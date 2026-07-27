@@ -197,9 +197,15 @@ void scr_library_bytes_out(ScrBytes *b, const uint8_t **out, size_t *out_len);
  * collection walks the buffer (markGray: trial-decrement internal edges;
  * scan: restore externally-referenced subgraphs; collectWhite: free the
  * dead cycle members, releasing only edges that LEAVE the white set).
- * Collection points: program exit (before the RC audit), event-loop
- * quiescence, and a root-buffer threshold (SCR_CYCLE_THRESHOLD env var,
- * default 256). There is no concurrent or incremental collection.
+ * It is GENERATIONAL: each header carries a generation, a pass names the
+ * oldest one it will walk, and objects that survive a pass are promoted out
+ * of the nursery so later nursery passes never re-walk them. That is what
+ * keeps a pass proportional to recent allocation rather than to the whole
+ * live heap — see the generation note in scr_cycle.c for the soundness
+ * argument and the schedule. Collection points: program exit (before the RC
+ * audit), event-loop quiescence, and the per-generation triggers.
+ * SCR_CYCLE_THRESHOLD pins the nursery trigger to a fixed candidate count.
+ * There is no concurrent or incremental collection.
  *
  * Contract for trace/teardown pairs (the compiler emits them for shapes,
  * the runtime owns its own): trace(obj) visits exactly the strong
@@ -214,13 +220,24 @@ typedef void (*ScrTraceVisit)(void *child, void *ctx);
 typedef void (*ScrTraceFn)(void *obj, ScrTraceVisit visit, void *ctx);
 typedef void (*ScrCycFreeFn)(void *obj);
 
-enum { SCR_CYC_BLACK = 0, SCR_CYC_PURPLE = 1, SCR_CYC_GRAY = 2, SCR_CYC_WHITE = 3 };
+/* DOOMED is WHITE that collectWhite has already gathered: it stops the
+ * gather recursing twice, and distinguishes "about to be freed" from a
+ * survivor for the re-buffering step (see scr_cycle.c). */
+enum {
+  SCR_CYC_BLACK = 0, SCR_CYC_PURPLE = 1, SCR_CYC_GRAY = 2, SCR_CYC_WHITE = 3,
+  SCR_CYC_DOOMED = 4
+};
+
+/* Generations. A candidate sits in the buffer named by its own `gen`, and a
+ * pass walks only objects at or below the generation it collects. */
+enum { SCR_CYC_NURSERY = 0, SCR_CYC_MATURE = 1, SCR_CYC_NGENS = 2 };
 
 typedef struct ScrCycHdr {
   ScrTraceFn trace;
   ScrCycFreeFn free_fn;
   uint32_t color;    /* SCR_CYC_* */
-  uint32_t buffered; /* 1 = sitting in the candidate-root buffer */
+  uint16_t buffered; /* 1 = sitting in its generation's candidate buffer */
+  uint16_t gen;      /* SCR_CYC_NURSERY..SCR_CYC_MATURE (the walk filter) */
   size_t buf_index;  /* position there (O(1) removal when rc hits 0) */
 } ScrCycHdr;
 
@@ -229,10 +246,8 @@ typedef struct ScrCycHdr {
  * static inline here, so there is no symbol to call) and reaches the header
  * at obj-32. Three sites emit it — llvm/shapes.ts, llvm/classes.ts,
  * llvm/emitter.ts. Nothing but `color` may share those four bytes: a field
- * placed in them is silently zeroed by every retain, which neither the type
- * system nor the C compiler can see. The existing llvm-runtime-abi test
- * checks declare/prototype agreement, which cannot catch a struct-offset
- * skew — hence the assertions. */
+ * placed in them is silently zeroed by every retain, which is invisible to
+ * the type system and to the C compiler. Hence the assertions. */
 _Static_assert(sizeof(ScrCycHdr) == 32, "LLVM backend reads the header at obj-32");
 _Static_assert(offsetof(ScrCycHdr, color) == 16,
                "LLVM backend's inlined mark-live stores i32 0 at obj-16");
@@ -262,8 +277,16 @@ static inline void scr_cyc_mark_live(void *obj) {
   scr_cyc_hdr(obj)->color = SCR_CYC_BLACK;
 }
 
-/* Run one full trial-deletion pass over the buffered candidates now. */
+/* Full sweep: trial-deletion passes over EVERY generation, to a fixpoint.
+ * This is the exit / session-reset entry point (the RC audit runs straight
+ * after and wants nothing reclaimable left), and it costs a walk of the
+ * live heap — do not put it on a per-turn path. */
 void scr_collect_cycles(void);
+
+/* One pass on the normal generational schedule, for callers that reach a
+ * natural collection point rather than a threshold (the event loop between
+ * turns). Cheap: usually a nursery pass. */
+void scr_cyc_collect_scheduled(void);
 
 /* ── class hierarchies (single inheritance) ───────────────────────────
  * Classes in an `extends` hierarchy share a two-word object prefix: the

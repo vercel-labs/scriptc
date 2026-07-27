@@ -1802,8 +1802,11 @@ bool scr_loop_run(ScrPromise *top_level) {
     }
     if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
     /* Quiescent between turns (microtasks drained, nothing running):
-     * collect any cycles the turn left behind. No-op on an empty buffer. */
-    scr_collect_cycles();
+     * collect any cycles the turn left behind. One SCHEDULED pass — almost
+     * always a nursery one, sized to the turn's own garbage. A full sweep
+     * here would walk the whole live heap every turn, which is precisely
+     * what the generations exist to avoid. No-op on an empty buffer. */
+    scr_cyc_collect_scheduled();
     /* Stream tick dispatch (scr_stream.c, when linked): the deferred
      * next-tick emissions ('data' flow kicks, 'readable'/'end'/'finish'/
      * 'drain'/'error'/'close') fire now, FIRST — the nextTick station.

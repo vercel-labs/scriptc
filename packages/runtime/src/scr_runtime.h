@@ -224,6 +224,25 @@ typedef struct ScrCycHdr {
   size_t buf_index;  /* position there (O(1) removal when rc hits 0) */
 } ScrCycHdr;
 
+/* This layout is an ABI, not an implementation detail: the LLVM backend
+ * inlines scr_cyc_mark_live as a raw `store i32 0` at obj-16 (it is a
+ * static inline here, so there is no symbol to call) and reaches the header
+ * at obj-32. Three sites emit it — llvm/shapes.ts, llvm/classes.ts,
+ * llvm/emitter.ts. Nothing but `color` may share those four bytes: a field
+ * placed in them is silently zeroed by every retain, which neither the type
+ * system nor the C compiler can see. The existing llvm-runtime-abi test
+ * checks declare/prototype agreement, which cannot catch a struct-offset
+ * skew — hence the assertions. */
+_Static_assert(sizeof(ScrCycHdr) == 32, "LLVM backend reads the header at obj-32");
+_Static_assert(offsetof(ScrCycHdr, color) == 16,
+               "LLVM backend's inlined mark-live stores i32 0 at obj-16");
+_Static_assert(sizeof(((ScrCycHdr *)0)->color) == 4,
+               "mark-live is an i32 store: color must own all four bytes");
+_Static_assert(SCR_CYC_BLACK == 0,
+               "the emitted mark-live stores the LITERAL 0, not the enumerator "
+               "— reordering the colors would make every compiled retain write "
+               "the wrong one");
+
 static inline ScrCycHdr *scr_cyc_hdr(void *obj) { return (ScrCycHdr *)obj - 1; }
 
 /* Zeroed allocation with a cycle header in front; returns the OBJECT

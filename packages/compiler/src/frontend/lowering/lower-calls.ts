@@ -2684,7 +2684,7 @@ export function lowerFfiCall(L: Lowerer, expr: ts.CallExpression): IrExpr | null
       // No entry means the program-level pass already diagnosed this
       // binding. Poison the statement without duplicating that diagnostic.
       if (validSymbols === undefined) throw new PoisonError();
-      if (!validSymbols.has(symbol)) {
+      if (!L.ownsValidatedFfiSymbol(binding.name, symbol)) {
         // TypeScript resolved this call to a distinct local declaration.
         // The manifest owns only the exact validated ambient binding; a
         // same-named function with a body remains ordinary scriptc code.

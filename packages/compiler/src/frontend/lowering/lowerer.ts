@@ -1264,6 +1264,15 @@ export class Lowerer {
       ? this.qualify(decl.getSourceFile(), `%cx${decl.getStart()}.${decl.name?.text ?? ""}`)
       : this.qualify(decl.getSourceFile(), nsPathPrefix(decl) + (decl.name ? decl.name.text : "%anon"));
 
+  /** Whether whole-program validation assigned this exact source symbol to
+   * the configured native binding. Name agreement alone never owns a call. */
+  ownsValidatedFfiSymbol(name: string, symbol: ts.Symbol): boolean {
+    return (
+      this.ffiImportsByName.has(name) &&
+      this.ffiBindingSymbols?.get(name)?.has(symbol) === true
+    );
+  }
+
   /** Follows import aliases to the original declaration's symbol. Every
    * value reference resolves through here, so it doubles as the flush
    * point for deferred collection diagnostics: resolving a reference to a

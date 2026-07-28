@@ -340,37 +340,6 @@ export function ambientNsRootOf(L: Lowerer, e: ts.Expression): ts.Identifier | n
  * the order Node dies in. Null for stdlib/@types roots (their own
  * chokepoints stand) and anything declared with a value. */
 export function ambientUndefVarRootOf(L: Lowerer, e: ts.Expression): ts.Identifier | null {
-  let root: ts.Expression = e;
-  for (;;) {
-    if (
-      ts.isParenthesizedExpression(root) ||
-      ts.isNonNullExpression(root) ||
-      ts.isAsExpression(root) ||
-      ts.isSatisfiesExpression(root) ||
-      ts.isTypeAssertion(root)
-    ) {
-      root = root.expression;
-      continue;
-    }
-    if (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root)) {
-      root = root.expression;
-      continue;
-    }
-    if (ts.isCallExpression(root) || ts.isNewExpression(root)) {
-      root = root.expression;
-      continue;
-    }
-    if (ts.isExpressionWithTypeArguments(root)) {
-      root = root.expression;
-      continue;
-    }
-    if (ts.isTaggedTemplateExpression(root)) {
-      root = root.tag;
-      continue;
-    }
-    break;
-  }
-  if (!ts.isIdentifier(root)) return null;
   // PROBE resolution: every caller asks "is this chain ambient-rooted?"
   // and proceeds to its ordinary lowering on a null answer — so the
   // question must not carry resolution's side effects. Bare
@@ -378,12 +347,53 @@ export function ambientUndefVarRootOf(L: Lowerer, e: ts.Expression): ts.Identifi
   // diagnostics onto the build (reached-only-by-the-probe declarations
   // reported eagerly — collectGlobals runs this walk on every
   // initializer) and throws the cross-block merged-namespace fence's
-  // PoisonError out of collection entirely. The collect-phase guard
-  // suppresses both; the ordinary lowering that follows a null answer
-  // re-resolves with full effects at its own site.
+  // PoisonError out of collection entirely. The collect-phase guard also
+  // covers exact FFI ownership checks encountered while walking the chain;
+  // the ordinary lowering that follows a null answer re-resolves with full
+  // effects at its own site.
   const wasCollecting = L.collecting;
   L.collecting = true;
   try {
+    let root: ts.Expression = e;
+    for (;;) {
+      if (
+        ts.isParenthesizedExpression(root) ||
+        ts.isNonNullExpression(root) ||
+        ts.isAsExpression(root) ||
+        ts.isSatisfiesExpression(root) ||
+        ts.isTypeAssertion(root)
+      ) {
+        root = root.expression;
+        continue;
+      }
+      if (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root)) {
+        root = root.expression;
+        continue;
+      }
+      if (ts.isCallExpression(root) || ts.isNewExpression(root)) {
+        if (ts.isCallExpression(root) && ts.isIdentifier(root.expression)) {
+          const symbol = L.resolveValueSymbol(root.expression);
+          if (symbol && L.ownsValidatedFfiSymbol(root.expression.text, symbol)) {
+            // The manifest supplies this exact ambient declaration. Stop at
+            // the call boundary so normal lowering can emit the native call
+            // or its existing call-shape diagnostic.
+            return null;
+          }
+        }
+        root = root.expression;
+        continue;
+      }
+      if (ts.isExpressionWithTypeArguments(root)) {
+        root = root.expression;
+        continue;
+      }
+      if (ts.isTaggedTemplateExpression(root)) {
+        root = root.tag;
+        continue;
+      }
+      break;
+    }
+    if (!ts.isIdentifier(root)) return null;
     const sym = L.resolveValueSymbol(root);
     if (!sym) return null;
     if (L.trapBindings.has(sym)) return root;

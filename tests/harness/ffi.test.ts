@@ -38,12 +38,16 @@ function nativeArchive(): string {
   return archive;
 }
 
-function manifest(archive: string): string {
+function manifest(archive: string, functionNames?: readonly string[]): string {
   const outDir = join(cacheRoot, "manifest");
   mkdirSync(outDir, { recursive: true });
   const profile = JSON.parse(
     readFileSync(join(fixtureRoot, "profile.json"), "utf8"),
-  ) as { libraries: string[] };
+  ) as { functions: { name: string }[]; libraries: string[] };
+  if (functionNames !== undefined) {
+    const names = new Set(functionNames);
+    profile.functions = profile.functions.filter((entry) => names.has(entry.name));
+  }
   profile.libraries = [archive];
   const path = join(outDir, "profile.json");
   writeFileSync(path, JSON.stringify(profile, null, 2));
@@ -79,6 +83,55 @@ describe.each(["c", "llvm"] as const)("outbound native FFI, %s backend", (backen
     expect(
       execFileSync(result.binaryPath, [], { encoding: "utf8" }),
     ).toBe(expected);
+  });
+});
+
+describe.each(["c", "llvm"] as const)("FFI binding initializers, %s backend", (backend) => {
+  test("stores the result of a manifest-bound call in a function-local const", async () => {
+    const outDir = join(cacheRoot, `binding-initializer-${backend}`);
+    mkdirSync(outDir, { recursive: true });
+    const entry = join(outDir, "main.ts");
+    writeFileSync(
+      entry,
+      [
+        "declare function nativeScale(value: number): number;",
+        "function main(): void {",
+        "  const result = nativeScale(21);",
+        "  console.log('const:', result);",
+        "}",
+        "main();",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await compile(entry, {
+      outDir,
+      outPath: join(outDir, "program"),
+      backend,
+      sanitize,
+      ffiProfilePath: manifest(nativeArchive(), ["nativeScale"]),
+      emitIr: true,
+    });
+    if (!result.ok) {
+      throw new Error(
+        result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+      );
+    }
+
+    const native = spawnSync(result.binaryPath, [], { encoding: "utf8" });
+    expect({
+      stdout: native.stdout,
+      stderr: native.stderr,
+      status: native.status,
+    }).toEqual({
+      stdout: "const: 42\n",
+      stderr: "",
+      status: 0,
+    });
+
+    const ir = JSON.stringify(JSON.parse(readFileSync(result.irPath!, "utf8")));
+    expect(ir).toContain('"kind":"ffiCall"');
+    expect(ir).not.toContain('"fn":"global.undefRead"');
   });
 });
 

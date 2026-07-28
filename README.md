@@ -12,7 +12,7 @@ console.log(fib(30));
 $ scriptc run fib.ts
 832040
 
-$ scriptc build fib.ts && ls -la fib
+$ scriptc build fib.ts && ls -la .scriptc/fib
 -rwxr-xr-x  178K  fib        # a self-contained native binary, ~2ms startup
 ```
 

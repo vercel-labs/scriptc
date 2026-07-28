@@ -42,7 +42,6 @@ export const UNSUPPORTED_STMT: Partial<Record<ts.SyntaxKind, { code: keyof typeo
 export const UNSUPPORTED_EXPR: Partial<Record<ts.SyntaxKind, { code: keyof typeof UNSUPPORTED; feature?: string }>> = {
   // ArrowFunction / FunctionExpression are supported (closures); handled in
   // lowerExpr before this table.
-  [ts.SyntaxKind.ClassExpression]: { code: "SC1020" },
   // ObjectLiteralExpression is supported (records); handled in lowerExpr.
   // ArrayLiteralExpression / ElementAccessExpression are supported (arrays);
   // handled in lowerExpr.

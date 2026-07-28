@@ -371,7 +371,11 @@ export function ambientUndefVarRootOf(L: Lowerer, e: ts.Expression): ts.Identifi
         continue;
       }
       if (ts.isCallExpression(root) || ts.isNewExpression(root)) {
-        if (ts.isCallExpression(root) && ts.isIdentifier(root.expression)) {
+        if (
+          ts.isCallExpression(root) &&
+          ts.isIdentifier(root.expression) &&
+          L.ffiImportsByName.has(root.expression.text)
+        ) {
           const symbol = L.resolveValueSymbol(root.expression);
           if (symbol && L.ownsValidatedFfiSymbol(root.expression.text, symbol)) {
             // The manifest supplies this exact ambient declaration. Stop at

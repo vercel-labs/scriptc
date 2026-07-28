@@ -21,7 +21,10 @@ const cacheRoot = join(
   flavor,
 );
 
+let cachedNativeArchive: string | undefined;
+
 function nativeArchive(): string {
+  if (cachedNativeArchive !== undefined) return cachedNativeArchive;
   const outDir = join(cacheRoot, "native");
   mkdirSync(outDir, { recursive: true });
   const object = join(outDir, "native.o");
@@ -35,7 +38,8 @@ function nativeArchive(): string {
     object,
   ]);
   execFileSync("ar", ["rcs", archive, object]);
-  return archive;
+  cachedNativeArchive = archive;
+  return cachedNativeArchive;
 }
 
 function manifest(archive: string, functionNames?: readonly string[]): string {
@@ -52,6 +56,52 @@ function manifest(archive: string, functionNames?: readonly string[]): string {
   const path = join(outDir, "profile.json");
   writeFileSync(path, JSON.stringify(profile, null, 2));
   return path;
+}
+
+async function compileScaleFixture(
+  id: string,
+  body: readonly string[],
+  options: {
+    backend?: "c" | "llvm";
+    emitIr?: boolean;
+    ffi?: boolean;
+  } = {},
+) {
+  const outDir = join(cacheRoot, id);
+  mkdirSync(outDir, { recursive: true });
+  const entry = join(outDir, "main.ts");
+  writeFileSync(
+    entry,
+    [
+      "declare function nativeScale(value: number): number;",
+      ...body,
+      "",
+    ].join("\n"),
+  );
+  const result = await compile(entry, {
+    outDir,
+    outPath: join(outDir, "program"),
+    backend: options.backend ?? "c",
+    sanitize,
+    ...(options.ffi === false
+      ? {}
+      : { ffiProfilePath: manifest(nativeArchive(), ["nativeScale"]) }),
+    emitIr: options.emitIr,
+  });
+  return { entry, result };
+}
+
+function expectUndefinedAmbient(binaryPath: string): void {
+  const native = spawnSync(binaryPath, [], { encoding: "utf8" });
+  expect({
+    stdout: native.stdout,
+    stderr: native.stderr,
+    status: native.status,
+  }).toEqual({
+    stdout: "",
+    stderr: "Uncaught ReferenceError: nativeScale is not defined\n",
+    status: 1,
+  });
 }
 
 const expected = [
@@ -87,31 +137,34 @@ describe.each(["c", "llvm"] as const)("outbound native FFI, %s backend", (backen
 });
 
 describe.each(["c", "llvm"] as const)("FFI binding initializers, %s backend", (backend) => {
-  test("stores the result of a manifest-bound call in a function-local const", async () => {
-    const outDir = join(cacheRoot, `binding-initializer-${backend}`);
-    mkdirSync(outDir, { recursive: true });
-    const entry = join(outDir, "main.ts");
-    writeFileSync(
-      entry,
+  test("preserves exact calls across binding and early-probe contexts", async () => {
+    const { result } = await compileScaleFixture(
+      `binding-initializer-${backend}`,
       [
-        "declare function nativeScale(value: number): number;",
+        "const moduleResult = nativeScale(2);",
         "function main(): void {",
-        "  const result = nativeScale(21);",
-        "  console.log('const:', result);",
+        "  const functionResult = nativeScale(21);",
+        "  let once = nativeScale(3);",
+        "  console.log('module:', moduleResult);",
+        "  console.log('const:', functionResult);",
+        "  console.log('let:', once);",
+        "  for (const value of [1, 2]) {",
+        "    const loopResult = nativeScale(value);",
+        "    console.log('loop:', loopResult);",
+        "  }",
+        "  let assigned = 0;",
+        "  assigned = nativeScale(5);",
+        "  console.log('assignment:', assigned);",
+        "  const text = nativeScale(6).toString();",
+        "  console.log('chain:', text);",
+        "  let calls = 0;",
+        "  const sideEffectResult = nativeScale(++calls);",
+        "  console.log('side effect:', sideEffectResult, calls);",
         "}",
         "main();",
-        "",
-      ].join("\n"),
+      ],
+      { backend, emitIr: true },
     );
-
-    const result = await compile(entry, {
-      outDir,
-      outPath: join(outDir, "program"),
-      backend,
-      sanitize,
-      ffiProfilePath: manifest(nativeArchive(), ["nativeScale"]),
-      emitIr: true,
-    });
     if (!result.ok) {
       throw new Error(
         result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
@@ -124,15 +177,126 @@ describe.each(["c", "llvm"] as const)("FFI binding initializers, %s backend", (b
       stderr: native.stderr,
       status: native.status,
     }).toEqual({
-      stdout: "const: 42\n",
+      stdout: [
+        "module: 4",
+        "const: 42",
+        "let: 6",
+        "loop: 2",
+        "loop: 4",
+        "assignment: 10",
+        "chain: 12",
+        "side effect: 2 1",
+        "",
+      ].join("\n"),
       stderr: "",
       status: 0,
     });
 
     const ir = JSON.stringify(JSON.parse(readFileSync(result.irPath!, "utf8")));
-    expect(ir).toContain('"kind":"ffiCall"');
+    expect(ir.match(/"kind":"ffiCall"/g)).toHaveLength(7);
     expect(ir).not.toContain('"fn":"global.undefRead"');
   });
+});
+
+test("keeps a no-manifest ambient initializer failure ahead of its arguments", async () => {
+  const { result } = await compileScaleFixture(
+    "binding-initializer-no-manifest",
+    [
+      "function argument(): number {",
+      "  console.log('argument evaluated');",
+      "  return 21;",
+      "}",
+      "const result = nativeScale(argument());",
+      "console.log(result);",
+    ],
+    { emitIr: true, ffi: false },
+  );
+  if (!result.ok) {
+    throw new Error(
+      result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+    );
+  }
+
+  expectUndefinedAmbient(result.binaryPath);
+
+  const ir = JSON.stringify(JSON.parse(readFileSync(result.irPath!, "utf8")));
+  expect(ir).toContain('"fn":"global.undefRead"');
+  expect(ir).not.toContain('"kind":"ffiCall"');
+});
+
+test.each([
+  {
+    id: "alias",
+    name: "an alias read",
+    body: [
+      "const alias = nativeScale;",
+      "console.log(alias(21));",
+    ],
+  },
+  {
+    id: "call-property",
+    name: "a .call use",
+    body: ["console.log(nativeScale.call(null, 21));"],
+  },
+  {
+    id: "parenthesized-callee",
+    name: "a parenthesized callee",
+    body: ["console.log((nativeScale)(21));"],
+  },
+])("does not widen $name into a native call", async ({ id, body }) => {
+  const { result } = await compileScaleFixture(`indirect-${id}`, body);
+  if (!result.ok) {
+    throw new Error(
+      result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+    );
+  }
+
+  expectUndefinedAmbient(result.binaryPath);
+});
+
+test.each([
+  {
+    id: "optional",
+    name: "an optional direct call",
+    call: "nativeScale?.(21)",
+    message: "direct, non-generic calls only",
+  },
+  {
+    id: "spread",
+    name: "a spread direct call",
+    call: "nativeScale(...([21] as [number]))",
+    message: "spread arguments do not have a fixed native ABI",
+  },
+  {
+    id: "arity",
+    name: "a wrong-arity direct call",
+    call: "nativeScale()",
+    message: "native ABI requires exactly 1",
+    suppressTypeScript: true,
+  },
+])("keeps the existing FFI diagnostic for $name", async ({
+  id,
+  call,
+  message,
+  suppressTypeScript,
+}) => {
+  const { entry, result } = await compileScaleFixture(
+    `call-diagnostic-${id}`,
+    [
+      "function main(): void {",
+      ...(suppressTypeScript ? ["  // @ts-ignore exercise the native arity diagnostic"] : []),
+      `  const result = ${call};`,
+      "}",
+      "main();",
+    ],
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]?.code).toBe("SC5003");
+    expect(result.diagnostics[0]?.message).toContain(message);
+    expect(result.diagnostics[0]?.loc.file).toBe(entry);
+  }
 });
 
 test("manifest validation is strict and source-facing", () => {
@@ -290,7 +454,8 @@ describe.each(["c", "llvm"] as const)("FFI binding identity, %s backend", (backe
           "declare function nativeScale(value: number): number;",
           "function localUse(): number {",
           "  function nativeScale(value: number): number { return value + 1; }",
-          "  return nativeScale(21);",
+          "  const result = nativeScale(21);",
+          "  return result;",
           "}",
           "console.log(localUse());",
           "",

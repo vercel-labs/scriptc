@@ -923,6 +923,7 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
             WeakRef: "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
             FinalizationRegistry: "finalization callbacks expose GC timing — genuinely dynamic; release resources explicitly instead",
             eval: "runtime code evaluation cannot be compiled ahead of time",
+            crypto: "the Web Crypto API (globalThis.crypto) has no static lowering; import named exports from 'node:crypto' instead — e.g. `import { randomUUID } from \"node:crypto\"`",
           };
           L.noLowering(expr.text, expr, globalHints[expr.text], sym ?? undefined);
         }

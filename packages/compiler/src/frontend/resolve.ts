@@ -15,7 +15,7 @@
  * and these tables are wrong — that is what the suite is for. */
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { isNpmStaticPackage, npmStaticPackageOfPath, npmStaticTransformPkgJson } from "./npm-static.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 
@@ -818,17 +818,22 @@ export function resolveTypeDirective(name: string, fromFile: string): string | n
  * loadProgram calls them).  clearResolveCaches reset included. */
 
 let tsconfigPaths: Record<string, string[]> | null = null;
+let tsconfigBasePath: string | null = null;
 
-/** Set the active tsconfig "paths" mapping (called by loadProgram). */
-export function setTsconfigPaths(paths: Record<string, string[]> | null): void {
+/** Set the active tsconfig "paths" mapping and base directory
+ * (baseUrl from tsconfig, or the tsconfig's directory). Called by loadProgram. */
+export function setTsconfigPaths(paths: Record<string, string[]> | null, baseDir?: string): void {
   tsconfigPaths = paths;
+  tsconfigBasePath = baseDir ?? null;
 }
 
 /** Resolve an import specifier through tsconfig "paths" — `@/foo → ./src/foo`
  * (with `*` wildcard substitution) — then through the normal relative-module
- * resolver.  Returns the resolved absolute path, or null. */
+ * resolver.  Mapping targets are resolved relative to the tsconfig base directory
+ * (baseUrl), not the importing file.  Returns the resolved absolute path, or null. */
 export function resolvePathsAlias(fromFile: string, specifier: string): string | null {
   if (tsconfigPaths === null) return null;
+  const base = resolve(tsconfigBasePath ?? dirname(fromFile));
   for (const [pattern, mappings] of Object.entries(tsconfigPaths)) {
     if (!Array.isArray(mappings)) continue;
     const starIdx = pattern.indexOf("*");
@@ -836,8 +841,8 @@ export function resolvePathsAlias(fromFile: string, specifier: string): string |
       if (specifier !== pattern) continue;
       for (const mapping of mappings) {
         if (typeof mapping !== "string") continue;
-        const target = mapping.startsWith("./") || mapping.startsWith("../") ? mapping : "./" + mapping;
-        const r = resolveRelativeModule(fromFile, target);
+        const target = mapping.startsWith("./") || mapping.startsWith("../") ? join(base, mapping) : mapping;
+        const r = resolveRelativeModule(dirname(target), "./" + basename(target));
         if (r !== null) return r;
       }
       continue;
@@ -850,13 +855,14 @@ export function resolvePathsAlias(fromFile: string, specifier: string): string |
       if (typeof mapping !== "string") continue;
       const mStarIdx = mapping.indexOf("*");
       if (mStarIdx === -1) {
-        const r = resolveRelativeModule(fromFile, mapping);
+        const target = mapping.startsWith("./") || mapping.startsWith("../") ? join(base, mapping) : mapping;
+        const r = resolveRelativeModule(dirname(target), "./" + basename(target));
         if (r !== null) return r;
         continue;
       }
       const target = mapping.slice(0, mStarIdx) + wildcard + mapping.slice(mStarIdx + 1);
-      const rel = target.startsWith("./") || target.startsWith("../") ? target : "./" + target;
-      const r = resolveRelativeModule(fromFile, rel);
+      const abs = target.startsWith("./") || target.startsWith("../") ? join(base, target) : target;
+      const r = resolveRelativeModule(dirname(abs), "./" + basename(abs));
       if (r !== null) return r;
     }
   }
@@ -869,6 +875,7 @@ export function clearResolveCaches(): void {
   pkgJsonCache.clear();
   workspaceMembersCache.clear();
   tsconfigPaths = null;
+  tsconfigBasePath = null;
 }
 
 /** True when `path` is under a node_modules directory (the

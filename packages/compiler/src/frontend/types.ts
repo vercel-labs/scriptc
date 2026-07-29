@@ -15,7 +15,7 @@ export { typeKey };
  * signal), so under --dynamic they map to island handles (jsval) exactly
  * like npm-declared types. Checked with declaration provenance in mapType;
  * consumed by the lowerer's badType for the static-build wording. */
-export const ISLAND_AMBIENT_TYPES = ["Response", "RequestInit", "AbortSignal", "Headers"] as const;
+export const ISLAND_AMBIENT_TYPES = ["Response", "RequestInit", "AbortSignal", "Headers", "HeadersInit"] as const;
 
 /** The frontend's record-shape interner. Records are monomorphic structural
  * shapes: fields sorted by name form the canonical identity, and two types

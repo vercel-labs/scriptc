@@ -253,6 +253,7 @@ export const ADOPTED_OPTIONS = [
   "esModuleInterop",
   "allowSyntheticDefaultImports",
   "paths",
+  "baseUrl",
 ] as const;
 
 /* The JAVASCRIPT strictness stance (the JS-input design made real):

@@ -220,8 +220,11 @@ function loadProgram7(host: ts.Ts7Host, entryPath: string): LoadResult & { dispo
   let options: ts.Ts7CompilerOptions = nodeTypes ? { ...config.options, skipLibCheck: true } : { ...config.options };
   // Adopt tsconfig "paths" for scriptc's own resolver (resolve.ts) —
   // lowering uses them to resolve aliased import specifiers.
+  // Mapping targets are relative to baseUrl (or the tsconfig directory).
   const userPaths = (options as Record<string, unknown>).paths as Record<string, string[]> | undefined;
-  setTsconfigPaths(userPaths ?? null);
+  const userBaseUrl = (options as Record<string, unknown>).baseUrl as string | undefined;
+  const pathsBaseDir = userBaseUrl !== undefined ? resolve(dirname(config.configFile ?? entryPath), userBaseUrl) : config.configFile !== null ? dirname(config.configFile) : undefined;
+  setTsconfigPaths(userPaths ?? null, pathsBaseDir);
   // --npm-static: opted-in packages' shipped JS must be TYPE-INCLUDED (not
   // just resolved) — without maxNodeModuleJsDepth, node_modules JS types as
   // an implicit-any module (TS7016) and nothing infers. Only flagged

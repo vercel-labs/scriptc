@@ -39,13 +39,6 @@ json-dyn.ts:28:19 - error SC1090: a checked cast of 'unknown' to 'Point' (a dyna
      |                   ^~~~~~~~~~~~~~~~~~~~~~~~~
   29 | // (casts of unknown to ADAPTABLE function types compile now — the kind
 
-json-dyn.ts:38:3 - error SC1090: 'unknown'-typed class fields are not supported yet
-
-  37 | class Holder {
-  38 |   data: unknown = JSON.parse("{}");
-     |   ^~~~
-  39 | }
-
 json-dyn.ts:42:7 - error SC2007: values of type '{ (text: string, reviver?: ((this: any, key: string, value: any) => any) | undefined): any; (text: string): unknown; }' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
 
   41 | const dynArray: unknown[] = []; // unknown[] IS the dyn array now — no fence (corpus 2585)
@@ -67,11 +60,4 @@ json-dyn.ts:51:39 - error SC1090: JSON.stringify of 'string | undefined' values 
   50 | }
   51 | const stringifyUndef = JSON.stringify(mkMaybe());
      |                                       ^~~~~~~~~
-  52 | 
-
-json-dyn.ts:59:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
-
-  58 | // them relevant; these references are what makes them count.
-  59 | new Holder();
-     | ^~~~~~~~~~~~
-  60 | 
+  52 | // Reached: unreached bodies never lower, so their rejections only exist

@@ -1496,6 +1496,9 @@ export class CEmitter {
     if (t.kind === "jsval") {
       return [`  o->${mangleField(name)} = scr_jsval_undefined(); /* ${name} starts undefined */`];
     }
+    if (t.kind === "dyn") {
+      return [`  o->${mangleField(name)} = scr_dyn_retain(scr_dyn_undefined()); /* ${name} starts undefined */`];
+    }
     const tag = this.undefinedArmTag(t);
     if (tag < 0 || t.kind !== "union") return [];
     return [`  o->${mangleField(name)} = ${this.unitInstanceRef(t.unionId, tag)}; /* ${name} starts undefined */`];

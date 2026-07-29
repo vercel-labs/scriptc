@@ -841,8 +841,8 @@ export function resolvePathsAlias(fromFile: string, specifier: string): string |
       if (specifier !== pattern) continue;
       for (const mapping of mappings) {
         if (typeof mapping !== "string") continue;
-        const target = mapping.startsWith("./") || mapping.startsWith("../") ? join(base, mapping) : mapping;
-        const r = resolveRelativeModule(dirname(target), "./" + basename(target));
+        const abs = resolve(base, mapping);
+        const r = resolveRelativeModule(abs, "./" + basename(abs));
         if (r !== null) return r;
       }
       continue;
@@ -855,14 +855,14 @@ export function resolvePathsAlias(fromFile: string, specifier: string): string |
       if (typeof mapping !== "string") continue;
       const mStarIdx = mapping.indexOf("*");
       if (mStarIdx === -1) {
-        const target = mapping.startsWith("./") || mapping.startsWith("../") ? join(base, mapping) : mapping;
-        const r = resolveRelativeModule(dirname(target), "./" + basename(target));
+        const abs = resolve(base, mapping);
+        const r = resolveRelativeModule(abs, "./" + basename(abs));
         if (r !== null) return r;
         continue;
       }
       const target = mapping.slice(0, mStarIdx) + wildcard + mapping.slice(mStarIdx + 1);
-      const abs = target.startsWith("./") || target.startsWith("../") ? join(base, target) : target;
-      const r = resolveRelativeModule(dirname(abs), "./" + basename(abs));
+      const abs = resolve(base, target);
+      const r = resolveRelativeModule(abs, "./" + basename(abs));
       if (r !== null) return r;
     }
   }

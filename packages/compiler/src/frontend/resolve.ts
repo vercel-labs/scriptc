@@ -806,11 +806,69 @@ export function resolveTypeDirective(name: string, fromFile: string): string | n
   }
 }
 
+/* ── tsconfig "paths" alias resolution ─────────────────────────────────────
+ *
+ * TypeScript's compilerOptions.paths maps import specifier patterns to file
+ * locations (most commonly `@/*` → `"./src/*"`).  scriptc's own resolver
+ * (used by the lowering) normally never sees these — tsgo's checker resolves
+ * its own.  The lowering's resolveImport7 / orderedImportsOf MUST apply the
+ * same mapping so that import sources line up.
+ *
+ * Setters below are one-way (once set they stay set for the load's lifetime;
+ * loadProgram calls them).  clearResolveCaches reset included. */
+
+let tsconfigPaths: Record<string, string[]> | null = null;
+
+/** Set the active tsconfig "paths" mapping (called by loadProgram). */
+export function setTsconfigPaths(paths: Record<string, string[]> | null): void {
+  tsconfigPaths = paths;
+}
+
+/** Resolve an import specifier through tsconfig "paths" — `@/foo → ./src/foo`
+ * (with `*` wildcard substitution) — then through the normal relative-module
+ * resolver.  Returns the resolved absolute path, or null. */
+export function resolvePathsAlias(fromFile: string, specifier: string): string | null {
+  if (tsconfigPaths === null) return null;
+  for (const [pattern, mappings] of Object.entries(tsconfigPaths)) {
+    if (!Array.isArray(mappings)) continue;
+    const starIdx = pattern.indexOf("*");
+    if (starIdx === -1) {
+      if (specifier !== pattern) continue;
+      for (const mapping of mappings) {
+        if (typeof mapping !== "string") continue;
+        const target = mapping.startsWith("./") || mapping.startsWith("../") ? mapping : "./" + mapping;
+        const r = resolveRelativeModule(fromFile, target);
+        if (r !== null) return r;
+      }
+      continue;
+    }
+    const prefix = pattern.slice(0, starIdx);
+    const suffix = pattern.slice(starIdx + 1);
+    if (!specifier.startsWith(prefix) || !specifier.endsWith(suffix)) continue;
+    const wildcard = specifier.slice(prefix.length, specifier.length - suffix.length);
+    for (const mapping of mappings) {
+      if (typeof mapping !== "string") continue;
+      const mStarIdx = mapping.indexOf("*");
+      if (mStarIdx === -1) {
+        const r = resolveRelativeModule(fromFile, mapping);
+        if (r !== null) return r;
+        continue;
+      }
+      const target = mapping.slice(0, mStarIdx) + wildcard + mapping.slice(mStarIdx + 1);
+      const rel = target.startsWith("./") || target.startsWith("../") ? target : "./" + target;
+      const r = resolveRelativeModule(fromFile, rel);
+      if (r !== null) return r;
+    }
+  }
+  return null;
+}
+
 /** Test hook: the package.json cache holds across programs (fine within one
  * compile; a long-lived test process editing fixtures must reset it). */
 export function clearResolveCaches(): void {
   pkgJsonCache.clear();
   workspaceMembersCache.clear();
+  tsconfigPaths = null;
 }
 
 /** True when `path` is under a node_modules directory (the

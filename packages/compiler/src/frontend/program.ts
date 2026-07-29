@@ -49,7 +49,7 @@ import {
   tscPassthroughDiag,
   unsupportedDiag,
 } from "../diagnostics/diagnostic.js";
-import { isNodeModulesPath, nearestPkgJsonPath, projectDtsRuntimeSibling, resolveBareModule, resolveProjectImport, resolveRelativeModule, resolveTypeDirective, setProjectRealm } from "./resolve.js";
+import { isNodeModulesPath, nearestPkgJsonPath, projectDtsRuntimeSibling, resolveBareModule, resolvePathsAlias, resolveProjectImport, resolveRelativeModule, resolveTypeDirective, setProjectRealm, setTsconfigPaths } from "./resolve.js";
 import { probeNodeImportRefusal, probeNodeRequireRefusal } from "./npm.js";
 import { isNpmStaticPackage, npmStaticActive, npmStaticFsShadow, npmStaticPackageOfPath, reportNpmStaticOffender, setNpmStaticPackages } from "./npm-static.js";
 import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
@@ -218,6 +218,10 @@ function loadProgram7(host: ts.Ts7Host, entryPath: string): LoadResult & { dispo
   // .d.ts-internal errors. Fence discipline never depended on it: the
   // lowerer checks provenance and forms at every use site.
   let options: ts.Ts7CompilerOptions = nodeTypes ? { ...config.options, skipLibCheck: true } : { ...config.options };
+  // Adopt tsconfig "paths" for scriptc's own resolver (resolve.ts) —
+  // lowering uses them to resolve aliased import specifiers.
+  const userPaths = (options as Record<string, unknown>).paths as Record<string, string[]> | undefined;
+  setTsconfigPaths(userPaths ?? null);
   // --npm-static: opted-in packages' shipped JS must be TYPE-INCLUDED (not
   // just resolved) — without maxNodeModuleJsDepth, node_modules JS types as
   // an implicit-any module (TS7016) and nothing infers. Only flagged
@@ -227,8 +231,10 @@ function loadProgram7(host: ts.Ts7Host, entryPath: string): LoadResult & { dispo
   // so tsgo's OWN resolution of the bare specifiers lands on the same
   // source files the preflight resolver answers — the checker types the
   // driver against the package's real TypeScript, not its shipped .d.ts.
-  const paths = provenancePaths();
-  if (paths !== null) options = { ...options, paths };
+  const provenance = provenancePaths();
+  if (provenance !== null) {
+    options = userPaths !== null ? { ...options, paths: { ...userPaths, ...provenance } } : { ...options, paths: provenance };
+  }
   const coreRoots = [entryPath, ambientDtsPath(), nodeTypes ?? fallbackDtsPath()];
   const program = ts.createProgram([...coreRoots, overridesDtsPath()], options, host);
   const entry = program.getSourceFile(entryPath);
@@ -1112,6 +1118,9 @@ export function makeCycleAdmission(
  * resolveImport) for the lowering: CommonJS require statements lower to
  * guarded %init calls of exactly the module preflight resolved here. */
 function resolveImport7(program: ts.Program, from: ts.SourceFile, specifier: string): ts.SourceFile | null {
+  // tsconfig "paths" aliases take precedence over relative and bare resolution.
+  const pathsResolved = resolvePathsAlias(from.fileName, specifier);
+  if (pathsResolved !== null) return program.getSourceFile(pathsResolved) ?? null;
   const resolved = resolveRelativeModule(from.fileName, specifier);
   if (resolved === null) return null;
   return program.getSourceFile(resolved) ?? null;
@@ -2111,6 +2120,8 @@ function cjsNamedImportLinkCheck(
   // --npm-static packages, whose CJS entries face Node's lexer exactly
   // like program CJS files (their JS IS the program now).
   const resolveEdge = (from: ts.SourceFile, spec: string): ts.SourceFile | null => {
+    const pathsResolved = resolvePathsAlias(from.fileName, spec);
+    if (pathsResolved !== null) return program.getSourceFile(pathsResolved) ?? null;
     if (isRelative(spec)) return resolveImport7(program, from, spec);
     const npmStatic = npmStaticDepSf7(program, from, spec);
     if (npmStatic !== null) return npmStatic;
@@ -2357,6 +2368,13 @@ export function orderedImportsOf(
     if (ts.isImportDeclaration(stmt) && erasedTypeOnlyImport(stmt)) continue;
     if (!stmt.moduleSpecifier || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
     const spec = stmt.moduleSpecifier.text;
+    // tsconfig "paths" aliases take precedence over all resolution strategies.
+    const pathsAlias = resolvePathsAlias(sf.fileName, spec);
+    if (pathsAlias !== null) {
+      const dep = program.getSourceFile(pathsAlias) ?? null;
+      out.push({ stmt, dep });
+      continue;
+    }
     const isRelative = isRelativeSpecifier(spec);
     // Relative edges as ever; PROJECT imports (#alias/self-name — the
     // package.json-mediated specifiers preflight admits as user-module

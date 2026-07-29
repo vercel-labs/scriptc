@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
+import { oracleEnvironmentFingerprint } from "./oracle-environment.js";
 import { shardSelect, shardSuffix } from "./shard.js";
 
 const execFileAsync = promisify(execFile);
@@ -240,14 +241,14 @@ function oracleKeyBase(): Promise<string> {
   // trusting process.version (vitest's own node could differ).
   oracleKeyBaseMemo ??= execFileAsync("node", ["--version"]).then(({ stdout }) =>
     createHash("sha256")
-      .update("oracle-v1\0")
+      .update("oracle-v2\0")
       .update(stdout.trim()).update("\0")
       // Decorator programs run tsc's downlevel on the Node side — its
       // emitter version is part of the verdict.
       .update(ts5.version).update("\0")
       .update(readFileSync(fileURLToPath(comptimeShim))).update("\0")
       .update(readFileSync(fileURLToPath(islandShim))).update("\0")
-      .update(process.env["SCRIPTC_TEST_ENV"] ?? "").update("\0")
+      .update(oracleEnvironmentFingerprint(process.env)).update("\0")
       .update(process.cwd()).update("\0")
       .digest("hex"),
   );

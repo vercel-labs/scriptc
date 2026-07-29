@@ -39,7 +39,7 @@ async function compileAndCompare(source: string, backend: "c" | "llvm"): Promise
     .update(`${backend}-${sanitize ? "san" : "plain"}`)
     .digest("hex")
     .slice(0, 16);
-  const outDir = join(tmpdir(), "scriptc-tests", `buffer-bytelength-${key}`);
+  const outDir = join(tmpdir(), "scriptc-tests", `global-buffer-alias-${key}`);
   mkdirSync(outDir, { recursive: true });
   const file = join(outDir, "main.mts");
   writeFileSync(file, source);
@@ -51,7 +51,7 @@ async function compileAndCompare(source: string, backend: "c" | "llvm"): Promise
   });
   if (!result.ok) {
     throw new Error(
-      "Buffer.byteLength program failed to compile:\n" +
+      "guarded global Buffer alias program failed to compile:\n" +
         result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
     );
   }
@@ -62,6 +62,25 @@ async function compileAndCompare(source: string, backend: "c" | "llvm"): Promise
   expect(nativeResult.stdout).toEqual(nodeResult.stdout);
   expect(nativeResult.stderr).toEqual(nodeResult.stderr);
   expect(nativeResult.exitCode).toBe(nodeResult.exitCode);
+}
+
+async function compileAndExpectFence(source: string, backend: "c" | "llvm"): Promise<void> {
+  const key = createHash("sha256").update(source).update(backend).digest("hex").slice(0, 16);
+  const outDir = join(tmpdir(), "scriptc-tests", `global-buffer-alias-fence-${key}`);
+  mkdirSync(outDir, { recursive: true });
+  const file = join(outDir, "main.mts");
+  writeFileSync(file, source);
+  const result = await compile(file, {
+    outPath: join(outDir, "program"),
+    outDir,
+    sanitize,
+    backend,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n")).toContain(
+    "SC1090: the reference to 'runtimeBuffer' (a binding form with no lowering) is not supported yet",
+  );
 }
 
 describe.each(["c", "llvm"] as const)(
@@ -85,6 +104,18 @@ console.log(byteLength("ascii"));
 console.log(byteLength("é"));
 console.log(byteLength("😀"));
 console.log(runtimeBuffer ? runtimeBuffer.byteLength("Aé😀") : -1);
+`, backend);
+    });
+
+    test("preserves unsupported member fences through the alias", async () => {
+      await compileAndExpectFence(`
+interface RuntimeBuffer {
+  byteLength(value: string): number;
+  poolSize?: number;
+}
+
+const runtimeBuffer = (globalThis as { Buffer?: RuntimeBuffer }).Buffer;
+console.log(runtimeBuffer ? runtimeBuffer.poolSize : -1);
 `, backend);
     });
   },

@@ -2978,6 +2978,13 @@ export function lowerOptionalChain(L: Lowerer, expr: ts.CallExpression | ts.Prop
   export function lowerCondition(L: Lowerer, expr: ts.Expression): IrExpr {
     let e: ts.Expression = expr;
     while (ts.isParenthesizedExpression(e)) e = e.expression;
+    // Node always installs the supported global Buffer constructor. A
+    // captured capability probe (`const b = globalThis.Buffer; if (b)`) is
+    // compile-time true; receiver-position calls through the alias still
+    // resolve via stdlibGlobalNameOf and keep Buffer's per-member fences.
+    if (stdlibGlobalNameOf(L, e) === "Buffer") {
+      return { kind: "boolLit", value: true, type: BOOL, loc: locOf(expr) };
+    }
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
       if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken) {

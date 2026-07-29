@@ -1510,9 +1510,18 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
     }
     if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
       if (stdlibGlobalNameOf(L, expr.expression) !== "globalThis") return null;
+      // Capability probes commonly narrow globalThis before reading Buffer:
+      // `(globalThis as { Buffer?: RuntimeBuffer }).Buffer`. The cast's
+      // member symbol belongs to the user-declared probe shape rather than
+      // @types/node, but the receiver is still the unshadowable globalThis
+      // intrinsic and the runtime Buffer is the same supported global.
+      if (expr.name.text === "Buffer") return "Buffer";
       const symbol = L.checker.getSymbolAtLocation(expr.name);
       if (!symbol || !L.isStdlibSymbol(symbol)) return null;
       return symbol.name === "global" ? "globalThis" : symbol.name;
+    }
+    if (ts.isAsExpression(expr) || ts.isTypeAssertion(expr)) {
+      return stdlibGlobalNameOf(L, expr.expression);
     }
     return null;
   }
@@ -1564,7 +1573,10 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
     // performance — the mockable-clock idiom snapshots it). Function-valued
     // globals (setTimeout) taken as values are a different story — the
     // ordinary value paths (and their fences) apply.
-    if (name !== "process" && name !== "console" && name !== "globalThis" && name !== "performance") return false;
+    if (
+      name !== "process" && name !== "console" && name !== "globalThis" &&
+      name !== "performance" && name !== "Buffer"
+    ) return false;
     const symbol = L.checker.getSymbolAtLocation(nameNode);
     if (!symbol) return false;
     L.stdlibGlobalAliases.set(symbol, name);

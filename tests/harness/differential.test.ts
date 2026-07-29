@@ -17,7 +17,7 @@ import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
-import { oracleEnvironmentFingerprint } from "./oracle-environment.js";
+import { oracleCacheKeyBase } from "./oracle-environment.js";
 import { shardSelect, shardSuffix } from "./shard.js";
 
 const execFileAsync = promisify(execFile);
@@ -224,8 +224,8 @@ function programInputs(file: string): string[] {
 // Node's verdict for a corpus program is a pure function of the program bytes,
 // the shims, and the Node build (corpus stdout is deterministic by
 // construction — it must match a non-Node native binary byte-for-byte). So
-// cache it, keyed by all of those plus the invocation shape (SCRIPTC_TEST_ENV
-// and the cwd). Only the SPAWN is skipped: the native side always runs live
+// cache it, keyed by all of those plus the invocation shape (the complete
+// inherited environment and the cwd). Only the SPAWN is skipped: the native side always runs live
 // and the comparison itself never changes. SCRIPTC_NO_CACHE=1 (or an unset
 // SCRIPTC_CACHE_DIR) disables the cache in both directions — no reads, no writes.
 // Storage shares the compile cache's root and its LRU sweep (see cc.ts).
@@ -240,17 +240,16 @@ function oracleKeyBase(): Promise<string> {
   // The spawned `node` comes from PATH, so ask IT for its version rather than
   // trusting process.version (vitest's own node could differ).
   oracleKeyBaseMemo ??= execFileAsync("node", ["--version"]).then(({ stdout }) =>
-    createHash("sha256")
-      .update("oracle-v2\0")
-      .update(stdout.trim()).update("\0")
+    oracleCacheKeyBase({
+      nodeVersion: stdout.trim(),
       // Decorator programs run tsc's downlevel on the Node side — its
       // emitter version is part of the verdict.
-      .update(ts5.version).update("\0")
-      .update(readFileSync(fileURLToPath(comptimeShim))).update("\0")
-      .update(readFileSync(fileURLToPath(islandShim))).update("\0")
-      .update(oracleEnvironmentFingerprint(process.env)).update("\0")
-      .update(process.cwd()).update("\0")
-      .digest("hex"),
+      typescriptVersion: ts5.version,
+      comptimeShim: readFileSync(fileURLToPath(comptimeShim), "utf8"),
+      islandShim: readFileSync(fileURLToPath(islandShim), "utf8"),
+      environment: process.env,
+      cwd: process.cwd(),
+    }),
   );
   return oracleKeyBaseMemo;
 }

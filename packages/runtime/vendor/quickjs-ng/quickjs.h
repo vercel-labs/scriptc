@@ -1269,6 +1269,12 @@ JS_EXTERN JSAtom JS_GetScriptOrModuleName(JSContext *ctx, int n_stack_levels);
 /* only exported for os.Worker() */
 JS_EXTERN JSValue JS_LoadModule(JSContext *ctx, const char *basename,
                                 const char *filename);
+/* Resolve and evaluate an ES module synchronously, returning its namespace.
+ * This is the host-side primitive for Node-compatible require(esm): graphs
+ * with top-level await throw an ERR_REQUIRE_ASYNC_MODULE TypeError instead
+ * of returning a pending promise. */
+JS_EXTERN JSValue JS_RequireModule(JSContext *ctx, const char *basename,
+                                   const char *filename);
 
 /* C function definition */
 typedef enum JSCFunctionEnum {  /* XXX: should rename for namespace isolation */

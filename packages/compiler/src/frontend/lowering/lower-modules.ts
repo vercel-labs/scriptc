@@ -321,6 +321,9 @@ export interface FileParts {
             // export named 'y'"), and the runtime check reproduces that
             // message exactly (scr_jsval_import).
             { kind: "strLit", value: spec, type: STRING, loc },
+            // Static import/export bindings use Node's ESM-loader warning
+            // path for syntax-detected typeless workspace modules.
+            { kind: "boolLit", value: true, type: BOOL, loc },
           ],
           type: JSVAL,
           loc,

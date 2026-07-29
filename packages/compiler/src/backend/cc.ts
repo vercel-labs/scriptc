@@ -14,6 +14,10 @@ const RUNTIME_SOURCES = ["scr_number.c", "scr_string.c", "scr_array.c", "scr_byt
  * (see vendor/README.md — update both together). Keys the archive cache so
  * a vendor bump can never reuse a stale engine build. */
 const QJS_COMMIT = "3c8f3d68953955950074c41c6e4d999562ae82a7";
+/** scriptc-local patches applied on top of the pinned snapshot. Bump when
+ * one changes engine object code so archive and binary caches cannot reuse
+ * the preceding patched build. */
+const QJS_PATCH_REVISION = "require-esm-v1";
 
 /** The pinned mbedTLS snapshot under packages/runtime/vendor/mbedtls (see
  * vendor/README.md — update both together). Keys the archive cache so a
@@ -104,10 +108,11 @@ export interface CcOptions {
    * over the checked-dynamic tree (no loop hooks, no install), cross-compiles everywhere.
    * Channel-free binaries keep their exact size class. */
   dc?: boolean;
-  /** The program uses the checked-dynamic async surfaces
-   * (moduleUsesDynAsync on the IR, or the dynInvoke/dc gates — their TUs
-   * call into this one): compiles scr_async_dyn.c — dyn-promise
-   * reactions, AsyncLocalStorage, the unhandledRejection/warning
+  /** The program uses the checked-dynamic async surfaces or embeds a
+   * typeless-package warning (moduleUsesDynAsync/
+   * moduleEmbedsTypelessWarning on the IR, or the dynInvoke/dc gates —
+   * their TUs call into this one): compiles scr_async_dyn.c — dyn-promise
+   * reactions, AsyncLocalStorage, and the shared warning/rejection
    * process events. */
   dynAsync?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
@@ -338,7 +343,10 @@ async function ensureEngineArchive(sanitize: boolean, driver: CcDriver): Promise
   const flavor = `${sanitize ? "asan" : "plain"}${driver.target !== null ? `-${driver.target}` : ""}`;
   const vendor = vendorEngineDir();
   const cacheRoot = join(vendor, "..", ".cache");
-  const cacheDir = join(cacheRoot, `${QJS_COMMIT.slice(0, 12)}-${flavor}`);
+  const cacheDir = join(
+    cacheRoot,
+    `${QJS_COMMIT.slice(0, 12)}-${QJS_PATCH_REVISION}-${flavor}`,
+  );
   const archive = join(cacheDir, "libqjs.a");
   if (await fileExists(archive)) return archive;
   if (driver.target !== null) return buildEngineArchiveCross(sanitize, driver, cacheRoot, cacheDir);
@@ -897,7 +905,11 @@ async function runtimeFingerprint(rtDir: string): Promise<string> {
   const stats = await Promise.all(names.map((n) => stat(join(rtDir, n))));
   const sig = stats.map((s, i) => `${names[i] ?? ""}:${s.size}:${s.mtimeMs}`).join("|");
   if (rtFingerprintMemo !== null && rtFingerprintMemo.sig === sig) return rtFingerprintMemo.hash;
-  const h = createHash("sha256").update(QJS_COMMIT).update(MBEDTLS_VERSION).update(ZLIB_VERSION);
+  const h = createHash("sha256")
+    .update(QJS_COMMIT)
+    .update(QJS_PATCH_REVISION)
+    .update(MBEDTLS_VERSION)
+    .update(ZLIB_VERSION);
   for (const n of names) h.update(n).update("\0").update(await readFile(join(rtDir, n))).update("\0");
   const hash = h.digest("hex");
   rtFingerprintMemo = { sig, hash };

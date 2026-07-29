@@ -16,7 +16,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { globSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { compile } from "@scriptc/compiler";
@@ -37,6 +37,7 @@ const cases = shardSelect(npmCases(fixturesRoot), (c) => c.name);
 
 interface RunResult {
   stdout: Buffer;
+  stderr: Buffer;
   exitCode: number;
 }
 
@@ -47,13 +48,29 @@ async function runBinary(cmd: string, args: string[]): Promise<RunResult> {
     // the island now), and a default open pipe would hang both lanes.
     const pending = execFileAsync(cmd, args, { encoding: "buffer" });
     pending.child.stdin?.end();
-    const { stdout } = await pending;
-    return { stdout, exitCode: 0 };
+    const { stdout, stderr } = await pending;
+    return { stdout, stderr, exitCode: 0 };
   } catch (err) {
-    const e = err as { code?: unknown; stdout?: Buffer };
-    if (typeof e.code !== "number" || !Buffer.isBuffer(e.stdout)) throw err;
-    return { stdout: e.stdout, exitCode: e.code };
+    const e = err as { code?: unknown; stdout?: Buffer; stderr?: Buffer };
+    if (
+      typeof e.code !== "number" ||
+      !Buffer.isBuffer(e.stdout) ||
+      !Buffer.isBuffer(e.stderr)
+    ) {
+      throw err;
+    }
+    return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code };
   }
+}
+
+/** Warning text is byte-for-byte; only the per-process pid necessarily
+ * differs between the Node oracle and the native binary. */
+function comparableStderr(stderr: Buffer): Buffer {
+  return Buffer.from(
+    stderr
+      .toString("utf8")
+      .replace(/\(node:\d+\)(?= \[MODULE_TYPELESS_PACKAGE_JSON\])/g, "(node:<pid>)"),
+  );
 }
 
 /** Compile once per (entry, lane); the cache key hashes the program AND
@@ -63,7 +80,11 @@ async function build(entry: string): Promise<string> {
   const fixtureDir = join(entry, "../..");
   const inputs = [
     entry,
+    ...globSync(join(dirname(entry), "*.json")).sort(),
     ...globSync(join(fixtureDir, "**/node_modules/**/*.{js,mjs,cjs,json,d.ts,node}")).sort(),
+    ...globSync(
+      join(fixturesRoot, "npm/workspace/**/*.{js,mjs,cjs,json,d.ts,node}"),
+    ).sort(),
   ];
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash.update(sanitize ? "san" : "plain").digest("hex").slice(0, 16);
@@ -174,6 +195,19 @@ describe(`npm differential (${cases.length} programs${sanitize ? ", sanitized" :
       if (!nodeRes.stdout.equals(nativeRes.stdout)) {
         expect(nativeRes.stdout.toString("utf8"), label).toBe(nodeRes.stdout.toString("utf8"));
         expect.unreachable("stdout differed at byte level but not after utf8 decode");
+      }
+      // This case pins the warning channel added for linked typeless
+      // workspaces. The older npm corpus intentionally predates stderr
+      // parity (many .ts entries themselves trigger Node's typeless
+      // warning from the repo package scope), so keep its established
+      // stdout/exit contract rather than broadening this fix's surface.
+      if (c.name.startsWith("workspace-typeless") && nodeRes.exitCode === 0) {
+        const nodeErr = comparableStderr(nodeRes.stderr);
+        const nativeErr = comparableStderr(nativeRes.stderr);
+        if (!nodeErr.equals(nativeErr)) {
+          expect(nativeErr.toString("utf8"), label).toBe(nodeErr.toString("utf8"));
+          expect.unreachable("stderr differed at byte level but not after utf8 decode");
+        }
       }
       expect(nativeRes.exitCode, label).toBe(nodeRes.exitCode);
     }

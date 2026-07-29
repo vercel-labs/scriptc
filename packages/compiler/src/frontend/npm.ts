@@ -86,7 +86,8 @@
  * re-export hops).
  */
 import { readFileSync, realpathSync } from "node:fs";
-import { dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import ts from "typescript5";
 import { cjsLexedExportsOf } from "./cjs-lexer.js";
 
@@ -97,6 +98,13 @@ export interface EmbeddedModule {
   key: string;
   source: string;
   format: EmbeddedFormat;
+  /** Node's [MODULE_TYPELESS_PACKAGE_JSON] warning for a .js file whose
+   * realpath escapes node_modules (the workspace-symlink shape), nearest
+   * package.json omits a valid "type", and syntax detection chose ESM.
+   * The runtime emits this only when the ESM loader reaches the module and
+   * de-duplicates by packageJson, exactly like Node. */
+  typelessPackageJson?: string;
+  typelessWarning?: string;
   /** CommonJS only: the synthesized ESM facade the island's module loader
    * evaluates when an ES module imports this file — default plus the LEXED
    * named exports (cjsEsmFacadeSource). ESM sources compile natively and
@@ -316,6 +324,16 @@ interface SpecifierUse {
  * its own. */
 interface ModuleSpecifiers {
   uses: SpecifierUse[];
+  /** Static `import source binding from "specifier"` declarations and
+   * dynamic `import.source(specifier)` expressions. V8 recognizes this
+   * Node 24 syntax; TypeScript 5 represents the dynamic form as a
+   * MetaProperty but cannot parse the static form, and the embedded engine
+   * has no source-phase/WebAssembly module implementation. */
+  sourcePhaseImports: SourcePhaseImport[];
+  /** Node 24's syntax detection for ambiguous .js/extensionless files:
+   * source that cannot run as CommonJS is intrinsically ESM even when the
+   * nearest package.json omits "type". */
+  esmSyntax: boolean;
   /** The specifier `__require` is IMPORTED from (`import { __require }
    * from "./chunk-X.js"` — esbuild's shared-helper chunk shape), else
    * null (locally defined or absent). */
@@ -338,6 +356,8 @@ function moduleSpecifiersOf(source: string, fileName: string): ModuleSpecifiers 
   const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS);
   const uses: SpecifierUse[] = [];
   const bySpec = new Map<string, SpecifierUse>();
+  const dynamicSourcePhaseImports = new Map<number, SourcePhaseImport>();
+  const regexRanges: { start: number; end: number }[] = [];
   let requireHelperImport: string | null = null;
   let requireHelperReexport: string | null = null;
   /** Uses with `__require(…)` sites — attributed local vs helper AFTER the
@@ -361,6 +381,9 @@ function moduleSpecifiersOf(source: string, fileName: string): ModuleSpecifiers 
     return use;
   };
   const visit = (n: ts.Node): void => {
+    if (n.kind === ts.SyntaxKind.RegularExpressionLiteral) {
+      regexRanges.push({ start: n.getStart(sf), end: n.end });
+    }
     if (
       (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) &&
       n.moduleSpecifier !== undefined &&
@@ -386,6 +409,18 @@ function moduleSpecifiersOf(source: string, fileName: string): ModuleSpecifiers 
     } else if (ts.isCallExpression(n)) {
       const arg = n.arguments[0];
       if (
+        ts.isMetaProperty(n.expression) &&
+        n.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+        n.expression.name.text === "source"
+      ) {
+        dynamicSourcePhaseImports.set(n.expression.getStart(sf), {
+          specifier:
+            arg !== undefined && ts.isStringLiteralLike(arg)
+              ? arg.text
+              : null,
+          dynamic: true,
+        });
+      } else if (
         n.expression.kind === ts.SyntaxKind.ImportKeyword &&
         arg !== undefined &&
         ts.isStringLiteralLike(arg)
@@ -414,7 +449,113 @@ function moduleSpecifiersOf(source: string, fileName: string): ModuleSpecifiers 
     else use.requireLocal = true;
   }
   for (const use of uses) use.require = use.requireLocal || use.requireViaHelper;
-  return { uses, requireHelperImport, requireHelperReexport };
+  return {
+    uses,
+    sourcePhaseImports: sourcePhaseImportsOf(
+      source,
+      dynamicSourcePhaseImports,
+      regexRanges,
+    ),
+    esmSyntax: nodeEsmSyntaxDetected(source, fileName),
+    requireHelperImport,
+    requireHelperReexport,
+  };
+}
+
+interface SourcePhaseImport {
+  /** Null for a computed dynamic `import.source(expr)` argument. */
+  specifier: string | null;
+  dynamic: boolean;
+}
+
+/** Collects Node 24 source-phase imports. TypeScript 5 represents dynamic
+ * `import.source(expr)` as a MetaProperty, which preserves the grammar
+ * context needed to distinguish it from `obj.import.source(expr)`. Its
+ * parser predates static `import source binding from "x"`, so a scanner
+ * handles only that seam while excluding AST-recognized regex bodies and
+ * distinguishing the ordinary default import `import source from "x"`
+ * (only one identifier before `from`) from the static source phase. */
+function sourcePhaseImportsOf(
+  source: string,
+  dynamicImports: ReadonlyMap<number, SourcePhaseImport>,
+  regexRanges: readonly { start: number; end: number }[],
+): SourcePhaseImport[] {
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    true,
+    ts.LanguageVariant.Standard,
+    source,
+  );
+  const imports: SourcePhaseImport[] = [];
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    if (token !== ts.SyntaxKind.ImportKeyword) continue;
+    const importStart = scanner.getTokenPos();
+    // The raw TS scanner does not rescan slash tokens as regex literals,
+    // so regex bodies can otherwise look like source-phase grammar.
+    if (regexRanges.some((r) => importStart >= r.start && importStart < r.end)) {
+      continue;
+    }
+    // TS 5 already parses the real dynamic form as an import.source
+    // MetaProperty. Requiring that AST identity excludes ordinary member
+    // access such as `loader.import.source(...)`.
+    const dynamicImport = dynamicImports.get(importStart);
+    if (dynamicImport !== undefined) {
+      imports.push(dynamicImport);
+      continue;
+    }
+    const afterImport = scanner.scan();
+    if (afterImport !== ts.SyntaxKind.Identifier || scanner.getTokenValue() !== "source") {
+      continue;
+    }
+    // V8 accepts TS-only contextual words such as `from`, `as`, `type`,
+    // and `module` as BindingIdentifiers here. The TS scanner gives those
+    // keyword token kinds. Its contextual range also contains ECMAScript
+    // grammar words that V8 rejects in this position (accessor/async/await/
+    // get/of/set/using), so exclude those rather than accepting every
+    // keyword and misclassifying invalid JS as a source-phase import.
+    const binding = scanner.scan();
+    const contextualBinding =
+      binding >= ts.SyntaxKind.AbstractKeyword &&
+      binding <= ts.SyntaxKind.DeferKeyword &&
+      binding !== ts.SyntaxKind.AccessorKeyword &&
+      binding !== ts.SyntaxKind.AsyncKeyword &&
+      binding !== ts.SyntaxKind.AwaitKeyword &&
+      binding !== ts.SyntaxKind.GetKeyword &&
+      binding !== ts.SyntaxKind.OfKeyword &&
+      binding !== ts.SyntaxKind.SetKeyword &&
+      binding !== ts.SyntaxKind.UsingKeyword;
+    if (
+      binding !== ts.SyntaxKind.Identifier &&
+      !contextualBinding
+    ) {
+      continue;
+    }
+    if (scanner.scan() !== ts.SyntaxKind.FromKeyword) continue;
+    if (scanner.scan() === ts.SyntaxKind.StringLiteral) {
+      imports.push({ specifier: scanner.getTokenValue(), dynamic: false });
+    }
+  }
+  return imports;
+}
+
+interface ContextifyBinding {
+  /** The V8-backed primitive Node 24's ESM loader calls from
+   * DETECT_MODULE_SYNTAX for ambiguous .js/extensionless sources. */
+  containsModuleSyntax(source: string, fileName: string, url: URL): boolean;
+}
+
+const contextify = (
+  process as typeof process & {
+    binding(name: "contextify"): ContextifyBinding;
+  }
+).binding("contextify");
+
+/** Node 24 DETECT_MODULE_SYNTAX for an otherwise-ambiguous source file.
+ * Use Node's own V8-backed classifier: a TypeScript AST approximation
+ * diverges on parser recovery, computed method names whose keys contain
+ * top-level await, and Node syntax newer than the legacy TS parser. */
+function nodeEsmSyntaxDetected(source: string, fileName: string): boolean {
+  return contextify.containsModuleSyntax(source, fileName, pathToFileURL(fileName));
 }
 
 function builtinKeyOf(specifier: string): string | null {
@@ -703,7 +844,9 @@ export class NpmGraphBuilder {
   readonly errors: NpmGraphError[] = [];
   private readonly pkgJsonCache = new Map<string, PkgJson | null>();
   /** Modules whose format the RESOLUTION decided (the "module" field names
-   * ESM sources regardless of the package's "type"). */
+   * an ESM entry regardless of the package's "type"). Relative ambiguous
+   * .js files use Node 24 syntax detection independently: ESM-syntax leaves
+   * stay ESM while same-scope CommonJS leaves retain their facade. */
   private readonly formatOverrides = new Map<string, EmbeddedFormat>();
   /** Canonical "node:x" → packages whose code imports it. */
   private readonly builtinsSeen = new Map<string, Set<string>>();
@@ -1064,19 +1207,70 @@ export class NpmGraphBuilder {
     return cached;
   }
 
-  /** The nearest package.json "type" above `file` — the .js format rule.
-   * Resolution-time overrides (the "module" field) win. */
-  private formatOf(file: string): EmbeddedFormat {
+  /** Node 24's file-format rule. Explicit extensions and a valid nearest
+   * package.json "type" win; an otherwise-ambiguous .js/extensionless file
+   * uses source syntax detection. Resolution-time "module" entry overrides
+   * remain the one deliberate bundler-convention input. */
+  private formatOf(file: string, source: string): EmbeddedFormat {
     const override = this.formatOverrides.get(file);
     if (override) return override;
     if (file.endsWith(".mjs")) return "esm";
     if (file.endsWith(".cjs")) return "cjs";
     if (file.endsWith(".json")) return "json";
     for (let dir = dirname(file); ; ) {
+      // LOOKUP_PACKAGE_SCOPE stops before a node_modules directory: an
+      // application's package.json never controls an unscoped file below
+      // its node_modules tree.
+      if (basename(dir) === "node_modules") break;
       const pkg = this.pkgJsonOf(dir);
-      if (pkg) return pkg.type === "module" ? "esm" : "cjs";
+      if (pkg) {
+        if (pkg.type === "module") return "esm";
+        if (pkg.type === "commonjs") return "cjs";
+        break;
+      }
       const parent = dirname(dir);
-      if (parent === dir) return "cjs";
+      if (parent === dir) break;
+      dir = parent;
+    }
+    const ext = extname(file);
+    return (ext === ".js" || ext === "") && this.specifiersOf(file, source)?.esmSyntax
+      ? "esm"
+      : "cjs";
+  }
+
+  /** Node's typeless-package warning payload for a syntax-detected .js
+   * module, or null when that load is silent. Node warns only when a real
+   * nearest package.json exists, its "type" is absent/invalid, and the
+   * physical URL is outside node_modules. (That final condition is why
+   * linked workspace packages differ from ordinary installed packages.) */
+  private typelessWarningOf(
+    file: string,
+    source: string,
+  ): { packageJson: string; warning: string } | null {
+    if (
+      extname(file) !== ".js" ||
+      this.formatOverrides.has(file) ||
+      file.split("\\").join("/").includes("/node_modules/") ||
+      !this.specifiersOf(file, source)?.esmSyntax
+    ) {
+      return null;
+    }
+    for (let dir = dirname(file); ; ) {
+      if (basename(dir) === "node_modules") return null;
+      const pkg = this.pkgJsonOf(dir);
+      if (pkg) {
+        if (pkg.type === "module" || pkg.type === "commonjs") return null;
+        const packageJson = join(dir, "package.json");
+        return {
+          packageJson,
+          warning:
+            `Module type of ${pathToFileURL(file).href} is not specified and it doesn't parse as CommonJS.\n` +
+            `Reparsing as ES module because module syntax was detected. This incurs a performance overhead.\n` +
+            `To eliminate this warning, add "type": "module" to ${packageJson}.`,
+        };
+      }
+      const parent = dirname(dir);
+      if (parent === dir) return null;
       dir = parent;
     }
   }
@@ -1246,6 +1440,23 @@ export class NpmGraphBuilder {
   private walk(key: string, chain: readonly string[], lazy: boolean): void {
     const existing = this.modules.get(key);
     if (existing) {
+      // A direct file edge can discover a package's physical module-field
+      // entry before a later bare import installs its deliberate ESM
+      // override. Refresh the cached classification so traversal order
+      // cannot decide the module format.
+      const override = this.formatOverrides.get(key);
+      if (override !== undefined) {
+        if (override !== existing.format) {
+          existing.format = override;
+          delete existing.esm;
+        }
+        // The module-field choice is an explicit format decision, not
+        // Node's syntax-detection path. Clear warning metadata even when
+        // the cached module was already classified as ESM, so discovery
+        // order cannot change stderr.
+        delete existing.typelessPackageJson;
+        delete existing.typelessWarning;
+      }
       if (!lazy && this.lazilyReached.has(key)) {
         // Promotion: a static path reached a module first seen behind a
         // lazy boundary — Node links it at the root now, so its edge
@@ -1277,10 +1488,38 @@ export class NpmGraphBuilder {
       });
       return;
     }
-    const format = this.formatOf(key);
-    this.modules.set(key, { key, source, format });
+    const format = this.formatOf(key, source);
+    const typeless = format === "esm" ? this.typelessWarningOf(key, source) : null;
+    this.modules.set(key, {
+      key,
+      source,
+      format,
+      ...(typeless === null
+        ? {}
+        : {
+            typelessPackageJson: typeless.packageJson,
+            typelessWarning: typeless.warning,
+          }),
+    });
     if (lazy) this.lazilyReached.add(key);
     if (format === "json") return;
+    const sourcePhaseImport = this.specifiersOf(key, source)?.sourcePhaseImports[0];
+    if (sourcePhaseImport !== undefined) {
+      const kind = sourcePhaseImport.dynamic
+        ? "dynamic source-phase import"
+        : "source-phase import";
+      const specifier =
+        sourcePhaseImport.specifier === null
+          ? ""
+          : ` '${sourcePhaseImport.specifier}'`;
+      this.errors.push({
+        message:
+          `package '${chain[chain.length - 1] ?? key}' uses unsupported Node ${kind}${specifier} ` +
+          `in ${key} (the embedded engine has no source-phase/WebAssembly ` +
+          `module implementation; dependency chain: ${NpmGraphBuilder.chainOf(chain)})`,
+      });
+      return;
+    }
     this.sweepEdges(key, source, chain, lazy);
   }
 

@@ -2317,8 +2317,10 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // module — and takes one export as an owned jsval. A package's
             // top-level throw bridges catchably (may-throw seed set), and a
             // MISSING named export throws Node's link-time SyntaxError
-            // naming the written specifier (arg 2).
-            return finish(`scr_jsval_import(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+            // naming the written specifier (arg 2). Arg 3 distinguishes
+            // import (typeless warning enabled) from require(esm)
+            // (syntax detection remains silent).
+            return finish(`scr_jsval_import(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`);
           case "island.importDyn":
             // --dynamic builds only. Dynamic import(): the island's module
             // system answers an ENGINE promise of the namespace — load and

@@ -5288,6 +5288,24 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2643-or-default-retag.ts": {
+   "order": [
+    "<repo>/tests/corpus/2643-or-default-retag.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2644-http-client-url-argument.ts": {
+   "order": [
+    "<repo>/tests/corpus/2644-http-client-url-argument.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2645-https-client-url-argument.ts": {
+   "order": [
+    "<repo>/tests/corpus/2645-https-client-url-argument.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/300-if-else.ts": {
    "order": [
     "<repo>/tests/corpus/300-if-else.ts"
@@ -7523,6 +7541,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/fixtures/npm/cases/esm-named-reexport/main.ts": {
+   "order": [
+    "<repo>/tests/fixtures/npm/cases/esm-named-reexport/main.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/fixtures/npm/cases/fs-shims/main.ts": {
    "order": [
     "<repo>/tests/fixtures/npm/cases/fs-shims/main.ts"
@@ -7633,6 +7657,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/fixtures/npm/cases/require-detected-esm/main.ts": {
+   "order": [
+    "<repo>/tests/fixtures/npm/cases/require-detected-esm/main.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/fixtures/npm/cases/scoped-nested/main.ts": {
    "order": [
     "<repo>/tests/fixtures/npm/cases/scoped-nested/main.ts"
@@ -7685,6 +7715,12 @@
   "<repo>/tests/fixtures/npm/cases/workspace-linked/main.ts": {
    "order": [
     "<repo>/tests/fixtures/npm/cases/workspace-linked/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/fixtures/npm/cases/workspace-typeless/main.ts": {
+   "order": [
+    "<repo>/tests/fixtures/npm/cases/workspace-typeless/main.ts"
    ],
    "diags": []
   },

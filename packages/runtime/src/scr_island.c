@@ -144,11 +144,21 @@ static size_t isl_nedges = 0;
  * inflater is installed by the emitted main exactly when some module
  * compressed at build time (scr_zlib.c links on the same predicate). */
 static bool (*isl_inflate)(const unsigned char *, size_t, unsigned char *, size_t) = NULL;
+static void (*isl_emit_warning)(const char *, const char *, ScrStr *) = NULL;
+static void (*isl_flush_warnings)(void) = NULL;
 static char **isl_text_cache = NULL; /* 2 slots per module: src, esm */
+static bool *isl_typeless_warned = NULL; /* one flag per module; pjson-deduped */
 
 void scr_island_set_inflate(bool (*inflate)(const unsigned char *src, size_t src_len,
                                             unsigned char *dst, size_t dst_len)) {
   isl_inflate = inflate;
+}
+
+void scr_island_set_warning_emitter(
+    void (*emit_warning)(const char *name, const char *code, ScrStr *message),
+    void (*flush_warnings)(void)) {
+  isl_emit_warning = emit_warning;
+  isl_flush_warnings = flush_warnings;
 }
 
 void scr_island_modules(const ScrIslandModule *mods, size_t nmods,
@@ -510,6 +520,8 @@ static void isl_teardown_at_exit(void) {
     free(isl_text_cache);
     isl_text_cache = NULL;
   }
+  free(isl_typeless_warned);
+  isl_typeless_warned = NULL;
 #ifdef SCR_RC_AUDIT
   if (isl_live_allocs != 0) {
     fflush(stdout);
@@ -688,6 +700,11 @@ int scr_island_drain_jobs(void) {
     }
     n++;
   }
+  /* Loader warnings become observable only after the jobs above have
+   * settled the bridge promise and queued its compiled continuation.
+   * Staging their nextTick markers now lets that continuation and its
+   * microtasks run first, as Node's dynamic ESM loader does. */
+  if (isl_flush_warnings) isl_flush_warnings();
   return n;
 }
 
@@ -2334,6 +2351,43 @@ ScrJsval *scr_jsval_arr_lit(int n, ScrJsval **elems) {
 
 static bool isl_booted = false;
 static JSValue isl_cjs_import; /* (key, name) → export, CJS/JSON entries */
+/* JS_LoadModule has no call-form parameter. The import boundary sets the
+ * requested root key around a require(esm) load: Node keeps that root's
+ * syntax detection silent, while typeless ESM dependencies loaded through
+ * its static graph still warn normally. */
+static const char *isl_silent_typeless_root = NULL;
+
+/* Node's ESM loader warning for an ambiguous .js file whose syntax forced
+ * ESM and whose physical realpath belongs to a typeless workspace package.
+ * A package with several such files warns once, keyed by its package.json.
+ * The requested require(esm) root is silent, but its ESM dependencies are
+ * not. */
+static void isl_warn_typeless(const ScrIslandModule *m) {
+  if ((isl_silent_typeless_root &&
+       strcmp(m->key, isl_silent_typeless_root) == 0) ||
+      !m->typeless_pjson || !m->typeless_warning) return;
+  if (!isl_typeless_warned) {
+    isl_typeless_warned = calloc(isl_nmods, sizeof(bool));
+  }
+  size_t index = (size_t)(m - isl_mods);
+  if (isl_typeless_warned) {
+    for (size_t i = 0; i < isl_nmods; i++) {
+      if (isl_typeless_warned[i] && isl_mods[i].typeless_pjson &&
+          strcmp(isl_mods[i].typeless_pjson, m->typeless_pjson) == 0) {
+        return;
+      }
+    }
+    isl_typeless_warned[index] = true;
+  }
+  /* Use the shared warning channel: process 'warning' listeners observe
+   * the Error value and its code, and the default report's trace hint is
+   * emitted only once per process across warning kinds. */
+  if (isl_emit_warning) {
+    ScrStr *message = scr_str_new(m->typeless_warning, strlen(m->typeless_warning));
+    isl_emit_warning("Warning", "MODULE_TYPELESS_PACKAGE_JSON", message);
+    scr_str_release(message);
+  }
+}
 
 static char *isl_module_normalize(JSContext *ctx, const char *base,
                                   const char *name, void *opaque) {
@@ -2531,6 +2585,7 @@ static JSModuleDef *isl_module_load(JSContext *ctx, const char *name, void *opaq
       return NULL;
     }
     if (m->format == 0) {
+      isl_warn_typeless(m);
       src = isl_mod_text(m, false, &len);
       if (!src) {
         JS_ThrowInternalError(ctx, "embedded module '%s' failed to inflate", name);
@@ -2614,6 +2669,34 @@ static JSValue isl_host_source(JSContext *ctx, JSValueConst this_val, int argc,
   JS_SetPropertyUint32(ctx, arr, 0, JS_NewStringLen(ctx, src, len));
   JS_SetPropertyUint32(ctx, arr, 1, JS_NewInt32(ctx, m->format));
   return arr;
+}
+
+/* The synchronous ESM half of embedded require(): QuickJS-ng's module
+ * evaluator already completes graphs without top-level await before its
+ * promise-returning API comes back, so JS_RequireModule exposes that
+ * namespace directly and rejects TLA graphs like Node's require(esm).
+ * The required root's syntax-detection warning is silent; its static ESM
+ * dependencies still warn through the loader. */
+static JSValue isl_host_require_esm(JSContext *ctx, JSValueConst this_val, int argc,
+                                    JSValueConst *argv) {
+  (void)this_val;
+  (void)argc;
+  const char *key = JS_ToCString(ctx, argv[0]);
+  if (!key) return JS_EXCEPTION;
+  const char *previous_silent_root = isl_silent_typeless_root;
+  isl_silent_typeless_root = key;
+  JSValue ns = JS_RequireModule(ctx, ISL_IMPORT_BASE, key);
+  isl_silent_typeless_root = previous_silent_root;
+  JS_FreeCString(ctx, key);
+  if (JS_IsException(ns)) {
+    /* Module evaluation failures are synchronous require() throws, not
+     * dropped promise rejections. Remove the evaluator promise's ledger
+     * entry before rethrowing the same reason into the CJS caller. */
+    JSValue reason = JS_GetException(ctx);
+    isl_rejections_drop_reason(reason);
+    return JS_Throw(ctx, reason);
+  }
+  return ns;
 }
 
 static JSValue isl_host_resolve(JSContext *ctx, JSValueConst this_val, int argc,
@@ -3596,7 +3679,11 @@ static const char isl_modules_bootstrap[] =
     "    cache[key] = mod;\n"
     "    if (parent !== undefined && !(key in parents)) parents[key] = parent;\n"
     "    if (format === 2) { mod.exports = JSON.parse(src); return mod.exports; }\n"
-    "    if (format === 0) { delete cache[key]; throw new Error('require() of ES module ' + key); }\n"
+    /* ESM modules live in the engine's module registry, not require.cache.
+     * JS_RequireModule returns the namespace synchronously for the no-TLA
+     * graph Node 24 permits through require(esm), preserving identity across
+     * repeated require/import calls. */
+    "    if (format === 0) { delete cache[key]; return host.requireEsm(key); }\n"
     "    const fn = new Function('exports', 'require', 'module', '__filename', '__dirname', src);\n"
     "    const req = (spec) => requireKey(resolveFrom(key, spec), key);\n"
     "    req.cache = cache;\n"
@@ -9339,6 +9426,8 @@ static void isl_modules_boot(void) {
   JSValue host = JS_NewObject(isl_ctx);
   /* JS_SetPropertyStr consumes the function values. */
   JS_SetPropertyStr(isl_ctx, host, "source", JS_NewCFunction(isl_ctx, isl_host_source, "source", 1));
+  JS_SetPropertyStr(isl_ctx, host, "requireEsm",
+                    JS_NewCFunction(isl_ctx, isl_host_require_esm, "requireEsm", 1));
   JS_SetPropertyStr(isl_ctx, host, "resolve", JS_NewCFunction(isl_ctx, isl_host_resolve, "resolve", 2));
   JS_SetPropertyStr(isl_ctx, host, "argv", JS_NewCFunction(isl_ctx, isl_host_argv, "argv", 0));
   JS_SetPropertyStr(isl_ctx, host, "env", JS_NewCFunction(isl_ctx, isl_host_env, "env", 0));
@@ -9399,7 +9488,8 @@ static void isl_free_boot(void) {
 }
 
 /* The import boundary (libCall island.import). Borrows all args; +1 out. */
-ScrJsval *scr_jsval_import(const ScrStr *key, const ScrStr *name, const ScrStr *specifier) {
+ScrJsval *scr_jsval_import(const ScrStr *key, const ScrStr *name,
+                           const ScrStr *specifier, bool warn_typeless) {
   isl_entry();
   const ScrIslandModule *m = isl_mod_find(key->data);
   if (!m || !isl_booted) {
@@ -9421,12 +9511,20 @@ ScrJsval *scr_jsval_import(const ScrStr *key, const ScrStr *name, const ScrStr *
       isl_bridge_exception();
       return NULL;
     }
+    if (isl_flush_warnings) isl_flush_warnings();
     return isl_cell_new(r);
   }
   /* ESM entry: the engine loads the graph through the module loader; the
    * promise resolves with the namespace. Commander-class packages have no
-   * top-level await, so draining the job queue settles it synchronously. */
+   * top-level await, so draining the job queue settles it synchronously.
+   * Loading/compiling the static graph is synchronous inside
+   * JS_LoadModule: scope the silent root key to that operation so a
+   * dynamic import started later during evaluation keeps its own warning
+   * semantics. */
+  const char *previous_silent_root = isl_silent_typeless_root;
+  isl_silent_typeless_root = warn_typeless ? NULL : key->data;
   JSValue promise = JS_LoadModule(isl_ctx, ISL_IMPORT_BASE, key->data);
+  isl_silent_typeless_root = previous_silent_root;
   if (JS_IsException(promise)) {
     isl_bridge_exception();
     return NULL;
@@ -9455,6 +9553,7 @@ ScrJsval *scr_jsval_import(const ScrStr *key, const ScrStr *name, const ScrStr *
   JSValue ns = JS_PromiseResult(isl_ctx, promise);
   JS_FreeValue(isl_ctx, promise);
   if (name->len == 1 && name->data[0] == '*') {
+    if (isl_flush_warnings) isl_flush_warnings();
     return isl_cell_new(ns);
   }
   /* Node validates named imports at LINK time: a name the module's
@@ -9488,6 +9587,7 @@ ScrJsval *scr_jsval_import(const ScrStr *key, const ScrStr *name, const ScrStr *
     isl_bridge_exception();
     return NULL;
   }
+  if (isl_flush_warnings) isl_flush_warnings();
   return isl_cell_new(v);
 }
 

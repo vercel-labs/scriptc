@@ -431,22 +431,54 @@ ScrDyn *scr_await_dyn_value(ScrDyn *v) {
 /* ── process warnings (emitWarning + the 'warning' event) ─────────────
  * Gated with the rest of this TU (a deprecation-emitting unit's gate
  * must imply the dynAsync link). Listeners are dyn functions; emission
- * is SYNCHRONOUS at the
- * call (Node defers a tick through nextTick — the MaxListenersExceeded
- * precedent, SEMANTICS.md 138) and the default stderr report always
- * prints (Node's own bootstrap listener; a compiled binary has no
- * --no-warnings). The warning VALUE is the dyn error encoding built over
- * an ScrError (identity-cached, so a listener comparing two deliveries
- * of one warning sees one object); a string `detail` joins the dyn node
- * and the report's second line, exactly Node. */
+ * queues a process.nextTick entry, so the synchronous caller returns
+ * before the default report and event — Node's ordering. The default
+ * stderr report runs before user listeners because Node installs its own
+ * warning listener during bootstrap. The warning VALUE is the dyn error
+ * encoding built over an ScrError (identity-cached, so a listener
+ * comparing two deliveries of one warning sees one object); a string
+ * `detail` joins the dyn node and the report's second line, exactly Node. */
 static ScrDyn **scr_warn_listeners = NULL;
 static size_t scr_nwarn = 0, scr_warn_cap = 0;
+
+typedef struct ScrPendingWarning {
+  ScrDyn *value; /* owned */
+  struct ScrPendingWarning *next;
+} ScrPendingWarning;
+
+static ScrPendingWarning *scr_warn_head = NULL;
+static ScrPendingWarning *scr_warn_tail = NULL;
+static ScrPendingWarning *scr_deferred_warn_head = NULL;
+static ScrPendingWarning *scr_deferred_warn_tail = NULL;
+static size_t scr_deferred_warn_scheduled = 0;
+static bool scr_warn_cleanup_registered = false;
+
+static void scr_warn_queue_teardown(ScrPendingWarning **head,
+                                    ScrPendingWarning **tail) {
+  while (*head) {
+    ScrPendingWarning *pending = *head;
+    *head = pending->next;
+    scr_dyn_release(pending->value);
+    free(pending);
+  }
+  *tail = NULL;
+}
 
 static void scr_warn_teardown(void) {
   for (size_t i = 0; i < scr_nwarn; i++) scr_dyn_release(scr_warn_listeners[i]);
   free(scr_warn_listeners);
   scr_warn_listeners = NULL;
   scr_nwarn = scr_warn_cap = 0;
+  scr_warn_queue_teardown(&scr_warn_head, &scr_warn_tail);
+  scr_warn_queue_teardown(&scr_deferred_warn_head, &scr_deferred_warn_tail);
+  scr_deferred_warn_scheduled = 0;
+}
+
+static void scr_warn_ensure_cleanup(void) {
+  if (!scr_warn_cleanup_registered) {
+    scr_warn_cleanup_registered = true;
+    atexit(scr_warn_teardown);
+  }
 }
 
 void scr_process_on_warning(ScrDyn *fn) {
@@ -463,7 +495,7 @@ void scr_process_on_warning(ScrDyn *fn) {
       abort();
     }
   }
-  if (scr_nwarn == 0) atexit(scr_warn_teardown);
+  scr_warn_ensure_cleanup();
   scr_warn_listeners[scr_nwarn++] = scr_dyn_retain(fn);
 }
 
@@ -483,15 +515,11 @@ void scr_process_off_warning(ScrDyn *fn) {
 }
 
 /* Dispatch + the default stderr report over a built warning dyn node.
- * Borrowed. A listener throw propagates (the dc publish stance). */
+ * Borrowed. A listener throw propagates from the queued tick. */
 static void scr_warning_dispatch(ScrDyn *w) {
-  for (size_t i = 0; i < scr_nwarn; i++) {
-    ScrDyn *r = scr_dyn_call(scr_warn_listeners[i], &w, 1, "listener");
-    if (r == NULL) return; /* pending exception propagates */
-    scr_dyn_release(r);
-  }
   /* "(node:pid) [CODE] Name: message" + "\n<detail>" — Node's
-   * onWarning report. */
+   * bootstrap onWarning report. It is registered before user listeners,
+   * so it prints first. */
   const ScrDyn *en = scr_dyn_obj_get(w, "name", 4);
   const ScrDyn *em = scr_dyn_obj_get(w, "message", 7);
   const ScrDyn *ec = scr_dyn_obj_get(w, "code", 4);
@@ -510,6 +538,73 @@ static void scr_warning_dispatch(ScrDyn *w) {
     hinted = true;
     fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
   }
+  for (size_t i = 0; i < scr_nwarn; i++) {
+    ScrDyn *r = scr_dyn_call(scr_warn_listeners[i], &w, 1, "listener");
+    if (r == NULL) return; /* pending exception propagates */
+    scr_dyn_release(r);
+  }
+}
+
+/* One raw nextTick marker delivers one queued warning. Keeping markers
+ * one-for-one preserves FIFO interleaving with user process.nextTick
+ * callbacks registered around emitWarning calls. */
+static void scr_warning_deliver_one(void) {
+  ScrPendingWarning *pending = scr_warn_head;
+  if (!pending) return;
+  scr_warn_head = pending->next;
+  if (!scr_warn_head) scr_warn_tail = NULL;
+  ScrDyn *value = pending->value;
+  free(pending);
+  scr_warning_dispatch(value);
+  scr_dyn_release(value);
+}
+
+static void scr_warning_append(ScrPendingWarning **head,
+                               ScrPendingWarning **tail,
+                               ScrDyn *w /* borrowed */) {
+  ScrPendingWarning *pending = calloc(1, sizeof *pending);
+  if (!pending) {
+    fputs("scriptc: out of memory\n", stderr);
+    abort();
+  }
+  scr_warn_ensure_cleanup();
+  pending->value = scr_dyn_retain(w);
+  if (*tail) (*tail)->next = pending;
+  else *head = pending;
+  *tail = pending;
+}
+
+static void scr_warning_enqueue(ScrDyn *w /* borrowed */) {
+  scr_warning_append(&scr_warn_head, &scr_warn_tail, w);
+  scr_next_tick_raw(scr_warning_deliver_one);
+}
+
+/* Typeless-package warnings originate inside the embedded ESM loader.
+ * Keep them dormant until the island boundary says module evaluation has
+ * reached its observable completion point. A static import flushes after
+ * evaluation; an import() flushes after engine promise jobs have woken
+ * the compiled awaiter. The post-ready tick stage then runs them after
+ * that awaiter's microtasks but before its nextTicks, matching Node's
+ * loader-warning order. */
+static void scr_warning_deliver_deferred_one(void) {
+  ScrPendingWarning *pending = scr_deferred_warn_head;
+  if (!pending) return;
+  scr_deferred_warn_head = pending->next;
+  if (!scr_deferred_warn_head) scr_deferred_warn_tail = NULL;
+  if (scr_deferred_warn_scheduled > 0) scr_deferred_warn_scheduled--;
+  ScrDyn *value = pending->value;
+  free(pending);
+  scr_warning_dispatch(value);
+  scr_dyn_release(value);
+}
+
+void scr_flush_deferred_warnings(void) {
+  size_t queued = 0;
+  for (ScrPendingWarning *p = scr_deferred_warn_head; p; p = p->next) queued++;
+  while (scr_deferred_warn_scheduled < queued) {
+    scr_next_tick_raw_after_microtasks(scr_warning_deliver_deferred_one);
+    scr_deferred_warn_scheduled++;
+  }
 }
 
 /* A warning built from C parts (the runtime deprecation sites): name
@@ -521,7 +616,22 @@ void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
   if (code) e->code = scr_str_new(code, strlen(code));
   ScrDyn *w = scr_dyn_from_error(e);
   scr_error_release(e);
-  scr_warning_dispatch(w);
+  scr_warning_enqueue(w);
+  scr_dyn_release(w);
+}
+
+/* The loader-only variant: construction is identical, but dispatch waits
+ * for scr_flush_deferred_warnings at the island completion boundary. */
+void scr_emit_warning_deferred(const char *name, const char *code,
+                               ScrStr *message) {
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(e->name);
+  e->name = scr_str_new(name ? name : "Warning",
+                        strlen(name ? name : "Warning"));
+  if (code) e->code = scr_str_new(code, strlen(code));
+  ScrDyn *w = scr_dyn_from_error(e);
+  scr_error_release(e);
+  scr_warning_append(&scr_deferred_warn_head, &scr_deferred_warn_tail, w);
   scr_dyn_release(w);
 }
 
@@ -543,7 +653,7 @@ void scr_process_emit_warning(ScrDyn *args) {
   /* An Error-encoded warning: type/code arguments are ignored (Node). */
   if (warning != NULL && warning->kind == SCR_DYN_OBJ &&
       scr_dyn_obj_get(warning, "%error", 6) != NULL) {
-    scr_warning_dispatch(warning);
+    scr_warning_enqueue(warning);
     return;
   }
   if (warning == NULL || warning->kind != SCR_DYN_STR) {
@@ -597,7 +707,7 @@ void scr_process_emit_warning(ScrDyn *args) {
   if (detail) {
     scr_dyn_obj_set(w, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
   }
-  scr_warning_dispatch(w);
+  scr_warning_enqueue(w);
   scr_dyn_release(w);
 }
 
@@ -720,4 +830,3 @@ ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
 ScrPromise *scr_dyn_promise_of(const ScrDyn *d) {
   return d->kind == SCR_DYN_PROMISE ? d->v.promise : NULL;
 }
-

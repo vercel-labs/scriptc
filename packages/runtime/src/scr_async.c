@@ -631,6 +631,12 @@ typedef struct ScrNtick {
 
 static ScrNtick *scr_nt_head = NULL;
 static ScrNtick *scr_nt_tail = NULL;
+/* Ticks whose producer ran after the engine's microtask checkpoint but
+ * before a compiled promise continuation was resumed. They join the front
+ * of the ordinary tick queue only after that ready queue drains, preserving
+ * their earlier enqueue order without preempting the continuation. */
+static ScrNtick *scr_nt_post_ready_head = NULL;
+static ScrNtick *scr_nt_post_ready_tail = NULL;
 
 /* Public: releases every queued tick without running it — the loop-exit
  * teardown below AND the exit-listener runner (scr_events.c) both call
@@ -660,6 +666,23 @@ void scr_next_tick_raw(void (*fn)(void)) {
   scr_nt_tail = t;
 }
 
+void scr_next_tick_raw_after_microtasks(void (*fn)(void)) {
+  ScrNtick *t = calloc(1, sizeof *t);
+  if (!t) scr_oom();
+  t->raw = fn;
+  if (scr_nt_post_ready_tail) scr_nt_post_ready_tail->next = t;
+  else scr_nt_post_ready_head = t;
+  scr_nt_post_ready_tail = t;
+}
+
+static void scr_nticks_promote_post_ready(void) {
+  if (!scr_nt_post_ready_head) return;
+  scr_nt_post_ready_tail->next = scr_nt_head;
+  scr_nt_head = scr_nt_post_ready_head;
+  if (!scr_nt_tail) scr_nt_tail = scr_nt_post_ready_tail;
+  scr_nt_post_ready_head = scr_nt_post_ready_tail = NULL;
+}
+
 void scr_nticks_teardown(void) {
   while (scr_nt_head != NULL) {
     ScrNtick *t = scr_nt_head;
@@ -668,6 +691,13 @@ void scr_nticks_teardown(void) {
     free(t);
   }
   scr_nt_tail = NULL;
+  while (scr_nt_post_ready_head != NULL) {
+    ScrNtick *t = scr_nt_post_ready_head;
+    scr_nt_post_ready_head = t->next;
+    if (t->cb) scr_closure_release(t->cb);
+    free(t);
+  }
+  scr_nt_post_ready_tail = NULL;
 }
 
 /* Releases every armed timer — the island teardown calls this before the
@@ -1742,6 +1772,11 @@ void scr_loop_run(void) {
       scr_ready_len--;
       scr_resume_fiber(f);
     }
+    /* Loader warnings discovered while the island settled an import()
+     * belong to the nextTick queue, but only AFTER the awakened promise
+     * continuation and every microtask it queues. Promote them now, ahead
+     * of nextTicks that continuation queued, matching Node's chronology. */
+    scr_nticks_promote_post_ready();
     first_checkpoint = false;
     if (scr_nt_head != NULL) continue;
     /* Quiescent between turns (microtasks drained, nothing running):

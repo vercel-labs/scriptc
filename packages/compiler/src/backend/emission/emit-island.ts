@@ -64,9 +64,14 @@ export function emitNpmEmbedding(E: CEmitter, out: string[]): void {
         s.esm !== null
           ? `sc_npm_esm_${i}, sizeof sc_npm_esm_${i} - 1, ${s.esm.raw}`
           : `NULL, 0, 0`;
+      const typeless =
+        m.typelessPackageJson !== undefined && m.typelessWarning !== undefined
+          ? `${cStringLiteral(Buffer.from(m.typelessPackageJson, "utf8"))}, ` +
+            `${cStringLiteral(Buffer.from(m.typelessWarning, "utf8"))}`
+          : `NULL, NULL`;
       out.push(
         `  { ${cStringLiteral(Buffer.from(m.key, "utf8"))}, sc_npm_src_${i}, ` +
-          `sizeof sc_npm_src_${i} - 1, ${s.src.raw}, ${fmt[m.format]}, ${facade} },`,
+          `sizeof sc_npm_src_${i} - 1, ${s.src.raw}, ${fmt[m.format]}, ${facade}, ${typeless} },`,
       );
     });
     out.push(`};`);

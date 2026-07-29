@@ -25,6 +25,18 @@ export function npmCases(fixturesRoot: string): NpmCase[] {
       .filter((entry) => !/\/(246[5-9]|255[67])-[^/]+\/main\.ts$/.test(entry))
       .map((entry) => ({ name: entry.split("/").at(-2)!, entry })),
     {
+      name: "workspace-typeless-require",
+      entry: join(fixturesRoot, "npm/cases/workspace-typeless/require.ts"),
+    },
+    {
+      name: "workspace-typeless-warning-event",
+      entry: join(fixturesRoot, "npm/cases/workspace-typeless/warning-event.ts"),
+    },
+    {
+      name: "workspace-typeless-two-warnings",
+      entry: join(fixturesRoot, "npm/cases/workspace-typeless/two-warnings.ts"),
+    },
+    {
       // THE acceptance test: a calculator CLI on the real commander package
       // (pinned in the fixture; see its README), across the happy paths,
       // --version/--help (island process.exit), and the error exits.

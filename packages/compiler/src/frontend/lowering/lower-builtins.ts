@@ -405,6 +405,9 @@ import { BOOL, BYTES_U8, CHILD_T, CHILDSTREAM_T, DYN, F64, FSWATCHER_T, PROCSTRE
         { kind: "strLit", value: res.entryKey, type: STRING, loc },
         { kind: "strLit", value: exportName, type: STRING, loc },
         { kind: "strLit", value: spec, type: STRING, loc },
+        // Node's synchronous require(esm) syntax-detects the module but
+        // deliberately does not emit MODULE_TYPELESS_PACKAGE_JSON.
+        { kind: "boolLit", value: false, type: BOOL, loc },
       ],
       type: JSVAL,
       loc,

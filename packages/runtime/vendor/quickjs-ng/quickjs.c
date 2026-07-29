@@ -31536,6 +31536,56 @@ JSValue JS_LoadModule(JSContext *ctx, const char *basename,
     return promise;
 }
 
+/* Synchronous ES-module entry for host implementations of require(esm).
+   The regular JS_LoadModule API deliberately answers a promise; for a graph
+   without top-level await, however, js_evaluate_module completes and settles
+   that promise before returning. Expose that already-synchronous path as a
+   namespace result and reject async graphs with Node's error code. */
+JSValue JS_RequireModule(JSContext *ctx, const char *basename,
+                         const char *filename)
+{
+    JSValue evaluate_promise, func_obj, result, err;
+    JSModuleDef *m;
+    JSPromiseStateEnum state;
+
+    m = js_host_resolve_imported_module(ctx, basename, filename, JS_UNDEFINED);
+    if (!m)
+        return JS_EXCEPTION;
+
+    if (js_resolve_module(ctx, m) < 0) {
+        js_free_modules(ctx, JS_FREE_MODULE_NOT_RESOLVED);
+        return JS_EXCEPTION;
+    }
+
+    func_obj = JS_NewModuleValue(ctx, m);
+    evaluate_promise = JS_EvalFunction(ctx, func_obj);
+    if (JS_IsException(evaluate_promise))
+        return JS_EXCEPTION;
+
+    state = JS_PromiseState(ctx, evaluate_promise);
+    if (state == JS_PROMISE_REJECTED) {
+        result = JS_PromiseResult(ctx, evaluate_promise);
+        JS_FreeValue(ctx, evaluate_promise);
+        return JS_Throw(ctx, result);
+    }
+    if (state != JS_PROMISE_FULFILLED) {
+        JS_FreeValue(ctx, evaluate_promise);
+        JS_ThrowTypeError(
+            ctx,
+            "require() cannot be used on an ESM graph with top-level await. "
+            "Use import() instead. To see where the top-level await comes "
+            "from, use --experimental-print-required-tla.");
+        err = JS_GetException(ctx);
+        if (JS_IsObject(err)) {
+            JS_SetPropertyStr(ctx, err, "code",
+                              JS_NewString(ctx, "ERR_REQUIRE_ASYNC_MODULE"));
+        }
+        return JS_Throw(ctx, err);
+    }
+    JS_FreeValue(ctx, evaluate_promise);
+    return JS_GetModuleNamespace(ctx, m);
+}
+
 static JSValue js_dynamic_import_job(JSContext *ctx,
                                      int argc, JSValueConst *argv)
 {

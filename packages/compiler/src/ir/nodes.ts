@@ -703,7 +703,16 @@ export interface IrModule {
      * island loader evaluates when an ES module imports the CJS file:
      * default plus the named exports LEXED from the source at build time
      * (cjs-lexer.ts — the compiler's port of Node's vendored CJS lexer). */
-    modules: { key: string; source: string; format: "esm" | "cjs" | "json"; esm?: string }[];
+    modules: {
+      key: string;
+      source: string;
+      format: "esm" | "cjs" | "json";
+      esm?: string;
+      /** Node's runtime warning for syntax-detected typeless workspace
+       * modules. The package path is the once-per-package dedupe key. */
+      typelessPackageJson?: string;
+      typelessWarning?: string;
+    }[];
     /** `kind` picks Node's "exports" condition set per CALL FORM: one
      * (from, specifier) can name a dual package's ESM entry behind an
      * "import" edge AND its CJS entry behind a "require" edge; "any"
@@ -1571,7 +1580,9 @@ export type IrLibFn =
   /** Load an embedded npm package's runtime entry in the island (cached by
    * the engine's module registry) and take one export: args are the entry
    * KEY (an embedded module's key, from IrModule.embedded) and the export
-   * name — "default" for default imports, "*" for the namespace object.
+   * name — "default" for default imports, "*" for the namespace object —
+   * followed by the written specifier and a bool selecting Node's
+   * typeless-package warning path (true for import, false for require).
    * --dynamic only, like island.eval; result is an owned jsval. May throw
    * (a package's top-level code can), bridged catchably. */
   | "island.import"
@@ -3632,11 +3643,12 @@ export type IrLibFn =
   | "dc.chanBindStore"
   | "dc.chanUnbindStore"
   | "dc.chanRunStores"
-  /** process warnings (scr_lib.c): onWarning/offWarning register dyn
+  /** process warnings (scr_async_dyn.c): onWarning/offWarning register dyn
    * listeners; emitWarning applies Node's full argument grammar over the
    * call's dyn argument vector (ERR_INVALID_ARG_TYPE TypeErrors — MAY
-   * THROW; a listener throw propagates too) and always prints Node's
-   * stderr report. Emission is synchronous (SEMANTICS.md). */
+   * THROW) and queues Node's default stderr report followed by the user
+   * warning event on process.nextTick. A listener throw is uncaught from
+   * that tick, never a synchronous emitWarning throw. */
   | "process.onWarning"
   | "process.offWarning"
   | "process.emitWarning"
@@ -5660,6 +5672,20 @@ export function moduleUsesStream(mod: IrModule): boolean {
  * the first; the emitted main installs it before any island entry). */
 export function moduleEmbedsBuiltin(mod: IrModule, builtin: string): boolean {
   return mod.embedded !== undefined && mod.embedded.edges.some((e) => e.to === builtin);
+}
+
+/** True when an embedded module can emit Node's typeless-package warning.
+ * The report uses scr_async_dyn.c's shared process-warning dispatcher so
+ * listeners and the once-per-process trace hint match every other warning. */
+export function moduleEmbedsTypelessWarning(mod: IrModule): boolean {
+  return (
+    mod.embedded !== undefined &&
+    mod.embedded.modules.some(
+      (m) =>
+        m.typelessPackageJson !== undefined &&
+        m.typelessWarning !== undefined,
+    )
+  );
 }
 
 /** Embedded module texts at least this long are DEFLATE-compressed into

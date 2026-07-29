@@ -84,7 +84,7 @@ export const REGEX_INTRINSIC_SIGS: Record<
  * Exported for the frontend's lib-boundary pass (lib-boundary.ts). */
 export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result: IrType }> = {
   "island.eval": { argTypes: [STRING], result: STRING },
-  "island.import": { argTypes: [STRING, STRING, STRING], result: JSVAL },
+  "island.import": { argTypes: [STRING, STRING, STRING, BOOL], result: JSVAL },
   "island.importDyn": { argTypes: [STRING], result: JSVAL },
   // Result is the cast's mapped PROMISE target (program-dependent) —
   // checked in the libCall case, like error.new.

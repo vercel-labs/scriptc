@@ -66,15 +66,24 @@ async function compileAndCompare(name: string, source: string, backend: "c" | "l
   expect(nativeResult.exitCode).toBe(nodeResult.exitCode);
 }
 
-const source = `class Holder {
+const source = `class Base {
+  inherited: unknown;
+}
+
+class Holder extends Base {
   value: unknown;
   initialized: unknown = { count: 3 };
   static current: unknown = "ready";
 
-  constructor(public argument: unknown) {}
+  constructor(public argument: unknown) {
+    super();
+  }
 }
 
 const h = new Holder(42);
+console.log(h.inherited === undefined);
+h.inherited = "from base";
+console.log(h.inherited === "from base");
 console.log(h.value === undefined, h.argument === 42);
 if (typeof h.initialized === "object" && h.initialized !== null && "count" in h.initialized) {
   console.log((h.initialized as { count: number }).count);

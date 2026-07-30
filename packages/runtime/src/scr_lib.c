@@ -17,7 +17,17 @@
 #include "scr_runtime.h"
 
 #include <ctype.h>
-#include <dirent.h>
+#ifndef _MSC_VER
+#include <dirent.h>  /* mingw-w64 ships one; MSVC: see scr_win.c shims */
+#else
+/* MSVC dirent shim — declared here, defined in scr_win.c. */
+enum { DT_REG = 8, DT_DIR = 4 };
+struct dirent { char d_name[260]; unsigned char d_type; };
+typedef struct { void *_hFind; int _first; struct dirent _ent; } DIR;
+DIR *opendir(const char *path);
+struct dirent *readdir(DIR *d);
+int closedir(DIR *d);
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -44,7 +54,13 @@
 #include <direct.h>  /* _mkdir */
 #include <io.h>      /* _isatty, _access, open/read/write/close */
 #include <process.h> /* getpid */
+#ifndef _MSC_VER
 #include <unistd.h>  /* mingw-w64 ships one: getcwd, access, isatty, ... */
+#else
+#define getcwd _getcwd
+#define access _access
+#define isatty _isatty
+#endif
 #include <winsock2.h> /* BEFORE windows.h (which pulls winsock 1 otherwise) */
 #include <ws2tcpip.h> /* inet_ntop, sockaddr_in6 */
 #include <iphlpapi.h> /* GetAdaptersAddresses (os.networkInterfaces) */

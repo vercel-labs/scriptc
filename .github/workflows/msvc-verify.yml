@@ -1,0 +1,66 @@
+name: MSVC POSIX Shims
+
+on:
+  push:
+    branches: [fix/msvc-posix-shims]
+  pull_request:
+    branches: [fix/msvc-posix-shims]
+
+jobs:
+  msvc_compile:
+    name: verify MSVC compilation
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Compile runtime with MSVC clang
+        shell: pwsh
+        run: |
+          # Verify clang is MSVC-targeted (not mingw)
+          clang --version
+          # Compile a simple program — this is the exact scenario from #25
+          node packages/cli/dist/main.js run tests/corpus/001-hello.ts --backend c
+      - name: Compile Map + sort program (the bare.ts pattern)
+        shell: pwsh
+        run: |
+          $ts = @'
+          const m = new Map<number, number>();
+          m.set(1, 10);
+          m.set(2, 5);
+          m.set(3, 20);
+          const sorted = [...m.entries()].sort((a, b) => a[1] - b[1]);
+          console.log(sorted[0][0], sorted[0][1]);
+          '@
+          $ts | Out-File -Encoding utf8 test-msvc.ts
+          node packages/cli/dist/main.js run test-msvc.ts --backend c
+
+  linux_regression:
+    name: verify no Linux regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SCRIPTC_NO_CACHE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Corpus smoke tests
+        run: >-
+          SCRIPTC_TEST_WORKERS=4 pnpm exec vitest run tests/harness/differential.test.ts
+          -t "001-hello|518-array-sort|520-map-basics|path"

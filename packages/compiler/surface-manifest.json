@@ -59,13 +59,6 @@
       "note": "cycles of ES modules with declaration-only top levels whose cycle-crossing bindings are only used inside function bodies compile as-is; move the named top-level read or call into a function body (or break the named edge) so nothing runs during the cycle's init window"
     },
     {
-      "id": "diagnostic.sc1020",
-      "kind": "diagnostic-fence",
-      "name": "class expressions",
-      "status": "unsupported",
-      "code": "SC1020"
-    },
-    {
       "id": "diagnostic.sc1030",
       "kind": "diagnostic-fence",
       "name": "var declarations",
@@ -2528,13 +2521,6 @@
       "name": "class declarations inside functions",
       "status": "unsupported",
       "code": "SC1090"
-    },
-    {
-      "id": "syntax.class-expressions",
-      "kind": "syntax",
-      "name": "class expressions",
-      "status": "unsupported",
-      "code": "SC1020"
     },
     {
       "id": "syntax.compound-assignment.bitwise-and",

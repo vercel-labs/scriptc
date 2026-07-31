@@ -180,8 +180,6 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
     milestone: "later",
     hint: "cycles of ES modules with declaration-only top levels whose cycle-crossing bindings are only used inside function bodies compile as-is; move the named top-level read or call into a function body (or break the named edge) so nothing runs during the cycle's init window",
   },
-  // Class DECLARATIONS shipped; SC1020's remaining use is class expressions.
-  SC1020: { feature: "class expressions", milestone: "later" },
   // SC1021 (arrow functions/closures) and SC1022 (nested function
   // declarations) shipped — codes retired, do not reuse.
   // SC1023 (object literals) shipped as records — code retired, do not

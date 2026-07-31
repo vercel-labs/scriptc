@@ -1,0 +1,17 @@
+incdec-expression.ts:5:9 - error SC1045: increment/decrement of record fields or elements in expression position is not supported yet
+
+  4 | const obj = { x: 1 };
+  5 | let y = obj.x++;
+    |         ^~~~~~~
+  6 | const arr = [1, 2, 3];
+
+  hint: use ++/-- as a standalone statement, or write x = x + 1
+
+incdec-expression.ts:7:9 - error SC1045: increment/decrement of record fields or elements in expression position is not supported yet
+
+  6 | const arr = [1, 2, 3];
+  7 | let z = arr[0]++;
+    |         ^~~~~~~~
+  8 | console.log(y, z);
+
+  hint: use ++/-- as a standalone statement, or write x = x + 1

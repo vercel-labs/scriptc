@@ -5004,11 +5004,30 @@ export function lowerNew(L: Lowerer, expr: ts.NewExpression): IrExpr {
       }
       if (symbol && symbol.name === "URL" && L.isStdlibSymbol(symbol)) {
         const args = expr.arguments ?? [];
+        if (args.length === 2) {
+          const urlExpr = L.lowerExpr(args[0]!);
+          const baseExpr = L.lowerExpr(args[1]!);
+          if (urlExpr.kind === "strLit" && baseExpr.kind === "strLit") {
+            try {
+              const resolved = new URL(urlExpr.value, baseExpr.value).href;
+              return { kind: "libCall", fn: "url.new", args: [{ kind: "strLit", value: resolved, type: STRING, loc }], type: URL_T, loc };
+            } catch {
+              L.noLowering("new URL with an unresolvable base URL", expr, "the base argument must be a valid absolute URL");
+              return { kind: "libCall", fn: "url.new", args: [L.lowerExprExpecting(args[0]!, STRING)], type: URL_T, loc };
+            }
+          }
+          L.noLowering(
+            "new URL with a non-literal argument",
+            expr,
+            "compile-time string literals for both url and base are required; resolve relative inputs against a base yourself, or use --dynamic for runtime URL resolution",
+          );
+          return { kind: "libCall", fn: "url.new", args: [L.lowerExprExpecting(args[0]!, STRING)], type: URL_T, loc };
+        }
         if (args.length !== 1) {
           L.noLowering(
             `new URL with ${args.length} argument${args.length === 1 ? "" : "s"}`,
             expr,
-            "one absolute-URL string is the supported form (resolve relative inputs against a base yourself)",
+            "one absolute-URL string or two string literals (url + base) are the supported forms",
             symbol,
           );
         }

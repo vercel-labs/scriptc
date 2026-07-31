@@ -252,6 +252,8 @@ export const ADOPTED_OPTIONS = [
   // SC1012 "not supported yet" beats a raw TS1259 at the same site.
   "esModuleInterop",
   "allowSyntheticDefaultImports",
+  "paths",
+  "baseUrl",
 ] as const;
 
 /* The JAVASCRIPT strictness stance (the JS-input design made real):

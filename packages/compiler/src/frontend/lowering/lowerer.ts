@@ -5805,6 +5805,17 @@ export class Lowerer {
   lowerReturnStmt(node: ts.Expression, loc: SrcLoc): IrStmt {
     const expected = this.ctx.returnType;
     if (expected.kind === "void") {
+      let expr = node;
+      while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+      if (ts.isConditionalExpression(expr)) {
+        return {
+          kind: "if",
+          cond: this.lowerCondition(expr.condition),
+          then: [this.lowerReturnStmt(expr.whenTrue, loc)],
+          else_: [this.lowerReturnStmt(expr.whenFalse, loc)],
+          loc,
+        };
+      }
       let e = this.lowerExpr(node);
       if (this.ctx.isAsync && e.type.kind === "promise") {
         e = { kind: "awaitExpr", value: e, type: e.type.inner, loc: e.loc };

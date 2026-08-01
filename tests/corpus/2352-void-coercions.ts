@@ -46,6 +46,13 @@ const box = {
 box.poke();
 console.log("method unit return ok");
 
+// Concise void-returning arrows over conditional void calls lower as a
+// branch, not a value ternary.
+const branchVoid = (flag: boolean) => (flag ? box.poke() : fv());
+branchVoid(true);
+branchVoid(false);
+console.log("branch-void", effects);
+
 // Async concise body over an existing promise: resolves through.
 async function inner(): Promise<number> {
   return 42;

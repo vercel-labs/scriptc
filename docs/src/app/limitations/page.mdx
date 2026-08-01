@@ -8,10 +8,10 @@ These are rejected at compile time with an `SC` code, a code frame, and usually 
 
 **Language edges**
 
-- `var` declarations, and loose equality `==`/`!=` (they need dynamic coercion semantics; use `let`/`const` and `===`).
-- Labeled `break`/`continue`, and jumps crossing a `finally` block (`return` through `finally` is supported).
-- Generic classes, generic methods, and generic arrows — only top-level generic function declarations monomorphize.
-- Generic functions and stdlib methods used as *values* (`const f = id`, `const g = Math.floor`) — call them directly.
+- Loose `==`/`!=` comparisons compile between two numbers, two strings, or two booleans, and for the `x == null`/`x != null` nullish idiom. Other coercing comparisons are rejected — use `===`/`!==`.
+- `break`/`continue` crossing a `finally` block, and any `return`/`break`/`continue` out of the `finally` body itself, are fenced. An ordinary `return` through `finally` compiles.
+- Generics monomorphize when the target resolves statically. The remaining edges include generic functions declared inside another function, generic class expressions, generic classes whose base depends on their own type parameters, and generic methods that would require dynamic dispatch.
+- Generic function values must be pinned at use to a concrete signature and come from a never-reassigned binding; unpinned or rebound values remain fenced. Built-in and standard-library functions often have call-only lowerings, so values such as `const g = Math.floor` are rejected — call them directly.
 
 **Types and shapes**
 
@@ -24,7 +24,7 @@ const jobs: Promise<number>[] = [work(1), work(2), work(3)];
 const results = await Promise.all(jobs); // number[] — compiles
 ```
 
-- `undefined`/`null` exist only as union arms, not as standalone values; optional *class* fields are fenced (optional record fields and optional/default/rest parameters compile).
+- `undefined` and `null` compile both as standalone values and as union arms. Optional record and class fields compile, as do optional/default/rest parameters.
 
 **Standard library**
 

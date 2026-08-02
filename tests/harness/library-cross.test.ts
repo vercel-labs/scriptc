@@ -11,6 +11,7 @@
  *                             pinned to the differential container's
  *                             bookworm — docs/linux-port.md)
  *   x86_64-linux-gnu.2.36    (the linux lane's amd64 triple)
+ *   x86_64-linux-musl        (the static-musl Linux target)
  *   x86_64-windows-gnu       (the windows lane's triple)
  *   x86_64-macos             (build-only; the host arm64-macos build is
  *                             the ordinary suites' tested baseline)
@@ -46,8 +47,8 @@
  * x86_64-macos stays build-only by contract; when Rosetta happens to be
  * present the probe runs as a bonus (detected, never required).
  *
- * Cost (warm zig cache, M-series host): ~1s per archive build, ~2.5min
- * for the full 112-build matrix — plus zig on PATH as a hard requirement,
+ * Cost (warm zig cache, M-series host): ~1s per archive build, ~3min
+ * for the full 140-build matrix — plus zig on PATH as a hard requirement,
  * which is why the lane is env-gated rather than part of the default
  * suite. SCRIPTC_CROSS_FILTER=<regex> narrows the fixture list for
  * triage. Never part of the commit gate. */
@@ -73,6 +74,7 @@ const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests/library-cross
 const TARGETS = [
   "aarch64-linux-gnu.2.36",
   "x86_64-linux-gnu.2.36",
+  "x86_64-linux-musl",
   "x86_64-windows-gnu",
   "x86_64-macos",
 ] as const;
@@ -295,6 +297,7 @@ describe.skipIf(!enabled)("cross-target library conformance", () => {
       EMISSIONS.flatMap((e) => [
         [`aarch64-linux-gnu.2.36 ${e}`, "aarch64-linux-gnu.2.36", e],
         [`x86_64-linux-gnu.2.36 ${e}`, "x86_64-linux-gnu.2.36", e],
+        [`x86_64-linux-musl ${e}`, "x86_64-linux-musl", e],
       ] as const),
     )(
       "scalar round-trip in the container (%s)",

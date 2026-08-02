@@ -290,10 +290,15 @@ export function resolveCc(
   }
   if (target === "") return { argv: ["zig", "cc"], target: null, ...hostArgs };
   const linux = target.includes("linux");
+  const musl = linux && target.includes("musl");
   return {
     argv: ["zig", "cc"],
     target,
-    targetArgs: ["-target", target, ...(linux ? ["-D_GNU_SOURCE"] : [])],
+    targetArgs: [
+      "-target", target,
+      ...(linux ? ["-D_GNU_SOURCE"] : []),
+      ...(musl ? ["-DSCR_MUSL"] : []),
+    ],
     linkArgs: linux ? ["-lm"] : [],
   };
 }
@@ -474,6 +479,7 @@ const LRE_SOURCES = ["libregexp.c", "libunicode.c"];
  * the runtime sources' (no host-built inputs); vendored SOURCES are
  * untouched, only the build wiring knows about targets. */
 async function ensureLreObjects(sanitize: boolean, driver: CcDriver): Promise<string[]> {
+  const pic = driver.target?.includes("musl") ?? false;
   // The flavor keys the DRIVER as well as the target: a zig-cc-built object
   // set must never be handed to a clang link (or vice versa) off a shared
   // cache directory — the historical `lre-plain`/`lre-asan` names stay
@@ -481,7 +487,8 @@ async function ensureLreObjects(sanitize: boolean, driver: CcDriver): Promise<st
   const flavor =
     (sanitize ? "asan" : "plain") +
     (driver.argv.length === 1 && driver.argv[0] === "clang" ? "" : "-zigcc") +
-    (driver.target !== null ? `-${driver.target}` : "");
+    (driver.target !== null ? `-${driver.target}` : "") +
+    (pic ? "-pic" : "");
   const vendor = vendorEngineDir();
   const cacheRoot = join(vendor, "..", ".cache");
   const cacheDir = join(cacheRoot, `${QJS_COMMIT.slice(0, 12)}-lre-${flavor}`);
@@ -502,6 +509,7 @@ async function ensureLreObjects(sanitize: boolean, driver: CcDriver): Promise<st
           ...driver.argv.slice(1),
           "-std=c11",
           ...driver.targetArgs,
+          ...(pic ? ["-fPIC"] : []),
           ...(sanitize ? ["-O1", "-fsanitize=address"] : ["-Os"]),
           "-I", vendor,
           "-c", join(vendor, f),
@@ -539,10 +547,12 @@ const ZLIB_SOURCES = ["adler32.c", "compress.c", "crc32.c", "deflate.c", "infbac
  * must never hand a zig-built object set to a clang link off a shared
  * directory. */
 async function ensureZlibObjects(sanitize: boolean, driver: CcDriver): Promise<string[]> {
+  const pic = driver.target?.includes("musl") ?? false;
   const flavor =
     (sanitize ? "asan" : "plain") +
     (driver.argv.length === 1 && driver.argv[0] === "clang" ? "" : "-zigcc") +
-    (driver.target !== null ? `-${driver.target}` : "");
+    (driver.target !== null ? `-${driver.target}` : "") +
+    (pic ? "-pic" : "");
   const vendor = vendorZlibDir();
   const cacheRoot = join(vendor, "..", ".cache");
   const cacheDir = join(cacheRoot, `zlib-${ZLIB_VERSION}-${flavor}`);
@@ -561,6 +571,7 @@ async function ensureZlibObjects(sanitize: boolean, driver: CcDriver): Promise<s
           ...driver.argv.slice(1),
           "-std=c11",
           ...driver.targetArgs,
+          ...(pic ? ["-fPIC"] : []),
           ...(sanitize ? ["-O1", "-fsanitize=address"] : ["-Os"]),
           "-I", vendor,
           "-c", join(vendor, f),
@@ -750,6 +761,12 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
   const rtDir = runtimeSrcDir();
   const driver = resolveCc();
   const sanitize = opts.sanitize ?? false;
+  if (driver.target !== null && sanitize) {
+    throw new Error(
+      `SCRIPTC_TARGET=${driver.target}: --sanitize not supported under a cross target yet ` +
+        `(target-specific runtime / system inputs — see docs/linux-port.md).`,
+    );
+  }
   const regex = opts.regex ?? false;
   const lreObjects = regex ? await ensureLreObjects(sanitize, driver) : [];
   const zlibObjects = opts.zlib ? await ensureZlibObjects(sanitize, driver) : [];
@@ -776,6 +793,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
   const cflags = [
     "-std=c11",
     ...driver.targetArgs,
+    ...(driver.target?.includes("musl") ? ["-fPIC"] : []),
     ...(sanitize ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"] : ["-O2"]),
     "-fno-math-errno",
     "-fno-strict-aliasing", // the emitted object model type-puns — see compileC's buildArgs
@@ -1050,6 +1068,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
     // the loop's capped win32 idle sleep (scr_async.c).
     const unsupported = (
       [
+        ["--sanitize", opts.sanitize ?? false],
         // The NATIVE fetch cross-compiles wherever the socket units do
         // (linux and win32 both); only the retired curl reference keeps
         // its linux-only soname-stub arm.
@@ -1061,7 +1080,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
     if (unsupported.length > 0) {
       throw new Error(
         `SCRIPTC_TARGET=${driver.target}: ${unsupported.join(", ")} not supported under a cross target yet ` +
-          `(host-built vendor archives / system libs — see docs/linux-port.md).`,
+          `(target-specific runtime / system inputs — see docs/linux-port.md).`,
       );
     }
   }

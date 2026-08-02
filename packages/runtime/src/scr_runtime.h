@@ -33,6 +33,11 @@ struct tm *gmtime_r(const time_t *t, struct tm *out);
 char *strcasestr(const char *hay, const char *needle);
 #endif
 
+/* musl intentionally does not provide the BSD arc4random API. */
+#ifdef SCR_MUSL
+void arc4random_buf(void *buf, size_t n);
+#endif
+
 /* ── process ──────────────────────────────────────────────────────────── */
 
 /* Called once at the top of main: private stdout formatter buffer,

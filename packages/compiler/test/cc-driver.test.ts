@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import { compileC, resolveCc } from "../src/backend/cc.js";
+import { compileC, compileLibArchive, resolveCc } from "../src/backend/cc.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -73,6 +73,10 @@ test("zigcc resolves to `zig cc`; linux triples add -target and -D_GNU_SOURCE", 
   expect(cross.targetArgs).toEqual(["-target", "aarch64-linux-gnu.2.36", "-D_GNU_SOURCE"]);
   expect(cross.linkArgs).toEqual(["-lm"]);
 
+  const musl = resolveCc({ SCRIPTC_CC: "zigcc", SCRIPTC_TARGET: "x86_64-linux-musl" });
+  expect(musl.targetArgs).toEqual(["-target", "x86_64-linux-musl", "-D_GNU_SOURCE", "-DSCR_MUSL"]);
+  expect(musl.linkArgs).toEqual(["-lm"]);
+
   // Non-linux triples get the -target but not glibc's visibility macro.
   const mac = resolveCc({ SCRIPTC_CC: "zigcc", SCRIPTC_TARGET: "aarch64-macos" });
   expect(mac.targetArgs).toEqual(["-target", "aarch64-macos"]);
@@ -101,6 +105,14 @@ async function withCcEnv(cc: string | undefined, target: string | undefined, bod
     else process.env["SCRIPTC_TARGET"] = prevTarget;
   }
 }
+
+test("cross-target library archives reject host-only ASan", async () => {
+  await withCcEnv("zigcc", "x86_64-linux-musl", async () => {
+    await expect(
+      compileLibArchive({ cPath: "unused.c", outPath: "unused.a", sanitize: true }),
+    ).rejects.toThrow(/--sanitize.*not supported under a cross target/s);
+  });
+});
 
 const HOST_CLANG_C = '#include <stdio.h>\nint main(void) { printf("clang says hi\\n"); return 0; }\n';
 
@@ -135,6 +147,18 @@ test("host-native clang static build links native fetch after zlib inputs", asyn
 }, 600_000);
 
 const HELLO_C = '#include <stdio.h>\nint main(void) { printf("zigcc says hi\\n"); return 0; }\n';
+const MUSL_ASYNC_C = `
+typedef struct ScrFiber ScrFiber;
+typedef struct ScrPromise ScrPromise;
+ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack);
+void scr_promise_release(ScrPromise *p);
+static void entry(ScrFiber *fiber, void *arg) { (void)fiber; (void)arg; }
+int main(void) {
+  ScrPromise *p = scr_async_spawn(entry, 0);
+  scr_promise_release(p);
+  return 0;
+}
+`;
 
 describe.skipIf(!zigOnPath())("zig cc builds (zig on PATH)", () => {
   test("host-native zigcc build compiles the runtime and runs", async () => {
@@ -155,6 +179,34 @@ describe.skipIf(!zigOnPath())("zig cc builds (zig on PATH)", () => {
     await withCcEnv("zigcc", "aarch64-linux-gnu.2.36", () => compileC({ cPath, outPath }));
     const magic = (await readFile(outPath)).subarray(0, 4);
     expect([...magic]).toEqual([0x7f, 0x45, 0x4c, 0x46]); // \x7fELF
+  });
+
+  test("cross build for x86_64-linux-musl provides arc4random_buf and compiles the static runtime", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scr-zigcc-musl-"));
+    const cPath = join(dir, "program.c");
+    await writeFile(cPath, MUSL_ASYNC_C);
+    const outPath = join(dir, "program");
+    await withCcEnv("zigcc", "x86_64-linux-musl", async () => {
+      await compileC({
+        cPath,
+        outPath,
+        events: true,
+        net: true,
+        http: true,
+        http2: true,
+        dgram: true,
+        watch: true,
+        regex: true,
+        zlib: true,
+        tls: true,
+      });
+      await expect(compileC({ cPath, outPath, sanitize: true })).rejects.toThrow(
+        /--sanitize.*not supported under a cross target/s,
+      );
+    });
+    const magic = (await readFile(outPath)).subarray(0, 4);
+    expect([...magic]).toEqual([0x7f, 0x45, 0x4c, 0x46]); // \x7fELF
+    await execFileAsync(outPath);
   });
 
   test("linux cross builds accept fetch natively (no libcurl); the curl reference keeps its soname stub", async () => {

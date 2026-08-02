@@ -40,7 +40,9 @@
 #else
 #include <poll.h>
 #include <signal.h>
+#if !defined(SCR_MUSL) || !defined(__x86_64__)
 #include <ucontext.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -273,6 +275,39 @@ void scr_promise_trace_v(void *p, ScrTraceVisit visit, void *ctx) {
  * so the slot only needs to name the destination; `from` is unused. */
 #ifdef _WIN32
 typedef void *ScrCtx;
+#elif defined(SCR_MUSL) && defined(__x86_64__)
+/* musl omits the obsolete ucontext API. The runtime only needs cooperative
+ * switches at a C call boundary, so preserving the SysV callee-saved state
+ * is sufficient. */
+typedef struct {
+  uintptr_t rbx, rbp, r12, r13, r14, r15, rsp, rip;
+} ScrCtx;
+
+void scr_musl_swap(ScrCtx *from, const ScrCtx *to);
+__asm__(
+    ".text\n"
+    ".p2align 4\n"
+    ".type scr_musl_swap,@function\n"
+    "scr_musl_swap:\n"
+    "movq %rbx, 0(%rdi)\n"
+    "movq %rbp, 8(%rdi)\n"
+    "movq %r12, 16(%rdi)\n"
+    "movq %r13, 24(%rdi)\n"
+    "movq %r14, 32(%rdi)\n"
+    "movq %r15, 40(%rdi)\n"
+    "leaq 8(%rsp), %rax\n"
+    "movq %rax, 48(%rdi)\n"
+    "movq (%rsp), %rax\n"
+    "movq %rax, 56(%rdi)\n"
+    "movq 0(%rsi), %rbx\n"
+    "movq 8(%rsi), %rbp\n"
+    "movq 16(%rsi), %r12\n"
+    "movq 24(%rsi), %r13\n"
+    "movq 32(%rsi), %r14\n"
+    "movq 40(%rsi), %r15\n"
+    "movq 48(%rsi), %rsp\n"
+    "jmp *56(%rsi)\n"
+    ".size scr_musl_swap, .-scr_musl_swap\n");
 #else
 typedef ucontext_t ScrCtx;
 #endif
@@ -851,6 +886,8 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
    * fiber object — `from` has nothing to record. */
   (void)from;
   SwitchToFiber(*to);
+#elif defined(SCR_MUSL) && defined(__x86_64__)
+  scr_musl_swap(from, to);
 #elif defined(SCR_ASAN_FIBERS)
   void **save = from_fiber ? &from_fiber->fake_stack : &scr_main_fake_stack;
   const void *bottom = to_fiber ? to_fiber->stack : NULL;
@@ -1131,6 +1168,16 @@ static void scr_trampoline(void) {
   /* unreachable */
 }
 
+#if defined(SCR_MUSL) && defined(__x86_64__)
+static void scr_musl_ctx_init(ScrCtx *ctx, char *stack) {
+  memset(ctx, 0, sizeof *ctx);
+  uintptr_t sp = ((uintptr_t)(stack + SCR_FIBER_STACK) & ~(uintptr_t)15) - 8;
+  *(uintptr_t *)sp = 0; /* scr_trampoline never returns */
+  ctx->rsp = sp;
+  ctx->rip = (uintptr_t)scr_trampoline;
+}
+#endif
+
 /* Frees a finished fiber's execution resources (the promise release and
  * bookkeeping stay at the call sites). Windows: DeleteFiber tears down the
  * fiber object and its stack — legal here because a finished fiber has
@@ -1163,6 +1210,12 @@ ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
   ScrCtx here = scr_win_self();
   f->ctx = CreateFiber(SCR_FIBER_STACK, scr_trampoline, NULL);
   if (f->ctx == NULL) scr_oom();
+#elif defined(SCR_MUSL) && defined(__x86_64__)
+  f->stack = malloc(SCR_FIBER_STACK);
+  if (!f->stack) scr_oom();
+  scr_musl_ctx_init(&f->ctx, f->stack);
+
+  ScrCtx here;
 #else
   f->stack = malloc(SCR_FIBER_STACK);
   if (!f->stack) scr_oom();
@@ -2443,6 +2496,10 @@ ScrGen *scr_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
 #ifdef _WIN32
   f->ctx = CreateFiber(SCR_FIBER_STACK, scr_trampoline, NULL);
   if (f->ctx == NULL) scr_oom();
+#elif defined(SCR_MUSL) && defined(__x86_64__)
+  f->stack = malloc(SCR_FIBER_STACK);
+  if (!f->stack) scr_oom();
+  scr_musl_ctx_init(&f->ctx, f->stack);
 #else
   f->stack = malloc(SCR_FIBER_STACK);
   if (!f->stack) scr_oom();
@@ -2614,6 +2671,8 @@ static void scr_gen_switch_in(ScrGen *g) {
   g->state = SCR_GEN_RUNNING;
 #ifdef _WIN32
   ScrCtx here = scr_win_self();
+#elif defined(SCR_MUSL) && defined(__x86_64__)
+  ScrCtx here;
 #else
   ucontext_t here;
 #endif

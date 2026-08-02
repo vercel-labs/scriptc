@@ -29,6 +29,26 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#ifdef SCR_MUSL
+#include <sys/random.h>
+
+/* musl has getrandom(2), but intentionally omits the BSD arc4random API used
+ * by the runtime's Math.random and crypto entry points. */
+void arc4random_buf(void *buf, size_t n) {
+  unsigned char *p = buf;
+  while (n > 0) {
+    ssize_t got = getrandom(p, n, 0);
+    if (got < 0 && errno == EINTR) continue;
+    if (got <= 0) {
+      fputs("scriptc: getrandom failed\n", stderr);
+      abort();
+    }
+    p += (size_t)got;
+    n -= (size_t)got;
+  }
+}
+#endif
+
 #ifdef _WIN32
 /* ── the Windows arm's system surface ─────────────────────────────────
  * mingw-w64's CRT covers most of sync fs (open/read/write/stat/dirent —

@@ -285,7 +285,8 @@ void scr_collect_cycles(void);
 
 /* One pass on the normal generational schedule, for callers that reach a
  * natural collection point rather than a threshold (the event loop between
- * turns). Cheap: usually a nursery pass. */
+ * turns). Cheap: usually a nursery pass; a waiting mature backlog ages into
+ * a bounded full pass so sparse roots cannot float forever. */
 void scr_cyc_collect_scheduled(void);
 
 /* ── class hierarchies (single inheritance) ───────────────────────────

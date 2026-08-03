@@ -68,12 +68,19 @@
  *                  was tallied when it was allocated) and is invisible to a
  *                  nursery pass, so without it a program that churns its
  *                  long-lived structures would never collect anything.
- * Each bounds total collection work to a constant factor of mutator work —
- * one heap-sized walk per live/N candidates — while keeping floating garbage
- * a bounded fraction of the live heap rather than a fixed object count. That
- * is the trade: a fixed threshold bounds floating garbage tightly and pays
- * unbounded time for it; this bounds time and lets garbage float in
- * proportion.
+ *   scheduled age  a mature candidate has waited through a nursery's worth
+ *                  of event-loop checkpoints. Candidate COUNT cannot bound
+ *                  the garbage behind one root, and an idle heap does not
+ *                  trip growth, so this keeps a sparse mature backlog from
+ *                  floating forever without putting a full walk on every
+ *                  turn.
+ * The first two bound collection work to a constant factor of mutator work —
+ * one heap-sized walk per live/N candidates — while the scheduled age is the
+ * liveness backstop, limiting its forced full walks to one per nursery's worth
+ * of checkpoints while mature roots wait. That is the trade: a fixed root
+ * threshold bounds floating garbage tightly and pays unbounded time for it;
+ * this bounds ordinary mutator-triggered work and lets garbage float in
+ * proportion, but not forever.
  */
 #include "scr_runtime.h"
 
@@ -182,6 +189,10 @@ static size_t scr_cyc_nursery_threshold(void) {
 static size_t scr_cyc_nbuffered = 0;
 static size_t scr_cyc_trigger = 0;
 
+/* Scheduled nursery passes for which at least one mature root was waiting.
+ * A full pass resets the age; with no mature backlog there is nothing to age. */
+static size_t scr_cyc_scheduled_mature_age = 0;
+
 static size_t scr_cyc_buffered(void) {
   return scr_roots[SCR_CYC_NURSERY].n + scr_roots[SCR_CYC_MATURE].n;
 }
@@ -225,7 +236,17 @@ static void scr_cyc_collect_due(void) {
  * per turn would walk the whole live heap every turn — which is exactly the
  * cost the generations exist to avoid. */
 void scr_cyc_collect_scheduled(void) {
-  if (scr_cyc_buffered() == 0) return;
+  if (scr_cyc_buffered() == 0) {
+    scr_cyc_scheduled_mature_age = 0;
+    return;
+  }
+  if (scr_roots[SCR_CYC_MATURE].n == 0) {
+    scr_cyc_scheduled_mature_age = 0;
+  } else if (++scr_cyc_scheduled_mature_age
+             >= scr_cyc_nursery_threshold()) {
+    scr_cyc_pass(SCR_CYC_MATURE);
+    return;
+  }
   scr_cyc_collect_due();
 }
 
@@ -242,6 +263,8 @@ void scr_cyc_on_dead(void *obj) {
   if (last != obj) scr_cyc_hdr(last)->buf_index = i;
   h->buffered = 0;
   scr_cyc_nbuffered--;
+  if (h->gen == SCR_CYC_MATURE && b->n == 0)
+    scr_cyc_scheduled_mature_age = 0;
 }
 
 /* THE hot path — every release that leaves an object alive lands here, so
@@ -506,7 +529,10 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
   scr_xgen.n = 0;
   freed += scr_xg_freed;
 
-  if (gen_limit >= SCR_CYC_MATURE) scr_cyc_live_after_full = scr_cyc_live;
+  if (gen_limit >= SCR_CYC_MATURE) {
+    scr_cyc_live_after_full = scr_cyc_live;
+    scr_cyc_scheduled_mature_age = 0;
+  }
   /* markRoots drained buffers in bulk and teardowns moved the count around;
    * resync from the buffers themselves and re-arm. */
   scr_cyc_nbuffered = scr_cyc_buffered();

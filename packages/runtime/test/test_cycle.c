@@ -125,11 +125,44 @@ static void check_age_reset_when_last_mature_root_dies(void) {
         "age reset ring was not collected at configured boundary");
 }
 
+static void check_dead_backlog_rearms_release_trigger(void) {
+  enum { BACKLOG = 32 };
+  size_t threshold = configured_nursery_threshold();
+  Node *leaves[BACKLOG];
+
+  for (size_t i = 0; i < BACKLOG; i++) {
+    leaves[i] = scr_cyc_alloc(sizeof(*leaves[i]), node_trace, node_free);
+    leaves[i]->rc = 2; /* external owner plus a temporary reference */
+    release_live(leaves[i]);
+  }
+  scr_collect_cycles(); /* promote the live leaves and drain their roots */
+
+  for (size_t i = 0; i < BACKLOG; i++) {
+    leaves[i]->rc++;
+    release_live(leaves[i]); /* build a mature candidate backlog */
+  }
+  if (threshold > 1)
+    scr_cyc_collect_scheduled(); /* re-arm over the entire backlog */
+
+  for (size_t i = 0; i < BACKLOG; i++) {
+    leaves[i]->rc--;
+    scr_cyc_on_dead(leaves[i]);
+    node_free(leaves[i]);
+  }
+
+  size_t before = freed;
+  for (size_t i = 0; i < threshold; i++)
+    release_live(make_ring(1));
+  check(freed - before == threshold,
+        "directly dead backlog delayed the next release-triggered pass");
+}
+
 int main(void) {
   check_sparse_mature_backlog(1);
   check_sparse_mature_backlog(2);
   check_age_reset_when_last_mature_root_dies();
-  printf("scheduled mature cycles collected: %zu threshold=%zu\n", freed,
+  check_dead_backlog_rearms_release_trigger();
+  printf("cycle collection checks passed: threshold=%zu\n",
          configured_nursery_threshold());
   return 0;
 }

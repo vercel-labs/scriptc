@@ -263,6 +263,8 @@ void scr_cyc_on_dead(void *obj) {
   if (last != obj) scr_cyc_hdr(last)->buf_index = i;
   h->buffered = 0;
   scr_cyc_nbuffered--;
+  /* A death must not consume room reserved for a future candidate. */
+  scr_cyc_trigger--;
   if (h->gen == SCR_CYC_MATURE && b->n == 0)
     scr_cyc_scheduled_mature_age = 0;
 }

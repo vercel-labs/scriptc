@@ -7,7 +7,7 @@ import { expect, test } from "vitest";
 const execFileAsync = promisify(execFile);
 const testDir = import.meta.dirname;
 
-test("scheduled collection eventually visits sparse mature roots", async () => {
+test("cycle collection scheduling honors configured thresholds", async () => {
   const buildDir = join(testDir, "build");
   await mkdir(buildDir, { recursive: true });
   const bin = join(buildDir, "test_cycle");
@@ -35,7 +35,7 @@ test("scheduled collection eventually visits sparse mature roots", async () => {
     if (configured !== undefined) env.SCR_CYCLE_THRESHOLD = configured;
     const run = await execFileAsync(bin, [], { env });
     expect(run.stdout).toBe(
-      `scheduled mature cycles collected: 129 threshold=${expected}\n`,
+      `cycle collection checks passed: threshold=${expected}\n`,
     );
   }
 });

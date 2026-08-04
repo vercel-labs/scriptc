@@ -1,0 +1,8 @@
+filter-void-predicate.ts:8:27 - error SC2011: values of type '(n: number) => void' have no static representation but run in the embedded dynamic engine, which this build does not include
+
+  7 | const pred: (n: number) => void = (n) => n;
+  8 | console.log([0, 1].filter(pred).join(","));
+    |                           ^~~~
+  9 | 
+
+  hint: build with --dynamic to run these values in the embedded engine (adds ~620KB to the binary), or restate the type inside the static surface (https://scriptc.dev/limitations describes the boundary)

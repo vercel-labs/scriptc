@@ -5551,8 +5551,14 @@
    "diags": []
   },
   "<repo>/tests/corpus/2682-fs-rename.ts": {
+    "order": [
+     "<repo>/tests/corpus/2682-fs-rename.ts"
+    ],
+    "diags": []
+   },
+  "<repo>/tests/corpus/2683-filter-truthy-predicate.ts": {
    "order": [
-    "<repo>/tests/corpus/2682-fs-rename.ts"
+    "<repo>/tests/corpus/2683-filter-truthy-predicate.ts"
    ],
    "diags": []
   },
@@ -5617,9 +5623,9 @@
    "diags": []
   },
   "<repo>/tests/corpus/2700-wasi-core.ts": {
-   "order": [
-    "<repo>/tests/corpus/2700-wasi-core.ts"
-   ],
+    "order": [
+     "<repo>/tests/corpus/2700-wasi-core.ts"
+    ],
    "diags": []
   },
   "<repo>/tests/corpus/300-if-else.ts": {
@@ -6956,6 +6962,12 @@
   "<repo>/tests/diagnostics/filter-narrow.ts": {
    "order": [
     "<repo>/tests/diagnostics/filter-narrow.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/filter-void-predicate.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/filter-void-predicate.ts"
    ],
    "diags": []
   },

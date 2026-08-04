@@ -155,7 +155,15 @@ function lowerSplitLimitArg(L: Lowerer, node: ts.Expression | undefined, loc: Sr
     {
       const receiver = L.lowerExpr(access.expression);
       if (receiver.type.kind === "jsval") {
-        const args = call.arguments.map((a) => L.jsvalIn(L.lowerExpr(a), a));
+        const loweredArgs = call.arguments.map((a) => L.lowerExpr(a));
+        if (name === "filter" && loweredArgs[0]?.type.kind === "func" && loweredArgs[0].type.ret.kind === "void") {
+          L.unsupported(
+            "SC1090",
+            call.arguments[0]!,
+            "'.filter()' with a void-returning predicate (the callback return value is erased before its truthiness can be tested)",
+          );
+        }
+        const args = loweredArgs.map((arg, i) => L.jsvalIn(arg, call.arguments[i]!));
         const result: IrExpr = { kind: "jsOp", op: "callMethod", name, args: [receiver, ...args], type: JSVAL, loc };
         return islandPrimitiveExit(L, call, result);
       }
@@ -172,7 +180,15 @@ function lowerSplitLimitArg(L: Lowerer, node: ts.Expression | undefined, loc: Sr
           if (call.arguments.some((a) => ts.isSpreadElement(a))) {
             L.unsupported("SC1090", call, "spread arguments in calls through 'unknown' values");
           }
-          const args = call.arguments.map((a) => L.lowerExprExpecting(a, DYN));
+          const loweredArgs = call.arguments.map((a) => L.lowerExpr(a));
+          if (name === "filter" && loweredArgs[0]?.type.kind === "func" && loweredArgs[0].type.ret.kind === "void") {
+            L.unsupported(
+              "SC1090",
+              call.arguments[0]!,
+              "'.filter()' with a void-returning predicate (the callback return value is erased before its truthiness can be tested)",
+            );
+          }
+          const args = loweredArgs.map((arg, i) => L.coerceInto(call.arguments[i]!, arg, DYN));
           return {
             kind: "dynInvoke",
             recv: receiver,
@@ -668,12 +684,60 @@ function lowerSplitLimitArg(L: Lowerer, node: ts.Expression | undefined, loc: Sr
         "'.map()' with a callback returning 'unknown'-typed values (the result array has no static element type — annotate the callback's return)",
       );
     }
-    if (method === "filter" && fnRet.kind !== "bool") L.badType(argNode, L.typeOf(argNode));
+    // JS applies ToBoolean to whatever the predicate answers, so a non-bool
+    // result is not an error — the filter loop wraps the call in the same
+    // toBool an `if` statement would apply. The island/dyn shapes, whose
+    // truthiness needs the engine, and void, whose real answer the ABI has
+    // already discarded, keep the fence. No separate
+    // requireTruthyUnion call belongs here: its check (no dyn/caught arm)
+    // IS filterPredicateOk's union branch, so it could never speak.
+    if (method === "filter" && !filterPredicateOk(L, fnRet)) {
+      L.badType(argNode, L.typeOf(argNode));
+    }
     const helper = arrayHofHelper(L, method, elem, fnRet, arity, loc);
     const resultType: IrType =
       method === "map" ? arrayOf(fnRet) : method === "filter" ? arrayOf(elem) : VOID;
     return { kind: "call", callee: helper, args: [receiver, fnArg], type: resultType, loc };
   }
+
+/** The predicate result kinds `.filter()` accepts. JS applies ToBoolean to
+ * whatever the callback answers, so a bool is not required: the scalars and
+ * the reference kinds have constant or by-value answers, and a union is fine
+ * when every arm does. void/dyn/jsval/caught stay out — see below. */
+function filterPredicateOk(L: Lowerer, ret: IrType): boolean {
+  if (ret.kind === "bool") return true;
+  // VOID is a TYPE erasure, not a runtime value: TS lets a value-returning
+  // function sit in a void-returning slot (`const p: (n: number) => void =
+  // (n) => n`), so the predicate's real answer can be truthy while the
+  // compiled ABI has already discarded it. Treating void as constantly
+  // falsy would silently answer [] where Node answers [1]. Fenced until
+  // the returned value can be preserved through the void ABI.
+  // dyn/jsval/caught stay out too: no native ToBoolean to compile against.
+  if (ret.kind === "void") return false;
+  if (ret.kind === "dyn" || ret.kind === "jsval" || ret.kind === "caught") return false;
+  if (ret.kind === "union") {
+    const def = L.unions.get(ret.unionId);
+    return def !== undefined && def.arms.every((a) => a.kind !== "dyn" && a.kind !== "caught");
+  }
+  return true;
+}
+
+/** The filter loop's condition: the predicate's result put through JS
+ * ToBoolean. A bool answer is already the condition; everything else takes
+ * the same `toBool` wrapper an `if` statement would apply (a union answer
+ * routes through its interned per-arm truthy helper). */
+function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
+  if (fnRet.kind === "bool") return call;
+  // No constant-false arm here: void is fenced at the call site, and a
+  // bare undefinedT/nullT return cannot arise (mapType sends `undefined`/
+  // `void` returns to void and a standalone `null` return to the unit-ONLY
+  // UNION, which routes through toBool below; ir/validate.ts rejects a
+  // bare unit return type outright). filterPredicateOk already rejected
+  // the arms with no native ToBoolean (dyn/caught) — which is exactly what
+  // requireTruthyUnion checks — and it did so at the call site, where a
+  // real node exists for the diagnostic.
+  return { kind: "toBool", operand: call, type: BOOL, loc };
+}
 
 /** Interned synthetic loop function for one (method, elem, fnRet, arity)
    * combo. Named `%arr.<method>.<n>` ('%' keeps it out of the user
@@ -1001,7 +1065,9 @@ function lowerSplitLimitArg(L: Lowerer, node: ts.Expression | undefined, loc: Sr
           { kind: "varDecl", localId: "v.0", init: getElem, loc },
           {
             kind: "if",
-            cond: callF(ref("v.0", elem)),
+            // ToBoolean over the predicate's answer — inert when it already
+            // returned bool, the per-union helper when it returned a union.
+            cond: filterCond(callF(ref("v.0", elem)), fnRet, loc),
             then: [push(arrT, ref("v.0", elem))],
             else_: null,
             loc,

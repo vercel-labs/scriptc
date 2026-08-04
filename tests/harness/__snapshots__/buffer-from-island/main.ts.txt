@@ -1,0 +1,17 @@
+buffer-from-island/main.ts:5:1 - error SC2020: 'Buffer.from with this argument shape' is part of the standard library types but has no scriptc lowering yet
+
+  4 | import { bytes, numbers } from "bytekit";
+  5 | Buffer.from(bytes());
+    | ^~~~~~~~~~~~~~~~~~~~
+  6 | Buffer.from(numbers());
+
+  hint: supported: Buffer.from(string, encoding?) with a literal encoding, Buffer.from(u8Array) — a copy — Buffer.from(number[]), or Buffer.from(x.buffer, byteOffset?, length?) — a view sharing x's storage (no free-standing ArrayBuffer value exists; narrow unions first)
+
+buffer-from-island/main.ts:6:1 - error SC2020: 'Buffer.from with this argument shape' is part of the standard library types but has no scriptc lowering yet
+
+  5 | Buffer.from(bytes());
+  6 | Buffer.from(numbers());
+    | ^~~~~~~~~~~~~~~~~~~~~~
+  7 | void 0;
+
+  hint: supported: Buffer.from(string, encoding?) with a literal encoding, Buffer.from(u8Array) — a copy — Buffer.from(number[]), or Buffer.from(x.buffer, byteOffset?, length?) — a view sharing x's storage (no free-standing ArrayBuffer value exists; narrow unions first)

@@ -6653,6 +6653,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/diagnostics/buffer-from-island/main.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/buffer-from-island/main.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/diagnostics/catch-bindings.ts": {
    "order": [
     "<repo>/tests/diagnostics/catch-bindings.ts"

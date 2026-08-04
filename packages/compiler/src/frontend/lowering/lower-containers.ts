@@ -6038,10 +6038,16 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
             return { kind: "libCall", fn: "buffer.fromStr", args: [s, enc], type: BYTES_U8, loc };
           }
           if (args.length === 1 && srcIr?.kind === "bytes" && srcIr.elem === "u8") {
-            return { kind: "bytesNew", source: L.lowerExpr(argNode), type: BYTES_U8, loc };
+            const source = L.lowerExpr(argNode);
+            if (source.type.kind === "bytes" && source.type.elem === "u8") {
+              return { kind: "bytesNew", source, type: BYTES_U8, loc };
+            }
           }
           if (args.length === 1 && srcIr?.kind === "array" && srcIr.elem.kind === "f64") {
-            return { kind: "bytesNew", source: L.lowerExpr(argNode), type: BYTES_U8, loc };
+            const source = L.lowerExpr(argNode);
+            if (source.type.kind === "array" && source.type.elem.kind === "f64") {
+              return { kind: "bytesNew", source, type: BYTES_U8, loc };
+            }
           }
         }
       }

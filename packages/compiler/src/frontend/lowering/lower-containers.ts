@@ -692,6 +692,13 @@ function lowerSplitLimitArg(L: Lowerer, node: ts.Expression | undefined, loc: Sr
     // requireTruthyUnion call belongs here: its check (no dyn/caught arm)
     // IS filterPredicateOk's union branch, so it could never speak.
     if (method === "filter" && !filterPredicateOk(L, fnRet)) {
+      if (fnRet.kind === "void") {
+        L.unsupported(
+          "SC1090",
+          argNode,
+          "'.filter()' with a void-returning predicate (the callback return value is erased before its truthiness can be tested)",
+        );
+      }
       L.badType(argNode, L.typeOf(argNode));
     }
     const helper = arrayHofHelper(L, method, elem, fnRet, arity, loc);

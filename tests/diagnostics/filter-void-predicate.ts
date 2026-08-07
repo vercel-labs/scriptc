@@ -6,3 +6,4 @@
 // until the returned value can be preserved through the void ABI.
 const pred: (n: number) => void = (n) => n;
 console.log([0, 1].filter(pred).join(","));
+// The callback's erased return makes this unsupported.

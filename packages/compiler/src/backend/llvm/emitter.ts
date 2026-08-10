@@ -12561,6 +12561,12 @@ class LlEmitter {
       B.line(`call void @scr_net_server_set_keep_alive_timeout(ptr ${args[0]!.name}, double ${args[1]!.name})`);
       return { name: "", type: e.type };
     }
+    if (e.fn === "net.serverSetHeadersTimeout") {
+      const args = e.args.map((a) => this.emitExpr(a));
+      this.declare(`declare void @scr_net_server_set_headers_timeout(ptr, double)`);
+      B.line(`call void @scr_net_server_set_headers_timeout(ptr ${args[0]!.name}, double ${args[1]!.name})`);
+      return { name: "", type: e.type };
+    }
     if (e.fn === "net.serverAddress") {
       // The AddressInfo record from the three runtime reads.
       if (e.type.kind !== "record") throw new Error("llvm emitter bug: net.serverAddress result is not a record");

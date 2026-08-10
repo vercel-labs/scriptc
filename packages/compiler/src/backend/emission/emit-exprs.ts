@@ -3874,6 +3874,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "net.serverSetKeepAliveTimeout":
             E.line(`scr_net_server_set_keep_alive_timeout(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
             return { name: "", type: e.type };
+          case "net.serverSetHeadersTimeout":
+            E.line(`scr_net_server_set_headers_timeout(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
           case "net.serverAddress": {
             // The AddressInfo record from the three runtime reads (the
             // dgram.address materialization; none of these throw).

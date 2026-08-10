@@ -1956,6 +1956,16 @@ static void scr_http_conn_closed(void *ctx) {
  * underlying socket's own listeners never see a parser-owned error. */
 static bool scr_http_client_sock_err(ScrHttpConn *conn, ScrStr *msg);
 
+static void scr_http_conn_headers_timeout(void *ctx) {
+  ScrHttpConn *conn = (ScrHttpConn *)ctx;
+  if (conn->client_mode || conn->req != NULL || conn->sock == NULL) return;
+  static const char timeout[] =
+      "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+  scr_net_sock_write_native(conn->sock, timeout, sizeof timeout - 1);
+  scr_net_sock_end(conn->sock);
+  conn->len = 0;
+}
+
 static bool scr_http_conn_err(void *ctx, ScrStr *msg) {
   ScrHttpConn *conn = (ScrHttpConn *)ctx;
   if (conn->client_mode) return scr_http_client_sock_err(conn, msg);
@@ -1989,7 +1999,8 @@ static void scr_http_on_connection(void *ctx, ScrNetSocket *sock) {
   conn->srv = scr_http_srv_ctx_retain(srv);
   scr_net_sock_set_native_reader(sock, &scr_http_conn_data, &scr_http_conn_eof,
                                   &scr_http_conn_closed, conn, &scr_http_conn_free);
-  scr_net_sock_set_native_events(sock, NULL, &scr_http_conn_err);
+  scr_net_sock_set_native_events(sock, &scr_http_conn_headers_timeout, &scr_http_conn_err);
+  scr_net_sock_apply_headers_timeout(sock);
 }
 
 /* The unguarded h2-only stream call (`req.stream.on(...)`): stream IS

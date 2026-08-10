@@ -426,6 +426,7 @@ struct ScrNetServer {
   bool in_registry;
   double timeout_ms; /* server.timeout applied to newly accepted sockets */
   double keep_alive_timeout_ms; /* HTTP keep-alive timeout after responses */
+  double headers_timeout_ms; /* HTTP header parse timeout on new connections */
   struct ScrNetServer *next;
 };
 
@@ -1196,6 +1197,7 @@ static ScrNetServer *scr_net_server_new(void) {
   s->rc = 1;
   s->fd = -1;
   s->keep_alive_timeout_ms = 5000;
+  s->headers_timeout_ms = 60000;
 #ifdef SCR_RC_AUDIT
   scr_net_live++;
 #endif
@@ -1382,6 +1384,16 @@ void scr_net_server_set_timeout(ScrNetServer *s, double ms) {
 
 void scr_net_server_set_keep_alive_timeout(ScrNetServer *s, double ms) {
   s->keep_alive_timeout_ms = ms > 0 ? ms : 0;
+}
+
+void scr_net_server_set_headers_timeout(ScrNetServer *s, double ms) {
+  s->headers_timeout_ms = ms > 0 ? ms : 0;
+}
+
+void scr_net_sock_apply_headers_timeout(ScrNetSocket *s) {
+  if (s != NULL && s->server != NULL) {
+    scr_net_sock_set_timeout(s, s->server->headers_timeout_ms);
+  }
 }
 
 void scr_net_sock_apply_keep_alive_timeout(ScrNetSocket *s) {

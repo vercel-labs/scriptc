@@ -2176,6 +2176,7 @@ export type IrLibFn =
   | "net.serverPort"
   | "net.serverSetTimeout"
   | "net.serverSetKeepAliveTimeout"
+  | "net.serverSetHeadersTimeout"
   /** server.address() as the full AddressInfo record (the dgram.address
    * materialization pattern: the emitter builds the record from the three
    * runtime reads; the frontend pinned the shape). Never throws — before

@@ -19,7 +19,7 @@ import { isMixinFnBinding, mixinResultBindingClassOf } from "./lower-mixins.js";
 import type { ClassInfo, ClassIteratorInfo } from "./lower-classes.js";
 import { genericIfaceBindingKeepsClass } from "./lower-classes.js";
 import { lowerStreamUnderscoreAssign, streamClassAliasDecl, streamSidesOf } from "./lower-stream.js";
-import { lowerHttpResPropertyAssignment, lowerServerCloseOverrideAssignment } from "./lower-server.js";
+import { lowerHttpResPropertyAssignment, lowerNetServerPropertyAssignment, lowerServerCloseOverrideAssignment } from "./lower-server.js";
 import { builtinMemberRequireDecl, builtinNamespaceDestructureModuleOf, createRequireBindingDecl, createRequireCalleeFileOf, createRequireNamespaceDecl, textCodecBindingDecl } from "./lower-builtins.js";
 import { lowerEnumDeclaration } from "./lower-enums.js";
 import { abstractPropertyDeclOf, aliasTypeofNarrows, isMatchSliceType, lowerGroupsProjection, matchResultNamedGroupsOf, probeLower, pureReemittable, symbolFieldInfo } from "./lower-exprs.js";
@@ -4302,6 +4302,10 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
           {
             const resProp = lowerHttpResPropertyAssignment(L, expr.left, expr.right, locOf(expr));
             if (resProp) return resProp;
+          }
+          {
+            const serverProp = lowerNetServerPropertyAssignment(L, expr.left, expr.right, locOf(expr));
+            if (serverProp) return serverProp;
           }
           // `N.x = v` — a namespace-qualified write: exported `let`
           // members are module globals, so the qualified spelling assigns

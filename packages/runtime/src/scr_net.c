@@ -424,6 +424,7 @@ struct ScrNetServer {
    * when several close in one turn (the wrapper-closes-inner idiom). */
   size_t close_seq;
   bool in_registry;
+  double timeout_ms; /* server.timeout applied to newly accepted sockets */
   struct ScrNetServer *next;
 };
 
@@ -1371,6 +1372,12 @@ void scr_net_listen_opts(ScrNetServer *s, double port, ScrStr *host /*borrowed*/
 
 double scr_net_server_port(ScrNetServer *s) { return (double)s->port; }
 
+void scr_net_server_set_timeout(ScrNetServer *s, double ms) {
+  /* Node validates this as a non-negative integer; the compiler already
+   * supplies a number, and the runtime applies it to future connections. */
+  s->timeout_ms = ms > 0 ? ms : 0;
+}
+
 /* address()'s other two fields — the bound host ('::'/'0.0.0.0' for the
  * host-less any, the normalized explicit host otherwise) and the family
  * string. Answer the any-form defaults before listen (Node answers null
@@ -1502,6 +1509,7 @@ static void scr_net_server_accept(ScrNetServer *srv) {
     ScrNetSocket *sock = scr_net_sock_new();
     sock->fd = fd;
     sock->server = scr_net_server_retain(srv);
+    if (srv->timeout_ms > 0) scr_net_sock_set_timeout(sock, srv->timeout_ms);
     srv->nconns++;
     scr_net_sock_register(sock);
     if (srv->native_conn) {

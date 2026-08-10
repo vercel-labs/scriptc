@@ -908,6 +908,21 @@ export function lowerServerCloseOverrideAssignment(L: Lowerer, left: ts.Expressi
  * writable ServerResponse properties (the implicit head reads them):
  * routed from lower-stmts' property-assignment path beside the
  * close-override hook. Null when the target isn't one of the two. */
+
+/** Writable net.Server timeout property. Node applies this socket timeout
+ * to connections accepted after the assignment; the runtime mirrors that
+ * behavior. */
+export function lowerNetServerPropertyAssignment(L: Lowerer, left: ts.Expression,
+  right: ts.Expression, loc: SrcLoc,): IrStmt | null {
+  if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return null;
+  if (left.name.text !== "timeout") return null;
+  if (L.mapTypeOf(L.typeOf(left.expression))?.kind !== "netServer") return null;
+  if (!L.isStdlibMember(left)) return null;
+  const receiver = handleReceiver(L, left.expression, NETSERVER_T);
+  const value = L.lowerExprExpecting(right, F64);
+  return { kind: "exprStmt", expr: { kind: "libCall", fn: "net.serverSetTimeout", args: [receiver, value], type: VOID, loc }, loc };
+}
+
 export function lowerHttpResPropertyAssignment(L: Lowerer, left: ts.Expression,
   right: ts.Expression, loc: SrcLoc,): IrStmt | null {
   if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return null;

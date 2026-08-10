@@ -4256,6 +4256,10 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
               loc,
             };
           }
+          {
+            const serverProp = lowerNetServerPropertyAssignment(L, expr.left, expr.right, locOf(expr));
+            if (serverProp) return serverProp;
+          }
           if (expr.left.expression.kind === ts.SyntaxKind.SuperKeyword) {
             // `super.x = v`: the base chain's SETTER, called directly over
             // this method's own `this` — super dispatch is static in JS.
@@ -4302,10 +4306,6 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
           {
             const resProp = lowerHttpResPropertyAssignment(L, expr.left, expr.right, locOf(expr));
             if (resProp) return resProp;
-          }
-          {
-            const serverProp = lowerNetServerPropertyAssignment(L, expr.left, expr.right, locOf(expr));
-            if (serverProp) return serverProp;
           }
           // `N.x = v` — a namespace-qualified write: exported `let`
           // members are module globals, so the qualified spelling assigns

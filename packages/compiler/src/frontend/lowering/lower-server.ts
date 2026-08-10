@@ -917,8 +917,6 @@ export function lowerNetServerPropertyAssignment(L: Lowerer, left: ts.Expression
   if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return null;
   const name = left.name.text;
   if (name !== "timeout" && name !== "keepAliveTimeout" && name !== "headersTimeout" && name !== "requestTimeout") return null;
-  if (L.mapTypeOf(L.typeOf(left.expression))?.kind !== "netServer") return null;
-  if (!L.isStdlibMember(left)) return null;
   const receiver = handleReceiver(L, left.expression, NETSERVER_T);
   const value = L.lowerExprExpecting(right, F64);
   const fn: IrLibFn = name === "timeout"

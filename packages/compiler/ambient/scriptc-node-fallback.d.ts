@@ -2015,6 +2015,11 @@ declare module "net" {
     once(event: "session", listener: (session: Buffer) => void): void;
   }
   export interface Server {
+    /** Writable socket timeout settings on HTTP servers. */
+    timeout: number;
+    headersTimeout: number;
+    keepAliveTimeout: number;
+    requestTimeout: number;
     /* Node answers the server itself (`return this` chaining). */
     listen(port: number, callback?: () => void): Server;
     /* The positional bind address (the options form's host in argument

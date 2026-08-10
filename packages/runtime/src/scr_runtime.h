@@ -5104,6 +5104,8 @@ void scr_net_listen_opts(ScrNetServer *s, double port, ScrStr *host /*borrowed*/
                           bool ipv6_only, ScrClosure *cb /*moves, nullable*/);
 double scr_net_server_port(ScrNetServer *s); /* address().port */
 void scr_net_server_set_timeout(ScrNetServer *s, double ms);
+void scr_net_server_set_keep_alive_timeout(ScrNetServer *s, double ms);
+void scr_net_sock_apply_keep_alive_timeout(ScrNetSocket *s);
 ScrStr *scr_net_server_addr_ip(ScrNetServer *s);     /* +1 — address().address */
 ScrStr *scr_net_server_addr_family(ScrNetServer *s); /* +1 — address().family */
 void scr_net_server_close(ScrNetServer *s, ScrClosure *cb /*moves, nullable*/);

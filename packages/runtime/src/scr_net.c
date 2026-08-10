@@ -425,6 +425,7 @@ struct ScrNetServer {
   size_t close_seq;
   bool in_registry;
   double timeout_ms; /* server.timeout applied to newly accepted sockets */
+  double keep_alive_timeout_ms; /* HTTP keep-alive timeout after responses */
   struct ScrNetServer *next;
 };
 
@@ -1194,6 +1195,7 @@ static ScrNetServer *scr_net_server_new(void) {
   s->kind = SCR_NET_K_SERVER;
   s->rc = 1;
   s->fd = -1;
+  s->keep_alive_timeout_ms = 5000;
 #ifdef SCR_RC_AUDIT
   scr_net_live++;
 #endif
@@ -1376,6 +1378,16 @@ void scr_net_server_set_timeout(ScrNetServer *s, double ms) {
   /* Node validates this as a non-negative integer; the compiler already
    * supplies a number, and the runtime applies it to future connections. */
   s->timeout_ms = ms > 0 ? ms : 0;
+}
+
+void scr_net_server_set_keep_alive_timeout(ScrNetServer *s, double ms) {
+  s->keep_alive_timeout_ms = ms > 0 ? ms : 0;
+}
+
+void scr_net_sock_apply_keep_alive_timeout(ScrNetSocket *s) {
+  if (s != NULL && s->server != NULL) {
+    scr_net_sock_set_timeout(s, s->server->keep_alive_timeout_ms);
+  }
 }
 
 /* address()'s other two fields — the bound host ('::'/'0.0.0.0' for the

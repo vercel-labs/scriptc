@@ -1432,6 +1432,8 @@ static void scr_http_conn_response_finished(ScrHttpConn *conn, bool keep_alive) 
   scr_http_conn_drop_request(conn, fire_end && false);
   if (!keep_alive || conn->close_after) {
     scr_net_sock_end(conn->sock);
+  } else {
+    scr_net_sock_apply_keep_alive_timeout(conn->sock);
   }
 }
 

@@ -915,12 +915,14 @@ export function lowerServerCloseOverrideAssignment(L: Lowerer, left: ts.Expressi
 export function lowerNetServerPropertyAssignment(L: Lowerer, left: ts.Expression,
   right: ts.Expression, loc: SrcLoc,): IrStmt | null {
   if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return null;
-  if (left.name.text !== "timeout") return null;
+  const name = left.name.text;
+  if (name !== "timeout" && name !== "keepAliveTimeout") return null;
   if (L.mapTypeOf(L.typeOf(left.expression))?.kind !== "netServer") return null;
   if (!L.isStdlibMember(left)) return null;
   const receiver = handleReceiver(L, left.expression, NETSERVER_T);
   const value = L.lowerExprExpecting(right, F64);
-  return { kind: "exprStmt", expr: { kind: "libCall", fn: "net.serverSetTimeout", args: [receiver, value], type: VOID, loc }, loc };
+  const fn: IrLibFn = name === "timeout" ? "net.serverSetTimeout" : "net.serverSetKeepAliveTimeout";
+  return { kind: "exprStmt", expr: { kind: "libCall", fn, args: [receiver, value], type: VOID, loc }, loc };
 }
 
 export function lowerHttpResPropertyAssignment(L: Lowerer, left: ts.Expression,

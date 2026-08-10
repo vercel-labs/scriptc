@@ -6074,6 +6074,14 @@ export function moduleUsesDynAsync(mod: IrModule): boolean {
       found = true;
       return;
     }
+    // Promise values crossing the checked-dynamic boundary are boxed by
+    // emit-walkers through scr_dyn_new_promise_adapting(). That constructor
+    // lives in scr_async_dyn.c, so promise-typed IR must pull that TU in even
+    // when the program never awaits a dyn value.
+    if (node.type !== undefined && node.type.kind === "promise") {
+      found = true;
+      return;
+    }
     for (const key of Object.keys(v)) visit((v as Record<string, unknown>)[key]);
   };
   visit(mod);

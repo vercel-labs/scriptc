@@ -916,14 +916,15 @@ export function lowerNetServerPropertyAssignment(L: Lowerer, left: ts.Expression
   right: ts.Expression, loc: SrcLoc,): IrStmt | null {
   if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return null;
   const name = left.name.text;
-  if (name !== "timeout" && name !== "keepAliveTimeout" && name !== "headersTimeout") return null;
+  if (name !== "timeout" && name !== "keepAliveTimeout" && name !== "headersTimeout" && name !== "requestTimeout") return null;
   if (L.mapTypeOf(L.typeOf(left.expression))?.kind !== "netServer") return null;
   if (!L.isStdlibMember(left)) return null;
   const receiver = handleReceiver(L, left.expression, NETSERVER_T);
   const value = L.lowerExprExpecting(right, F64);
   const fn: IrLibFn = name === "timeout"
     ? "net.serverSetTimeout"
-    : name === "keepAliveTimeout" ? "net.serverSetKeepAliveTimeout" : "net.serverSetHeadersTimeout";
+    : name === "keepAliveTimeout" ? "net.serverSetKeepAliveTimeout"
+    : name === "headersTimeout" ? "net.serverSetHeadersTimeout" : "net.serverSetRequestTimeout";
   return { kind: "exprStmt", expr: { kind: "libCall", fn, args: [receiver, value], type: VOID, loc }, loc };
 }
 

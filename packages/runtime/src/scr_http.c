@@ -921,6 +921,9 @@ void scr_http_res_set_timeout(ScrHttpRes *r, double ms, ScrClosure *cb /*moves, 
 
 static void scr_http_conn_response_finished(struct ScrHttpConn *conn, bool keep_alive);
 static void scr_http_queue_res_finish(ScrHttpRes *res);
+static void scr_http_conn_request_timeout(void *ctx);
+static void scr_http_conn_headers_timeout(void *ctx);
+static bool scr_http_conn_err(void *ctx, ScrStr *msg);
 
 /* Flush corked bytes as one write (corked already zero, or forced by
  * end()). */
@@ -1712,9 +1715,13 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len) {
 
   if (chunked) {
     conn->state = SCR_HTTP_CHUNK_SIZE;
+    scr_net_sock_set_native_events(conn->sock, &scr_http_conn_request_timeout, &scr_http_conn_err);
+    scr_net_sock_apply_request_timeout(conn->sock);
   } else if (content_length > 0) {
     conn->state = SCR_HTTP_BODY_CL;
     conn->body_remaining = (size_t)content_length;
+    scr_net_sock_set_native_events(conn->sock, &scr_http_conn_request_timeout, &scr_http_conn_err);
+    scr_net_sock_apply_request_timeout(conn->sock);
   } else {
     conn->state = SCR_HTTP_HEAD; /* no body */
   }
@@ -1955,6 +1962,16 @@ static void scr_http_conn_closed(void *ctx) {
  * routes them to the request handle's 'error'. Always consumed: the
  * underlying socket's own listeners never see a parser-owned error. */
 static bool scr_http_client_sock_err(ScrHttpConn *conn, ScrStr *msg);
+
+static void scr_http_conn_request_timeout(void *ctx) {
+  ScrHttpConn *conn = (ScrHttpConn *)ctx;
+  if (conn->client_mode || conn->req == NULL || conn->state == SCR_HTTP_HEAD) return;
+  static const char timeout[] =
+      "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+  scr_net_sock_write_native(conn->sock, timeout, sizeof timeout - 1);
+  scr_net_sock_end(conn->sock);
+  conn->len = 0;
+}
 
 static void scr_http_conn_headers_timeout(void *ctx) {
   ScrHttpConn *conn = (ScrHttpConn *)ctx;

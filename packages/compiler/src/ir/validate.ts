@@ -349,6 +349,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "net.serverSetTimeout": { argTypes: [NETSERVER_T, F64], result: VOID },
   "net.serverSetKeepAliveTimeout": { argTypes: [NETSERVER_T, F64], result: VOID },
   "net.serverSetHeadersTimeout": { argTypes: [NETSERVER_T, F64], result: VOID },
+  "net.serverSetRequestTimeout": { argTypes: [NETSERVER_T, F64], result: VOID },
   // net.serverAddress's record result is shape-checked in the libCall case
   // (the dgram.address sentinel pattern).
   "net.serverAddress": { argTypes: [NETSERVER_T], result: VOID },

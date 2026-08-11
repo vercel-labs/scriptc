@@ -101,6 +101,17 @@ test("lazy builtin edges mark in the builtins table, __require sites included", 
   ).toMatchFileSnapshot("__snapshots__/coverage-npm-lazy-builtin.txt");
 });
 
+test("a partial dynamic shim is reported as partial, not fully shimmed", async () => {
+  // The crypto-shims fixture imports node:crypto through cryptozoo. The
+  // island ships a crypto shim, but only the hashing/random/pbkdf2 slice;
+  // keys, ciphers, signing, and the rest throw at the call. The builtins
+  // table marks it "partial" with an explanatory note, distinct from a
+  // fully implemented shim (the esbuild-require snapshot pins that side).
+  await expect(
+    report(join(repoRoot, "tests/fixtures/npm/cases/crypto-shims/main.ts"), { dynamic: true }),
+  ).toMatchFileSnapshot("__snapshots__/coverage-npm-partial-builtin.txt");
+});
+
 test("import fences no longer stop analysis: percentage plus module blockers", async () => {
   // The fenced module reports ONE grouped blocker (the import line plus
   // every use of its bindings carry the same message); the rest of the

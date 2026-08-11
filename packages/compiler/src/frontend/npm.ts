@@ -189,6 +189,11 @@ export interface NpmBuiltinUse {
   builtin: string;
   /** Whether the island ships a shim for it. */
   shimmed: boolean;
+  /** Shimmed, but the island covers only PART of Node's surface: the
+   * implemented members work, the rest are throwing stubs. Coverage reports
+   * this so a partial shim is not indistinguishable from a complete one.
+   * Always false when not shimmed. */
+  partial: boolean;
   /** Unshimmed AND only require()/import() edges reach it: the build
    * embeds the island's lazy throw at the call instead of failing —
    * Node's laziness for those edge kinds (Node itself would LOAD the
@@ -268,6 +273,24 @@ const SHIMMED_BUILTINS = new Set([
   // fences at the call. Prettier's bundled error helpers call
   // startupSnapshot.isBuildingSnapshot() on every CLI start.
   "v8",
+]);
+
+/** Shimmed builtins whose island shim covers only PART of Node's surface:
+ * the members the shim carries work, the rest are honest throwing stubs
+ * (scr_island.c). `SHIMMED_BUILTINS` minus this set is the full-shim set,
+ * so coverage can tell a complete shim from a partial one without a
+ * per-function capability database. A partial shim still LOADS and runs
+ * programs that stay within its implemented slice, so it is not a blocker. */
+const PARTIAL_SHIM_BUILTINS = new Set([
+  // The hashing/random/pbkdf2 slice; keys, ciphers, signing, and the rest
+  // throw at the call (the embedded runtime carries the hashing/random
+  // slice only).
+  "crypto",
+  // deflate/gzip and the buffering stream classes; brotli and zstd throw.
+  "zlib",
+  // Whole-file reads/writes (readFile/writeFile/mkdir/stat/readdir/...);
+  // watch, open, and incremental read/write throw.
+  "fs", "fs/promises",
 ]);
 
 /** Node builtins importable WITHOUT the "node:" prefix — used to tell
@@ -971,6 +994,7 @@ export class NpmGraphBuilder {
           return {
             builtin,
             shimmed,
+            partial: shimmed && PARTIAL_SHIM_BUILTINS.has(builtin.slice(5)),
             lazy: !shimmed && !this.builtinsEager.has(builtin),
             packages: [...packages].sort(),
           };

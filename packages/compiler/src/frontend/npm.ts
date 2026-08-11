@@ -282,15 +282,33 @@ const SHIMMED_BUILTINS = new Set([
  * per-function capability database. A partial shim still LOADS and runs
  * programs that stay within its implemented slice, so it is not a blocker. */
 const PARTIAL_SHIM_BUILTINS = new Set([
+  // Broad process plumbing with explicit fences: process.umask only supports
+  // its read form; module.register is unavailable; child_process is a
+  // load-only surface whose process-launching members all throw.
+  "process", "module", "child_process",
+  // Buffer is broadly implemented, but transcode remains unavailable.
+  "buffer",
+  // Whole-file reads/writes (readFile/writeFile/mkdir/stat/readdir/...);
+  // watch, open, and incremental read/write throw.
+  "fs", "fs/promises",
   // The hashing/random/pbkdf2 slice; keys, ciphers, signing, and the rest
   // throw at the call (the embedded runtime carries the hashing/random
   // slice only).
   "crypto",
+  // The stream classes and pipeline helpers work; the consumers submodule's
+  // Blob conversion remains an explicit fence.
+  "stream/consumers",
   // deflate/gzip and the buffering stream classes; brotli and zstd throw.
   "zlib",
-  // Whole-file reads/writes (readFile/writeFile/mkdir/stat/readdir/...);
-  // watch, open, and incremental read/write throw.
-  "fs", "fs/promises",
+  // DNS has the loadable Node shape but every resolver call fences. The
+  // main-thread worker plumbing is real, while Worker construction throws.
+  "dns", "worker_threads",
+  // HTTP(S) implements the request/get client slice only. net/tls provide
+  // address/load plumbing for it, but their direct socket surfaces throw.
+  "http", "https", "net", "tls",
+  // Startup-snapshot/heap metadata is loadable; V8 serialization, heap
+  // snapshots, profiling, and promise hooks remain call-time fences.
+  "v8",
 ]);
 
 /** Node builtins importable WITHOUT the "node:" prefix — used to tell

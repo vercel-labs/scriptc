@@ -3376,6 +3376,20 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // halves and naive floor(x+0.5) drifts at the epsilon boundary).
           case "math.abs":
             return finish(`fabs(${arg(0)})`);
+          case "math.sin":
+            return finish(`sin(${arg(0)})`);
+          case "math.cos":
+            return finish(`cos(${arg(0)})`);
+          case "math.sqrt":
+            return finish(`sqrt(${arg(0)})`);
+          case "math.exp":
+            return finish(`exp(${arg(0)})`);
+          case "math.log":
+            return finish(`log(${arg(0)})`);
+          case "math.pow":
+            return finish(`pow(${arg(0)}, ${arg(1)})`);
+          case "math.fround":
+            return finish(`(double)(float)(${arg(0)})`);
           case "math.round":
             return finish(`scr_math_round(${arg(0)})`);
           // The scalar Math.min/max (scr_lib.c — fmin/fmax drop NaN, so

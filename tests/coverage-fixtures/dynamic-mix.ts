@@ -5,7 +5,7 @@
 // fixes.
 const v: any = 21;
 const doubled = v * 2;
-const root = Math.sqrt(81);
+const root = Math.cbrt(27);
 const up = (19.99).toPrecision(3);
 const parsed = Number.parseFloat("1.5"); // the global's string form is static now; the Number static keeps the island
 const raw = __island_eval("6 * 7");

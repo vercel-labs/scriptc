@@ -937,32 +937,32 @@ describe.each(EMISSIONS)("K14: determinism fences, %s emission", (emission) => {
 
   test("a manifest-id-keyed teachings entry attaches to that surface's own refusal", async () => {
     const diags = await refusal(
-      `export function f(): number { return Math.sin(1); }\n`,
+      `export function f(): number { return Math.cbrt(8); }\n`,
       {
         exports: [{ export: "f", symbol: "kx_f", params: [], returns: "f64" }],
-        determinism: { teachings: { "stdlib.math.sin": "trig runs in the host; request it as an effect" } },
+        determinism: { teachings: { "stdlib.math.cbrt": "cube roots run in the host; request them as an effect" } },
       },
       emission,
     );
     // The surface's own code, not a fence code: the id key attaches text
     // to the refusal that already fires.
     expect(diags[0]!.code).toBe("SC2012");
-    expect(diags[0]!.message).toContain("Math.sin");
-    expect(diags[0]!.note).toBe("from the 'refusal-fixture' profile: trig runs in the host; request it as an effect");
+    expect(diags[0]!.message).toContain("Math.cbrt");
+    expect(diags[0]!.note).toBe("from the 'refusal-fixture' profile: cube roots run in the host; request them as an effect");
   });
 
   test("fencing a surface the static tier refuses anyway changes only the message", async () => {
     const diags = await refusal(
-      `export function f(): number { return Math.sin(1); }\n`,
+      `export function f(): number { return Math.cbrt(8); }\n`,
       {
         exports: [{ export: "f", symbol: "kx_f", params: [], returns: "f64" }],
-        determinism: { fences: [{ id: "stdlib.math.sin", teaching: "trig is host math" }] },
+        determinism: { fences: [{ id: "stdlib.math.cbrt", teaching: "cube roots are host math" }] },
       },
       emission,
     );
     // The existing refusal's code survives — the fence never re-codes a
     // surface that already refuses; its teaching rides as the note.
     expect(diags[0]!.code).toBe("SC2012");
-    expect(diags[0]!.note).toBe("from the 'refusal-fixture' profile: trig is host math");
+    expect(diags[0]!.note).toBe("from the 'refusal-fixture' profile: cube roots are host math");
   });
 });

@@ -523,6 +523,13 @@ export const ISLAND_SURFACE = {
 export const STATIC_MATH_FNS: Record<string, { fn: IrLibFn; arity: number } | undefined> = {
   floor: { fn: "math.floor", arity: 1 },
   abs: { fn: "math.abs", arity: 1 },
+  sin: { fn: "math.sin", arity: 1 },
+  cos: { fn: "math.cos", arity: 1 },
+  sqrt: { fn: "math.sqrt", arity: 1 },
+  exp: { fn: "math.exp", arity: 1 },
+  log: { fn: "math.log", arity: 1 },
+  pow: { fn: "math.pow", arity: 2 },
+  fround: { fn: "math.fround", arity: 1 },
   round: { fn: "math.round", arity: 1 },
   // trunc/ceil joined the static table with ask 4: they are the
   // integer-boundary inference's wholeness-discharge operators (C
@@ -532,6 +539,13 @@ export const STATIC_MATH_FNS: Record<string, { fn: IrLibFn; arity: number } | un
   min: { fn: "math.min", arity: 2 },
   max: { fn: "math.max", arity: 2 },
   random: { fn: "math.random", arity: 0 },
+};
+
+/** Read-only Math constants whose IEEE-754 values are emitted directly into
+ * the IR. They need neither a runtime call nor the embedded dynamic engine. */
+export const STATIC_MATH_PROPS: Readonly<Record<string, number | undefined>> = {
+  PI: Math.PI,
+  E: Math.E,
 };
 
 /** Number prototype methods with dedicated STATIC lowering paths. The

@@ -52,6 +52,7 @@ import {
   SET_COMBINE_METHODS,
   SET_METHODS,
   STATIC_MATH_FNS,
+  STATIC_MATH_PROPS,
   STATIC_NUMBER_METHODS,
   STR_METHODS,
   UNSUPPORTED_EXPR,
@@ -221,8 +222,12 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
       add({ id: `stdlib.math.${name}`, kind: "stdlib", name: `Math.${name}`, status: "dynamic-only", code: "SC2012" });
     }
   }
-  for (const name of Object.keys(ISLAND_SURFACE.math.props)) {
-    add({ id: `stdlib.math.${name}`, kind: "stdlib", name: `Math.${name}`, status: "dynamic-only", code: "SC2012" });
+  for (const name of new Set([...Object.keys(STATIC_MATH_PROPS), ...Object.keys(ISLAND_SURFACE.math.props)])) {
+    if (STATIC_MATH_PROPS[name] !== undefined) {
+      add({ id: `stdlib.math.${name}`, kind: "stdlib", name: `Math.${name}`, status: "static" });
+    } else {
+      add({ id: `stdlib.math.${name}`, kind: "stdlib", name: `Math.${name}`, status: "dynamic-only", code: "SC2012" });
+    }
   }
   const numberNames = new Set([
     ...Object.keys(STATIC_NUMBER_METHODS),

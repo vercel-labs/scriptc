@@ -1930,6 +1930,13 @@ export type IrLibFn =
    * round() is half-away-from-zero and floor(x+0.5) drifts at the
    * epsilon boundary). Borrow nothing; never throw. */
   | "math.abs"
+  | "math.sin"
+  | "math.cos"
+  | "math.sqrt"
+  | "math.exp"
+  | "math.log"
+  | "math.pow"
+  | "math.fround"
   | "math.round"
   /** Math.trunc / Math.ceil — C trunc()/ceil() ARE the JS operations
    * (NaN/±0/±Infinity pass through bit-exactly; ceil(-0.5) is -0 in IEEE

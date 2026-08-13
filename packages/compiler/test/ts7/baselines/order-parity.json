@@ -5089,6 +5089,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2607-math-dsp-static.js": {
+   "order": [
+    "<repo>/tests/corpus/2607-math-dsp-static.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/2608-regex-named-groups.ts": {
    "order": [
     "<repo>/tests/corpus/2608-regex-named-groups.ts"

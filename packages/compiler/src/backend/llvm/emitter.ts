@@ -13729,6 +13729,35 @@ class LlEmitter {
       B.line(`${t} = call double @llvm.fabs.f64(double ${v.name})`);
       return { name: t, type: e.type };
     }
+    if (
+      e.fn === "math.sin" ||
+      e.fn === "math.cos" ||
+      e.fn === "math.sqrt" ||
+      e.fn === "math.exp" ||
+      e.fn === "math.log"
+    ) {
+      const v = this.emitExpr(e.args[0]!);
+      this.declare(`declare double @llvm.${e.fn.slice(5)}.f64(double)`);
+      const t = B.tmp();
+      B.line(`${t} = call double @llvm.${e.fn.slice(5)}.f64(double ${v.name})`);
+      return { name: t, type: e.type };
+    }
+    if (e.fn === "math.pow") {
+      const left = this.emitExpr(e.args[0]!);
+      const right = this.emitExpr(e.args[1]!);
+      this.declare(`declare double @llvm.pow.f64(double, double)`);
+      const t = B.tmp();
+      B.line(`${t} = call double @llvm.pow.f64(double ${left.name}, double ${right.name})`);
+      return { name: t, type: e.type };
+    }
+    if (e.fn === "math.fround") {
+      const v = this.emitExpr(e.args[0]!);
+      const narrowed = B.tmp();
+      const widened = B.tmp();
+      B.line(`${narrowed} = fptrunc double ${v.name} to float`);
+      B.line(`${widened} = fpext float ${narrowed} to double`);
+      return { name: widened, type: e.type };
+    }
     if (e.fn === "num.isNaN") {
       const v = this.emitExpr(e.args[0]!);
       const t = B.tmp();

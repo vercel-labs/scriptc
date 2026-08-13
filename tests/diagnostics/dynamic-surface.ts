@@ -7,8 +7,8 @@
 // trim/pad variants, parseInt, isNaN, and the global parseFloat/isFinite
 // over exactly-typed arguments compile statically now and no longer
 // appear here.)
-const up = Math.sqrt(2);
-const tau = Math.PI * 2;
+const up = Math.cbrt(8);
+const tau = Math.atan2(0, -1) * 2;
 const price = (19.99).toPrecision(4);
 const swapped = "banana".replace("an", "AN");
 const ch = "hello".at(0);

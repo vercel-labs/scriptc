@@ -341,6 +341,12 @@ export interface CcOptions {
    * on the IR): compiles scr_dgram.c into the binary — the net gating
    * precedent, so dgram-free binaries keep their exact link line. */
   dgram?: boolean;
+  /** The program uses the node:midi surface (moduleUsesMidi on the IR):
+   * compiles scr_midi.c into the binary and links the platform MIDI stack
+   * (ALSA seq on Linux where libasound is present, CoreMIDI on macOS, WinMM
+   * on Windows) — the dgram gating precedent, so midi-free binaries keep
+   * their exact link line. */
+  midi?: boolean;
   /** The program uses fs.watch (moduleUsesFsWatch on the IR): compiles
    * scr_watch.c into the binary — the net gating precedent, so watch-free
    * binaries keep their exact link line. */
@@ -3595,7 +3601,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
     // platform, so all three link whenever a poller-using unit does and
     // the others cost nothing (ws2_32 rides the unconditional win32 libs
     // above).
-    ...(net || opts.dgram
+    ...(net || opts.dgram || opts.midi
       ? [
           rt(join(rtDir, "scr_loop_kqueue.c")),
           rt(join(rtDir, "scr_loop_epoll.c")),
@@ -3606,6 +3612,26 @@ export async function compileC(opts: CcOptions): Promise<void> {
     ...(http ? [rt(join(rtDir, "scr_http.c"))] : []),
     ...(opts.http2 ?? false ? [rt(join(rtDir, "scr_http2.c"))] : []),
     ...(opts.dgram ? [rt(join(rtDir, "scr_dgram.c"))] : []),
+    // node:midi (scr_midi.c) + the platform MIDI stack. The runtime's ALSA
+    // backend is guarded by __has_include(<alsa/asoundlib.h>): on a Linux
+    // host with libasound-dev it compiles the ALSA seq path and needs
+    // -lasound; without the header it compiles a stub that references no
+    // snd_* symbols, so -lasound must be withheld or the link fails. The
+    // host header probe below matches that compile-time guard (the default
+    // host-target path; a cross-compile to Linux keys off the target sysroot
+    // header at compile time and may need the flag threaded explicitly).
+    ...(opts.midi
+      ? [
+          rt(join(rtDir, "scr_midi.c")),
+          ...(targetPlatform(driver) === "darwin"
+            ? ["-framework", "CoreMIDI", "-framework", "CoreFoundation"]
+            : targetPlatform(driver) === "win32"
+              ? ["-lwinmm"]
+              : targetPlatform(driver) === "linux" && existsSync("/usr/include/alsa/asoundlib.h")
+                ? ["-lasound"]
+                : []),
+        ]
+      : []),
     ...(opts.watch ? [rt(join(rtDir, "scr_watch.c"))] : []),
     ...(opts.nodeTest ? [rt(join(rtDir, "scr_test.c"))] : []),
     // The CA-store unit rides its own gate OR the tls one: scr_tls.c

@@ -21,7 +21,7 @@ import {
 import { validateSidecar } from "./library/sidecar-validate.js";
 import { entryFunctionExports, type EntryExportInfo } from "./frontend/lib-exports.js";
 import { entryContractFacts, type ContractFacts } from "./frontend/lib-contract.js";
-import { moduleLibAsyncSurface, moduleLibNondeterministicSurface, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesAssert, moduleUsesCopying, moduleUsesDc, moduleUsesDgram, moduleUsesDynAsync, moduleUsesDynInvoke, moduleUsesEmitter, moduleUsesFetch, moduleUsesFileHandle, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesInspect, moduleUsesLegacyTextDecoder, moduleUsesNet, moduleUsesNodeTest, moduleUsesParseArgs, moduleUsesProcessEvents, moduleUsesQs, moduleUsesRegex, moduleUsesSearchParams, moduleUsesStream, moduleUsesSymbol, moduleUsesTls, moduleUsesTlsCa, moduleUsesZlib, type IrFfiImport, type IrLibSection, type IrModule, type IrRecordShape, type IrType, type SrcLoc } from "./ir/nodes.js";
+import { moduleLibAsyncSurface, moduleLibNondeterministicSurface, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesAssert, moduleUsesCopying, moduleUsesDc, moduleUsesDgram, moduleUsesDynAsync, moduleUsesDynInvoke, moduleUsesEmitter, moduleUsesFetch, moduleUsesFileHandle, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesInspect, moduleUsesLegacyTextDecoder, moduleUsesMidi, moduleUsesNet, moduleUsesNodeTest, moduleUsesParseArgs, moduleUsesProcessEvents, moduleUsesQs, moduleUsesRegex, moduleUsesSearchParams, moduleUsesStream, moduleUsesSymbol, moduleUsesTls, moduleUsesTlsCa, moduleUsesZlib, type IrFfiImport, type IrLibSection, type IrModule, type IrRecordShape, type IrType, type SrcLoc } from "./ir/nodes.js";
 import { serializeModule } from "./ir/serialize.js";
 import { validateModule } from "./ir/validate.js";
 import { canonicalBuiltinModule, checkPreflight, isNodeTypesPath, loadProgram, locOf, requiresOf, resolveNpmImport, type LoadResult } from "./frontend/program.js";
@@ -230,6 +230,7 @@ function moduleWasiUnavailableSurface(mod: IrModule): { surface: string; loc: Sr
     ["h2.", "network sockets (WASI Preview 1 has no socket API)"],
     ["dgram.", "network sockets (WASI Preview 1 has no socket API)"],
     ["dns.", "network sockets (WASI Preview 1 has no socket API)"],
+    ["midi.", "MIDI devices (WASI Preview 1 has no MIDI API)"],
     ["tls.", "network sockets (WASI Preview 1 has no socket API)"],
     ["fetch.", "network-backed fetch (WASI Preview 1 has no socket API)"],
     ["fs.watch", "filesystem watching (WASI Preview 1 has no notification API)"],
@@ -244,6 +245,8 @@ function moduleWasiUnavailableSurface(mod: IrModule): { surface: string; loc: Sr
     ["http2Session", "network sockets (WASI Preview 1 has no socket API)"],
     ["http2Stream", "network sockets (WASI Preview 1 has no socket API)"],
     ["dgramSocket", "network sockets (WASI Preview 1 has no socket API)"],
+    ["midiInput", "MIDI devices (WASI Preview 1 has no MIDI API)"],
+    ["midiOutput", "MIDI devices (WASI Preview 1 has no MIDI API)"],
     ["fsWatcher", "filesystem watching (WASI Preview 1 has no notification API)"],
     ["httpReq", "network sockets (WASI Preview 1 has no socket API)"],
     ["httpRes", "network sockets (WASI Preview 1 has no socket API)"],
@@ -1053,6 +1056,8 @@ export async function compile(entryPath: string, opts: CompileOptions): Promise<
       http2: moduleUsesHttp2(lowered.module),
       // The link switch for scr_dgram.c: dgram.* or dns.* libCalls on the IR.
       dgram: moduleUsesDgram(lowered.module),
+      // The link switch for scr_midi.c: midi.* libCalls on the IR.
+      midi: moduleUsesMidi(lowered.module),
       // The link switch for scr_watch.c: fs.watch/watcher.* libCalls on the IR.
       watch: moduleUsesFsWatch(lowered.module),
       // The link switch for scr_test.c: test.* libCalls on the IR.

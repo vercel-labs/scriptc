@@ -49,6 +49,7 @@ const send = (value: IrExpr, callee = "send"): IrStmt => ({
 const decl = (localId: string, init: IrExpr): IrStmt => ({ kind: "varDecl", localId, init, loc });
 const assign = (localId: string, value: IrExpr): IrStmt => ({ kind: "assign", localId, value, loc });
 const iff = (cond: IrExpr, then: IrStmt[]): IrStmt => ({ kind: "if", cond, then, else_: null, loc });
+const ret = (): IrStmt => ({ kind: "return", value: null, loc });
 const forLoop = (init: IrStmt, cond: IrExpr, update: IrStmt, body: IrStmt[]): IrStmt => ({
   kind: "for", init, cond, update, body, loc,
 });
@@ -506,6 +507,71 @@ describe("the domain's edges beyond the corpus", () => {
     expect(v.outcome).toBe("refuse");
     expect(v.obligation).toBe("wholeness");
     expect(v.detail).toContain("NaN");
+  });
+
+  test("the failed edge of an ordered comparison keeps NaN alive (guard clauses)", () => {
+    // if (a < 0) return; if (a > 100) return; send(Math.trunc(a)) — NaN
+    // fails BOTH guards (NaN < 0 and NaN > 100 are false), reaches the
+    // slot, and Math.trunc(NaN) is NaN: ¬(a < b) must not clear maybeNaN.
+    const v = only(
+      caseModule(["a"], [], [
+        iff(bin("<", ref("a.0"), num(0)), [ret()]),
+        iff(bin(">", ref("a.0"), num(100)), [ret()]),
+        send(math("trunc", ref("a.0"))),
+      ]),
+    );
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("wholeness");
+    expect(v.detail).toContain("NaN");
+  });
+
+  test("the else spelling of the failed edge keeps NaN alive too", () => {
+    const inner: IrStmt = {
+      kind: "if",
+      cond: bin(">", ref("a.0"), num(100)),
+      then: [],
+      else_: [send(math("trunc", ref("a.0")))],
+      loc,
+    };
+    const v = only(
+      caseModule(["a"], [], [
+        { kind: "if", cond: bin("<", ref("a.0"), num(0)), then: [], else_: [inner], loc },
+      ]),
+    );
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("wholeness");
+    expect(v.detail).toContain("NaN");
+  });
+
+  test("a u64 slot behind failed-edge guards refuses instead of fabricating [0, 100]", () => {
+    const v = only(
+      caseModule(["a"], [], [
+        iff(bin("<", ref("a.0"), num(0)), [ret()]),
+        iff(bin(">", ref("a.0"), num(100)), [ret()]),
+        send(math("trunc", ref("a.0")), "sendU64"),
+      ]),
+    );
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("wholeness");
+    expect(v.detail).toContain("NaN");
+  });
+
+  test("failed edges still refine numeric members once NaN is excluded", () => {
+    // if (a === a) { guards } — === held excludes NaN; the guards' failed
+    // edges then prove [0, 100] exactly (the negated comparison keeps
+    // refining the numeric members, as the refine doc comment pins).
+    const v = only(
+      caseModule(["a"], [], [
+        iff(bin("===", ref("a.0"), ref("a.0")), [
+          iff(bin("<", ref("a.0"), num(0)), [ret()]),
+          iff(bin(">", ref("a.0"), num(100)), [ret()]),
+          send(math("trunc", ref("a.0"))),
+        ]),
+      ]),
+    );
+    expect(v.outcome).toBe("prove");
+    expect(v.provenLo).toBe(0);
+    expect(v.provenHi).toBe(100);
   });
 });
 

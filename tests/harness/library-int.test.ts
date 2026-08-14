@@ -199,6 +199,19 @@ const CORPUS: CorpusCase[] = [
     evidence: ["NaN"],
   },
   {
+    name: "nan-survives-failed-guard-edge",
+    // NaN < 0 and NaN > 100 are both false, so a NaN dividend (a = 0)
+    // falls through BOTH guard clauses into the slot: the failed edge of
+    // an ordered comparison excludes nothing.
+    body: `const q = a / a;\nif (q < 0) return;\nif (q > 100) return;\nsend(Math.trunc(q));`,
+    param: true,
+    expected: "refuse",
+    obligation: "wholeness",
+    code: "SC4022",
+    slot: "exports.send.params[0]",
+    evidence: ["NaN"],
+  },
+  {
     name: "infinity-reaches-slot",
     body: `send(1 / 0);`,
     expected: "refuse",

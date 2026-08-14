@@ -1209,10 +1209,12 @@ class FnAnalyzer {
         if (cond.left.type.kind !== "f64" || cond.right.type.kind !== "f64") return env;
         if (!this.isPure(cond.left) || !this.isPure(cond.right)) return env;
         const op = branch ? cond.op : NEGATE[cond.op]!;
-        // NaN makes < <= > >= === evaluate false, so the edge where one of
-        // those was TRUE proves both operands NaN-free (!== held excludes
-        // nothing — NaN !== x is true).
-        const clearNaN = op !== "!==";
+        // NaN makes < <= > >= === evaluate false, so only the edge where one
+        // of those HELD proves both operands NaN-free; on the failed edge NaN
+        // survives (¬(a < b) does not imply a >= b — both are false when a is
+        // NaN), though the negated comparison still refines the numeric
+        // members. !== is the mirror image: its FAILED edge means === held.
+        const clearNaN = branch !== (cond.op === "!==");
         const a = this.evalPure(cond.left, env);
         const b = this.evalPure(cond.right, env);
         const out = cloneEnv(env);

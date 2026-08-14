@@ -3561,6 +3561,11 @@ export function lowerCall(L: Lowerer, expr: ts.CallExpression): IrExpr {
         // The dgram spoke (lower-dgram.ts) owns dgram and dns the same way.
         const dgramServed = L.lowerDgramDnsModuleCall(expr, bi, loc);
         if (dgramServed) return dgramServed;
+        // The midi spoke (lower-midi.ts) owns node:midi — fence-only here
+        // (the ports are `new`-constructed, so a call on a midi binding has
+        // no lowering); construction rides the lowerNew chain.
+        const midiServed = L.lowerMidiModuleCall(expr, bi, loc);
+        if (midiServed) return midiServed;
         // The assert spoke (lower-assert.ts) owns node:assert the same way
         // (`import { strictEqual } from "node:assert"` and the destructured
         // require twin land here).
@@ -4156,6 +4161,10 @@ export function lowerCall(L: Lowerer, expr: ts.CallExpression): IrExpr {
         L.lowerDcTracingChannelMethodCall(expr, expr.expression) ??
         L.lowerServerMethodCall(expr, expr.expression) ??
         L.lowerDgramMethodCall(expr, expr.expression) ??
+        // midi.Input / midi.Output receivers — the port method surface
+        // (getPortCount/getPortName/openPort/openVirtualPort/closePort/
+        // isPortOpen, ignoreTypes, sendMessage) and the "message" listener.
+        L.lowerMidiMethodCall(expr, expr.expression) ??
         // node:test — skip/todo/only twins on named import bindings, the
         // TestContext surface (t.test/t.skip/t.diagnostic), t.assert.*.
         L.lowerTestMethodCall(expr, expr.expression) ??

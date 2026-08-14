@@ -805,6 +805,13 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
   // special-cased); the keys exist for the same reason net/http's do.
   dgram: {},
   dns: {},
+  // node:midi lowers ENTIRELY through the midi spoke (lower-midi.ts — the
+  // Input/Output constructors ride lowerer.ts's lowerNew chain, and the
+  // port method surface + the "message" listener are all special-cased);
+  // the key exists for the same reason net/http/dgram's do — a home for
+  // the "recognized module, unlowered member" fence. The module has no
+  // callable exports (the ports are `new`-constructed), so no table rows.
+  midi: {},
   // node:assert lowers ENTIRELY through the assert spoke (lower-assert.ts
   // — every call shape is special-cased: optional messages complete, the
   // comparisons pick per-type libCalls, deep equality synthesizes

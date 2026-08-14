@@ -100,6 +100,7 @@ import { builtinImportOf, createRequireBindingDecl, createRequireNamespaceDecl, 
 import { fenceFetchObjectAssignment, fenceFetchObjectBinding, fenceStaticAbortControllerMemberRead, fenceStaticHeadersIteration, fenceStaticHeadersMember, fenceStaticReadableStreamMember, fenceStaticResponseMember, fenceUnsupportedFetchConstructorMember, isIslandExpr, islandFuncValueFence, islandRegexpOf, jsvalIn, requireDynamicApi, islandGlobalFnOf, lowerAbortControllerNew, lowerDynamicHeadersIteratorCall, lowerDynamicHeadersSpread, lowerDynamicImportCall, lowerFetchCall, lowerFetchElementMethodCall, lowerResponseNew, lowerStaticFetchCompanionCall, lowerStaticAbortControllerCall, lowerStaticAbortSignalListenerCall, lowerStaticReadableStreamCancelCall, lowerStaticReadableStreamControllerCall, lowerStaticReadableStreamNew, lowerStaticReadableStreamReaderCall, lowerStaticResponseCall, lowerIslandMethodCall, lowerMathProperty, npmPackageOf, npmMemberFence, npmPackageOfSymbol } from "./lower-island.js";
 import { lowerHttpHeadersElement, lowerNetModuleCall, lowerServerMethodCall, lowerServerProperty, lowerTlsRootCertificates } from "./lower-server.js";
 import { lowerDgramDnsModuleCall, lowerDgramMethodCall } from "./lower-dgram.js";
+import { lowerMidiModuleCall, lowerMidiMethodCall, lowerMidiNew } from "./lower-midi.js";
 import { lowerNodeTestModuleCall, lowerTestDirectCall, lowerTestMethodCall, lowerTestCtxProperty } from "./lower-test.js";
 import { lowerAssertModuleCall, lowerAssertDirectCall } from "./lower-assert.js";
 import { lowerUtilModuleCall } from "./lower-inspect.js";
@@ -7799,7 +7800,7 @@ export class Lowerer {
       const arg = this.lowerExpr(expr.arguments[0]!);
       return { kind: "jsOp", op: "construct", args: [ctor, arg], type: JSVAL, loc };
     }
-    return lowerAbortControllerNew(this, expr) ?? lowerResponseNew(this, expr) ?? lowerStaticReadableStreamNew(this, expr) ?? lowerNew(this, expr);
+    return lowerAbortControllerNew(this, expr) ?? lowerResponseNew(this, expr) ?? lowerStaticReadableStreamNew(this, expr) ?? lowerMidiNew(this, expr) ?? lowerNew(this, expr);
   }
 
   lowerFieldRead(expr: ts.PropertyAccessExpression): IrExpr | null {
@@ -8018,6 +8019,11 @@ export class Lowerer {
     // shape is special-cased there, so it never rides the param tables.
     const dgramServed = this.lowerDgramDnsModuleCall(call, bi, locOf(access));
     if (dgramServed) return dgramServed;
+    // The midi spoke owns node:midi for namespace members too — the module
+    // has no callable exports (ports are `new`-constructed), so this only
+    // ever fences a call on a midi binding module-qualified.
+    const midiServed = this.lowerMidiModuleCall(call, bi, locOf(access));
+    if (midiServed) return midiServed;
     // The server-surface spoke owns net and http wholesale — the same
     // dispatch the named-import path takes (`net.createServer(...)` via
     // `import * as net` is portless's own spelling).
@@ -8242,6 +8248,20 @@ export class Lowerer {
   lowerDgramMethodCall(call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     return lowerDgramMethodCall(this, call, access);
+  }
+
+  // The midi spoke (lower-midi.ts): the node:midi module call (fence-only —
+  // no callable exports) and the midiInput/midiOutput method surface. The
+  // Input/Output constructors ride the lowerNew chain (lowerMidiNew).
+  lowerMidiModuleCall(expr: ts.CallExpression,
+    bi: { module: string; member: string },
+    loc: SrcLoc,): IrExpr | null {
+    return lowerMidiModuleCall(this, expr, bi, loc);
+  }
+
+  lowerMidiMethodCall(call: ts.CallExpression,
+    access: ts.PropertyAccessExpression,): IrExpr | null {
+    return lowerMidiMethodCall(this, call, access);
   }
 
   // The node:test spoke (lower-test.ts): registrations, suites, hooks,

@@ -6971,6 +6971,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/diagnostics/filter-void-predicate-island.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/filter-void-predicate-island.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/diagnostics/filter-void-predicate.ts": {
    "order": [
     "<repo>/tests/diagnostics/filter-void-predicate.ts"

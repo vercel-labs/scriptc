@@ -2185,6 +2185,19 @@ void scr_loop_set_dgram(bool (*pending)(void), void (*dispatch)(void), int (*pol
   scr_dgram_pollfd_fn = pollfd;
 }
 
+/* The midi hook (scr_midi.c, when linked) — the dgram hook's exact shape:
+ * one more set of nullable slots, byte-identical loop behavior when
+ * unset. */
+static bool (*scr_midi_pending_fn)(void) = NULL;
+static void (*scr_midi_dispatch_fn)(void) = NULL;
+static int (*scr_midi_pollfd_fn)(void) = NULL;
+
+void scr_loop_set_midi(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void)) {
+  scr_midi_pending_fn = pending;
+  scr_midi_dispatch_fn = dispatch;
+  scr_midi_pollfd_fn = pollfd;
+}
+
 /* The fs.watch hook (scr_watch.c, when linked) — the net hook's exact
  * shape: one more set of nullable slots, byte-identical loop behavior
  * when unset. */
@@ -2333,6 +2346,13 @@ bool scr_loop_run(ScrPromise *top_level) {
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
       if (scr_ready_len > 0) continue;
     }
+    /* MIDI dispatch (scr_midi.c, when linked): arrived MIDI messages fire
+     * their 'message' listeners now — the dgram hook's exact station. */
+    if (scr_midi_dispatch_fn != NULL) {
+      scr_midi_dispatch_fn();
+      if (scr_exc_pending()) return false; /* uncaught throw in a listener */
+      if (scr_ready_len > 0) continue;
+    }
     /* Watch dispatch (scr_watch.c, when linked): file events queued on
      * the unit's event backend fire their FSWatcher listeners now — the
      * net hook's exact station. */
@@ -2362,6 +2382,7 @@ bool scr_loop_run(ScrPromise *top_level) {
           (scr_events_pending_fn != NULL && scr_events_pending_fn()) ||
           (scr_net_pending_fn != NULL && scr_net_pending_fn()) ||
           (scr_dgram_pending_fn != NULL && scr_dgram_pending_fn()) ||
+          (scr_midi_pending_fn != NULL && scr_midi_pending_fn()) ||
           (scr_watch_pending_fn != NULL && scr_watch_pending_fn()) ||
           scr_fs_renames_pending();
       if (held) {
@@ -2381,6 +2402,7 @@ bool scr_loop_run(ScrPromise *top_level) {
     bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
     bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
     bool dgram = scr_dgram_pending_fn != NULL && scr_dgram_pending_fn();
+    bool midi = scr_midi_pending_fn != NULL && scr_midi_pending_fn();
     bool watch = scr_watch_pending_fn != NULL && scr_watch_pending_fn();
     bool renames = scr_fs_renames_pending();
     /* Timer liveness counts only REF'd timers: an unref'd timer stays in
@@ -2389,7 +2411,7 @@ bool scr_loop_run(ScrPromise *top_level) {
      * Children follow the same rule: an unref'd child is still REAPED
      * while the loop runs (kids drives the sweeps and sleeps above) but
      * only reffed ones keep the process alive. */
-    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !scr_children_reffed_pending() && !io && !events && !net && !dgram && !watch && !renames) break;
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !scr_children_reffed_pending() && !io && !events && !net && !dgram && !midi && !watch && !renames) break;
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -2430,11 +2452,11 @@ bool scr_loop_run(ScrPromise *top_level) {
        * on EINTR), so they re-impose a coarser cap — bounded Ctrl-C and
        * socket latency during a fetch, without the reap-granularity
        * cost. */
-      else if ((evw || net || dgram || watch) && due > now + SCR_SIGNAL_POLL_MS) due = now + SCR_SIGNAL_POLL_MS;
+      else if ((evw || net || dgram || midi || watch) && due > now + SCR_SIGNAL_POLL_MS) due = now + SCR_SIGNAL_POLL_MS;
       scr_io_poll_fn(due > now ? due - now : 0);
       now = scr_now_ms();
       if (scr_ready_len > 0) continue; /* io callbacks woke fibers */
-    } else if (evw || net || dgram || watch) {
+    } else if (evw || net || dgram || midi || watch) {
 #if defined(_WIN32) || defined(__wasi__)
       /* The win32 arm, and WASI hosts whose poll_oneoff adapters do not
        * reliably wake for a closed inherited stdin pipe: the sleep is a capped nanosleep and
@@ -2448,7 +2470,7 @@ bool scr_loop_run(ScrPromise *top_level) {
        * show up in a profile, the upgrade is a real waitable arm —
        * WaitForMultipleObjects over WSAEVENTs, or IOCP. */
       if (evw && due > now + SCR_SIGNAL_POLL_MS) due = now + SCR_SIGNAL_POLL_MS;
-      if ((net || dgram || watch) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
+      if ((net || dgram || midi || watch) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (kids && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (due > now) {
         double wait = due - now;
@@ -2465,7 +2487,7 @@ bool scr_loop_run(ScrPromise *top_level) {
        * events are pending); unrepresentable children keep the ~1ms reap cap
        * instead. Dispatch happens at the next turn's top — the poll only
        * decides how long to sleep. */
-      struct pollfd fds[6];
+      struct pollfd fds[7];
       int nfds = 0;
       int evfds[2];
       int nev = evw && scr_events_pollfds_fn != NULL ? scr_events_pollfds_fn(evfds) : 0;
@@ -2493,6 +2515,17 @@ bool scr_loop_run(ScrPromise *top_level) {
         int dfd = scr_dgram_pollfd_fn != NULL ? scr_dgram_pollfd_fn() : -1;
         if (dfd >= 0) {
           fds[nfds].fd = dfd;
+          fds[nfds].events = POLLIN;
+          fds[nfds++].revents = 0;
+        } else if (due > now + SCR_SIGNAL_POLL_MS) {
+          due = now + SCR_SIGNAL_POLL_MS;
+        }
+      }
+      if (midi) {
+        /* The midi unit's poller fd — the net slot's exact story. */
+        int mfd = scr_midi_pollfd_fn != NULL ? scr_midi_pollfd_fn() : -1;
+        if (mfd >= 0) {
+          fds[nfds].fd = mfd;
           fds[nfds].events = POLLIN;
           fds[nfds++].revents = 0;
         } else if (due > now + SCR_SIGNAL_POLL_MS) {

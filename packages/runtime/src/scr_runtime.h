@@ -6064,6 +6064,72 @@ long scr_dgram_live_count(void);
  * hook's exact shape, one more nullable slot set. */
 void scr_loop_set_dgram(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void));
 
+/* ── node:midi (scr_midi.c — compiled only when the program uses it;
+ * design note atop the file). Two lean refcounted handle kinds modeled on
+ * ScrDgramSocket: ScrMidiInput (a live, pollable source — an OPEN input
+ * holds the loop, like a bound socket) and ScrMidiOutput (fire-and-forget,
+ * like a connected sender). Both start with a ScrMidiKind tag as their
+ * first member so the shared void*-handle ABI symbols route on it. The
+ * ALSA/CoreMIDI/WinMM backends live behind platform guards; off-thread
+ * platform callbacks (CoreMIDI/WinMM) only fill a lock-guarded ring and
+ * poke a self-pipe — all JS-visible work runs in scr_midi_dispatch on the
+ * loop thread. Self-contained: no symbol here needs scr_dgram.c to link. */
+typedef struct ScrMidiInput ScrMidiInput;
+typedef struct ScrMidiOutput ScrMidiOutput;
+/* The 'message' adapter (the dgram thunk family): deltaTime in SECONDS as
+ * the leading f64, the byte run as a number[] (SCR_ELEM_F64) delivered
+ * BORROWED (multiple listeners see one message; the two-param adapter
+ * retains for its listener's owned param). */
+typedef void (*ScrMidiMsgFn)(ScrClosure *cb, double deltaTime, ScrArr *message);
+
+/* Refcount entry points the compiler emits per handle kind (the
+ * scr_dgram_retain/_v pair, one set per struct). */
+ScrMidiInput *scr_midi_input_retain(ScrMidiInput *s);
+void scr_midi_input_release(ScrMidiInput *s);
+void *scr_midi_input_retain_v(void *p);
+void scr_midi_input_release_v(void *p);
+ScrMidiOutput *scr_midi_output_retain(ScrMidiOutput *s);
+void scr_midi_output_release(ScrMidiOutput *s);
+void *scr_midi_output_retain_v(void *p);
+void scr_midi_output_release_v(void *p);
+
+ScrMidiInput *scr_midi_input_new(void);   /* +1 */
+ScrMidiOutput *scr_midi_output_new(void); /* +1 */
+/* Enumeration works on a fresh handle before openPort (node-midi's
+ * enumerate-then-open). is_input selects the input vs output namespace
+ * (the frozen ABI passes it explicitly); port_name reads the handle tag
+ * and returns "" for an out-of-range index (node-midi's answer). */
+double scr_midi_port_count(void *handle, bool is_input);
+ScrStr *scr_midi_port_name(void *handle, double idx); /* +1 */
+void scr_midi_open_port(void *handle, double idx);    /* throws on bad index */
+void scr_midi_open_virtual(void *handle, ScrStr *name /*borrowed*/); /* throws on WinMM */
+void scr_midi_close_port(void *handle);
+bool scr_midi_is_open(void *handle);
+void scr_midi_ignore_types(ScrMidiInput *s, bool sysex, bool timing, bool sense);
+/* send: the frozen ABI primitive is the raw byte pointer + length; the
+ * _array (number[]) and _bytes (Uint8Array) forms marshal to it — the two
+ * accepted argument shapes. All borrowed. Throws on an unopened port. */
+void scr_midi_send(ScrMidiOutput *s, const uint8_t *bytes /*borrowed*/, double len);
+void scr_midi_send_array(ScrMidiOutput *s, ScrArr *message /*borrowed*/);
+void scr_midi_send_bytes(ScrMidiOutput *s, ScrBytes *message /*borrowed*/);
+/* on('message')/once('message'): cb MOVES in, fn is the arity adapter
+ * (scr_midi_msg_thunk0/1/2). See the ABI note below — this carries an fn
+ * adapter argument the §4 draft table omitted (the dgram on_message
+ * precedent), so a 0/1/2-param listener is never called with a mismatched
+ * C signature. */
+void scr_midi_on_message(ScrMidiInput *s, ScrClosure *cb /*moves*/, ScrMidiMsgFn fn, bool once);
+/* The runtime-provided message adapters (zero/one/two-param listeners). */
+void scr_midi_msg_thunk0(ScrClosure *cb, double deltaTime, ScrArr *message);
+void scr_midi_msg_thunk1(ScrClosure *cb, double deltaTime, ScrArr *message);
+void scr_midi_msg_thunk2(ScrClosure *cb, double deltaTime, ScrArr *message);
+void scr_midi_install(void);
+#ifdef SCR_RC_AUDIT
+long scr_midi_live_count(void);
+#endif
+/* The loop-side registration (scr_async.c, always linked) — the dgram
+ * hook's exact shape, one more nullable slot set. */
+void scr_loop_set_midi(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void));
+
 /* ── fs.watch (scr_watch.c — compiled only when the program uses it;
  * design note atop the file). FSWatcher handles over the unit's own
  * event backend (kqueue EVFILT_VNODE on macOS/BSD, inotify on Linux):

@@ -31,7 +31,7 @@ fib.ir.json
 
 - **Memory** — values are reference-counted; an acyclic value is freed the moment its last reference drops. Reference cycles are collected at deterministic points by a cycle collector, not a concurrent GC. There are no GC pauses and no tracing heap.
 - **Concurrency** — `async`/`await` runs on stackful fibers with JS-exact scheduling: microtasks drain in the same order Node's do, timers fire in the same order, and the event loop (kqueue on macOS, epoll on Linux) has no external dependencies.
-- **The server stack** — `net`, `http`, `https`, `tls` (vendored mbedTLS), `dgram`, `dns` are native implementations on that same loop.
+- **The server stack** — `net`, `http`, `https`, `tls` (vendored mbedTLS), `dgram`, `dns` are native implementations on that same loop, as is `midi` (ALSA/CoreMIDI/WinMM, linked only into binaries that use it).
 - **Numbers** — JS-exact f64 semantics, including shortest-roundtrip number-to-string formatting fuzz-verified against Node's output.
 - **Regular expressions** — the same ECMAScript-exact bytecode interpreter QuickJS uses, linked only into regex-using binaries.
 

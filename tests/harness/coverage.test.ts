@@ -58,6 +58,15 @@ test("fully static JavaScript program reports 100%", () => {
   expect(out).toContain("fully static");
 });
 
+test("node:midi enumerate program is fully static", () => {
+  // The enumerate surface (construct, getPortCount/getPortName, closePort)
+  // lowers with no dynamic remainder — the static-coverage floor the native
+  // enumerate program builds on. See tests/coverage-fixtures/midi-enumerate.ts.
+  const out = report(fixture("midi-enumerate.ts"));
+  expect(out).toContain("(100%)");
+  expect(out).toContain("fully static");
+});
+
 test("JS inference gaps land where 'any' lands: SC2011 static, island dynamic", async () => {
   // The js-gap fixture's tsconfig turns noImplicitAny off, so the untyped
   // parameter types `any` — the static analysis reports the site as

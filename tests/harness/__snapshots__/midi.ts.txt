@@ -1,0 +1,29 @@
+midi.ts:16:20 - error SC2020: 'sendMessage with a message that is not a number[] or Uint8Array' is part of the standard library types but has no scriptc lowering yet
+
+  15 | // sendArray, a Uint8Array rides sendBytes, and nothing else lowers).
+  16 | output.sendMessage("nope" as unknown as number[]);
+     |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 | 
+
+  hint: the supported message shapes are a number[] (array literal) and a Uint8Array
+
+midi.ts:22:16 - error SC1090: using the result of port.openPort(...) (the result is void here — call it as its own statement) is not supported yet
+
+  21 | // cannot feed a binding; call them as their own statement.
+  22 | const opened = input.openPort(0);
+     |                ^~~~~~~~~~~~~~~~~
+  23 | 
+
+midi.ts:26:21 - error SC1090: listeners returning a value (make the callback body a block, or return nothing) is not supported yet
+
+  25 | // keeps its word and stays fenced (the child_process listener rule exactly).
+  26 | input.on("message", (deltaTime): number => deltaTime);
+     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  27 | 
+
+midi.ts:29:13 - error SC1090: using the result of port.closePort(...) (the result is void here — call it as its own statement) is not supported yet
+
+  28 | // A void-result port call in argument position is not a statement either.
+  29 | console.log(input.closePort());
+     |             ^~~~~~~~~~~~~~~~~
+  30 | 

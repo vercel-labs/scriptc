@@ -63,6 +63,44 @@ WASI is a production LLVM target with the same language tiers as the native targ
 
 The remaining executable boundary is host capability, not language coverage. WASI Preview 1 has no portable socket, process-spawn, OS-signal, network-interface, or filesystem-notification APIs. Networking/fetch, child processes, signal APIs, <code>os.networkInterfaces()</code>, and <code>fs.watch</code> therefore fail before linking with diagnostic <code>SC3002</code>. <code>--sanitize</code>, native FFI, and library-mode archive builds are unavailable too. Filesystem behavior is bounded by the host's preopens, and process/OS introspection follows WASI's reduced model.
 
+## MIDI (`node:midi`)
+
+Raw MIDI messaging (`node:midi`, API-compatible with node-midi/@julusian/midi) is a native runtime unit linked only into binaries that use it. Each platform binds its own MIDI stack, so the availability is per target:
+
+<table>
+  <thead>
+    <tr>
+      <th>Platform</th>
+      <th>Backend</th>
+      <th>Virtual ports</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Linux</td>
+      <td>ALSA sequencer (<code>libasound</code>, linked as <code>-lasound</code>)</td>
+      <td>Yes — a native ALSA port other clients connect to</td>
+    </tr>
+    <tr>
+      <td>macOS</td>
+      <td>CoreMIDI (<code>-framework CoreMIDI</code>)</td>
+      <td>Yes — <code>MIDISourceCreate</code>/<code>MIDIDestinationCreate</code></td>
+    </tr>
+    <tr>
+      <td>Windows</td>
+      <td>WinMM (<code>winmm.lib</code>)</td>
+      <td>No — WinMM has no user-space virtual ports; <code>openVirtualPort</code> fails at runtime with a clear error</td>
+    </tr>
+    <tr>
+      <td>WASI</td>
+      <td>None</td>
+      <td>No — any midi surface fences before linking with <code>SC3002</code></td>
+    </tr>
+  </tbody>
+</table>
+
+An open Input is a live pollable source that holds the event loop alive (like a bound `dgram` socket); an Output is fire-and-forget. Port enumeration (`getPortCount`/`getPortName`) works on a fresh handle before `openPort`. The runtime is byte-transparent — it neither parses nor validates MIDI message semantics. Note that a Linux host without an ALSA sound stack (many CI containers) enumerates zero ports and throws on open.
+
 ## Cross-target limits
 
 - `--sanitize` is a host-build lane.

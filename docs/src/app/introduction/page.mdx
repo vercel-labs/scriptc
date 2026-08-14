@@ -51,7 +51,7 @@ The static surface covers the language and the standard library real programs us
 
 - **The language** — classes with single inheritance and dynamic dispatch, closures with JS capture semantics, generic function declarations (monomorphized), discriminated unions driven by TypeScript's own narrowing, `async`/`await` with JS-exact scheduling, exceptions with `finally`, destructuring, spread, optional/default/rest parameters, getters and setters, iterators, template literals, bitwise operators with JS-exact ToInt32 semantics, and the static slice of regular expressions.
 - **The standard library** — strings with UTF-16-exact surface semantics, arrays, `Map` and `Set` with JS-exact ordering, read-only `Date` values and calendar getters, `JSON` with runtime-validated casts, `Math`, typed arrays and `Buffer`, `Error` hierarchies with typed `catch`.
-- **Node's API surface** — `fs` (sync and promises), `path`, `process`, `child_process`, `os`, `crypto`, `url`/`URL`, `zlib`, timers and signal handlers on a dependency-free event loop, and the server stack: `net`, `http`, `https`, `tls`, `dgram`, `dns`, `readline`. Real servers compile:
+- **Node's API surface** — `fs` (sync and promises), `path`, `process`, `child_process`, `os`, `crypto`, `url`/`URL`, `zlib`, timers and signal handlers on a dependency-free event loop, the server stack: `net`, `http`, `https`, `tls`, `dgram`, `dns`, `readline`, and native `midi` (raw MIDI messaging over the same loop). Real servers compile:
 
 ```ts:server.ts
 import { createServer } from "node:http";

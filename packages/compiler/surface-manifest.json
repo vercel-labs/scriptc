@@ -1120,6 +1120,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.midi",
+      "kind": "node-builtin",
+      "name": "midi",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
       "id": "node-builtin.module",
       "kind": "node-builtin",
       "name": "module",

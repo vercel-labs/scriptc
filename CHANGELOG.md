@@ -4,6 +4,10 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Features
+
+- **Native MIDI messaging.** `node:midi` (API-compatible with node-midi/@julusian/midi) enumerates ports, opens inputs and outputs including virtual ports, sends raw messages, and receives time-stamped messages through the `"message"` event on the dependency-free event loop. Backends bind each platform's MIDI stack — ALSA on Linux, CoreMIDI on macOS, WinMM on Windows — and are linked only into binaries that use the surface. An open input holds the loop alive like a bound `dgram` socket; the runtime is byte-transparent and does not parse MIDI semantics. `openVirtualPort` is POSIX-only (WinMM has no user-space virtual ports), and any MIDI surface on `wasm32-wasi` refuses before linking with `SC3002`.
+
 <!-- release:start -->
 
 ## 0.0.30

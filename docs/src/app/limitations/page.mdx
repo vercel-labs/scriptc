@@ -87,6 +87,16 @@ const who = process.argv.length > 2 ? process.argv[2] : "world";
 
 The production <code>wasm32-wasi</code> target supports the complete executable language tier through LLVM: async/await, promises, generators, timers and other portable event-loop work, stdin/readline, filesystem callbacks and promises, and the <code>--dynamic</code> island. Portable WASI Preview 1 has no socket, process-spawn, OS-signal, network-interface, or filesystem-notification capabilities, so networking/fetch, child processes, signal APIs, <code>os.networkInterfaces()</code>, and <code>fs.watch</code> are rejected before linking with <code>SC3002</code>. <code>--sanitize</code>, native FFI, and library-mode archive builds are also unavailable. Filesystem access is bounded by the host's preopens; <code>scriptc run</code> exposes the current working directory and <code>/tmp</code>. See [Platform Support](/platforms) for build and run details.
 
+## MIDI limits
+
+`node:midi` is raw MIDI messaging, modeled on node-midi/@julusian/midi — enumerate ports, open input/output (including virtual ports), send raw messages, and receive time-stamped messages via the `"message"` event.
+
+- **The runtime is byte-transparent.** It carries raw message bytes (Note On/Off, CC, Program Change, Pitch Bend, SysEx as a byte run) and neither parses nor validates MIDI semantics. Higher-level semantic events (`noteon`, `cc`, …), MIDI file parsing, sequencing/clock scheduling, and MIDI 2.0 / UMP are out of scope.
+- **Virtual ports are POSIX-only.** `openVirtualPort` works on Linux (ALSA) and macOS (CoreMIDI); on Windows WinMM it fails at runtime with a clear error, because WinMM has no user-space virtual ports. See [Platform Support](/platforms).
+- **No MIDI on WASI.** WASI Preview 1 has no MIDI capability, so any `node:midi` surface is rejected before linking with `SC3002`. Browser Web MIDI is a separate runtime the WASI target does not cover.
+- **`on`/`once` accept only the `"message"` event**, with a `(deltaTime, message)` listener. `deltaTime` is seconds since the previous message on that input (`0` for the first) and is inherently nondeterministic — a differential test must never print it.
+- **A Linux host without ALSA** (many CI containers) has no MIDI backend: the runtime enumerates zero ports and throws on open. The hardware-free loopback tests use a virtual-port pair on a capable host.
+
 ## Tooling gaps
 
 - `scriptc run` does not forward extra CLI arguments to the program — `build` and invoke the binary directly.

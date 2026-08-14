@@ -20,6 +20,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "eslint": "^9.20.0",
+    "midi": "npm:@julusian/midi@^3.8.1",
     "tsx": "^4.19.0",
     "typescript": "5.9.3",
     "typescript-eslint": "^8.24.0",

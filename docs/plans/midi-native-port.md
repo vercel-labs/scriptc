@@ -177,12 +177,28 @@ Draft (finalize in the front-matter task, then freeze for the runtime task):
 | `midi.closePort` | `scr_midi_close_port` | `(handle) -> void` |
 | `midi.isOpen` | `scr_midi_is_open` | `(handle) -> bool` |
 | `midi.ignoreTypes` | `scr_midi_ignore_types` | `(input, b,b,b) -> void` |
-| `midi.send` | `scr_midi_send` | `(output, bytes*, len) -> void` |
-| `midi.onMessage` | `scr_midi_on_message` | `(input, closure, once) -> void` |
-| `midi.dispatch` | `scr_midi_dispatch` | loop hook (internal) |
+| `midi.send` (array) | `scr_midi_send_array` | `(output, ScrArr* number[]) -> void` |
+| `midi.send` (bytes) | `scr_midi_send_bytes` | `(output, ScrBytes* Uint8Array) -> void` |
+| `midi.onMessage` | `scr_midi_on_message` | `(input, closure, ScrMidiMsgFn fn, once) -> void` |
+| `midi.dispatch` | `scr_midi_dispatch` | loop hook (internal, static) |
 
 Message bytes are delivered to the JS closure as a `number[]` (the node-midi
 shape) built by the runtime, with `deltaTime` as the first f64 argument.
+
+**Reconciled during prototyping (both mirror the dgram spoke exactly):**
+- `sendMessage` lowers to two marshalers picked by argument type —
+  `scr_midi_send_array` for a `number[]` and `scr_midi_send_bytes` for a
+  `Uint8Array` — over a raw `scr_midi_send(out, bytes*, len)` primitive
+  (parallel to dgram's `send_str`/`send_bytes`).
+- `on/once('message')` passes an adapter-thunk pointer selected by the
+  listener's declared param count (`scr_midi_msg_thunk0/1/2`), because a user
+  closure's compiled C arity (0/1/2 params) can't be invoked through one fixed
+  signature — exactly dgram's `msg_thunk0/1` mechanism.
+- The runtime registers its loop hook via `scr_loop_set_midi(...)` from
+  `scr_midi_install()`; generated `main` must call `scr_midi_install()` under
+  `moduleUsesMidi`, like `scr_dgram_install()`.
+- Refcount symbols the C-emission layer calls: `scr_midi_input_retain/release`,
+  `scr_midi_output_retain/release`, and their `_v` void* variants.
 
 ## 5. Testing strategy (hardware-free, differential)
 

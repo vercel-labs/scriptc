@@ -60,6 +60,10 @@ export function cType(t: IrType): string {
       return "ScrH2Stream *";
     case "dgramSocket":
       return "ScrDgramSocket *";
+    case "midiInput":
+      return "ScrMidiInput *";
+    case "midiOutput":
+      return "ScrMidiOutput *";
     case "testCtx":
       return "ScrTestCtx *";
     case "httpReq":
@@ -164,6 +168,10 @@ export function retainCallC(type: IrType, expr: string): string {
       return `scr_http2_stream_retain(${expr})`;
     case "dgramSocket":
       return `scr_dgram_retain(${expr})`;
+    case "midiInput":
+      return `scr_midi_input_retain(${expr})`;
+    case "midiOutput":
+      return `scr_midi_output_retain(${expr})`;
     case "testCtx":
       return `scr_testctx_retain(${expr})`;
     case "httpReq":
@@ -245,6 +253,10 @@ export function releaseCallC(type: IrType, expr: string): string {
       return `scr_http2_stream_release(${expr})`;
     case "dgramSocket":
       return `scr_dgram_release(${expr})`;
+    case "midiInput":
+      return `scr_midi_input_release(${expr})`;
+    case "midiOutput":
+      return `scr_midi_output_release(${expr})`;
     case "testCtx":
       return `scr_testctx_release(${expr})`;
     case "httpReq":
@@ -320,6 +332,8 @@ export function boxKindC(t: IrType): string {
     case "http2Session":
     case "http2Stream":
     case "dgramSocket":
+    case "midiInput":
+    case "midiOutput":
     case "testCtx":
     case "httpReq":
     case "httpRes":
@@ -403,6 +417,10 @@ export function vAdapters(t: IrType): { retain: string; release: string } {
       return { retain: "scr_http2_stream_retain_v", release: "scr_http2_stream_release_v" };
     case "dgramSocket":
       return { retain: "scr_dgram_retain_v", release: "scr_dgram_release_v" };
+    case "midiInput":
+      return { retain: "scr_midi_input_retain_v", release: "scr_midi_input_release_v" };
+    case "midiOutput":
+      return { retain: "scr_midi_output_retain_v", release: "scr_midi_output_release_v" };
     case "testCtx":
       return { retain: "scr_testctx_retain_v", release: "scr_testctx_release_v" };
     case "httpReq":
@@ -526,6 +544,8 @@ export function elemKindC(elem: IrType): string {
     case "http2Session":
     case "http2Stream":
     case "dgramSocket":
+    case "midiInput":
+    case "midiOutput":
     case "testCtx":
     case "httpReq":
     case "httpRes":

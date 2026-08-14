@@ -1905,6 +1905,8 @@ export class CEmitter {
       case "http2Session":
       case "http2Stream":
       case "dgramSocket":
+      case "midiInput":
+      case "midiOutput":
       case "testCtx":
       case "httpReq":
       case "httpRes":

@@ -3032,6 +3032,47 @@ declare module "node:dns" {
   export * from "dns";
 }
 
+/* node:midi — raw MIDI messaging over the event loop (scr_midi.c, linked
+ * only into using binaries — the moduleUsesMidi switch). API-compatible
+ * with node-midi/@julusian/midi so the Node differential baseline is a
+ * real, installable package. Input is a live pollable source (an open
+ * port holds the loop alive, like a bound dgram socket); Output is
+ * fire-and-forget (send never holds the loop). Port enumeration
+ * (getPortCount/getPortName) works on a fresh handle before openPort —
+ * enumerate then open, like node-midi. openVirtualPort is POSIX-only and
+ * fences at runtime on Windows (WinMM has no user-space virtual ports).
+ * on/once accept ONLY the "message" event with a (deltaTime, message)
+ * handler; message bytes arrive as a number[] with deltaTime (seconds
+ * since the previous message, 0 for the first) as the leading argument —
+ * the node-midi callback shape. sendMessage takes an array literal or a
+ * Uint8Array; the runtime is byte-transparent (it neither parses nor
+ * validates MIDI semantics). */
+declare module "midi" {
+  export class Input {
+    getPortCount(): number;
+    getPortName(port: number): string;
+    openPort(port: number): void;
+    openVirtualPort(name: string): void;
+    closePort(): void;
+    isPortOpen(): boolean;
+    ignoreTypes(sysex: boolean, timing: boolean, activeSensing: boolean): void;
+    on(event: "message", listener: (deltaTime: number, message: number[]) => void): void;
+    once(event: "message", listener: (deltaTime: number, message: number[]) => void): void;
+  }
+  export class Output {
+    getPortCount(): number;
+    getPortName(port: number): string;
+    openPort(port: number): void;
+    openVirtualPort(name: string): void;
+    closePort(): void;
+    isPortOpen(): boolean;
+    sendMessage(message: number[] | Uint8Array): void;
+  }
+}
+declare module "node:midi" {
+  export * from "midi";
+}
+
 /* node:worker_threads — the MAIN-THREAD slice only. A compiled binary is
  * always the main thread (no JS-engine thread machinery exists), so
  * isMainThread lowers to `true` and threadId to 0 — Node's main-thread

@@ -576,7 +576,7 @@ const KNOWN_BUILTINS = new Set([
   ...SHIMMED_BUILTINS,
   "assert", "async_hooks", "buffer", "cluster", "console", "constants",
   "crypto", "dgram", "diagnostics_channel", "dns", "domain", "http",
-  "https", "http2", "inspector", "module", "net", "os", "perf_hooks",
+  "https", "http2", "inspector", "midi", "module", "net", "os", "perf_hooks",
   "punycode", "querystring", "readline", "repl", "stream",
   "string_decoder", "sys", "timers", "tls", "trace_events", "tty", "url",
   "util", "v8", "vm", "wasi", "worker_threads", "zlib",

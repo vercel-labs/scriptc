@@ -393,6 +393,10 @@ export function formatIrType(t: IrType, shapes: ShapeRegistry, unions: UnionRegi
       return "Http2Stream";
     case "dgramSocket":
       return "dgram.Socket";
+    case "midiInput":
+      return "midi.Input";
+    case "midiOutput":
+      return "midi.Output";
     case "testCtx":
       return "TestContext";
     case "httpReq":
@@ -987,6 +991,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       elem.kind === "spawnRes" ||
       elem.kind === "netSocket" ||
       elem.kind === "dgramSocket" ||
+      elem.kind === "midiInput" ||
+      elem.kind === "midiOutput" ||
       elem.kind === "testCtx" ||
       elem.kind === "httpReq" ||
       elem.kind === "httpRes" ||
@@ -1086,7 +1092,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // no class identity of its own.
   if (widened.isIntersectionType()) {
     const HANDLE_KINDS = new Set([
-      "netServer", "netSocket", "httpReq", "httpRes", "httpClientReq", "dgramSocket",
+      "netServer", "netSocket", "httpReq", "httpRes", "httpClientReq", "dgramSocket", "midiInput", "midiOutput",
       // process.stdout's own type IS the refined intersection
       // `WriteStream & { fd: 1 }` — the scalar stream kind rides the same
       // refinement rule.
@@ -1799,6 +1805,34 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "dgramSocket" };
+  }
+  // midi.Input / midi.Output: the node-midi port classes, disambiguated by
+  // their enclosing ambient module — @julusian/midi's `class Input` /
+  // `class Output` and the fallback declarations' classes both live inside
+  // `declare module "midi"` (isDeclaredInAmbientModule answers for the
+  // "midi" and "node:midi" spellings alike). The names are generic enough
+  // to collide with user classes, so the ambient-module guard is load-bearing.
+  if (
+    psym?.name === "Input" &&
+    checker.declarationsOf(psym).some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "midi"),
+    )
+  ) {
+    return { kind: "midiInput" };
+  }
+  if (
+    psym?.name === "Output" &&
+    checker.declarationsOf(psym).some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        isDeclaredInAmbientModule(d, "midi"),
+    )
+  ) {
+    return { kind: "midiOutput" };
   }
   // node:test's TestContext — the test-body parameter (`test('x', (t) =>
   // ...)`). @types/node's `class TestContext` and the fallback

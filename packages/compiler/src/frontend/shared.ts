@@ -51,6 +51,14 @@ export function isNodeTypesPath(file: string): boolean {
   return pkg === "@types/node" || pkg === "undici-types";
 }
 
+/** True for the declaration surface shipped by the Node-compatible MIDI
+ * package. ScriptC lowers this package's Input/Output handles natively, so
+ * its declarations are trusted surface types rather than dynamic-island
+ * package values. */
+export function isMidiTypesPath(file: string): boolean {
+  return npmPackageNameOf(file) === "@julusian/midi";
+}
+
 /** The node builtin modules with scriptc lowerings, by CANONICAL (bare)
  * name — every module answers to both specifier forms ("fs" and "node:fs"
  * are the same module, like in Node). When the fallback declarations ship,

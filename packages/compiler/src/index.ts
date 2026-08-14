@@ -435,11 +435,10 @@ function detectAutoPackages(
     }
     for (const { spec, loc } of edges) {
       if (isRelativeSpecifier(spec) || spec.startsWith("node:") || spec.startsWith("#")) continue;
-      // Bare builtin names ("fs", "path") are the builtin machinery's
-      // business (and the SC4005 async_free gate's, in library mode) —
-      // never npm candidates. Auto keeps its original path (the
-      // @types/node answer skips them below), byte-for-byte.
-      if (mode === "lib" && canonicalBuiltinModule(spec) !== null) continue;
+      // Bare builtin names ("fs", "path", and the Node-compatible "midi"
+      // package surface) are the builtin machinery's business — never npm
+      // candidates, even when a package supplies the declarations.
+      if (canonicalBuiltinModule(spec) !== null) continue;
       const npm = resolveNpmImport(sf.fileName, spec);
       if (npm !== null && isNodeTypesPath(npm.typesFile)) continue;
       if (npm === null) {

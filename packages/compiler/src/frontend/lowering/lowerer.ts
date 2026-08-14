@@ -63,6 +63,7 @@ import {
   fallbackDtsPath,
   isCjsExportTableLiteral,
   isJsSourceFile,
+  isMidiTypesPath,
   isNodeEsmFile,
   isNodeTypesPath,
   locOf,
@@ -7446,7 +7447,7 @@ export class Lowerer {
     sf.fileName === this.overridesAmbient ||
     sf.fileName === this.fallbackAmbient ||
     this.program.isSourceFileDefaultLibrary(sf) ||
-    (sf.isDeclarationFile && isNodeTypesPath(sf.fileName));
+    (sf.isDeclarationFile && (isNodeTypesPath(sf.fileName) || isMidiTypesPath(sf.fileName)));
 
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {
     return nodeTypesOnlySymbol(this, sym);

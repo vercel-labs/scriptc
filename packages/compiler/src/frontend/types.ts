@@ -2,7 +2,7 @@ import * as ts from "./ts7/adapter.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../ir/nodes.js";
 import { arrayOf, BOOL, bytesOf, canConvertToDyn, CHILD_T, DATE_T, DYN, F64, funcOf, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, JSVAL, mapOf, NULL_T, PROCSTREAM_T, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, setOf, STRING, SYMBOL_T, typeEquals, typeKey, UNDEFINED_T, VOID } from "../ir/nodes.js";
 
-import { isJsSourceFile, isNodeTypesPath } from "./program.js";
+import { isJsSourceFile, isMidiTypesPath, isNodeTypesPath } from "./program.js";
 import { accessorSlotProp } from "../ir/nodes.js";
 // typeKey moved to ir/nodes.ts (the backend needs it too, for per-type
 // helper interning); re-exported here so frontend call sites keep their
@@ -1807,18 +1807,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return { kind: "dgramSocket" };
   }
   // midi.Input / midi.Output: the node-midi port classes, disambiguated by
-  // their enclosing ambient module — @julusian/midi's `class Input` /
-  // `class Output` and the fallback declarations' classes both live inside
-  // `declare module "midi"` (isDeclaredInAmbientModule answers for the
-  // "midi" and "node:midi" spellings alike). The names are generic enough
-  // to collide with user classes, so the ambient-module guard is load-bearing.
+  // their fallback ambient module or by @julusian/midi's declaration path.
+  // The names are generic enough to collide with user classes, so this
+  // provenance guard is load-bearing.
   if (
     psym?.name === "Input" &&
     checker.declarationsOf(psym).some(
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
         ctx.isStdlibFile(d.getSourceFile()) &&
-        isDeclaredInAmbientModule(d, "midi"),
+        (isDeclaredInAmbientModule(d, "midi") || isMidiTypesPath(d.getSourceFile().fileName)),
     )
   ) {
     return { kind: "midiInput" };
@@ -1829,7 +1827,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
         ctx.isStdlibFile(d.getSourceFile()) &&
-        isDeclaredInAmbientModule(d, "midi"),
+        (isDeclaredInAmbientModule(d, "midi") || isMidiTypesPath(d.getSourceFile().fileName)),
     )
   ) {
     return { kind: "midiOutput" };

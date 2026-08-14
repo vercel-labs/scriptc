@@ -3174,7 +3174,9 @@ declare module "node:async_hooks" {
  * checks annotated listener parameters against it (unannotated non-empty
  * parameter lists have no static types and fence at the registration). */
 declare module "events" {
-  class EventEmitter {
+  // Node 24 makes EventEmitter generic; the native surface remains
+  // intentionally event-name agnostic, but accepts that type argument.
+  class EventEmitter<T = any> {
     constructor();
     static defaultMaxListeners: number;
     on(eventName: string, listener: (...args: any[]) => void): this;

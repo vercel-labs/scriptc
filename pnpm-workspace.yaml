@@ -3,6 +3,7 @@ packages:
 minimumReleaseAgeExclude:
   - "vercel@58.1.0"
 allowBuilds:
+  "@julusian/midi": true
   esbuild: true
 overrides:
   "@napi-rs/wasm-runtime": "1.1.6"

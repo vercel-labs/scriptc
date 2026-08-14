@@ -1193,7 +1193,8 @@ static void scr_midi_plat_out_send(ScrMidiOutput *s, const unsigned char *bytes,
     pl = (MIDIPacketList *)storage;
   }
   MIDIPacket *pkt = MIDIPacketListInit(pl);
-  pkt = MIDIPacketListAdd(pl, len + sizeof(MIDIPacketList) + 16, pkt, 0, len, bytes);
+  pkt = MIDIPacketListAdd(
+      pl, len + sizeof(MIDIPacketList) + 16, pkt, mach_absolute_time(), len, bytes);
   if (pkt) {
     if (s->endpoint_is_virtual) MIDIReceived(s->endpoint, pl); /* publish on the source */
     else MIDISend(s->port, s->endpoint, pl);

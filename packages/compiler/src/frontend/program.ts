@@ -1465,13 +1465,13 @@ function resolveImport7(program: ts.Program, from: ts.SourceFile, specifier: str
 /** An import that resolves into node_modules: the package's shipped .d.ts
  * is the type surface, and the package's shipped JS runs in the dynamic
  * island under --dynamic. Resolution rides the own resolver (resolve.ts).
- * Null for relative and node: specifiers, and for anything that doesn't
- * resolve into node_modules. */
+ * Null for relative and supported builtin specifiers, and for anything
+ * that doesn't resolve into node_modules. */
 function resolveNpmImport7(
   fromFileName: string,
   specifier: string,
 ): { packageName: string; version?: string; typesFile: string } | null {
-  if (isRelativeSpecifier(specifier) || specifier.startsWith("node:")) {
+  if (isRelativeSpecifier(specifier) || canonicalBuiltinModule(specifier) !== null) {
     return null;
   }
   // --provenance-sources: a registered specifier is NOT an npm import —
@@ -2011,7 +2011,10 @@ function preflight7(load: LoadResult): {
         continue;
       }
       const isRelative = isRelativeSpecifier(spec);
-      const isBare = !isRelative && !ambientModules.has(spec);
+      const isBare =
+        !isRelative &&
+        canonicalBuiltinModule(spec) === null &&
+        !ambientModules.has(spec);
       // --npm-static: an opted-in package importing node:module admits
       // for PROGRAM code (per-member fences, divergence 370) but marks
       // the PACKAGE an offender — createRequire's static story covers
@@ -2668,6 +2671,7 @@ export {
   builtinDefaultImportModule,
   canonicalBuiltinModule,
   fallbackDtsPath,
+  isMidiTypesPath,
   isNodeTypesPath,
   npmPackageNameOf,
   overridesDtsPath,
@@ -2772,7 +2776,7 @@ export function orderedImportsOf(
  * lowering paths share. */
 export function npmStaticDepSf7(program: ts.Program, sf: ts.SourceFile, spec: string): ts.SourceFile | null {
   if (!npmStaticActive() || isRelativeSpecifier(spec)) return null;
-  if (spec.startsWith("node:") || spec.startsWith("#")) return null;
+  if (canonicalBuiltinModule(spec) !== null || spec.startsWith("#")) return null;
   const npm = resolveNpmImport7(sf.fileName, spec);
   if (npm === null || !isNpmStaticPackage(npm.packageName)) return null;
   if (!isJsSourceFileName(npm.typesFile)) return null;

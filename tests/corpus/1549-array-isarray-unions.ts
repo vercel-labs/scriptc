@@ -75,8 +75,21 @@ function isFixedTuple(value: [TupleModel, TupleCommand]): boolean {
   return Array.isArray(value);
 }
 
+// For a readonly tuple union, tsc narrows the guarded value to an
+// intersection with any[] rather than directly to an array type. The
+// runtime tag still proves the tuple arm, so positional reads must bridge
+// back to its fixed shape.
+type ReadonlyTupleResult = TupleModel | readonly [TupleModel, TupleCommand];
+function describeReadonlyTuple(value: ReadonlyTupleResult): string {
+  if (Array.isArray(value)) return `${value[0].n}:${value[1].op}`;
+  return "plain";
+}
+
 const plainResult = normalizeTuple({ n: 7 }, false);
 console.log(plainResult[0].n, plainResult[1]);
 const tupleResult = normalizeTuple({ n: 9 }, true);
 console.log(tupleResult[0].n, tupleResult[1]);
 console.log(isFixedTuple([{ n: 11 }, { op: "direct" }]));
+const readonlyTuple: readonly [TupleModel, TupleCommand] = [{ n: 12 }, { op: "readonly" }];
+console.log(describeReadonlyTuple({ n: 13 }));
+console.log(describeReadonlyTuple(readonlyTuple));

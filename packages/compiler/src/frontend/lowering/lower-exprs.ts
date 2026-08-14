@@ -2257,26 +2257,20 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
       return expr;
     }
     if (expr.type.kind !== "union") return expr;
-    const narrowed = L.mapTypeOf(L.typeOf(node));
-    // `Array.isArray(u)` on a `string | readonly string[]` union: the lib
-    // predicate narrows the READONLY arm to `any[]` (tsc's readonly-array
-    // quirk), which maps to the island's array-of-handles (or nothing) —
-    // but the tag test proved the union's one array arm, so the bridge is
-    // the same trusted unionNarrow the mapped case below builds (the
-    // certs configuredTlds shape).
-    if (!narrowed || (narrowed.kind === "array" && narrowed.elem.kind === "jsval")) {
-      const t = L.typeOf(node);
-      const anyElem =
-        L.checker.isArrayType(t) &&
-        ((L.checker.getTypeArguments(t as ts.TypeReference)[0]?.flags ?? 0) &
-          (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
-      if (anyElem) {
-        const def = L.unions.get(expr.type.unionId);
-        const arrayTags = L.arrayValueTags(expr.type.unionId);
-        if (arrayTags.length === 1) {
-          const arm = def!.arms[arrayTags[0]!]!;
-          return { kind: "unionNarrow", unionId: expr.type.unionId, tag: arrayTags[0]!, value: expr, type: arm, loc: expr.loc };
-        }
+    const narrowedTs = L.typeOf(node);
+    const narrowed = L.mapTypeOf(narrowedTs);
+    // `Array.isArray(u)` on a union with one readonly array/tuple arm: the
+    // lib predicate narrows to `any[]`, either directly or intersected
+    // with the original union. That checker type can map to the island's
+    // array-of-handles, nothing, or a synthetic intersection record — but
+    // the tag test proved the union's one array-valued arm, so bridge to it
+    // with the same trusted unionNarrow the mapped case below builds.
+    if (L.checkerAnyArrayType(narrowedTs)) {
+      const def = L.unions.get(expr.type.unionId);
+      const arrayTags = L.arrayValueTags(expr.type.unionId);
+      if (arrayTags.length === 1) {
+        const arm = def!.arms[arrayTags[0]!]!;
+        return { kind: "unionNarrow", unionId: expr.type.unionId, tag: arrayTags[0]!, value: expr, type: arm, loc: expr.loc };
       }
     }
     // A checker type narrowed to a UNIT arm (the `=== undefined` branch)
@@ -6002,9 +5996,18 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
     // `const cmd = ['pwd', []]`, whose binding lowered checked-dynamic)
     // dispatches as unmapped so the dyn-receiver branch below reads
     // through the checked-dynamic tree instead of dynChecking into never's f64 residue.
-    const receiverIr = neverTaintedJsType(L, expr.expression, L.typeOf(expr.expression))
+    let receiverIr = neverTaintedJsType(L, expr.expression, L.typeOf(expr.expression))
       ? null
       : L.mapTypeOf(L.typeOf(expr.expression));
+    // A readonly tuple union under Array.isArray is checker-typed as an
+    // intersection with any[], whose structural mapping is not the tuple
+    // shape. maybeNarrow on the receiver uses the runtime tag proof to
+    // extract the one array-valued arm; dispatch element access from that
+    // lowered representation, like the existing any[] array-method path.
+    if (L.checkerAnyArray(expr.expression)) {
+      const probe = L.lowerExpr(expr.expression);
+      if (L.isArrayValueType(probe.type)) receiverIr = probe.type;
+    }
     if (receiverIr?.kind === "jsval") {
       // Dispatch follows the RUNTIME world (383(d)): a checker-'any'
       // receiver whose value LOWERED checked-dynamic (`bag.list[0]` where

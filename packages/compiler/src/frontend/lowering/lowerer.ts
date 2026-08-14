@@ -3090,20 +3090,38 @@ export class Lowerer {
     return isIslandExpr(this, node);
   }
 
-  /** True when this node's CHECKER type is `any[]`/`unknown[]` — the type
-   * tsc's Array.isArray predicate narrows readonly arrays to (its `arg is
-   * any[]` quirk), and what a union collapses to when such an arm absorbs
-   * its siblings. The VALUE behind it can still be a real static array
-   * (maybeNarrow's isArray bridge extracts the union's array arm), so
-   * receiver-typed dispatch falls back to the LOWERED type under this
-   * test. */
+  /** True when this node's CHECKER type is proven `any[]`/`unknown[]`,
+   * directly or through the intersection tsc builds for a readonly tuple
+   * union (`(Model | readonly [Model, Command]) & any[]`; TS7 distributes
+   * this over the union arms). These are forms of the `arg is any[]`
+   * Array.isArray predicate; the VALUE behind them can still be a real
+   * static array/tuple (maybeNarrow's bridge extracts the union's one
+   * array-valued arm), so receiver-typed dispatch falls back to the LOWERED
+   * type under this test. */
   checkerAnyArray(node: ts.Expression): boolean {
-    const t = this.typeOf(node);
-    return (
-      this.checker.isArrayType(t) &&
-      ((this.checker.getTypeArguments(t as ts.TypeReference)[0]?.flags ?? 0) &
-        (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
-    );
+    return this.checkerAnyArrayType(this.typeOf(node));
+  }
+
+  /** Type-level half of checkerAnyArray, for narrowing sites that already
+   * queried the checker type from a general AST node. */
+  checkerAnyArrayType(t: ts.Type): boolean {
+    const isAnyArray = (part: ts.Type): boolean =>
+      this.checker.isArrayType(part) &&
+      ((this.checker.getTypeArguments(part as ts.TypeReference)[0]?.flags ?? 0) &
+        (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+    const visit = (part: ts.Type): boolean => {
+      if (isAnyArray(part)) return true;
+      // 5.9 leaves `(U) & any[]` as one intersection; 7 distributes it
+      // into `(A & any[]) | (B & any[])`. An intersection is array-proven
+      // when one constituent is; a union is array-proven only when EVERY
+      // arm is, so an ordinary `any[] | string` never qualifies.
+      if ((part.flags & ts.TypeFlags.Intersection) !== 0) {
+        return (part as ts.UnionOrIntersectionType).getTypes().some(visit);
+      }
+      if (part.isUnionType()) return part.getTypes().every(visit);
+      return false;
+    };
+    return visit(t);
   }
 
   /** Substitutes a bound type parameter anywhere inside mapType's recursion

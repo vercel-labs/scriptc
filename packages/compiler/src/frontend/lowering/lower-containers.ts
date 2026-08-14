@@ -180,15 +180,17 @@ function lowerSplitLimitArg(L: Lowerer, node: ts.Expression | undefined, loc: Sr
           if (call.arguments.some((a) => ts.isSpreadElement(a))) {
             L.unsupported("SC1090", call, "spread arguments in calls through 'unknown' values");
           }
-          const loweredArgs = call.arguments.map((a) => L.lowerExpr(a));
-          if (name === "filter" && loweredArgs[0]?.type.kind === "func" && loweredArgs[0].type.ret.kind === "void") {
+          const predicate = name === "filter" ? L.lowerExpr(call.arguments[0]!) : null;
+          if (predicate?.type.kind === "func" && predicate.type.ret.kind === "void") {
             L.unsupported(
               "SC1090",
               call.arguments[0]!,
               "'.filter()' with a void-returning predicate (the callback return value is erased before its truthiness can be tested)",
             );
           }
-          const args = loweredArgs.map((arg, i) => L.coerceInto(call.arguments[i]!, arg, DYN));
+          const args = call.arguments.map((arg, i) =>
+            i === 0 && predicate ? L.coerceInto(arg, predicate, DYN) : L.lowerExprExpecting(arg, DYN),
+          );
           return {
             kind: "dynInvoke",
             recv: receiver,

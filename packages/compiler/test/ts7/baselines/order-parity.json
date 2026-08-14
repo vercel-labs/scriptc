@@ -6965,6 +6965,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/diagnostics/filter-void-predicate-dyn.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/filter-void-predicate-dyn.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/diagnostics/filter-void-predicate-dynamic.ts": {
    "order": [
     "<repo>/tests/diagnostics/filter-void-predicate-dynamic.ts"

@@ -1,0 +1,6 @@
+filter-void-predicate-dyn.ts:7:27 - error SC1090: '.filter()' with a void-returning predicate (the callback return value is erased before its truthiness can be tested) is not supported yet
+
+  6 | const pred: (n: string) => void = (n) => n;
+  7 | console.log(values.filter(pred).join(","));
+    |                           ^~~~
+  8 | // The callback's erased return makes this unsupported.

@@ -3124,6 +3124,17 @@ export class Lowerer {
     return visit(t);
   }
 
+  /** The lowered static array/tuple value behind checkerAnyArray's
+   * synthetic `any[]` spelling. Array.isArray can leave readonly tuple
+   * unions as intersections that do not map directly, while maybeNarrow
+   * still extracts the runtime-proven array arm from the original union.
+   * Receiver dispatchers use this bridge instead of the synthetic type. */
+  checkerArrayValue(node: ts.Expression): IrExpr | null {
+    if (!this.checkerAnyArray(node)) return null;
+    const value = this.lowerExpr(node);
+    return this.isArrayValueType(value.type) ? value : null;
+  }
+
   /** Substitutes a bound type parameter anywhere inside mapType's recursion
    * (`T`, `T[]`, `{ v: T }`, `(x: T) => T` all resolve). Inert outside
    * generic instantiation. */

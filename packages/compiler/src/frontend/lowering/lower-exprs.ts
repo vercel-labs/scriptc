@@ -6004,10 +6004,8 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
     // shape. maybeNarrow on the receiver uses the runtime tag proof to
     // extract the one array-valued arm; dispatch element access from that
     // lowered representation, like the existing any[] array-method path.
-    if (L.checkerAnyArray(expr.expression)) {
-      const probe = L.lowerExpr(expr.expression);
-      if (L.isArrayValueType(probe.type)) receiverIr = probe.type;
-    }
+    const checkerArray = L.checkerArrayValue(expr.expression);
+    if (checkerArray) receiverIr = checkerArray.type;
     if (receiverIr?.kind === "jsval") {
       // Dispatch follows the RUNTIME world (383(d)): a checker-'any'
       // receiver whose value LOWERED checked-dynamic (`bag.list[0]` where
@@ -9955,7 +9953,13 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
     const target = L.fieldTarget(expr);
     if (target) return L.fieldGetExpr(target, locOf(expr), expr);
     if (expr.questionDotToken) return null;
-    const receiverIr = L.mapTypeOf(L.typeOf(expr.expression));
+    let receiverIr = L.mapTypeOf(L.typeOf(expr.expression));
+    // The readonly-tuple Array.isArray narrow has no directly mappable
+    // checker type (`Result & any[]`), but maybeNarrow extracted the tuple
+    // record behind it. Route tuple properties such as `.length` from that
+    // lowered value, the element-access bridge's twin.
+    const checkerArray = L.checkerArrayValue(expr.expression);
+    if (checkerArray?.type.kind === "record") receiverIr = checkerArray.type;
     if (
       receiverIr?.kind === "object" &&
       (L.findMethodOn(L.classes.get(receiverIr.className) ?? null, expr.name.text) ||

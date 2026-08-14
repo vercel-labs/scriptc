@@ -708,11 +708,21 @@ function lowerSplitLimitArg(L: Lowerer, node: ts.Expression | undefined, loc: Sr
     const name = access.name.text;
     if (name !== "slice" && name !== "map") return null;
     if (!L.isStdlibMember(access)) return null;
-    const receiverIr = L.mapTypeOf(L.typeOf(access.expression));
+    let receiverIr = L.mapTypeOf(L.typeOf(access.expression));
+    let receiver: IrExpr | null = null;
+    // A readonly tuple union under Array.isArray is checker-typed as an
+    // unmappable intersection with any[], while maybeNarrow still extracts
+    // its one tuple arm. Dispatch the supported tuple read methods from
+    // that lowered representation, like tuple indexing and `.length`.
+    const checkerArray = L.checkerArrayValue(access.expression);
+    if (checkerArray?.type.kind === "record") {
+      receiverIr = checkerArray.type;
+      receiver = checkerArray;
+    }
     if (receiverIr?.kind !== "record") return null;
     const shape = L.shapes.get(receiverIr.shapeId);
     if (!shape?.tuple) return null;
-    const receiver = L.lowerExpr(access.expression);
+    receiver ??= L.lowerExpr(access.expression);
     if (receiver.type.kind !== "record") return null;
     if (!pureReemittable(receiver)) {
       L.noLowering(

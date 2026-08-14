@@ -85,6 +85,18 @@ function describeReadonlyTuple(value: ReadonlyTupleResult): string {
   return "plain";
 }
 
+// The checker keeps the same synthetic intersection for neighboring tuple
+// operations. A const alias must retain the lowered tuple representation;
+// then length, the supported read-only methods, and iteration all dispatch
+// from that representation too.
+function summarizeReadonlyTuple(value: ReadonlyTupleResult): string {
+  if (!Array.isArray(value)) return "plain";
+  const tuple = value;
+  let visits = 0;
+  for (const _part of tuple) visits++;
+  return `${value.length}:${value.slice(0).length}:${value.map(() => "v").join("")}:${tuple.length}:${tuple.slice(0).length}:${tuple.map(() => "t").join("")}:${visits}`;
+}
+
 const plainResult = normalizeTuple({ n: 7 }, false);
 console.log(plainResult[0].n, plainResult[1]);
 const tupleResult = normalizeTuple({ n: 9 }, true);
@@ -93,3 +105,5 @@ console.log(isFixedTuple([{ n: 11 }, { op: "direct" }]));
 const readonlyTuple: readonly [TupleModel, TupleCommand] = [{ n: 12 }, { op: "readonly" }];
 console.log(describeReadonlyTuple({ n: 13 }));
 console.log(describeReadonlyTuple(readonlyTuple));
+console.log(summarizeReadonlyTuple({ n: 14 }));
+console.log(summarizeReadonlyTuple(readonlyTuple));

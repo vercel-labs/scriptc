@@ -3313,13 +3313,14 @@ export function lowerVarDecl(L: Lowerer, decl: ts.VariableDeclaration, isLet: bo
     // adopt the initializer's type. Checker-`any[]` decls take the same
     // rule (`const tlds = Array.isArray(u) ? u : [u]` — tsc's readonly
     // Array.isArray quirk types the ternary any[], while the arms lower
-    // to the union's real array arm). Const only — an evolving-`any`
+    // to the union's real array arm; readonly fixed-tuple narrows adopt
+    // their tuple record likewise). Const only — an evolving-`any`
     // `let` may be reassigned a different shape later; genuine `any`
     // only — every other unmappable keeps its own diagnostic.
     if (
       type === null && !isLet &&
       ((L.typeOf(decl.name).flags & ts.TypeFlags.Any) !== 0 ||
-        (L.checkerAnyArray(decl.name) && init.type.kind === "array") ||
+        (L.checkerAnyArray(decl.name) && L.isArrayValueType(init.type)) ||
         // JS declarations carry no annotations: an unmappable inferred
         // type (a union with a fence-folded arm — the typeof-'bigint'
         // dual-mode ternary) adopts the initializer's static type, the

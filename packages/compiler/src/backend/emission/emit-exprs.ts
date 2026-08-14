@@ -4296,6 +4296,54 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             E.line(`scr_dns_lookup(${arg(0)}, ${arg(1)}, ${cb.name}, &${adapter});${E.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
+          // node:midi (scr_midi.c + the loop's midi hook — linked only when
+          // these appear on the IR; moduleUsesMidi is the switch). Handles
+          // and byte payloads are BORROWED; the onMessage CALLBACK MOVES into
+          // the input's registry. An open input port holds the loop live
+          // (usesTimers) — a source of pending messages, like a bound socket.
+          case "midi.newInput":
+            return finish(`scr_midi_input_new()`);
+          case "midi.newOutput":
+            return finish(`scr_midi_output_new()`);
+          case "midi.portCount":
+            return finish(`scr_midi_port_count(${arg(0)}, ${arg(1)})`);
+          case "midi.portName":
+            return finish(`scr_midi_port_name(${arg(0)}, ${arg(1)})`);
+          case "midi.openPort":
+            // Opening an INPUT makes the loop live; an OUTPUT does not.
+            if (e.args[0]!.type.kind === "midiInput") E.usesTimers = true;
+            return finish(`scr_midi_open_port(${arg(0)}, ${arg(1)})`);
+          case "midi.openVirtual":
+            if (e.args[0]!.type.kind === "midiInput") E.usesTimers = true;
+            return finish(`scr_midi_open_virtual(${arg(0)}, ${arg(1)})`);
+          case "midi.closePort":
+            E.line(`scr_midi_close_port(${arg(0)});${E.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "midi.isOpen":
+            return finish(`scr_midi_is_open(${arg(0)})`);
+          case "midi.ignoreTypes":
+            E.line(`scr_midi_ignore_types(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)});${E.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "midi.sendArray":
+            return finish(`scr_midi_send_array(${arg(0)}, ${arg(1)})`);
+          case "midi.sendBytes":
+            return finish(`scr_midi_send_bytes(${arg(0)}, ${arg(1)})`);
+          case "midi.onMessage": {
+            // The message listener receives (deltaTime: f64, message:
+            // number[]); the runtime invokes the moved-in closure through
+            // the per-arity adapter picked by the declared param count.
+            E.usesTimers = true; // a listening input holds the loop open
+            const cbT = e.args[1]!.type;
+            if (cbT.kind !== "func") throw new Error("emitter bug: midi.onMessage callback not a func");
+            const cb = args[1]!;
+            E.moveTemp(cb);
+            const adapter =
+              cbT.params.length === 0 ? "scr_midi_msg_thunk0"
+              : cbT.params.length === 1 ? "scr_midi_msg_thunk1"
+              : "scr_midi_msg_thunk2";
+            E.line(`scr_midi_on_message(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
           // node:test (scr_test.c — linked only when these appear on the
           // IR; moduleUsesNodeTest is the switch). Strings borrowed,
           // callbacks MOVE. Registrations keep the loop-run emitted

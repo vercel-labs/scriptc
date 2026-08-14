@@ -2429,6 +2429,26 @@ export type IrLibFn =
   | "dgram.onClose"
   | "dgram.onConnect"
   | "dns.lookup"
+  /** node:midi (scr_midi.c + the loop's midi hook — linked only when one
+   * of these appears on the IR; moduleUsesMidi is the switch). Input and
+   * Output handles construct through new*; the port surface enumerates,
+   * opens (real or virtual), and closes; sendArray/sendBytes marshal a
+   * number[] or Uint8Array to the wire; onMessage MOVES its callback into
+   * the input's registry and fires it (deltaTime, number[]) on the loop
+   * thread through the per-arity adapter (scr_midi_msg_thunk0/1/2). Opens
+   * and sends may-throw (bad index, closed port, no backend). */
+  | "midi.newInput"
+  | "midi.newOutput"
+  | "midi.portCount"
+  | "midi.portName"
+  | "midi.openPort"
+  | "midi.openVirtual"
+  | "midi.closePort"
+  | "midi.isOpen"
+  | "midi.ignoreTypes"
+  | "midi.sendArray"
+  | "midi.sendBytes"
+  | "midi.onMessage"
   /** node:test (scr_test.c — linked only when one of these appears on
    * the IR; moduleUsesNodeTest is the switch, and the main epilogue asks
    * scr_test_exit_code() for the process's exit status). Strings are
@@ -7221,6 +7241,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dgram.address",
   "dgram.close",
   "dgram.closeCb",
+  // node:midi synchronous throws: allocation failure on construct, a bad
+  // port index or absent backend on open, a virtual port where the platform
+  // has none (WinMM), and send on a closed output.
+  "midi.newInput",
+  "midi.newOutput",
+  "midi.portName",
+  "midi.openPort",
+  "midi.openVirtual",
+  "midi.sendArray",
+  "midi.sendBytes",
   // The assert surface: every entry point except sameValue, bytesDeepEq,
   // and the shape accumulator's begin/slot/test calls throws the
   // catchable AssertionError on failure.

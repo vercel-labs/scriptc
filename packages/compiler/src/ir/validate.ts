@@ -18,7 +18,7 @@ import type {
   IrUnionDef,
   SrcLoc,
 } from "./nodes.js";
-import { arrayOf, BOOL, BYTES_U8, bytesOf, canAdaptDynFuncTo, canConvertToDyn, canExitIslandToType, canMarshalIntoIsland, canMarshalTypedFuncIntoIsland, CHILD_T, CHILDSTREAM_T, DATE_T, DGRAMSOCK_T, DYN, DYN_HANDLE_KINDS, F64, ffiClassType, ffiSourceParamTypes, FILEHANDLE_T, FSWATCHER_T, HTTP2SESSION_T, HTTP2STREAM_T, HTTPCLIENTREQ_T, HTTPREQ_T, HTTPRES_T, islandPromisePayloadTag, isJsonSafeType, isRefCounted, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, jsOpResultKind, JSVAL, NETSERVER_T, NETSOCKET_T, PROCSTREAM_T, REF_TRUTHY_KINDS, REGEX, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, SEARCH_PARAMS_T, SECURECTX_T, SPAWNRES_T, STATS_T, STRING, SYMBOL_T, TESTCTX_T, typeEquals, typeKey, unionFuncSetArmsOk, URL_T, VOID } from "./nodes.js";
+import { arrayOf, BOOL, BYTES_U8, bytesOf, canAdaptDynFuncTo, canConvertToDyn, canExitIslandToType, canMarshalIntoIsland, canMarshalTypedFuncIntoIsland, CHILD_T, CHILDSTREAM_T, DATE_T, DGRAMSOCK_T, DYN, DYN_HANDLE_KINDS, F64, ffiClassType, ffiSourceParamTypes, FILEHANDLE_T, FSWATCHER_T, HTTP2SESSION_T, HTTP2STREAM_T, HTTPCLIENTREQ_T, HTTPREQ_T, HTTPRES_T, islandPromisePayloadTag, MIDIIN_T, MIDIOUT_T, isJsonSafeType, isRefCounted, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, jsOpResultKind, JSVAL, NETSERVER_T, NETSOCKET_T, PROCSTREAM_T, REF_TRUTHY_KINDS, REGEX, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, SEARCH_PARAMS_T, SECURECTX_T, SPAWNRES_T, STATS_T, STRING, SYMBOL_T, TESTCTX_T, typeEquals, typeKey, unionFuncSetArmsOk, URL_T, VOID } from "./nodes.js";
 
 /** Per-method signature for strIntrinsic: `argTypes` lists every argument
  * position (optional ones included); `minArgs` is how many may be omitted
@@ -404,6 +404,21 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "dgram.onClose": { argTypes: [DGRAMSOCK_T, { kind: "func", params: [], ret: VOID }, BOOL], result: VOID },
   "dgram.onConnect": { argTypes: [DGRAMSOCK_T, { kind: "func", params: [], ret: VOID }, BOOL], result: VOID },
   "dns.lookup": { argTypes: [STRING, F64, null], result: VOID },
+  // node:midi. The shared port functions accept either handle kind, so the
+  // receiver slot is left unchecked (null); the input-/output-only members
+  // pin their receiver. onMessage's callback shape varies (null), like dgram.
+  "midi.newInput": { argTypes: [], result: MIDIIN_T },
+  "midi.newOutput": { argTypes: [], result: MIDIOUT_T },
+  "midi.portCount": { argTypes: [null, BOOL], result: F64 },
+  "midi.portName": { argTypes: [null, F64], result: STRING },
+  "midi.openPort": { argTypes: [null, F64], result: VOID },
+  "midi.openVirtual": { argTypes: [null, STRING], result: VOID },
+  "midi.closePort": { argTypes: [null], result: VOID },
+  "midi.isOpen": { argTypes: [null], result: BOOL },
+  "midi.ignoreTypes": { argTypes: [MIDIIN_T, BOOL, BOOL, BOOL], result: VOID },
+  "midi.sendArray": { argTypes: [MIDIOUT_T, arrayOf(F64)], result: VOID },
+  "midi.sendBytes": { argTypes: [MIDIOUT_T, BYTES_U8], result: VOID },
+  "midi.onMessage": { argTypes: [MIDIIN_T, null, BOOL], result: VOID },
   // node:test (scr_test.c). Bodies are program-dependent closures (0 or
   // 1 testCtx param, void or Promise<void> result — the spoke pinned the
   // shape): null slots. sub's result is the settled Promise<void> the

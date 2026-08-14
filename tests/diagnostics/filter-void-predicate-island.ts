@@ -8,3 +8,4 @@ function values(): any {
 
 const pred: (n: number) => void = (n) => n;
 console.log(values().filter(pred).join(","));
+// The callback's erased return makes this unsupported.

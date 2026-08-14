@@ -4803,8 +4803,9 @@ const DYN_STRING_ONLY_METHODS = new Set([
     }
     if (arg.type.kind === "union") {
       // A union answers by its RUNTIME TAG: true iff the active arm is an
-      // array kind (bytes arms answer false — Array.isArray(new Uint8Array)
-      // is false in JS too). One array arm compiles to the plain tag test
+      // array value (homogeneous array or fixed tuple; bytes arms answer
+      // false — Array.isArray(new Uint8Array) is false in JS too). One
+      // array arm compiles to the plain tag test
       // (`Array.isArray(tlds)` on `string | readonly string[]` — the
       // narrowing test tsc's control flow then builds on); several array
       // arms OR their tag tests, and zero arms fold to false — both only
@@ -4813,7 +4814,7 @@ const DYN_STRING_ONLY_METHODS = new Set([
       // static tag answer and keep the narrow-first fence.
       const def = L.unions.get(arg.type.unionId);
       const opaque = !def || def.arms.some((a) => a.kind === "dyn" || a.kind === "caught" || a.kind === "jsval");
-      const arrayTags = def ? def.arms.flatMap((a, i) => (a.kind === "array" ? [i] : [])) : [];
+      const arrayTags = L.arrayValueTags(arg.type.unionId);
       const freeRead = arg.kind === "varRef" || arg.kind === "recordGet" || arg.kind === "fieldGet";
       if (!opaque && arrayTags.length === 1) {
         return { kind: "unionIsTag", unionId: arg.type.unionId, tag: arrayTags[0]!, negated: false, value: arg, type: BOOL, loc };
@@ -4834,7 +4835,7 @@ const DYN_STRING_ONLY_METHODS = new Set([
     }
     if (arg.type.kind === "jsval" || arg.type.kind === "caught") return null;
     if (arg.kind === "varRef" || arg.kind === "recordGet" || arg.kind === "fieldGet") {
-      return { kind: "boolLit", value: arg.type.kind === "array", type: BOOL, loc };
+      return { kind: "boolLit", value: L.isArrayValueType(arg.type), type: BOOL, loc };
     }
     L.unsupported(
       "SC1090",

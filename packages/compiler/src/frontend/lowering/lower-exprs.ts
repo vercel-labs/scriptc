@@ -1976,10 +1976,7 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
           const constituents = t.isUnionType() ? t.getTypes() : [];
           const nonArray = constituents.filter((a) => !L.checker.isArrayType(a) && !L.checker.isTupleType(a));
           const mapped = L.mapTypeOf(t);
-          const armCount =
-            mapped?.kind === "union"
-              ? (L.unions.get(mapped.unionId)?.arms.filter((a) => a.kind === "array").length ?? 0)
-              : 0;
+          const armCount = mapped?.kind === "union" ? L.arrayValueTags(mapped.unionId).length : 0;
           if (sym && nonArray.length === 1 && armCount === 1) {
             falseArmNarrowType = nonArray[0]!;
             const collect = (n: ts.Node): void => {
@@ -2275,7 +2272,7 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
           (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
       if (anyElem) {
         const def = L.unions.get(expr.type.unionId);
-        const arrayTags = def ? def.arms.flatMap((a, i) => (a.kind === "array" ? [i] : [])) : [];
+        const arrayTags = L.arrayValueTags(expr.type.unionId);
         if (arrayTags.length === 1) {
           const arm = def!.arms[arrayTags[0]!]!;
           return { kind: "unionNarrow", unionId: expr.type.unionId, tag: arrayTags[0]!, value: expr, type: arm, loc: expr.loc };

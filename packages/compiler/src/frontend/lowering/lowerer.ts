@@ -3024,6 +3024,22 @@ export class Lowerer {
     return formatIrType(t, this.shapes, this.unions);
   }
 
+  /** Whether an IR value has JavaScript Array identity. Homogeneous arrays
+   * use the native array representation; non-empty fixed tuples use a
+   * positional record shape so their slots can keep distinct types, but
+   * Array.isArray must still answer true for both representations. */
+  isArrayValueType(t: IrType): boolean {
+    return t.kind === "array" || (t.kind === "record" && this.shapes.get(t.shapeId)?.tuple === true);
+  }
+
+  /** Runtime tags of every JavaScript-array arm in one union. Kept beside
+   * isArrayValueType so Array.isArray's predicate and its narrowing bridge
+   * cannot disagree about fixed tuple arms. */
+  arrayValueTags(unionId: string): number[] {
+    const def = this.unions.get(unionId);
+    return def ? def.arms.flatMap((arm, tag) => (this.isArrayValueType(arm) ? [tag] : [])) : [];
+  }
+
   /** isJsonSafeType with this Lowerer's registries — the shared fence for
    * what JSON.stringify accepts and what a checked cast can validate. */
   jsonSafe(t: IrType): boolean {

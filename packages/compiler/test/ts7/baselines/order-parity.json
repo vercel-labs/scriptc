@@ -7346,6 +7346,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/diagnostics/midi.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/midi.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/diagnostics/mixed-compare.ts": {
    "order": [
     "<repo>/tests/diagnostics/mixed-compare.ts"

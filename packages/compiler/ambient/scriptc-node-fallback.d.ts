@@ -2378,7 +2378,7 @@ declare module "tls" {
   /** The CA-store introspection surface (scr_tls_ca.c): per-type cached
    * PEM string arrays. The host bundle stands in for Node's compiled-in
    * Mozilla roots ('bundled', and rootCertificates) AND the platform
-   * store ('system') — the Windows ROOT stores or POSIX bundle probe;
+   * store ('system') — the Windows certificate stores or POSIX bundle probe;
    * 'extra' reads NODE_EXTRA_CA_CERTS. An unknown type string throws
    * Node's ERR_INVALID_ARG_VALUE TypeError. */
   export function getCACertificates(type?: string): string[];

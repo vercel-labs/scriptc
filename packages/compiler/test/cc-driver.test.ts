@@ -359,11 +359,13 @@ describe.skipIf(!zigOnPath())("zig cc builds (zig on PATH)", () => {
       const magic = (await readFile(outPath)).subarray(0, 2);
       expect([...magic]).toEqual([0x4d, 0x5a]); // MZ
       // CA introspection is mbedTLS-free but imports and PEM-encodes the
-      // same filtered ROOT-store entries that the TLS client consumes.
+      // same filtered Windows certificate-store entries that the TLS client
+      // consumes.
       await compileC({ cPath: caProbePath, outPath: caOutPath, tlsCa: true });
       const caPe = await readFile(caOutPath);
       expect(caPe.includes("CRYPT32.dll")).toBe(true);
       expect(caPe.includes("bcrypt.dll")).toBe(false);
+      expect(caPe.includes("TrustedPeople")).toBe(true);
       // The units with Windows arms link and produce a PE: events (CRT
       // signal + stdin probes), net/http (winsock + the WSAPoll poller
       // backend), dgram/dns (the winsock datagram arm + ws2tcpip's

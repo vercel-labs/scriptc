@@ -11,7 +11,7 @@
  *
  * Divergences, documented: the host bundle stands in for Node's
  * compiled-in Mozilla roots ('bundled' and rootCertificates) AND for the
- * platform store ('system') — Windows' system ROOT stores and the POSIX
+ * platform store ('system') — Windows' system certificate stores and the POSIX
  * bundle probe are the same sources scr_tls.c's anchors use; and set-time
  * validation is PEM-BLOCK shaped (a well-formed block with corrupt DER
  * inside is kept here where Node's X509 parse would drop it — such a cert
@@ -191,12 +191,13 @@ bool scr_tls_ca_windows_cert_server_auth(const void *cert_context) {
   return allowed;
 }
 
-static void scr_tls_ca_windows_roots_at(
-    DWORD location, HCERTSTORE seen, ScrTlsCaWindowsRootFn fn, void *ctx) {
+static void scr_tls_ca_windows_certs_at(
+    DWORD location, const char *store_name, HCERTSTORE seen,
+    ScrTlsCaWindowsCertFn fn, void *ctx) {
   HCERTSTORE store = CertOpenStore(
       CERT_STORE_PROV_SYSTEM_A, 0, 0,
       location | CERT_STORE_OPEN_EXISTING_FLAG | CERT_STORE_READONLY_FLAG,
-      "ROOT");
+      store_name);
   if (store == NULL) return;
   PCCERT_CONTEXT cert = NULL;
   /* CertEnumCertificatesInStore frees the previous context on every call,
@@ -214,29 +215,41 @@ static void scr_tls_ca_windows_roots_at(
   (void)CertCloseStore(store, 0);
 }
 
-void scr_tls_ca_windows_roots(ScrTlsCaWindowsRootFn fn, void *ctx) {
-  /* Windows keeps policy and enterprise roots in distinct store locations;
-   * the ordinary current-user ROOT collection does not include the
-   * current-user Group Policy store. Match Node's ROOT-location coverage so
-   * organization-managed roots reach both TLS verification and CA-store
-   * introspection. A memory store deduplicates their overlapping contents. */
-  static const DWORD locations[] = {
-      CERT_SYSTEM_STORE_LOCAL_MACHINE,
-      CERT_SYSTEM_STORE_LOCAL_MACHINE_GROUP_POLICY,
-      CERT_SYSTEM_STORE_LOCAL_MACHINE_ENTERPRISE,
-      CERT_SYSTEM_STORE_CURRENT_USER,
-      CERT_SYSTEM_STORE_CURRENT_USER_GROUP_POLICY,
+void scr_tls_ca_windows_certs(ScrTlsCaWindowsCertFn fn, void *ctx) {
+  /* Match Node's Windows system-certificate sources: roots and intermediate
+   * CAs from all five applicable locations, plus explicitly trusted server
+   * certificates from the three local-machine TrustedPeople locations.
+   * A memory store deduplicates their overlapping contents. */
+  typedef struct ScrTlsCaWindowsStore {
+    DWORD location;
+    const char *name;
+  } ScrTlsCaWindowsStore;
+  static const ScrTlsCaWindowsStore stores[] = {
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE, "ROOT"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_GROUP_POLICY, "ROOT"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_ENTERPRISE, "ROOT"},
+      {CERT_SYSTEM_STORE_CURRENT_USER, "ROOT"},
+      {CERT_SYSTEM_STORE_CURRENT_USER_GROUP_POLICY, "ROOT"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE, "CA"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_GROUP_POLICY, "CA"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_ENTERPRISE, "CA"},
+      {CERT_SYSTEM_STORE_CURRENT_USER, "CA"},
+      {CERT_SYSTEM_STORE_CURRENT_USER_GROUP_POLICY, "CA"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE, "TrustedPeople"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_GROUP_POLICY, "TrustedPeople"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_ENTERPRISE, "TrustedPeople"},
   };
   HCERTSTORE seen = CertOpenStore(
       CERT_STORE_PROV_MEMORY, 0, 0, CERT_STORE_CREATE_NEW_FLAG, NULL);
   if (seen == NULL) return;
-  for (size_t i = 0; i < sizeof locations / sizeof locations[0]; i++) {
-    scr_tls_ca_windows_roots_at(locations[i], seen, fn, ctx);
+  for (size_t i = 0; i < sizeof stores / sizeof stores[0]; i++) {
+    scr_tls_ca_windows_certs_at(
+        stores[i].location, stores[i].name, seen, fn, ctx);
   }
   (void)CertCloseStore(seen, 0);
 }
 
-static void scr_ca_push_windows_root(void *ctx, const unsigned char *der, size_t len) {
+static void scr_ca_push_windows_cert(void *ctx, const unsigned char *der, size_t len) {
   if (len > UINT32_MAX) return;
   DWORD pem_cap = 0;
   DWORD flags = CRYPT_STRING_BASE64HEADER | CRYPT_STRING_NOCR;
@@ -259,7 +272,7 @@ static void scr_ca_push_windows_root(void *ctx, const unsigned char *der, size_t
 static ScrArr *scr_ca_load_host_bundle(void) {
   ScrArr *arr = scr_arr_new(SCR_ELEM_STR, 128);
 #ifdef _WIN32
-  scr_tls_ca_windows_roots(scr_ca_push_windows_root, arr);
+  scr_tls_ca_windows_certs(scr_ca_push_windows_cert, arr);
 #else
   static const char *const bundles[] = {
       "/etc/ssl/cert.pem",                  /* macOS, Alpine */

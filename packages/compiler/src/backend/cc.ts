@@ -359,10 +359,10 @@ export interface CcOptions {
   /** The program uses the CA-store introspection surface (moduleUsesTlsCa
    * on the IR — getCACertificates / rootCertificates /
    * setDefaultCACertificates): compiles scr_tls_ca.c, PEM-block bookkeeping
-   * plus the platform ROOT-store reader on Windows, with NO mbedTLS
+   * plus the platform certificate-store reader on Windows, with NO mbedTLS
    * dependency, so an introspection-only binary never builds the archive.
    * The unit also compiles whenever `tls` does — scr_tls.c consults its
-   * default-set override and shared Windows-root enumerator. */
+   * default-set override and shared Windows-certificate enumerator. */
   tlsCa?: boolean;
 }
 
@@ -422,7 +422,7 @@ export function runtimeSrcDir(): string {
  * their win32 arms (mbedTLS compiles unchanged for the triple — its own _WIN32
  * port covers entropy and timing; the TLS link adds bcrypt for
  * BCryptGenRandom, while the CA-store unit adds crypt32 for the Windows
- * ROOT certificate store).
+ * system certificate stores).
  * They additionally compile
  * scr_win.c, the win32 libc shim TU (stpcpy, arc4random_buf — see the
  * _WIN32 block in scr_runtime.h), linking -ladvapi32 for its CSPRNG
@@ -3626,7 +3626,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
           ...(targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
         ]
         : []),
-    // scr_tls_ca.c enumerates and PEM-encodes Windows ROOT-store entries.
+    // scr_tls_ca.c enumerates and PEM-encodes Windows system-store entries.
     // This is independent of the mbedTLS archive: getCACertificates-only
     // programs need crypt32 too, while TLS programs imply the CA unit.
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),

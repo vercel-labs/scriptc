@@ -339,8 +339,8 @@ typedef struct ScrTlsCli {
 /* The default trust anchors when no `ca` option is given: the host trust
  * store, standing in for Node's compiled-in Mozilla roots, plus
  * NODE_EXTRA_CA_CERTS. Windows certificates live as DER entries across the
- * machine, enterprise, current-user, and policy ROOT-store locations;
- * mbedTLS copies each successfully parsed entry into its own chain.
+ * machine, enterprise, current-user, and policy ROOT/CA/TrustedPeople store
+ * locations; mbedTLS copies each successfully parsed entry into its own chain.
  * POSIX hosts probe the established bundle spellings — /etc/ssl/cert.pem
  * first (macOS ships it; Alpine links it), then Debian/Ubuntu's
  * ca-certificates.crt, Fedora/RHEL's ca-bundle.crt, and openSUSE's
@@ -357,7 +357,7 @@ static mbedtls_x509_crt scr_tls_override_roots;
 static uint64_t scr_tls_override_parsed_gen = 0;
 
 #ifdef _WIN32
-static void scr_tls_add_windows_root(void *ctx, const unsigned char *der, size_t len) {
+static void scr_tls_add_windows_ca(void *ctx, const unsigned char *der, size_t len) {
   (void)mbedtls_x509_crt_parse_der((mbedtls_x509_crt *)ctx, der, len);
 }
 #endif
@@ -385,7 +385,7 @@ static mbedtls_x509_crt *scr_tls_system_ca(void) {
     /* The shared enumerator applies Windows' effective server-auth EKU
      * policy before yielding DER. mbedTLS copies every successfully parsed
      * entry, so the store contexts may die immediately after each callback. */
-    scr_tls_ca_windows_roots(scr_tls_add_windows_root, &scr_tls_system_roots);
+    scr_tls_ca_windows_certs(scr_tls_add_windows_ca, &scr_tls_system_roots);
 #else
     static const char *const bundles[] = {
         "/etc/ssl/cert.pem",                  /* macOS, Alpine */

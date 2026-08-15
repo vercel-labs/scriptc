@@ -5495,7 +5495,7 @@ long scr_secure_ctx_live_count(void);
 /* ── node:tls, the CA-store introspection slice (scr_tls_ca.c — its own
  * unit and link gate; NO mbedTLS, so a getCACertificates-only binary never
  * builds the archive; cc.ts also compiles it whenever scr_tls.c does). The
- * HOST roots (Windows' system ROOT stores, the established bundle probe on
+ * HOST roots (Windows' system certificate stores, the established bundle probe on
  * POSIX) stand in for both Node's compiled-in Mozilla roots ('bundled',
  * rootCertificates) and the platform store ('system') — the established
  * SEMANTICS divergence, extended to introspection; 'extra' uses the
@@ -5505,12 +5505,12 @@ long scr_secure_ctx_live_count(void);
 void scr_tls_ca_install(void); /* snapshots NODE_EXTRA_CA_CERTS + file bytes */
 bool scr_tls_ca_extra_pem(const char **pem, size_t *len); /* borrowed launch snapshot */
 #ifdef _WIN32
-/* Enumerates the machine, enterprise, current-user, and policy ROOT-store
+/* Enumerates Windows' trusted ROOT, intermediate CA, and TrustedPeople store
  * locations, yielding only certificates whose effective Windows EKU policy
  * permits TLS server authentication. DER is borrowed for the call. */
-typedef void (*ScrTlsCaWindowsRootFn)(void *ctx, const unsigned char *der, size_t len);
+typedef void (*ScrTlsCaWindowsCertFn)(void *ctx, const unsigned char *der, size_t len);
 bool scr_tls_ca_windows_cert_server_auth(const void *cert_context);
-void scr_tls_ca_windows_roots(ScrTlsCaWindowsRootFn fn, void *ctx);
+void scr_tls_ca_windows_certs(ScrTlsCaWindowsCertFn fn, void *ctx);
 #endif
 ScrArr *scr_tls_ca_get(ScrStr *type); /* +1; throws ERR_INVALID_ARG_VALUE on unknown types */
 ScrArr *scr_tls_ca_root(void);        /* +1; === getCACertificates("bundled") */

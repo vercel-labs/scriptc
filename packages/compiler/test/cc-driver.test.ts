@@ -299,11 +299,14 @@ describe.skipIf(!zigOnPath())("zig cc builds (zig on PATH)", () => {
       // signal + stdin probes), net/http (winsock + the WSAPoll poller
       // backend), dgram/dns (the winsock datagram arm + ws2tcpip's
       // getaddrinfo), tls (mbedTLS compiled for the triple, -lbcrypt for
-      // its entropy poll), watch (ReadDirectoryChangesW), zlib
+      // its entropy poll and -lcrypt32 for the ROOT certificate store),
+      // watch (ReadDirectoryChangesW), zlib
       // (per-target vendored objects).
       await compileC({ cPath, outPath, events: true, net: true, http: true, dgram: true, watch: true, zlib: true, tls: true });
-      const magic2 = (await readFile(outPath)).subarray(0, 2);
+      const tlsPe = await readFile(outPath);
+      const magic2 = tlsPe.subarray(0, 2);
       expect([...magic2]).toEqual([0x4d, 0x5a]);
+      expect(tlsPe.includes("CRYPT32.dll")).toBe(true);
       // --dynamic: the engine archive cross-builds for the windows triple
       // (buildEngineArchiveCross), the island's win32 arms (_msize, the
       // winsock hostname) compile, and the link carries the 8MB PE stack

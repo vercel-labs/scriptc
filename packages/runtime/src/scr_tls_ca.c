@@ -192,7 +192,7 @@ bool scr_tls_ca_windows_cert_server_auth(const void *cert_context) {
 }
 
 static void scr_tls_ca_windows_roots_at(
-    DWORD location, ScrTlsCaWindowsRootFn fn, void *ctx) {
+    DWORD location, HCERTSTORE seen, ScrTlsCaWindowsRootFn fn, void *ctx) {
   HCERTSTORE store = CertOpenStore(
       CERT_STORE_PROV_SYSTEM_A, 0, 0,
       location | CERT_STORE_OPEN_EXISTING_FLAG | CERT_STORE_READONLY_FLAG,
@@ -202,7 +202,12 @@ static void scr_tls_ca_windows_roots_at(
   /* CertEnumCertificatesInStore frees the previous context on every call,
    * including the final NULL result. Each callback must copy DER it keeps. */
   while ((cert = CertEnumCertificatesInStore(store, cert)) != NULL) {
-    if (scr_tls_ca_windows_cert_server_auth(cert)) {
+    /* The logical stores overlap (notably CurrentUser inherits machine
+     * roots). CERT_STORE_ADD_NEW turns the memory store into a process-local
+     * identity set: only the first allowed context reaches the consumer. */
+    if (scr_tls_ca_windows_cert_server_auth(cert) &&
+        CertAddCertificateContextToStore(
+            seen, cert, CERT_STORE_ADD_NEW, NULL)) {
       fn(ctx, cert->pbCertEncoded, (size_t)cert->cbCertEncoded);
     }
   }
@@ -214,7 +219,7 @@ void scr_tls_ca_windows_roots(ScrTlsCaWindowsRootFn fn, void *ctx) {
    * the ordinary current-user ROOT collection does not include the
    * current-user Group Policy store. Match Node's ROOT-location coverage so
    * organization-managed roots reach both TLS verification and CA-store
-   * introspection. Duplicate entries are harmless and match Node's gather. */
+   * introspection. A memory store deduplicates their overlapping contents. */
   static const DWORD locations[] = {
       CERT_SYSTEM_STORE_LOCAL_MACHINE,
       CERT_SYSTEM_STORE_LOCAL_MACHINE_GROUP_POLICY,
@@ -222,9 +227,13 @@ void scr_tls_ca_windows_roots(ScrTlsCaWindowsRootFn fn, void *ctx) {
       CERT_SYSTEM_STORE_CURRENT_USER,
       CERT_SYSTEM_STORE_CURRENT_USER_GROUP_POLICY,
   };
+  HCERTSTORE seen = CertOpenStore(
+      CERT_STORE_PROV_MEMORY, 0, 0, CERT_STORE_CREATE_NEW_FLAG, NULL);
+  if (seen == NULL) return;
   for (size_t i = 0; i < sizeof locations / sizeof locations[0]; i++) {
-    scr_tls_ca_windows_roots_at(locations[i], fn, ctx);
+    scr_tls_ca_windows_roots_at(locations[i], seen, fn, ctx);
   }
+  (void)CertCloseStore(seen, 0);
 }
 
 static void scr_ca_push_windows_root(void *ctx, const unsigned char *der, size_t len) {

@@ -11,7 +11,7 @@
  *
  * Divergences, documented: the host bundle stands in for Node's
  * compiled-in Mozilla roots ('bundled' and rootCertificates) AND for the
- * platform store ('system') — Windows' logical ROOT store and the POSIX
+ * platform store ('system') — Windows' system ROOT stores and the POSIX
  * bundle probe are the same sources scr_tls.c's anchors use; and set-time
  * validation is PEM-BLOCK shaped (a well-formed block with corrupt DER
  * inside is kept here where Node's X509 parse would drop it — such a cert
@@ -191,11 +191,11 @@ bool scr_tls_ca_windows_cert_server_auth(const void *cert_context) {
   return allowed;
 }
 
-void scr_tls_ca_windows_roots(ScrTlsCaWindowsRootFn fn, void *ctx) {
+static void scr_tls_ca_windows_roots_at(
+    DWORD location, ScrTlsCaWindowsRootFn fn, void *ctx) {
   HCERTSTORE store = CertOpenStore(
       CERT_STORE_PROV_SYSTEM_A, 0, 0,
-      CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_OPEN_EXISTING_FLAG |
-          CERT_STORE_READONLY_FLAG,
+      location | CERT_STORE_OPEN_EXISTING_FLAG | CERT_STORE_READONLY_FLAG,
       "ROOT");
   if (store == NULL) return;
   PCCERT_CONTEXT cert = NULL;
@@ -207,6 +207,24 @@ void scr_tls_ca_windows_roots(ScrTlsCaWindowsRootFn fn, void *ctx) {
     }
   }
   (void)CertCloseStore(store, 0);
+}
+
+void scr_tls_ca_windows_roots(ScrTlsCaWindowsRootFn fn, void *ctx) {
+  /* Windows keeps policy and enterprise roots in distinct store locations;
+   * the ordinary current-user ROOT collection does not include the
+   * current-user Group Policy store. Match Node's ROOT-location coverage so
+   * organization-managed roots reach both TLS verification and CA-store
+   * introspection. Duplicate entries are harmless and match Node's gather. */
+  static const DWORD locations[] = {
+      CERT_SYSTEM_STORE_LOCAL_MACHINE,
+      CERT_SYSTEM_STORE_LOCAL_MACHINE_GROUP_POLICY,
+      CERT_SYSTEM_STORE_LOCAL_MACHINE_ENTERPRISE,
+      CERT_SYSTEM_STORE_CURRENT_USER,
+      CERT_SYSTEM_STORE_CURRENT_USER_GROUP_POLICY,
+  };
+  for (size_t i = 0; i < sizeof locations / sizeof locations[0]; i++) {
+    scr_tls_ca_windows_roots_at(locations[i], fn, ctx);
+  }
 }
 
 static void scr_ca_push_windows_root(void *ctx, const unsigned char *der, size_t len) {

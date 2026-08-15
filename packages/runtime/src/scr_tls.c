@@ -338,9 +338,9 @@ typedef struct ScrTlsCli {
 
 /* The default trust anchors when no `ca` option is given: the host trust
  * store, standing in for Node's compiled-in Mozilla roots, plus
- * NODE_EXTRA_CA_CERTS. Windows certificates live as DER entries in the
- * current user's logical ROOT store, which includes the inherited machine
- * roots; mbedTLS copies each successfully parsed entry into its own chain.
+ * NODE_EXTRA_CA_CERTS. Windows certificates live as DER entries across the
+ * machine, enterprise, current-user, and policy ROOT-store locations;
+ * mbedTLS copies each successfully parsed entry into its own chain.
  * POSIX hosts probe the established bundle spellings — /etc/ssl/cert.pem
  * first (macOS ships it; Alpine links it), then Debian/Ubuntu's
  * ca-certificates.crt, Fedora/RHEL's ca-bundle.crt, and openSUSE's

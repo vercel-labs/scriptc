@@ -16,7 +16,7 @@
  */
 import { execFile, execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { EOL, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
@@ -414,7 +414,7 @@ describe.skipIf(!zigOnPath())("zig cc builds (zig on PATH)", () => {
         "../../../tests/fixtures/server/certs/ca.pem",
       );
       const { stdout } = await execFileAsync(outPath, [caPath]);
-      expect(stdout).toBe("windows EKU policy ok\n");
+      expect(stdout).toBe(`windows EKU policy ok${EOL}`);
     },
     600_000,
   );

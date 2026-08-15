@@ -158,6 +158,26 @@ jobs:
           if ($actual -ne "hello world") {
             throw "unexpected scriptc output: $actual"
           }
+      - name: Windows CA-store differential
+        shell: pwsh
+        run: |
+          $nodeOutput = & node tests/corpus/2557-tls-ca-store.ts
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $nativeOutput = & node packages/cli/dist/main.js run tests/corpus/2557-tls-ca-store.ts --backend c
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $expected = ($nodeOutput -join "`n").Trim()
+          $actual = ($nativeOutput -join "`n").Trim()
+          if ($actual -ne $expected) {
+            throw "Windows CA-store output differed:`nNODE:`n$expected`nNATIVE:`n$actual"
+          }
+      - name: Windows CA EKU policy
+        run: >-
+          pnpm exec vitest run packages/compiler/test/cc-driver.test.ts
+          --testNamePattern "Windows CA roots honor"
 
   # Aggregate gate with the pre-matrix job's name, so anything keyed on the
   # single "test" check (branch protection, badges) keeps resolving. Fails

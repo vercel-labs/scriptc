@@ -2,28 +2,33 @@
  * rootCertificates, and setDefaultCACertificates (scr_runtime.h has the
  * contracts). Its own link gate ("tlsca." libCalls), deliberately free
  * of mbedTLS: everything here is PEM-BLOCK bookkeeping over the host
- * bundle, so a program that only inspects the CA store keeps the lean
- * link line. scr_tls.c (when it links — cc.ts compiles this unit
- * alongside it) consults scr_tls_ca_default_override for its client
- * trust anchors, which is what makes setDefaultCACertificates LIVE
- * semantics: the next https/tls dial verifies against the replaced set.
+ * roots (plus crypt32 store access on Windows), so a program that only
+ * inspects the CA store never builds the TLS archive. scr_tls.c (when it
+ * links — cc.ts compiles this unit alongside it) consults
+ * scr_tls_ca_default_override for its client trust anchors, which is what
+ * makes setDefaultCACertificates LIVE semantics: the next https/tls dial
+ * verifies against the replaced set.
  *
  * Divergences, documented: the host bundle stands in for Node's
  * compiled-in Mozilla roots ('bundled' and rootCertificates) AND for the
- * platform store ('system') — the same /etc/ssl/cert.pem stance
- * scr_tls.c's anchors established; and set-time validation is PEM-BLOCK
- * shaped (a well-formed block with corrupt DER inside is kept here where
- * Node's X509 parse would drop it — such a cert then fails verification
- * instead, the same observable outcome one step later). Deduplication is
- * byte-exact over the extracted block where Node compares parsed X509
- * identities; re-encoded duplicates of one certificate stay distinct
- * entries, which no equality the tests observe can distinguish without a
- * parser. */
+ * platform store ('system') — Windows' logical ROOT store and the POSIX
+ * bundle probe are the same sources scr_tls.c's anchors use; and set-time
+ * validation is PEM-BLOCK shaped (a well-formed block with corrupt DER
+ * inside is kept here where Node's X509 parse would drop it — such a cert
+ * then fails verification instead, the same observable outcome one step
+ * later). Deduplication is byte-exact over the extracted block where Node
+ * compares parsed X509 identities; re-encoded duplicates of one certificate
+ * stay distinct entries, which no equality the tests observe can distinguish
+ * without a parser. */
 #include "scr_runtime.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <wincrypt.h>
+#endif
 
 /* The per-type caches: +1 held here for the process lifetime (an atexit
  * teardown releases them so the RC audit stays clean). 'default' also
@@ -154,9 +159,81 @@ bool scr_tls_ca_extra_pem(const char **pem, size_t *len) {
   return true;
 }
 
-/* The host bundle, probed in scr_tls.c's documented order. */
+#ifdef _WIN32
+/* Windows can restrict a certificate's purposes in a store property that is
+ * not part of its DER. CertGetEnhancedKeyUsage with flags 0 intersects that
+ * property with the encoded EKU extension. An empty result means either all
+ * purposes (CRYPT_E_NOT_FOUND) or no purposes (ERROR_SUCCESS); every other
+ * API failure is fail-closed too. */
+bool scr_tls_ca_windows_cert_server_auth(const void *cert_context) {
+  PCCERT_CONTEXT cert = (PCCERT_CONTEXT)cert_context;
+  DWORD usage_len = 0;
+  if (!CertGetEnhancedKeyUsage(cert, 0, NULL, &usage_len) || usage_len == 0) {
+    return false;
+  }
+  CERT_ENHKEY_USAGE *usage = malloc((size_t)usage_len);
+  if (usage == NULL) scr_ca_oom();
+  if (!CertGetEnhancedKeyUsage(cert, 0, usage, &usage_len)) {
+    free(usage);
+    return false;
+  }
+  DWORD usage_error = GetLastError();
+  bool allowed = usage->cUsageIdentifier == 0 &&
+      usage_error == CRYPT_E_NOT_FOUND;
+  for (DWORD i = 0; !allowed && usage->rgpszUsageIdentifier != NULL &&
+       i < usage->cUsageIdentifier; i++) {
+    const char *oid = usage->rgpszUsageIdentifier[i];
+    allowed = oid != NULL &&
+        (strcmp(oid, szOID_PKIX_KP_SERVER_AUTH) == 0 ||
+         strcmp(oid, szOID_ANY_ENHANCED_KEY_USAGE) == 0);
+  }
+  free(usage);
+  return allowed;
+}
+
+void scr_tls_ca_windows_roots(ScrTlsCaWindowsRootFn fn, void *ctx) {
+  HCERTSTORE store = CertOpenStore(
+      CERT_STORE_PROV_SYSTEM_A, 0, 0,
+      CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_OPEN_EXISTING_FLAG |
+          CERT_STORE_READONLY_FLAG,
+      "ROOT");
+  if (store == NULL) return;
+  PCCERT_CONTEXT cert = NULL;
+  /* CertEnumCertificatesInStore frees the previous context on every call,
+   * including the final NULL result. Each callback must copy DER it keeps. */
+  while ((cert = CertEnumCertificatesInStore(store, cert)) != NULL) {
+    if (scr_tls_ca_windows_cert_server_auth(cert)) {
+      fn(ctx, cert->pbCertEncoded, (size_t)cert->cbCertEncoded);
+    }
+  }
+  (void)CertCloseStore(store, 0);
+}
+
+static void scr_ca_push_windows_root(void *ctx, const unsigned char *der, size_t len) {
+  if (len > UINT32_MAX) return;
+  DWORD pem_cap = 0;
+  DWORD flags = CRYPT_STRING_BASE64HEADER | CRYPT_STRING_NOCR;
+  if (!CryptBinaryToStringA(der, (DWORD)len, flags, NULL, &pem_cap) ||
+      pem_cap == 0) {
+    return;
+  }
+  char *pem = malloc((size_t)pem_cap);
+  if (pem == NULL) scr_ca_oom();
+  DWORD pem_len = pem_cap;
+  if (CryptBinaryToStringA(der, (DWORD)len, flags, pem, &pem_len)) {
+    scr_arr_push_ref((ScrArr *)ctx, scr_str_new(pem, (size_t)pem_len));
+  }
+  free(pem);
+}
+#endif
+
+/* The host roots, from the Windows logical store or the POSIX bundle probe
+ * shared with scr_tls.c. */
 static ScrArr *scr_ca_load_host_bundle(void) {
   ScrArr *arr = scr_arr_new(SCR_ELEM_STR, 128);
+#ifdef _WIN32
+  scr_tls_ca_windows_roots(scr_ca_push_windows_root, arr);
+#else
   static const char *const bundles[] = {
       "/etc/ssl/cert.pem",                  /* macOS, Alpine */
       "/etc/ssl/certs/ca-certificates.crt", /* Debian/Ubuntu */
@@ -171,6 +248,7 @@ static ScrArr *scr_ca_load_host_bundle(void) {
     free(text);
     break; /* first bundle wins, like the anchor probe */
   }
+#endif
   return arr;
 }
 

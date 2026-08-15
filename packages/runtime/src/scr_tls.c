@@ -81,7 +81,6 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h> /* inet_pton, in6_addr */
-#include <wincrypt.h> /* ROOT certificate store */
 #else
 #include <arpa/inet.h>
 #endif
@@ -357,6 +356,12 @@ static bool scr_tls_system_roots_loaded = false;
 static mbedtls_x509_crt scr_tls_override_roots;
 static uint64_t scr_tls_override_parsed_gen = 0;
 
+#ifdef _WIN32
+static void scr_tls_add_windows_root(void *ctx, const unsigned char *der, size_t len) {
+  (void)mbedtls_x509_crt_parse_der((mbedtls_x509_crt *)ctx, der, len);
+}
+#endif
+
 static mbedtls_x509_crt *scr_tls_system_ca(void) {
   const char *pem = NULL;
   size_t pem_len = 0;
@@ -377,19 +382,10 @@ static mbedtls_x509_crt *scr_tls_system_ca(void) {
     scr_tls_system_roots_loaded = true;
     mbedtls_x509_crt_init(&scr_tls_system_roots);
 #ifdef _WIN32
-    HCERTSTORE store = CertOpenSystemStoreA(0, "ROOT");
-    if (store != NULL) {
-      PCCERT_CONTEXT cert = NULL;
-      /* CertEnumCertificatesInStore frees the previous context on every
-       * call, including the final NULL result. mbedTLS copies DER bytes, so
-       * closing the store after enumeration cannot invalidate the chain. */
-      while ((cert = CertEnumCertificatesInStore(store, cert)) != NULL) {
-        (void)mbedtls_x509_crt_parse_der(
-            &scr_tls_system_roots, cert->pbCertEncoded,
-            (size_t)cert->cbCertEncoded);
-      }
-      (void)CertCloseStore(store, 0);
-    }
+    /* The shared enumerator applies Windows' effective server-auth EKU
+     * policy before yielding DER. mbedTLS copies every successfully parsed
+     * entry, so the store contexts may die immediately after each callback. */
+    scr_tls_ca_windows_roots(scr_tls_add_windows_root, &scr_tls_system_roots);
 #else
     static const char *const bundles[] = {
         "/etc/ssl/cert.pem",                  /* macOS, Alpine */

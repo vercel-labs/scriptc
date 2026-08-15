@@ -202,6 +202,66 @@ int main(void) {
   return getcontext(&here);
 }
 `;
+const WINDOWS_CA_EKU_C = String.raw`
+#include "scr_runtime.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <windows.h>
+#include <wincrypt.h>
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 2;
+  FILE *file = fopen(argv[1], "rb");
+  if (file == NULL) return 3;
+  if (fseek(file, 0, SEEK_END) != 0) return 4;
+  long pem_len = ftell(file);
+  if (pem_len <= 0 || pem_len > UINT32_MAX) return 5;
+  rewind(file);
+  char *pem = malloc((size_t)pem_len + 1);
+  if (pem == NULL) return 6;
+  size_t got = fread(pem, 1, (size_t)pem_len, file);
+  fclose(file);
+  pem[got] = 0;
+
+  DWORD der_len = 0;
+  if (!CryptStringToBinaryA(pem, (DWORD)got, CRYPT_STRING_BASE64HEADER,
+                            NULL, &der_len, NULL, NULL)) return 7;
+  BYTE *der = malloc((size_t)der_len);
+  if (der == NULL) return 8;
+  if (!CryptStringToBinaryA(pem, (DWORD)got, CRYPT_STRING_BASE64HEADER,
+                            der, &der_len, NULL, NULL)) return 9;
+  free(pem);
+  PCCERT_CONTEXT cert = CertCreateCertificateContext(
+      X509_ASN_ENCODING, der, der_len);
+  free(der);
+  if (cert == NULL) return 10;
+
+  LPSTR code_signing = szOID_PKIX_KP_CODE_SIGNING;
+  CERT_ENHKEY_USAGE usage = {1, &code_signing};
+  if (!CertSetEnhancedKeyUsage(cert, &usage)) return 11;
+  if (scr_tls_ca_windows_cert_server_auth(cert)) return 12;
+
+  LPSTR server_auth = szOID_PKIX_KP_SERVER_AUTH;
+  usage.rgpszUsageIdentifier = &server_auth;
+  if (!CertSetEnhancedKeyUsage(cert, &usage)) return 13;
+  if (!scr_tls_ca_windows_cert_server_auth(cert)) return 14;
+
+  LPSTR any_usage = szOID_ANY_ENHANCED_KEY_USAGE;
+  usage.rgpszUsageIdentifier = &any_usage;
+  if (!CertSetEnhancedKeyUsage(cert, &usage)) return 15;
+  if (!scr_tls_ca_windows_cert_server_auth(cert)) return 16;
+
+  usage.cUsageIdentifier = 0;
+  usage.rgpszUsageIdentifier = NULL;
+  if (!CertSetEnhancedKeyUsage(cert, &usage)) return 17;
+  if (scr_tls_ca_windows_cert_server_auth(cert)) return 18;
+
+  CertFreeCertificateContext(cert);
+  fputs("windows EKU policy ok\n", stdout);
+  return 0;
+}
+`;
 
 describe.skipIf(!zigOnPath())("zig cc builds (zig on PATH)", () => {
   test("host-native zigcc build compiles the runtime and runs", async () => {
@@ -289,12 +349,21 @@ describe.skipIf(!zigOnPath())("zig cc builds (zig on PATH)", () => {
   test("cross build for x86_64-windows-gnu produces a PE and accepts events/net/http/dgram/tls/watch/zlib/--dynamic/fetch", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scr-zigcc-win-"));
     const cPath = join(dir, "program.c");
+    const caProbePath = join(dir, "ca-eku.c");
     await writeFile(cPath, HELLO_C);
+    await writeFile(caProbePath, WINDOWS_CA_EKU_C);
     const outPath = join(dir, "program.exe");
+    const caOutPath = join(dir, "ca-probe.exe");
     await withCcEnv("zigcc", "x86_64-windows-gnu", async () => {
       await compileC({ cPath, outPath });
       const magic = (await readFile(outPath)).subarray(0, 2);
       expect([...magic]).toEqual([0x4d, 0x5a]); // MZ
+      // CA introspection is mbedTLS-free but imports and PEM-encodes the
+      // same filtered ROOT-store entries that the TLS client consumes.
+      await compileC({ cPath: caProbePath, outPath: caOutPath, tlsCa: true });
+      const caPe = await readFile(caOutPath);
+      expect(caPe.includes("CRYPT32.dll")).toBe(true);
+      expect(caPe.includes("bcrypt.dll")).toBe(false);
       // The units with Windows arms link and produce a PE: events (CRT
       // signal + stdin probes), net/http (winsock + the WSAPoll poller
       // backend), dgram/dns (the winsock datagram arm + ws2tcpip's
@@ -329,6 +398,26 @@ describe.skipIf(!zigOnPath())("zig cc builds (zig on PATH)", () => {
       }
     });
   }, 600_000);
+
+  test.skipIf(process.platform !== "win32")(
+    "Windows CA roots honor the effective server-auth EKU property",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scr-zigcc-win-ca-eku-"));
+      const cPath = join(dir, "program.c");
+      const outPath = join(dir, "program.exe");
+      await writeFile(cPath, WINDOWS_CA_EKU_C);
+      await withCcEnv("zigcc", "x86_64-windows-gnu", () =>
+        compileC({ cPath, outPath, tlsCa: true }),
+      );
+      const caPath = join(
+        import.meta.dirname,
+        "../../../tests/fixtures/server/certs/ca.pem",
+      );
+      const { stdout } = await execFileAsync(outPath, [caPath]);
+      expect(stdout).toBe("windows EKU policy ok\n");
+    },
+    600_000,
+  );
 
   test("regex cross-compiles: the vendored libregexp objects build per target", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scr-zigcc-lre-"));

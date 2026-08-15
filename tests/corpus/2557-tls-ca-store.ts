@@ -26,8 +26,14 @@ console.log("bundled-pem", allPem);
 console.log("cached", getCACertificates("bundled") === bundled);
 console.log("roots", rootCertificates === bundled, tls.rootCertificates === bundled);
 console.log("default-cached", getCACertificates() === getCACertificates("default"));
-console.log("system-cached", getCACertificates("system") === getCACertificates("system"));
+const system = getCACertificates("system");
+console.log("system-cached", system === getCACertificates("system"));
+console.log("system-nonempty", system.length > 0);
 console.log("extra-cached", getCACertificates("extra") === getCACertificates("extra"));
+
+// Node's documented recipe must retain a non-empty trust set on every host.
+tls.setDefaultCACertificates(system);
+console.log("system-default", getCACertificates("default").length > 0);
 
 // A fixed self-signed certificate (only its identity matters here).
 const PEM = `-----BEGIN CERTIFICATE-----

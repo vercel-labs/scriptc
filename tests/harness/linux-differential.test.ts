@@ -4,7 +4,7 @@
  * (SCRIPTC_CC=zigcc, SCRIPTC_TARGET=<linux triple>) and both sides run
  * inside one Linux container — the binary, and a LINUX Node as the oracle.
  * GNU targets use node:<.node-version>-bookworm (whose glibc matches the
- * triple's pin); x86_64-linux-musl uses the matching Alpine Node image.
+ * triple's pin); <arch>-linux-musl uses the matching Alpine Node image.
  * Same contract as differential.test.ts: stdout byte-equal, stderr
  * byte-equal for exit-0 programs, exit codes agree with the `// @exit:`
  * directive.
@@ -517,11 +517,10 @@ describe.skipIf(!enabled)(`linux differential (${target})`, () => {
     await execFileAsync("docker", [
       "run", "-d", "--rm",
       // The container's CPU arch follows the TARGET triple, so
-      // SCRIPTC_LINUX_TARGET=x86_64-linux-{gnu.2.36,musl} runs the whole lane —
-      // oracle Node and cross binaries both — under linux/amd64 (Rosetta /
-      // qemu on Apple-silicon Docker; the CI/server arch that motivates
-      // the Linux lane in the first place). Default stays the host arch's
-      // image via the aarch64 default target.
+      // SCRIPTC_LINUX_TARGET selects the container architecture from the
+      // triple: x86_64 targets run the whole lane under linux/amd64
+      // (Rosetta/qemu on Apple-silicon Docker), while AArch64 targets use
+      // linux/arm64. The oracle Node and cross binaries always share it.
       "--platform", target.startsWith("x86_64") ? "linux/amd64" : "linux/arm64",
       "--name", containerName,
       "-v", `${repoRoot}:${mountPoint}`,

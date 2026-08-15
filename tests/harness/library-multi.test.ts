@@ -733,6 +733,7 @@ const crossOn = process.env["SCRIPTC_CROSS"] === "1";
 const CROSS_TARGETS = [
   "aarch64-linux-gnu.2.36",
   "x86_64-linux-gnu.2.36",
+  "aarch64-linux-musl",
   "x86_64-linux-musl",
   "x86_64-windows-gnu",
   ...(process.platform === "darwin" ? (["x86_64-macos"] as const) : []),
@@ -849,6 +850,7 @@ describe.skipIf(!crossOn)("cross-target localization", () => {
       ["aarch64-linux-gnu.2.36", "llvm"],
       ["x86_64-linux-gnu.2.36", "llvm"],
       ["x86_64-linux-gnu.2.36", "c"],
+      ["aarch64-linux-musl", "llvm"],
       ["x86_64-linux-musl", "llvm"],
     ] as const)(
       "M11: the two-instance probe runs in the container (%s, %s emission)",

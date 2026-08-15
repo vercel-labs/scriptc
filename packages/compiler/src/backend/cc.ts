@@ -381,6 +381,32 @@ export class CcCompileError extends Error {
   }
 }
 
+/** Preserve the useful output from a failed compiler/tool invocation. Node's
+ * execFile error exposes stderr and stdout independently, but either stream
+ * may be present as an empty string. Prefer compiler diagnostics, retain a
+ * non-standard stdout diagnostic when that is all the tool emitted, and only
+ * then fall back to the process error itself. */
+export function subprocessFailureDetail(err: unknown): string {
+  const failure = err as {
+    stderr?: string | Buffer;
+    stdout?: string | Buffer;
+    message?: string;
+  };
+  const output = (value: string | Buffer | undefined): string => {
+    const text = Buffer.isBuffer(value) ? value.toString("utf8") : value ?? "";
+    return text.trim().length > 0 ? text.trimEnd() : "";
+  };
+  const stderr = output(failure.stderr);
+  const stdout = output(failure.stdout);
+  if (stderr !== "" && stdout !== "") return `${stderr}\n\ncompiler stdout:\n${stdout}`;
+  if (stderr !== "") return stderr;
+  if (stdout !== "") return `compiler stdout:\n${stdout}`;
+  if (typeof failure.message === "string" && failure.message.trim() !== "") {
+    return failure.message;
+  }
+  return String(err);
+}
+
 export function runtimeSrcDir(): string {
   const testRoot = process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"];
   if (testRoot !== undefined) return resolve(testRoot);
@@ -940,7 +966,7 @@ async function ensureEngineArchive(
       }
       throw new Error(
         `cmake failed configuring the embedded engine (${vendor}).\n\n` +
-          `${(err as { stderr?: string }).stderr ?? String(err)}`,
+          subprocessFailureDetail(err),
       );
     }
     await execFileAsync("cmake", [
@@ -1640,7 +1666,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
         try {
           await execFileAsync(driver.argv[0] ?? "clang", args);
         } catch (err) {
-          const stderr = (err as { stderr?: string }).stderr ?? String(err);
+          const stderr = subprocessFailureDetail(err);
           throw new Error(
             `${driver.argv.join(" ")} failed compiling ${src} for the library archive.\n` +
               `This is a scriptc bug (generated/runtime C should always compile) unless the compiler itself is missing/broken.\n\n${stderr}`,
@@ -1873,7 +1899,7 @@ async function localizeLibraryObjects(
     try {
       await execFileAsync(argv[0]!, [...argv.slice(1)]);
     } catch (err) {
-      const stderr = (err as { stderr?: string }).stderr ?? String(err);
+      const stderr = subprocessFailureDetail(err);
       throw new Error(
         `${argv[0]} failed while localizing the library archive's runtime symbols (abi.localize_runtime).\n` +
           `Runtime symbol localization needs the ${platform === "darwin" ? "host toolchain's ld" : driver.target === null ? "host toolchain's ld and objcopy" : "cross driver's relocatable link"} beside the C compiler.\n\n${stderr}`,
@@ -3731,7 +3757,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
     try {
       await execFileAsync(driver.argv[0] ?? "clang", [...driver.argv.slice(1), ...args]);
     } catch (err) {
-      const stderr = (err as { stderr?: string }).stderr ?? String(err);
+      const stderr = subprocessFailureDetail(err);
       const guidance =
         (opts.linkInputs?.length ?? 0) > 0 ||
         (opts.systemLibraries?.length ?? 0) > 0

@@ -20,7 +20,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import { compileC, resolveCc, runtimeSrcDir } from "../src/backend/cc.js";
+import {
+  compileC,
+  resolveCc,
+  runtimeSrcDir,
+  subprocessFailureDetail,
+} from "../src/backend/cc.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -57,6 +62,19 @@ test("SCRIPTC_TARGET without zigcc is an error, never a silent clang cross build
 test("unknown SCRIPTC_CC values are rejected", () => {
   expect(() => resolveCc({ SCRIPTC_CC: "gcc" })).toThrow(/unknown SCRIPTC_CC/);
   expect(() => resolveCc({ SCRIPTC_CC: "zigcc", SCRIPTC_TARGET: "wasm64-wasi" })).toThrow(/supported: wasm32-wasi/);
+});
+
+test("subprocess failures retain diagnostics when stderr is empty", () => {
+  expect(subprocessFailureDetail({
+    stderr: "",
+    stdout: "zig: actual failure\n",
+  })).toBe("compiler stdout:\nzig: actual failure");
+
+  const noOutput = Object.assign(new Error("zig cc exited with code 1"), {
+    stderr: "",
+    stdout: "",
+  });
+  expect(subprocessFailureDetail(noOutput)).toBe("zig cc exited with code 1");
 });
 
 test("an empty ANDROID_NDK_ROOT does not mask ANDROID_NDK_HOME", async () => {
@@ -117,6 +135,15 @@ test("zigcc resolves to `zig cc`; linux triples add their libc target flags", ()
     "-DSCR_MUSL",
   ]);
   expect(musl.linkArgs).toEqual(["-lm"]);
+
+  const armMusl = resolveCc({ SCRIPTC_CC: "zigcc", SCRIPTC_TARGET: "aarch64-linux-musl" });
+  expect(armMusl.targetArgs).toEqual([
+    "-target",
+    "aarch64-linux-musl",
+    "-D_GNU_SOURCE",
+    "-DSCR_MUSL",
+  ]);
+  expect(armMusl.linkArgs).toEqual(["-lm"]);
 
   // Non-linux triples get the -target but not glibc's visibility macro.
   const mac = resolveCc({ SCRIPTC_CC: "zigcc", SCRIPTC_TARGET: "aarch64-macos" });
@@ -232,6 +259,17 @@ describe.skipIf(!zigOnPath())("zig cc builds (zig on PATH)", () => {
     await withCcEnv("zigcc", "x86_64-linux-musl", () => compileC({ cPath, outPath }));
     const elf = await readFile(outPath);
     expect([...elf.subarray(0, 4)]).toEqual([0x7f, 0x45, 0x4c, 0x46]);
+  });
+
+  test("cross build for aarch64-linux-musl links the libc and ucontext shims", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scr-zigcc-aarch64-musl-"));
+    const cPath = join(dir, "program.c");
+    await writeFile(cPath, MUSL_RUNTIME_C);
+    const outPath = join(dir, "program");
+    await withCcEnv("zigcc", "aarch64-linux-musl", () => compileC({ cPath, outPath }));
+    const elf = await readFile(outPath);
+    expect([...elf.subarray(0, 4)]).toEqual([0x7f, 0x45, 0x4c, 0x46]);
+    expect(elf.readUInt16LE(18)).toBe(183); // EM_AARCH64
   });
 
   test("musl library CSPRNG failures stay on the library trap funnel", async () => {

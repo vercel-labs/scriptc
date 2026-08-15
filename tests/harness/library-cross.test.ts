@@ -11,6 +11,7 @@
  *                             pinned to the differential container's
  *                             bookworm — docs/linux-port.md)
  *   x86_64-linux-gnu.2.36    (the linux lane's amd64 triple)
+ *   aarch64-linux-musl       (the Alpine-compatible static arm64 triple)
  *   x86_64-linux-musl        (the Alpine-compatible static amd64 triple)
  *   x86_64-windows-gnu       (the windows lane's triple)
  *   x86_64-macos             (build-only; the host arm64-macos build is
@@ -74,6 +75,7 @@ const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests/library-cross
 const TARGETS = [
   "aarch64-linux-gnu.2.36",
   "x86_64-linux-gnu.2.36",
+  "aarch64-linux-musl",
   "x86_64-linux-musl",
   "x86_64-windows-gnu",
   "x86_64-macos",
@@ -299,6 +301,7 @@ describe.skipIf(!enabled)("cross-target library conformance", () => {
       EMISSIONS.flatMap((e) => [
         [`aarch64-linux-gnu.2.36 ${e}`, "aarch64-linux-gnu.2.36", e],
         [`x86_64-linux-gnu.2.36 ${e}`, "x86_64-linux-gnu.2.36", e],
+        [`aarch64-linux-musl ${e}`, "aarch64-linux-musl", e],
         [`x86_64-linux-musl ${e}`, "x86_64-linux-musl", e],
       ] as const),
     )(

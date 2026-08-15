@@ -23,7 +23,7 @@ $ file fib-linux
 fib-linux: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, for GNU/Linux 2.0.0, with debug_info, not stripped
 ```
 
-The runtime has native Linux backends throughout: the event loop is epoll (kqueue on macOS), the server stack and TLS (with distro CA-bundle probing) and `fs.watch` all have Linux implementations, verified against Linux Node in a container-based differential lane. `x86_64-linux-gnu.2.36` works the same way. For Alpine containers, use `x86_64-linux-musl`; Zig produces a statically linked executable and the same static runtime surface is verified against Node on Alpine.
+The runtime has native Linux backends throughout: the event loop is epoll (kqueue on macOS), the server stack and TLS (with distro CA-bundle probing) and `fs.watch` all have Linux implementations, verified against Linux Node in a container-based differential lane. `x86_64-linux-gnu.2.36` works the same way. For Alpine containers, use `<arch>-linux-musl`; Zig produces a statically linked executable for either AArch64 or x86_64, and the same static runtime surface is verified against Node on Alpine.
 
 ### Windows (x86_64)
 
@@ -89,7 +89,7 @@ The remaining executable boundary is host capability, not language coverage. WAS
     </tr>
     <tr>
       <td>Linux arm64 / x86_64</td>
-      <td><code>SCRIPTC_CC=zigcc SCRIPTC_TARGET=&lt;arch&gt;-linux-gnu.2.36</code> or <code>x86_64-linux-musl</code></td>
+      <td><code>SCRIPTC_CC=zigcc SCRIPTC_TARGET=&lt;arch&gt;-linux-gnu.2.36</code> or <code>&lt;arch&gt;-linux-musl</code></td>
       <td>Static and dynamic surfaces incl. servers, TLS, fetch, fs.watch, and child_process; verified against Linux Node on Bookworm and Alpine</td>
     </tr>
     <tr>

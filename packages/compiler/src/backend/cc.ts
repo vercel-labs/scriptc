@@ -371,13 +371,25 @@ export interface CcOptions {
  * when an outbound FFI profile is active and turns user-controlled native
  * link failures into SC5004. */
 export class CcCompileError extends Error {
+  readonly command: string;
+  readonly exitCode: number | null;
+  readonly stdout: string;
+
   constructor(
     readonly driver: string,
     readonly stderr: string,
     message: string,
+    details?: {
+      command: string;
+      exitCode: number | null;
+      stdout: string;
+    },
   ) {
     super(message);
     this.name = "CcCompileError";
+    this.command = details?.command ?? driver;
+    this.exitCode = details?.exitCode ?? null;
+    this.stdout = details?.stdout ?? "";
   }
 }
 
@@ -3728,10 +3740,32 @@ export async function compileC(opts: CcOptions): Promise<void> {
   const programSourceExtension = opts.cPath.endsWith(".ll") ? ".ll" : ".c";
   const ccName = driver.argv.join(" ");
   const runClang = async (args: string[]): Promise<void> => {
+    const executable = driver.argv[0] ?? "clang";
+    const argv = [...driver.argv.slice(1), ...args];
     try {
-      await execFileAsync(driver.argv[0] ?? "clang", [...driver.argv.slice(1), ...args]);
+      await execFileAsync(executable, argv);
     } catch (err) {
-      const stderr = (err as { stderr?: string }).stderr ?? String(err);
+      const failure = err as {
+        cmd?: unknown;
+        code?: unknown;
+        stderr?: unknown;
+        stdout?: unknown;
+      };
+      const command =
+        typeof failure.cmd === "string" && failure.cmd.length > 0
+          ? failure.cmd
+          : [executable, ...argv].join(" ");
+      const exitCode = typeof failure.code === "number" ? failure.code : null;
+      const stderr = typeof failure.stderr === "string"
+        ? failure.stderr
+        : Buffer.isBuffer(failure.stderr)
+          ? failure.stderr.toString()
+          : "";
+      const stdout = typeof failure.stdout === "string"
+        ? failure.stdout
+        : Buffer.isBuffer(failure.stdout)
+          ? failure.stdout.toString()
+          : "";
       const guidance =
         (opts.linkInputs?.length ?? 0) > 0 ||
         (opts.systemLibraries?.length ?? 0) > 0
@@ -3739,11 +3773,22 @@ export async function compileC(opts: CcOptions): Promise<void> {
             "that archive/object ordering is correct, and that each input matches the selected target."
           : `This is a scriptc bug (generated C should always compile) unless ` +
             `${ccName} itself is missing/broken.`;
+      const processError = String(err);
+      const output = [
+        `Command: ${command}`,
+        `Exit code: ${exitCode ?? "unavailable"}`,
+        `Compiler stderr:${stderr.length > 0 ? `\n${stderr}` : " <empty>"}`,
+        ...(stdout.length > 0 ? [`Compiler stdout:\n${stdout}`] : []),
+        ...(stderr.length === 0 && stdout.length === 0
+          ? [`Process error: ${processError}`]
+          : []),
+      ].join("\n");
       throw new CcCompileError(
         ccName,
         stderr,
         `${ccName} failed compiling ${opts.cPath}.\n` +
-          `${guidance}\n\n${stderr}`,
+          `${guidance}\n\n${output}`,
+        { command, exitCode, stdout },
       );
     }
   };

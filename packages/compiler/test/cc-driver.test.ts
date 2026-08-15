@@ -17,10 +17,10 @@
 import { execFile, execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import { compileC, resolveCc, runtimeSrcDir } from "../src/backend/cc.js";
+import { CcCompileError, compileC, resolveCc, runtimeSrcDir } from "../src/backend/cc.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -173,6 +173,55 @@ test("host-native clang static build compiles the runtime and runs", async () =>
   const { stdout } = await execFileAsync(outPath);
   expect(stdout).toBe("clang says hi\n");
 });
+
+test.skipIf(process.platform === "win32")(
+  "compiler failures retain the command, exit code, and captured output",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scr-cc-failure-"));
+    const binDir = join(dir, "bin");
+    const fakeClang = join(binDir, "clang");
+    const cPath = join(dir, "program.c");
+    const outPath = join(dir, "program");
+    await mkdir(binDir);
+    await writeFile(
+      fakeClang,
+      '#!/bin/sh\nprintf "compiler stdout marker\\n"\nexit 23\n',
+    );
+    await chmod(fakeClang, 0o755);
+    await writeFile(cPath, "int main(void) { return 0; }\n");
+
+    const previousPath = process.env["PATH"];
+    const previousNoCache = process.env["SCRIPTC_NO_CACHE"];
+    process.env["PATH"] = `${binDir}${delimiter}${previousPath ?? ""}`;
+    process.env["SCRIPTC_NO_CACHE"] = "1";
+    try {
+      let failure: unknown;
+      try {
+        await compileC({ cPath, outPath });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeInstanceOf(CcCompileError);
+      if (!(failure instanceof CcCompileError)) throw failure;
+      expect(failure.command).toContain(`clang`);
+      expect(failure.command).toContain(cPath);
+      expect(failure.command).toContain(outPath);
+      expect(failure.exitCode).toBe(23);
+      expect(failure.stderr).toBe("");
+      expect(failure.stdout).toBe("compiler stdout marker\n");
+      expect(failure.message).toContain(`Command: ${failure.command}`);
+      expect(failure.message).toContain("Exit code: 23");
+      expect(failure.message).toContain("Compiler stderr: <empty>");
+      expect(failure.message).toContain("Compiler stdout:\ncompiler stdout marker");
+    } finally {
+      if (previousPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = previousPath;
+      if (previousNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = previousNoCache;
+    }
+  },
+);
 
 test("host-native clang static build links native fetch after zlib inputs", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scr-host-fetch-clang-"));

@@ -18,7 +18,7 @@ import type {
   IrUnionDef,
   SrcLoc,
 } from "./nodes.js";
-import { arrayOf, BOOL, BYTES_U8, bytesOf, canAdaptDynFuncTo, canConvertToDyn, canExitIslandToType, canMarshalIntoIsland, canMarshalTypedFuncIntoIsland, CHILD_T, CHILDSTREAM_T, DATE_T, DGRAMSOCK_T, DYN, DYN_HANDLE_KINDS, F64, ffiClassType, ffiSourceParamTypes, FILEHANDLE_T, FSWATCHER_T, HTTP2SESSION_T, HTTP2STREAM_T, HTTPCLIENTREQ_T, HTTPREQ_T, HTTPRES_T, islandPromisePayloadTag, isJsonSafeType, isRefCounted, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, jsOpResultKind, JSVAL, NETSERVER_T, NETSOCKET_T, PROCSTREAM_T, REF_TRUTHY_KINDS, REGEX, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, SEARCH_PARAMS_T, SECURECTX_T, SPAWNRES_T, STATS_T, STRING, SYMBOL_T, TESTCTX_T, typeEquals, typeKey, unionFuncSetArmsOk, URL_T, VOID } from "./nodes.js";
+import { arrayOf, BOOL, BYTES_U8, bytesOf, canAdaptDynFuncTo, canConvertToDyn, canExitIslandToType, canMarshalIntoIsland, canMarshalTypedFuncIntoIsland, CHILD_T, CHILDSTREAM_T, DATE_T, DGRAMSOCK_T, DYN, DYN_HANDLE_KINDS, F64, ffiClassType, ffiSourceParamTypes, FILEHANDLE_T, FSWATCHER_T, HTTP2SESSION_T, HTTP2STREAM_T, HTTPCLIENTREQ_T, HTTPREQ_T, HTTPRES_T, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isJsonSafeType, isRefCounted, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, jsOpResultKind, JSVAL, NETSERVER_T, NETSOCKET_T, PROCSTREAM_T, REF_TRUTHY_KINDS, REGEX, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, SEARCH_PARAMS_T, SECURECTX_T, SPAWNRES_T, STATS_T, STRING, SYMBOL_T, TESTCTX_T, typeEquals, typeKey, unionFuncSetArmsOk, URL_T, VOID } from "./nodes.js";
 
 /** Per-method signature for strIntrinsic: `argTypes` lists every argument
  * position (optional ones included); `minArgs` is how many may be omitted
@@ -1181,6 +1181,49 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     }
     ffiByName.set(entry.name, entry);
     ffiSymbols.add(entry.symbol);
+  }
+  const retainedFfiCallbacks = new Map<string, Extract<NonNullable<IrModule["ffiImports"]>[number]["params"][number], { callback: { id: string } }>["callback"]>();
+  for (const entry of mod.ffiImports ?? []) {
+    const ids = new Set<string>();
+    for (const param of entry.params) {
+      if (!isFfiCallbackParam(param)) continue;
+      if (ids.has(param.callback.id)) {
+        errors.push({ message: `FFI binding "${entry.name}" has duplicate callback id "${param.callback.id}"`, loc: moduleLoc });
+      }
+      ids.add(param.callback.id);
+      if (param.callback.lifetime === "retained") {
+        retainedFfiCallbacks.set(`${entry.name}:${param.callback.id}`, param.callback);
+      }
+      const hasInnerContext = param.callback.params.some(isFfiContextParam);
+      const outerContexts = entry.params.filter(
+        (candidate) => isFfiContextParam(candidate) && candidate.context === param.callback.id,
+      ).length;
+      if (hasInnerContext !== (outerContexts === 1)) {
+        errors.push({ message: `FFI callback "${entry.name}:${param.callback.id}" has inconsistent context slots`, loc: moduleLoc });
+      }
+    }
+  }
+  for (const entry of mod.ffiImports ?? []) {
+    for (const param of entry.params) {
+      if (!isFfiReleaseParam(param)) continue;
+      const target = retainedFfiCallbacks.get(param.callback.release);
+      if (target === undefined) {
+        errors.push({ message: `FFI release "${entry.name}:${param.callback.release}" has no retained target`, loc: moduleLoc });
+        continue;
+      }
+      const inherited = JSON.stringify(param.callback.params) === JSON.stringify(target.params) &&
+        param.callback.returns === target.returns;
+      if (!inherited) {
+        errors.push({ message: `FFI release "${entry.name}:${param.callback.release}" does not inherit its target ABI`, loc: moduleLoc });
+      }
+      const hasInnerContext = target.params.some(isFfiContextParam);
+      const outerContexts = entry.params.filter(
+        (candidate) => isFfiContextParam(candidate) && candidate.context === param.callback.release,
+      ).length;
+      if (hasInnerContext !== (outerContexts === 1)) {
+        errors.push({ message: `FFI release "${entry.name}:${param.callback.release}" has inconsistent context slots`, loc: moduleLoc });
+      }
+    }
   }
   // The lib section (library mode): every mapped function exists, is
   // synchronous, and its IR signature fits the declared marshalling

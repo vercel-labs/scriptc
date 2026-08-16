@@ -104,21 +104,21 @@ The manifest is the native ABI authority. TypeScript has only `number`, so its d
       <td><code>cstring</code></td>
       <td><code>string</code></td>
       <td><code>const char *</code>; callback input only, copied through lossy UTF-8 decoding</td>
-      <td>callback only (format 3)</td>
+      <td>callback only (formats 3–4)</td>
       <td>no</td>
     </tr>
     <tr>
       <td><code>string</code></td>
       <td><code>string</code></td>
       <td><code>const uint8_t *, size_t</code>; UTF-8 bytes, length-delimited</td>
-      <td>yes; callback input in format 3</td>
+      <td>yes; callback input in formats 3–4</td>
       <td>no</td>
     </tr>
     <tr>
       <td><code>bytes</code></td>
       <td><code>Uint8Array</code> or <code>Buffer</code></td>
       <td><code>const uint8_t *, size_t</code>; raw bytes, length-delimited</td>
-      <td>yes; callback input in format 3</td>
+      <td>yes; callback input in formats 3–4</td>
       <td>no</td>
     </tr>
     <tr>
@@ -189,13 +189,63 @@ The callback id connects the two independently positioned context entries. Both 
 }
 ```
 
-A callback descriptor consumes one TypeScript function parameter and one native function-pointer slot. A context entry consumes no TypeScript parameter and one native `void *` slot. Formats 2 and 3 accept `f64`, `bool`, `u8`, `u32`, and `i32` callback parameters plus at most one context entry. Format 3 additionally accepts `cstring`, `string`, and `bytes`; callback returns remain scalar or `void`.
+A callback descriptor consumes one TypeScript function parameter and one native function-pointer slot. A context entry consumes no TypeScript parameter and one native `void *` slot. Formats 2 through 4 accept `f64`, `bool`, `u8`, `u32`, and `i32` callback parameters plus at most one context entry. Formats 3 and 4 additionally accept `cstring`, `string`, and `bytes`; callback returns remain scalar or `void`.
 
 Format 3 string-bearing callback parameters copy native data before the closure runs. `cstring` reads one non-null, NUL-terminated `const char *`. `string` and `bytes` each consume a `const uint8_t *, size_t` pair; a null pointer is valid only when its length is zero. Text is decoded as UTF-8 with malformed sequences replaced by U+FFFD, matching `Buffer.toString("utf8")`. The resulting string or `Uint8Array` is freshly owned scriptc storage, so the closure may retain it without depending on the native buffer's lifetime. An unexpected null `cstring`, or a null non-empty span, traps at the boundary instead of being treated as empty.
 
-For a raw C callback type with no userdata, omit the context entry from both parameter lists. scriptc installs that closure in a binding-specific thread-local slot around the native call, so captures and nested calls still work. This remains call-scoped: the native function must invoke it synchronously on the thread that entered the native call.
+For a raw call-scoped C callback type with no userdata, omit the context entry from both parameter lists. scriptc installs that closure in a binding-specific thread-local slot around the native call, so captures and nested calls still work.
 
-`lifetime` must currently be `"call"`. Native code must not retain a callback or context, invoke it after the outer function returns, or invoke it from another thread. As with a bad native pointer or mismatched signature, violating that contract is outside scriptc's memory-safety guarantees. Retained callbacks will require an explicit registration/unregistration ownership model; foreign-thread callbacks will additionally require runtime scheduling and synchronization.
+Format 4 adds `lifetime: "retained"` for same-thread native APIs that store a callback and invoke it from a later FFI call. Registration pins the closure and its captures. A paired release binding passes the same trampoline and closure context back to native code, then unpins one matching registration after the native call returns:
+
+```ts:main.ts
+declare function timerAdd(interval: number, tick: () => void): void;
+declare function timerRemove(tick: () => void): void;
+
+const tick = () => console.log("tick");
+timerAdd(100, tick);
+// A later native pump call may invoke tick here.
+timerRemove(tick);
+```
+
+```json:ffi.json
+{
+  "ffi_format": 4,
+  "functions": [
+    {
+      "name": "timerAdd",
+      "symbol": "timer_add",
+      "params": [
+        "u32",
+        {
+          "callback": {
+            "id": "tick",
+            "params": [{ "context": "tick" }],
+            "returns": "void",
+            "lifetime": "retained"
+          }
+        },
+        { "context": "tick" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "timerRemove",
+      "symbol": "timer_remove",
+      "params": [
+        { "callback": { "release": "timerAdd:tick" } },
+        { "context": "timerAdd:tick" }
+      ],
+      "returns": "void"
+    }
+  ]
+}
+```
+
+The release argument must be the same function value used for registration. Registrations are counted: registering the same closure twice requires two releases. Releasing an unregistered value traps because native code may still hold the original pointer. The callback's function type must be exact at retained call sites; an implicit wrapper would create a different pointer and make release identity unsound.
+
+Context-bearing descriptors support multiple concurrent closures. A raw retained descriptor has no context pointer, so it has one process-global slot with replace semantics: registering a new closure releases the old slot. Retained registrations do not keep the event loop alive and remaining registrations are released at process exit.
+
+Both `"call"` and `"retained"` callbacks must run synchronously on the script thread. Direct foreign-thread invocation, value-returning foreign-thread callbacks, and real-time callback delivery are unsupported: scriptc's reference counting and exception cell are thread-confined, and a future foreign-thread surface must enqueue fire-and-forget delivery onto the script loop. Dereferenceable struct callback parameters are also unsupported; use an opaque native handle with accessor functions when the API permits it.
 
 If a callback throws, the adapter returns zero (or `void`) to native code and suppresses further script callback execution while the exception is pending. When the outer native function returns, the original exception resumes through scriptc's ordinary catchable unwind path. Native work performed between the callback's return and the outer function's return is not rolled back.
 
@@ -203,10 +253,10 @@ If a callback throws, the adapter returns zero (or `void`) to native code and su
 
 <dl>
   <dt><code>ffi_format</code></dt>
-  <dd>Required. Format <code>1</code> supports value parameters; format <code>2</code> preserves them and adds callback/context entries; format <code>3</code> adds copy-in <code>cstring</code>, string-span, and byte-span callback parameters.</dd>
+  <dd>Required. Format <code>1</code> supports value parameters; format <code>2</code> preserves them and adds callback/context entries; format <code>3</code> adds copy-in <code>cstring</code>, string-span, and byte-span callback parameters; format <code>4</code> adds retained registrations and release references.</dd>
 
   <dt><code>functions</code></dt>
-  <dd>Required array. Every entry has exactly <code>name</code>, <code>symbol</code>, <code>params</code>, and <code>returns</code>. Binding names and symbols must be unique. In formats 2 and 3, callback ids must be unique within a function and every context must match exactly one callback.</dd>
+  <dd>Required array. Every entry has exactly <code>name</code>, <code>symbol</code>, <code>params</code>, and <code>returns</code>. Binding names and symbols must be unique. Callback ids must be unique within a function and every context must match exactly one callback or release. A release references a retained <code>&lt;binding&gt;:&lt;callback-id&gt;</code> in the same manifest and inherits its callback ABI.</dd>
 
   <dt><code>libraries</code></dt>
   <dd>Optional array of archive or object paths. Relative paths are resolved from the manifest directory and appended after the generated program at link time.</dd>
@@ -221,7 +271,7 @@ Unknown fields, invalid ABI classes, duplicate names, and signature mismatches f
 
 - Native calls are synchronous and must return normally. Do not unwind C++ exceptions or `longjmp` across the boundary.
 - Native code is outside scriptc's exception, reference-counting, and sanitizer contracts. A bad pointer or mismatched C signature can still corrupt the process.
-- Callbacks are synchronous, call-scoped, and same-thread only. Retained callbacks and foreign-thread invocation are not supported yet.
+- Callbacks are same-thread only. Format 4 supports retained callbacks with explicit release; foreign-thread invocation is not supported.
 - There are no variadic calls, struct-by-value arguments, owned pointer returns, or runtime `dlopen`/`dlsym` handles yet.
 - The archive or object must match the build target. Cross-compilation does not translate native inputs.
 - Outbound FFI is currently available for executable builds, not `scriptc build --lib`.

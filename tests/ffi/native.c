@@ -120,3 +120,62 @@ void sf_callback_string_throw(sf_cstring_cb callback, void *context) {
 void sf_null_cstring(sf_cstring_cb callback, void *context) {
   callback(NULL, context);
 }
+
+/* Format-4 retained callbacks. This fixture deliberately stores the exact
+ * function/context pair and fires it only from a later pump call. Duplicate
+ * registrations are distinct native entries, matching the runtime ledger. */
+typedef void (*sf_retained_cb)(double value, void *context);
+
+typedef struct {
+  sf_retained_cb callback;
+  void *context;
+} sf_retained_entry;
+
+static sf_retained_entry retained_entries[16];
+static size_t retained_len;
+
+void sf_retained_add(sf_retained_cb callback, void *context) {
+  if (retained_len < 16) {
+    retained_entries[retained_len++] = (sf_retained_entry){callback, context};
+  }
+}
+
+void sf_retained_remove(sf_retained_cb callback, void *context) {
+  for (size_t i = 0; i < retained_len; i++) {
+    if (retained_entries[i].callback != callback ||
+        retained_entries[i].context != context) continue;
+    retained_len--;
+    for (size_t j = i; j < retained_len; j++) {
+      retained_entries[j] = retained_entries[j + 1];
+    }
+    return;
+  }
+}
+
+void sf_retained_pump(double value) {
+  size_t end = retained_len;
+  for (size_t i = 0; i < end; i++) {
+    retained_entries[i].callback(value, retained_entries[i].context);
+  }
+}
+
+void sf_retained_fire_first(double value) {
+  if (retained_len != 0) {
+    retained_entries[0].callback(value, retained_entries[0].context);
+  }
+}
+
+typedef void (*sf_retained_raw_cb)(double value);
+static sf_retained_raw_cb retained_raw;
+
+void sf_retained_raw_set(sf_retained_raw_cb callback) {
+  retained_raw = callback;
+}
+
+void sf_retained_raw_remove(sf_retained_raw_cb callback) {
+  if (retained_raw == callback) retained_raw = NULL;
+}
+
+void sf_retained_raw_pump(double value) {
+  if (retained_raw != NULL) retained_raw(value);
+}

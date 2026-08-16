@@ -31,6 +31,13 @@ declare function nativeCallbackSpans(
 ): void;
 declare function nativeCallbackStringThrow(callback: (value: string) => void): void;
 declare function nativeNullCString(callback: (value: string) => void): void;
+declare function nativeRetainedAdd(callback: (value: number) => void): void;
+declare function nativeRetainedRemove(callback: (value: number) => void): void;
+declare function nativeRetainedPump(value: number): void;
+declare function nativeRetainedFireFirst(value: number): void;
+declare function nativeRetainedRawSet(callback: (value: number) => void): void;
+declare function nativeRetainedRawRemove(callback: (value: number) => void): void;
+declare function nativeRetainedRawPump(value: number): void;
 
 console.log(nativeScale(21));
 console.log(nativeInvert(false), nativeInvert(true));
@@ -85,6 +92,82 @@ try {
 } catch (error) {
   console.log("caught", (error as Error).message);
 }
+
+const retainedEvents: string[] = [];
+const retainedOffset = 10;
+const retainedFirst = (value: number) => {
+  retainedEvents.push(`first:${value + retainedOffset}`);
+};
+let retainedSecondTotal = 0;
+const retainedSecond = (value: number) => {
+  retainedSecondTotal += value;
+  retainedEvents.push(`second:${retainedSecondTotal}`);
+};
+nativeRetainedAdd(retainedFirst);
+nativeRetainedAdd(retainedSecond);
+nativeRetainedPump(1);
+nativeRetainedRemove(retainedFirst);
+nativeRetainedPump(2);
+nativeRetainedRemove(retainedSecond);
+console.log(retainedEvents.join("|"));
+
+let retainedDuplicateTotal = 0;
+const retainedDuplicate = (value: number) => {
+  retainedDuplicateTotal += value;
+};
+nativeRetainedAdd(retainedDuplicate);
+nativeRetainedAdd(retainedDuplicate);
+nativeRetainedPump(2);
+nativeRetainedRemove(retainedDuplicate);
+nativeRetainedPump(3);
+nativeRetainedRemove(retainedDuplicate);
+nativeRetainedPump(4);
+console.log(retainedDuplicateTotal);
+
+const retainedThrow = (value: number) => {
+  throw new Error(`retained boom ${value}`);
+};
+nativeRetainedAdd(retainedThrow);
+try {
+  nativeRetainedPump(9);
+} catch (error) {
+  console.log("caught", (error as Error).message);
+}
+nativeRetainedRemove(retainedThrow);
+
+let selfReleaseTotal = 0;
+const selfRelease = (value: number) => {
+  selfReleaseTotal += value;
+  nativeRetainedRemove(selfRelease);
+};
+nativeRetainedAdd(selfRelease);
+nativeRetainedFireFirst(4);
+nativeRetainedPump(5);
+console.log(selfReleaseTotal);
+
+const rawEvents: number[] = [];
+const rawOffset = 5;
+const rawFirst = (value: number) => {
+  rawEvents.push(value + rawOffset);
+};
+const rawSecond = (value: number) => {
+  rawEvents.push(value * 10);
+};
+nativeRetainedRawSet(rawFirst);
+nativeRetainedRawPump(1);
+nativeRetainedRawSet(rawSecond);
+nativeRetainedRawPump(2);
+nativeRetainedRawRemove(rawSecond);
+nativeRetainedRawPump(3);
+console.log(rawEvents.join(" "));
+
+// A still-live registration at normal process exit exercises the runtime's
+// teardown path (the sanitized lane checks that its captured closure leaks
+// neither the closure nor its capture box).
+const exitCapture = "live-at-exit";
+nativeRetainedAdd((_value: number) => {
+  if (exitCapture.length === 0) console.log("unreachable");
+});
 
 try {
   nativeCallbackStringThrow((value) => {

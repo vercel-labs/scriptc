@@ -90,5 +90,5 @@ The production <code>wasm32-wasi</code> target supports the complete executable 
 ## Tooling gaps
 
 - `scriptc run` does not forward extra CLI arguments to the program — `build` and invoke the binary directly.
-- Native FFI is a direct, manifest-declared C ABI link surface. Callback parameters are synchronous, call-scoped, and same-thread; retained or foreign-thread callbacks are not supported yet. Variadic calls, structs by value, owned pointer/string/byte returns, runtime dynamic-library loading, and library-mode builds also remain unsupported. See [Native FFI](/ffi).
+- Native FFI is a direct, manifest-declared C ABI link surface. Callback invocation is same-thread only; format 4 supports explicitly released retained callbacks, but foreign-thread callbacks remain unsupported. Variadic calls, structs by value, owned pointer/string/byte returns, runtime dynamic-library loading, and library-mode builds also remain unsupported. See [Native FFI](/ffi).
 - Numbers are JS-exact f64 everywhere. Integer inference and ownership analysis — the systems-language performance ceiling — are roadmap, not shipped.

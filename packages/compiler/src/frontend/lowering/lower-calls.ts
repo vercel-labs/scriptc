@@ -5,8 +5,8 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
-import { BOOL, CAUGHT, DYN, F64, IrExpr, IrFunction, IrLocal, IrParam, IrStmt, IrType, JSVAL, STRING, SYMBOL_T, SrcLoc, UNDEFINED_T, VOID, arrayOf, canBoxFuncIntoDyn, canConvertToDyn, canDynCheckTo, canMarshalTypedFuncIntoIsland, ffiClassType, ffiSourceParamTypes, funcOf, isFfiCallbackParam, isFfiContextParam, isUnitType, shapeHasAccessorSlots, typeEquals } from "../../ir/nodes.js";
-import type { IrFfiCallbackParam, IrFfiCallbackParamClass, IrFfiImport } from "../../ir/nodes.js";
+import { BOOL, CAUGHT, DYN, F64, IrExpr, IrFunction, IrLocal, IrParam, IrStmt, IrType, JSVAL, STRING, SYMBOL_T, SrcLoc, UNDEFINED_T, VOID, arrayOf, canBoxFuncIntoDyn, canConvertToDyn, canDynCheckTo, canMarshalTypedFuncIntoIsland, ffiClassType, ffiSourceParamTypes, funcOf, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isUnitType, shapeHasAccessorSlots, typeEquals } from "../../ir/nodes.js";
+import type { IrFfiCallbackParam, IrFfiCallbackParamClass, IrFfiImport, IrFfiReleaseParam } from "../../ir/nodes.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { isGenericCallableMemberType, typeKey } from "../types.js";
 import { PoisonError, dynFallbackType, dynUndefinedExpr, importCallHandleType, jsFuncNameOf, newFnCtx, nodeThrowExpr } from "./lowerer.js";
@@ -2479,7 +2479,11 @@ function ffiSourceParams(binding: IrFfiImport): Exclude<IrFfiImport["params"][nu
 }
 
 function ffiParamDisplay(param: ReturnType<typeof ffiSourceParams>[number]): string {
-  return isFfiCallbackParam(param) ? `callback '${param.callback.id}'` : `class '${param}'`;
+  return isFfiCallbackParam(param)
+    ? `callback '${param.callback.id}'`
+    : isFfiReleaseParam(param)
+      ? `release callback '${param.callback.release}'`
+      : `class '${param}'`;
 }
 
 /** Callback arguments flow from native code into TypeScript. Their source
@@ -2488,7 +2492,7 @@ function ffiParamDisplay(param: ReturnType<typeof ffiSourceParams>[number]): str
  * enum, or `never` from an unrestricted `number`. */
 function ffiCallbackInputDiagnostic(
   L: Lowerer,
-  descriptor: IrFfiCallbackParam,
+  descriptor: IrFfiCallbackParam | IrFfiReleaseParam,
   callbackType: ts.Type,
 ): string | null {
   const signatures = L.checker.getCallSignatures(callbackType);
@@ -2527,8 +2531,11 @@ function ffiCallbackInputDiagnostic(
       ? (paramType.flags & ts.TypeFlags.String) !== 0
       : (paramType.flags & ts.TypeFlags.Number) !== 0;
     if (!coversDomain) {
+      const descriptorName = isFfiCallbackParam(descriptor)
+        ? descriptor.callback.id
+        : descriptor.callback.release;
       return (
-        `callback '${descriptor.callback.id}' parameter ${i + 1} is '${L.checker.typeToString(paramType)}', ` +
+        `callback '${descriptorName}' parameter ${i + 1} is '${L.checker.typeToString(paramType)}', ` +
         `but native class '${nativeClass}' may supply any ${domain}; declare it as '${domain}'`
       );
     }
@@ -2638,7 +2645,7 @@ function ffiDeclarationDiagnostic(
         loc,
       );
     }
-    if (isFfiCallbackParam(sourceParam)) {
+    if (isFfiCallbackParam(sourceParam) || isFfiReleaseParam(sourceParam)) {
       const callbackDiagnostic = ffiCallbackInputDiagnostic(L, sourceParam, paramType);
       if (callbackDiagnostic !== null) {
         return signatureDiag(binding.name, callbackDiagnostic, loc);
@@ -2905,9 +2912,35 @@ export function lowerFfiCall(L: Lowerer, expr: ts.CallExpression): IrExpr | null
       );
     }
     const expectedReturn = ffiClassType(binding.returns);
-    const args = expr.arguments.map((arg, i) =>
-      L.lowerExprExpecting(arg, expectedParams[i]!)
-    );
+    const sourceParams = ffiSourceParams(binding);
+    const args = expr.arguments.map((arg, i) => {
+      const sourceParam = sourceParams[i]!;
+      const expected = expectedParams[i]!;
+      const lowered = L.lowerExprExpecting(arg, expected);
+      // Retained identity is the runtime closure pointer. A coercion adapter
+      // would be freshly allocated at registration and release sites, so an
+      // assignable-but-different function shape (notably `() => number` into
+      // `() => void`) cannot honestly participate in explicit release.
+      if (
+        (
+          isFfiReleaseParam(sourceParam) ||
+          (isFfiCallbackParam(sourceParam) && sourceParam.callback.lifetime === "retained")
+        ) &&
+        (
+          lowered.kind === "dynCheck" ||
+          (lowered.kind === "call" &&
+            (lowered.callee.startsWith("%fn.adapt.") ||
+              lowered.callee.startsWith("%fn.width.") ||
+              lowered.callee.startsWith("%fnval.")))
+        )
+      ) {
+        signatureError(
+          `retained callback argument ${i + 1} must have the exact manifest function type; ` +
+            `an implicit function adapter would change its release identity`,
+        );
+      }
+      return lowered;
+    });
     return {
       kind: "ffiCall",
       import: binding.name,

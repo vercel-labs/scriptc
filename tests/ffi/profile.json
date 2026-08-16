@@ -1,5 +1,5 @@
 {
-  "ffi_format": 3,
+  "ffi_format": 4,
   "functions": [
     { "name": "nativeScale", "symbol": "sf_scale", "params": ["f64"], "returns": "f64" },
     { "name": "nativeInvert", "symbol": "sf_invert", "params": ["bool"], "returns": "bool" },
@@ -166,6 +166,72 @@
         },
         { "context": "nullCString" }
       ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedAdd",
+      "symbol": "sf_retained_add",
+      "params": [
+        {
+          "callback": {
+            "id": "tick",
+            "params": ["f64", { "context": "tick" }],
+            "returns": "void",
+            "lifetime": "retained"
+          }
+        },
+        { "context": "tick" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedRemove",
+      "symbol": "sf_retained_remove",
+      "params": [
+        { "callback": { "release": "nativeRetainedAdd:tick" } },
+        { "context": "nativeRetainedAdd:tick" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedPump",
+      "symbol": "sf_retained_pump",
+      "params": ["f64"],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedFireFirst",
+      "symbol": "sf_retained_fire_first",
+      "params": ["f64"],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedRawSet",
+      "symbol": "sf_retained_raw_set",
+      "params": [
+        {
+          "callback": {
+            "id": "raw",
+            "params": ["f64"],
+            "returns": "void",
+            "lifetime": "retained"
+          }
+        }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedRawRemove",
+      "symbol": "sf_retained_raw_remove",
+      "params": [
+        { "callback": { "release": "nativeRetainedRawSet:raw" } }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedRawPump",
+      "symbol": "sf_retained_raw_pump",
+      "params": ["f64"],
       "returns": "void"
     }
   ],

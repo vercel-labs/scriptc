@@ -37,7 +37,7 @@ function stableTestMemo<T>(
   return pending;
 }
 
-const RUNTIME_SOURCES = ["scr_number.c", "scr_string.c", "scr_array.c", "scr_bytes.c", "scr_bytes_io.c", "scr_map.c", "scr_closure.c", "scr_object.c", "scr_union.c", "scr_exception.c", "scr_error.c", "scr_console.c", "scr_lib.c", "scr_path.c", "scr_url.c", "scr_json.c", "scr_async.c", "scr_child.c", "scr_cycle.c"];
+const RUNTIME_SOURCES = ["scr_number.c", "scr_string.c", "scr_array.c", "scr_bytes.c", "scr_bytes_io.c", "scr_map.c", "scr_closure.c", "scr_ffi.c", "scr_object.c", "scr_union.c", "scr_exception.c", "scr_error.c", "scr_console.c", "scr_lib.c", "scr_path.c", "scr_url.c", "scr_json.c", "scr_async.c", "scr_child.c", "scr_cycle.c"];
 
 /** The pinned quickjs-ng snapshot under packages/runtime/vendor/quickjs-ng
  * (see vendor/README.md — update both together). Keys the archive cache so
@@ -1385,7 +1385,9 @@ async function ensureTlsArchive(
 /** The library base: the executable lane's unconditional sources minus the
  * fiber/loop and child-process units, plus the library-mode TU. */
 const LIB_RUNTIME_SOURCES = [
-  ...RUNTIME_SOURCES.filter((f) => f !== "scr_async.c" && f !== "scr_child.c"),
+  ...RUNTIME_SOURCES.filter(
+    (f) => f !== "scr_async.c" && f !== "scr_child.c" && f !== "scr_ffi.c",
+  ),
   "scr_library.c",
 ];
 

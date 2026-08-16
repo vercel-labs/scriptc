@@ -1319,6 +1319,25 @@ static inline ScrClosure *scr_closure_retain(ScrClosure *c) {
 
 void scr_closure_release(ScrClosure *c); /* releases the boxes; NULL-tolerant */
 
+/* ── outbound FFI retained callbacks (scr_ffi.c) ─────────────────────
+ * One compiler-emitted table per retained callback descriptor. Entries are
+ * counted rather than deduplicated: registering the same closure twice
+ * requires two matching releases. The table owns one closure reference per
+ * entry and joins a process-global teardown list on first use. Retained
+ * callbacks do not contribute event-loop liveness. */
+typedef struct ScrFfiTable {
+  ScrClosure **entries;
+  size_t len;
+  size_t cap;
+  struct ScrFfiTable *next;
+  bool linked;
+} ScrFfiTable;
+
+void scr_ffi_retain(ScrFfiTable *table, ScrClosure *callback);
+void scr_ffi_release(ScrFfiTable *table, ScrClosure *callback);
+void scr_ffi_teardown(ScrFfiTable *table);
+void scr_ffi_teardown_all(void);
+
 /* ── unions ─────────────────────────────────────────────────────────
  * A union value (`A | B`) is an IMMUTABLE tagged box: a refcounted header,
  * the arm's tag (its index in the compiler's canonical arm order), and one

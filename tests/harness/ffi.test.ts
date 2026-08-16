@@ -3,8 +3,9 @@
  * TypeScript and native archive run through BOTH scriptc backends, and the
  * result bytes must match. The fixture covers every value ABI class,
  * integer coercion, embedded-NUL/UTF-8 string spans, byte spans, format-2
- * raw/context callbacks, and format-3 callback cstring/span copies (lossy
- * UTF-8, exact bytes, empty spans, ownership, and catchable throws). */
+ * raw/context callbacks, format-3 callback cstring/span copies (lossy UTF-8,
+ * exact bytes, empty spans, ownership, and catchable throws), and format-4
+ * retained registration/release ownership. */
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,12 +70,17 @@ const expected = [
   "0 NaN  ",
   "4 0 Bé 0,255,1",
   "caught callback boom",
+  "first:11|second:1|second:3",
+  "7",
+  "caught retained boom 9",
+  "4",
+  "6 20",
   "caught string callback boom: materialized",
   "",
 ].join("\n");
 
 describe.each(["c", "llvm"] as const)("outbound native FFI, %s backend", (backend) => {
-  test("calls the manifest-bound archive across every v1 ABI class plus v2/v3 callback ABI classes", async () => {
+  test("calls the manifest-bound archive across every v1 ABI class plus v2/v3/v4 callback ABI classes", async () => {
     const outDir = join(cacheRoot, backend);
     mkdirSync(outDir, { recursive: true });
     const result = await compile(join(fixtureRoot, "main.ts"), {
@@ -237,7 +243,7 @@ test.each([
         returns: "void",
       }],
     },
-    message: "lifetime' must be 'call",
+    message: "value 'retained' requires ffi_format 4",
   },
   {
     name: "a format 3 callback class in format 2",
@@ -276,6 +282,63 @@ test.each([
       functions: [{ name: "visit", symbol: "sf_visit", params: ["cstring"], returns: "void" }],
     },
     message: "must be one of",
+  },
+  {
+    name: "a release descriptor before format 4",
+    profile: {
+      ffi_format: 3,
+      functions: [{
+        name: "remove",
+        symbol: "sf_remove",
+        params: [{ callback: { release: "add:tick" } }],
+        returns: "void",
+      }],
+    },
+    message: "callback.release' requires ffi_format 4",
+  },
+  {
+    name: "a dangling retained release",
+    profile: {
+      ffi_format: 4,
+      functions: [{
+        name: "remove",
+        symbol: "sf_remove",
+        params: [{ callback: { release: "missing:tick" } }],
+        returns: "void",
+      }],
+    },
+    message: "has no matching retained callback",
+  },
+  {
+    name: "a release targeting a call-scoped callback",
+    profile: {
+      ffi_format: 4,
+      functions: [{
+        name: "add",
+        symbol: "sf_add",
+        params: [{ callback: { id: "tick", params: [], returns: "void", lifetime: "call" } }],
+        returns: "void",
+      }, {
+        name: "remove",
+        symbol: "sf_remove",
+        params: [{ callback: { release: "add:tick" } }],
+        returns: "void",
+      }],
+    },
+    message: "targets a non-retained callback",
+  },
+  {
+    name: "a release carrying its own signature",
+    profile: {
+      ffi_format: 4,
+      functions: [{
+        name: "remove",
+        symbol: "sf_remove",
+        params: [{ callback: { release: "add:tick", params: [] } }],
+        returns: "void",
+      }],
+    },
+    message: "unknown field 'functions[0].params[0].callback.params'",
   },
 ])("manifest validation rejects $name", ({ name, profile, message }) => {
   const path = join(cacheRoot, `invalid-callback-${name.replaceAll(" ", "-")}.json`);
@@ -531,6 +594,115 @@ describe.each(["c", "llvm"] as const)("FFI binding identity, %s backend", (backe
       rmSync(sourceDir, { recursive: true, force: true });
     }
   });
+});
+
+describe.each(["c", "llvm"] as const)("retained FFI release traps, %s backend", (backend) => {
+  test("releasing a closure that was never registered traps precisely", async () => {
+    const outDir = join(cacheRoot, `retained-missing-${backend}`);
+    mkdirSync(outDir, { recursive: true });
+    const entry = join(outDir, "main.ts");
+    const profilePath = join(outDir, "profile.json");
+    writeFileSync(
+      entry,
+      [
+        "declare function nativeRetainedAdd(callback: (value: number) => void): void;",
+        "declare function nativeRetainedRemove(callback: (value: number) => void): void;",
+        "const registered = (_value: number) => {};",
+        "const missing = (_value: number) => {};",
+        "nativeRetainedAdd(registered);",
+        "nativeRetainedRemove(missing);",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      profilePath,
+      JSON.stringify({
+        ffi_format: 4,
+        functions: [{
+          name: "nativeRetainedAdd",
+          symbol: "sf_retained_add",
+          params: [{
+            callback: {
+              id: "tick",
+              params: ["f64", { context: "tick" }],
+              returns: "void",
+              lifetime: "retained",
+            },
+          }, { context: "tick" }],
+          returns: "void",
+        }, {
+          name: "nativeRetainedRemove",
+          symbol: "sf_retained_remove",
+          params: [{ callback: { release: "nativeRetainedAdd:tick" } }, {
+            context: "nativeRetainedAdd:tick",
+          }],
+          returns: "void",
+        }],
+        libraries: [nativeArchive()],
+      }),
+    );
+    const result = await compile(entry, {
+      outDir,
+      outPath: join(outDir, "program"),
+      backend,
+      sanitize,
+      ffiProfilePath: profilePath,
+    });
+    if (!result.ok) {
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    }
+    const run = spawnSync(result.binaryPath, [], { encoding: "utf8" });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain(
+      "scriptc: releasing a native callback registration that does not exist",
+    );
+  });
+});
+
+test("retained callback calls reject function adapters that would change identity", async () => {
+  const outDir = join(cacheRoot, "retained-adapter-identity");
+  mkdirSync(outDir, { recursive: true });
+  const entry = join(outDir, "main.ts");
+  const profilePath = join(outDir, "profile.json");
+  writeFileSync(
+    entry,
+    [
+      "declare function nativeRetainedRawSet(callback: (value: number) => void): void;",
+      "const returnsNumber = (value: number) => value;",
+      "nativeRetainedRawSet(returnsNumber);",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    profilePath,
+    JSON.stringify({
+      ffi_format: 4,
+      functions: [{
+        name: "nativeRetainedRawSet",
+        symbol: "sf_retained_raw_set",
+        params: [{
+          callback: {
+            id: "raw",
+            params: ["f64"],
+            returns: "void",
+            lifetime: "retained",
+          },
+        }],
+        returns: "void",
+      }],
+      libraries: [nativeArchive()],
+    }),
+  );
+  const result = await compile(entry, {
+    outDir,
+    outPath: join(outDir, "program"),
+    ffiProfilePath: profilePath,
+  });
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.diagnostics[0]?.code).toBe("SC5003");
+    expect(result.diagnostics[0]?.message).toContain("would change its release identity");
+  }
 });
 
 test("a missing FFI symbol is an SC5004 diagnostic, not a rejected compile", async () => {

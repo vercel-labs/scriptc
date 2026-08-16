@@ -32,14 +32,26 @@
  *   ]
  *
  * Context entries are compiler-supplied and consume no TypeScript
- * parameter. `lifetime: "call"` is deliberately the only policy today:
- * native code may invoke the callback synchronously on the calling thread
- * and must not retain either pointer after the outer call returns.
+ * parameter. `lifetime: "call"` lets native code invoke the callback only
+ * during the outer call. Format 4 adds `lifetime: "retained"` plus release
+ * descriptors that reuse a registration's callback ABI and trampoline.
  *
  * Format 3 preserves format 2 and adds copy-in callback parameters:
  * `cstring` is one NUL-terminated pointer, while `string` and `bytes` are
  * pointer+length spans. The copies have ordinary scriptc ownership and no
- * lifetime relationship to the native storage. */
+ * lifetime relationship to the native storage.
+ *
+ * Format 4 preserves format 3 and adds retained callback registration:
+ *
+ *   { "callback": { "id": "tick", "params": [{ "context": "tick" }],
+ *                   "returns": "void", "lifetime": "retained" } }
+ *
+ * A paired release parameter names that descriptor. Its resolved profile
+ * node carries the inherited ABI, but those fields are never accepted from
+ * JSON:
+ *
+ *   { "callback": { "release": "timerAdd:tick" } }
+ *   { "context": "timerAdd:tick" } */
 import { readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { ffiProfileDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
@@ -83,12 +95,27 @@ export interface FfiCallbackParam {
     /** Exact native callback ABI; a context entry consumes no TS argument. */
     params: (FfiCallbackParamClass | FfiContextParam)[];
     returns: FfiReturnClass;
-    /** Callbacks are valid only for the dynamic extent of the outer call. */
-    lifetime: "call";
+    /** Dynamic-extent borrow, or explicitly paired retained registration. */
+    lifetime: "call" | "retained";
   };
 }
 
-export type FfiParamClass = FfiValueParamClass | FfiCallbackParam | FfiContextParam;
+export interface FfiReleaseParam {
+  callback: {
+    /** `<binding>:<callback-id>` of the retained descriptor being released. */
+    release: string;
+    /** Inherited from the target after whole-manifest cross-checking. */
+    params: (FfiCallbackParamClass | FfiContextParam)[];
+    /** Inherited from the target after whole-manifest cross-checking. */
+    returns: FfiReturnClass;
+  };
+}
+
+export type FfiParamClass =
+  | FfiValueParamClass
+  | FfiCallbackParam
+  | FfiReleaseParam
+  | FfiContextParam;
 
 export interface FfiFunction {
   /** The signature-only TypeScript function declaration's binding name. */
@@ -100,7 +127,7 @@ export interface FfiFunction {
 }
 
 export interface FfiProfile {
-  ffiFormat: 1 | 2 | 3;
+  ffiFormat: 1 | 2 | 3 | 4;
   functions: FfiFunction[];
   /** Absolute paths, resolved relative to the manifest. */
   libraries: string[];
@@ -152,7 +179,17 @@ function contextParam(value: unknown, path: string): FfiContextParam | null {
   return { context: stringField(rec["context"], `${path}.context`) };
 }
 
-function callbackParam(value: unknown, path: string, format: 2 | 3): FfiCallbackParam | null {
+interface UnresolvedFfiReleaseParam {
+  callback: { release: string };
+}
+
+type UnresolvedFfiParamClass = FfiParamClass | UnresolvedFfiReleaseParam;
+
+function callbackParam(
+  value: unknown,
+  path: string,
+  format: 2 | 3 | 4,
+): FfiCallbackParam | UnresolvedFfiReleaseParam | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const rec = value as Record<string, unknown>;
   if (!("callback" in rec)) return null;
@@ -162,6 +199,15 @@ function callbackParam(value: unknown, path: string, format: 2 | 3): FfiCallback
     throw new FfiProfileError(`'${path}.callback' must be an object`);
   }
   const callback = raw as Record<string, unknown>;
+  if ("release" in callback) {
+    if (format < 4) {
+      throw new FfiProfileError(`'${path}.callback.release' requires ffi_format 4`);
+    }
+    rejectUnknownKeys(callback, `${path}.callback`, ["release"]);
+    return {
+      callback: { release: stringField(callback["release"], `${path}.callback.release`) },
+    };
+  }
   rejectUnknownKeys(callback, `${path}.callback`, ["id", "params", "returns", "lifetime"]);
   const id = stringField(callback["id"], `${path}.callback.id`);
   if (!TS_IDENT.test(id)) {
@@ -172,7 +218,7 @@ function callbackParam(value: unknown, path: string, format: 2 | 3): FfiCallback
   }
   const params = callback["params"].map((entry, i): FfiCallbackParamClass | FfiContextParam => {
     const entryPath = `${path}.callback.params[${i}]`;
-    const allowed = format === 3
+    const allowed = format >= 3
       ? FFI_CALLBACK_PARAM_CLASSES
       : FFI_FORMAT_2_CALLBACK_PARAM_CLASSES;
     if (
@@ -199,15 +245,19 @@ function callbackParam(value: unknown, path: string, format: 2 | 3): FfiCallback
       `'${path}.callback.returns' must be one of ${FFI_RETURN_CLASSES.join("/")}, got '${returns}'`,
     );
   }
-  if (callback["lifetime"] !== "call") {
-    throw new FfiProfileError(`'${path}.callback.lifetime' must be 'call'`);
+  const lifetime = callback["lifetime"];
+  if (lifetime !== "call" && lifetime !== "retained") {
+    throw new FfiProfileError(`'${path}.callback.lifetime' must be 'call' or 'retained'`);
+  }
+  if (lifetime === "retained" && format < 4) {
+    throw new FfiProfileError(`'${path}.callback.lifetime' value 'retained' requires ffi_format 4`);
   }
   return {
     callback: {
       id,
       params,
       returns: returns as FfiReturnClass,
-      lifetime: "call",
+      lifetime,
     },
   };
 }
@@ -238,11 +288,11 @@ export function loadFfiProfile(
     }
     const root = raw as Record<string, unknown>;
     const format = root["ffi_format"];
-    if (format !== 1 && format !== 2 && format !== 3) {
+    if (format !== 1 && format !== 2 && format !== 3 && format !== 4) {
       throw new FfiProfileError(
         typeof format === "number"
-          ? `unsupported ffi_format ${format} (this scriptc reads formats 1, 2, and 3)`
-          : "'ffi_format' must be the number 1, 2, or 3",
+          ? `unsupported ffi_format ${format} (this scriptc reads formats 1, 2, 3, and 4)`
+          : "'ffi_format' must be the number 1, 2, 3, or 4",
       );
     }
     rejectUnknownKeys(root, "", [
@@ -258,7 +308,7 @@ export function loadFfiProfile(
     }
     const names = new Set<string>();
     const symbols = new Set<string>();
-    const functions = functionsRaw.map((entry, i): FfiFunction => {
+    const functions = functionsRaw.map((entry, i): Omit<FfiFunction, "params"> & { params: UnresolvedFfiParamClass[] } => {
       const path = `functions[${i}]`;
       if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
         throw new FfiProfileError(`'${path}' must be an object`);
@@ -286,14 +336,14 @@ export function loadFfiProfile(
       if (!Array.isArray(row["params"])) {
         throw new FfiProfileError(`'${path}.params' must be an array`);
       }
-      const params = row["params"].map((value, j): FfiParamClass => {
+      const params = row["params"].map((value, j): UnresolvedFfiParamClass => {
         const paramPath = `${path}.params[${j}]`;
         if (
           typeof value !== "string" ||
           !(FFI_PARAM_CLASSES as readonly string[]).includes(value)
         ) {
           if (format >= 2) {
-            const callback = callbackParam(value, paramPath, format === 2 ? 2 : 3);
+            const callback = callbackParam(value, paramPath, format as 2 | 3 | 4);
             if (callback !== null) return callback;
             const context = contextParam(value, paramPath);
             if (context !== null) return context;
@@ -308,20 +358,30 @@ export function loadFfiProfile(
       });
       if (format >= 2) {
         const callbacks = new Map<string, FfiCallbackParam["callback"]>();
+        const releases = new Set<string>();
         const outerContexts = new Map<string, number>();
         for (const param of params) {
           if (typeof param === "object" && "callback" in param) {
             const cb = param.callback;
-            if (callbacks.has(cb.id)) {
-              throw new FfiProfileError(`callback id '${cb.id}' is declared twice in '${path}.params'`);
+            if ("release" in cb) {
+              if (releases.has(cb.release)) {
+                throw new FfiProfileError(
+                  `callback release '${cb.release}' is declared twice in '${path}.params'`,
+                );
+              }
+              releases.add(cb.release);
+            } else {
+              if (callbacks.has(cb.id)) {
+                throw new FfiProfileError(`callback id '${cb.id}' is declared twice in '${path}.params'`);
+              }
+              callbacks.set(cb.id, cb);
             }
-            callbacks.set(cb.id, cb);
           } else if (typeof param === "object") {
             outerContexts.set(param.context, (outerContexts.get(param.context) ?? 0) + 1);
           }
         }
         for (const [id, count] of outerContexts) {
-          if (!callbacks.has(id)) {
+          if (!callbacks.has(id) && !releases.has(id)) {
             throw new FfiProfileError(`context '${id}' in '${path}.params' has no matching callback`);
           }
           if (count !== 1) {
@@ -361,6 +421,78 @@ export function loadFfiProfile(
       return { name, symbol, params, returns: returns as FfiReturnClass };
     });
 
+    if (format >= 4) {
+      const retained = new Map<string, FfiCallbackParam["callback"]>();
+      for (const fn of functions) {
+        for (const param of fn.params) {
+          if (
+            typeof param === "object" &&
+            "callback" in param &&
+            !("release" in param.callback) &&
+            param.callback.lifetime === "retained"
+          ) {
+            retained.set(`${fn.name}:${param.callback.id}`, param.callback);
+          }
+        }
+      }
+      for (const [i, fn] of functions.entries()) {
+        for (const [j, param] of fn.params.entries()) {
+          if (
+            typeof param !== "object" ||
+            !("callback" in param) ||
+            !("release" in param.callback)
+          ) continue;
+          const target = param.callback.release;
+          const descriptor = retained.get(target);
+          if (descriptor === undefined) {
+            const [binding, id, ...extra] = target.split(":");
+            const candidate = extra.length === 0 && binding !== undefined && id !== undefined
+              ? functions.find((entry) => entry.name === binding)?.params.find(
+                (entry) =>
+                  typeof entry === "object" &&
+                  "callback" in entry &&
+                  !("release" in entry.callback) &&
+                  entry.callback.id === id,
+              )
+              : undefined;
+            if (
+              candidate !== undefined &&
+              typeof candidate === "object" &&
+              "callback" in candidate &&
+              !("release" in candidate.callback)
+            ) {
+              throw new FfiProfileError(
+                `release '${target}' in 'functions[${i}].params[${j}]' targets a non-retained callback`,
+              );
+            }
+            throw new FfiProfileError(
+              `release '${target}' in 'functions[${i}].params[${j}]' has no matching retained callback`,
+            );
+          }
+          const inheritedContext = descriptor.params.some(
+            (entry) => typeof entry === "object",
+          );
+          const contextCount = fn.params.filter(
+            (entry) => typeof entry === "object" && "context" in entry && entry.context === target,
+          ).length;
+          if (inheritedContext !== (contextCount === 1)) {
+            throw new FfiProfileError(
+              `release '${target}' must declare its context exactly once in the native function parameter list when the retained callback has a context`,
+            );
+          }
+          fn.params[j] = {
+            callback: {
+              release: target,
+              params: descriptor.params,
+              returns: descriptor.returns,
+            },
+          };
+        }
+      }
+    }
+
+    const resolvedFunctions = functions as FfiFunction[];
+
     const libraries = stringArray(root["libraries"], "libraries").map((path) =>
       resolve(dirname(profilePath), path)
     );
@@ -399,7 +531,7 @@ export function loadFfiProfile(
       ok: true,
       profile: {
         ffiFormat: format,
-        functions,
+        functions: resolvedFunctions,
         libraries,
         systemLibraries,
       },

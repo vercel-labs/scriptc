@@ -34,6 +34,11 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
       .filter((entry) => entry.params.some(isFfiCallbackParam))
       .map((entry) => entry.name),
   );
+  const manifestHasRetainedCallback = (mod.ffiImports ?? []).some(
+    (entry) => entry.params.some(
+      (param) => isFfiCallbackParam(param) && param.callback.lifetime === "retained",
+    ),
+  );
   // Method name → every class's implementation of it (virtualCall callees).
   const methodImpls = new Map<string, string[]>();
   for (const cls of mod.classes ?? []) {
@@ -169,10 +174,13 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
           if (MAY_THROW_LIB_FNS.has(rec["fn"] as IrLibFn)) f.throws = true;
           break;
         case "ffiCall":
-          // A call-scoped native callback may run arbitrary scriptc code.
-          // Its exception stays pending until the outer native call
-          // returns, where the emitter checks and unwinds normally.
-          if (callbackFfiImports.has(rec["import"] as string)) f.throws = true;
+          // A native callback may run arbitrary scriptc code. With retained
+          // descriptors any manifest binding may pump a previously stored
+          // callback, so every FFI call is conservatively a checkpoint.
+          if (
+            callbackFfiImports.has(rec["import"] as string) ||
+            manifestHasRetainedCallback
+          ) f.throws = true;
           break;
         case "bytesNew": {
           // The size form (`new Uint8Array(n)`) throws Node's "Invalid

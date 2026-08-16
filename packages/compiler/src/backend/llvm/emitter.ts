@@ -67,6 +67,7 @@ import type {
   IrFfiCallbackParam,
   IrFfiCallbackParamClass,
   IrFfiImport,
+  IrFfiReleaseParam,
   IrFfiReturnClass,
   IrFfiValueParamClass,
   IrFunction,
@@ -79,7 +80,7 @@ import type {
   IrUnionDef,
   SrcLoc,
 } from "../../ir/nodes.js";
-import { canMarshalFuncIntoIsland, CAUGHT, DYN, F64, ffiCallbackType, islandCallbackRet, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesDynInvoke, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, NPM_COMPRESS_MIN, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, typeEquals, typeKey, VOID } from "../../ir/nodes.js";
+import { canMarshalFuncIntoIsland, CAUGHT, DYN, F64, ffiCallbackType, islandCallbackRet, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesDynInvoke, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, NPM_COMPRESS_MIN, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, typeEquals, typeKey, VOID } from "../../ir/nodes.js";
 import { matchIntegerBytesForLoop } from "../../ir/integer-loops.js";
 import { allocateFfiCallbackAdapters, type FfiCallbackAdapter } from "../ffi-callbacks.js";
 import { computeMayThrow } from "../emission/may-throw.js";
@@ -1289,9 +1290,14 @@ class LlEmitter {
     this.declare(`declare zeroext i1 @scr_exc_pending()`);
     this.declare(`declare void @scr_trap(ptr)`);
     const expired = this.cstr("scriptc: native callback invoked outside its call-scoped lifetime\n");
+    const released = this.cstr("scriptc: native callback invoked outside its retained lifetime\n");
     for (const adapter of this.ffiCallbackAdapters.values()) {
       const cb = adapter.callback;
       if (adapter.tls !== null) globals.push(`@${adapter.tls} = internal thread_local global ptr null`);
+      if (adapter.global !== null) globals.push(`@${adapter.global} = internal global ptr null`);
+      if (adapter.table !== null) {
+        globals.push(`@${adapter.table} = internal global %ScrFfiTable zeroinitializer`);
+      }
       const params = cb.params.flatMap((param, i): string[] => {
         if (isFfiContextParam(param)) return [`ptr %ctx`];
         if (param === "string" || param === "bytes") {
@@ -1303,11 +1309,15 @@ class LlEmitter {
       defs.push(
         `define internal ${ret} @${adapter.symbol}(${params.join(", ")}) ${FN_ATTRS} {`,
         `entry:`,
-        adapter.tls === null ? `  %cb = getelementptr inbounds i8, ptr %ctx, i64 0` : `  %cb = load ptr, ptr @${adapter.tls}`,
+        adapter.tls !== null
+          ? `  %cb = load ptr, ptr @${adapter.tls}`
+          : adapter.global !== null
+            ? `  %cb = load ptr, ptr @${adapter.global}`
+            : `  %cb = getelementptr inbounds i8, ptr %ctx, i64 0`,
         `  %missing = icmp eq ptr %cb, null`,
         `  br i1 %missing, label %expired, label %ready`,
         `expired:`,
-        `  call void @scr_trap(ptr ${expired})`,
+        `  call void @scr_trap(ptr ${adapter.callback.lifetime === "call" ? expired : released})`,
         `  unreachable`,
         `ready:`,
         `  %pending = call zeroext i1 @scr_exc_pending()`,
@@ -1398,11 +1408,25 @@ class LlEmitter {
       const ft = ffiCallbackType(cb);
       const internalRet = this.llType(ft.ret);
       const callArgs = [`ptr %cb`, ...scriptArgs].join(", ");
+      if (cb.lifetime === "retained") {
+        this.declare(`declare ptr @scr_closure_retain_v(ptr)`);
+        this.declare(`declare void @scr_closure_release_v(ptr)`);
+        defs.push(`  %invoke_pin = call ptr @scr_closure_retain_v(ptr %cb)`);
+      }
       if (cb.returns === "void") {
-        defs.push(`  call void %fn(${callArgs})`, `  ret void`, `}`, ``);
+        defs.push(
+          `  call void %fn(${callArgs})`,
+          ...(cb.lifetime === "retained" ? [`  call void @scr_closure_release_v(ptr %invoke_pin)`] : []),
+          `  ret void`,
+          `}`,
+          ``,
+        );
         continue;
       }
       defs.push(`  %result = call ${internalRet} %fn(${callArgs})`);
+      if (cb.lifetime === "retained") {
+        defs.push(`  call void @scr_closure_release_v(ptr %invoke_pin)`);
+      }
       switch (cb.returns) {
         case "f64":
           defs.push(`  ret double %result`);
@@ -1714,6 +1738,7 @@ class LlEmitter {
       `%ScrVt = type { ${this.sizeType}, ${this.sizeType}, ptr }`,
       `%ScrUnion = type { ${this.sizeType}, i32, ptr, ptr, ptr, i64 }`,
       `%ScrClosure = type { ${this.sizeType}, ptr, ${this.sizeType}, ptr }`,
+      `%ScrFfiTable = type { ptr, ${this.sizeType}, ${this.sizeType}, ptr, i8 }`,
       `%ScrRegex = type { ${this.sizeType}, ptr, ptr, ptr }`,
       // ScrArr mirror { rc, len, cap, elem(i32+pad), elem_retain,
       // elem_release, elem_trace, data } — the immortal tagged-template
@@ -6010,7 +6035,39 @@ class LlEmitter {
           const arg = args[sourceIndex++]!;
           sourceArgs.set(abiIndex, arg);
           if (isFfiCallbackParam(param)) callbackArgs.set(param.callback.id, arg);
+          if (isFfiReleaseParam(param)) callbackArgs.set(param.callback.release, arg);
         });
+
+        const retainedRegistrations: { table: string; callback: LlValue; global: string | null }[] = [];
+        const retainedReleases: { table: string; callback: LlValue; global: string | null }[] = [];
+        for (const param of entry.params) {
+          if (isFfiCallbackParam(param) && param.callback.lifetime === "retained") {
+            const adapter = this.ffiCallbackAdapter(entry.name, param.callback.id);
+            const callback = callbackArgs.get(param.callback.id)!;
+            if (adapter.table === null) throw new Error("llvm emitter bug: retained callback has no table");
+            retainedRegistrations.push({ table: adapter.table, callback, global: adapter.global });
+          } else if (isFfiReleaseParam(param)) {
+            const split = param.callback.release.lastIndexOf(":");
+            const adapter = this.ffiCallbackAdapter(
+              param.callback.release.slice(0, split),
+              param.callback.release.slice(split + 1),
+            );
+            const callback = callbackArgs.get(param.callback.release)!;
+            if (adapter.table === null) throw new Error("llvm emitter bug: retained release has no table");
+            retainedReleases.push({ table: adapter.table, callback, global: adapter.global });
+          }
+        }
+        if (retainedRegistrations.length > 0) {
+          this.declare(`declare void @scr_ffi_retain(ptr, ptr)`);
+          this.declare(`declare void @scr_ffi_teardown(ptr)`);
+        }
+        for (const registration of retainedRegistrations) {
+          if (registration.global !== null) {
+            B.line(`call void @scr_ffi_teardown(ptr @${registration.table})`);
+            B.line(`store ptr ${registration.callback.name}, ptr @${registration.global}`);
+          }
+          B.line(`call void @scr_ffi_retain(ptr @${registration.table}, ptr ${registration.callback.name})`);
+        }
 
         const rawContexts: { tls: string; previous: string }[] = [];
         for (const param of entry.params) {
@@ -6028,6 +6085,16 @@ class LlEmitter {
         entry.params.forEach((param, i) => {
           if (isFfiCallbackParam(param)) {
             const adapter = this.ffiCallbackAdapter(entry.name, param.callback.id);
+            nativeParamTypes.push("ptr");
+            nativeArgs.push(`ptr @${adapter.symbol}`);
+            return;
+          }
+          if (isFfiReleaseParam(param)) {
+            const split = param.callback.release.lastIndexOf(":");
+            const adapter = this.ffiCallbackAdapter(
+              param.callback.release.slice(0, split),
+              param.callback.release.slice(split + 1),
+            );
             nativeParamTypes.push("ptr");
             nativeArgs.push(`ptr @${adapter.symbol}`);
             return;
@@ -6117,16 +6184,29 @@ class LlEmitter {
             B.line(`store ptr ${saved.previous}, ptr @${saved.tls}`);
           }
         };
-        const callbacksMayThrow = callbackArgs.size > 0;
+        const finishRetainedReleases = (): void => {
+          if (retainedReleases.length > 0) this.declare(`declare void @scr_ffi_release(ptr, ptr)`);
+          for (const release of retainedReleases) {
+            B.line(`call void @scr_ffi_release(ptr @${release.table}, ptr ${release.callback.name})`);
+            if (release.global !== null) B.line(`store ptr null, ptr @${release.global}`);
+          }
+        };
+        const callbacksMayThrow = callbackArgs.size > 0 || (this.mod.ffiImports ?? []).some(
+          (candidate) => candidate.params.some(
+            (param) => isFfiCallbackParam(param) && param.callback.lifetime === "retained",
+          ),
+        );
         if (entry.returns === "void") {
           B.line(call);
           restoreRawContexts();
+          finishRetainedReleases();
           if (callbacksMayThrow) this.emitPendingCheck();
           return { name: "", type: e.type };
         }
         const raw = B.tmp();
         B.line(`${raw} = ${call}`);
         restoreRawContexts();
+        finishRetainedReleases();
         if (entry.returns === "f64") {
           const result = { name: raw, type: e.type };
           if (callbacksMayThrow) this.emitPendingCheck();

@@ -2,7 +2,7 @@
  * expression lands in a fresh C temp, with RC ownership tracked on the
  * emitter's frames (see the discipline comment in emitter core). */
 import type { CEmitter, Temp } from "./emitter.js";
-import { arrayOf, BOOL, BYTES_U8, bytesOf, canMarshalFuncIntoIsland, CHILDSTREAM_T, DYN, F64, IrExpr, IrRecordShape, IrType, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, RUNTIME_ERROR_CLASSES, STRING, typeEquals, typeKey } from "../../ir/nodes.js";
+import { arrayOf, BOOL, BYTES_U8, bytesOf, canMarshalFuncIntoIsland, CHILDSTREAM_T, DYN, F64, IrExpr, IrRecordShape, IrType, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, RUNTIME_ERROR_CLASSES, STRING, typeEquals, typeKey } from "../../ir/nodes.js";
 import { boxAccess, BYTES_NUM_KIND_C, BYTES_NUM_VAR_C, bytesElemKindC, cDecl, cFnPtrCast, cNumberLiteral, cStringLiteral, cType, DV_GET_KIND_C, DV_SET_KIND_C, elemAccess, mapKeyAccess, mapKeyKindC, mapValKindC, releaseCallC, retainCallC, vAdapters } from "./emit-types.js";
 import { mangleClassNew, mangleClassRetain, mangleClassStruct, mangleField, mangleFnClosure, mangleFunction, mangleGlobal, mangleLocal, mangleRecordNew, mangleRecordStruct, mangleVtStruct } from "../mangle.js";
 import { OVERFLOW_MEMBER } from "./emit-shapes.js";
@@ -2131,7 +2131,39 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           const arg = args[sourceIndex++]!;
           sourceArgs.set(abiIndex, arg);
           if (isFfiCallbackParam(param)) callbackArgs.set(param.callback.id, arg);
+          if (isFfiReleaseParam(param)) callbackArgs.set(param.callback.release, arg);
         });
+
+        const retainedRegistrations: { table: string; callback: Temp; global: string | null }[] = [];
+        const retainedReleases: { table: string; callback: Temp; global: string | null }[] = [];
+        for (const param of entry.params) {
+          if (isFfiCallbackParam(param) && param.callback.lifetime === "retained") {
+            const adapter = E.ffiCallbackAdapter(entry.name, param.callback.id);
+            const callback = callbackArgs.get(param.callback.id)!;
+            if (adapter.table === null) throw new Error("emitter bug: retained callback has no table");
+            retainedRegistrations.push({ table: adapter.table, callback, global: adapter.global });
+          } else if (isFfiReleaseParam(param)) {
+            const split = param.callback.release.lastIndexOf(":");
+            const adapter = E.ffiCallbackAdapter(
+              param.callback.release.slice(0, split),
+              param.callback.release.slice(split + 1),
+            );
+            const callback = callbackArgs.get(param.callback.release)!;
+            if (adapter.table === null) throw new Error("emitter bug: retained release has no table");
+            retainedReleases.push({ table: adapter.table, callback, global: adapter.global });
+          }
+        }
+
+        // Pin before registration. Raw retained descriptors are native
+        // singletons: replacing them drops the previous table entry and
+        // points the global trampoline slot at the new closure.
+        for (const registration of retainedRegistrations) {
+          if (registration.global !== null) {
+            E.line(`scr_ffi_teardown(&${registration.table});`);
+            E.line(`${registration.global} = ${registration.callback.name};`);
+          }
+          E.line(`scr_ffi_retain(&${registration.table}, ${registration.callback.name});`);
+        }
 
         // Raw C callback pointers carry no userdata. For the documented
         // call-scoped/same-thread policy, lend each one a distinct TLS
@@ -2151,6 +2183,15 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         entry.params.forEach((param, i) => {
           if (isFfiCallbackParam(param)) {
             const adapter = E.ffiCallbackAdapter(entry.name, param.callback.id);
+            nativeArgs.push(`&${adapter.symbol}`);
+            return;
+          }
+          if (isFfiReleaseParam(param)) {
+            const split = param.callback.release.lastIndexOf(":");
+            const adapter = E.ffiCallbackAdapter(
+              param.callback.release.slice(0, split),
+              param.callback.release.slice(split + 1),
+            );
             nativeArgs.push(`&${adapter.symbol}`);
             return;
           }
@@ -2192,22 +2233,35 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             E.line(`${saved.tls} = ${saved.previous.name};`);
           }
         };
-        const callbacksMayThrow = callbackArgs.size > 0;
+        const finishRetainedReleases = (): void => {
+          for (const release of retainedReleases) {
+            E.line(`scr_ffi_release(&${release.table}, ${release.callback.name});`);
+            if (release.global !== null) E.line(`${release.global} = NULL;`);
+          }
+        };
+        const callbacksMayThrow = callbackArgs.size > 0 || (E.mod.ffiImports ?? []).some(
+          (candidate) => candidate.params.some(
+            (param) => isFfiCallbackParam(param) && param.callback.lifetime === "retained",
+          ),
+        );
         switch (entry.returns) {
           case "void":
             E.line(`${call};${E.srcComment(e.loc)}`);
             restoreRawContexts();
+            finishRetainedReleases();
             if (callbacksMayThrow) E.emitPendingCheck();
             return { name: "", type: e.type };
           case "f64": {
             const result = E.newTemp(e.type, call);
             restoreRawContexts();
+            finishRetainedReleases();
             if (callbacksMayThrow) E.emitPendingCheck();
             return result;
           }
           case "bool": {
             const result = E.newTemp(e.type, `(${call} != 0)`);
             restoreRawContexts();
+            finishRetainedReleases();
             if (callbacksMayThrow) E.emitPendingCheck();
             return result;
           }
@@ -2216,6 +2270,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "i32": {
             const result = E.newTemp(e.type, `(double)${call}`);
             restoreRawContexts();
+            finishRetainedReleases();
             if (callbacksMayThrow) E.emitPendingCheck();
             return result;
           }

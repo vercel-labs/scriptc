@@ -785,14 +785,33 @@ export interface IrFfiCallbackParam {
     /** Exact callback ABI order; context entries consume no TS argument. */
     params: (IrFfiCallbackParamClass | IrFfiContextParam)[];
     returns: IrFfiReturnClass;
-    lifetime: "call";
+    lifetime: "call" | "retained";
   };
 }
 
-export type IrFfiParam = IrFfiValueParamClass | IrFfiCallbackParam | IrFfiContextParam;
+export interface IrFfiReleaseParam {
+  callback: {
+    /** `<binding>:<callback-id>` of the retained registration descriptor. */
+    release: string;
+    /** Resolved/inherited callback ABI. */
+    params: (IrFfiCallbackParamClass | IrFfiContextParam)[];
+    /** Resolved/inherited callback return ABI. */
+    returns: IrFfiReturnClass;
+  };
+}
+
+export type IrFfiParam =
+  | IrFfiValueParamClass
+  | IrFfiCallbackParam
+  | IrFfiReleaseParam
+  | IrFfiContextParam;
 
 export function isFfiCallbackParam(param: IrFfiParam): param is IrFfiCallbackParam {
-  return typeof param === "object" && "callback" in param;
+  return typeof param === "object" && "callback" in param && "id" in param.callback;
+}
+
+export function isFfiReleaseParam(param: IrFfiParam): param is IrFfiReleaseParam {
+  return typeof param === "object" && "callback" in param && "release" in param.callback;
 }
 
 export function isFfiContextParam(
@@ -822,7 +841,7 @@ export function ffiClassType(
 
 /** The ordinary TypeScript function type a native callback descriptor consumes. */
 export function ffiCallbackType(
-  callback: IrFfiCallbackParam["callback"],
+  callback: IrFfiCallbackParam["callback"] | IrFfiReleaseParam["callback"],
 ): IrType & { kind: "func" } {
   return {
     kind: "func",
@@ -838,16 +857,17 @@ export function ffiSourceParamTypes(params: readonly IrFfiParam[]): IrType[] {
   return params.flatMap((param): IrType[] => {
     if (isFfiContextParam(param)) return [];
     if (isFfiCallbackParam(param)) return [ffiCallbackType(param.callback)];
+    if (isFfiReleaseParam(param)) return [ffiCallbackType(param.callback)];
     return [ffiClassType(param)];
   });
 }
 
 /** One outbound native FFI declaration. Format 1 contains only value
  * classes. Format 2 additionally carries exact-position callback/context
- * entries. Format 3 adds callback copy-in cstrings and spans. Outer
- * string/bytes values still expand to pointer+length pairs; callbacks and
- * contexts are each one native pointer slot. Callback lifetimes are
- * call-scoped and their closure/context storage is borrowed. */
+ * entries. Format 3 adds callback copy-in cstrings and spans. Format 4 adds
+ * retained callbacks and resolved release entries. Outer string/bytes
+ * values still expand to pointer+length pairs; callbacks, releases, and
+ * contexts are each one native pointer slot. */
 export interface IrFfiImport {
   /** The signature-only ambient TypeScript binding name. */
   name: string;

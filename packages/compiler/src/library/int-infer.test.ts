@@ -475,6 +475,48 @@ describe("the domain's edges beyond the corpus", () => {
     expect(v.detail).toContain("NaN");
   });
 
+  test.each([
+    ["<", 1],
+    ["<=", 1],
+    [">", 0],
+    [">=", 0],
+  ] as const)("a failed %s comparison does not narrow through a NaN right operand", (op, numericY) => {
+    // x is always the non-integer 0.5. The numeric member of y makes the
+    // comparison true, but NaN makes it false without constraining x.
+    const v = only(
+      caseModule(["a"], ["x", "y"], [
+        decl("x.0", num(0.5)),
+        decl("y.0", num(numericY)),
+        iff(bin("===", ref("a.0"), num(0)), [assign("y.0", bin("/", num(0), num(0)))]),
+        iff(bin(op, ref("x.0"), ref("y.0")), [{ kind: "return", value: null, loc }]),
+        send(ref("x.0")),
+      ]),
+    );
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("wholeness");
+  });
+
+  test.each([
+    ["<", 0],
+    ["<=", 0],
+    [">", 1],
+    [">=", 1],
+  ] as const)("a failed %s comparison does not narrow through a NaN left operand", (op, numericY) => {
+    // The symmetric case: y may be NaN, so a failed comparison cannot
+    // constrain the non-integer x on the right-hand side.
+    const v = only(
+      caseModule(["a"], ["x", "y"], [
+        decl("x.0", num(0.5)),
+        decl("y.0", num(numericY)),
+        iff(bin("===", ref("a.0"), num(0)), [assign("y.0", bin("/", num(0), num(0)))]),
+        iff(bin(op, ref("y.0"), ref("x.0")), [{ kind: "return", value: null, loc }]),
+        send(ref("x.0")),
+      ]),
+    );
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("wholeness");
+  });
+
   test("a failed !== comparison clears NaN and proves equality", () => {
     // The true edge consumes the NaN alternative; falling through proves
     // x === 5, so the integer crossing is exact and NaN-free.

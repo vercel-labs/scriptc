@@ -330,6 +330,22 @@ test.each([
     message: "targets a non-retained callback",
   },
   {
+    name: "a release registered by the same call",
+    profile: {
+      ffi_format: 4,
+      functions: [{
+        name: "swap",
+        symbol: "sf_swap",
+        params: [
+          { callback: { id: "tick", params: [], returns: "void", lifetime: "retained" } },
+          { callback: { release: "swap:tick" } },
+        ],
+        returns: "void",
+      }],
+    },
+    message: "registered by the same call",
+  },
+  {
     name: "a release carrying its own signature",
     profile: {
       ffi_format: 4,

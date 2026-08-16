@@ -1211,6 +1211,17 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         errors.push({ message: `FFI release "${entry.name}:${param.callback.release}" has no retained target`, loc: moduleLoc });
         continue;
       }
+      // A call registering its own release target defeats the emitted
+      // pin -> require -> call -> commit -> release ordering (the loader
+      // rejects this shape; mirrored here for deserialized IR).
+      const registeredBySameCall = entry.params.some(
+        (candidate) =>
+          isFfiCallbackParam(candidate) &&
+          `${entry.name}:${candidate.callback.id}` === param.callback.release,
+      );
+      if (registeredBySameCall) {
+        errors.push({ message: `FFI release "${entry.name}:${param.callback.release}" targets a retained callback registered by the same call`, loc: moduleLoc });
+      }
       // Structural ABI comparison: a params entry is a value-class string
       // or a {context} object. Key order and incidental object shape must
       // not matter — a producer that rebuilds these arrays (deserialized

@@ -469,6 +469,23 @@ export function loadFfiProfile(
               `release '${target}' in 'functions[${i}].params[${j}]' has no matching retained callback`,
             );
           }
+          /* The emitted lifecycle is pin -> require -> native call -> commit ->
+           * release. A call that registers its own release target either
+           * retires the released pin during the commit sweep or satisfies the
+           * pre-call require with the pin it just created, so the
+           * release-validation trap cannot hold. */
+          const registeredBySameCall = fn.params.some(
+            (entry) =>
+              typeof entry === "object" &&
+              "callback" in entry &&
+              !("release" in entry.callback) &&
+              `${fn.name}:${entry.callback.id}` === target,
+          );
+          if (registeredBySameCall) {
+            throw new FfiProfileError(
+              `release '${target}' in 'functions[${i}].params[${j}]' targets a retained callback registered by the same call; registration and release must be separate bindings`,
+            );
+          }
           const inheritedContext = descriptor.params.some(
             (entry) => typeof entry === "object",
           );

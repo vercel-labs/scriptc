@@ -6,13 +6,24 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.0.32
+
+### Features
+
+- **Cross-compilation targets ARM64 Alpine Linux.** `SCRIPTC_TARGET=aarch64-linux-musl` produces statically linked executables and library archives through both backends, including async and generator fibers, runtime localization, multi-instance libraries, and the full portable differential contract. Cross-tool failures also retain the compiler's useful stderr or stdout diagnostics instead of losing the underlying error.
+
+### Fixes
+
+- **Windows TLS trusts the native system certificate stores.** TLS and HTTPS clients now load, policy-filter, and deduplicate server-auth roots and intermediates from the applicable user and machine stores; `tls.getCACertificates("system")` exposes the same live trust source.
+- **Library integer proofs preserve JavaScript's NaN comparison behavior.** Failed ordered comparisons no longer narrow a value when either operand may be NaN, preventing an unsafe integer-boundary proof, while the false edge of `!==` correctly proves equality and clears the NaN alternative.
+
+<!-- release:end -->
+
 ## 0.0.31
 
 ### Fixes
 
 - **`Array.isArray` recognizes fixed tuples.** Readonly tuple arms now retain JavaScript array identity and their runtime-tag narrowing through `Array.isArray`, so Native SDK-style values such as `Model | readonly [Model, Command]` compile and preserve tuple indexing, `.length`, `slice`, and `map` behavior.
-
-<!-- release:end -->
 
 ## 0.0.30
 

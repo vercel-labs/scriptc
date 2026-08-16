@@ -1212,7 +1212,7 @@ class FnAnalyzer {
         // NaN makes < <= > >= === evaluate false, so the edge where one of
         // those was TRUE proves both operands NaN-free (!== held excludes
         // nothing — NaN !== x is true).
-        const clearNaN = op !== "!==";
+        const clearNaN = branch ? cond.op !== "!==" : cond.op === "!==";
         const a = this.evalPure(cond.left, env);
         const b = this.evalPure(cond.right, env);
         const out = cloneEnv(env);

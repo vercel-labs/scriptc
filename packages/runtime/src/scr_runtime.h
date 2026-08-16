@@ -1331,9 +1331,23 @@ typedef struct ScrFfiTable {
   size_t cap;
   struct ScrFfiTable *next;
   bool linked;
+  /* Raw retained singletons only: the compiler-emitted global the
+   * trampoline dispatches through. Teardown and release disarm it so a
+   * late native invocation hits the trampoline's NULL trap instead of a
+   * freed closure. NULL for context-bearing descriptors. */
+  ScrClosure **slot;
 } ScrFfiTable;
 
 void scr_ffi_retain(ScrFfiTable *table, ScrClosure *callback);
+/* Raw singleton registration, split around the native set call:
+ * retain_slot pins the incoming closure BEFORE the call without touching
+ * the current registration; commit_slot repoints the slot and retires the
+ * superseded pins after the call returns. */
+void scr_ffi_retain_slot(ScrFfiTable *table, ScrClosure **slot, ScrClosure *callback);
+void scr_ffi_commit_slot(ScrFfiTable *table, ScrClosure *callback);
+/* Traps unless the registration exists — emitted BEFORE a native release
+ * call so a bogus release cannot reach native code. */
+void scr_ffi_require(ScrFfiTable *table, ScrClosure *callback);
 void scr_ffi_release(ScrFfiTable *table, ScrClosure *callback);
 void scr_ffi_teardown(ScrFfiTable *table);
 void scr_ffi_teardown_all(void);

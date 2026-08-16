@@ -2920,7 +2920,10 @@ export function lowerFfiCall(L: Lowerer, expr: ts.CallExpression): IrExpr | null
       // Retained identity is the runtime closure pointer. A coercion adapter
       // would be freshly allocated at registration and release sites, so an
       // assignable-but-different function shape (notably `() => number` into
-      // `() => void`) cannot honestly participate in explicit release.
+      // `() => void`) cannot honestly participate in explicit release. The
+      // adapter set comes from the mint sites themselves (Lowerer's
+      // freshClosureAdapters), not name-prefix matching, so a new coercion
+      // helper cannot silently slip past this guard.
       if (
         (
           isFfiReleaseParam(sourceParam) ||
@@ -2928,10 +2931,7 @@ export function lowerFfiCall(L: Lowerer, expr: ts.CallExpression): IrExpr | null
         ) &&
         (
           lowered.kind === "dynCheck" ||
-          (lowered.kind === "call" &&
-            (lowered.callee.startsWith("%fn.adapt.") ||
-              lowered.callee.startsWith("%fn.width.") ||
-              lowered.callee.startsWith("%fnval.")))
+          (lowered.kind === "call" && L.freshClosureAdapters.has(lowered.callee))
         )
       ) {
         signatureError(

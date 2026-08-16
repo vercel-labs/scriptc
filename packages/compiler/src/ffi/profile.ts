@@ -477,7 +477,9 @@ export function loadFfiProfile(
           ).length;
           if (inheritedContext !== (contextCount === 1)) {
             throw new FfiProfileError(
-              `release '${target}' must declare its context exactly once in the native function parameter list when the retained callback has a context`,
+              inheritedContext
+                ? `release '${target}' must declare its context exactly once in the native function parameter list because the retained callback has a context`
+                : `release '${target}' must not declare a context in the native function parameter list because the retained callback has none`,
             );
           }
           fn.params[j] = {

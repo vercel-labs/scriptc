@@ -2618,12 +2618,14 @@ bool scr_loop_run(ScrPromise *top_level) {
    * them as leaks. Uncaught callback throws still return above for main
    * to report through the existing exceptional teardown path. */
   scr_timers_teardown();
-  /* Retained native registrations carry no fd and do not hold liveness.
-   * Once the loop is exhausted the process cannot meaningfully pump their
-   * libraries again, so drop the ledger's closure references here. The
-   * idempotent atexit sweep covers synchronous and exceptional exits. */
-  scr_ffi_teardown_all();
-  /* Same story for unref'd children the loop never reaped: release the
+  /* Retained native FFI registrations are deliberately NOT torn down
+   * here: process 'exit' listeners run after the loop returns (inline in
+   * main, before any atexit handler) and may legitimately release a
+   * registration or pump a native library one last time — exactly like
+   * the process.exit() path, where the ledger is also still intact. The
+   * atexit sweep scr_ffi_retain registered (LIFO before the RC audit)
+   * drops the ledger's references on every exit path. */
+  /* Unref'd children the loop never reaped: release the
    * registry's references (their listeners never fire — the process is
    * exiting, Node's behavior; the OS reparents the children). */
   scr_children_teardown();

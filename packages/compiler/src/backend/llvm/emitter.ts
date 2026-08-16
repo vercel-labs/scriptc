@@ -67,7 +67,6 @@ import type {
   IrFfiCallbackParam,
   IrFfiCallbackParamClass,
   IrFfiImport,
-  IrFfiReleaseParam,
   IrFfiReturnClass,
   IrFfiValueParamClass,
   IrFunction,
@@ -82,7 +81,7 @@ import type {
 } from "../../ir/nodes.js";
 import { canMarshalFuncIntoIsland, CAUGHT, DYN, F64, ffiCallbackType, islandCallbackRet, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesDynInvoke, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, NPM_COMPRESS_MIN, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, typeEquals, typeKey, VOID } from "../../ir/nodes.js";
 import { matchIntegerBytesForLoop } from "../../ir/integer-loops.js";
-import { allocateFfiCallbackAdapters, type FfiCallbackAdapter } from "../ffi-callbacks.js";
+import { allocateFfiCallbackAdapters, collectFfiRetainedOps, hasRetainedFfiCallback, parseFfiCallbackKey, type FfiCallbackAdapter } from "../ffi-callbacks.js";
 import { computeMayThrow } from "../emission/may-throw.js";
 import { mangleArgPack, mangleAsyncSpawn, mangleClassNew, mangleClassObj, mangleClassRetain, mangleFnClosure, mangleFunction, mangleGenDrop, mangleGenResThunk, mangleGenSpawn, mangleGlobal, mangleLocal, mangleRecordNew, mangleRecordStruct, mangleResolveThunk, mangleTrampoline, mangleVtStruct, mangleWrapper } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
@@ -1019,6 +1018,11 @@ class LlEmitter {
   /** C-ABI callback trampolines and (for raw/no-userdata callbacks) their
    * distinct call-scoped TLS closure slots. */
   private readonly ffiCallbackAdapters: Map<string, FfiCallbackAdapter>;
+  /** Module-level constant consulted per ffiCall: with a retained
+   * descriptor anywhere in the manifest, every native call is a
+   * pending-exception checkpoint (may-throw derives the same fact from
+   * the same helper). */
+  private readonly ffiHasRetainedCallback: boolean;
   private readonly globalTypes = new Map<string, IrType>();
   /** May-throw analysis (the C emitter's computeMayThrow, shared): pending
    * checks are emitted only after calls that can actually raise. */
@@ -1140,6 +1144,7 @@ class LlEmitter {
     // bytes behind a wasm32 object and 16 bytes behind a 64-bit object.
     this.cycleColorOffset = options.pointerBits === 32 ? 12 : 16;
     this.ffiCallbackAdapters = allocateFfiCallbackAdapters(mod.ffiImports ?? []);
+    this.ffiHasRetainedCallback = hasRetainedFfiCallback(mod.ffiImports ?? []);
     for (const fn of mod.functions) this.fnByName.set(fn.name, fn);
     for (const entry of mod.ffiImports ?? []) {
       this.ffiByName.set(entry.name, entry);
@@ -1562,7 +1567,6 @@ class LlEmitter {
       moduleUsesTls(this.mod) || moduleUsesTlsCa(this.mod) ||
       moduleEmbedsBuiltin(this.mod, "node:https") ||
       moduleEmbedsBuiltin(this.mod, "node:tls");
-    const hasRefGlobals = globals.some((g) => isRefCounted(g.type)) || fnValueProps.length > 0;
     // The process verdict has the same precedence as the C reference
     // emitter: node:test owns the final status when present; otherwise an
     // embedded process.exitCode owns it; ordinary programs return zero.
@@ -1592,12 +1596,18 @@ class LlEmitter {
     if (snapshotsTlsCa) {
       this.declare(`declare void @scr_tls_ca_install()`);
     }
-    if (usesEvents && hasRefGlobals) {
+    // Emitted whenever the module touches process events, even with no
+    // refcounted globals: listeners must beat the ATEXIT teardowns (the
+    // retained-FFI ledger sweep above all — a listener may legitimately
+    // release or pump a registration), and only the inline call orders
+    // ahead of every atexit handler (the C emitter's runExitListeners
+    // stance).
+    if (usesEvents) {
       this.declare(`declare void @scr_run_exit_listeners(double)`);
       this.declare(`declare i32 @scr_exit_code_hint_get()`);
     }
     const exitListenerLines = (prefix: string): string[] => {
-      if (!usesEvents || !hasRefGlobals) return [];
+      if (!usesEvents) return [];
       return [
         `  %${prefix}h = call i32 @scr_exit_code_hint_get()`,
         `  %${prefix}hd = sitofp i32 %${prefix}h to double`,
@@ -1637,7 +1647,7 @@ class LlEmitter {
       this.declare(`declare void @scr_promise_rethrow_top_level(ptr)`);
       this.declare(`declare void @scr_promise_release(ptr)`);
       this.declare(`declare void @scr_exit_code_note(i32)`);
-      if (programExitUsesIsland && usesEvents && hasRefGlobals) {
+      if (programExitUsesIsland && usesEvents) {
         this.declare(`declare ${this.sizeType} @scr_island_exit_code_version()`);
       }
     }
@@ -1656,7 +1666,7 @@ class LlEmitter {
         );
       }
       const exitStatus = usesNodeTest || usesIsland ? "%tla_exit_status" : "%tla_status";
-      const tracksIslandExit = programExitUsesIsland && usesEvents && hasRefGlobals;
+      const tracksIslandExit = programExitUsesIsland && usesEvents;
       if (tracksIslandExit) {
         lines.push(`  %tla_exit_version = call ${this.sizeType} @scr_island_exit_code_version()`);
       }
@@ -1738,7 +1748,7 @@ class LlEmitter {
       `%ScrVt = type { ${this.sizeType}, ${this.sizeType}, ptr }`,
       `%ScrUnion = type { ${this.sizeType}, i32, ptr, ptr, ptr, i64 }`,
       `%ScrClosure = type { ${this.sizeType}, ptr, ${this.sizeType}, ptr }`,
-      `%ScrFfiTable = type { ptr, ${this.sizeType}, ${this.sizeType}, ptr, i8 }`,
+      `%ScrFfiTable = type { ptr, ${this.sizeType}, ${this.sizeType}, ptr, i8, ptr }`,
       `%ScrRegex = type { ${this.sizeType}, ptr, ptr, ptr }`,
       // ScrArr mirror { rc, len, cap, elem(i32+pad), elem_retain,
       // elem_release, elem_trace, data } — the immortal tagged-template
@@ -6038,35 +6048,37 @@ class LlEmitter {
           if (isFfiReleaseParam(param)) callbackArgs.set(param.callback.release, arg);
         });
 
-        const retainedRegistrations: { table: string; callback: LlValue; global: string | null }[] = [];
-        const retainedReleases: { table: string; callback: LlValue; global: string | null }[] = [];
-        for (const param of entry.params) {
-          if (isFfiCallbackParam(param) && param.callback.lifetime === "retained") {
-            const adapter = this.ffiCallbackAdapter(entry.name, param.callback.id);
-            const callback = callbackArgs.get(param.callback.id)!;
-            if (adapter.table === null) throw new Error("llvm emitter bug: retained callback has no table");
-            retainedRegistrations.push({ table: adapter.table, callback, global: adapter.global });
-          } else if (isFfiReleaseParam(param)) {
-            const split = param.callback.release.lastIndexOf(":");
-            const adapter = this.ffiCallbackAdapter(
-              param.callback.release.slice(0, split),
-              param.callback.release.slice(split + 1),
-            );
-            const callback = callbackArgs.get(param.callback.release)!;
-            if (adapter.table === null) throw new Error("llvm emitter bug: retained release has no table");
-            retainedReleases.push({ table: adapter.table, callback, global: adapter.global });
-          }
-        }
+        const { registrations: retainedRegistrations, releases: retainedReleases } =
+          collectFfiRetainedOps<LlValue>(entry, callbackArgs, (binding, id) => this.ffiCallbackAdapter(binding, id));
         if (retainedRegistrations.length > 0) {
           this.declare(`declare void @scr_ffi_retain(ptr, ptr)`);
-          this.declare(`declare void @scr_ffi_teardown(ptr)`);
+          if (retainedRegistrations.some((registration) => registration.global !== null)) {
+            this.declare(`declare void @scr_ffi_retain_slot(ptr, ptr, ptr)`);
+            this.declare(`declare void @scr_ffi_commit_slot(ptr, ptr)`);
+          }
         }
+        if (retainedReleases.length > 0) {
+          this.declare(`declare void @scr_ffi_require(ptr, ptr)`);
+        }
+        // Pin before registration. Raw retained descriptors are native
+        // singletons: the incoming closure is pinned (and an EMPTY slot
+        // armed) before the native set call, but a replaced registration
+        // stays live and dispatching until the call returns — a native
+        // setter may flush the outgoing callback one last time mid-replace.
+        // scr_ffi_commit_slot below repoints the slot and retires the
+        // superseded pins after the call.
         for (const registration of retainedRegistrations) {
           if (registration.global !== null) {
-            B.line(`call void @scr_ffi_teardown(ptr @${registration.table})`);
-            B.line(`store ptr ${registration.callback.name}, ptr @${registration.global}`);
+            B.line(`call void @scr_ffi_retain_slot(ptr @${registration.table}, ptr @${registration.global}, ptr ${registration.callback.name})`);
+          } else {
+            B.line(`call void @scr_ffi_retain(ptr @${registration.table}, ptr ${registration.callback.name})`);
           }
-          B.line(`call void @scr_ffi_retain(ptr @${registration.table}, ptr ${registration.callback.name})`);
+        }
+        // Validate releases BEFORE the native removal call runs: a bogus
+        // release traps without native code observing any side effect. The
+        // registration itself is unpinned only after the call returns.
+        for (const release of retainedReleases) {
+          B.line(`call void @scr_ffi_require(ptr @${release.table}, ptr ${release.callback.name})`);
         }
 
         const rawContexts: { tls: string; previous: string }[] = [];
@@ -6090,11 +6102,8 @@ class LlEmitter {
             return;
           }
           if (isFfiReleaseParam(param)) {
-            const split = param.callback.release.lastIndexOf(":");
-            const adapter = this.ffiCallbackAdapter(
-              param.callback.release.slice(0, split),
-              param.callback.release.slice(split + 1),
-            );
+            const { binding, id } = parseFfiCallbackKey(param.callback.release);
+            const adapter = this.ffiCallbackAdapter(binding, id);
             nativeParamTypes.push("ptr");
             nativeArgs.push(`ptr @${adapter.symbol}`);
             return;
@@ -6185,17 +6194,20 @@ class LlEmitter {
           }
         };
         const finishRetainedReleases = (): void => {
+          // Commit raw replacements first (repoint the slot, retire the
+          // superseded pins), then unpin explicit releases — the runtime
+          // disarms the slot itself when the released closure holds it.
+          for (const registration of retainedRegistrations) {
+            if (registration.global !== null) {
+              B.line(`call void @scr_ffi_commit_slot(ptr @${registration.table}, ptr ${registration.callback.name})`);
+            }
+          }
           if (retainedReleases.length > 0) this.declare(`declare void @scr_ffi_release(ptr, ptr)`);
           for (const release of retainedReleases) {
             B.line(`call void @scr_ffi_release(ptr @${release.table}, ptr ${release.callback.name})`);
-            if (release.global !== null) B.line(`store ptr null, ptr @${release.global}`);
           }
         };
-        const callbacksMayThrow = callbackArgs.size > 0 || (this.mod.ffiImports ?? []).some(
-          (candidate) => candidate.params.some(
-            (param) => isFfiCallbackParam(param) && param.callback.lifetime === "retained",
-          ),
-        );
+        const callbacksMayThrow = callbackArgs.size > 0 || this.ffiHasRetainedCallback;
         if (entry.returns === "void") {
           B.line(call);
           restoreRawContexts();

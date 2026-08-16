@@ -75,6 +75,8 @@ const expected = [
   "caught retained boom 9",
   "4",
   "6 20",
+  "lead:6|lead:7",
+  "first:11|first:-1|second:12",
   "caught string callback boom: materialized",
   "",
 ].join("\n");
@@ -593,6 +595,74 @@ describe.each(["c", "llvm"] as const)("FFI binding identity, %s backend", (backe
     } finally {
       rmSync(sourceDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe.each(["c", "llvm"] as const)("retained FFI at process exit, %s backend", (backend) => {
+  test("process 'exit' listeners can release retained registrations after a normal loop drain", async () => {
+    const outDir = join(cacheRoot, `retained-exit-listener-${backend}`);
+    mkdirSync(outDir, { recursive: true });
+    const entry = join(outDir, "main.ts");
+    const profilePath = join(outDir, "profile.json");
+    writeFileSync(
+      entry,
+      [
+        "declare function nativeRetainedAdd(callback: (value: number) => void): void;",
+        "declare function nativeRetainedRemove(callback: (value: number) => void): void;",
+        "const tick = (_value: number) => {};",
+        "nativeRetainedAdd(tick);",
+        "process.on('exit', () => {",
+        "  nativeRetainedRemove(tick);",
+        "  console.log('released-at-exit');",
+        "});",
+        // Force the event loop to run: the loop-drain exit path must leave
+        // the retained ledger intact for the listener, exactly like the
+        // process.exit() path.
+        "await Promise.resolve();",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      profilePath,
+      JSON.stringify({
+        ffi_format: 4,
+        functions: [{
+          name: "nativeRetainedAdd",
+          symbol: "sf_retained_add",
+          params: [{
+            callback: {
+              id: "tick",
+              params: ["f64", { context: "tick" }],
+              returns: "void",
+              lifetime: "retained",
+            },
+          }, { context: "tick" }],
+          returns: "void",
+        }, {
+          name: "nativeRetainedRemove",
+          symbol: "sf_retained_remove",
+          params: [{ callback: { release: "nativeRetainedAdd:tick" } }, {
+            context: "nativeRetainedAdd:tick",
+          }],
+          returns: "void",
+        }],
+        libraries: [nativeArchive()],
+      }),
+    );
+    const result = await compile(entry, {
+      outDir,
+      outPath: join(outDir, "program"),
+      backend,
+      sanitize,
+      ffiProfilePath: profilePath,
+    });
+    if (!result.ok) {
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    }
+    const run = spawnSync(result.binaryPath, [], { encoding: "utf8" });
+    expect(run.stderr).toBe("");
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("released-at-exit\n");
   });
 });
 

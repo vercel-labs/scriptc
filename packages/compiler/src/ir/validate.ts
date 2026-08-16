@@ -1211,7 +1211,17 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         errors.push({ message: `FFI release "${entry.name}:${param.callback.release}" has no retained target`, loc: moduleLoc });
         continue;
       }
-      const inherited = JSON.stringify(param.callback.params) === JSON.stringify(target.params) &&
+      // Structural ABI comparison: a params entry is a value-class string
+      // or a {context} object. Key order and incidental object shape must
+      // not matter — a producer that rebuilds these arrays (deserialized
+      // IR, a second frontend) still validates.
+      const inherited = param.callback.params.length === target.params.length &&
+        param.callback.params.every((entry, i) => {
+          const other = target.params[i]!;
+          return isFfiContextParam(entry)
+            ? isFfiContextParam(other) && entry.context === other.context
+            : entry === other;
+        }) &&
         param.callback.returns === target.returns;
       if (!inherited) {
         errors.push({ message: `FFI release "${entry.name}:${param.callback.release}" does not inherit its target ABI`, loc: moduleLoc });

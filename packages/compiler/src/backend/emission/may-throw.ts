@@ -2,6 +2,7 @@
  * of the IR module; the emitter consults the result to place unwind checks. */
 import type { IrArrIntrinsicMethod, IrBytesIntrinsicMethod, IrLibFn, IrModule } from "../../ir/nodes.js";
 import { isFfiCallbackParam, MAY_THROW_ARR_METHODS, MAY_THROW_BYTES_METHODS, MAY_THROW_LIB_FNS } from "../../ir/nodes.js";
+import { hasRetainedFfiCallback } from "../ffi-callbacks.js";
 
 /** Cheap may-throw analysis (cost discipline: functions that transitively
  * CANNOT throw pay for no pending-exception checks). A function may throw
@@ -34,11 +35,7 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
       .filter((entry) => entry.params.some(isFfiCallbackParam))
       .map((entry) => entry.name),
   );
-  const manifestHasRetainedCallback = (mod.ffiImports ?? []).some(
-    (entry) => entry.params.some(
-      (param) => isFfiCallbackParam(param) && param.callback.lifetime === "retained",
-    ),
-  );
+  const manifestHasRetainedCallback = hasRetainedFfiCallback(mod.ffiImports ?? []);
   // Method name → every class's implementation of it (virtualCall callees).
   const methodImpls = new Map<string, string[]>();
   for (const cls of mod.classes ?? []) {

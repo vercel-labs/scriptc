@@ -7,6 +7,7 @@ import { boxAccess, BYTES_NUM_KIND_C, BYTES_NUM_VAR_C, bytesElemKindC, cDecl, cF
 import { mangleClassNew, mangleClassRetain, mangleClassStruct, mangleField, mangleFnClosure, mangleFunction, mangleGlobal, mangleLocal, mangleRecordNew, mangleRecordStruct, mangleVtStruct } from "../mangle.js";
 import { OVERFLOW_MEMBER } from "./emit-shapes.js";
 import { dynDestrCheckHelper, dynIterNHelper, dynKeyGetHelper } from "./emit-walkers.js";
+import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
 import { genResultThunkFor } from "./emit-async.js";
 
 function streamTypedRefCommitAdapter(
@@ -2134,35 +2135,28 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           if (isFfiReleaseParam(param)) callbackArgs.set(param.callback.release, arg);
         });
 
-        const retainedRegistrations: { table: string; callback: Temp; global: string | null }[] = [];
-        const retainedReleases: { table: string; callback: Temp; global: string | null }[] = [];
-        for (const param of entry.params) {
-          if (isFfiCallbackParam(param) && param.callback.lifetime === "retained") {
-            const adapter = E.ffiCallbackAdapter(entry.name, param.callback.id);
-            const callback = callbackArgs.get(param.callback.id)!;
-            if (adapter.table === null) throw new Error("emitter bug: retained callback has no table");
-            retainedRegistrations.push({ table: adapter.table, callback, global: adapter.global });
-          } else if (isFfiReleaseParam(param)) {
-            const split = param.callback.release.lastIndexOf(":");
-            const adapter = E.ffiCallbackAdapter(
-              param.callback.release.slice(0, split),
-              param.callback.release.slice(split + 1),
-            );
-            const callback = callbackArgs.get(param.callback.release)!;
-            if (adapter.table === null) throw new Error("emitter bug: retained release has no table");
-            retainedReleases.push({ table: adapter.table, callback, global: adapter.global });
-          }
-        }
+        const { registrations: retainedRegistrations, releases: retainedReleases } =
+          collectFfiRetainedOps<Temp>(entry, callbackArgs, (binding, id) => E.ffiCallbackAdapter(binding, id));
 
         // Pin before registration. Raw retained descriptors are native
-        // singletons: replacing them drops the previous table entry and
-        // points the global trampoline slot at the new closure.
+        // singletons: the incoming closure is pinned (and an EMPTY slot
+        // armed) before the native set call, but a replaced registration
+        // stays live and dispatching until the call returns — a native
+        // setter may flush the outgoing callback one last time mid-replace.
+        // scr_ffi_commit_slot below repoints the slot and retires the
+        // superseded pins after the call.
         for (const registration of retainedRegistrations) {
           if (registration.global !== null) {
-            E.line(`scr_ffi_teardown(&${registration.table});`);
-            E.line(`${registration.global} = ${registration.callback.name};`);
+            E.line(`scr_ffi_retain_slot(&${registration.table}, &${registration.global}, ${registration.callback.name});`);
+          } else {
+            E.line(`scr_ffi_retain(&${registration.table}, ${registration.callback.name});`);
           }
-          E.line(`scr_ffi_retain(&${registration.table}, ${registration.callback.name});`);
+        }
+        // Validate releases BEFORE the native removal call runs: a bogus
+        // release traps without native code observing any side effect. The
+        // registration itself is unpinned only after the call returns.
+        for (const release of retainedReleases) {
+          E.line(`scr_ffi_require(&${release.table}, ${release.callback.name});`);
         }
 
         // Raw C callback pointers carry no userdata. For the documented
@@ -2187,11 +2181,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return;
           }
           if (isFfiReleaseParam(param)) {
-            const split = param.callback.release.lastIndexOf(":");
-            const adapter = E.ffiCallbackAdapter(
-              param.callback.release.slice(0, split),
-              param.callback.release.slice(split + 1),
-            );
+            const { binding, id } = parseFfiCallbackKey(param.callback.release);
+            const adapter = E.ffiCallbackAdapter(binding, id);
             nativeArgs.push(`&${adapter.symbol}`);
             return;
           }
@@ -2234,16 +2225,19 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
         };
         const finishRetainedReleases = (): void => {
+          // Commit raw replacements first (repoint the slot, retire the
+          // superseded pins), then unpin explicit releases — the runtime
+          // disarms the slot itself when the released closure holds it.
+          for (const registration of retainedRegistrations) {
+            if (registration.global !== null) {
+              E.line(`scr_ffi_commit_slot(&${registration.table}, ${registration.callback.name});`);
+            }
+          }
           for (const release of retainedReleases) {
             E.line(`scr_ffi_release(&${release.table}, ${release.callback.name});`);
-            if (release.global !== null) E.line(`${release.global} = NULL;`);
           }
         };
-        const callbacksMayThrow = callbackArgs.size > 0 || (E.mod.ffiImports ?? []).some(
-          (candidate) => candidate.params.some(
-            (param) => isFfiCallbackParam(param) && param.callback.lifetime === "retained",
-          ),
-        );
+        const callbacksMayThrow = callbackArgs.size > 0 || E.ffiHasRetainedCallback;
         switch (entry.returns) {
           case "void":
             E.line(`${call};${E.srcComment(e.loc)}`);

@@ -229,6 +229,21 @@
       "returns": "void"
     },
     {
+      "name": "nativeRetainedRawSetFlush",
+      "symbol": "sf_retained_raw_set_flush",
+      "params": [
+        {
+          "callback": {
+            "id": "raw",
+            "params": ["f64"],
+            "returns": "void",
+            "lifetime": "retained"
+          }
+        }
+      ],
+      "returns": "void"
+    },
+    {
       "name": "nativeRetainedRawPump",
       "symbol": "sf_retained_raw_pump",
       "params": ["f64"],

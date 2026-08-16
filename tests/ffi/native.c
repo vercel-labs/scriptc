@@ -153,9 +153,23 @@ void sf_retained_remove(sf_retained_cb callback, void *context) {
 }
 
 void sf_retained_pump(double value) {
-  size_t end = retained_len;
-  for (size_t i = 0; i < end; i++) {
-    retained_entries[i].callback(value, retained_entries[i].context);
+  /* A pumped callback may remove entries mid-pump (sf_retained_remove
+   * shifts the array left). Walk a snapshot and fire only entries still
+   * registered, so a removal never double-fires the former last entry or
+   * invokes a just-released callback. */
+  sf_retained_entry snapshot[16];
+  size_t count = retained_len;
+  for (size_t i = 0; i < count; i++) snapshot[i] = retained_entries[i];
+  for (size_t i = 0; i < count; i++) {
+    int live = 0;
+    for (size_t j = 0; j < retained_len; j++) {
+      if (retained_entries[j].callback == snapshot[i].callback &&
+          retained_entries[j].context == snapshot[i].context) {
+        live = 1;
+        break;
+      }
+    }
+    if (live) snapshot[i].callback(value, snapshot[i].context);
   }
 }
 
@@ -169,6 +183,14 @@ typedef void (*sf_retained_raw_cb)(double value);
 static sf_retained_raw_cb retained_raw;
 
 void sf_retained_raw_set(sf_retained_raw_cb callback) {
+  retained_raw = callback;
+}
+
+void sf_retained_raw_set_flush(sf_retained_raw_cb callback) {
+  /* Flush-on-replace: fire the OUTGOING callback one last time before
+   * storing the new one — the runtime must keep the previous registration
+   * live and dispatching until this call returns. */
+  if (retained_raw != NULL) retained_raw(-1);
   retained_raw = callback;
 }
 

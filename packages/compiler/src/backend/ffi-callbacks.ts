@@ -1,5 +1,5 @@
 import type { IrFfiCallbackParam, IrFfiImport } from "../ir/nodes.js";
-import { isFfiCallbackParam, isFfiContextParam } from "../ir/nodes.js";
+import { isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam } from "../ir/nodes.js";
 
 export interface FfiCallbackAdapter {
   symbol: string;
@@ -63,4 +63,68 @@ export function allocateFfiCallbackAdapters(
   }
 
   return adapters;
+}
+
+/** The adapter-map key is `<binding>:<callback-id>`; a release descriptor
+ * carries the same key as its target. Binding names may themselves contain
+ * `:`; callback ids may not — split on the LAST separator. The single
+ * parser for every consumer (both emitters, twice each). */
+export function parseFfiCallbackKey(key: string): { binding: string; id: string } {
+  const split = key.lastIndexOf(":");
+  return { binding: key.slice(0, split), id: key.slice(split + 1) };
+}
+
+/** Whether any manifest binding declares a retained callback — the
+ * throw-checkpoint policy predicate (with retained descriptors ANY binding
+ * may pump a stored callback). Computed once per module by may-throw and
+ * each emitter; keep every consumer on this helper so the policy cannot
+ * drift between analysis and emission. */
+export function hasRetainedFfiCallback(imports: readonly IrFfiImport[]): boolean {
+  return imports.some((entry) =>
+    entry.params.some(
+      (param) => isFfiCallbackParam(param) && param.callback.lifetime === "retained",
+    ),
+  );
+}
+
+/** One retained lifecycle operation of an FFI call: the registration table,
+ * the raw singleton trampoline slot (null for context-bearing descriptors),
+ * and the backend's value for the closure argument. */
+export interface FfiRetainedOp<V> {
+  table: string;
+  global: string | null;
+  callback: V;
+}
+
+/** Collect a call's retained registrations and releases in manifest order —
+ * the lifecycle-policy walk shared by the C and LLVM emitters, so ordering
+ * fixes apply to both backends at once. */
+export function collectFfiRetainedOps<V>(
+  entry: IrFfiImport,
+  callbackArgs: ReadonlyMap<string, V>,
+  adapterFor: (binding: string, id: string) => FfiCallbackAdapter,
+): { registrations: FfiRetainedOp<V>[]; releases: FfiRetainedOp<V>[] } {
+  const registrations: FfiRetainedOp<V>[] = [];
+  const releases: FfiRetainedOp<V>[] = [];
+  for (const param of entry.params) {
+    if (isFfiCallbackParam(param) && param.callback.lifetime === "retained") {
+      const adapter = adapterFor(entry.name, param.callback.id);
+      if (adapter.table === null) throw new Error("emitter bug: retained callback has no table");
+      registrations.push({
+        table: adapter.table,
+        global: adapter.global,
+        callback: callbackArgs.get(param.callback.id)!,
+      });
+    } else if (isFfiReleaseParam(param)) {
+      const { binding, id } = parseFfiCallbackKey(param.callback.release);
+      const adapter = adapterFor(binding, id);
+      if (adapter.table === null) throw new Error("emitter bug: retained release has no table");
+      releases.push({
+        table: adapter.table,
+        global: adapter.global,
+        callback: callbackArgs.get(param.callback.release)!,
+      });
+    }
+  }
+  return { registrations, releases };
 }

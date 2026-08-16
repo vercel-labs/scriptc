@@ -38,6 +38,7 @@ declare function nativeRetainedFireFirst(value: number): void;
 declare function nativeRetainedRawSet(callback: (value: number) => void): void;
 declare function nativeRetainedRawRemove(callback: (value: number) => void): void;
 declare function nativeRetainedRawPump(value: number): void;
+declare function nativeRetainedRawSetFlush(callback: (value: number) => void): void;
 
 console.log(nativeScale(21));
 console.log(nativeInvert(false), nativeInvert(true));
@@ -160,6 +161,46 @@ nativeRetainedRawPump(2);
 nativeRetainedRawRemove(rawSecond);
 nativeRetainedRawPump(3);
 console.log(rawEvents.join(" "));
+
+// A pumped callback removing a LATER registration mid-pump: the fixture
+// pump must neither double-fire the shifted entry nor invoke the released
+// closure (the sanitized lane checks the latter).
+const midPumpEvents: string[] = [];
+const midPumpTrailing = (value: number) => {
+  midPumpEvents.push(`trail:${value}`);
+};
+let midPumpRemoved = false;
+const midPumpLead = (value: number) => {
+  midPumpEvents.push(`lead:${value}`);
+  if (!midPumpRemoved) {
+    midPumpRemoved = true;
+    nativeRetainedRemove(midPumpTrailing);
+  }
+};
+nativeRetainedAdd(midPumpLead);
+nativeRetainedAdd(midPumpTrailing);
+nativeRetainedPump(6);
+nativeRetainedPump(7);
+nativeRetainedRemove(midPumpLead);
+console.log(midPumpEvents.join("|"));
+
+// Flush-on-replace: a raw setter that fires the OUTGOING callback while
+// replacing it must still reach the OLD closure — the replacement commits
+// (slot repointed, previous pin dropped) only after the set call returns.
+const flushEvents: string[] = [];
+const flushFirst = (value: number) => {
+  flushEvents.push(`first:${value}`);
+};
+const flushSecond = (value: number) => {
+  flushEvents.push(`second:${value}`);
+};
+nativeRetainedRawSetFlush(flushFirst);
+nativeRetainedRawPump(11);
+nativeRetainedRawSetFlush(flushSecond);
+nativeRetainedRawPump(12);
+console.log(flushEvents.join("|"));
+// flushSecond stays registered at exit: teardown must disarm the raw slot
+// (a post-teardown native pump takes the NULL trap, not a use-after-free).
 
 // A still-live registration at normal process exit exercises the runtime's
 // teardown path (the sanitized lane checks that its captured closure leaks

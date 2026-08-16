@@ -964,6 +964,16 @@ export class Lowerer {
   /** Union re-tag helpers (%union.retag.N), interned per (from, to)
    * unionId pair — see unionRetagHelper. */
   readonly retagHelpers = new Map<string, string>();
+  /** Callee names of every interned coercion helper whose CALL mints a
+   * FRESH closure per evaluation (%fn.width.*, %fn.adapt.*,
+   * %fnval.spawnres.*). Registered at the mint site — NOT recovered by
+   * name-prefix matching — because retained-FFI release identity is the
+   * runtime closure pointer: a coercion adapter allocates a different
+   * closure at the registration and release sites, so lowerFfiCall must
+   * refuse these forms at compile time (SC5003). Any new closure-minting
+   * adapter helper MUST add its name here, or the identity guard silently
+   * reopens and the mismatch surfaces as a runtime release trap instead. */
+  readonly freshClosureAdapters = new Set<string>();
   /** Symbols bound by `const x = promisify(execFile)` — the one lowered
    * util.promisify shape. Declarations register here and emit nothing;
    * calls through the binding lower (lowerExecFileAsyncCall) and value
@@ -4697,6 +4707,8 @@ export class Lowerer {
     if (existing) return existing;
     const name = `%fn.width.${this.widthHelpers.size}`;
     this.widthHelpers.set(key, name);
+    this.freshClosureAdapters.add(name); // wraps `f` in a new closure per call
+
     const impl = `${name}.impl`;
     // The returned closure's body: call the captured original, width-map.
     this.liftedFns.push({
@@ -4865,6 +4877,8 @@ export class Lowerer {
     if (existing) return existing;
     const name = `%fn.adapt.${this.retagHelpers.size}`;
     this.retagHelpers.set(key, name);
+    this.freshClosureAdapters.add(name); // wraps `f` in a new closure per call
+
     const impl = `${name}.impl`;
     const params: IrParam[] = toT.params.map((t, i) => ({ localId: `a.${i}`, name: `a${i}`, type: t }));
     const strandThrow = (why: string): IrStmt => ({
@@ -5027,6 +5041,8 @@ export class Lowerer {
     if (existing) return existing;
     const name = `%fnval.spawnres.${this.widthHelpers.size}`;
     this.widthHelpers.set(key, name);
+    this.freshClosureAdapters.add(name); // wraps `f` in a new closure per call
+
     const impl = `${name}.impl`;
     const params: IrParam[] = toT.params.map((p, i) => ({ localId: `p${i}.0`, name: `p${i}`, type: p }));
     const rRef: IrExpr = { kind: "varRef", localId: "r.0", type: fromT.ret, loc };

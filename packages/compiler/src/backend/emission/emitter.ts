@@ -40,7 +40,7 @@ import type {
   SrcLoc,
 } from "../../ir/nodes.js";
 import { ffiCallbackType, funcOf, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, mapOf, moduleEmbedsCompressedNpm, moduleUsesDgram, moduleUsesDynInvoke, moduleEmbedsBuiltin, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, RUNTIME_EMITTER_CLASS, STRING, VOID } from "../../ir/nodes.js";
-import { allocateFfiCallbackAdapters, type FfiCallbackAdapter } from "../ffi-callbacks.js";
+import { allocateFfiCallbackAdapters, hasRetainedFfiCallback, type FfiCallbackAdapter } from "../ffi-callbacks.js";
 import {
   mangleAsyncSpawn,
   mangleGenSpawn,
@@ -242,6 +242,11 @@ export class CEmitter {
    * pointers additionally get a distinct TLS context slot, so two
    * callbacks with the same signature never alias each other's closure. */
   readonly ffiCallbackAdapters: Map<string, FfiCallbackAdapter>;
+  /** Module-level constant consulted per ffiCall: with a retained
+   * descriptor anywhere in the manifest, every native call is a
+   * pending-exception checkpoint (may-throw derives the same fact from
+   * the same helper). */
+  readonly ffiHasRetainedCallback: boolean;
   readonly globalsById = new Map<string, IrGlobal>();
   readonly unionsById = new Map<string, IrUnionDef>();
   /** Active optional-chain bind temps, by chain id (chainRecv reads). */
@@ -407,6 +412,7 @@ export class CEmitter {
     sourceText?: string,
   ) {
     this.ffiCallbackAdapters = allocateFfiCallbackAdapters(mod.ffiImports ?? []);
+    this.ffiHasRetainedCallback = hasRetainedFfiCallback(mod.ffiImports ?? []);
     for (const fn of mod.functions) {
       this.returnTypeByFn.set(fn.name, fn.returnType);
       this.fnByName.set(fn.name, fn);
@@ -855,20 +861,26 @@ export class CEmitter {
     // main freed them (observed use-after-free). scr_run_exit_listeners
     // is idempotent (scr_exit_ran), so the atexit becomes a no-op; the
     // code argument is the hint the failure reporters maintain — exactly
-    // what the atexit path would have passed.
+    // what the atexit path would have passed. Emitted whenever the module
+    // touches process events, even with nothing to release: listeners must
+    // also beat the ATEXIT teardowns (the retained-FFI ledger sweep above
+    // all — a listener may legitimately release or pump a registration),
+    // and only the inline call orders ahead of every atexit handler.
     const needsRelease = refGlobals.length > 0 || fnValueProps.length > 0;
-    const runExitListeners =
-      moduleUsesProcessEvents(this.mod) && needsRelease
-        ? "scr_run_exit_listeners((double)scr_exit_code_hint_get()); "
-        : "";
+    const runExitListeners = moduleUsesProcessEvents(this.mod)
+      ? "scr_run_exit_listeners((double)scr_exit_code_hint_get()); "
+      : "";
+    const exitCleanup = `${runExitListeners}${needsRelease ? "sc_release_globals(); " : ""}`;
     const releaseGlobals = needsRelease
       ? `  ${runExitListeners}sc_release_globals();`
-      : `  /* no refcounted globals */`;
+      : runExitListeners !== ""
+        ? `  ${runExitListeners.trim()}`
+        : `  /* no refcounted globals */`;
     const uncaught = (indent: string, releaseTop = false) => [
       `${indent}if (scr_exc_pending()) {`,
       `${indent}  scr_exc_print_uncaught();`,
       `${indent}  ${releaseTop ? "scr_promise_release(sc_top); " : ""}` +
-        `${needsRelease ? `${runExitListeners}sc_release_globals(); ` : ""}return 1;`,
+        `${exitCleanup}return 1;`,
       `${indent}}`,
     ];
     out.push(
@@ -973,7 +985,7 @@ export class CEmitter {
             `  if (sc_loop_rejection) {`,
             `    scr_discard_unhandled_rejections();`,
             ...(asyncEntry ? [`    scr_promise_release(sc_top);`] : []),
-            `    ${needsRelease ? `${runExitListeners}sc_release_globals(); ` : ""}return 1;`,
+            `    ${exitCleanup}return 1;`,
             `  }`,
             ...(asyncEntry
               ? [
@@ -986,13 +998,13 @@ export class CEmitter {
                   `    scr_promise_rethrow_top_level(sc_top);`,
                   `    scr_promise_release(sc_top);`,
                   `    scr_exc_print_uncaught();`,
-                  `    ${needsRelease ? `${runExitListeners}sc_release_globals(); ` : ""}return 1;`,
+                  `    ${exitCleanup}return 1;`,
                   `  }`,
                   `  scr_promise_release(sc_top);`,
                 ]
               : []),
             `  if (scr_report_unhandled_rejections()) {`,
-            `    ${needsRelease ? `${runExitListeners}sc_release_globals(); ` : ""}return 1;`,
+            `    ${exitCleanup}return 1;`,
             `  }`,
             ...(asyncEntry
               ? [

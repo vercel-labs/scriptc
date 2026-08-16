@@ -101,17 +101,24 @@ The manifest is the native ABI authority. TypeScript has only `number`, so its d
       <td>yes</td>
     </tr>
     <tr>
+      <td><code>cstring</code></td>
+      <td><code>string</code></td>
+      <td><code>const char *</code>; callback input only, copied through lossy UTF-8 decoding</td>
+      <td>callback only (format 3)</td>
+      <td>no</td>
+    </tr>
+    <tr>
       <td><code>string</code></td>
       <td><code>string</code></td>
       <td><code>const uint8_t *, size_t</code>; UTF-8 bytes, length-delimited</td>
-      <td>yes</td>
+      <td>yes; callback input in format 3</td>
       <td>no</td>
     </tr>
     <tr>
       <td><code>bytes</code></td>
       <td><code>Uint8Array</code> or <code>Buffer</code></td>
       <td><code>const uint8_t *, size_t</code>; raw bytes, length-delimited</td>
-      <td>yes</td>
+      <td>yes; callback input in format 3</td>
       <td>no</td>
     </tr>
     <tr>
@@ -124,7 +131,7 @@ The manifest is the native ABI authority. TypeScript has only `number`, so its d
   </tbody>
 </table>
 
-String and byte pointers are borrowed only for the duration of the call. Native code must not mutate, free, or retain them. Strings may contain embedded NUL bytes, so always use the supplied length; an empty span may have a null pointer. The current formats deliberately have no pointer, string, or byte return because those need an explicit ownership and allocator contract.
+For ordinary outbound parameters, string and byte pointers are borrowed only for the duration of the call. Native code must not mutate, free, or retain them. Strings may contain embedded NUL bytes, so always use the supplied length; an empty span may have a null pointer. The current formats deliberately have no pointer, string, or byte return because those need an explicit ownership and allocator contract.
 
 For C++, export the symbol with `extern "C"` so it keeps the manifest's unmangled C name.
 
@@ -182,7 +189,9 @@ The callback id connects the two independently positioned context entries. Both 
 }
 ```
 
-A callback descriptor consumes one TypeScript function parameter and one native function-pointer slot. A context entry consumes no TypeScript parameter and one native `void *` slot. Callback parameter lists currently accept `f64`, `bool`, `u8`, `u32`, and `i32`, plus at most one context entry; callback returns accept those scalar classes or `void`.
+A callback descriptor consumes one TypeScript function parameter and one native function-pointer slot. A context entry consumes no TypeScript parameter and one native `void *` slot. Formats 2 and 3 accept `f64`, `bool`, `u8`, `u32`, and `i32` callback parameters plus at most one context entry. Format 3 additionally accepts `cstring`, `string`, and `bytes`; callback returns remain scalar or `void`.
+
+Format 3 string-bearing callback parameters copy native data before the closure runs. `cstring` reads one non-null, NUL-terminated `const char *`. `string` and `bytes` each consume a `const uint8_t *, size_t` pair; a null pointer is valid only when its length is zero. Text is decoded as UTF-8 with malformed sequences replaced by U+FFFD, matching `Buffer.toString("utf8")`. The resulting string or `Uint8Array` is freshly owned scriptc storage, so the closure may retain it without depending on the native buffer's lifetime. An unexpected null `cstring`, or a null non-empty span, traps at the boundary instead of being treated as empty.
 
 For a raw C callback type with no userdata, omit the context entry from both parameter lists. scriptc installs that closure in a binding-specific thread-local slot around the native call, so captures and nested calls still work. This remains call-scoped: the native function must invoke it synchronously on the thread that entered the native call.
 
@@ -194,10 +203,10 @@ If a callback throws, the adapter returns zero (or `void`) to native code and su
 
 <dl>
   <dt><code>ffi_format</code></dt>
-  <dd>Required. Format <code>1</code> supports value parameters; format <code>2</code> preserves them and adds callback/context entries.</dd>
+  <dd>Required. Format <code>1</code> supports value parameters; format <code>2</code> preserves them and adds callback/context entries; format <code>3</code> adds copy-in <code>cstring</code>, string-span, and byte-span callback parameters.</dd>
 
   <dt><code>functions</code></dt>
-  <dd>Required array. Every entry has exactly <code>name</code>, <code>symbol</code>, <code>params</code>, and <code>returns</code>. Binding names and symbols must be unique. In format 2, callback ids must be unique within a function and every context must match exactly one callback.</dd>
+  <dd>Required array. Every entry has exactly <code>name</code>, <code>symbol</code>, <code>params</code>, and <code>returns</code>. Binding names and symbols must be unique. In formats 2 and 3, callback ids must be unique within a function and every context must match exactly one callback.</dd>
 
   <dt><code>libraries</code></dt>
   <dd>Optional array of archive or object paths. Relative paths are resolved from the manifest directory and appended after the generated program at link time.</dd>

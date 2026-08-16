@@ -2515,9 +2515,16 @@ function ffiCallbackInputDiagnostic(
       continue;
     }
 
-    const domain = nativeClass === "bool" ? "boolean" : "number";
+    if (nativeClass === "bytes") continue;
+    const domain = nativeClass === "bool"
+      ? "boolean"
+      : nativeClass === "cstring" || nativeClass === "string"
+      ? "string"
+      : "number";
     const coversDomain = nativeClass === "bool"
       ? (paramType.flags & ts.TypeFlags.Boolean) !== 0
+      : nativeClass === "cstring" || nativeClass === "string"
+      ? (paramType.flags & ts.TypeFlags.String) !== 0
       : (paramType.flags & ts.TypeFlags.Number) !== 0;
     if (!coversDomain) {
       return (

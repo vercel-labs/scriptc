@@ -80,3 +80,43 @@ void sf_each(sf_each_cb callback, void *context) {
   callback(2, context);
   callback(3, context);
 }
+
+typedef void (*sf_prop_visit_cb)(void *context, int32_t id,
+                                 const char *name);
+
+void sf_prop_visit(sf_prop_visit_cb callback, void *context) {
+  char ascii[] = "alpha";
+  char utf8[] = "caf\xc3\xa9";
+  char invalid[] = {'b', 'a', 'd', ':', (char)0xc3, '(', 0};
+  callback(context, 1, ascii);
+  callback(context, 2, utf8);
+  callback(context, 3, invalid);
+  for (size_t i = 0; i + 1 < sizeof ascii; i++) ascii[i] = 'x';
+  for (size_t i = 0; i + 1 < sizeof utf8; i++) utf8[i] = 'x';
+  for (size_t i = 0; i + 1 < sizeof invalid; i++) invalid[i] = 'x';
+}
+
+typedef void (*sf_spans_cb)(const uint8_t *text, size_t text_len,
+                            const uint8_t *bytes, size_t bytes_len,
+                            void *context);
+
+void sf_callback_spans(sf_spans_cb callback, void *context) {
+  uint8_t text[] = {'A', 0, 'B', 0xc3, 0xa9};
+  uint8_t bytes[] = {0, 255, 1};
+  callback(text, sizeof text, bytes, sizeof bytes, context);
+  for (size_t i = 0; i < sizeof text; i++) text[i] = 'x';
+  for (size_t i = 0; i < sizeof bytes; i++) bytes[i] = 42;
+  callback(NULL, 0, NULL, 0, context);
+}
+
+typedef void (*sf_cstring_cb)(const char *value, void *context);
+
+void sf_callback_string_throw(sf_cstring_cb callback, void *context) {
+  callback("materialized", context);
+  /* A pending script exception suppresses this second invocation. */
+  callback("skipped", context);
+}
+
+void sf_null_cstring(sf_cstring_cb callback, void *context) {
+  callback(NULL, context);
+}

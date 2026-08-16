@@ -2,9 +2,9 @@
  * Node has no equivalent static-link surface to differential-run. The same
  * TypeScript and native archive run through BOTH scriptc backends, and the
  * result bytes must match. The fixture covers every value ABI class,
- * integer coercion, embedded-NUL/UTF-8 string spans, byte spans, and format-2
- * raw/context callbacks (captures, exact context positions, conversion,
- * mutation, and catchable throws). */
+ * integer coercion, embedded-NUL/UTF-8 string spans, byte spans, format-2
+ * raw/context callbacks, and format-3 callback cstring/span copies (lossy
+ * UTF-8, exact bytes, empty spans, ownership, and catchable throws). */
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,12 +65,16 @@ const expected = [
   "true 255 4000000000 -7 0.5",
   "4294967295",
   "6",
+  "1:alpha|2:café|3:bad:�(",
+  "0 NaN  ",
+  "4 0 Bé 0,255,1",
   "caught callback boom",
+  "caught string callback boom: materialized",
   "",
 ].join("\n");
 
 describe.each(["c", "llvm"] as const)("outbound native FFI, %s backend", (backend) => {
-  test("calls the manifest-bound archive across every v1 ABI class plus v2 callback ABI classes", async () => {
+  test("calls the manifest-bound archive across every v1 ABI class plus v2/v3 callback ABI classes", async () => {
     const outDir = join(cacheRoot, backend);
     mkdirSync(outDir, { recursive: true });
     const result = await compile(join(fixtureRoot, "main.ts"), {
@@ -88,6 +92,54 @@ describe.each(["c", "llvm"] as const)("outbound native FFI, %s backend", (backen
     expect(
       execFileSync(result.binaryPath, [], { encoding: "utf8" }),
     ).toBe(expected);
+  });
+
+  test("traps a NULL callback cstring with a precise boundary error", async () => {
+    const outDir = join(cacheRoot, `null-cstring-${backend}`);
+    mkdirSync(outDir, { recursive: true });
+    const entry = join(outDir, "main.ts");
+    const profilePath = join(outDir, "profile.json");
+    writeFileSync(
+      entry,
+      [
+        "declare function nativeNullCString(callback: (value: string) => void): void;",
+        "nativeNullCString((value) => console.log(value));",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      profilePath,
+      JSON.stringify({
+        ffi_format: 3,
+        functions: [{
+          name: "nativeNullCString",
+          symbol: "sf_null_cstring",
+          params: [{
+            callback: {
+              id: "nullCString",
+              params: ["cstring", { context: "nullCString" }],
+              returns: "void",
+              lifetime: "call",
+            },
+          }, { context: "nullCString" }],
+          returns: "void",
+        }],
+        libraries: [nativeArchive()],
+      }),
+    );
+    const result = await compile(entry, {
+      outDir,
+      outPath: join(outDir, "program"),
+      backend,
+      sanitize,
+      ffiProfilePath: profilePath,
+    });
+    if (!result.ok) {
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    }
+    const run = spawnSync(result.binaryPath, [], { encoding: "utf8" });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("scriptc: native callback passed a NULL cstring");
   });
 });
 
@@ -186,6 +238,44 @@ test.each([
       }],
     },
     message: "lifetime' must be 'call",
+  },
+  {
+    name: "a format 3 callback class in format 2",
+    profile: {
+      ffi_format: 2,
+      functions: [{
+        name: "visit",
+        symbol: "sf_visit",
+        params: [{
+          callback: { id: "visit", params: ["cstring"], returns: "void", lifetime: "call" },
+        }],
+        returns: "void",
+      }],
+    },
+    message: "class 'cstring' requires ffi_format 3",
+  },
+  {
+    name: "cstring as a callback return",
+    profile: {
+      ffi_format: 3,
+      functions: [{
+        name: "visit",
+        symbol: "sf_visit",
+        params: [{
+          callback: { id: "visit", params: [], returns: "cstring", lifetime: "call" },
+        }],
+        returns: "void",
+      }],
+    },
+    message: "callback.returns' must be one of",
+  },
+  {
+    name: "cstring as an outer parameter",
+    profile: {
+      ffi_format: 3,
+      functions: [{ name: "visit", symbol: "sf_visit", params: ["cstring"], returns: "void" }],
+    },
+    message: "must be one of",
   },
 ])("manifest validation rejects $name", ({ name, profile, message }) => {
   const path = join(cacheRoot, `invalid-callback-${name.replaceAll(" ", "-")}.json`);
@@ -319,6 +409,8 @@ test.each([
   },
   { id: "never", type: "never", nativeClass: "f64", domain: "number", prefix: null },
   { id: "boolean-literal", type: "true", nativeClass: "bool", domain: "boolean", prefix: null },
+  { id: "string-literal", type: '"fixed"', nativeClass: "cstring", domain: "string", prefix: null },
+  { id: "span-string-literal", type: '"fixed"', nativeClass: "string", domain: "string", prefix: null },
 ])(
   "rejects a narrowed $id native-to-script callback parameter",
   async ({ id, type, nativeClass, domain, prefix }) => {
@@ -338,7 +430,7 @@ test.each([
     writeFileSync(
       profilePath,
       JSON.stringify({
-        ffi_format: 2,
+        ffi_format: nativeClass === "cstring" || nativeClass === "string" ? 3 : 2,
         functions: [{
           name: "nativeVisit",
           symbol: "sf_visit",

@@ -63,6 +63,15 @@ ScrBytes *scr_bytes_new(ScrBytesElem elem, double n) {
   return scr_bytes_alloc(elem, (size_t)t);
 }
 
+ScrBytes *scr_bytes_from_data(const uint8_t *data, size_t len) {
+  if (data == NULL && len != 0) {
+    scr_trap("scriptc: native callback passed a NULL span with nonzero length\n");
+  }
+  ScrBytes *b = scr_bytes_alloc(SCR_BYTES_U8, len);
+  if (len != 0) memcpy(b->data, data, len);
+  return b;
+}
+
 ScrBytes *scr_bytes_copy(const ScrBytes *src) {
   ScrBytes *b = scr_bytes_alloc(src->elem, src->len);
   memcpy(b->data, src->data, src->len * scr_bytes_elem_size(src->elem));
@@ -410,6 +419,10 @@ static const char scr_hex_digits[] = "0123456789abcdef";
  * — what Buffer.prototype.toString("utf8") does. Output re-encodes as
  * (now valid) UTF-8: worst case 3 bytes per input byte. */
 static ScrStr *scr_bytes_decode_utf8(const uint8_t *in, size_t n) {
+  if (in == NULL && n != 0) {
+    scr_trap("scriptc: native callback passed a NULL span with nonzero length\n");
+  }
+  if (n > (SIZE_MAX - 1) / 3) scr_bytes_oom();
   char *out = malloc(n * 3 + 1);
   if (!out) scr_bytes_oom();
   size_t o = 0;
@@ -476,6 +489,10 @@ static ScrStr *scr_bytes_decode_utf8(const uint8_t *in, size_t n) {
   ScrStr *s = scr_str_new(out, o);
   free(out);
   return s;
+}
+
+ScrStr *scr_str_from_utf8_lossy(const uint8_t *bytes, size_t len) {
+  return scr_bytes_decode_utf8(bytes, len);
 }
 
 /* WHATWG TextDecoder.decode (utf-8, default options): the SAME maximal-

@@ -96,6 +96,8 @@ export function ffiNativeTypeC(
       return "uint32_t";
     case "i32":
       return "int32_t";
+    case "cstring":
+      return "const char *";
     case "string":
     case "bytes":
       throw new Error(`emitter bug: span class '${cls}' has no scalar C type`);
@@ -105,11 +107,16 @@ export function ffiNativeTypeC(
 }
 
 function ffiCallbackNativeParamsC(callback: IrFfiCallbackParam["callback"], named: boolean): string[] {
-  return callback.params.map((param, i) =>
-    isFfiContextParam(param)
-      ? `void *${named ? "sc_ctx" : ""}`.trim()
-      : `${ffiNativeTypeC(param)}${named ? ` sc_a${i}` : ""}`,
-  );
+  return callback.params.flatMap((param, i): string[] => {
+    if (isFfiContextParam(param)) return [`void *${named ? "sc_ctx" : ""}`.trim()];
+    if (param === "string" || param === "bytes") {
+      return [
+        `const uint8_t *${named ? `sc_a${i}` : ""}`.trim(),
+        `size_t${named ? ` sc_a${i}_len` : ""}`,
+      ];
+    }
+    return [`${ffiNativeTypeC(param)}${named ? ` sc_a${i}` : ""}`];
+  });
 }
 
 function ffiCallbackPointerTypeC(callback: IrFfiCallbackParam["callback"]): string {
@@ -1733,11 +1740,12 @@ export class CEmitter {
     return adapter;
   }
 
-  /** C-callable trampolines for format-2 callbacks. The external callback
-   * ABI is scalar C plus an optional exact-position context pointer; the
-   * internal side is scriptc's (ScrClosure *env, params...) convention.
-   * A raw callback borrows its closure through a distinct TLS slot for the
-   * dynamic extent of the outer call. */
+  /** C-callable trampolines for format-2/3 callbacks. The external callback
+   * ABI is scalar C, format-3 copy-in string/byte slots, plus an optional
+   * exact-position context pointer; the internal side is scriptc's
+   * (ScrClosure *env, params...) convention. A raw callback borrows its
+   * closure through a distinct TLS slot for the dynamic extent of the outer
+   * call. */
   emitFfiCallbackDefs(out: string[]): void {
     if (this.ffiCallbackAdapters.size === 0) return;
     for (const adapter of this.ffiCallbackAdapters.values()) {
@@ -1755,7 +1763,41 @@ export class CEmitter {
       );
       const dummy = ffiCallbackDummyC(cb);
       out.push(`  if (scr_exc_pending()) ${cb.returns === "void" ? "return;" : `return ${dummy};`}`);
+      // Reject every invalid native pointer before materializing any owned
+      // callback arguments, so the trap path cannot strand an earlier copy.
+      for (let i = 0; i < cb.params.length; i++) {
+        const param = cb.params[i]!;
+        if (param === "cstring") {
+          out.push(
+            `  if (sc_a${i} == NULL) scr_trap("scriptc: native callback passed a NULL cstring\\n");`,
+          );
+        } else if (param === "string" || param === "bytes") {
+          out.push(
+            `  if (sc_a${i} == NULL && sc_a${i}_len != 0) scr_trap("scriptc: native callback passed a NULL ${param} span with nonzero length\\n");`,
+          );
+        }
+      }
       const ft = ffiCallbackType(cb);
+      const materialized = new Map<number, string>();
+      for (let i = 0; i < cb.params.length; i++) {
+        const param = cb.params[i]!;
+        if (isFfiContextParam(param)) continue;
+        if (param === "cstring") {
+          const local = `sc_s${i}`;
+          out.push(
+            `  ScrStr *${local} = scr_str_from_utf8_lossy((const uint8_t *)sc_a${i}, strlen(sc_a${i}));`,
+          );
+          materialized.set(i, local);
+        } else if (param === "string") {
+          const local = `sc_s${i}`;
+          out.push(`  ScrStr *${local} = scr_str_from_utf8_lossy(sc_a${i}, sc_a${i}_len);`);
+          materialized.set(i, local);
+        } else if (param === "bytes") {
+          const local = `sc_s${i}`;
+          out.push(`  ScrBytes *${local} = scr_bytes_from_data(sc_a${i}, sc_a${i}_len);`);
+          materialized.set(i, local);
+        }
+      }
       const scriptArgs = cb.params.flatMap((param, i): string[] => {
         if (isFfiContextParam(param)) return [];
         switch (param) {
@@ -1767,6 +1809,10 @@ export class CEmitter {
           case "u32":
           case "i32":
             return [`(double)sc_a${i}`];
+          case "cstring":
+          case "string":
+          case "bytes":
+            return [materialized.get(i)!];
         }
       });
       const call = `(${cFnPtrCast(ft)}sc_cb->fn)(sc_cb${scriptArgs.length ? `, ${scriptArgs.join(", ")}` : ""})`;

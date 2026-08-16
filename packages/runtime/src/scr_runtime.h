@@ -389,6 +389,9 @@ typedef struct ScrStr {
 } ScrStr;
 
 ScrStr *scr_str_new(const char *bytes, size_t len); /* returns +1 */
+/* Native callback boundary: copy and WHATWG-decode a UTF-8 span, replacing
+ * malformed subsequences with U+FFFD. NULL with len == 0 is an empty span. */
+ScrStr *scr_str_from_utf8_lossy(const uint8_t *bytes, size_t len); /* +1 */
 
 /* Internal allocators for buffer builders (scr_json.c): a +1 string with
  * UNINITIALIZED data (the builder fills bytes, then len and the NUL), and
@@ -4735,6 +4738,9 @@ ScrJsval *scr_jsval_from_bytes(const ScrBytes *b);
  * THROWS Node's "Invalid typed array length" RangeError catchably and
  * returns NULL with the exception pending). */
 ScrBytes *scr_bytes_new(ScrBytesElem elem, double n); /* +1 */
+/* Native callback boundary: exact owned u8 copy. NULL with len == 0 is an
+ * empty span. */
+ScrBytes *scr_bytes_from_data(const uint8_t *data, size_t len); /* +1 */
 
 /* `new Uint8Array(src)` / Buffer.from(u8): a same-elem-kind copy (the
  * compiler fences cross-kind construction). Borrows src. Never throws. */

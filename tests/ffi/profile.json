@@ -1,5 +1,5 @@
 {
-  "ffi_format": 2,
+  "ffi_format": 3,
   "functions": [
     { "name": "nativeScale", "symbol": "sf_scale", "params": ["f64"], "returns": "f64" },
     { "name": "nativeInvert", "symbol": "sf_invert", "params": ["bool"], "returns": "bool" },
@@ -101,6 +101,70 @@
           }
         },
         { "context": "each" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativePropVisit",
+      "symbol": "sf_prop_visit",
+      "params": [
+        {
+          "callback": {
+            "id": "prop",
+            "params": [{ "context": "prop" }, "i32", "cstring"],
+            "returns": "void",
+            "lifetime": "call"
+          }
+        },
+        { "context": "prop" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeCallbackSpans",
+      "symbol": "sf_callback_spans",
+      "params": [
+        {
+          "callback": {
+            "id": "spans",
+            "params": ["string", "bytes", { "context": "spans" }],
+            "returns": "void",
+            "lifetime": "call"
+          }
+        },
+        { "context": "spans" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeCallbackStringThrow",
+      "symbol": "sf_callback_string_throw",
+      "params": [
+        {
+          "callback": {
+            "id": "stringThrow",
+            "params": ["cstring", { "context": "stringThrow" }],
+            "returns": "void",
+            "lifetime": "call"
+          }
+        },
+        { "context": "stringThrow" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeNullCString",
+      "symbol": "sf_null_cstring",
+      "params": [
+        {
+          "callback": {
+            "id": "nullCString",
+            "params": ["cstring", { "context": "nullCString" }],
+            "returns": "void",
+            "lifetime": "call"
+          }
+        },
+        { "context": "nullCString" }
       ],
       "returns": "void"
     }

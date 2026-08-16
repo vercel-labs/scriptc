@@ -763,7 +763,15 @@ export interface IrModule {
 }
 
 export type IrFfiValueParamClass = "f64" | "bool" | "u8" | "u32" | "i32" | "string" | "bytes";
-export type IrFfiCallbackParamClass = "f64" | "bool" | "u8" | "u32" | "i32";
+export type IrFfiCallbackParamClass =
+  | "f64"
+  | "bool"
+  | "u8"
+  | "u32"
+  | "i32"
+  | "cstring"
+  | "string"
+  | "bytes";
 export type IrFfiReturnClass = "f64" | "bool" | "u8" | "u32" | "i32" | "void";
 
 export interface IrFfiContextParam {
@@ -794,10 +802,13 @@ export function isFfiContextParam(
 }
 
 /** Script-side type represented by one scalar/span FFI class. */
-export function ffiClassType(cls: IrFfiValueParamClass | IrFfiReturnClass): IrType {
+export function ffiClassType(
+  cls: IrFfiCallbackParamClass | IrFfiValueParamClass | IrFfiReturnClass,
+): IrType {
   switch (cls) {
     case "bool":
       return BOOL;
+    case "cstring":
     case "string":
       return STRING;
     case "bytes":
@@ -833,8 +844,9 @@ export function ffiSourceParamTypes(params: readonly IrFfiParam[]): IrType[] {
 
 /** One outbound native FFI declaration. Format 1 contains only value
  * classes. Format 2 additionally carries exact-position callback/context
- * entries. String/bytes still expand to pointer+length pairs; callbacks
- * and contexts are each one native pointer slot. Callback lifetimes are
+ * entries. Format 3 adds callback copy-in cstrings and spans. Outer
+ * string/bytes values still expand to pointer+length pairs; callbacks and
+ * contexts are each one native pointer slot. Callback lifetimes are
  * call-scoped and their closure/context storage is borrowed. */
 export interface IrFfiImport {
   /** The signature-only ambient TypeScript binding name. */

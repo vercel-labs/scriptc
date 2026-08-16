@@ -119,6 +119,8 @@ function ffiNativeTypeLl(
     case "u32":
     case "i32":
       return "i32";
+    case "cstring":
+      return "ptr";
     case "string":
     case "bytes":
       throw new Error(`llvm emitter bug: span class '${cls}' has no scalar LLVM type`);
@@ -1290,9 +1292,13 @@ class LlEmitter {
     for (const adapter of this.ffiCallbackAdapters.values()) {
       const cb = adapter.callback;
       if (adapter.tls !== null) globals.push(`@${adapter.tls} = internal thread_local global ptr null`);
-      const params = cb.params.map((param, i) =>
-        isFfiContextParam(param) ? `ptr %ctx` : `${ffiNativeTypeLl(param)} %a${i}`,
-      );
+      const params = cb.params.flatMap((param, i): string[] => {
+        if (isFfiContextParam(param)) return [`ptr %ctx`];
+        if (param === "string" || param === "bytes") {
+          return [`ptr %a${i}`, `${this.sizeType} %a${i}_len`];
+        }
+        return [`${ffiNativeTypeLl(param)} %a${i}`];
+      });
       const ret = ffiNativeTypeLl(cb.returns);
       defs.push(
         `define internal ${ret} @${adapter.symbol}(${params.join(", ")}) ${FN_ATTRS} {`,
@@ -1309,6 +1315,34 @@ class LlEmitter {
         `skip:`,
         `  ret ${ffiCallbackDummyLl(cb)}`,
         `invoke:`,
+      );
+      // Validate every native pointer before allocating any copy-in value.
+      // A later bad slot therefore cannot leak an earlier materialization.
+      for (let i = 0; i < cb.params.length; i++) {
+        const param = cb.params[i]!;
+        if (param !== "cstring" && param !== "string" && param !== "bytes") continue;
+        const invalid = `%invalid${i}`;
+        defs.push(`  %null${i} = icmp eq ptr %a${i}, null`);
+        if (param === "cstring") {
+          defs.push(`  ${invalid} = or i1 %null${i}, false`);
+        } else {
+          defs.push(
+            `  %nonempty${i} = icmp ne ${this.sizeType} %a${i}_len, 0`,
+            `  ${invalid} = and i1 %null${i}, %nonempty${i}`,
+          );
+        }
+        const message = param === "cstring"
+          ? "scriptc: native callback passed a NULL cstring\n"
+          : `scriptc: native callback passed a NULL ${param} span with nonzero length\n`;
+        defs.push(
+          `  br i1 ${invalid}, label %invalid_param${i}, label %param_ok${i}`,
+          `invalid_param${i}:`,
+          `  call void @scr_trap(ptr ${this.cstr(message)})`,
+          `  unreachable`,
+          `param_ok${i}:`,
+        );
+      }
+      defs.push(
         `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
         `  %fn = load ptr, ptr %fnp`,
       );
@@ -1335,6 +1369,29 @@ class LlEmitter {
           case "i32":
             defs.push(`  %s${i} = sitofp i32 %a${i} to double`);
             scriptArgs.push(`double %s${i}`);
+            break;
+          case "cstring":
+            this.declare(`declare ${this.sizeType} @strlen(ptr)`);
+            this.declare(`declare ptr @scr_str_from_utf8_lossy(ptr, ${this.sizeType})`);
+            defs.push(
+              `  %len${i} = call ${this.sizeType} @strlen(ptr %a${i})`,
+              `  %s${i} = call ptr @scr_str_from_utf8_lossy(ptr %a${i}, ${this.sizeType} %len${i})`,
+            );
+            scriptArgs.push(`ptr %s${i}`);
+            break;
+          case "string":
+            this.declare(`declare ptr @scr_str_from_utf8_lossy(ptr, ${this.sizeType})`);
+            defs.push(
+              `  %s${i} = call ptr @scr_str_from_utf8_lossy(ptr %a${i}, ${this.sizeType} %a${i}_len)`,
+            );
+            scriptArgs.push(`ptr %s${i}`);
+            break;
+          case "bytes":
+            this.declare(`declare ptr @scr_bytes_from_data(ptr, ${this.sizeType})`);
+            defs.push(
+              `  %s${i} = call ptr @scr_bytes_from_data(ptr %a${i}, ${this.sizeType} %a${i}_len)`,
+            );
+            scriptArgs.push(`ptr %s${i}`);
             break;
         }
       }

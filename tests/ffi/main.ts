@@ -25,6 +25,12 @@ declare function nativeCallbackMix(
   ) => number,
 ): number;
 declare function nativeEach(callback: (value: number) => void): void;
+declare function nativePropVisit(callback: (id: number, name: string) => void): void;
+declare function nativeCallbackSpans(
+  callback: (text: string, bytes: Uint8Array) => void,
+): void;
+declare function nativeCallbackStringThrow(callback: (value: string) => void): void;
+declare function nativeNullCString(callback: (value: string) => void): void;
 
 console.log(nativeScale(21));
 console.log(nativeInvert(false), nativeInvert(true));
@@ -54,10 +60,36 @@ nativeEach((value) => {
 });
 console.log(total);
 
+const properties: string[] = [];
+nativePropVisit((id, name) => {
+  properties.push(`${id}:${name}`);
+});
+console.log(properties.join("|"));
+
+let copiedText = "";
+let copiedBytes: Uint8Array = new Uint8Array(0);
+nativeCallbackSpans((text, bytes) => {
+  if (text.length === 0) {
+    console.log(text.length, text.charCodeAt(1), text.slice(2), bytes.join(","));
+  } else {
+    copiedText = text;
+    copiedBytes = bytes;
+  }
+});
+console.log(copiedText.length, copiedText.charCodeAt(1), copiedText.slice(2), copiedBytes.join(","));
+
 try {
   nativeApply(() => {
     throw new Error("callback boom");
   }, 1);
+} catch (error) {
+  console.log("caught", (error as Error).message);
+}
+
+try {
+  nativeCallbackStringThrow((value) => {
+    throw new Error(`string callback boom: ${value}`);
+  });
 } catch (error) {
   console.log("caught", (error as Error).message);
 }

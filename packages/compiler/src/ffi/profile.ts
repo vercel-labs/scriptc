@@ -34,7 +34,12 @@
  * Context entries are compiler-supplied and consume no TypeScript
  * parameter. `lifetime: "call"` is deliberately the only policy today:
  * native code may invoke the callback synchronously on the calling thread
- * and must not retain either pointer after the outer call returns. */
+ * and must not retain either pointer after the outer call returns.
+ *
+ * Format 3 preserves format 2 and adds copy-in callback parameters:
+ * `cstring` is one NUL-terminated pointer, while `string` and `bytes` are
+ * pointer+length spans. The copies have ordinary scriptc ownership and no
+ * lifetime relationship to the native storage. */
 import { readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { ffiProfileDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
@@ -50,7 +55,17 @@ export const FFI_PARAM_CLASSES = [
 ] as const;
 
 export const FFI_RETURN_CLASSES = ["f64", "bool", "u8", "u32", "i32", "void"] as const;
-export const FFI_CALLBACK_PARAM_CLASSES = ["f64", "bool", "u8", "u32", "i32"] as const;
+export const FFI_CALLBACK_PARAM_CLASSES = [
+  "f64",
+  "bool",
+  "u8",
+  "u32",
+  "i32",
+  "cstring",
+  "string",
+  "bytes",
+] as const;
+const FFI_FORMAT_2_CALLBACK_PARAM_CLASSES = ["f64", "bool", "u8", "u32", "i32"] as const;
 
 export type FfiValueParamClass = (typeof FFI_PARAM_CLASSES)[number];
 export type FfiReturnClass = (typeof FFI_RETURN_CLASSES)[number];
@@ -85,7 +100,7 @@ export interface FfiFunction {
 }
 
 export interface FfiProfile {
-  ffiFormat: 1 | 2;
+  ffiFormat: 1 | 2 | 3;
   functions: FfiFunction[];
   /** Absolute paths, resolved relative to the manifest. */
   libraries: string[];
@@ -137,7 +152,7 @@ function contextParam(value: unknown, path: string): FfiContextParam | null {
   return { context: stringField(rec["context"], `${path}.context`) };
 }
 
-function callbackParam(value: unknown, path: string): FfiCallbackParam | null {
+function callbackParam(value: unknown, path: string, format: 2 | 3): FfiCallbackParam | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const rec = value as Record<string, unknown>;
   if (!("callback" in rec)) return null;
@@ -157,16 +172,25 @@ function callbackParam(value: unknown, path: string): FfiCallbackParam | null {
   }
   const params = callback["params"].map((entry, i): FfiCallbackParamClass | FfiContextParam => {
     const entryPath = `${path}.callback.params[${i}]`;
+    const allowed = format === 3
+      ? FFI_CALLBACK_PARAM_CLASSES
+      : FFI_FORMAT_2_CALLBACK_PARAM_CLASSES;
+    if (
+      typeof entry === "string" &&
+      (allowed as readonly string[]).includes(entry)
+    ) {
+      return entry as FfiCallbackParamClass;
+    }
     if (
       typeof entry === "string" &&
       (FFI_CALLBACK_PARAM_CLASSES as readonly string[]).includes(entry)
     ) {
-      return entry as FfiCallbackParamClass;
+      throw new FfiProfileError(`'${entryPath}' class '${entry}' requires ffi_format 3`);
     }
     const context = contextParam(entry, entryPath);
     if (context !== null) return context;
     throw new FfiProfileError(
-      `'${entryPath}' must be one of ${FFI_CALLBACK_PARAM_CLASSES.join("/")} or a context entry`,
+      `'${entryPath}' must be one of ${allowed.join("/")} or a context entry`,
     );
   });
   const returns = stringField(callback["returns"], `${path}.callback.returns`);
@@ -214,11 +238,11 @@ export function loadFfiProfile(
     }
     const root = raw as Record<string, unknown>;
     const format = root["ffi_format"];
-    if (format !== 1 && format !== 2) {
+    if (format !== 1 && format !== 2 && format !== 3) {
       throw new FfiProfileError(
         typeof format === "number"
-          ? `unsupported ffi_format ${format} (this scriptc reads formats 1 and 2)`
-          : "'ffi_format' must be the number 1 or 2",
+          ? `unsupported ffi_format ${format} (this scriptc reads formats 1, 2, and 3)`
+          : "'ffi_format' must be the number 1, 2, or 3",
       );
     }
     rejectUnknownKeys(root, "", [
@@ -268,8 +292,8 @@ export function loadFfiProfile(
           typeof value !== "string" ||
           !(FFI_PARAM_CLASSES as readonly string[]).includes(value)
         ) {
-          if (format === 2) {
-            const callback = callbackParam(value, paramPath);
+          if (format >= 2) {
+            const callback = callbackParam(value, paramPath, format === 2 ? 2 : 3);
             if (callback !== null) return callback;
             const context = contextParam(value, paramPath);
             if (context !== null) return context;
@@ -282,7 +306,7 @@ export function loadFfiProfile(
         }
         return value as FfiValueParamClass;
       });
-      if (format === 2) {
+      if (format >= 2) {
         const callbacks = new Map<string, FfiCallbackParam["callback"]>();
         const outerContexts = new Map<string, number>();
         for (const param of params) {

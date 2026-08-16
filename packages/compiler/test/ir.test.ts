@@ -22,7 +22,7 @@ test("fib module JSON round-trips", () => {
 test("validator rejects type mismatches and bad references", () => {
   const loc = { file: "t.ts", start: 0, end: 0 };
   const bad: IrModule = {
-    irVersion: 3,
+    irVersion: 4,
     sourceFile: "t.ts",
     entry: "__main",
     functions: [
@@ -82,7 +82,7 @@ test("serializer round-trips ±Infinity and refuses NaN", () => {
   expect(() => serializeModule(mod)).toThrow(/NaN/);
 });
 
-test("deserializer enforces IR version", () => {
-  const json = serializeModule(fibModule).replace('"irVersion": 3', '"irVersion": 99');
+test("deserializer rejects the previous IR version", () => {
+  const json = serializeModule(fibModule).replace('"irVersion": 4', '"irVersion": 3');
   expect(() => deserializeModule(json)).toThrow(/version mismatch/);
 });

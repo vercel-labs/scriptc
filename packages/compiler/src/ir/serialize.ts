@@ -5,7 +5,7 @@
  */
 import type { IrModule } from "./nodes.js";
 
-export const IR_VERSION = 3 as const;
+export const IR_VERSION = 4 as const;
 
 export function serializeModule(mod: IrModule): string {
   return JSON.stringify(mod, (_key, value) => {

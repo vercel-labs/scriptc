@@ -452,6 +452,45 @@ describe("the domain's edges beyond the corpus", () => {
     expect(v.obligation).toBe("range");
   });
 
+  test.each([
+    ["<", 6],
+    ["<=", 5],
+    [">", 4],
+    [">=", 5],
+  ] as const)("a failed %s comparison preserves NaN", (op, bound) => {
+    // x is either the whole number 5 or NaN. The numeric member satisfies
+    // every comparison in this table, so only NaN reaches the false edge.
+    // Treating that edge as the negated ordered comparison would incorrectly
+    // make it vacuous and prove the integer crossing.
+    const v = only(
+      caseModule(["a"], ["x"], [
+        decl("x.0", num(5)),
+        iff(bin("===", ref("a.0"), num(0)), [assign("x.0", bin("/", num(0), num(0)))]),
+        iff(bin(op, ref("x.0"), num(bound)), [{ kind: "return", value: null, loc }]),
+        send(ref("x.0")),
+      ]),
+    );
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("wholeness");
+    expect(v.detail).toContain("NaN");
+  });
+
+  test("a failed !== comparison clears NaN and proves equality", () => {
+    // The true edge consumes the NaN alternative; falling through proves
+    // x === 5, so the integer crossing is exact and NaN-free.
+    const v = only(
+      caseModule(["a"], ["x"], [
+        decl("x.0", num(5)),
+        iff(bin("===", ref("a.0"), num(0)), [assign("x.0", bin("/", num(0), num(0)))]),
+        iff(bin("!==", ref("x.0"), num(5)), [{ kind: "return", value: null, loc }]),
+        send(ref("x.0")),
+      ]),
+    );
+    expect(v.outcome).toBe("prove");
+    expect(v.provenLo).toBe(5);
+    expect(v.provenHi).toBe(5);
+  });
+
   test("the arithmetic twin of the representability case refuses on RANGE", () => {
     // 2^53 + 1 computed arithmetically: no spelling, whole, but past the
     // provable bound — the failed obligation is range, never

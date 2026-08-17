@@ -2396,18 +2396,41 @@ interface ImplicitLinkerProbe {
   linker: { spelling: string; identity: string | null; path: string | null };
 }
 
+interface FingerprintDependencies {
+  paths: string[];
+  /** Content identity computed while the enclosing fingerprint was minted.
+   * Null means the fingerprint has no file-content component. */
+  contentPaths: string[];
+  contentFingerprint: string | null;
+}
+
 /** Dependency paths discovered while computing one strict fingerprint. The
  * output-local cache stamp snapshots these exact files/directories after a
  * validated build, then can prove a later same-output no-op without spawning
- * clang again. Keep the map bounded for long-lived corpus/test processes. */
-const fingerprintDependencyPaths = new Map<string, string[]>();
-function rememberFingerprintDependencies(fingerprint: string, paths: readonly string[]): string {
-  fingerprintDependencyPaths.set(fingerprint, [...new Set(paths)].sort());
-  if (fingerprintDependencyPaths.size > 256) {
-    const oldest = fingerprintDependencyPaths.keys().next().value as string | undefined;
-    if (oldest !== undefined) fingerprintDependencyPaths.delete(oldest);
+ * clang again. The content identity closes the gap between hashing and that
+ * metadata snapshot: a file changed in the gap cannot make new bytes ride an
+ * old key. Keep the map bounded for long-lived corpus/test processes. */
+const fingerprintDependencies = new Map<string, FingerprintDependencies>();
+function rememberFingerprintDependencies(
+  fingerprint: string,
+  paths: readonly string[],
+  contentPaths: readonly string[] = [],
+  contentFingerprint: string | null = null,
+): string {
+  fingerprintDependencies.set(fingerprint, {
+    paths: [...new Set(paths)].sort(),
+    contentPaths: [...new Set(contentPaths)].sort(),
+    contentFingerprint,
+  });
+  if (fingerprintDependencies.size > 256) {
+    const oldest = fingerprintDependencies.keys().next().value as string | undefined;
+    if (oldest !== undefined) fingerprintDependencies.delete(oldest);
   }
   return fingerprint;
+}
+
+function fingerprintDependencyPaths(fingerprint: string): string[] {
+  return fingerprintDependencies.get(fingerprint)?.paths ?? [];
 }
 
 function parseMakeDependencies(output: string, cwd: string = process.cwd()): string[] {
@@ -2545,6 +2568,8 @@ async function effectiveCompilerInvocationFingerprintFresh(
   return rememberFingerprintDependencies(
     fingerprint,
     [...probe.dependencies, ...probe.invocationPaths],
+    probe.dependencies,
+    probe.dependencyFingerprint,
   );
 }
 
@@ -2650,6 +2675,23 @@ async function fingerprintDependencyFiles(paths: readonly string[]): Promise<str
   return hash.digest("hex");
 }
 
+async function fingerprintDependenciesStillMatch(fingerprints: readonly string[]): Promise<boolean> {
+  const distinct = [...new Set(fingerprints)];
+  const identities = distinct
+    .map((fingerprint) => fingerprintDependencies.get(fingerprint))
+    // A restored native-metadata stamp carries and revalidates the dependency
+    // snapshot from the process that minted this fingerprint. Only identities
+    // computed in this process have an additional content hash to recheck here.
+    .filter((identity): identity is FingerprintDependencies => identity !== undefined);
+  return (await Promise.all(
+    identities.map(async (identity) =>
+      identity.contentFingerprint === null ||
+      await fingerprintDependencyFiles(identity.contentPaths).catch(() => null) ===
+        identity.contentFingerprint
+    ),
+  )).every(Boolean);
+}
+
 interface TranslationUnitDependencyProbe {
   compilerIdentity: string;
   dependencies: string[];
@@ -2727,7 +2769,12 @@ async function translationUnitDependencyFingerprintFresh(
     .update("\0")
     .update(probe.dependencyFingerprint)
     .digest("hex");
-  return rememberFingerprintDependencies(fingerprint, probe.dependencies);
+  return rememberFingerprintDependencies(
+    fingerprint,
+    probe.dependencies,
+    probe.dependencies,
+    probe.dependencyFingerprint,
+  );
 }
 
 const stableTranslationUnitDependencyMemos = new Map<string, Promise<string>>();
@@ -2906,6 +2953,8 @@ async function implicitToolchainFingerprintFresh(
       ...probe.invocationPaths,
       ...probe.tools.flatMap((tool) => tool.path === null ? [] : [tool.path]),
     ],
+    probe.dependencies,
+    probe.dependencyFingerprint,
   );
 }
 
@@ -3185,6 +3234,8 @@ async function implicitLinkerFingerprintFresh(
       ...probe.invocationPaths,
       ...(probe.linker.path === null ? [] : [probe.linker.path]),
     ],
+    probe.dependencies,
+    probe.dependencyFingerprint,
   );
 }
 
@@ -3357,7 +3408,7 @@ async function publishCachedFile(source: string, destination: string): Promise<v
 }
 
 interface LocalArtifactStamp {
-  version: 1;
+  version: 2;
   key: string;
   digest: string;
   dependencies: LocalArtifactDependency[];
@@ -3367,27 +3418,138 @@ interface LocalArtifactStamp {
 interface LocalArtifactDependency {
   path: string;
   kind: "file" | "directory" | "symlink";
+  dev: number;
+  ino: number;
   size: number;
   mtimeMs: number;
   ctimeMs: number;
+  /** Symlinks are identity-bearing paths whose target bytes also matter. */
+  targetPath?: string;
+  targetKind?: "file" | "directory";
+  targetDev?: number;
+  targetIno?: number;
+  targetSize?: number;
+  targetMtimeMs?: number;
+  targetCtimeMs?: number;
+  /** A directory's recursive namespace. This detects a new nested candidate
+   * that can begin shadowing an existing system/header dependency. */
+  treeDigest?: string;
+  treeExclusions?: string[];
+}
+
+async function directoryTreeDigest(
+  root: string,
+  excludedPaths: readonly string[] = [],
+): Promise<string> {
+  const hash = createHash("sha256").update("native-dependency-tree-v1\0");
+  const visited = new Set<string>();
+  const excluded = excludedPaths.map((path) => resolve(path));
+  const walk = async (directory: string, relative: string): Promise<void> => {
+    const canonical = await realpath(directory);
+    if (visited.has(canonical)) {
+      hash.update(relative).update("\0cycle\0").update(canonical).update("\0");
+      return;
+    }
+    visited.add(canonical);
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      const absolute = resolve(path);
+      if (excluded.some((candidate) =>
+        absolute === candidate ||
+        absolute.startsWith(`${candidate}/`) ||
+        absolute.startsWith(`${candidate}\\`)
+      )) continue;
+      const child = relative === "" ? entry.name : `${relative}/${entry.name}`;
+      const info = await lstat(path);
+      const kind = info.isDirectory()
+        ? "directory"
+        : info.isFile()
+          ? "file"
+          : info.isSymbolicLink()
+            ? "symlink"
+            : "other";
+      hash.update(child).update("\0").update(kind).update("\0");
+      if (kind === "symlink") {
+        const target = await realpath(path).catch(() => "<missing>");
+        hash.update(target).update("\0");
+        const targetInfo = await stat(path).catch(() => null);
+        if (targetInfo?.isDirectory()) await walk(path, child);
+      }
+      if (kind === "directory") await walk(path, child);
+    }
+    visited.delete(canonical);
+  };
+  await walk(root, "");
+  return hash.digest("hex");
+}
+
+function localDependencyKind(
+  info: Awaited<ReturnType<typeof lstat>>,
+): LocalArtifactDependency["kind"] | null {
+  return info.isFile()
+    ? "file"
+    : info.isDirectory()
+      ? "directory"
+      : info.isSymbolicLink()
+        ? "symlink"
+        : null;
+}
+
+async function snapshotLocalArtifactDependency(
+  path: string,
+  treeExclusions: readonly string[] | null = null,
+): Promise<LocalArtifactDependency> {
+  const info = await lstat(path);
+  const kind = localDependencyKind(info);
+  if (kind === null) throw new Error(`unsupported local artifact dependency: ${path}`);
+  const dependency: LocalArtifactDependency = {
+    path,
+    kind,
+    dev: info.dev,
+    ino: info.ino,
+    size: info.size,
+    mtimeMs: info.mtimeMs,
+    ctimeMs: info.ctimeMs,
+  };
+  if (kind === "directory" && treeExclusions !== null) {
+    dependency.treeExclusions = [...new Set(treeExclusions.map((entry) => resolve(entry)))].sort();
+    dependency.treeDigest = await directoryTreeDigest(path, dependency.treeExclusions);
+  }
+  if (kind === "symlink") {
+    const targetPath = await realpath(path);
+    const target = await stat(path);
+    const targetKind = target.isFile() ? "file" : target.isDirectory() ? "directory" : null;
+    if (targetKind === null) throw new Error(`unsupported symlink target dependency: ${path}`);
+    dependency.targetPath = targetPath;
+    dependency.targetKind = targetKind;
+    dependency.targetDev = target.dev;
+    dependency.targetIno = target.ino;
+    dependency.targetSize = target.size;
+    dependency.targetMtimeMs = target.mtimeMs;
+    dependency.targetCtimeMs = target.ctimeMs;
+    if (targetKind === "directory" && treeExclusions !== null) {
+      dependency.treeExclusions = [...new Set(treeExclusions.map((entry) => resolve(entry)))].sort();
+      dependency.treeDigest = await directoryTreeDigest(path, dependency.treeExclusions);
+    }
+  }
+  return dependency;
 }
 
 async function snapshotLocalArtifactDependencies(
   dependencyPaths: readonly string[],
+  recursiveDirectories: readonly string[] = [],
+  recursiveExclusions: readonly string[] = [],
 ): Promise<LocalArtifactDependency[]> {
+  const recursive = new Set(recursiveDirectories.map((path) => resolve(path)));
   return Promise.all(
-    [...new Set(dependencyPaths)].sort().map(async (path) => {
-      const info = await lstat(path);
-      const kind: LocalArtifactDependency["kind"] | null = info.isFile()
-        ? "file"
-        : info.isDirectory()
-          ? "directory"
-          : info.isSymbolicLink()
-            ? "symlink"
-            : null;
-      if (kind === null) throw new Error(`unsupported local artifact dependency: ${path}`);
-      return { path, kind, size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs };
-    }),
+    [...new Set(dependencyPaths)].sort().map((path) =>
+      snapshotLocalArtifactDependency(
+        path,
+        recursive.has(resolve(path)) ? recursiveExclusions : null,
+      )
+    ),
   );
 }
 
@@ -3396,22 +3558,17 @@ async function localArtifactDependenciesStillMatch(
 ): Promise<boolean> {
   return (await Promise.all(
     dependencies.map(async (dependency) => {
-      const info = await lstat(dependency.path).catch(() => null);
-      return info !== null &&
-        (dependency.kind === "file"
-          ? info.isFile()
-          : dependency.kind === "directory"
-            ? info.isDirectory()
-            : info.isSymbolicLink()) &&
-        info.size === dependency.size &&
-        info.mtimeMs === dependency.mtimeMs &&
-        info.ctimeMs === dependency.ctimeMs;
+      const current = await snapshotLocalArtifactDependency(
+        dependency.path,
+        dependency.treeDigest === undefined ? null : dependency.treeExclusions ?? [],
+      ).catch(() => null);
+      return current !== null && JSON.stringify(current) === JSON.stringify(dependency);
     }),
   )).every(Boolean);
 }
 
 interface NativeMetadataStamp {
-  version: 1;
+  version: 2;
   key: string;
   values: Record<string, string>;
   dependencies: LocalArtifactDependency[];
@@ -3426,7 +3583,7 @@ function nativeMetadataStampIntegrity(
   stamp: Pick<NativeMetadataStamp, "version" | "key" | "values" | "dependencies">,
 ): string {
   return createHash("sha256")
-    .update("native-metadata-stamp-v1\0")
+    .update("native-metadata-stamp-v2\0")
     .update(JSON.stringify(stamp))
     .digest("hex");
 }
@@ -3440,7 +3597,7 @@ async function readNativeMetadataStamp(
       await readFile(nativeMetadataStampPath(root, key), "utf8"),
     ) as NativeMetadataStamp;
     if (
-      stamp.version !== 1 ||
+      stamp.version !== 2 ||
       stamp.key !== key ||
       stamp.values === null ||
       typeof stamp.values !== "object" ||
@@ -3467,11 +3624,15 @@ async function publishNativeMetadataStamp(
   key: string,
   values: Record<string, string>,
   dependencyPaths: readonly string[],
+  fingerprints: readonly string[] = [],
 ): Promise<NativeMetadataStamp> {
   const destination = nativeMetadataStampPath(root, key);
   await mkdir(dirname(destination), { recursive: true });
   const dependencies = await snapshotLocalArtifactDependencies(dependencyPaths);
-  const unsigned = { version: 1, key, values, dependencies } as const;
+  if (!(await fingerprintDependenciesStillMatch(fingerprints))) {
+    throw new CacheInputsChangedError();
+  }
+  const unsigned = { version: 2, key, values, dependencies } as const;
   const stamp: NativeMetadataStamp = {
     ...unsigned,
     integrity: nativeMetadataStampIntegrity(unsigned),
@@ -3490,7 +3651,7 @@ function nativeMetadataKey(
   kind: string,
   parts: readonly (string | readonly string[])[],
 ): string {
-  const hash = createHash("sha256").update(`native-metadata-${kind}-v1\0`);
+  const hash = createHash("sha256").update(`native-metadata-${kind}-v2\0`);
   for (const part of parts) {
     hash.update(typeof part === "string" ? part : part.join("\x1f")).update("\0");
   }
@@ -3544,7 +3705,7 @@ function localArtifactStampIntegrity(
   stamp: Pick<LocalArtifactStamp, "version" | "key" | "digest" | "dependencies">,
 ): string {
   return createHash("sha256")
-    .update("local-artifact-stamp-v1\0")
+    .update("local-artifact-stamp-v2\0")
     .update(JSON.stringify(stamp))
     .digest("hex");
 }
@@ -3559,7 +3720,7 @@ async function localArtifactHit(
     const output = await lstat(outPath);
     const expectedMode = 0o777 & ~process.umask();
     if (
-      stamp.version !== 1 ||
+      stamp.version !== 2 ||
       stamp.key !== key ||
       !/^[0-9a-f]{64}$/.test(stamp.digest ?? "") ||
       !Array.isArray(stamp.dependencies) ||
@@ -3579,9 +3740,21 @@ async function localArtifactHit(
         dependency.kind !== "file" &&
           dependency.kind !== "directory" &&
           dependency.kind !== "symlink" ||
+        typeof dependency.dev !== "number" ||
+        typeof dependency.ino !== "number" ||
         typeof dependency.size !== "number" ||
         typeof dependency.mtimeMs !== "number" ||
-        typeof dependency.ctimeMs !== "number"
+        typeof dependency.ctimeMs !== "number" ||
+        dependency.treeDigest !== undefined && typeof dependency.treeDigest !== "string" ||
+        dependency.kind === "symlink" && (
+          typeof dependency.targetPath !== "string" ||
+          dependency.targetKind !== "file" && dependency.targetKind !== "directory" ||
+          typeof dependency.targetDev !== "number" ||
+          typeof dependency.targetIno !== "number" ||
+          typeof dependency.targetSize !== "number" ||
+          typeof dependency.targetMtimeMs !== "number" ||
+          typeof dependency.targetCtimeMs !== "number"
+        )
       ) ||
       !(await localArtifactDependenciesStillMatch(stamp.dependencies)) ||
       await fileDigest(outPath) !== stamp.digest
@@ -3601,13 +3774,19 @@ async function publishLocalArtifactStamp(
   outPath: string,
   key: string,
   dependencyPaths: readonly string[],
+  recursiveDirectories: readonly string[] = [],
+  recursiveExclusions: readonly string[] = [],
 ): Promise<void> {
   await mkdir(dirname(stampPath), { recursive: true });
   const tmp = `${stampPath}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
   try {
-    const dependencies = await snapshotLocalArtifactDependencies(dependencyPaths);
+    const dependencies = await snapshotLocalArtifactDependencies(
+      dependencyPaths,
+      recursiveDirectories,
+      recursiveExclusions,
+    );
     const unsigned = {
-      version: 1,
+      version: 2,
       key,
       digest: await fileDigest(outPath),
       dependencies,
@@ -3988,8 +4167,9 @@ export async function compileC(opts: CcOptions): Promise<void> {
             [
               metadataCompiler.canonicalPath,
               metadataEffectiveCompiler.canonicalPath,
-              ...(fingerprintDependencyPaths.get(implicitToolchain) ?? []),
+              ...fingerprintDependencyPaths(implicitToolchain),
             ],
+            [implicitToolchain],
           );
         }
       }
@@ -4374,9 +4554,10 @@ export async function compileC(opts: CcOptions): Promise<void> {
               programInvocation: programCompilerInvocation,
             },
             [
-              ...(fingerprintDependencyPaths.get(runtimeCompilerInvocation) ?? []),
-              ...(fingerprintDependencyPaths.get(programCompilerInvocation) ?? []),
+              ...fingerprintDependencyPaths(runtimeCompilerInvocation),
+              ...fingerprintDependencyPaths(programCompilerInvocation),
             ],
+            [runtimeCompilerInvocation, programCompilerInvocation],
           );
         }
       }
@@ -4520,18 +4701,37 @@ export async function compileC(opts: CcOptions): Promise<void> {
           root,
           linkMetadataKey,
           { implicitLinker },
-          fingerprintDependencyPaths.get(implicitLinker) ?? [],
+          fingerprintDependencyPaths(implicitLinker),
+          [implicitLinker],
         );
       }
       preBuildDependencies = await snapshotLocalArtifactDependencies([
         ...(await runtimeFingerprintInputPaths(rtDir)),
         ...(toolchainMetadataStamp?.dependencies.map((dependency) => dependency.path) ??
-          fingerprintDependencyPaths.get(implicitToolchain!) ?? []),
+          fingerprintDependencyPaths(implicitToolchain!)),
         ...(compileMetadataStamp?.dependencies.map((dependency) => dependency.path) ?? []),
         ...(linkMetadataStamp?.dependencies.map((dependency) => dependency.path) ??
-          fingerprintDependencyPaths.get(implicitLinker!) ?? []),
-        ...(fingerprintDependencyPaths.get(programDependencies) ?? []),
+          fingerprintDependencyPaths(implicitLinker!)),
+        ...fingerprintDependencyPaths(programDependencies),
       ]);
+      // Every content-bearing fingerprint was computed before this metadata
+      // snapshot. Re-read those exact files now so the snapshot cannot certify
+      // bytes that changed after hashing but before the final compile starts.
+      if (!(await fingerprintDependenciesStillMatch([
+        implicitToolchain!,
+        runtimeCompilerInvocation!,
+        programCompilerInvocation!,
+        implicitLinker!,
+        programDependencies,
+      ])) ||
+        await runtimeFingerprint(rtDir).catch(() => null) !== fingerprint ||
+        !(await Promise.all(
+          [toolchainMetadataStamp, compileMetadataStamp, linkMetadataStamp]
+            .filter((stamp): stamp is NativeMetadataStamp => stamp !== null)
+            .map((stamp) => localArtifactDependenciesStillMatch(stamp.dependencies)),
+        )).every(Boolean)) {
+        throw new CacheInputsChangedError();
+      }
       if (localArtifact !== null) {
         // Native metadata stamps persist their dependency paths across CLI
         // processes; fingerprintDependencyPaths deliberately does not. Build
@@ -4549,6 +4749,8 @@ export async function compileC(opts: CcOptions): Promise<void> {
       // complete hit. Runtime objects remain safely cacheable if either probe
       // is unavailable.
       cacheCompleteArtifact = false;
+      preBuildDependencies = null;
+      localArtifactDependencyPaths = null;
     }
   }
   const binDir = join(root, "bin");
@@ -4609,6 +4811,8 @@ export async function compileC(opts: CcOptions): Promise<void> {
           opts.outPath,
           localArtifact.key,
           localArtifactDependencyPaths,
+          [dirname(resolve(opts.cPath))],
+          [root],
         ).catch(() => undefined);
       }
       return; // hit: the program/runtime payload compile and link were skipped
@@ -4660,10 +4864,12 @@ export async function compileC(opts: CcOptions): Promise<void> {
       // inputs while the safe runtime-object tier remains active. Preserve its
       // strict discovery fallback in that posture.
       strictObjectVerification ??= Promise.all([
+        runtimeFingerprint(rtDir),
         implicitToolchainFingerprint(driver, toolchainEnv),
         effectiveCompilerInvocationFingerprint(driver, toolchainEnv, cflags),
       ]).then(
-        ([currentImplicit, currentInvocation]) =>
+        ([currentRuntime, currentImplicit, currentInvocation]) =>
+          currentRuntime === fingerprint &&
           currentImplicit === implicitToolchain &&
           currentInvocation === runtimeCompilerInvocation,
         () => false,
@@ -4695,14 +4901,51 @@ export async function compileC(opts: CcOptions): Promise<void> {
     await installArtifact(privateOut, opts.outPath);
 
     if (cachedBin !== null && keyHex !== null) {
-      // The strict pre-build probes already discovered every runtime/header/
-      // SDK/compiler/linker input participating in this exact flavor. Compare
-      // their metadata again after linking to close the race without launching
-      // a second copy of every expensive discovery subprocess.
+      // Metadata comparison catches ordinary changes cheaply, but cannot by
+      // itself prove the snapshot was taken from the same bytes hashed into
+      // the key. Recompute every content-bearing identity after the final link
+      // so a header/SDK/compiler change in either pre-build gap cannot publish
+      // new output under an old key.
+      const [currentRuntime, currentImplicit, currentRuntimeInvocation, currentProgramInvocation, currentProgramDependencies, currentLinker, currentCompiler] =
+        await Promise.all([
+          runtimeFingerprint(rtDir).catch(() => null),
+          implicitToolchainFingerprint(driver, toolchainEnv).catch(() => null),
+          effectiveCompilerInvocationFingerprint(driver, toolchainEnv, cflags).catch(
+            () => null,
+          ),
+          effectiveCompilerInvocationFingerprint(
+            driver,
+            toolchainEnv,
+            programCompilerArgs,
+            programSourceExtension,
+          ).catch(() => null),
+          translationUnitDependencyFingerprint(
+            driver,
+            cflags,
+            opts.cPath,
+            cBytes,
+            toolchainEnv,
+          ).catch(() => null),
+          implicitLinkerFingerprint(
+            driver,
+            toolchainEnv,
+            linkProbeArgs,
+            effectiveLinkInvocationArgs,
+            linkTraceInvocationArgs,
+          ).catch(() => null),
+          ccVersionOnce(driver.argv, toolchainEnv, true).catch(() => null),
+        ]);
       cacheInputsStable =
         cacheInputsStable &&
         preBuildDependencies !== null &&
-        await localArtifactDependenciesStillMatch(preBuildDependencies);
+        await localArtifactDependenciesStillMatch(preBuildDependencies) &&
+        currentRuntime === fingerprint &&
+        currentImplicit === implicitToolchain &&
+        currentRuntimeInvocation === runtimeCompilerInvocation &&
+        currentProgramInvocation === programCompilerInvocation &&
+        currentProgramDependencies === programDependencies &&
+        currentLinker === implicitLinker &&
+        currentCompiler === cv;
     }
     if (cachedBin !== null && keyHex !== null && cacheInputsStable) {
       try {
@@ -4725,6 +4968,8 @@ export async function compileC(opts: CcOptions): Promise<void> {
         opts.outPath,
         localArtifact.key,
         localArtifactDependencyPaths,
+        [dirname(resolve(opts.cPath))],
+        [root],
       ).catch(() => undefined);
     }
   } finally {

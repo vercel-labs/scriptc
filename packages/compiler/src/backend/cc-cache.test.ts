@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterAll, afterEach, expect, test as vitestTest } from "vitest";
@@ -2419,6 +2419,81 @@ test("frontend-generated same-output builds no-op only while output and dependen
     process.umask(oldUmask);
   }
 });
+
+test.skipIf(process.platform === "win32")(
+  "output-local hits follow symlinked header targets",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-local-artifact-symlink-"));
+    scratch.push(dir);
+    const cacheRoot = join(dir, "cache");
+    const cPath = join(dir, "program.c");
+    const header = join(dir, "value.h");
+    const target = join(dir, "target.h");
+    const outPath = join(dir, "program");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+
+    try {
+      process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      await writeFile(target, '#define VALUE "one"\n');
+      await symlink(target, header);
+      await writeFile(
+        cPath,
+        '#include <stdio.h>\n#include "value.h"\nint main(void) { puts(VALUE); return 0; }\n',
+      );
+      await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+      expect(execFileSync(outPath, { encoding: "utf8" }).trim()).toBe("one");
+
+      // clang's dependency file names the symlink path. The local stamp must
+      // also follow that path and invalidate when only the target changes.
+      await writeFile(target, '#define VALUE "two"\n');
+      await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+      expect(execFileSync(outPath, { encoding: "utf8" }).trim()).toBe("two");
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "output-local hits detect newly shadowing nested headers",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-local-artifact-shadow-"));
+    scratch.push(dir);
+    const cacheRoot = join(dir, "cache");
+    const cPath = join(dir, "program.c");
+    const outPath = join(dir, "program");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+
+    try {
+      process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      await mkdir(join(dir, "sys"));
+      await writeFile(
+        cPath,
+        '#include <stdio.h>\n#include "sys/param.h"\nint main(void) { printf("%d\\n", MAXPATHLEN); return 0; }\n',
+      );
+      await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+      expect(execFileSync(outPath, { encoding: "utf8" }).trim()).not.toBe("7");
+
+      // The source directory itself does not necessarily change metadata when
+      // a child directory gains a file. Its recursive namespace digest must.
+      await writeFile(join(dir, "sys", "param.h"), "#define MAXPATHLEN 7\n");
+      await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+      expect(execFileSync(outPath, { encoding: "utf8" }).trim()).toBe("7");
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    }
+  },
+);
 
 test("fresh processes preserve output-local dependency coverage after source edits", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-local-artifact-process-"));

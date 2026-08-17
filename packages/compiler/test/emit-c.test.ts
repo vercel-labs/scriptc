@@ -35,7 +35,7 @@ test("strings: literals, concat in a loop, toString, RC-clean under audit", asyn
   // while (i < 3) { acc = acc + ("-" + i); i = i + 1; }
   // console.log(acc, acc === "x-0-1-2", "α∂" < "β");
   const mod: IrModule = {
-    irVersion: 4,
+    irVersion: 5,
     sourceFile: "s.ts",
     entry: "__main",
     functions: [
@@ -113,7 +113,7 @@ test("short-circuit: right operand of && only evaluates when left is true", asyn
   // if (false && sideEffect()) {} ; if (true || sideEffect()) {}
   // console.log("done")
   const mod: IrModule = {
-    irVersion: 4,
+    irVersion: 5,
     sourceFile: "l.ts",
     entry: "__main",
     functions: [
@@ -161,7 +161,7 @@ test("string params: callee owns and releases; returns transfer ownership", asyn
   // function greet(who: string): string { return "hi " + who; }
   // console.log(greet("world"));
   const mod: IrModule = {
-    irVersion: 4,
+    irVersion: 5,
     sourceFile: "p.ts",
     entry: "__main",
     functions: [

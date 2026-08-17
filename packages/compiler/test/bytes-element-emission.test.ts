@@ -66,7 +66,7 @@ function fixture(): IrModule {
   );
 
   return {
-    irVersion: 4,
+    irVersion: 5,
     sourceFile: loc.file,
     entry: "__main",
     functions: [{ name: "__main", params: [], returnType: VOID, locals, body, loc }],
@@ -136,7 +136,7 @@ function receiverReassignmentFixture(): IrModule {
   ];
 
   return {
-    irVersion: 4,
+    irVersion: 5,
     sourceFile: loc.file,
     entry: "__main",
     functions: [{ name: "__main", params: [], returnType: VOID, locals, body, loc }],
@@ -201,7 +201,7 @@ function integerLoopFixture(mutatesIndex = false): IrModule {
     { kind: "bytesSet", arr: bytesRef(), index: indexRef(), value: ref("sum"), loc },
   );
   return {
-    irVersion: 4,
+    irVersion: 5,
     sourceFile: loc.file,
     entry: "__main",
     functions: [{

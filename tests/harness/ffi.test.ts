@@ -205,6 +205,78 @@ describe.each(["c", "llvm"] as const)("outbound native FFI, %s backend", (backen
     expect(run.stdout).toBe("foreign-before-throw 1\n");
     expect(run.stderr).toContain("Uncaught Error: foreign boom");
   });
+
+  test.runIf(process.platform !== "win32")(
+    "drains next-ticks before another ready event-loop station",
+    async () => {
+      const outDir = join(cacheRoot, `foreign-nexttick-${backend}`);
+      mkdirSync(outDir, { recursive: true });
+      const entry = join(outDir, "main.ts");
+      const profilePath = join(outDir, "profile.json");
+      writeFileSync(
+        entry,
+        [
+          "declare function nativeForeignStart(callback: (value: number, label: string) => void): void;",
+          "declare function nativeForeignStop(callback: (value: number, label: string) => void): void;",
+          "process.once('SIGTERM', () => console.log('signal'));",
+          "const tick = (value: number, _label: string) => {",
+          "  if (value === 1) {",
+          "    console.log('callback');",
+          "    process.kill(process.pid, 'SIGTERM');",
+          "    process.nextTick(() => console.log('nextTick'));",
+          // Keep the loop alive long enough for Node-style signal delivery.
+          "    setTimeout(() => {}, 50);",
+          "  }",
+          "  if (value === 3) nativeForeignStop(tick);",
+          "};",
+          "nativeForeignStart(tick);",
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(
+        profilePath,
+        JSON.stringify({
+          ffi_format: 5,
+          functions: [{
+            name: "nativeForeignStart",
+            symbol: "sf_foreign_start",
+            params: [{
+              callback: {
+                id: "tick",
+                params: ["f64", "cstring", { context: "tick" }],
+                returns: "void",
+                lifetime: "retained",
+                invoke: "foreign",
+              },
+            }, { context: "tick" }],
+            returns: "void",
+          }, {
+            name: "nativeForeignStop",
+            symbol: "sf_foreign_stop",
+            params: [{ callback: { release: "nativeForeignStart:tick" } }, {
+              context: "nativeForeignStart:tick",
+            }],
+            returns: "void",
+          }],
+          libraries: [nativeArchive()],
+        }),
+      );
+      const result = await compile(entry, {
+        outDir,
+        outPath: join(outDir, "program"),
+        backend,
+        sanitize,
+        ffiProfilePath: profilePath,
+      });
+      if (!result.ok) {
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      }
+      const run = spawnSync(result.binaryPath, [], { encoding: "utf8" });
+      expect(run.stderr).toBe("");
+      expect(run.status).toBe(0);
+      expect(run.stdout).toBe("callback\nnextTick\nsignal\n");
+    },
+  );
 });
 
 test("manifest validation is strict and source-facing", () => {

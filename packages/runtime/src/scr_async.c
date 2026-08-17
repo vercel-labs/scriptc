@@ -2315,7 +2315,7 @@ bool scr_loop_run(ScrPromise *top_level) {
      * the microtask checkpoint before considering the next queued post. */
     if (scr_ffi_dispatch_fn != NULL && scr_ffi_dispatch_fn()) {
       if (scr_exc_pending()) return false;
-      if (scr_ready_len > 0) continue;
+      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
     }
     /* Stream tick dispatch (scr_stream.c, when linked): the deferred
      * next-tick emissions ('data' flow kicks, 'readable'/'end'/'finish'/

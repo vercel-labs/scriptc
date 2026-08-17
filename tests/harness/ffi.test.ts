@@ -4,8 +4,9 @@
  * result bytes must match. The fixture covers every value ABI class,
  * integer coercion, embedded-NUL/UTF-8 string spans, byte spans, format-2
  * raw/context callbacks, format-3 callback cstring/span copies (lossy UTF-8,
- * exact bytes, empty spans, ownership, and catchable throws), and format-4
- * retained registration/release ownership. */
+ * exact bytes, empty spans, ownership, and catchable throws), format-4
+ * retained registration/release ownership, and format-5 foreign-thread
+ * queue wakeup, concurrency, FIFO, fairness, string staging, and liveness. */
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,11 +79,13 @@ const expected = [
   "lead:6|lead:7",
   "first:11|first:-1|second:12",
   "caught string callback boom: materialized",
+  "1000 499500 true 0",
+  "1:foreign-copy|2:foreign-copy|3:foreign-copy",
   "",
 ].join("\n");
 
 describe.each(["c", "llvm"] as const)("outbound native FFI, %s backend", (backend) => {
-  test("calls the manifest-bound archive across every v1 ABI class plus v2/v3/v4 callback ABI classes", async () => {
+  test("calls the manifest-bound archive across every v1 ABI class plus v2/v3/v4/v5 callback ABI classes", async () => {
     const outDir = join(cacheRoot, backend);
     mkdirSync(outDir, { recursive: true });
     const result = await compile(join(fixtureRoot, "main.ts"), {
@@ -148,6 +151,59 @@ describe.each(["c", "llvm"] as const)("outbound native FFI, %s backend", (backen
     const run = spawnSync(result.binaryPath, [], { encoding: "utf8" });
     expect(run.status).not.toBe(0);
     expect(run.stderr).toContain("scriptc: native callback passed a NULL cstring");
+  });
+
+  test("a throw from marshalled delivery follows timer-style uncaught behavior and drains safely", async () => {
+    const outDir = join(cacheRoot, `foreign-throw-${backend}`);
+    mkdirSync(outDir, { recursive: true });
+    const entry = join(outDir, "main.ts");
+    const profilePath = join(outDir, "profile.json");
+    writeFileSync(
+      entry,
+      [
+        "declare function nativeForeignStart(callback: (value: number, label: string) => void): void;",
+        "nativeForeignStart((value, _label) => {",
+        "  console.log('foreign-before-throw', value);",
+        "  throw new Error('foreign boom');",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      profilePath,
+      JSON.stringify({
+        ffi_format: 5,
+        functions: [{
+          name: "nativeForeignStart",
+          symbol: "sf_foreign_start",
+          params: [{
+            callback: {
+              id: "tick",
+              params: ["f64", "cstring", { context: "tick" }],
+              returns: "void",
+              lifetime: "retained",
+              invoke: "foreign",
+            },
+          }, { context: "tick" }],
+          returns: "void",
+        }],
+        libraries: [nativeArchive()],
+      }),
+    );
+    const result = await compile(entry, {
+      outDir,
+      outPath: join(outDir, "program"),
+      backend,
+      sanitize,
+      ffiProfilePath: profilePath,
+    });
+    if (!result.ok) {
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    }
+    const run = spawnSync(result.binaryPath, [], { encoding: "utf8" });
+    expect(run.status).toBe(1);
+    expect(run.stdout).toBe("foreign-before-throw 1\n");
+    expect(run.stderr).toContain("Uncaught Error: foreign boom");
   });
 });
 
@@ -344,6 +400,90 @@ test.each([
       }],
     },
     message: "registered by the same call",
+  },
+  {
+    name: "a foreign callback before format 5",
+    profile: {
+      ffi_format: 4,
+      functions: [{
+        name: "visit",
+        symbol: "sf_visit",
+        params: [{
+          callback: {
+            id: "visit",
+            params: [{ context: "visit" }],
+            returns: "void",
+            lifetime: "retained",
+            invoke: "foreign",
+          },
+        }, { context: "visit" }],
+        returns: "void",
+      }],
+    },
+    message: "value 'foreign' requires ffi_format 5",
+  },
+  {
+    name: "a call-scoped foreign callback",
+    profile: {
+      ffi_format: 5,
+      functions: [{
+        name: "visit",
+        symbol: "sf_visit",
+        params: [{
+          callback: {
+            id: "visit",
+            params: [{ context: "visit" }],
+            returns: "void",
+            lifetime: "call",
+            invoke: "foreign",
+          },
+        }, { context: "visit" }],
+        returns: "void",
+      }],
+    },
+    message: "requires lifetime 'retained'",
+  },
+  {
+    name: "a value-returning foreign callback",
+    profile: {
+      ffi_format: 5,
+      functions: [{
+        name: "visit",
+        symbol: "sf_visit",
+        params: [{
+          callback: {
+            id: "visit",
+            params: [{ context: "visit" }],
+            returns: "f64",
+            lifetime: "retained",
+            invoke: "foreign",
+          },
+        }, { context: "visit" }],
+        returns: "void",
+      }],
+    },
+    message: "requires returns 'void'",
+  },
+  {
+    name: "a context-free foreign callback",
+    profile: {
+      ffi_format: 5,
+      functions: [{
+        name: "visit",
+        symbol: "sf_visit",
+        params: [{
+          callback: {
+            id: "visit",
+            params: ["f64"],
+            returns: "void",
+            lifetime: "retained",
+            invoke: "foreign",
+          },
+        }],
+        returns: "void",
+      }],
+    },
+    message: "requires a context entry",
   },
   {
     name: "a release carrying its own signature",

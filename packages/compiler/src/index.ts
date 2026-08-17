@@ -32,6 +32,7 @@ import { isJsSourceFileName, isRelativeSpecifier } from "./frontend/shared.js";
 import { lowerToIr, type LowerOptions, type LowerResult } from "./frontend/lowering/lowerer.js";
 import type { CoverageInput, NpmStaticStatus } from "./coverage/report.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/profile.js";
+import { hasForeignFfiCallback } from "./backend/ffi-callbacks.js";
 
 export const VERSION = "0.0.1";
 
@@ -1055,6 +1056,7 @@ export async function compile(entryPath: string, opts: CompileOptions): Promise<
       dgram: moduleUsesDgram(lowered.module),
       // The link switch for scr_watch.c: fs.watch/watcher.* libCalls on the IR.
       watch: moduleUsesFsWatch(lowered.module),
+      foreignFfi: hasForeignFfiCallback(lowered.module.ffiImports ?? []),
       // The link switch for scr_test.c: test.* libCalls on the IR.
       nodeTest: moduleUsesNodeTest(lowered.module),
       // The link switch for scr_tls.c + the vendored mbedTLS archive:

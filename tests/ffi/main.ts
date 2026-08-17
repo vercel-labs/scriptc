@@ -210,6 +210,58 @@ nativeRetainedAdd((_value: number) => {
   if (exitCapture.length === 0) console.log("unreachable");
 });
 
+declare function nativeForeignStart(
+  callback: (value: number, label: string) => void,
+): void;
+declare function nativeForeignStop(
+  callback: (value: number, label: string) => void,
+): void;
+declare function nativeForeignBurstStart(
+  callback: (threadId: number, sequence: number) => void,
+): void;
+declare function nativeForeignBurstStop(
+  callback: (threadId: number, sequence: number) => void,
+): void;
+
+const foreignEvents: string[] = [];
+let foreignBurstDone = false;
+const foreignTick = (value: number, label: string) => {
+  foreignEvents.push(`${value}:${label}`);
+  if (value === 3) {
+    nativeForeignStop(foreignTick);
+    if (foreignBurstDone) console.log(foreignEvents.join("|"));
+  }
+};
+nativeForeignStart(foreignTick);
+
+let foreignBurstCount = 0;
+let foreignBurstSum = 0;
+let foreignTimerTicks = 0;
+let foreignBurstOrderErrors = 0;
+const foreignBurstNext = [0, 0];
+const foreignTimer = setInterval(() => {
+  foreignTimerTicks++;
+}, 0);
+const foreignBurstTick = (threadId: number, sequence: number) => {
+  if (sequence !== foreignBurstNext[threadId]) foreignBurstOrderErrors++;
+  foreignBurstNext[threadId] = foreignBurstNext[threadId] + 1;
+  foreignBurstCount++;
+  foreignBurstSum += threadId * 500 + sequence;
+  if (foreignBurstCount === 1000) {
+    nativeForeignBurstStop(foreignBurstTick);
+    clearInterval(foreignTimer);
+    console.log(
+      foreignBurstCount,
+      foreignBurstSum,
+      foreignTimerTicks > 0,
+      foreignBurstOrderErrors,
+    );
+    foreignBurstDone = true;
+    if (foreignEvents.length === 3) console.log(foreignEvents.join("|"));
+  }
+};
+nativeForeignBurstStart(foreignBurstTick);
+
 try {
   nativeCallbackStringThrow((value) => {
     throw new Error(`string callback boom: ${value}`);

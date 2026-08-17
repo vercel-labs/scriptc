@@ -786,6 +786,7 @@ export interface IrFfiCallbackParam {
     params: (IrFfiCallbackParamClass | IrFfiContextParam)[];
     returns: IrFfiReturnClass;
     lifetime: "call" | "retained";
+    invoke: "script-thread" | "foreign";
   };
 }
 

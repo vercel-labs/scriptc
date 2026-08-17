@@ -51,7 +51,15 @@
  * JSON:
  *
  *   { "callback": { "release": "timerAdd:tick" } }
- *   { "context": "timerAdd:tick" } */
+ *   { "context": "timerAdd:tick" }
+ *
+ * Format 5 adds retained foreign-thread callbacks. Their native trampoline
+ * only stages plain data and posts it to the process event loop; script code
+ * always runs asynchronously on the script thread:
+ *
+ *   { "callback": { "id": "tick", "params": [{ "context": "tick" }],
+ *                   "returns": "void", "lifetime": "retained",
+ *                   "invoke": "foreign" } } */
 import { readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { ffiProfileDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
@@ -97,6 +105,8 @@ export interface FfiCallbackParam {
     returns: FfiReturnClass;
     /** Dynamic-extent borrow, or explicitly paired retained registration. */
     lifetime: "call" | "retained";
+    /** Native invocation thread; foreign delivery is marshalled to the loop. */
+    invoke: "script-thread" | "foreign";
   };
 }
 
@@ -127,7 +137,7 @@ export interface FfiFunction {
 }
 
 export interface FfiProfile {
-  ffiFormat: 1 | 2 | 3 | 4;
+  ffiFormat: 1 | 2 | 3 | 4 | 5;
   functions: FfiFunction[];
   /** Absolute paths, resolved relative to the manifest. */
   libraries: string[];
@@ -188,7 +198,7 @@ type UnresolvedFfiParamClass = FfiParamClass | UnresolvedFfiReleaseParam;
 function callbackParam(
   value: unknown,
   path: string,
-  format: 2 | 3 | 4,
+  format: 2 | 3 | 4 | 5,
 ): FfiCallbackParam | UnresolvedFfiReleaseParam | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const rec = value as Record<string, unknown>;
@@ -208,7 +218,7 @@ function callbackParam(
       callback: { release: stringField(callback["release"], `${path}.callback.release`) },
     };
   }
-  rejectUnknownKeys(callback, `${path}.callback`, ["id", "params", "returns", "lifetime"]);
+  rejectUnknownKeys(callback, `${path}.callback`, ["id", "params", "returns", "lifetime", "invoke"]);
   const id = stringField(callback["id"], `${path}.callback.id`);
   if (!TS_IDENT.test(id)) {
     throw new FfiProfileError(`'${path}.callback.id' is not a plain identifier: '${id}'`);
@@ -252,12 +262,29 @@ function callbackParam(
   if (lifetime === "retained" && format < 4) {
     throw new FfiProfileError(`'${path}.callback.lifetime' value 'retained' requires ffi_format 4`);
   }
+  const invoke = callback["invoke"] ?? "script-thread";
+  if (invoke !== "script-thread" && invoke !== "foreign") {
+    throw new FfiProfileError(`'${path}.callback.invoke' must be 'script-thread' or 'foreign'`);
+  }
+  if (invoke === "foreign" && format < 5) {
+    throw new FfiProfileError(`'${path}.callback.invoke' value 'foreign' requires ffi_format 5`);
+  }
+  if (invoke === "foreign" && lifetime !== "retained") {
+    throw new FfiProfileError(`'${path}.callback.invoke' value 'foreign' requires lifetime 'retained'`);
+  }
+  if (invoke === "foreign" && returns !== "void") {
+    throw new FfiProfileError(`'${path}.callback.invoke' value 'foreign' requires returns 'void'`);
+  }
+  if (invoke === "foreign" && !params.some((param) => typeof param === "object")) {
+    throw new FfiProfileError(`'${path}.callback.invoke' value 'foreign' requires a context entry`);
+  }
   return {
     callback: {
       id,
       params,
       returns: returns as FfiReturnClass,
       lifetime,
+      invoke,
     },
   };
 }
@@ -288,11 +315,11 @@ export function loadFfiProfile(
     }
     const root = raw as Record<string, unknown>;
     const format = root["ffi_format"];
-    if (format !== 1 && format !== 2 && format !== 3 && format !== 4) {
+    if (format !== 1 && format !== 2 && format !== 3 && format !== 4 && format !== 5) {
       throw new FfiProfileError(
         typeof format === "number"
-          ? `unsupported ffi_format ${format} (this scriptc reads formats 1, 2, 3, and 4)`
-          : "'ffi_format' must be the number 1, 2, 3, or 4",
+          ? `unsupported ffi_format ${format} (this scriptc reads formats 1, 2, 3, 4, and 5)`
+          : "'ffi_format' must be the number 1, 2, 3, 4, or 5",
       );
     }
     rejectUnknownKeys(root, "", [
@@ -343,7 +370,7 @@ export function loadFfiProfile(
           !(FFI_PARAM_CLASSES as readonly string[]).includes(value)
         ) {
           if (format >= 2) {
-            const callback = callbackParam(value, paramPath, format as 2 | 3 | 4);
+            const callback = callbackParam(value, paramPath, format as 2 | 3 | 4 | 5);
             if (callback !== null) return callback;
             const context = contextParam(value, paramPath);
             if (context !== null) return context;

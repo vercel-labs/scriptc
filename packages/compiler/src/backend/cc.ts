@@ -345,6 +345,10 @@ export interface CcOptions {
    * scr_watch.c into the binary — the net gating precedent, so watch-free
    * binaries keep their exact link line. */
   watch?: boolean;
+  /** The executable manifest has a format-5 foreign callback descriptor:
+   * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
+   * keep their existing runtime size class. */
+  foreignFfi?: boolean;
   /** The program uses node:test (moduleUsesNodeTest on the IR): compiles
    * scr_test.c into the binary — the net gating precedent, so test-free
    * binaries keep their exact link line. */
@@ -3638,6 +3642,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
     ...(opts.http2 ?? false ? [rt(join(rtDir, "scr_http2.c"))] : []),
     ...(opts.dgram ? [rt(join(rtDir, "scr_dgram.c"))] : []),
     ...(opts.watch ? [rt(join(rtDir, "scr_watch.c"))] : []),
+    ...(opts.foreignFfi ? [rt(join(rtDir, "scr_ffi_queue.c"))] : []),
     ...(opts.nodeTest ? [rt(join(rtDir, "scr_test.c"))] : []),
     // The CA-store unit rides its own gate OR the tls one: scr_tls.c
     // references its default-set override unconditionally.

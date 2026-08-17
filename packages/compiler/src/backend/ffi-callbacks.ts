@@ -87,6 +87,16 @@ export function hasRetainedFfiCallback(imports: readonly IrFfiImport[]): boolean
   );
 }
 
+/** Foreign callbacks install and hold the process event loop even when the
+ * source itself has no timer, async function, or other loop-backed surface. */
+export function hasForeignFfiCallback(imports: readonly IrFfiImport[]): boolean {
+  return imports.some((entry) =>
+    entry.params.some(
+      (param) => isFfiCallbackParam(param) && param.callback.invoke === "foreign",
+    ),
+  );
+}
+
 /** One retained lifecycle operation of an FFI call: the registration table,
  * the raw singleton trampoline slot (null for context-bearing descriptors),
  * and the backend's value for the closure argument. */
@@ -94,6 +104,7 @@ export interface FfiRetainedOp<V> {
   table: string;
   global: string | null;
   callback: V;
+  foreign: boolean;
 }
 
 /** Collect a call's retained registrations and releases in manifest order —
@@ -114,6 +125,7 @@ export function collectFfiRetainedOps<V>(
         table: adapter.table,
         global: adapter.global,
         callback: callbackArgs.get(param.callback.id)!,
+        foreign: param.callback.invoke === "foreign",
       });
     } else if (isFfiReleaseParam(param)) {
       const { binding, id } = parseFfiCallbackKey(param.callback.release);
@@ -123,6 +135,7 @@ export function collectFfiRetainedOps<V>(
         table: adapter.table,
         global: adapter.global,
         callback: callbackArgs.get(param.callback.release)!,
+        foreign: adapter.callback.invoke === "foreign",
       });
     }
   }

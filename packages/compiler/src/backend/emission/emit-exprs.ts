@@ -2148,6 +2148,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         for (const registration of retainedRegistrations) {
           if (registration.global !== null) {
             E.line(`scr_ffi_retain_slot(&${registration.table}, &${registration.global}, ${registration.callback.name});`);
+          } else if (registration.foreign) {
+            E.line(`scr_ffi_retain_foreign(&${registration.table}, ${registration.callback.name});`);
           } else {
             E.line(`scr_ffi_retain(&${registration.table}, ${registration.callback.name});`);
           }
@@ -2156,7 +2158,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // release traps without native code observing any side effect. The
         // registration itself is unpinned only after the call returns.
         for (const release of retainedReleases) {
-          E.line(`scr_ffi_require(&${release.table}, ${release.callback.name});`);
+          E.line(`scr_ffi_require${release.foreign ? "_foreign" : ""}(&${release.table}, ${release.callback.name});`);
         }
 
         // Raw C callback pointers carry no userdata. For the documented
@@ -2234,7 +2236,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             }
           }
           for (const release of retainedReleases) {
-            E.line(`scr_ffi_release(&${release.table}, ${release.callback.name});`);
+            E.line(`scr_ffi_release${release.foreign ? "_foreign" : ""}(&${release.table}, ${release.callback.name});`);
           }
         };
         const callbacksMayThrow = callbackArgs.size > 0 || E.ffiHasRetainedCallback;

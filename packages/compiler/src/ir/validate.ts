@@ -1191,6 +1191,20 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         errors.push({ message: `FFI binding "${entry.name}" has duplicate callback id "${param.callback.id}"`, loc: moduleLoc });
       }
       ids.add(param.callback.id);
+      if (param.callback.invoke !== "script-thread" && param.callback.invoke !== "foreign") {
+        errors.push({ message: `FFI callback "${entry.name}:${param.callback.id}" has invalid invoke mode`, loc: moduleLoc });
+      }
+      if (param.callback.invoke === "foreign") {
+        if (param.callback.lifetime !== "retained") {
+          errors.push({ message: `FFI foreign callback "${entry.name}:${param.callback.id}" is not retained`, loc: moduleLoc });
+        }
+        if (param.callback.returns !== "void") {
+          errors.push({ message: `FFI foreign callback "${entry.name}:${param.callback.id}" does not return void`, loc: moduleLoc });
+        }
+        if (!param.callback.params.some(isFfiContextParam)) {
+          errors.push({ message: `FFI foreign callback "${entry.name}:${param.callback.id}" has no context`, loc: moduleLoc });
+        }
+      }
       if (param.callback.lifetime === "retained") {
         retainedFfiCallbacks.set(`${entry.name}:${param.callback.id}`, param.callback);
       }

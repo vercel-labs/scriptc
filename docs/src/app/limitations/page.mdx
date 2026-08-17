@@ -71,6 +71,8 @@ const who = process.argv.length > 2 ? process.argv[2] : "world";
 
 **Memory is reference-counted.** Acyclic values free deterministically; reference cycles are collected at deterministic collection points, not by a concurrent GC. Cycles that cross the static/island boundary are uncollectable by either side.
 
+**Foreign native callbacks are asynchronous and not real-time capable.** FFI format 5 accepts retained, context-bearing, `void` callbacks invoked by library-owned threads, but the native trampoline only copies arguments and enqueues work. The closure runs on the script event loop at least one turn later. Value-returning foreign callbacks and direct execution on the library thread are refused: waiting for the loop is deadlock-prone, while scriptc's reference counting and exception state are thread-confined.
+
 **Process shape** — `process.argv[0]` is `"scriptc"` and `argv[1]` is the binary's path (positions line up with Node; `argv[2]` onward are your args). The uncaught-exception stderr line reads `Uncaught <value>` instead of Node's stack-trace block (exit code and pre-throw stdout are identical). Runtime errors carry `message` and Node's `code`, but not `errno`/`syscall`/`path`.
 
 **Comparator call sequences differ in `sort` and `toSorted`** (stable insertion sort here, TimSort in V8 — sorted results are byte-identical for consistent comparators), and **`localeCompare` compares code units**, not ICU collation.
@@ -90,5 +92,5 @@ The production <code>wasm32-wasi</code> target supports the complete executable 
 ## Tooling gaps
 
 - `scriptc run` does not forward extra CLI arguments to the program — `build` and invoke the binary directly.
-- Native FFI is a direct, manifest-declared C ABI link surface. Callback invocation is same-thread only; format 4 supports explicitly released retained callbacks, but foreign-thread callbacks remain unsupported. Variadic calls, structs by value, owned pointer/string/byte returns, runtime dynamic-library loading, and library-mode builds also remain unsupported. See [Native FFI](/ffi).
+- Native FFI is a direct, manifest-declared C ABI link surface. Formats 2–5 cover call-scoped callbacks, copied string/byte callback parameters, explicitly released retained callbacks, and asynchronous foreign-thread delivery. Variadic calls, structs by value, owned pointer/string/byte returns, runtime dynamic-library loading, and library-mode builds remain unsupported. See [Native FFI](/ffi).
 - Numbers are JS-exact f64 everywhere. Integer inference and ownership analysis — the systems-language performance ceiling — are roadmap, not shipped.

@@ -1,5 +1,5 @@
 {
-  "ffi_format": 4,
+  "ffi_format": 5,
   "functions": [
     { "name": "nativeScale", "symbol": "sf_scale", "params": ["f64"], "returns": "f64" },
     { "name": "nativeInvert", "symbol": "sf_invert", "params": ["bool"], "returns": "bool" },
@@ -247,6 +247,58 @@
       "name": "nativeRetainedRawPump",
       "symbol": "sf_retained_raw_pump",
       "params": ["f64"],
+      "returns": "void"
+    },
+    {
+      "name": "nativeForeignStart",
+      "symbol": "sf_foreign_start",
+      "params": [
+        {
+          "callback": {
+            "id": "tick",
+            "params": ["f64", "cstring", { "context": "tick" }],
+            "returns": "void",
+            "lifetime": "retained",
+            "invoke": "foreign"
+          }
+        },
+        { "context": "tick" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeForeignStop",
+      "symbol": "sf_foreign_stop",
+      "params": [
+        { "callback": { "release": "nativeForeignStart:tick" } },
+        { "context": "nativeForeignStart:tick" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeForeignBurstStart",
+      "symbol": "sf_foreign_burst_start",
+      "params": [
+        {
+          "callback": {
+            "id": "tick",
+            "params": ["f64", "f64", { "context": "tick" }],
+            "returns": "void",
+            "lifetime": "retained",
+            "invoke": "foreign"
+          }
+        },
+        { "context": "tick" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeForeignBurstStop",
+      "symbol": "sf_foreign_burst_stop",
+      "params": [
+        { "callback": { "release": "nativeForeignBurstStart:tick" } },
+        { "context": "nativeForeignBurstStart:tick" }
+      ],
       "returns": "void"
     }
   ],

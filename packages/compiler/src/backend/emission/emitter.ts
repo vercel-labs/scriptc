@@ -40,7 +40,7 @@ import type {
   SrcLoc,
 } from "../../ir/nodes.js";
 import { ffiCallbackType, funcOf, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, mapOf, moduleEmbedsCompressedNpm, moduleUsesDgram, moduleUsesDynInvoke, moduleEmbedsBuiltin, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, RUNTIME_EMITTER_CLASS, STRING, VOID } from "../../ir/nodes.js";
-import { allocateFfiCallbackAdapters, hasRetainedFfiCallback, type FfiCallbackAdapter } from "../ffi-callbacks.js";
+import { allocateFfiCallbackAdapters, hasForeignFfiCallback, hasRetainedFfiCallback, type FfiCallbackAdapter } from "../ffi-callbacks.js";
 import {
   mangleAsyncSpawn,
   mangleGenSpawn,
@@ -247,6 +247,7 @@ export class CEmitter {
    * pending-exception checkpoint (may-throw derives the same fact from
    * the same helper). */
   readonly ffiHasRetainedCallback: boolean;
+  readonly ffiHasForeignCallback: boolean;
   readonly globalsById = new Map<string, IrGlobal>();
   readonly unionsById = new Map<string, IrUnionDef>();
   /** Active optional-chain bind temps, by chain id (chainRecv reads). */
@@ -413,6 +414,7 @@ export class CEmitter {
   ) {
     this.ffiCallbackAdapters = allocateFfiCallbackAdapters(mod.ffiImports ?? []);
     this.ffiHasRetainedCallback = hasRetainedFfiCallback(mod.ffiImports ?? []);
+    this.ffiHasForeignCallback = hasForeignFfiCallback(mod.ffiImports ?? []);
     for (const fn of mod.functions) {
       this.returnTypeByFn.set(fn.name, fn.returnType);
       this.fnByName.set(fn.name, fn);
@@ -957,6 +959,7 @@ export class CEmitter {
       // fs.watch programs fill the loop's watch hooks the same way —
       // scr_watch.c links only when this line is emitted.
       ...(moduleUsesFsWatch(this.mod) ? [`  scr_watch_install();`] : []),
+      ...(this.ffiHasForeignCallback ? [`  scr_ffi_install();`] : []),
       // The embedded npm tables must be registered before %main: the %init
       // functions it calls import from them. Static data only — the engine
       // still boots lazily, on the first island entry. Compressed module
@@ -981,7 +984,7 @@ export class CEmitter {
       // The event loop runs to exhaustion (microtasks before timers). A
       // throw escaping a timer callback and unhandled promise rejections
       // both exit 1, like Node.
-      ...(hasAsync || hasGenerators || this.usesTimers || usesIsland
+      ...(hasAsync || hasGenerators || this.usesTimers || usesIsland || this.ffiHasForeignCallback
         ? [
             `  bool sc_loop_rejection = scr_loop_run(${asyncEntry ? "sc_top" : "NULL"});`,
             ...uncaught("  ", asyncEntry),
@@ -1785,6 +1788,70 @@ export class CEmitter {
       const nativeParams = ffiCallbackNativeParamsC(cb, true);
       const ret = ffiNativeTypeC(cb.returns);
       const contextParam = cb.params.findIndex(isFfiContextParam);
+      if (cb.invoke === "foreign") {
+        if (adapter.table === null || contextParam < 0 || cb.returns !== "void") {
+          throw new Error("emitter bug: invalid foreign FFI callback descriptor");
+        }
+        const dispatch = `${adapter.symbol}_dispatch`;
+        const ft = ffiCallbackType(cb);
+        const scriptArgs = cb.params.flatMap((param, i): string[] => {
+          if (isFfiContextParam(param)) return [];
+          switch (param) {
+            case "f64":
+              return [`scr_ffi_call_get_f64(sc_call, ${i})`];
+            case "bool":
+              return [`scr_ffi_call_get_bool(sc_call, ${i})`];
+            case "u8":
+              return [`scr_ffi_call_get_u8(sc_call, ${i})`];
+            case "u32":
+              return [`scr_ffi_call_get_u32(sc_call, ${i})`];
+            case "i32":
+              return [`scr_ffi_call_get_i32(sc_call, ${i})`];
+            case "cstring":
+            case "string":
+              return [`scr_str_from_utf8_lossy(scr_ffi_call_get_data(sc_call, ${i}), scr_ffi_call_get_len(sc_call, ${i}))`];
+            case "bytes":
+              return [`scr_bytes_from_data(scr_ffi_call_get_data(sc_call, ${i}), scr_ffi_call_get_len(sc_call, ${i}))`];
+          }
+        });
+        out.push(
+          `static void ${dispatch}(ScrClosure *sc_cb, ScrFfiCall *sc_call) {`,
+          `  (${cFnPtrCast(ft)}sc_cb->fn)(sc_cb${scriptArgs.length ? `, ${scriptArgs.join(", ")}` : ""});`,
+          `}`,
+          `static void ${adapter.symbol}(${nativeParams.join(", ")}) {`,
+          `  ScrClosure *sc_cb = (ScrClosure *)sc_ctx;`,
+          `  ScrFfiCall *sc_call = scr_ffi_call_new(&${adapter.table}, sc_cb, &${dispatch}, ${cb.params.length});`,
+        );
+        cb.params.forEach((param, i) => {
+          if (isFfiContextParam(param)) return;
+          switch (param) {
+            case "f64":
+              out.push(`  scr_ffi_call_set_f64(sc_call, ${i}, sc_a${i});`);
+              break;
+            case "bool":
+              out.push(`  scr_ffi_call_set_bool(sc_call, ${i}, sc_a${i});`);
+              break;
+            case "u8":
+              out.push(`  scr_ffi_call_set_u8(sc_call, ${i}, sc_a${i});`);
+              break;
+            case "u32":
+              out.push(`  scr_ffi_call_set_u32(sc_call, ${i}, sc_a${i});`);
+              break;
+            case "i32":
+              out.push(`  scr_ffi_call_set_i32(sc_call, ${i}, sc_a${i});`);
+              break;
+            case "cstring":
+              out.push(`  scr_ffi_call_copy_cstring(sc_call, ${i}, sc_a${i});`);
+              break;
+            case "string":
+            case "bytes":
+              out.push(`  scr_ffi_call_copy_${param}(sc_call, ${i}, sc_a${i}, sc_a${i}_len);`);
+              break;
+          }
+        });
+        out.push(`  scr_ffi_post(sc_call);`, `}`, ``);
+        continue;
+      }
       out.push(
         `static ${ret} ${adapter.symbol}(${nativeParams.length > 0 ? nativeParams.join(", ") : "void"}) {`,
         `  ScrClosure *sc_cb = ${contextParam >= 0 ? `(ScrClosure *)sc_ctx` : adapter.tls ?? adapter.global};`,

@@ -1,5 +1,17 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
+
+#ifdef _WIN32
+#include <process.h>
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <time.h>
+#endif
 
 static double last_note;
 
@@ -200,4 +212,131 @@ void sf_retained_raw_remove(sf_retained_raw_cb callback) {
 
 void sf_retained_raw_pump(double value) {
   if (retained_raw != NULL) retained_raw(value);
+}
+
+/* Format-5 foreign-thread callbacks. The first fixture pins wake/FIFO/cstring
+ * copying; the second posts concurrently from two library-owned threads and
+ * is large enough for the script timer fairness assertion. */
+typedef void (*sf_foreign_cb)(double value, const char *label, void *context);
+typedef void (*sf_foreign_burst_cb)(double thread_id, double sequence,
+                                    void *context);
+
+typedef struct {
+  sf_foreign_cb callback;
+  void *context;
+#ifdef _WIN32
+  HANDLE thread;
+#else
+  pthread_t thread;
+#endif
+} sf_foreign_state;
+
+static sf_foreign_state foreign_state;
+
+#ifdef _WIN32
+static unsigned __stdcall sf_foreign_worker(void *opaque) {
+#else
+static void *sf_foreign_worker(void *opaque) {
+#endif
+  sf_foreign_state *state = opaque;
+#ifdef _WIN32
+  Sleep(20);
+#else
+  struct timespec delay = {0, 20 * 1000 * 1000};
+  (void)nanosleep(&delay, NULL);
+#endif
+  for (int i = 1; i <= 3; i++) {
+    char label[] = "foreign-copy";
+    state->callback((double)i, label, state->context);
+    label[0] = 'x'; /* queued text must already own its copy */
+  }
+#ifdef _WIN32
+  return 0;
+#else
+  return NULL;
+#endif
+}
+
+void sf_foreign_start(sf_foreign_cb callback, void *context) {
+  foreign_state.callback = callback;
+  foreign_state.context = context;
+#ifdef _WIN32
+  foreign_state.thread = (HANDLE)_beginthreadex(NULL, 0, sf_foreign_worker,
+                                                 &foreign_state, 0, NULL);
+#else
+  (void)pthread_create(&foreign_state.thread, NULL, sf_foreign_worker,
+                       &foreign_state);
+#endif
+}
+
+void sf_foreign_stop(sf_foreign_cb callback, void *context) {
+  (void)callback;
+  (void)context;
+#ifdef _WIN32
+  WaitForSingleObject(foreign_state.thread, INFINITE);
+  CloseHandle(foreign_state.thread);
+#else
+  (void)pthread_join(foreign_state.thread, NULL);
+#endif
+  foreign_state.callback = NULL;
+  foreign_state.context = NULL;
+}
+
+typedef struct {
+  sf_foreign_burst_cb callback;
+  void *context;
+  int id;
+#ifdef _WIN32
+  HANDLE thread;
+#else
+  pthread_t thread;
+#endif
+} sf_foreign_burst_state;
+
+static sf_foreign_burst_state foreign_burst[2];
+
+#ifdef _WIN32
+static unsigned __stdcall sf_foreign_burst_worker(void *opaque) {
+#else
+static void *sf_foreign_burst_worker(void *opaque) {
+#endif
+  sf_foreign_burst_state *state = opaque;
+  for (int i = 0; i < 500; i++) {
+    state->callback((double)state->id, (double)i, state->context);
+  }
+#ifdef _WIN32
+  return 0;
+#else
+  return NULL;
+#endif
+}
+
+void sf_foreign_burst_start(sf_foreign_burst_cb callback, void *context) {
+  for (int i = 0; i < 2; i++) {
+    foreign_burst[i].callback = callback;
+    foreign_burst[i].context = context;
+    foreign_burst[i].id = i;
+#ifdef _WIN32
+    foreign_burst[i].thread = (HANDLE)_beginthreadex(
+        NULL, 0, sf_foreign_burst_worker, &foreign_burst[i], 0, NULL);
+#else
+    (void)pthread_create(&foreign_burst[i].thread, NULL,
+                         sf_foreign_burst_worker, &foreign_burst[i]);
+#endif
+  }
+}
+
+void sf_foreign_burst_stop(sf_foreign_burst_cb callback, void *context) {
+  (void)callback;
+  (void)context;
+  for (int i = 0; i < 2; i++) {
+#ifdef _WIN32
+    WaitForSingleObject(foreign_burst[i].thread, INFINITE);
+    CloseHandle(foreign_burst[i].thread);
+#else
+    (void)pthread_join(foreign_burst[i].thread, NULL);
+#endif
+    foreign_burst[i].callback = NULL;
+    foreign_burst[i].context = NULL;
+  }
 }

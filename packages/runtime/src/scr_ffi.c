@@ -2,17 +2,32 @@
 
 #include <stdlib.h>
 
-/* Retained callbacks are same-thread only in format 4, so the registration
- * ledger deliberately has no synchronization. The global list exists only
- * to make every still-live registration release before the executable RC
- * audit. A table remains linked after an explicit teardown so a later
- * registration can reuse it without mutating the list twice. */
+/* The process-global retained-registration ledger. Format-4 script-thread
+ * tables use the lock-free path in this always-linked unit. Format-5 foreign
+ * tables install an optional teardown hook owned by scr_ffi_queue.c, keeping
+ * all queue/thread machinery out of unrelated binaries. */
 static ScrFfiTable *scr_ffi_tables;
 static bool scr_ffi_exit_registered;
 
 static void scr_ffi_oom(void) { scr_trap("scriptc: out of memory\n"); }
 
+void scr_ffi_link(ScrFfiTable *table) {
+  if (!table->linked) {
+    table->linked = true;
+    table->next = scr_ffi_tables;
+    scr_ffi_tables = table;
+  }
+  if (!scr_ffi_exit_registered) {
+    scr_ffi_exit_registered = true;
+    scr_atexit(scr_ffi_teardown_all);
+  }
+}
+
 void scr_ffi_teardown(ScrFfiTable *table) {
+  if (table->teardown != NULL) {
+    table->teardown(table);
+    return;
+  }
   /* Disarm the raw trampoline slot FIRST: a closure release below cannot
    * run script code today, but the slot must never dangle over freed
    * entries — a native exit-path invocation takes the NULL trap instead. */
@@ -33,15 +48,7 @@ void scr_ffi_teardown_all(void) {
 }
 
 void scr_ffi_retain(ScrFfiTable *table, ScrClosure *callback) {
-  if (!table->linked) {
-    table->linked = true;
-    table->next = scr_ffi_tables;
-    scr_ffi_tables = table;
-  }
-  if (!scr_ffi_exit_registered) {
-    scr_ffi_exit_registered = true;
-    scr_atexit(scr_ffi_teardown_all);
-  }
+  scr_ffi_link(table);
   if (table->len == table->cap) {
     size_t cap = table->cap == 0 ? 4 : table->cap * 2;
     if (cap < table->cap || cap > SIZE_MAX / sizeof *table->entries) scr_ffi_oom();

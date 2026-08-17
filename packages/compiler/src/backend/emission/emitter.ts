@@ -861,15 +861,18 @@ export class CEmitter {
     // main freed them (observed use-after-free). scr_run_exit_listeners
     // is idempotent (scr_exit_ran), so the atexit becomes a no-op; the
     // code argument is the hint the failure reporters maintain — exactly
-    // what the atexit path would have passed. Emitted whenever the module
-    // touches process events, even with nothing to release: listeners must
-    // also beat the ATEXIT teardowns (the retained-FFI ledger sweep above
-    // all — a listener may legitimately release or pump a registration),
-    // and only the inline call orders ahead of every atexit handler.
+    // what the atexit path would have passed. With a retained FFI
+    // descriptor the inline call is required even with nothing to
+    // release: listeners must beat the atexit FFI ledger sweep (a
+    // listener may legitimately release or pump a registration), and
+    // only the inline call orders ahead of every atexit handler. Plain
+    // event programs with neither keep the atexit path, so their
+    // listener timing is unchanged.
     const needsRelease = refGlobals.length > 0 || fnValueProps.length > 0;
-    const runExitListeners = moduleUsesProcessEvents(this.mod)
-      ? "scr_run_exit_listeners((double)scr_exit_code_hint_get()); "
-      : "";
+    const runExitListeners =
+      moduleUsesProcessEvents(this.mod) && (needsRelease || this.ffiHasRetainedCallback)
+        ? "scr_run_exit_listeners((double)scr_exit_code_hint_get()); "
+        : "";
     const exitCleanup = `${runExitListeners}${needsRelease ? "sc_release_globals(); " : ""}`;
     const releaseGlobals = needsRelease
       ? `  ${runExitListeners}sc_release_globals();`

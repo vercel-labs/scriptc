@@ -1596,18 +1596,21 @@ class LlEmitter {
     if (snapshotsTlsCa) {
       this.declare(`declare void @scr_tls_ca_install()`);
     }
-    // Emitted whenever the module touches process events, even with no
-    // refcounted globals: listeners must beat the ATEXIT teardowns (the
-    // retained-FFI ledger sweep above all — a listener may legitimately
-    // release or pump a registration), and only the inline call orders
-    // ahead of every atexit handler (the C emitter's runExitListeners
-    // stance).
-    if (usesEvents) {
+    // Inline exit listeners run when something they must beat exists:
+    // the refcounted-global releases, or the retained-FFI atexit ledger
+    // sweep (a listener may legitimately release or pump a registration,
+    // and only the inline call orders ahead of every atexit handler —
+    // the C emitter's runExitListeners stance). Plain event programs
+    // with neither keep the atexit path, so their listener timing is
+    // unchanged.
+    const hasRefGlobals = globals.some((g) => isRefCounted(g.type)) || fnValueProps.length > 0;
+    const inlineExitListeners = usesEvents && (hasRefGlobals || this.ffiHasRetainedCallback);
+    if (inlineExitListeners) {
       this.declare(`declare void @scr_run_exit_listeners(double)`);
       this.declare(`declare i32 @scr_exit_code_hint_get()`);
     }
     const exitListenerLines = (prefix: string): string[] => {
-      if (!usesEvents) return [];
+      if (!inlineExitListeners) return [];
       return [
         `  %${prefix}h = call i32 @scr_exit_code_hint_get()`,
         `  %${prefix}hd = sitofp i32 %${prefix}h to double`,
@@ -1647,7 +1650,7 @@ class LlEmitter {
       this.declare(`declare void @scr_promise_rethrow_top_level(ptr)`);
       this.declare(`declare void @scr_promise_release(ptr)`);
       this.declare(`declare void @scr_exit_code_note(i32)`);
-      if (programExitUsesIsland && usesEvents) {
+      if (programExitUsesIsland && inlineExitListeners) {
         this.declare(`declare ${this.sizeType} @scr_island_exit_code_version()`);
       }
     }
@@ -1666,7 +1669,7 @@ class LlEmitter {
         );
       }
       const exitStatus = usesNodeTest || usesIsland ? "%tla_exit_status" : "%tla_status";
-      const tracksIslandExit = programExitUsesIsland && usesEvents;
+      const tracksIslandExit = programExitUsesIsland && inlineExitListeners;
       if (tracksIslandExit) {
         lines.push(`  %tla_exit_version = call ${this.sizeType} @scr_island_exit_code_version()`);
       }

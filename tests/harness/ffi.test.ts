@@ -632,9 +632,11 @@ describe.each(["c", "llvm"] as const)("retained FFI at process exit, %s backend"
         // `usesEvents && needsRelease` gate ran exit listeners inline
         // whenever globals needed releasing, passing this test by
         // accident. A local closure captured by the listener leaves the
-        // program with NOTHING to release, pinning the actual fix: process
-        // events alone must run 'exit' listeners inline, before the atexit
-        // FFI ledger sweep drops the registration the listener releases.
+        // program with NOTHING to release, pinning the actual fix: a
+        // retained descriptor alone must run 'exit' listeners inline,
+        // before the atexit FFI ledger sweep drops the registration the
+        // listener releases. (Event programs with no refcounted globals
+        // and no retained FFI keep the atexit listener path.)
         "function main() {",
         "  const tick = (_value: number) => {};",
         "  nativeRetainedAdd(tick);",

@@ -54,28 +54,29 @@ function collectNodes(w: TwoWorlds): Node[] {
   return nodes;
 }
 
-test("the walk's queries batch: N nodes cost O(1) raw requests, repeats cost zero", () => {
+test("hot expression and identifier queries batch; uncommon kinds fall back once", () => {
   const { facade, counts, w } = build();
   const nodes = collectNodes(w);
   expect(nodes.length).toBeGreaterThan(300);
 
   for (const n of nodes) facade.getTypeAtLocation(n);
-  // One chunked array request for the whole file (fixture < chunk size),
-  // triggered by the first miss — never one request per node.
-  expect(counts["getTypeAtLocation"]).toBe(1);
+  // The first miss bulk-fetches only lowering's hot expression kinds. The
+  // uncommon declaration/token kinds then use the direct memoized fallback.
+  expect(counts["getTypeAtLocation"] ?? 0).toBeLessThan(nodes.length);
 
   for (const n of nodes) facade.getSymbolAtLocation(n);
-  expect(counts["getSymbolAtLocation"]).toBe(1);
+  expect(counts["getSymbolAtLocation"] ?? 0).toBeLessThan(nodes.length);
   // Symbol prefetch batch-fetches the symbols' types too...
   const typeOfSymbolBatches = counts["getTypeOfSymbol"] ?? 0;
   expect(typeOfSymbolBatches).toBe(1);
 
-  // ...so getTypeOfSymbol over every symbol the file surfaced is free.
+  // ...so hot identifier symbols are free. Symbols surfaced only by uncommon
+  // direct-fallback nodes pay one memoized query each.
   for (const n of nodes) {
     const s = facade.getSymbolAtLocation(n);
     if (s) facade.getTypeOfSymbol(s);
   }
-  expect(counts["getTypeOfSymbol"]).toBe(typeOfSymbolBatches);
+  expect(counts["getTypeOfSymbol"] ?? 0).toBeLessThan(nodes.length);
 
   // Warm repeats of everything: zero further raw traffic.
   const before = { ...counts };
@@ -150,18 +151,24 @@ test("isTupleType agrees with the raw checker; only object types round-trip, onc
   expect(counts["isTupleType"] ?? 0).toBe(before);
 });
 
-test("explicit prefetchSourceFile primes everything ahead of the walk", () => {
+test("explicit prefetchSourceFile primes hot kinds and direct fallbacks memoize", () => {
   const { facade, counts, w } = build();
   const sf = w.p7.getSourceFile(w.files[0]!)!;
   facade.prefetchSourceFile(sf);
-  const after = { ...counts };
   const nodes = collectNodes(w);
   for (const n of nodes) {
     facade.getTypeAtLocation(n);
     const s = facade.getSymbolAtLocation(n);
     if (s) facade.getTypeOfSymbol(s);
   }
-  expect(counts).toEqual(after);
+  expect(counts["getTypeAtLocation"] ?? 0).toBeLessThan(nodes.length);
+  expect(counts["getSymbolAtLocation"] ?? 0).toBeLessThan(nodes.length);
+  const afterWalk = { ...counts };
+  for (const n of nodes) {
+    facade.getTypeAtLocation(n);
+    facade.getSymbolAtLocation(n);
+  }
+  expect(counts).toEqual(afterWalk);
 });
 
 test("autoPrefetch: false degrades to per-call queries (the escape hatch works)", () => {

@@ -8,7 +8,7 @@ scriptc is experimental and targets macOS, Linux, Windows, and WebAssembly via W
 
 ## Installation
 
-The compiler requires Node.js 20 or newer and clang. The executables it produces do not require Node.
+The compiler requires Node.js 24 or newer and clang. The executables it produces do not require Node.
 
 ```console
 $ npm install -g scriptc

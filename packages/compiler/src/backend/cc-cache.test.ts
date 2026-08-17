@@ -2351,6 +2351,126 @@ test("system libraries relink after an in-place rebuild while runtime objects re
   }
 });
 
+test("frontend-generated same-output builds no-op only while output and dependency stamp are valid", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-local-artifact-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const cPath = join(dir, "program.c");
+  const outPath = join(dir, "program");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  const oldUmask = process.umask();
+
+  try {
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    delete process.env["SCRIPTC_NO_CACHE"];
+    await writeFile(cPath, '#include <stdio.h>\nint main(void) { puts("valid"); return 0; }\n');
+
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+    const stampPath = join(
+      cacheRoot,
+      "local",
+      createHash("sha256").update(outPath).digest("hex"),
+    );
+    const stamp = JSON.parse(await readFile(stampPath, "utf8")) as {
+      dependencies: { path: string; kind: "file" | "directory"; size: number; mtimeMs: number; ctimeMs: number }[];
+      integrity: string;
+    };
+    expect(stamp.dependencies.length).toBeGreaterThan(0);
+
+    const pinnedTime = new Date("2001-01-01T00:00:00.000Z");
+    await utimes(outPath, pinnedTime, pinnedTime);
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+    expect((await stat(outPath)).mtimeMs).toBe(pinnedTime.getTime());
+
+    process.umask(0o077);
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+    expect((await stat(outPath)).mode & 0o777).toBe(0o700);
+    process.umask(oldUmask);
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+    expect((await stat(outPath)).mode & 0o777).toBe(0o777 & ~oldUmask);
+
+    // Generated TU bytes join the key: an actual source edit must replace the
+    // output even though its path, runtime, and toolchain are unchanged.
+    await writeFile(cPath, '#include <stdio.h>\nint main(void) { puts("edited"); return 0; }\n');
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+    expect(execFileSync(outPath, { encoding: "utf8" }).trim()).toBe("edited");
+    await writeFile(cPath, '#include <stdio.h>\nint main(void) { puts("valid"); return 0; }\n');
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+
+    // A damaged output cannot no-op even when every build input is unchanged.
+    await writeFile(outPath, "damaged\n");
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+    expect(execFileSync(outPath, { encoding: "utf8" }).trim()).toBe("valid");
+
+    // The stamp is disposable cache data. A changed SDK/linker dependency
+    // metadata record must take the strict CAS path, which reinstalls output.
+    const damagedStamp = JSON.parse(await readFile(stampPath, "utf8")) as typeof stamp;
+    damagedStamp.dependencies[0]!.size++;
+    await writeFile(stampPath, `${JSON.stringify(damagedStamp)}\n`);
+    await utimes(outPath, pinnedTime, pinnedTime);
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+    expect((await stat(outPath)).mtimeMs).toBeGreaterThan(pinnedTime.getTime());
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    process.umask(oldUmask);
+  }
+});
+
+test("native metadata snapshots survive source edits and repair after tampering", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-native-metadata-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const cPath = join(dir, "program.c");
+  const outPath = join(dir, "program");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+
+  try {
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    delete process.env["SCRIPTC_NO_CACHE"];
+    await writeFile(cPath, '#include <stdio.h>\nint main(void) { puts("one"); return 0; }\n');
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+
+    const metadataDir = join(cacheRoot, "meta");
+    const metadataNames = await readdir(metadataDir);
+    expect(metadataNames.length).toBeGreaterThanOrEqual(3);
+    const pinnedTime = new Date("2002-01-01T00:00:00.000Z");
+    await Promise.all(metadataNames.map((name) => utimes(join(metadataDir, name), pinnedTime, pinnedTime)));
+
+    // Program bytes are not toolchain identity. A source edit should reuse the
+    // validated target/compiler/link snapshots without republishing them.
+    await writeFile(cPath, '#include <stdio.h>\nint main(void) { puts("two"); return 0; }\n');
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+    expect(execFileSync(outPath, { encoding: "utf8" }).trim()).toBe("two");
+    for (const name of metadataNames) {
+      expect((await stat(join(metadataDir, name))).mtimeMs).toBe(pinnedTime.getTime());
+    }
+
+    // Snapshot files are disposable cache data. Tampering invalidates one,
+    // strict discovery repairs it, and the requested source edit still lands.
+    const damagedPath = join(metadataDir, metadataNames[0]!);
+    const damaged = JSON.parse(await readFile(damagedPath, "utf8")) as { integrity: string };
+    damaged.integrity = "0".repeat(64);
+    await writeFile(damagedPath, `${JSON.stringify(damaged)}\n`);
+    await utimes(damagedPath, pinnedTime, pinnedTime);
+    await writeFile(cPath, '#include <stdio.h>\nint main(void) { puts("three"); return 0; }\n');
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+    expect(execFileSync(outPath, { encoding: "utf8" }).trim()).toBe("three");
+    expect((await stat(damagedPath)).mtimeMs).toBeGreaterThan(pinnedTime.getTime());
+    const repaired = JSON.parse(await readFile(damagedPath, "utf8")) as { integrity: string };
+    expect(repaired.integrity).not.toBe("0".repeat(64));
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+  }
+});
+
 test("damaged complete artifacts are rejected and rebuilt", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-artifact-integrity-"));
   scratch.push(dir);

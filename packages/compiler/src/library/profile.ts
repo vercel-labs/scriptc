@@ -14,6 +14,7 @@
  *     "name": "<embedder identity string>",
  *     "entry": "src/lib.ts",                  // ONE module, profile-relative
  *     "emission": "llvm" | "c",                // pins the emission; no fallback
+ *     "optimization": "release" | "dev",       // optional; default release
  *     "abi": {
  *       "prefix": "<prefix>_",
  *       "init_symbol": "<prefix>_init",
@@ -362,6 +363,9 @@ export interface LibraryProfile {
   entry: string;
   /** The pinned emission — no fallback concept exists on the library path. */
   emission: "llvm" | "c";
+  /** Native optimizer posture. release preserves the production -O2 archive;
+   * dev uses -O0 for fast iterative embedding builds. */
+  optimization: "release" | "dev";
   prefix: string;
   initSymbol: string;
   sinkRegisterSymbol: string;
@@ -486,7 +490,7 @@ export function loadLibraryProfile(
     // the root would otherwise be silently inert — the exact footgun the
     // fence machinery refuses everywhere else.
     for (const k of Object.keys(p)) {
-      if (["profile_format", "name", "entry", "emission", "abi", "exports", "callbacks", "sidecar", "determinism"].includes(k)) continue;
+      if (["profile_format", "name", "entry", "emission", "optimization", "abi", "exports", "callbacks", "sidecar", "determinism"].includes(k)) continue;
       if (k === "fences" || k === "teachings" || k === "remediations") {
         throw new ProfileError(
           `'${k}' at the profile root does nothing — the ask-5 determinism surface lives under 'determinism.${k}'; move it there`,
@@ -501,6 +505,12 @@ export function loadLibraryProfile(
     const emission = req<string>(p["emission"], "emission", "string");
     if (emission !== "llvm" && emission !== "c") {
       throw new ProfileError(`'emission' must be "llvm" or "c", got '${emission}'`);
+    }
+    const optimization = p["optimization"] === undefined
+      ? "release"
+      : req<string>(p["optimization"], "optimization", "string");
+    if (optimization !== "release" && optimization !== "dev") {
+      throw new ProfileError(`'optimization' must be "release" or "dev", got '${optimization}'`);
     }
     const abi = p["abi"];
     if (abi === null || typeof abi !== "object" || Array.isArray(abi)) {
@@ -866,6 +876,7 @@ export function loadLibraryProfile(
         profilePath,
         entry,
         emission,
+        optimization,
         prefix,
         initSymbol,
         sinkRegisterSymbol,

@@ -587,6 +587,14 @@ export interface TypeMapperCtx {
   /** --dynamic: `any` maps to the island handle type (jsval). Off, `any`
    * stays unmapped and the requires-dynamic diagnostic fires per site. */
   dynamic: boolean;
+  /** Successful context-free mappings, keyed by dynamic posture + the
+   * TypeScript server's stable type id. A generated facade can reference the
+   * same large record/function type thousands of times; remapping its full
+   * member graph each time is quadratic work. Generic/mixin contexts opt out
+   * through canMemoizeType because the same checker type can map differently
+   * under different instantiation bindings. */
+  typeMemo?: Map<string, IrType>;
+  canMemoizeType?: () => boolean;
   /** True for files the Lowerer actually compiles (its module order). A
    * class type can reach the entry through the TYPE world alone — a jsdoc
    * `typeof import('./mod')` over a module never imported at value level
@@ -689,9 +697,28 @@ let contextResolutions = 0;
 
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
+  const topLevel = mapTypeDepth === 0;
+  const typeId = (type as { id?: number }).id;
+  const memoizable = typeId !== undefined && (ctx.canMemoizeType?.() ?? true);
+  const memoKey = memoizable ? `${ctx.dynamic ? 1 : 0}:${typeId}` : null;
+  if (memoKey !== null) {
+    const memo = ctx.typeMemo?.get(memoKey);
+    if (memo !== undefined) return memo;
+  }
+  const sensitivityAtEntry = contextResolutions;
   mapTypeDepth++;
   try {
-    return mapTypeInner(type, ctx);
+    const mapped = mapTypeInner(type, ctx);
+    if (
+      mapped !== null &&
+      memoKey !== null &&
+      topLevel &&
+      contextResolutions === sensitivityAtEntry &&
+      (ctx.canMemoizeType?.() ?? true)
+    ) {
+      ctx.typeMemo?.set(memoKey, mapped);
+    }
+    return mapped;
   } finally {
     mapTypeDepth--;
   }

@@ -44,7 +44,7 @@ import type {
   TypeReference,
 } from "typescript/unstable/sync";
 import { walkPreorder } from "./ast.js";
-import { SignatureKind, TypeFlags } from "./enums.js";
+import { SignatureKind, SyntaxKind, TypeFlags } from "./enums.js";
 
 /** Array-overload chunk size: large enough that per-request overhead
  * vanishes, small enough to keep any single JSON-RPC payload modest. */
@@ -92,11 +92,23 @@ function chunked<T, R>(items: readonly T[], fetch: (chunk: readonly T[]) => read
  * memoized per-node call. */
 const PREFETCH_MAX_DEPTH = 512;
 
+/** Node kinds the lowering routinely asks getTypeAtLocation about. The
+ * fallback path remains correct for every other kind, but bulk-querying the
+ * entire AST was severe overfetch on generated facades (191k nodes fetched,
+ * only 29k ever requested). */
+const TYPE_PREFETCH_KINDS = new Set<SyntaxKind>([
+  SyntaxKind.Identifier,
+  SyntaxKind.PropertyAccessExpression,
+  SyntaxKind.ObjectLiteralExpression,
+  SyntaxKind.ArrayLiteralExpression,
+  SyntaxKind.ConditionalExpression,
+]);
+
 /** Preorder sweep of the whole file, ITERATIVE (walkPreorder): the obvious
  * recursive forEachChild walk overflowed the stack HERE, in the prefetch
  * sweep, on the binderBinaryExpressionStress chains — before lowering could
  * answer with its SC1090 nesting fence. */
-function collectNodes(sf: SourceFile): Node[] {
+function collectNodes(sf: Node): Node[] {
   const nodes: Node[] = [];
   walkPreorder(sf, (n, depth) => {
     nodes.push(n);
@@ -245,7 +257,13 @@ export class CheckerFacade {
   private prefetchTypes(sf: SourceFile): void {
     if (this.prefetchedTypes.has(sf)) return;
     this.prefetchedTypes.add(sf);
-    const nodes = collectNodes(sf).filter((n) => !this.typeAtLocation.has(n));
+    this.prefetchTypesIn(sf);
+  }
+
+  private prefetchTypesIn(root: Node): void {
+    const nodes = collectNodes(root).filter(
+      (n) => TYPE_PREFETCH_KINDS.has(n.kind) && !this.typeAtLocation.has(n),
+    );
     const types = chunked(nodes, (chunk) => this.typesWithPanicFence(chunk));
     nodes.forEach((n, i) => this.typeAtLocation.set(n, types[i]));
   }
@@ -259,7 +277,13 @@ export class CheckerFacade {
   private prefetchSymbols(sf: SourceFile): void {
     if (this.prefetchedSymbols.has(sf)) return;
     this.prefetchedSymbols.add(sf);
-    const nodes = collectNodes(sf).filter((n) => !this.symbolAtLocation.has(n));
+    this.prefetchSymbolsIn(sf);
+  }
+
+  private prefetchSymbolsIn(root: Node): void {
+    const nodes = collectNodes(root).filter(
+      (n) => n.kind === SyntaxKind.Identifier && !this.symbolAtLocation.has(n),
+    );
     // The same bisecting panic fence as the type sweep: tsgo panics on
     // SYMBOL queries too (observed: GetSymbolAtLocation over an
     // `import.defer(...)` callee — the sweep's batch must not turn one

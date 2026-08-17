@@ -11,13 +11,13 @@
   },
   "type": "module",
   "bin": {
-    "scriptc": "dist/main.js"
+    "scriptc": "dist/bootstrap.js"
   },
   "files": [
     "dist"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json"

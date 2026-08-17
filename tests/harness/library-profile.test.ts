@@ -55,6 +55,7 @@ describe("library profile validation", () => {
     if (!r.ok) return;
     expect(r.profile.name).toBe("conformance-test");
     expect(r.profile.emission).toBe("llvm");
+    expect(r.profile.optimization).toBe("release");
     expect(r.profile.prefix).toBe("kx_");
     expect(r.profile.initSymbol).toBe("kx_init");
     expect(r.profile.collectSymbol).toBe("kx_collect");
@@ -148,6 +149,12 @@ describe("library profile validation", () => {
     expectSc4001(rest, "'name'");
   });
   test("bad emission", () => expectSc4001({ ...good, emission: "wasm" }, "emission"));
+  test("optimization defaults to release and admits dev explicitly", () => {
+    const dev = loadLibraryProfile(writeProfile({ ...good, optimization: "dev" }));
+    expect(dev.ok).toBe(true);
+    if (dev.ok) expect(dev.profile.optimization).toBe("dev");
+    expectSc4001({ ...good, optimization: "fast" }, "optimization");
+  });
   test("bad prefix identifier", () =>
     expectSc4001({ ...good, abi: { ...good.abi, prefix: "9bad_" } }, "abi.prefix"));
   test("symbol without the prefix", () =>

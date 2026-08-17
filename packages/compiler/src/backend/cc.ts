@@ -2,7 +2,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants as fsConstants, existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
-import { access, chmod, copyFile, link, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { availableParallelism, homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -1405,6 +1405,8 @@ export interface LibArchiveOptions {
    * matching compileC's arbitrary-input safety boundary. */
   cacheIdentity?: string;
   sanitize?: boolean;
+  /** Native optimization posture: release = -O2, dev = -O0. */
+  optimization?: "release" | "dev";
   /** Multi-instance library mode (the profile's abi.localize_runtime): the
    * external symbols to KEEP global — every other scriptc external
    * definition in the archive (the runtime's internals, the program TU's
@@ -1444,6 +1446,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
   const rtDir = runtimeSrcDir();
   const driver = resolveCc();
   const sanitize = opts.sanitize ?? false;
+  const optimization = opts.optimization ?? "release";
   const regex = opts.regex ?? false;
   const sources = [
     ...LIB_RUNTIME_SOURCES,
@@ -1471,7 +1474,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
   const cflags = [
     "-std=c11",
     ...driver.targetArgs,
-    ...(sanitize ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"] : ["-O2"]),
+    ...(sanitize
+      ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
+      : [optimization === "dev" ? "-O0" : "-O2"]),
     "-fno-math-errno",
     "-fno-strict-aliasing", // the emitted object model type-puns — see compileC's buildArgs
     "-Wno-deprecated-declarations",
@@ -2177,6 +2182,19 @@ async function resolvedToolIdentity(
 }
 
 const directCompilerDriverMemos = new Map<string, boolean>();
+const directCompilerSelections = new Map<string, ResolvedTool>();
+
+function compilerDriverProbeKey(
+  driver: Pick<CcDriver, "argv" | "targetArgs" | "target">,
+  environmentFingerprint: string,
+): string {
+  return [
+    environmentFingerprint,
+    driver.argv.join("\x1f"),
+    driver.target ?? "<native>",
+    driver.targetArgs.join("\x1f"),
+  ].join("\0");
+}
 
 /** `/usr/bin/clang` on Darwin is Apple's immutable driver shim: its `-###`
  * trace names the selected Xcode/CommandLineTools clang rather than the shim
@@ -2206,12 +2224,7 @@ async function compilerDriverSupportsPersistentCache(
   // wrapper. This is deliberately undocumented and test-scoped.
   if (process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] === "1") return true;
 
-  const driverKey = [
-    environmentFingerprint,
-    driver.argv.join("\x1f"),
-    driver.target ?? "<native>",
-    driver.targetArgs.join("\x1f"),
-  ].join("\0");
+  const driverKey = compilerDriverProbeKey(driver, environmentFingerprint);
   const compiler = driver.argv[0] ?? "clang";
   const resolvedDriver = await resolvedTool(compiler);
   // A prior dependency list cannot prove that name resolution is unchanged:
@@ -2254,6 +2267,7 @@ async function compilerDriverSupportsPersistentCache(
       direct = effectiveCompiler !== null &&
         (effectiveCompiler.fileIdentity === resolvedDriver.fileIdentity ||
           isAppleSystemClangHandoff(resolvedDriver, effectiveCompiler));
+      if (direct) directCompilerSelections.set(driverKey, effectiveCompiler!);
     }
   } catch {
     direct = false;
@@ -2261,6 +2275,7 @@ async function compilerDriverSupportsPersistentCache(
     await rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
   }
   directCompilerDriverMemos.set(probeKey, direct);
+  if (!direct) directCompilerSelections.delete(driverKey);
   return direct;
 }
 
@@ -2368,7 +2383,8 @@ interface ImplicitToolchainProbe {
   compilerInvocation: string;
   dependencies: string[];
   dependencyFingerprint: string;
-  tools: { spelling: string; identity: string | null }[];
+  invocationPaths: string[];
+  tools: { spelling: string; identity: string | null; path: string | null }[];
 }
 
 interface ImplicitLinkerProbe {
@@ -2376,7 +2392,22 @@ interface ImplicitLinkerProbe {
   linkerInvocation: string;
   dependencies: string[];
   dependencyFingerprint: string;
-  linker: { spelling: string; identity: string | null };
+  invocationPaths: string[];
+  linker: { spelling: string; identity: string | null; path: string | null };
+}
+
+/** Dependency paths discovered while computing one strict fingerprint. The
+ * output-local cache stamp snapshots these exact files/directories after a
+ * validated build, then can prove a later same-output no-op without spawning
+ * clang again. Keep the map bounded for long-lived corpus/test processes. */
+const fingerprintDependencyPaths = new Map<string, string[]>();
+function rememberFingerprintDependencies(fingerprint: string, paths: readonly string[]): string {
+  fingerprintDependencyPaths.set(fingerprint, [...new Set(paths)].sort());
+  if (fingerprintDependencyPaths.size > 256) {
+    const oldest = fingerprintDependencyPaths.keys().next().value as string | undefined;
+    if (oldest !== undefined) fingerprintDependencyPaths.delete(oldest);
+  }
+  return fingerprint;
 }
 
 function parseMakeDependencies(output: string, cwd: string = process.cwd()): string[] {
@@ -2425,6 +2456,7 @@ interface EffectiveCompilerInvocationProbe {
   invocation: string;
   dependencies: string[];
   dependencyFingerprint: string;
+  invocationPaths: string[];
 }
 
 /** The effective cc1 invocation and injected dependencies for the flags used
@@ -2481,13 +2513,18 @@ async function effectiveCompilerInvocationFingerprintFresh(
         invocation: normalizedProbeInvocation(invocation, probeDir),
         dependencies,
         dependencyFingerprint: await fingerprintDependencyFiles(dependencies),
+        invocationPaths: await existingDriverTracePaths(
+          `${invocation.stdout}\n${invocation.stderr}`,
+          probeDir,
+          probeDir,
+        ),
       };
     } finally {
       await rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
-  return createHash("sha256")
+  const fingerprint = createHash("sha256")
     .update("effective-compiler-invocation-v2\0")
     .update(environmentFingerprint)
     .update("\0")
@@ -2505,6 +2542,10 @@ async function effectiveCompilerInvocationFingerprintFresh(
     .update("\0")
     .update(probe.dependencyFingerprint)
     .digest("hex");
+  return rememberFingerprintDependencies(
+    fingerprint,
+    [...probe.dependencies, ...probe.invocationPaths],
+  );
 }
 
 const stableEffectiveCompilerInvocationMemos = new Map<string, Promise<string>>();
@@ -2629,7 +2670,10 @@ async function translationUnitDependencyFingerprintFresh(
   environmentFingerprint: string,
 ): Promise<string> {
   if (sourcePath.endsWith(".ll")) {
-    return createHash("sha256").update("translation-unit-dependencies-v1\0llvm-ir").digest("hex");
+    return rememberFingerprintDependencies(
+      createHash("sha256").update("translation-unit-dependencies-v1\0llvm-ir").digest("hex"),
+      [],
+    );
   }
 
   const compiler = driver.argv[0] ?? "clang";
@@ -2673,7 +2717,7 @@ async function translationUnitDependencyFingerprintFresh(
     }
   }
 
-  return createHash("sha256")
+  const fingerprint = createHash("sha256")
     .update("translation-unit-dependencies-v1\0")
     .update(environmentFingerprint)
     .update("\0")
@@ -2683,6 +2727,7 @@ async function translationUnitDependencyFingerprintFresh(
     .update("\0")
     .update(probe.dependencyFingerprint)
     .digest("hex");
+  return rememberFingerprintDependencies(fingerprint, probe.dependencies);
 }
 
 const stableTranslationUnitDependencyMemos = new Map<string, Promise<string>>();
@@ -2809,11 +2854,20 @@ async function implicitToolchainFingerprintFresh(
         compilerInvocation: normalizedProbeInvocation(compilerInvocation, probeDir),
         dependencies: dependencyPaths,
         dependencyFingerprint: await fingerprintDependencyFiles(dependencyPaths),
+        invocationPaths: await existingDriverTracePaths(
+          `${compilerInvocation.stdout}\n${compilerInvocation.stderr}`,
+          probeDir,
+          probeDir,
+        ),
         tools: await Promise.all(
-          toolSpellings.map(async (spelling) => ({
-            spelling,
-            identity: await resolvedToolIdentity(spelling),
-          })),
+          toolSpellings.map(async (spelling) => {
+            const resolved = await resolvedTool(spelling);
+            return {
+              spelling,
+              identity: resolved?.cacheIdentity ?? null,
+              path: resolved?.canonicalPath ?? null,
+            };
+          }),
         ),
       };
     } finally {
@@ -2845,7 +2899,14 @@ async function implicitToolchainFingerprintFresh(
       .update(currentIdentity ?? tool.identity ?? "<unresolved>")
       .update("\0");
   }
-  return hash.digest("hex");
+  return rememberFingerprintDependencies(
+    hash.digest("hex"),
+    [
+      ...probe.dependencies,
+      ...probe.invocationPaths,
+      ...probe.tools.flatMap((tool) => tool.path === null ? [] : [tool.path]),
+    ],
+  );
 }
 
 const stableImplicitToolchainMemos = new Map<string, Promise<string>>();
@@ -2886,6 +2947,63 @@ function driverTraceCandidates(line: string): string[] {
     if (token !== "") candidates.push(token);
   }
   return candidates;
+}
+
+async function existingDriverTracePaths(
+  output: string,
+  cwd: string,
+  excludedRoot: string,
+): Promise<string[]> {
+  const candidates = new Set<string>();
+  for (const line of output.split(/\r?\n/)) {
+    const tokens = driverTraceCandidates(line);
+    for (let index = 0; index < tokens.length; index++) {
+      const token = tokens[index]!;
+      const joinedPathOption = ["-I", "-L", "-F"].find(
+        (option) => token.startsWith(option) && token.length > option.length,
+      );
+      const equalsPathOption = ["--sysroot=", "-resource-dir="].find((option) =>
+        token.startsWith(option)
+      );
+      const separatePathOptions = [
+        "-I",
+        "-L",
+        "-F",
+        "--sysroot",
+        "-isysroot",
+        "-resource-dir",
+        "-isystem",
+        "-iquote",
+        "-internal-isystem",
+        "-internal-externc-isystem",
+        "-internal-iframework",
+      ];
+      const optionPath = joinedPathOption !== undefined
+        ? token.slice(joinedPathOption.length)
+        : equalsPathOption !== undefined
+          ? token.slice(equalsPathOption.length)
+          : separatePathOptions.includes(token)
+            ? tokens[index + 1] ?? ""
+            : token;
+      if (!isAbsolute(optionPath)) continue;
+      const path = resolve(cwd, optionPath);
+      if (
+        path === excludedRoot ||
+        path.startsWith(`${excludedRoot}/`) ||
+        path.startsWith(`${excludedRoot}\\`)
+      ) {
+        continue;
+      }
+      candidates.add(path);
+    }
+  }
+  const existing = await Promise.all(
+    [...candidates].map(async (path) => [path, await lstat(path).catch(() => null)] as const),
+  );
+  return existing
+    .filter((entry): entry is readonly [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null)
+    .map(([path]) => path)
+    .sort();
 }
 
 export async function parseLinkTraceFiles(
@@ -3008,9 +3126,21 @@ async function implicitLinkerFingerprintFresh(
         linkerInvocation: normalizedProbeInvocation(driverInvocation, probeDir),
         dependencies,
         dependencyFingerprint: await fingerprintDependencyFiles(dependencies),
+        invocationPaths: await existingDriverTracePaths(
+          `${driverInvocation.stdout}\n${driverInvocation.stderr}`,
+          probeDir,
+          probeDir,
+        ),
         linker: {
           spelling: linkerSpelling,
-          identity: linkerSpelling === "" ? null : await resolvedToolIdentity(linkerSpelling),
+          identity:
+            linkerSpelling === ""
+              ? null
+              : (await resolvedTool(linkerSpelling))?.cacheIdentity ?? null,
+          path:
+            linkerSpelling === ""
+              ? null
+              : (await resolvedTool(linkerSpelling))?.canonicalPath ?? null,
         },
       };
     } finally {
@@ -3022,7 +3152,7 @@ async function implicitLinkerFingerprintFresh(
     probe.linker.spelling === ""
       ? null
       : await resolvedToolIdentity(probe.linker.spelling);
-  return createHash("sha256")
+  const fingerprint = createHash("sha256")
     .update("implicit-linker-v3\0")
     .update(environmentFingerprint)
     .update("\0")
@@ -3048,6 +3178,14 @@ async function implicitLinkerFingerprintFresh(
     .update("\0")
     .update(linkerIdentity ?? probe.linker.identity ?? "<unresolved>")
     .digest("hex");
+  return rememberFingerprintDependencies(
+    fingerprint,
+    [
+      ...probe.dependencies,
+      ...probe.invocationPaths,
+      ...(probe.linker.path === null ? [] : [probe.linker.path]),
+    ],
+  );
 }
 
 const stableImplicitLinkerMemos = new Map<string, Promise<string>>();
@@ -3097,7 +3235,20 @@ function ccacheAvailable(): Promise<boolean> {
  * tree is hashed on every identity calculation: a stat-only memo can miss a
  * same-size edit whose timestamp was preserved by a copy/sync tool. */
 async function runtimeFingerprintFresh(rtDir: string): Promise<string> {
-  const groups = await Promise.all(
+  const groups = await runtimeFingerprintInputGroups(rtDir);
+  const h = createHash("sha256").update(QJS_COMMIT).update(MBEDTLS_VERSION).update(ZLIB_VERSION);
+  for (const group of groups) {
+    for (const n of group.names) {
+      h.update(group.label).update("/").update(n).update("\0").update(await readFile(join(group.dir, n))).update("\0");
+    }
+  }
+  return h.digest("hex");
+}
+
+async function runtimeFingerprintInputGroups(
+  rtDir: string,
+): Promise<{ label: string; dir: string; names: string[] }[]> {
+  return Promise.all(
     [
       { label: "runtime", dir: rtDir },
       { label: "ryu", dir: join(rtDir, "..", "vendor", "ryu") },
@@ -3106,13 +3257,12 @@ async function runtimeFingerprintFresh(rtDir: string): Promise<string> {
       return { ...group, names };
     }),
   );
-  const h = createHash("sha256").update(QJS_COMMIT).update(MBEDTLS_VERSION).update(ZLIB_VERSION);
-  for (const group of groups) {
-    for (const n of group.names) {
-      h.update(group.label).update("/").update(n).update("\0").update(await readFile(join(group.dir, n))).update("\0");
-    }
-  }
-  return h.digest("hex");
+}
+
+async function runtimeFingerprintInputPaths(rtDir: string): Promise<string[]> {
+  return (await runtimeFingerprintInputGroups(rtDir)).flatMap((group) =>
+    group.names.map((name) => join(group.dir, name))
+  );
 }
 
 const stableRuntimeFingerprintMemos = new Map<string, Promise<string>>();
@@ -3203,6 +3353,273 @@ async function publishCachedFile(source: string, destination: string): Promise<v
       rm(tmp, { force: true }).catch(() => undefined),
       rm(tmpDigest, { force: true }).catch(() => undefined),
     ]);
+  }
+}
+
+interface LocalArtifactStamp {
+  version: 1;
+  key: string;
+  digest: string;
+  dependencies: LocalArtifactDependency[];
+  integrity: string;
+}
+
+interface LocalArtifactDependency {
+  path: string;
+  kind: "file" | "directory" | "symlink";
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}
+
+async function snapshotLocalArtifactDependencies(
+  dependencyPaths: readonly string[],
+): Promise<LocalArtifactDependency[]> {
+  return Promise.all(
+    [...new Set(dependencyPaths)].sort().map(async (path) => {
+      const info = await lstat(path);
+      const kind: LocalArtifactDependency["kind"] | null = info.isFile()
+        ? "file"
+        : info.isDirectory()
+          ? "directory"
+          : info.isSymbolicLink()
+            ? "symlink"
+            : null;
+      if (kind === null) throw new Error(`unsupported local artifact dependency: ${path}`);
+      return { path, kind, size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs };
+    }),
+  );
+}
+
+async function localArtifactDependenciesStillMatch(
+  dependencies: readonly LocalArtifactDependency[],
+): Promise<boolean> {
+  return (await Promise.all(
+    dependencies.map(async (dependency) => {
+      const info = await lstat(dependency.path).catch(() => null);
+      return info !== null &&
+        (dependency.kind === "file"
+          ? info.isFile()
+          : dependency.kind === "directory"
+            ? info.isDirectory()
+            : info.isSymbolicLink()) &&
+        info.size === dependency.size &&
+        info.mtimeMs === dependency.mtimeMs &&
+        info.ctimeMs === dependency.ctimeMs;
+    }),
+  )).every(Boolean);
+}
+
+interface NativeMetadataStamp {
+  version: 1;
+  key: string;
+  values: Record<string, string>;
+  dependencies: LocalArtifactDependency[];
+  integrity: string;
+}
+
+function nativeMetadataStampPath(root: string, key: string): string {
+  return join(root, "meta", createHash("sha256").update(key).digest("hex"));
+}
+
+function nativeMetadataStampIntegrity(
+  stamp: Pick<NativeMetadataStamp, "version" | "key" | "values" | "dependencies">,
+): string {
+  return createHash("sha256")
+    .update("native-metadata-stamp-v1\0")
+    .update(JSON.stringify(stamp))
+    .digest("hex");
+}
+
+async function readNativeMetadataStamp(
+  root: string,
+  key: string,
+): Promise<NativeMetadataStamp | null> {
+  try {
+    const stamp = JSON.parse(
+      await readFile(nativeMetadataStampPath(root, key), "utf8"),
+    ) as NativeMetadataStamp;
+    if (
+      stamp.version !== 1 ||
+      stamp.key !== key ||
+      stamp.values === null ||
+      typeof stamp.values !== "object" ||
+      !Array.isArray(stamp.dependencies) ||
+      !/^[0-9a-f]{64}$/.test(stamp.integrity) ||
+      nativeMetadataStampIntegrity({
+        version: stamp.version,
+        key: stamp.key,
+        values: stamp.values,
+        dependencies: stamp.dependencies,
+      }) !== stamp.integrity ||
+      !(await localArtifactDependenciesStillMatch(stamp.dependencies))
+    ) {
+      return null;
+    }
+    return stamp;
+  } catch {
+    return null;
+  }
+}
+
+async function publishNativeMetadataStamp(
+  root: string,
+  key: string,
+  values: Record<string, string>,
+  dependencyPaths: readonly string[],
+): Promise<NativeMetadataStamp> {
+  const destination = nativeMetadataStampPath(root, key);
+  await mkdir(dirname(destination), { recursive: true });
+  const dependencies = await snapshotLocalArtifactDependencies(dependencyPaths);
+  const unsigned = { version: 1, key, values, dependencies } as const;
+  const stamp: NativeMetadataStamp = {
+    ...unsigned,
+    integrity: nativeMetadataStampIntegrity(unsigned),
+  };
+  const tmp = `${destination}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    await writeFile(tmp, `${JSON.stringify(stamp)}\n`, { mode: 0o600 });
+    await rename(tmp, destination);
+  } finally {
+    await rm(tmp, { force: true }).catch(() => undefined);
+  }
+  return stamp;
+}
+
+function nativeMetadataKey(
+  kind: string,
+  parts: readonly (string | readonly string[])[],
+): string {
+  const hash = createHash("sha256").update(`native-metadata-${kind}-v1\0`);
+  for (const part of parts) {
+    hash.update(typeof part === "string" ? part : part.join("\x1f")).update("\0");
+  }
+  return `${kind}-${hash.digest("hex")}`;
+}
+
+/** The caller-visible output is itself the cheapest safe cache tier. Once a
+ * generated TU has produced this exact binary, an unchanged rebuild need not
+ * rediscover every SDK header and linker input merely to copy equivalent bytes
+ * back onto the same path. This tier is deliberately narrower than the CAS:
+ * only frontend-generated programs with no caller-owned native inputs opt in.
+ * The generated TU bytes, every scriptc runtime source, the selected direct
+ * compiler inode, target/options/environment, and the output path all join the
+ * key. A digest rejects a modified/truncated output before the no-op hit. */
+function localArtifactIdentity(
+  opts: CcOptions,
+  driver: CcDriver,
+  environmentFingerprint: string,
+  compilerIdentity: string,
+  runtimeHash: string,
+  programBytes: Buffer,
+): string {
+  const normalizedOptions = Object.fromEntries(
+    Object.entries(opts)
+      .filter(([, value]) => value !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b)),
+  );
+  return createHash("sha256")
+    .update("local-artifact-v1\0")
+    .update(cacheTargetIdentity(driver)).update("\0")
+    .update(environmentFingerprint).update("\0")
+    .update(compilerIdentity).update("\0")
+    .update(runtimeHash).update("\0")
+    .update(driver.argv.join("\x1f")).update("\0")
+    .update(driver.targetArgs.join("\x1f")).update("\0")
+    .update(driver.linkArgs.join("\x1f")).update("\0")
+    .update(process.env["SCRIPTC_FETCH_CURL"] === "1" ? "fetch-curl" : "fetch-native").update("\0")
+    .update(JSON.stringify(normalizedOptions)).update("\0")
+    .update(resolve(opts.cPath)).update("\0")
+    .update(resolve(opts.outPath)).update("\0")
+    .update(programBytes)
+    .digest("hex");
+}
+
+function localArtifactStampPath(root: string, outPath: string): string {
+  const outputKey = createHash("sha256").update(resolve(outPath)).digest("hex");
+  return join(root, "local", outputKey);
+}
+
+function localArtifactStampIntegrity(
+  stamp: Pick<LocalArtifactStamp, "version" | "key" | "digest" | "dependencies">,
+): string {
+  return createHash("sha256")
+    .update("local-artifact-stamp-v1\0")
+    .update(JSON.stringify(stamp))
+    .digest("hex");
+}
+
+async function localArtifactHit(
+  stampPath: string,
+  outPath: string,
+  key: string,
+): Promise<boolean> {
+  try {
+    const stamp = JSON.parse(await readFile(stampPath, "utf8")) as Partial<LocalArtifactStamp>;
+    const output = await lstat(outPath);
+    const expectedMode = 0o777 & ~process.umask();
+    if (
+      stamp.version !== 1 ||
+      stamp.key !== key ||
+      !/^[0-9a-f]{64}$/.test(stamp.digest ?? "") ||
+      !Array.isArray(stamp.dependencies) ||
+      !/^[0-9a-f]{64}$/.test(stamp.integrity ?? "") ||
+      localArtifactStampIntegrity({
+        version: stamp.version,
+        key: stamp.key,
+        digest: stamp.digest!,
+        dependencies: stamp.dependencies,
+      }) !== stamp.integrity ||
+      !output.isFile() ||
+      (output.mode & 0o777) !== expectedMode ||
+      stamp.dependencies.some((dependency) =>
+        dependency === null ||
+        typeof dependency !== "object" ||
+        typeof dependency.path !== "string" ||
+        dependency.kind !== "file" &&
+          dependency.kind !== "directory" &&
+          dependency.kind !== "symlink" ||
+        typeof dependency.size !== "number" ||
+        typeof dependency.mtimeMs !== "number" ||
+        typeof dependency.ctimeMs !== "number"
+      ) ||
+      !(await localArtifactDependenciesStillMatch(stamp.dependencies)) ||
+      await fileDigest(outPath) !== stamp.digest
+    ) {
+      return false;
+    }
+    const now = new Date();
+    await utimes(stampPath, now, now).catch(() => undefined);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function publishLocalArtifactStamp(
+  stampPath: string,
+  outPath: string,
+  key: string,
+  dependencyPaths: readonly string[],
+): Promise<void> {
+  await mkdir(dirname(stampPath), { recursive: true });
+  const tmp = `${stampPath}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    const dependencies = await snapshotLocalArtifactDependencies(dependencyPaths);
+    const unsigned = {
+      version: 1,
+      key,
+      digest: await fileDigest(outPath),
+      dependencies,
+    } as const;
+    const stamp: LocalArtifactStamp = {
+      ...unsigned,
+      integrity: localArtifactStampIntegrity(unsigned),
+    };
+    await writeFile(tmp, `${JSON.stringify(stamp)}\n`, { mode: 0o600 });
+    await rename(tmp, stampPath);
+  } finally {
+    await rm(tmp, { force: true }).catch(() => undefined);
   }
 }
 
@@ -3469,10 +3886,113 @@ export async function compileC(opts: CcOptions): Promise<void> {
       root = null;
     }
   }
+  let localArtifact: {
+    stampPath: string;
+    key: string;
+    runtimeHash: string;
+    programBytes: Buffer;
+    compilerPath: string;
+  } | null = null;
+  // Generated executable TUs are closed over scriptc's own runtime tree. A
+  // same-output rebuild can therefore check those bytes directly before the
+  // broader cross-output CAS performs its compiler/SDK/linker rediscovery.
+  // FFI/native-input builds and the public arbitrary-C cache API stay on the
+  // strict path because their dependency graphs are caller-owned.
+  if (
+    root !== null &&
+    cachePolicy.completeArtifacts &&
+    opts.cacheIdentity === "scriptc-generated-v1" &&
+    (opts.linkInputs?.length ?? 0) === 0 &&
+    (opts.systemLibraries?.length ?? 0) === 0 &&
+    process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] !== "1"
+  ) {
+    try {
+      const [compiler, runtimeHash, programBytes] = await Promise.all([
+        resolvedTool(driver.argv[0] ?? "clang"),
+        runtimeFingerprint(rtDir),
+        readFile(opts.cPath),
+      ]);
+      if (compiler !== null) {
+        const effectiveCompiler = directCompilerSelections.get(
+          compilerDriverProbeKey(driver, toolchainEnv),
+        ) ?? compiler;
+        const key = localArtifactIdentity(
+          opts,
+          driver,
+          toolchainEnv,
+          `${compiler.cacheIdentity}\0${effectiveCompiler.cacheIdentity}`,
+          runtimeHash,
+          programBytes,
+        );
+        const stampPath = localArtifactStampPath(root, opts.outPath);
+        localArtifact = {
+          stampPath,
+          key,
+          runtimeHash,
+          programBytes,
+          compilerPath: effectiveCompiler.canonicalPath,
+        };
+        if (await localArtifactHit(stampPath, opts.outPath, key)) return;
+      }
+    } catch {
+      // The output-local tier is only an optimization; the fully validated
+      // CAS below remains the source of truth on any metadata trouble.
+      localArtifact = null;
+    }
+  }
   let implicitToolchain: string | null = null;
+  let toolchainMetadataStamp: NativeMetadataStamp | null = null;
+  const metadataCompiler = root === null
+    ? null
+    : await resolvedTool(driver.argv[0] ?? "clang");
+  const metadataEffectiveCompiler = directCompilerSelections.get(
+    compilerDriverProbeKey(driver, toolchainEnv),
+  ) ?? metadataCompiler;
+  const toolchainMetadataKey =
+    root === null ||
+      metadataCompiler === null ||
+      metadataEffectiveCompiler === null ||
+      process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] === "1"
+    ? null
+    : nativeMetadataKey("toolchain", [
+        cacheTargetIdentity(driver),
+        toolchainEnv,
+        driver.argv,
+        driver.targetArgs,
+        metadataCompiler.cacheIdentity,
+        metadataEffectiveCompiler.cacheIdentity,
+        rtDir,
+      ]);
   if (persistentDriverCache) {
     try {
-      implicitToolchain = await implicitToolchainFingerprint(driver, toolchainEnv);
+      toolchainMetadataStamp =
+        root === null || toolchainMetadataKey === null
+          ? null
+          : await readNativeMetadataStamp(root, toolchainMetadataKey);
+      implicitToolchain = toolchainMetadataStamp?.values["implicitToolchain"] ??
+        await implicitToolchainFingerprint(driver, toolchainEnv);
+      let compilerVersion = toolchainMetadataStamp?.values["compilerVersion"];
+      if (compilerVersion === undefined) {
+        compilerVersion = await ccVersionOnce(driver.argv, toolchainEnv, true);
+      }
+      if (
+        toolchainMetadataStamp === null &&
+        root !== null &&
+        toolchainMetadataKey !== null
+      ) {
+        if (metadataCompiler !== null && metadataEffectiveCompiler !== null) {
+          toolchainMetadataStamp = await publishNativeMetadataStamp(
+            root,
+            toolchainMetadataKey,
+            { implicitToolchain, compilerVersion },
+            [
+              metadataCompiler.canonicalPath,
+              metadataEffectiveCompiler.canonicalPath,
+              ...(fingerprintDependencyPaths.get(implicitToolchain) ?? []),
+            ],
+          );
+        }
+      }
     } catch {
       // Cache discovery is best-effort. In particular, a compiler wrapper can
       // compile successfully without implementing the metadata probes.
@@ -3790,21 +4310,76 @@ export async function compileC(opts: CcOptions): Promise<void> {
 
   let runtimeCompilerInvocation: string | null = null;
   let programCompilerInvocation: string | null = null;
+  let payloadMetadata: Promise<[string, string, Buffer]> | null = null;
+  let compileMetadataStamp: NativeMetadataStamp | null = null;
+  const compileMetadataKey =
+    root === null || process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] === "1"
+    ? null
+    : nativeMetadataKey("compile", [
+        cacheTargetIdentity(driver),
+        toolchainEnv,
+        implicitToolchain ?? "<uncached>",
+        driver.argv,
+        cflags,
+        programCompilerArgs,
+        programSourceExtension,
+      ]);
   if (root !== null) {
     try {
-      runtimeCompilerInvocation = await effectiveCompilerInvocationFingerprint(
-        driver,
-        toolchainEnv,
-        cflags,
-      );
-      programCompilerInvocation = programSourceExtension === ".ll"
-        ? await effectiveCompilerInvocationFingerprint(
-            driver,
-            toolchainEnv,
-            programCompilerArgs,
-            programSourceExtension,
-          )
-        : runtimeCompilerInvocation;
+      // These probes inspect disjoint inputs. Start the payload reads here as
+      // well so runtime hashing and clang's dry-run traces overlap instead of
+      // forming a serial prelude before every cache lookup.
+      payloadMetadata = Promise.all([
+        Promise.resolve(
+          toolchainMetadataStamp?.values["compilerVersion"] ??
+            ccVersionOnce(driver.argv, toolchainEnv, true),
+        ),
+        localArtifact === null
+          ? runtimeFingerprint(rtDir)
+          : Promise.resolve(localArtifact.runtimeHash),
+        localArtifact === null
+          ? readFile(opts.cPath)
+          : Promise.resolve(localArtifact.programBytes),
+      ]);
+      compileMetadataStamp = compileMetadataKey === null
+        ? null
+        : await readNativeMetadataStamp(root, compileMetadataKey);
+      if (compileMetadataStamp !== null) {
+        runtimeCompilerInvocation = compileMetadataStamp.values["runtimeInvocation"] ?? null;
+        programCompilerInvocation = compileMetadataStamp.values["programInvocation"] ?? null;
+        if (runtimeCompilerInvocation === null || programCompilerInvocation === null) {
+          compileMetadataStamp = null;
+        }
+      }
+      if (compileMetadataStamp === null) {
+        const [runtimeInvocation, programInvocation] = await Promise.all([
+          effectiveCompilerInvocationFingerprint(driver, toolchainEnv, cflags),
+          programSourceExtension === ".ll"
+            ? effectiveCompilerInvocationFingerprint(
+                driver,
+                toolchainEnv,
+                programCompilerArgs,
+                programSourceExtension,
+              )
+            : Promise.resolve(null),
+        ]);
+        runtimeCompilerInvocation = runtimeInvocation;
+        programCompilerInvocation = programInvocation ?? runtimeInvocation;
+        if (compileMetadataKey !== null) {
+          compileMetadataStamp = await publishNativeMetadataStamp(
+            root,
+            compileMetadataKey,
+            {
+              runtimeInvocation: runtimeCompilerInvocation,
+              programInvocation: programCompilerInvocation,
+            },
+            [
+              ...(fingerprintDependencyPaths.get(runtimeCompilerInvocation) ?? []),
+              ...(fingerprintDependencyPaths.get(programCompilerInvocation) ?? []),
+            ],
+          );
+        }
+      }
     } catch {
       // Preserve the uncached build for wrappers that compile successfully but
       // cannot provide a dry-run trace for the real build flavor.
@@ -3829,11 +4404,11 @@ export async function compileC(opts: CcOptions): Promise<void> {
   let fingerprint: string;
   let cBytes: Buffer;
   try {
-    [cv, fingerprint, cBytes] = await Promise.all([
+    [cv, fingerprint, cBytes] = await (payloadMetadata ?? Promise.all([
       ccVersionOnce(driver.argv, toolchainEnv, true),
       runtimeFingerprint(rtDir),
       readFile(opts.cPath),
-    ]);
+    ]));
   } catch {
     // A version/fingerprint probe is an optimization boundary. If the compiler
     // itself can still compile, preserve the pre-cache behavior instead of
@@ -3852,21 +4427,6 @@ export async function compileC(opts: CcOptions): Promise<void> {
     (opts.linkInputs?.length ?? 0) === 0 &&
     (opts.systemLibraries?.length ?? 0) === 0;
   let programDependencies: string | null = null;
-  if (cacheCompleteArtifact) {
-    try {
-      programDependencies = await translationUnitDependencyFingerprint(
-        driver,
-        cflags,
-        opts.cPath,
-        cBytes,
-        toolchainEnv,
-      );
-    } catch {
-      // Program-header discovery is needed only for a complete hit. Runtime
-      // objects remain safe because they never contain the caller's TU.
-      cacheCompleteArtifact = false;
-    }
-  }
   const linkProbeArgs = [
     ...(sanitize ? ["-fsanitize=address"] : []),
     ...threadArgs,
@@ -3908,19 +4468,73 @@ export async function compileC(opts: CcOptions): Promise<void> {
       ? effectiveLinkInvocationArgs
       : effectiveLinkInvocationArgs.filter((arg) => arg !== `-L${curlStubDir}`);
   let implicitLinker: string | null = null;
-  if (cacheCompleteArtifact) {
-    try {
-      implicitLinker = await implicitLinkerFingerprint(
-        driver,
+  let preBuildDependencies: LocalArtifactDependency[] | null = null;
+  let linkMetadataStamp: NativeMetadataStamp | null = null;
+  const linkMetadataKey =
+    root === null || process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] === "1"
+    ? null
+    : nativeMetadataKey("link", [
+        cacheTargetIdentity(driver),
         toolchainEnv,
+        implicitToolchain ?? "<uncached>",
+        runtimeCompilerInvocation ?? "<uncached>",
+        programCompilerInvocation ?? "<uncached>",
+        driver.argv,
         linkProbeArgs,
         effectiveLinkInvocationArgs,
         linkTraceInvocationArgs,
-      );
+      ]);
+  if (cacheCompleteArtifact) {
+    try {
+      // Header discovery and linker tracing are independent subprocess trees.
+      // Running them together removes one complete probe round-trip from both
+      // cache hits and ordinary edit/build misses without changing either key.
+      linkMetadataStamp = linkMetadataKey === null
+        ? null
+        : await readNativeMetadataStamp(root, linkMetadataKey);
+      if (linkMetadataStamp !== null) {
+        implicitLinker = linkMetadataStamp.values["implicitLinker"] ?? null;
+        if (implicitLinker === null) linkMetadataStamp = null;
+      }
+      [programDependencies, implicitLinker] = await Promise.all([
+        translationUnitDependencyFingerprint(
+          driver,
+          cflags,
+          opts.cPath,
+          cBytes,
+          toolchainEnv,
+        ),
+        linkMetadataStamp === null
+          ? implicitLinkerFingerprint(
+              driver,
+              toolchainEnv,
+              linkProbeArgs,
+              effectiveLinkInvocationArgs,
+              linkTraceInvocationArgs,
+            )
+          : Promise.resolve(implicitLinker!),
+      ]);
+      if (linkMetadataStamp === null && linkMetadataKey !== null) {
+        linkMetadataStamp = await publishNativeMetadataStamp(
+          root,
+          linkMetadataKey,
+          { implicitLinker },
+          fingerprintDependencyPaths.get(implicitLinker) ?? [],
+        );
+      }
+      preBuildDependencies = await snapshotLocalArtifactDependencies([
+        ...(await runtimeFingerprintInputPaths(rtDir)),
+        ...(toolchainMetadataStamp?.dependencies.map((dependency) => dependency.path) ??
+          fingerprintDependencyPaths.get(implicitToolchain!) ?? []),
+        ...(compileMetadataStamp?.dependencies.map((dependency) => dependency.path) ?? []),
+        ...(linkMetadataStamp?.dependencies.map((dependency) => dependency.path) ??
+          fingerprintDependencyPaths.get(implicitLinker!) ?? []),
+        ...(fingerprintDependencyPaths.get(programDependencies) ?? []),
+      ]);
     } catch {
-      // Some compiler wrappers/linkers do not implement trace mode. Runtime
-      // objects remain safely cacheable, but a complete executable cannot be
-      // keyed without knowing every implicit link input.
+      // Program-header discovery and linker tracing are both required for a
+      // complete hit. Runtime objects remain safely cacheable if either probe
+      // is unavailable.
       cacheCompleteArtifact = false;
     }
   }
@@ -3976,6 +4590,19 @@ export async function compileC(opts: CcOptions): Promise<void> {
       // cache entry populated by a less restrictive shell must not widen access.
       await chmod(tmpOut, 0o777 & ~process.umask());
       await rename(tmpOut, opts.outPath);
+      if (localArtifact !== null) {
+        await publishLocalArtifactStamp(
+          localArtifact.stampPath,
+          opts.outPath,
+          localArtifact.key,
+          [
+            localArtifact.compilerPath,
+            dirname(resolve(opts.cPath)),
+            ...(fingerprintDependencyPaths.get(implicitToolchain!) ?? []),
+            ...(fingerprintDependencyPaths.get(implicitLinker!) ?? []),
+          ],
+        ).catch(() => undefined);
+      }
       return; // hit: the program/runtime payload compile and link were skipped
     } catch {
       await rm(tmpOut, { force: true }).catch(() => undefined);
@@ -4016,9 +4643,15 @@ export async function compileC(opts: CcOptions): Promise<void> {
 
     let objects: Map<string, string> | null = null;
     let cacheInputsStable = true;
-    let objectImplicitVerification: Promise<boolean> | null = null;
+    let strictObjectVerification: Promise<boolean> | null = null;
     const objectImplicitToolchainStillMatches = (): Promise<boolean> => {
-      objectImplicitVerification ??= Promise.all([
+      if (preBuildDependencies !== null) {
+        return localArtifactDependenciesStillMatch(preBuildDependencies);
+      }
+      // Complete-artifact caching can be disabled by caller-owned native
+      // inputs while the safe runtime-object tier remains active. Preserve its
+      // strict discovery fallback in that posture.
+      strictObjectVerification ??= Promise.all([
         implicitToolchainFingerprint(driver, toolchainEnv),
         effectiveCompilerInvocationFingerprint(driver, toolchainEnv, cflags),
       ]).then(
@@ -4027,7 +4660,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
           currentInvocation === runtimeCompilerInvocation,
         () => false,
       );
-      return objectImplicitVerification;
+      return strictObjectVerification;
     };
     try {
       const cached = await ensureRuntimeObjects(
@@ -4037,8 +4670,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
         rtInputs,
         `obj-v5\0${cacheTargetIdentity(driver)}\0${toolchainEnv}\0${implicitToolchain}\0${runtimeCompilerInvocation}\0${ccName}\0${cv}\0${fingerprint}\0`,
         async () =>
-          (await runtimeFingerprint(rtDir)) === fingerprint &&
-          (await objectImplicitToolchainStillMatches()),
+          await objectImplicitToolchainStillMatches(),
       );
       objects = await stageRuntimeObjects(cached, join(buildDir, "runtime-objects"));
     } catch (err) {
@@ -4055,48 +4687,14 @@ export async function compileC(opts: CcOptions): Promise<void> {
     await installArtifact(privateOut, opts.outPath);
 
     if (cachedBin !== null && keyHex !== null) {
-      // This check is deliberately fresh rather than the object-publication
-      // verification above. The final program compile/link can itself race an
-      // SDK header, compiler, linker, CRT, or system-library replacement; its
-      // bytes must not be published under the pre-build identity in that case.
-      const [currentRuntime, currentImplicit, currentRuntimeInvocation, currentProgramInvocation, currentProgramDependencies, currentLinker, currentCompiler] =
-        await Promise.all([
-          runtimeFingerprint(rtDir).catch(() => null),
-          implicitToolchainFingerprint(driver, toolchainEnv).catch(() => null),
-          effectiveCompilerInvocationFingerprint(driver, toolchainEnv, cflags).catch(
-            () => null,
-          ),
-          effectiveCompilerInvocationFingerprint(
-            driver,
-            toolchainEnv,
-            programCompilerArgs,
-            programSourceExtension,
-          ).catch(() => null),
-          translationUnitDependencyFingerprint(
-            driver,
-            cflags,
-            opts.cPath,
-            cBytes,
-            toolchainEnv,
-          ).catch(() => null),
-          implicitLinkerFingerprint(
-            driver,
-            toolchainEnv,
-            linkProbeArgs,
-            effectiveLinkInvocationArgs,
-            linkTraceInvocationArgs,
-          ).catch(() => null),
-          ccVersionOnce(driver.argv, toolchainEnv, true).catch(() => null),
-        ]);
+      // The strict pre-build probes already discovered every runtime/header/
+      // SDK/compiler/linker input participating in this exact flavor. Compare
+      // their metadata again after linking to close the race without launching
+      // a second copy of every expensive discovery subprocess.
       cacheInputsStable =
         cacheInputsStable &&
-        currentRuntime === fingerprint &&
-        currentImplicit === implicitToolchain &&
-        currentRuntimeInvocation === runtimeCompilerInvocation &&
-        currentProgramInvocation === programCompilerInvocation &&
-        currentProgramDependencies === programDependencies &&
-        currentLinker === implicitLinker &&
-        currentCompiler === cv;
+        preBuildDependencies !== null &&
+        await localArtifactDependenciesStillMatch(preBuildDependencies);
     }
     if (cachedBin !== null && keyHex !== null && cacheInputsStable) {
       try {
@@ -4107,6 +4705,19 @@ export async function compileC(opts: CcOptions): Promise<void> {
       } catch {
         /* publishing is best-effort */
       }
+    }
+    if (localArtifact !== null && cacheCompleteArtifact && cacheInputsStable) {
+      await publishLocalArtifactStamp(
+        localArtifact.stampPath,
+        opts.outPath,
+        localArtifact.key,
+        [
+          localArtifact.compilerPath,
+          dirname(resolve(opts.cPath)),
+          ...(fingerprintDependencyPaths.get(implicitToolchain!) ?? []),
+          ...(fingerprintDependencyPaths.get(implicitLinker!) ?? []),
+        ],
+      ).catch(() => undefined);
     }
   } finally {
     await rm(buildDir, { recursive: true, force: true }).catch(() => undefined);

@@ -1152,6 +1152,8 @@ export class Lowerer {
    * IrModule.unions. An arm's index in the canonical list is its runtime
    * tag. */
   readonly unions = new UnionRegistry();
+  /** Context-free successful type mappings. See TypeMapperCtx.typeMemo. */
+  readonly typeMemo = new Map<string, IrType>();
   readonly ambient = ambientDtsPath();
   readonly overridesAmbient = overridesDtsPath();
   readonly fallbackAmbient = fallbackDtsPath();
@@ -1331,6 +1333,11 @@ export class Lowerer {
       isExternalTypeFile: (sf) =>
         this.externalTypeSpecifiersByFile.has(tsgoPath(resolve(sf.fileName))),
       dynamic: this.dynamic,
+      typeMemo: this.typeMemo,
+      canMemoizeType: () =>
+        this.typeParamBindings === null &&
+        this.typeParamTsBindings === null &&
+        this.mixinTypeContext === null,
       // fileTag is filled just below; the hook is only ever CALLED during
       // lowering, long after the constructor completes.
       isProgramFile: (sf) => this.fileTag.has(sf),

@@ -625,16 +625,29 @@ describe.each(["c", "llvm"] as const)("retained FFI at process exit, %s backend"
       [
         "declare function nativeRetainedAdd(callback: (value: number) => void): void;",
         "declare function nativeRetainedRemove(callback: (value: number) => void): void;",
-        "const tick = (_value: number) => {};",
-        "nativeRetainedAdd(tick);",
-        "process.on('exit', () => {",
-        "  nativeRetainedRemove(tick);",
-        "  console.log('released-at-exit');",
-        "});",
-        // Force the event loop to run: the loop-drain exit path must leave
-        // the retained ledger intact for the listener, exactly like the
-        // process.exit() path.
-        "await Promise.resolve();",
+        // The callback deliberately lives in a FUNCTION-LOCAL const, not at
+        // module scope: a module-level const arrow is a refcounted func
+        // global and a declared function used as a value is an interned fn
+        // value — either makes needsRelease true, and the old
+        // `usesEvents && needsRelease` gate ran exit listeners inline
+        // whenever globals needed releasing, passing this test by
+        // accident. A local closure captured by the listener leaves the
+        // program with NOTHING to release, pinning the actual fix: process
+        // events alone must run 'exit' listeners inline, before the atexit
+        // FFI ledger sweep drops the registration the listener releases.
+        "function main() {",
+        "  const tick = (_value: number) => {};",
+        "  nativeRetainedAdd(tick);",
+        "  process.on('exit', () => {",
+        "    nativeRetainedRemove(tick);",
+        "    console.log('released-at-exit');",
+        "  });",
+        // Force the event loop to run via a timer, NOT a top-level await:
+        // an async module init caches its promise in a refcounted global,
+        // which would flip needsRelease back to true and un-pin the gate.
+        "  setTimeout(() => {}, 0);",
+        "}",
+        "main();",
         "",
       ].join("\n"),
     );
@@ -788,6 +801,66 @@ test("retained callback calls reject function adapters that would change identit
   if (!result.ok) {
     expect(result.diagnostics[0]?.code).toBe("SC5003");
     expect(result.diagnostics[0]?.message).toContain("would change its release identity");
+  }
+});
+
+// An inline function literal mints a fresh closure at every evaluation,
+// so at a RELEASE site it is a pointer no registration holds — a
+// guaranteed runtime trap, refused at compile time. Registration sites
+// still accept literals (a permanent registration the exit teardown
+// releases — the live-at-exit shape in tests/ffi/main.ts).
+test("retained release calls reject an inline function literal", async () => {
+  const outDir = join(cacheRoot, "retained-inline-literal-release");
+  mkdirSync(outDir, { recursive: true });
+  const entry = join(outDir, "main.ts");
+  const profilePath = join(outDir, "profile.json");
+  writeFileSync(
+    entry,
+    [
+      "declare function nativeRetainedAdd(callback: (value: number) => void): void;",
+      "declare function nativeRetainedRemove(callback: (value: number) => void): void;",
+      "function tick(_value: number) {}",
+      "nativeRetainedAdd(tick);",
+      "nativeRetainedRemove((_value: number) => {});",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    profilePath,
+    JSON.stringify({
+      ffi_format: 4,
+      functions: [{
+        name: "nativeRetainedAdd",
+        symbol: "sf_retained_add",
+        params: [{
+          callback: {
+            id: "tick",
+            params: ["f64", { context: "tick" }],
+            returns: "void",
+            lifetime: "retained",
+          },
+        }, { context: "tick" }],
+        returns: "void",
+      }, {
+        name: "nativeRetainedRemove",
+        symbol: "sf_retained_remove",
+        params: [{ callback: { release: "nativeRetainedAdd:tick" } }, {
+          context: "nativeRetainedAdd:tick",
+        }],
+        returns: "void",
+      }],
+      libraries: [nativeArchive()],
+    }),
+  );
+  const result = await compile(entry, {
+    outDir,
+    outPath: join(outDir, "program"),
+    ffiProfilePath: profilePath,
+  });
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.diagnostics[0]?.code).toBe("SC5003");
+    expect(result.diagnostics[0]?.message).toContain("cannot be an inline function value");
   }
 });
 

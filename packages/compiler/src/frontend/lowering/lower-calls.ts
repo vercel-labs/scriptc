@@ -2925,19 +2925,39 @@ export function lowerFfiCall(L: Lowerer, expr: ts.CallExpression): IrExpr | null
       // freshClosureAdapters), not name-prefix matching, so a new coercion
       // helper cannot silently slip past this guard.
       if (
-        (
-          isFfiReleaseParam(sourceParam) ||
-          (isFfiCallbackParam(sourceParam) && sourceParam.callback.lifetime === "retained")
-        ) &&
-        (
+        isFfiReleaseParam(sourceParam) ||
+        (isFfiCallbackParam(sourceParam) && sourceParam.callback.lifetime === "retained")
+      ) {
+        if (
           lowered.kind === "dynCheck" ||
           (lowered.kind === "call" && L.freshClosureAdapters.has(lowered.callee))
-        )
-      ) {
-        signatureError(
-          `retained callback argument ${i + 1} must have the exact manifest function type; ` +
-            `an implicit function adapter would change its release identity`,
-        );
+        ) {
+          signatureError(
+            `retained callback argument ${i + 1} must have the exact manifest function type; ` +
+              `an implicit function adapter would change its release identity`,
+          );
+        }
+        // An inline function value at a RELEASE site can never match:
+        // lifted lambdas always carry a captures list (even an empty one),
+        // so both backends mint a fresh closure per evaluation of the
+        // expression — the release argument is a pointer no registration
+        // holds, a guaranteed runtime trap. Declared functions stay valid
+        // here — their value is the interned immortal closure (captures
+        // undefined), one pointer for every mention. Registration sites
+        // still accept literals: an unnameable registration is simply
+        // permanent, released by the exit teardown (the live-at-exit
+        // fixture shape), and hides no matching failure.
+        if (
+          isFfiReleaseParam(sourceParam) &&
+          lowered.kind === "closure" &&
+          L.liftedFns.some((f) => f.name === lowered.fnName && f.captures !== undefined)
+        ) {
+          signatureError(
+            `retained callback argument ${i + 1} cannot be an inline function value; ` +
+              `each evaluation creates a fresh closure no registration holds — ` +
+              `pass the same named value used to register`,
+          );
+        }
       }
       return lowered;
     });

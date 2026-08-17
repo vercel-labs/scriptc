@@ -4,13 +4,17 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+<!-- release:start -->
+
+## 0.0.33
+
 ### Features
 
 - **Foreign-thread native callbacks are marshalled to the event loop.** FFI format 5 adds `invoke: "foreign"` for retained, context-bearing, `void` callbacks. Thread-safe generated trampolines copy scalar/string/byte arguments into plain staging memory, wake the process loop, and return immediately; the loop delivers one callback per turn on the script thread with ref'd registration liveness, concurrent-producer FIFO safety, explicit release, throw propagation, and clean shutdown across both backends.
 - **Native callbacks can be retained and explicitly released.** FFI format 4 adds `lifetime: "retained"` registrations and paired `release` descriptors that reuse the original function-pointer trampoline. Registrations pin captured closures until the same function value is released, count duplicate registrations, support multiple context-bearing registrations and raw single-slot replacement, defer callback throws through later FFI pump calls, and clean up live registrations at process exit across both backends.
 - **Native callbacks copy in strings and byte spans.** FFI format 3 adds callback-only `cstring` parameters plus length-delimited `string` and `bytes` parameters. Trampolines in both backends copy native memory into owned scriptc values, decode malformed UTF-8 with U+FFFD replacement, preserve embedded NUL bytes in spans, and trap precise invalid null pointers before invoking the closure.
 
-<!-- release:start -->
+<!-- release:end -->
 
 ## 0.0.32
 
@@ -22,8 +26,6 @@ All notable changes to scriptc will be documented in this file.
 
 - **Windows TLS trusts the native system certificate stores.** TLS and HTTPS clients now load, policy-filter, and deduplicate server-auth roots and intermediates from the applicable user and machine stores; `tls.getCACertificates("system")` exposes the same live trust source.
 - **Library integer proofs preserve JavaScript's NaN comparison behavior.** Failed ordered comparisons no longer narrow a value when either operand may be NaN, preventing an unsafe integer-boundary proof, while the false edge of `!==` correctly proves equality and clears the NaN alternative.
-
-<!-- release:end -->
 
 ## 0.0.31
 

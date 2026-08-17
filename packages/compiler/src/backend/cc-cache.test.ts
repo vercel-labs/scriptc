@@ -2420,6 +2420,54 @@ test("frontend-generated same-output builds no-op only while output and dependen
   }
 });
 
+test("fresh processes preserve output-local dependency coverage after source edits", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-local-artifact-process-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const cPath = join(dir, "program.c");
+  const outPath = join(dir, "program");
+  const helperPath = join(dir, "compile.mjs");
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, SCRIPTC_CACHE_DIR: cacheRoot };
+  delete childEnv["SCRIPTC_NO_CACHE"];
+  delete childEnv["SCRIPTC_TEST_STABLE_TOOLCHAIN"];
+  delete childEnv["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"];
+
+  await writeFile(
+    helperPath,
+    `import { compileC } from ${JSON.stringify(new URL("./cc.ts", import.meta.url).href)};\n` +
+      `await compileC({ cPath: process.argv[2], outPath: process.argv[3], cacheIdentity: "scriptc-generated-v1" });\n`,
+  );
+  const compileInFreshProcess = (): void => {
+    execFileSync(process.execPath, ["--import", "tsx", helperPath, cPath, outPath], {
+      env: childEnv,
+      stdio: "pipe",
+    });
+  };
+  const stampPath = join(
+    cacheRoot,
+    "local",
+    createHash("sha256").update(outPath).digest("hex"),
+  );
+  const dependencyPaths = async (): Promise<string[]> => {
+    const stamp = JSON.parse(await readFile(stampPath, "utf8")) as {
+      dependencies: { path: string }[];
+    };
+    return stamp.dependencies.map((dependency) => dependency.path);
+  };
+
+  await writeFile(cPath, '#include <stdio.h>\nint main(void) { puts("one"); return 0; }\n');
+  compileInFreshProcess();
+  const firstPaths = await dependencyPaths();
+  expect(firstPaths.length).toBeGreaterThan(2);
+
+  // The metadata fingerprints are restored from cache files in this second
+  // Node process; their in-memory fingerprint-to-path map starts empty.
+  await writeFile(cPath, '#include <stdio.h>\nint main(void) { puts("two"); return 0; }\n');
+  compileInFreshProcess();
+  expect(execFileSync(outPath, { encoding: "utf8" }).trim()).toBe("two");
+  expect(await dependencyPaths()).toEqual(firstPaths);
+});
+
 test("native metadata snapshots survive source edits and repair after tampering", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-native-metadata-"));
   scratch.push(dir);

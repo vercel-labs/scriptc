@@ -4469,6 +4469,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
       : effectiveLinkInvocationArgs.filter((arg) => arg !== `-L${curlStubDir}`);
   let implicitLinker: string | null = null;
   let preBuildDependencies: LocalArtifactDependency[] | null = null;
+  let localArtifactDependencyPaths: string[] | null = null;
   let linkMetadataStamp: NativeMetadataStamp | null = null;
   const linkMetadataKey =
     root === null || process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] === "1"
@@ -4531,6 +4532,18 @@ export async function compileC(opts: CcOptions): Promise<void> {
           fingerprintDependencyPaths.get(implicitLinker!) ?? []),
         ...(fingerprintDependencyPaths.get(programDependencies) ?? []),
       ]);
+      if (localArtifact !== null) {
+        // Native metadata stamps persist their dependency paths across CLI
+        // processes; fingerprintDependencyPaths deliberately does not. Build
+        // the output-local stamp from this complete validated snapshot so a
+        // source edit in a fresh process cannot replace it with only the two
+        // process-local fallback paths.
+        localArtifactDependencyPaths = [
+          localArtifact.compilerPath,
+          dirname(resolve(opts.cPath)),
+          ...preBuildDependencies.map((dependency) => dependency.path),
+        ];
+      }
     } catch {
       // Program-header discovery and linker tracing are both required for a
       // complete hit. Runtime objects remain safely cacheable if either probe
@@ -4590,17 +4603,12 @@ export async function compileC(opts: CcOptions): Promise<void> {
       // cache entry populated by a less restrictive shell must not widen access.
       await chmod(tmpOut, 0o777 & ~process.umask());
       await rename(tmpOut, opts.outPath);
-      if (localArtifact !== null) {
+      if (localArtifact !== null && localArtifactDependencyPaths !== null) {
         await publishLocalArtifactStamp(
           localArtifact.stampPath,
           opts.outPath,
           localArtifact.key,
-          [
-            localArtifact.compilerPath,
-            dirname(resolve(opts.cPath)),
-            ...(fingerprintDependencyPaths.get(implicitToolchain!) ?? []),
-            ...(fingerprintDependencyPaths.get(implicitLinker!) ?? []),
-          ],
+          localArtifactDependencyPaths,
         ).catch(() => undefined);
       }
       return; // hit: the program/runtime payload compile and link were skipped
@@ -4706,17 +4714,17 @@ export async function compileC(opts: CcOptions): Promise<void> {
         /* publishing is best-effort */
       }
     }
-    if (localArtifact !== null && cacheCompleteArtifact && cacheInputsStable) {
+    if (
+      localArtifact !== null &&
+      localArtifactDependencyPaths !== null &&
+      cacheCompleteArtifact &&
+      cacheInputsStable
+    ) {
       await publishLocalArtifactStamp(
         localArtifact.stampPath,
         opts.outPath,
         localArtifact.key,
-        [
-          localArtifact.compilerPath,
-          dirname(resolve(opts.cPath)),
-          ...(fingerprintDependencyPaths.get(implicitToolchain!) ?? []),
-          ...(fingerprintDependencyPaths.get(implicitLinker!) ?? []),
-        ],
+        localArtifactDependencyPaths,
       ).catch(() => undefined);
     }
   } finally {

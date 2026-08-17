@@ -686,9 +686,11 @@ function genChannels(
  * fallback for it. */
 const MAP_TYPE_MAX_DEPTH = 64;
 let mapTypeDepth = 0;
-/** Bumped whenever mapType resolves a type through CONTEXT-SENSITIVE hooks
- * (a generic body's type parameter, a mixin instantiation) — mappings that
- * make the same ts.Type answer differently across instantiation contexts.
+/** Bumped whenever mapType resolves a type through CONTEXT-SENSITIVE or
+ * collection-sensitive hooks (a generic body's type parameter, a mixin
+ * instantiation, a generic class instance) — mappings that can make the same
+ * ts.Type answer differently across instantiation contexts or collection
+ * phases.
  * The recursive-shape machinery keys shape identity by checker type, which
  * is sound only for context-FREE mappings: a recursive frame that observes
  * a bump between entry and exit stays fenced (recursive generic-open types
@@ -1190,7 +1192,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // INSTANTIATION's class (`Box%0`), registered on demand — the Lowerer
     // hook owns the instance table (monomorphization by flow).
     if (classDecl.typeParameters) {
-      return ctx.genericClassInstance ? ctx.genericClassInstance(classDecl, widened) : null;
+      const instance = ctx.genericClassInstance
+        ? ctx.genericClassInstance(classDecl, widened)
+        : null;
+      // Before the generic declaration's collection turn, the hook can only
+      // return its family shell; after collection the same checker type names
+      // a concrete registered instance. Never memoize either phase's answer.
+      if (instance !== null) contextResolutions++;
+      return instance;
     }
     return { kind: "object", className: classNamer(classDecl) };
   }

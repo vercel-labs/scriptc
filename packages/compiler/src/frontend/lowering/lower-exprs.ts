@@ -4819,6 +4819,11 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
       }
     }
     const fieldTypes = new Map(shape.fields.map((f) => [f.name, f.type]));
+    // The clone probe may lower the leading spread before declining (a
+    // static `as` cast can make the checker-visible shape match while its
+    // erased IR value keeps a wider shape). Reuse that exact value in the
+    // ordinary spread path so lowering still happens once.
+    let leadingSpreadLowered: IrExpr | null = null;
 
     // The overwhelmingly common immutable-update form over a record:
     // `{ ...model, changed, other: value }`. The historic lowering expanded
@@ -4865,20 +4870,23 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
         names.every((name) => fieldTypes.has(name))
       ) {
         const source = L.lowerExpr(spread.expression);
-        const overrides: { name: string; value: IrExpr }[] = [];
-        for (let i = 0; i < props.length; i++) {
-          const p = props[i]!;
-          const name = names[i]!;
-          const fieldType = fieldTypes.get(name)!;
-          const valueNode = ts.isPropertyAssignment(p) ? p.initializer : p;
-          let value = ts.isPropertyAssignment(p)
-            ? L.lowerExpr(p.initializer)
-            : L.lowerShorthandValue(p);
-          value = L.coerceInto(valueNode, value, fieldType);
-          if (!typeEquals(value.type, fieldType)) L.badType(valueNode, L.typeOf(valueNode));
-          overrides.push({ name, value });
+        if (source.type.kind === "record" && source.type.shapeId === type.shapeId) {
+          const overrides: { name: string; value: IrExpr }[] = [];
+          for (let i = 0; i < props.length; i++) {
+            const p = props[i]!;
+            const name = names[i]!;
+            const fieldType = fieldTypes.get(name)!;
+            const valueNode = ts.isPropertyAssignment(p) ? p.initializer : p;
+            let value = ts.isPropertyAssignment(p)
+              ? L.lowerExpr(p.initializer)
+              : L.lowerShorthandValue(p);
+            value = L.coerceInto(valueNode, value, fieldType);
+            if (!typeEquals(value.type, fieldType)) L.badType(valueNode, L.typeOf(valueNode));
+            overrides.push({ name, value });
+          }
+          return { kind: "recordClone", source, overrides, type, loc };
         }
-        return { kind: "recordClone", source, overrides, type, loc };
+        leadingSpreadLowered = source;
       }
     }
 
@@ -5155,7 +5163,12 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
         }
         let srcNode: ts.Expression = prop.expression;
         while (ts.isParenthesizedExpression(srcNode)) srcNode = srcNode.expression;
-        const srcLowered = ts.isIdentifier(srcNode) ? null : L.lowerExpr(srcNode);
+        const srcLowered =
+          prop === expr.properties[0] && leadingSpreadLowered !== null
+            ? leadingSpreadLowered
+            : ts.isIdentifier(srcNode)
+              ? null
+              : L.lowerExpr(srcNode);
         const srcType = srcLowered ? srcLowered.type : L.mapTypeOf(L.typeOf(srcNode));
         // `...options.installConfig` — a spread of `Partial<X> | undefined`
         // (the optional-options merge idiom `{ ...DEFAULTS, ...overrides }`):

@@ -54,6 +54,7 @@ async function fixture(): Promise<{
       sanitize: false,
       target: "test",
       compiler: ["clang"],
+      nodeVersion: "v24-test",
       implementation: "test-implementation",
     },
   };
@@ -235,6 +236,37 @@ test("early library cache misses on source edits and newly-resolved candidates",
   await writeFile(f.source, "export function value(): number { return 1; }\n");
   await writeFile(f.missing, "export const appeared = true;\n");
   expect(await readEarlyLibraryCache(f.root, f.options, null)).toBeNull();
+});
+
+test("early library cache is separated by the host Node version", async () => {
+  const f = await fixture();
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  await publishEarlyLibraryCache(f.root, f.options, {
+    cPath: f.cPath,
+    irPath: f.irPath,
+    sidecarPath: f.sidecarPath,
+    native: {
+      backend: "llvm",
+      regex: false,
+      assert: false,
+      inspect: false,
+      symbol: false,
+      searchParams: false,
+      emitter: false,
+      zlib: false,
+      copying: false,
+      textDecoderLegacy: false,
+    },
+    frontend: tracker.snapshot(),
+  });
+
+  expect(await readEarlyLibraryCache(f.root, f.options, null)).not.toBeNull();
+  expect(await readEarlyLibraryCache(
+    f.root,
+    { ...f.options, nodeVersion: "v25-test" },
+    null,
+  )).toBeNull();
 });
 
 test("early library cache rejects corrupted artifacts and metadata", async () => {

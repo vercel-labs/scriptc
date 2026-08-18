@@ -1700,6 +1700,7 @@ async function compileLibraryTracked(
     sanitize: opts.sanitize ?? false,
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}`,
     compiler: [process.env["SCRIPTC_CC"] ?? "clang"],
+    nodeVersion: process.version,
     implementation: await libraryFrontendImplementationFingerprint(),
   };
   const earlyHit = await readEarlyLibraryCache(

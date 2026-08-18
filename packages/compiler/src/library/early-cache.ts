@@ -57,6 +57,9 @@ export interface EarlyLibraryCacheOptions {
   sanitize: boolean;
   target: string;
   compiler: string[];
+  /** Host Node runtime whose builtin-module inventory participates in
+   * frontend classification. */
+  nodeVersion: string;
   implementation: string;
 }
 
@@ -105,6 +108,7 @@ function cacheKey(options: EarlyLibraryCacheOptions): string {
     .update(options.sanitize ? "sanitize" : "plain").update("\0")
     .update(options.target).update("\0")
     .update(options.compiler.join("\x1f")).update("\0")
+    .update(options.nodeVersion).update("\0")
     .update(options.implementation)
     .digest("hex");
 }

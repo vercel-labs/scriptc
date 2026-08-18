@@ -7,6 +7,7 @@ import { deserialize as deserializeV8, serialize as serializeV8 } from "node:v8"
 import { gzip, gunzip } from "node:zlib";
 import { compilerReleaseVersion } from "./sidecar.js";
 import type { IrModule } from "../ir/nodes.js";
+import { IR_VERSION } from "../ir/serialize.js";
 import { frontendInputsSemanticallyMatch, frontendInputsStillMatch, validFrontendInputSnapshot, type FrontendInputExclusions, type FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { rebaseSourceLocations, semanticallyEqualSource } from "./semantic-source.js";
 
@@ -400,7 +401,7 @@ export async function readSemanticLibraryCache(
     );
     if (semantic === null || semantic.changed.length === 0) return null;
     const mod = deserializeV8(irJson) as IrModule;
-    if (mod.irVersion !== 6) return null;
+    if (mod.irVersion !== IR_VERSION) return null;
     rebaseSourceLocations(mod, previousSources, semantic.currentSources);
     const now = new Date();
     await Promise.all([

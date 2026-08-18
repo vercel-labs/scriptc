@@ -55,3 +55,34 @@ test("comment markers inside strings, templates, and regex literals are tokens",
     expect(semanticallyEqualSource("entry.ts", before, after)).toBe(false);
   }
 });
+
+test("contextual regex literals cannot hide token edits as comments", () => {
+  for (const [before, after] of [
+    [
+      "if (flag) {} else /[//a]/.test(value);\n",
+      "if (flag) {} else /[//b]/.test(value);\n",
+    ],
+    [
+      "if (flag) /[//a]/.test(value);\n",
+      "if (flag) /[//b]/.test(value);\n",
+    ],
+    [
+      "do /[//a]/.test(value); while (flag);\n",
+      "do /[//b]/.test(value); while (flag);\n",
+    ],
+  ] as const) {
+    expect(semanticallyEqualSource("entry.ts", before, after)).toBe(false);
+  }
+});
+
+test("trivia cannot move a shebang away from the start of the file", () => {
+  const before = "#!/usr/bin/env node\nexport const value = 1;\n";
+  const after = `// inserted comment\n${before}`;
+  expect(semanticallyEqualSource("entry.ts", before, after)).toBe(false);
+
+  expect(semanticallyEqualSource(
+    "entry.ts",
+    "export const value = 1;\n",
+    "// inserted comment\nexport const value = 1;\n",
+  )).toBe(true);
+});

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { extname } from "node:path";
+import ts from "typescript5";
 
 interface SemanticToken {
   kind: "token" | "comment";
@@ -11,32 +12,6 @@ interface SemanticToken {
 
 const TOKEN_PATTERN = /(?:\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:===|!==|>>>|>>=|<<=|\*\*=|&&=|\|\|=|\?\?=|=>|==|!=|<=|>=|\+\+|--|&&|\|\||\?\?|\?\.|\*\*|<<|>>>|>>|\+=|-=|\*=|\/=|%=|&=|\|=|\^=)|[^\s])/gy;
 
-const REGEX_PRECEDERS = new Set([
-  "(", "[", "{", ",", ";", ":", "=", "==", "===", "!=", "!==", "!", "?", "=>",
-  "+", "-", "*", "%", "&", "|", "^", "~", "<", ">", "<=", ">=", "&&", "||", "??",
-  "return", "throw", "case", "delete", "void", "typeof", "instanceof", "in", "of", "yield", "await",
-]);
-
-function regexLiteralEnd(source: string, start: number): number | null {
-  let inClass = false;
-  for (let index = start + 1; index < source.length; index++) {
-    const char = source[index]!;
-    if (char === "\\") {
-      index++;
-      continue;
-    }
-    if (char === "[") inClass = true;
-    else if (char === "]") inClass = false;
-    else if (char === "/" && !inClass) {
-      index++;
-      while (/[A-Za-z]/.test(source[index] ?? "")) index++;
-      return index;
-    }
-    if (char === "\n" || char === "\r") return null;
-  }
-  return null;
-}
-
 function commentCanAffectCompilation(path: string, text: string): boolean {
   const extension = extname(path).toLowerCase();
   // JavaScript's checker surface is JSDoc-driven, so every comment remains
@@ -47,7 +22,25 @@ function commentCanAffectCompilation(path: string, text: string): boolean {
   return text.startsWith("///") || text.includes("@") || text.includes("#");
 }
 
-function semanticTokens(path: string, source: string): SemanticToken[] {
+function semanticTokens(path: string, source: string): SemanticToken[] | null {
+  // Slash is context-sensitive in JavaScript: after `else`, for example,
+  // `/[//a]/` is one regex token even though a standalone scanner can see
+  // the inner `//` as a comment. Use TypeScript's parser as the authority for
+  // both syntax validity (including a shebang's byte-zero requirement) and
+  // exact regular-expression spans, then keep the cheap scanner for trivia
+  // equivalence and location mapping.
+  const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const parseDiagnostics = (sourceFile as ts.SourceFile & {
+    parseDiagnostics: readonly ts.Diagnostic[];
+  }).parseDiagnostics;
+  if (parseDiagnostics.length > 0) return null;
+  const regexEnds = new Map<number, number>();
+  const collectRegex = (node: ts.Node): void => {
+    if (ts.isRegularExpressionLiteral(node)) regexEnds.set(node.getStart(sourceFile), node.end);
+    ts.forEachChild(node, collectRegex);
+  };
+  collectRegex(sourceFile);
+
   const tokens: SemanticToken[] = [];
   let lineBreakBefore = false;
   TOKEN_PATTERN.lastIndex = 0;
@@ -61,22 +54,20 @@ function semanticTokens(path: string, source: string): SemanticToken[] {
       if (/\r|\n/.test(text)) lineBreakBefore = true;
       continue;
     }
+    const regexEnd = regexEnds.get(start);
+    if (regexEnd !== undefined) {
+      end = regexEnd;
+      text = source.slice(start, end);
+      TOKEN_PATTERN.lastIndex = end;
+      tokens.push({ kind: "token", text, lineBreakBefore, start, end });
+      lineBreakBefore = false;
+      continue;
+    }
     const comment = text.startsWith("//") || text.startsWith("/*");
     if (comment) {
       if (!commentCanAffectCompilation(path, text)) {
         if (/\r|\n/.test(text)) lineBreakBefore = true;
         continue;
-      }
-    }
-    if (
-      text === "/" &&
-      (tokens.length === 0 || REGEX_PRECEDERS.has(tokens[tokens.length - 1]!.text))
-    ) {
-      const regexEnd = regexLiteralEnd(source, start);
-      if (regexEnd !== null) {
-        end = regexEnd;
-        text = source.slice(start, end);
-        TOKEN_PATTERN.lastIndex = end;
       }
     }
     tokens.push({ kind: comment ? "comment" : "token", text, lineBreakBefore, start, end });
@@ -97,7 +88,9 @@ function tokensEqual(left: readonly SemanticToken[], right: readonly SemanticTok
 /** Content identity after discarding TypeScript comments proven to be trivia. */
 export function semanticSourceDigest(path: string, source: string): string {
   const hash = createHash("sha256").update("scriptc-semantic-source-v1\0");
-  for (const token of semanticTokens(path, source)) {
+  const tokens = semanticTokens(path, source);
+  if (tokens === null) return hash.update("invalid\0").update(source).digest("hex");
+  for (const token of tokens) {
     hash.update(String(token.kind)).update("\0")
       .update(token.lineBreakBefore ? "nl" : "same-line").update("\0")
       .update(token.text).update("\0");
@@ -110,13 +103,17 @@ export function semanticallyEqualSource(
   previous: string,
   current: string,
 ): boolean {
-  return tokensEqual(semanticTokens(path, previous), semanticTokens(path, current));
+  const left = semanticTokens(path, previous);
+  const right = semanticTokens(path, current);
+  return left !== null && right !== null && tokensEqual(left, right);
 }
 
 function offsetMapper(path: string, previous: string, current: string): (offset: number) => number {
   const oldTokens = semanticTokens(path, previous);
   const newTokens = semanticTokens(path, current);
-  if (!tokensEqual(oldTokens, newTokens)) return (offset) => offset;
+  if (oldTokens === null || newTokens === null || !tokensEqual(oldTokens, newTokens)) {
+    return (offset) => offset;
+  }
   return (offset) => {
     if (offset <= 0) return 0;
     if (offset >= previous.length) return current.length;

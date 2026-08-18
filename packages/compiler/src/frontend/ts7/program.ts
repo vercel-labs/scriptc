@@ -15,7 +15,7 @@
  * 387 cold). createProgram() takes an optional shared host — the default
  * spawns a private one that dispose() closes. */
 
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { API } from "typescript/unstable/sync";
 import type {
@@ -28,6 +28,7 @@ import type { SourceFile } from "typescript/unstable/ast";
 import { CheckerFacade } from "./checker.js";
 import { enumKeyOf, ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget } from "./enums.js";
 import { tsgoPath } from "../shared.js";
+import { trackedAccessibleEntries, trackedDirectoryExists, trackedFileExists, trackedReadFile, trackedRealpath } from "../input-tracker.js";
 
 /** The compiler options our createProgram accepts: TS7's CompilerOptions
  * shape (numeric enums for target/module/moduleResolution — the enums module
@@ -116,18 +117,22 @@ export class Ts7Host {
         readFile: (fileName) => {
           const virtual = virtualFiles.get(tsgoPath(fileName));
           if (virtual !== undefined) return virtual;
-          if (shadow === null) return undefined;
-          if (shadow.hideFile(fileName)) return null;
-          return shadow.readFile(fileName);
+          if (shadow !== null) {
+            if (shadow.hideFile(fileName)) return null;
+            const replacement = shadow.readFile(fileName);
+            if (replacement !== undefined) return replacement;
+          }
+          return trackedReadFile(fileName);
         },
         fileExists: (fileName) => {
           if (virtualFiles.has(tsgoPath(fileName))) return true;
           if (shadow !== null && shadow.hideFile(fileName)) return false;
-          return undefined;
+          return trackedFileExists(fileName);
         },
-        directoryExists: () => undefined,
-        realpath: (path) => (virtualFiles.has(tsgoPath(path)) ? path : undefined),
-        getAccessibleEntries: () => undefined,
+        directoryExists: (path) => trackedDirectoryExists(path),
+        realpath: (path) =>
+          virtualFiles.has(tsgoPath(path)) ? path : (trackedRealpath(path) ?? path),
+        getAccessibleEntries: (path) => trackedAccessibleEntries(path) ?? { files: [], directories: [] },
       },
     });
   }
@@ -309,20 +314,16 @@ export function findConfigFile(
  * are the direct implementations. */
 export const sys = {
   fileExists(path: string): boolean {
-    return existsSync(path) && statSync(path).isFile();
+    return trackedFileExists(path);
   },
   readFile(path: string): string | undefined {
-    try {
-      return readFileSync(path, "utf8");
-    } catch {
-      return undefined;
-    }
+    return trackedReadFile(path) ?? undefined;
   },
   writeFile(path: string, data: string): void {
     writeFileSync(path, data);
   },
   directoryExists(path: string): boolean {
-    return existsSync(path) && statSync(path).isDirectory();
+    return trackedDirectoryExists(path);
   },
   getCurrentDirectory(): string {
     return process.cwd();

@@ -85,10 +85,10 @@
  * lives under its key (requireHelperOriginOf follows the import and
  * re-export hops).
  */
-import { readFileSync, realpathSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import ts from "typescript5";
 import { cjsLexedExportsOf } from "./cjs-lexer.js";
+import { trackedDirectoryExists, trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 
 export type EmbeddedFormat = "esm" | "cjs" | "json";
 
@@ -732,21 +732,11 @@ interface Host {
 
 const realHost: Host = {
   readFile: (path) => {
-    try {
-      return readFileSync(path, "utf8");
-    } catch {
-      return null;
-    }
+    return trackedReadFile(path);
   },
-  isFile: (path) => ts.sys.fileExists(path),
-  isDirectory: (path) => ts.sys.directoryExists(path),
-  realpath: (path) => {
-    try {
-      return realpathSync(path);
-    } catch {
-      return path;
-    }
-  },
+  isFile: (path) => trackedFileExists(path),
+  isDirectory: (path) => trackedDirectoryExists(path),
+  realpath: (path) => trackedRealpath(path) ?? path,
 };
 
 interface PkgJson {

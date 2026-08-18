@@ -1,6 +1,6 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { CcCompileError, compileC, compileLibArchive, mobileLibraryTarget, mobileTargetRefusal, resolveCc, targetPlatform } from "./backend/cc.js";
+import { buildCacheRoot, CcCompileError, compileC, compileLibArchive, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/cc.js";
 import { emitModule } from "./backend/emission/emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
 import { checkerPanicDiag, ffiNativeBuildDiag, libAsyncExportDiag, libAsyncSurfaceDiag, libExportUnresolvedDiag, libGenericExportDiag, libIntBoundaryDiag, libNpmIneligibleDiag, libSidecarDiag, libUnmappableSignatureDiag, iceDiag, isCheckerPanic, LIB_INBOUND_BYTES_TRAP_CODE, LIB_RUNTIME_TRAP_CODES, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
@@ -27,12 +27,14 @@ import { validateModule } from "./ir/validate.js";
 import { canonicalBuiltinModule, checkPreflight, isNodeTypesPath, loadProgram, locOf, requiresOf, resolveNpmImport, type LoadResult } from "./frontend/program.js";
 import { npmStaticIneligibleReason, npmStaticOffenders, npmStaticPackageOfPath } from "./frontend/npm-static.js";
 import { provenanceSources } from "./frontend/provenance-registry.js";
-import { resolveBareModule } from "./frontend/resolve.js";
+import { clearResolveCaches, resolveBareModule } from "./frontend/resolve.js";
 import { isJsSourceFileName, isRelativeSpecifier } from "./frontend/shared.js";
 import { lowerToIr, type LowerOptions, type LowerResult } from "./frontend/lowering/lowerer.js";
 import type { CoverageInput, NpmStaticStatus } from "./coverage/report.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/profile.js";
 import { hasForeignFfiCallback } from "./backend/ffi-callbacks.js";
+import { FrontendInputTracker, trackedReadFile } from "./frontend/input-tracker.js";
+import { libraryFrontendImplementationFingerprint, publishEarlyLibraryCache, readEarlyLibraryCache, type EarlyLibraryCacheOptions, type EarlyLibraryCachePublish, type EarlyLibraryNativeFeatures } from "./library/early-cache.js";
 
 export const VERSION = "0.0.1";
 
@@ -517,6 +519,11 @@ function runFrontend(
   npmStatic?: readonly string[] | "auto" | "lib",
   externalTypes?: Readonly<Record<string, string>>,
 ): Frontend {
+  // Resolver package/workspace metadata is intentionally shared across the
+  // several load attempts of ONE auto-detection fixpoint, but never across
+  // separate compiles in a long-lived process.  A cache miss must observe
+  // package.json edits before it can publish a new early-library entry.
+  clearResolveCaches();
   const statuses: NpmStaticStatus[] = [];
   const npmSites = new Map<string, SrcLoc>();
   const judged = new Set<string>();
@@ -1499,7 +1506,77 @@ function mergeSidecarIntSlots(
   return { ok: true, config: cfg };
 }
 
+function libraryNativeFeatures(
+  mod: IrModule,
+  backend: "c" | "llvm",
+): EarlyLibraryNativeFeatures {
+  return {
+    backend,
+    regex: moduleUsesRegex(mod),
+    assert: moduleUsesAssert(mod),
+    inspect: moduleUsesInspect(mod),
+    symbol: moduleUsesSymbol(mod),
+    searchParams: moduleUsesSearchParams(mod),
+    emitter: moduleUsesEmitter(mod),
+    zlib: moduleUsesZlib(mod),
+    copying: moduleUsesCopying(mod),
+    textDecoderLegacy: moduleUsesLegacyTextDecoder(mod),
+  };
+}
+
+function libraryLocalizeSymbols(profile: LibraryProfile): string[] | undefined {
+  return profile.localizeRuntime
+    ? [
+        profile.initSymbol,
+        profile.sinkRegisterSymbol,
+        ...(profile.collectSymbol !== null ? [profile.collectSymbol] : []),
+        ...(profile.resultResetSymbol !== null ? [profile.resultResetSymbol] : []),
+        ...(profile.callbackRegisterSymbol !== null ? [profile.callbackRegisterSymbol] : []),
+        ...(profile.sidecar !== null
+          ? [profile.sidecar.buildIdSymbol, profile.sidecar.abiVersionSymbol]
+          : []),
+        ...profile.exports.map((entry) => entry.symbol),
+      ]
+    : undefined;
+}
+
+async function compileLibraryNative(
+  profile: LibraryProfile,
+  cPath: string,
+  archivePath: string,
+  sanitize: boolean,
+  features: EarlyLibraryNativeFeatures,
+): Promise<void> {
+  const localizeSymbols = libraryLocalizeSymbols(profile);
+  await compileLibArchive({
+    cPath,
+    outPath: archivePath,
+    cacheIdentity: "scriptc-generated-library-v1",
+    sanitize,
+    optimization: profile.optimization,
+    ...(localizeSymbols !== undefined ? { localizeSymbols } : {}),
+    ...(profile.instancePerThread ? { threadInstances: true } : {}),
+    regex: features.regex,
+    assert: features.assert,
+    inspect: features.inspect,
+    symbol: features.symbol,
+    searchParams: features.searchParams,
+    emitter: features.emitter,
+    zlib: features.zlib,
+    copying: features.copying,
+    textDecoderLegacy: features.textDecoderLegacy,
+  });
+}
+
 export async function compileLibrary(opts: CompileLibraryOptions): Promise<CompileLibraryResult> {
+  const frontendInputs = new FrontendInputTracker();
+  return frontendInputs.run(() => compileLibraryTracked(opts, frontendInputs));
+}
+
+async function compileLibraryTracked(
+  opts: CompileLibraryOptions,
+  frontendInputs: FrontendInputTracker,
+): Promise<CompileLibraryResult> {
   const timingOn = process.env["SCRIPTC_TIMING"] === "1";
   const timingStart = performance.now();
   let timingLast = timingStart;
@@ -1525,6 +1602,23 @@ export async function compileLibrary(opts: CompileLibraryOptions): Promise<Compi
   const profile = loadedProfile.profile;
   const entryPath = profile.entry;
   const buildPlatform = buildTargetPlatform();
+  const profileDir = dirname(resolve(opts.profilePath));
+  for (let directory = dirname(entryPath); ; directory = dirname(directory)) {
+    for (const name of ["tsconfig.json", "package.json"]) {
+      // Project configuration and package-realm metadata can affect the
+      // frontend even when TypeScript did not request their bytes through
+      // its delegated filesystem callbacks (tsgo may read them server-side).
+      frontendInputs.run(() => {
+        const path = join(directory, name);
+        trackedReadFile(path);
+      });
+    }
+    if (directory === profileDir || dirname(directory) === directory) break;
+  }
+  const archivePath = opts.outPath ?? join(
+    opts.outDir,
+    `${basename(entryPath).replace(/\.(ts|js|mjs|cjs)$/, "")}.lib.a`,
+  );
 
   // Mobile-target admission first — a pure env/host check, so a refused
   // pairing never reaches toolchain discovery. iOS targets (device and
@@ -1592,6 +1686,48 @@ export async function compileLibrary(opts: CompileLibraryOptions): Promise<Compi
       };
     }
   }
+
+  const cacheRoot = provenanceSources() === null
+    ? await prepareBuildCacheRoot(buildCacheRoot())
+    : null;
+  const earlyCacheOptions: EarlyLibraryCacheOptions = {
+    profilePath: opts.profilePath,
+    profileBytes: profile.profileBytes,
+    entryPath,
+    outDir: opts.outDir,
+    ...(opts.outPath !== undefined ? { outPath: opts.outPath } : {}),
+    emitIr: opts.emitIr ?? false,
+    sanitize: opts.sanitize ?? false,
+    target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}`,
+    compiler: [process.env["SCRIPTC_CC"] ?? "clang"],
+    implementation: await libraryFrontendImplementationFingerprint(),
+  };
+  const earlyHit = await readEarlyLibraryCache(
+    cacheRoot,
+    earlyCacheOptions,
+    profile.sidecar === null ? undefined : profile.sidecar.path,
+  );
+  if (earlyHit !== null) {
+    timing("early-cache-hit");
+    await compileLibraryNative(
+      profile,
+      earlyHit.cPath,
+      archivePath,
+      opts.sanitize ?? false,
+      earlyHit.native,
+    );
+    timing("native-archive");
+    timing("complete");
+    return {
+      ok: true,
+      archivePath,
+      cPath: earlyHit.cPath,
+      backend: earlyHit.native.backend,
+      ...(earlyHit.irPath !== undefined ? { irPath: earlyHit.irPath } : {}),
+      ...(earlyHit.sidecarPath !== undefined ? { sidecarPath: earlyHit.sidecarPath } : {}),
+    };
+  }
+  timing("early-cache-miss");
 
   // Bare npm specifiers in a library graph take the STATIC-OR-REFUSE
   // posture: "lib" runs the same auto-detection and eligibility bar as
@@ -1847,41 +1983,14 @@ export async function compileLibrary(opts: CompileLibraryOptions): Promise<Compi
     await writeFile(irPath, serializeModule(mod));
   }
 
-  const archivePath = opts.outPath ?? join(opts.outDir, `${stem}.lib.a`);
-  // Multi-instance library mode: the profile-declared external surface —
-  // the mode-provided entries, the identity getters, and the export map —
-  // is exactly the set the localization step keeps global.
-  const localizeSymbols = profile.localizeRuntime
-    ? [
-        profile.initSymbol,
-        profile.sinkRegisterSymbol,
-        ...(profile.collectSymbol !== null ? [profile.collectSymbol] : []),
-        ...(profile.resultResetSymbol !== null ? [profile.resultResetSymbol] : []),
-        ...(profile.callbackRegisterSymbol !== null ? [profile.callbackRegisterSymbol] : []),
-        ...(profile.sidecar !== null
-          ? [profile.sidecar.buildIdSymbol, profile.sidecar.abiVersionSymbol]
-          : []),
-        ...profile.exports.map((e) => e.symbol),
-      ]
-    : undefined;
-  await compileLibArchive({
+  const nativeFeatures = libraryNativeFeatures(mod, profile.emission);
+  await compileLibraryNative(
+    profile,
     cPath,
-    outPath: archivePath,
-    cacheIdentity: "scriptc-generated-library-v1",
-    sanitize: opts.sanitize ?? false,
-    optimization: profile.optimization,
-    ...(localizeSymbols !== undefined ? { localizeSymbols } : {}),
-    ...(profile.instancePerThread ? { threadInstances: true } : {}),
-    regex: moduleUsesRegex(mod),
-    assert: moduleUsesAssert(mod),
-    inspect: moduleUsesInspect(mod),
-    symbol: moduleUsesSymbol(mod),
-    searchParams: moduleUsesSearchParams(mod),
-    emitter: moduleUsesEmitter(mod),
-    zlib: moduleUsesZlib(mod),
-    copying: moduleUsesCopying(mod),
-    textDecoderLegacy: moduleUsesLegacyTextDecoder(mod),
-  });
+    archivePath,
+    opts.sanitize ?? false,
+    nativeFeatures,
+  );
   timing("native-archive");
 
   // The sidecar lands beside the compiled object, written by the same
@@ -1895,6 +2004,16 @@ export async function compileLibrary(opts: CompileLibraryOptions): Promise<Compi
         : `${archivePath}.contract.json`;
     await writeFile(sidecarPath, sidecarJson);
   }
+  const earlyPublish: EarlyLibraryCachePublish = {
+    cPath,
+    native: nativeFeatures,
+    frontend: frontendInputs.snapshot(),
+    ...(irPath !== undefined ? { irPath } : {}),
+    ...(sidecarPath !== undefined ? { sidecarPath } : {}),
+  };
+  await publishEarlyLibraryCache(cacheRoot, earlyCacheOptions, earlyPublish).catch(() => undefined);
+  await pruneBuildCache(cacheRoot);
+  timing("early-cache-publish");
   timing("complete");
   return {
     ok: true,

@@ -14,33 +14,21 @@
  * implementations and requires identical answers. Change 5.9.3's options
  * and these tables are wrong — that is what the suite is for. */
 
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { isNpmStaticPackage, npmStaticPackageOfPath, npmStaticTransformPkgJson } from "./npm-static.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
+import { trackedAccessibleEntries, trackedDirectoryExists, trackedExists, trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 
 function isFile(path: string): boolean {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
+  return trackedFileExists(path);
 }
 
 function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
+  return trackedDirectoryExists(path);
 }
 
 function realpathOr(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
+  return trackedRealpath(path) ?? path;
 }
 
 interface PkgJson {
@@ -63,9 +51,9 @@ function pkgJsonOf(dir: string): PkgJson | null {
   if (cached === undefined) {
     const path = join(dir, "package.json");
     let parsed: PkgJson | null = null;
-    if (existsSync(path)) {
+    if (trackedExists(path)) {
       try {
-        parsed = JSON.parse(readFileSync(path, "utf8")) as PkgJson;
+        parsed = JSON.parse(trackedReadFile(path)!) as PkgJson;
       } catch {
         parsed = null;
       }
@@ -114,12 +102,7 @@ function expandWorkspacePattern(root: string, pattern: string): string[] {
     const next: string[] = [];
     for (const dir of dirs) {
       if (seg === "*") {
-        let entries: string[];
-        try {
-          entries = readdirSync(dir);
-        } catch {
-          continue;
-        }
+        const entries = trackedAccessibleEntries(dir)?.directories ?? [];
         for (const e of entries) {
           if (e === "node_modules" || e.startsWith(".")) continue;
           const child = join(dir, e);
@@ -463,7 +446,7 @@ function nearestPkgDir(dir: string): string | null {
 function nearestPackageConfigDir(dir: string): string | null {
   let d = dir;
   for (;;) {
-    if (existsSync(join(d, "package.json"))) return d;
+    if (trackedExists(join(d, "package.json"))) return d;
     const parent = dirname(d);
     if (parent === d) return null;
     d = parent;

@@ -2,7 +2,6 @@
  * crypto, child_process spawn/spawnSync and child/stats/spawn-result
  * methods), JSON.parse/stringify, process properties/methods and
  * process.env access, and console.log detection. */
-import { readFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import { dirname, resolve } from "node:path";
 import * as ts from "../ts7/adapter.js";
@@ -12,6 +11,7 @@ import { canonicalBuiltinModule, isJsSourceFile, locOf, requireSpecOf } from "..
 import { isRelativeSpecifier } from "../shared.js";
 import { probeNodeRequireRefusal } from "../npm.js";
 import { isNpmStaticPackage } from "../npm-static.js";
+import { trackedReadFile } from "../input-tracker.js";
 import { invalidJsonModuleDiag, requiresDynamicImportDiag } from "../../diagnostics/diagnostic.js";
 import {
   BuiltinModuleFn,
@@ -408,12 +408,7 @@ function lowerBuiltinOptionalDefault(
       const abs = spec.startsWith("/")
         ? spec
         : resolve(dirname(cr.baseFile.fileName), spec);
-      let text: string | null = null;
-      try {
-        text = readFileSync(abs, "utf8");
-      } catch {
-        /* the fence below speaks */
-      }
+      const text = trackedReadFile(abs);
       if (text === null) {
         L.noLowering(
           `createRequire's require of '${spec}' (no file at ${abs})`,

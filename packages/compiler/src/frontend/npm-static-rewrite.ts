@@ -73,11 +73,11 @@
  * untouched (null): its import-site errors stay, and the frontend's
  * offender attribution degrades the PACKAGE to the island with a note. */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import ts from "typescript5";
 import { cjsLexedExportsOf, cjsLexerVisibleNames } from "./cjs-lexer.js";
 import { resolveExports } from "./npm.js";
+import { trackedDirectoryExists, trackedFileExists, trackedReadFile } from "./input-tracker.js";
 
 /** True when `e` is exactly the `exports` identifier. */
 function isExportsIdent(e: ts.Expression): boolean {
@@ -233,26 +233,23 @@ function definePropertyExportOf(
 function resolveCjsBase(base: string): string | null {
   const candidates = [base, `${base}.js`, `${base}.cjs`];
   for (const c of candidates) {
-    try {
-      if (existsSync(c) && statSync(c).isFile() && /\.(js|cjs)$/.test(c)) return c;
-    } catch {
-      /* keep probing */
-    }
+    if (trackedFileExists(c) && /\.(js|cjs)$/.test(c)) return c;
   }
   try {
-    if (existsSync(base) && statSync(base).isDirectory()) {
+    if (trackedDirectoryExists(base)) {
       const pkgPath = resolvePath(base, "package.json");
-      if (existsSync(pkgPath)) {
-        const main = (JSON.parse(readFileSync(pkgPath, "utf8")) as { main?: unknown }).main;
+      const pkgText = trackedReadFile(pkgPath);
+      if (pkgText !== null) {
+        const main = (JSON.parse(pkgText) as { main?: unknown }).main;
         if (typeof main === "string") {
           const m = resolvePath(base, main);
           for (const c of [m, `${m}.js`, `${m}.cjs`, resolvePath(m, "index.js")]) {
-            if (existsSync(c) && statSync(c).isFile() && /\.(js|cjs)$/.test(c)) return c;
+            if (trackedFileExists(c) && /\.(js|cjs)$/.test(c)) return c;
           }
         }
       }
       const idx = resolvePath(base, "index.js");
-      if (existsSync(idx)) return idx;
+      if (trackedFileExists(idx)) return idx;
     }
   } catch {
     /* unresolved */
@@ -281,13 +278,14 @@ function resolveBareRequireCjs(fromFile: string, spec: string): string | null {
   for (let dir = dirname(fromFile); ; ) {
     const pkgDir = join(dir, "node_modules", name);
     try {
-      if (existsSync(pkgDir) && statSync(pkgDir).isDirectory()) {
+      if (trackedDirectoryExists(pkgDir)) {
         const pkgPath = join(pkgDir, "package.json");
         let exports: unknown;
         try {
-          exports = existsSync(pkgPath)
-            ? (JSON.parse(readFileSync(pkgPath, "utf8")) as { exports?: unknown }).exports
-            : undefined;
+          const pkgText = trackedReadFile(pkgPath);
+          exports = pkgText === null
+            ? undefined
+            : (JSON.parse(pkgText) as { exports?: unknown }).exports;
         } catch {
           return null;
         }
@@ -329,9 +327,10 @@ function requireTargetEsModuleStamped(fromFile: string, spec: string, depth = 0)
     // the nearest package.json "type" decides the .js format
     for (let dir = dirname(file); ; ) {
       const pkgPath = join(dir, "package.json");
-      if (existsSync(pkgPath)) {
+      const pkgText = trackedReadFile(pkgPath);
+      if (pkgText !== null) {
         try {
-          if ((JSON.parse(readFileSync(pkgPath, "utf8")) as { type?: unknown }).type === "module") return true;
+          if ((JSON.parse(pkgText) as { type?: unknown }).type === "module") return true;
         } catch {
           /* unreadable — treat as CJS */
         }
@@ -344,7 +343,7 @@ function requireTargetEsModuleStamped(fromFile: string, spec: string, depth = 0)
   }
   let src: string;
   try {
-    src = readFileSync(file, "utf8");
+    src = trackedReadFile(file)!;
   } catch {
     return false;
   }
@@ -366,7 +365,7 @@ function starTargetNames(file: string): Set<string> {
   try {
     return cjsLexerVisibleNames(
       file,
-      (f) => readFileSync(f, "utf8"),
+      (f) => trackedReadFile(f)!,
       (from, spec) => resolveRelativeCjs(from, spec),
     );
   } catch {

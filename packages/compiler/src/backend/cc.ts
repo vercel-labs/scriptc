@@ -2075,6 +2075,31 @@ export function resolveBuildCacheRoot(
     : resolve(userHome, ".cache", "scriptc", "build");
 }
 
+/** Shared persistent-cache root for compiler-level tiers.  The early library
+ * cache deliberately follows the native cache's activation and hard-disable
+ * contract, while native compilation retains ownership of toolchain safety. */
+export function buildCacheRoot(): string | null {
+  return resolveBuildCacheRoot();
+}
+
+/** Harden/create a compiler-level cache root using the same privacy policy as
+ * the artifact caches.  Failure disables only the optional caller's tier. */
+export async function prepareBuildCacheRoot(root: string | null): Promise<string | null> {
+  if (root === null) return null;
+  try {
+    await ensurePrivateCacheRoot(root, process.env["SCRIPTC_CACHE_DIR"] === undefined);
+    return root;
+  } catch {
+    return null;
+  }
+}
+
+/** Register a successful compiler-level cache write with the shared bounded
+ * LRU policy. */
+export async function pruneBuildCache(root: string | null): Promise<void> {
+  if (root !== null) await pruneCache(root).catch(() => undefined);
+}
+
 function cacheRootDir(): string | null {
   return resolveBuildCacheRoot();
 }

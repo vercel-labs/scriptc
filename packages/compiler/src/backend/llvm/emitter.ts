@@ -83,7 +83,7 @@ import { canMarshalFuncIntoIsland, CAUGHT, DYN, F64, ffiCallbackType, islandCall
 import { matchIntegerBytesForLoop } from "../../ir/integer-loops.js";
 import { allocateFfiCallbackAdapters, collectFfiRetainedOps, hasForeignFfiCallback, hasRetainedFfiCallback, parseFfiCallbackKey, type FfiCallbackAdapter } from "../ffi-callbacks.js";
 import { computeMayThrow } from "../emission/may-throw.js";
-import { mangleArgPack, mangleAsyncSpawn, mangleClassNew, mangleClassObj, mangleClassRetain, mangleFnClosure, mangleFunction, mangleGenDrop, mangleGenResThunk, mangleGenSpawn, mangleGlobal, mangleLocal, mangleRecordNew, mangleRecordStruct, mangleResolveThunk, mangleTrampoline, mangleVtStruct, mangleWrapper } from "../mangle.js";
+import { mangleArgPack, mangleAsyncSpawn, mangleClassNew, mangleClassObj, mangleClassRetain, mangleFnClosure, mangleFunction, mangleGenDrop, mangleGenResThunk, mangleGenSpawn, mangleGlobal, mangleLocal, mangleRecordClone, mangleRecordNew, mangleRecordStruct, mangleResolveThunk, mangleTrampoline, mangleVtStruct, mangleWrapper } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import {
   buildClassGraph,
@@ -1053,6 +1053,7 @@ class LlEmitter {
   private readonly dynPromiseAdapters = new Map<string, string>();
   readonly unionsById = new Map<string, IrUnionDef>();
   readonly recordsById = new Map<string, IrRecordShape>();
+  readonly recordCloneShapes = new Set<string>();
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
   /** The class graph (buildClassGraph): preorder numbering, hierarchy
@@ -1567,6 +1568,9 @@ class LlEmitter {
     const wrappers = this.emitFnValueDefs();
     const asyncDefs = this.emitAsyncScaffolding();
     const ffiCallbacks = this.emitFfiCallbackDefs();
+    const hasNoInlineRecordClone = [...this.recordCloneShapes].some(
+      (shapeId) => (this.recordsById.get(shapeId)?.fields.length ?? 0) >= 16,
+    );
     const embedded = this.mod.embedded;
     const usesIsland = embedded !== undefined && embedded.modules.length > 0;
     const storeNpmText = (text: string): { bytes: Buffer; raw: number } => {
@@ -2068,6 +2072,7 @@ class LlEmitter {
       out.push(...this.emitLibDefs(globals, globalReleaseLines, stamps));
       out.push(`attributes #0 = { sanitize_address }`);
       if (this.wasi) out.push(`attributes #1 = { sanitize_address presplitcoroutine }`);
+      if (hasNoInlineRecordClone) out.push(`attributes #2 = { noinline sanitize_address }`);
       out.push(``);
       return out.join("\n");
     }
@@ -2192,6 +2197,7 @@ class LlEmitter {
       // emitted functions too (the runtime TUs get theirs from clang).
       `attributes #0 = { sanitize_address }`,
       ...(this.wasi ? [`attributes #1 = { sanitize_address presplitcoroutine }`] : []),
+      ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline sanitize_address }`] : []),
       ``,
     );
     return out.join("\n");
@@ -5291,6 +5297,28 @@ class LlEmitter {
           if (isRefCounted(v.type)) this.moveTemp(v);
           const { ptr, type } = this.recordFieldPtr(rec, shapeId, f.name);
           this.storeField(ptr, type, v.name);
+        }
+        return out;
+      }
+      case "recordClone": {
+        if (e.type.kind !== "record") throw new Error("llvm emitter bug: recordClone of non-record type");
+        this.recordCloneShapes.add(e.type.shapeId);
+        const source = this.emitExpr(e.source);
+        const rec = B.tmp();
+        B.line(`${rec} = call ptr @${mangleRecordClone(e.type.shapeId)}(ptr ${source.name})`);
+        const out = this.own({ name: rec, type: e.type });
+        for (const f of e.overrides) {
+          const v = this.emitExpr(f.value);
+          const { ptr, type } = this.recordFieldPtr(rec, e.type.shapeId, f.name);
+          if (isRefCounted(type)) {
+            this.moveTemp(v);
+            const old = B.tmp();
+            B.line(`${old} = load ptr, ptr ${ptr}`);
+            this.storeField(ptr, type, v.name);
+            this.releaseValue(old, type);
+          } else {
+            this.storeField(ptr, type, v.name);
+          }
         }
         return out;
       }

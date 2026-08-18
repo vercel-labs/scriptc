@@ -17,6 +17,7 @@ import {
   mangleClassRetain,
   mangleClassTrace,
   mangleRecordGcFree,
+  mangleRecordClone,
   mangleRecordNew,
   mangleRecordRelease,
   mangleRecordRetain,
@@ -38,6 +39,7 @@ export interface ShapeHost {
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
   readonly recordsById: Map<string, IrRecordShape>;
+  readonly recordCloneShapes: ReadonlySet<string>;
 }
 
 /** Every emitted function/helper carries #0 = { sanitize_address } — see
@@ -817,6 +819,37 @@ export function emitRecordShapes(host: ShapeHost, mod: IrModule): { typeDefs: st
     }
     nw.push(`  call void @scr_obj_alloc_note()`, `  ret ptr %o`, `}`, ``);
     defs.push(...nw);
+
+    if (host.recordCloneShapes.has(shape.id)) {
+      const attrs = shape.fields.length >= 16 ? "#2" : FN_ATTRS;
+      const clone: string[] = [
+        `define internal ptr @${mangleRecordClone(shape.id)}(ptr %src) ${attrs} {`,
+        `entry:`,
+        `  %o = call ptr @${mangleRecordNew(shape.id)}()`,
+      ];
+      let i = 0;
+      for (const field of shape.fields) {
+        const index = i + 1;
+        const fieldTy = llFieldType(field.type);
+        clone.push(
+          `  %sp${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
+          `  %sv${i} = load ${fieldTy}, ptr %sp${i}`,
+        );
+        const stored = isRefCounted(field.type)
+          ? `%sr${i}`
+          : `%sv${i}`;
+        if (isRefCounted(field.type)) {
+          clone.push(`  ${stored} = call ptr ${retainSym(host, field.type)}(ptr %sv${i})`);
+        }
+        clone.push(
+          `  %dp${i} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${index}`,
+          `  store ${fieldTy} ${stored}, ptr %dp${i} ; ${field.name}`,
+        );
+        i++;
+      }
+      clone.push(`  ret ptr %o`, `}`, ``);
+      defs.push(...clone);
+    }
 
     if (traced) {
       // trace: visit exactly the cycle-capable members; gcFree: release

@@ -1625,6 +1625,20 @@ class FnAnalyzer {
         }
         return { ...TOP };
       }
+      case "recordClone": {
+        // The clone copies already-proven field values. Only explicit
+        // overrides create new writes that must discharge integer slots.
+        this.evalExpr(e.source, env);
+        const slotMap = this.cfg.records.get((e.type as { kind: "record"; shapeId: string }).shapeId);
+        for (const f of e.overrides) {
+          const v = this.evalExpr(f.value, env);
+          const slot = slotMap?.get(f.name);
+          if (slot !== undefined && numberCarrierKind(f.value.type, this.mod) !== null) {
+            this.emitRecordSlot(v, slot, f.value.loc);
+          }
+        }
+        return { ...TOP };
+      }
       case "recordGet": {
         // A declared record-field slot is an assumption on the read side,
         // exactly like a declared parameter inside its callee: every write

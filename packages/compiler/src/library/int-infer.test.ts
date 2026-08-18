@@ -65,7 +65,7 @@ const sink = (name: string): IrFunction => ({
 /** A module holding the case function plus the two declared sinks. */
 function caseModule(params: string[], locals: string[], body: IrStmt[]): IrModule {
   return {
-    irVersion: 5,
+    irVersion: 6,
     sourceFile: "corpus.ts",
     functions: [
       sink("send"),
@@ -136,7 +136,7 @@ const RECORD_CFG: IntSlotConfig = {
 
 function recordCase(body: IrStmt[], names = ["m"], extraFns: IrFunction[] = []): IrModule {
   return {
-    irVersion: 5,
+    irVersion: 6,
     sourceFile: "fields.ts",
     functions: [
       ...extraFns,
@@ -177,7 +177,7 @@ const classCountRead = (): IrExpr => ({
 
 function onlyOrdinaryClass(body: IrStmt[]): IntVerdict {
   const mod: IrModule = {
-    irVersion: 5,
+    irVersion: 6,
     sourceFile: "class-fields.ts",
     functions: [
       sink("send"),
@@ -391,7 +391,7 @@ describe("the domain's edges beyond the corpus", () => {
       loc,
     };
     const mod: IrModule = {
-      irVersion: 5,
+      irVersion: 6,
       sourceFile: "optional.ts",
       functions: [{
         name: "normalize",
@@ -751,6 +751,24 @@ describe("straight-line ordinary-field refinement", () => {
 });
 
 describe("straight-line declared-field refinement", () => {
+  test("recordClone checks explicit integer-slot overrides", () => {
+    const clone: IrStmt = {
+      kind: "exprStmt",
+      expr: {
+        kind: "recordClone",
+        source: recordRef(),
+        overrides: [{ name: "count", value: math("trunc", num(42)) }],
+        type: MODEL,
+        loc,
+      },
+      loc,
+    };
+    const v = onlyRecord([clone]);
+    expect(v.outcome).toBe("prove");
+    expect(v.provenLo).toBe(42);
+    expect(v.provenHi).toBe(42);
+  });
+
   test("an if guard refines the repeated field read through its boundary write", () => {
     const v = onlyRecord([
       iff(bin("<", countRead(), num(1000)), [

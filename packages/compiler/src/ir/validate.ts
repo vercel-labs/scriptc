@@ -18,7 +18,7 @@ import type {
   IrUnionDef,
   SrcLoc,
 } from "./nodes.js";
-import { arrayOf, BOOL, BYTES_U8, bytesOf, canAdaptDynFuncTo, canConvertToDyn, canExitIslandToType, canMarshalIntoIsland, canMarshalTypedFuncIntoIsland, CHILD_T, CHILDSTREAM_T, DATE_T, DGRAMSOCK_T, DYN, DYN_HANDLE_KINDS, F64, ffiClassType, ffiSourceParamTypes, FILEHANDLE_T, FSWATCHER_T, HTTP2SESSION_T, HTTP2STREAM_T, HTTPCLIENTREQ_T, HTTPREQ_T, HTTPRES_T, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isJsonSafeType, isRefCounted, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, jsOpResultKind, JSVAL, NETSERVER_T, NETSOCKET_T, PROCSTREAM_T, REF_TRUTHY_KINDS, REGEX, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, SEARCH_PARAMS_T, SECURECTX_T, SPAWNRES_T, STATS_T, STRING, SYMBOL_T, TESTCTX_T, typeEquals, typeKey, unionFuncSetArmsOk, URL_T, VOID } from "./nodes.js";
+import { arrayOf, BOOL, BYTES_U8, bytesOf, canAdaptDynFuncTo, canConvertToDyn, canExitIslandToType, canMarshalIntoIsland, canMarshalTypedFuncIntoIsland, CHILD_T, CHILDSTREAM_T, DATE_T, DGRAMSOCK_T, DYN, DYN_HANDLE_KINDS, F64, ffiClassType, ffiSourceParamTypes, FILEHANDLE_T, FSWATCHER_T, HTTP2SESSION_T, HTTP2STREAM_T, HTTPCLIENTREQ_T, HTTPREQ_T, HTTPRES_T, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isJsonSafeType, isRefCounted, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, jsOpResultKind, JSVAL, NETSERVER_T, NETSOCKET_T, PROCSTREAM_T, REF_TRUTHY_KINDS, REGEX, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, SEARCH_PARAMS_T, SECURECTX_T, shapeHasAccessorSlots, SPAWNRES_T, STATS_T, STRING, SYMBOL_T, TESTCTX_T, typeEquals, typeKey, unionFuncSetArmsOk, URL_T, VOID } from "./nodes.js";
 
 /** Per-method signature for strIntrinsic: `argTypes` lists every argument
  * position (optional ones included); `minArgs` is how many may be omitted
@@ -3120,6 +3120,33 @@ function validateFunction(
         }
         if (e.fields.filter((f) => !f.overflow && !f.drop).length !== shape.fields.length) {
           err(`recordLit does not initialize every field of shape ${shape.id}`, e.loc);
+        }
+        break;
+      }
+      case "recordClone": {
+        checkExpr(e.source);
+        if (e.type.kind !== "record") {
+          err(`recordClone must be record-typed, got ${e.type.kind}`, e.loc);
+          break;
+        }
+        const shape = records.get(e.type.shapeId);
+        if (!shape) {
+          err(`recordClone of undeclared shape "${e.type.shapeId}"`, e.loc);
+          break;
+        }
+        if (shape.tuple || shape.indexValue || shapeHasAccessorSlots(shape)) {
+          err(`recordClone requires a plain declared-field shape, got ${shape.id}`, e.loc);
+        }
+        expectType(e.source, e.type, "recordClone source");
+        const want = new Map(shape.fields.map((f) => [f.name, f.type]));
+        const seen = new Set<string>();
+        for (const f of e.overrides) {
+          checkExpr(f.value);
+          if (seen.has(f.name)) err(`recordClone overrides field "${f.name}" twice`, e.loc);
+          seen.add(f.name);
+          const ft = want.get(f.name);
+          if (!ft) err(`shape ${shape.id} has no field "${f.name}"`, e.loc);
+          else expectType(f.value, ft, `recordClone field "${f.name}"`);
         }
         break;
       }

@@ -117,6 +117,9 @@ export function mangleRecordStruct(shapeId: string): string {
 export function mangleRecordNew(shapeId: string): string {
   return `sc_rnew_${sanitize(shapeId)}`;
 }
+export function mangleRecordClone(shapeId: string): string {
+  return `sc_rclone_${sanitize(shapeId)}`;
+}
 export function mangleRecordRetain(shapeId: string): string {
   return `sc_rretain_${sanitize(shapeId)}`;
 }

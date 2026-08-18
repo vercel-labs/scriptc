@@ -253,6 +253,9 @@ export class CEmitter {
   /** Active optional-chain bind temps, by chain id (chainRecv reads). */
   readonly chainTemps = new Map<string, Temp>();
   readonly recordsById = new Map<string, IrRecordShape>();
+  /** Record shapes whose bodies emitted recordClone. Filled while function
+   * bodies emit, before emitStructDefs assembles per-shape helpers. */
+  readonly recordCloneShapes = new Set<string>();
   /** Type-directed JSON walkers, interned per typeKey — one serializer per
    * type used in jsonStringify position (sc_jw_*), one match predicate
    * (sc_dm_*) and one checked builder (sc_dc_*) per type used in dynCheck

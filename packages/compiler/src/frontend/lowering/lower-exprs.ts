@@ -2641,6 +2641,8 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
         return e.elems.every(droppableStatic);
       case "recordLit":
         return e.fields.every((f) => droppableStatic(f.value));
+      case "recordClone":
+        return droppableStatic(e.source) && e.overrides.every((f) => droppableStatic(f.value));
       case "closure":
         return true;
       default:
@@ -4817,6 +4819,68 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
       }
     }
     const fieldTypes = new Map(shape.fields.map((f) => [f.name, f.type]));
+
+    // The overwhelmingly common immutable-update form over a record:
+    // `{ ...model, changed, other: value }`. The historic lowering expanded
+    // the spread into one recordGet per untouched field at EVERY site, then
+    // the backends inlined all of those retains and stores into the caller.
+    // A 178-field model updated hundreds of times consequently produced a
+    // half-million-line LLVM function. Keep the same evaluation/ownership
+    // semantics in one compact IR node: source first, explicit overrides in
+    // source order, and one backend clone helper per shape.
+    //
+    // Stay deliberately narrow. Tuple/index/accessor shapes, conditional or
+    // multiple spreads, spread-after-explicit order, and shape-changing width
+    // copies retain their existing lowering and diagnostics.
+    if (
+      !isJsSourceFile(expr.getSourceFile()) &&
+      !shape.indexValue &&
+      !shape.tuple &&
+      !shapeHasAccessorSlots(shape) &&
+      expr.properties.length >= 2 &&
+      ts.isSpreadAssignment(expr.properties[0]!) &&
+      !conditionalSpreadOf(expr.properties[0]!.expression) &&
+      expr.properties.slice(1).every(
+        (p) =>
+          (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+          p.name !== undefined &&
+          (ts.isIdentifier(p.name) ||
+            ts.isStringLiteral(p.name) ||
+            ts.isNumericLiteral(p.name) ||
+            (ts.isComputedPropertyName(p.name) && literalComputedKey(L, p.name) !== null)),
+      )
+    ) {
+      const spread = expr.properties[0]! as ts.SpreadAssignment;
+      const props = expr.properties.slice(1) as (
+        | ts.PropertyAssignment
+        | ts.ShorthandPropertyAssignment
+      )[];
+      const names = props.map((p) => propNameText(L, p.name!));
+      const unique = new Set(names);
+      const sourceType = L.mapTypeOf(L.typeOf(spread.expression));
+      if (
+        sourceType?.kind === "record" &&
+        sourceType.shapeId === type.shapeId &&
+        unique.size === names.length &&
+        names.every((name) => fieldTypes.has(name))
+      ) {
+        const source = L.lowerExpr(spread.expression);
+        const overrides: { name: string; value: IrExpr }[] = [];
+        for (let i = 0; i < props.length; i++) {
+          const p = props[i]!;
+          const name = names[i]!;
+          const fieldType = fieldTypes.get(name)!;
+          const valueNode = ts.isPropertyAssignment(p) ? p.initializer : p;
+          let value = ts.isPropertyAssignment(p)
+            ? L.lowerExpr(p.initializer)
+            : L.lowerShorthandValue(p);
+          value = L.coerceInto(valueNode, value, fieldType);
+          if (!typeEquals(value.type, fieldType)) L.badType(valueNode, L.typeOf(valueNode));
+          overrides.push({ name, value });
+        }
+        return { kind: "recordClone", source, overrides, type, loc };
+      }
+    }
 
     // A PURE index-signature target with spreads — `{ ...process.env }`,
     // `{ ...process.env, ...extraEnv }`, `{ ...env, PATH: p }` (the

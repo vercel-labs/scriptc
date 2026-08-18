@@ -4,7 +4,7 @@
 import type { CEmitter, Temp } from "./emitter.js";
 import { arrayOf, BOOL, BYTES_U8, bytesOf, canMarshalFuncIntoIsland, CHILDSTREAM_T, DYN, F64, IrExpr, IrRecordShape, IrType, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, RUNTIME_ERROR_CLASSES, STRING, typeEquals, typeKey } from "../../ir/nodes.js";
 import { boxAccess, BYTES_NUM_KIND_C, BYTES_NUM_VAR_C, bytesElemKindC, cDecl, cFnPtrCast, cNumberLiteral, cStringLiteral, cType, DV_GET_KIND_C, DV_SET_KIND_C, elemAccess, mapKeyAccess, mapKeyKindC, mapValKindC, releaseCallC, retainCallC, vAdapters } from "./emit-types.js";
-import { mangleClassNew, mangleClassRetain, mangleClassStruct, mangleField, mangleFnClosure, mangleFunction, mangleGlobal, mangleLocal, mangleRecordNew, mangleRecordStruct, mangleVtStruct } from "../mangle.js";
+import { mangleClassNew, mangleClassRetain, mangleClassStruct, mangleField, mangleFnClosure, mangleFunction, mangleGlobal, mangleLocal, mangleRecordClone, mangleRecordNew, mangleRecordStruct, mangleVtStruct } from "../mangle.js";
 import { OVERFLOW_MEMBER } from "./emit-shapes.js";
 import { dynDestrCheckHelper, dynIterNHelper, dynKeyGetHelper } from "./emit-walkers.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
@@ -2468,6 +2468,29 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           if (isRefCounted(v.type)) E.moveTemp(v);
           E.line(`${rec.name}->${mangleField(f.name)} = ${v.name};`);
+        }
+        return rec;
+      }
+      case "recordClone": {
+        if (e.type.kind !== "record") throw new Error("emitter bug: recordClone of non-record type");
+        E.recordCloneShapes.add(e.type.shapeId);
+        // Source first, then each override in source order. The helper
+        // returns a fully retained owned clone; replacement unlinks before
+        // releasing the copied value, matching recordSet's cycle discipline.
+        const source = E.emitExpr(e.source);
+        const rec = E.newTemp(e.type, `${mangleRecordClone(e.type.shapeId)}(${source.name})`);
+        for (const f of e.overrides) {
+          const v = E.emitExpr(f.value);
+          const field = `${rec.name}->${mangleField(f.name)}`;
+          if (isRefCounted(v.type)) {
+            E.moveTemp(v);
+            const old = `sc_t${E.tempCounter++}`;
+            E.line(`${cDecl(v.type, old)} = ${field};`);
+            E.line(`${field} = ${v.name};`);
+            E.releaseValue(old, v.type);
+          } else {
+            E.line(`${field} = ${v.name};`);
+          }
         }
         return rec;
       }

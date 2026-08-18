@@ -6,8 +6,8 @@
 import type { CEmitter } from "./emitter.js";
 import type { IrFunction } from "../../ir/nodes.js";
 import { IrClassDef, IrType, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, isRefCounted, mapOf, STRING } from "../../ir/nodes.js";
-import { mangleClassGcFree, mangleClassNew, mangleClassRelease, mangleClassReleaseDirect, mangleClassRetain, mangleClassStruct, mangleClassTrace, mangleCtorThunk, mangleField, mangleFunction, mangleRecordGcFree, mangleRecordNew, mangleRecordRelease, mangleRecordRetain, mangleRecordStruct, mangleRecordTrace, mangleVtAdapter, mangleVtInstance, mangleVtStruct } from "../mangle.js";
-import { boxKindC, cDecl, cType, elemKindC, mapValKindC, releaseCallC, vAdapters } from "./emit-types.js";
+import { mangleClassGcFree, mangleClassNew, mangleClassRelease, mangleClassReleaseDirect, mangleClassRetain, mangleClassStruct, mangleClassTrace, mangleCtorThunk, mangleField, mangleFunction, mangleRecordClone, mangleRecordGcFree, mangleRecordNew, mangleRecordRelease, mangleRecordRetain, mangleRecordStruct, mangleRecordTrace, mangleVtAdapter, mangleVtInstance, mangleVtStruct } from "../mangle.js";
+import { boxKindC, cDecl, cType, elemKindC, mapValKindC, releaseCallC, retainCallC, vAdapters } from "./emit-types.js";
 
 /** The overflow map's C member name on index-signature record structs.
  * User fields mangle to `sc_fld_*`, so no field can collide. */
@@ -83,6 +83,8 @@ export interface ClassMeta {
        * new/release/trace treat as one more (map-typed) field. */
       indexValue?: IrType;
       comment: string;
+      /** Record shape id; absent for classes. */
+      recordId?: string;
       /** Class shapes only; hierarchy members get the vtable machinery. */
       meta: ClassMeta | null;
     }
@@ -112,6 +114,7 @@ export interface ClassMeta {
         gcFree: mangleRecordGcFree(rec.id),
         traced: E.tracedShapes.has(`record:${rec.id}`),
         fields: rec.fields,
+        recordId: rec.id,
         ...(rec.indexValue ? { indexValue: rec.indexValue } : {}),
         comment: `record ${rec.id} { ${rec.fields.map((f) => f.name).join("; ")}${rec.indexValue ? "; [key: string]" : ""} }`,
         meta: null,
@@ -205,6 +208,9 @@ export interface ClassMeta {
         `static void ${s.release}(${s.struct} *o);`,
         `static ${s.struct} *${s.newFn}(void);`,
       );
+      if (s.recordId !== undefined && E.recordCloneShapes.has(s.recordId)) {
+        out.push(`static ${s.struct} *${mangleRecordClone(s.recordId)}(${s.struct} *src);`);
+      }
       if (inHierarchy(s)) {
         out.push(`static void ${mangleClassReleaseDirect(s.meta!.def.name)}(void *o0);`);
       }
@@ -253,6 +259,9 @@ export interface ClassMeta {
           `  scr_obj_alloc_note();`,
           `  return o;`,
           `}`,
+          ...(s.recordId !== undefined && E.recordCloneShapes.has(s.recordId)
+            ? emitRecordCloneC(s.recordId, s.struct, s.fields, s.newFn)
+            : []),
           `static void *${s.retain}_v(void *o) { return ${s.retain}((${s.struct} *)o); }`,
           `static void ${s.release}_v(void *o) { ${s.release}((${s.struct} *)o); }`,
           ``,
@@ -298,6 +307,9 @@ export interface ClassMeta {
         `  scr_obj_alloc_note();`,
         `  return o;`,
         `}`,
+        ...(s.recordId !== undefined && E.recordCloneShapes.has(s.recordId)
+          ? emitRecordCloneC(s.recordId, s.struct, s.fields, s.newFn)
+          : []),
         `static void ${s.trace}(void *o0, ScrTraceVisit visit, void *ctx) {`,
         `  ${s.struct} *o = (${s.struct} *)o0;`,
         ...tracedFields.map(
@@ -323,6 +335,37 @@ export interface ClassMeta {
       );
     }
   }
+
+/** One deliberately non-inlined same-shape clone helper. Keeping the copy
+ * here makes each `{ ...largeRecord, override }` site constant-sized while
+ * preserving the ordinary type-directed retain rules. */
+function emitRecordCloneC(
+  shapeId: string,
+  struct: string,
+  fields: { name: string; type: IrType }[],
+  newFn: string,
+): string[] {
+  const noinline = fields.length >= 16;
+  return [
+    ...(noinline
+      ? [
+          `#if defined(_MSC_VER)`,
+          `__declspec(noinline)`,
+          `#else`,
+          `__attribute__((noinline))`,
+          `#endif`,
+        ]
+      : []),
+    `static ${struct} *${mangleRecordClone(shapeId)}(${struct} *src) {`,
+    `  ${struct} *o = ${newFn}();`,
+    ...fields.map((f) => {
+      const member = mangleField(f.name);
+      return `  o->${member} = ${isRefCounted(f.type) ? retainCallC(f.type, `src->${member}`) : `src->${member}`};`;
+    }),
+    `  return o;`,
+    `}`,
+  ];
+}
 
 /** The root's slot list as seen by one class: the implementation the
    * class dispatches to, or null outside the slot's declaring subtree (a

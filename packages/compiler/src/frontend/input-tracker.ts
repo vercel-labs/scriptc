@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
@@ -15,6 +15,7 @@ export type FrontendInputProbe =
   | { op: "read-error"; path: string }
   | { op: "kind"; path: string; kind: "file" | "directory" | "other" | "missing" }
   | { op: "entries"; path: string; files: string[]; directories: string[] }
+  | { op: "entries-error"; path: string }
   | { op: "realpath"; path: string; target: string | null };
 
 export interface FrontendInputSnapshot {
@@ -67,9 +68,11 @@ export class FrontendInputTracker {
     this.probes.set(key, probe);
     if (probe.op === "file") {
       // A successful content read supersedes earlier existence probes for the
-      // same path. Retaining both would make the post-build stability check
-      // reject a perfectly stable input (`kind` vs `file` are two views of
-      // the same current file, not two historical states).
+      // same path only when they also observed a file. A missing/non-file
+      // answer followed by a successful read means the input changed during
+      // the frontend and the mixed observation must never be published.
+      const previousKind = this.probes.get(`kind\0${probe.path}`);
+      if (previousKind?.op === "kind" && previousKind.kind !== "file") this.stable = false;
       this.probes.delete(`kind\0${probe.path}`);
       const failedRead = this.probes.get(`read-error\0${probe.path}`);
       if (failedRead !== undefined) this.stable = false;
@@ -117,33 +120,23 @@ export function trackedReadFile(path: string): string | null {
 
 export function trackedFileExists(path: string): boolean {
   path = resolve(path);
-  let exists = false;
-  try {
-    exists = statSync(path).isFile();
-  } catch {
-    // The exact failed candidate is part of the resolution answer.
-  }
-  record({ op: "kind", path, kind: pathKind(path) });
-  return exists;
+  const kind = pathKind(path);
+  record({ op: "kind", path, kind });
+  return kind === "file";
 }
 
 export function trackedDirectoryExists(path: string): boolean {
   path = resolve(path);
-  let exists = false;
-  try {
-    exists = statSync(path).isDirectory();
-  } catch {
-    // The exact failed candidate is part of the resolution answer.
-  }
-  record({ op: "kind", path, kind: pathKind(path) });
-  return exists;
+  const kind = pathKind(path);
+  record({ op: "kind", path, kind });
+  return kind === "directory";
 }
 
 export function trackedExists(path: string): boolean {
   path = resolve(path);
-  const exists = existsSync(path);
-  record({ op: "kind", path, kind: pathKind(path) });
-  return exists;
+  const kind = pathKind(path);
+  record({ op: "kind", path, kind });
+  return kind !== "missing";
 }
 
 export function trackedRealpath(path: string): string | null {
@@ -176,7 +169,10 @@ export function trackedAccessibleEntries(
     record({ op: "entries", path, ...answer });
     return answer;
   } catch {
-    record({ op: "kind", path, kind: pathKind(path) });
+    // Enumeration can fail even while the path remains a directory. Preserve
+    // the failed operation itself so a permission/ACL repair invalidates the
+    // cached frontend rather than replaying only the unchanged path kind.
+    record({ op: "entries-error", path });
     return null;
   }
 }
@@ -222,6 +218,14 @@ export function frontendInputsStillMatch(snapshot: FrontendInputSnapshot): boole
           return false;
         }
       }
+      case "entries-error": {
+        try {
+          readdirSync(probe.path, { withFileTypes: true });
+          return false;
+        } catch {
+          return true;
+        }
+      }
       case "realpath": {
         try {
           return realpathSync(probe.path) === probe.target;
@@ -253,6 +257,8 @@ export function validFrontendInputSnapshot(snapshot: unknown): snapshot is Front
       case "entries":
         return Array.isArray(value.files) && value.files.every((entry) => typeof entry === "string") &&
           Array.isArray(value.directories) && value.directories.every((entry) => typeof entry === "string");
+      case "entries-error":
+        return true;
       case "realpath":
         return value.target === null || typeof value.target === "string";
       default:

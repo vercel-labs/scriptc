@@ -69,6 +69,22 @@ test("failed resolution candidates invalidate when a file appears", async () => 
   expect(frontendInputsStillMatch(snapshot)).toBe(false);
 });
 
+test("a candidate appearing during the frontend prevents cache publication", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const candidate = join(dir, "dependency.ts");
+
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => expect(trackedFileExists(candidate)).toBe(false));
+  await writeFile(candidate, "export const loaded = true;\n");
+  tracker.run(() => expect(trackedReadFile(candidate)).toContain("loaded"));
+
+  const snapshot = tracker.snapshot();
+  expect(snapshot.stable).toBe(false);
+  expect(validFrontendInputSnapshot(snapshot)).toBe(false);
+  expect(frontendInputsStillMatch(snapshot)).toBe(false);
+});
+
 test("directory enumeration invalidates workspace discovery", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
   scratch.push(dir);
@@ -80,4 +96,45 @@ test("directory enumeration invalidates workspace discovery", async () => {
   const snapshot = tracker.snapshot();
   await mkdir(join(packages, "new-member"));
   expect(frontendInputsStillMatch(snapshot)).toBe(false);
+});
+
+test("failed directory enumeration invalidates when the operation starts succeeding", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const packages = join(dir, "packages");
+  await writeFile(packages, "not a directory\n");
+
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => expect(trackedAccessibleEntries(packages)).toBeNull());
+  const snapshot = tracker.snapshot();
+  expect(snapshot.probes).toContainEqual({ op: "entries-error", path: packages });
+  expect(frontendInputsStillMatch(snapshot)).toBe(true);
+
+  await rm(packages);
+  await mkdir(packages);
+  expect(frontendInputsStillMatch(snapshot)).toBe(false);
+});
+
+test("failed directory enumeration invalidates when access is restored", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const packages = join(dir, "packages");
+  await mkdir(packages);
+  await writeFile(join(packages, "member.ts"), "export const member = true;\n");
+  await chmod(packages, 0o000);
+
+  try {
+    const tracker = new FrontendInputTracker();
+    const result = tracker.run(() => trackedAccessibleEntries(packages));
+    if (result !== null) return; // Windows and privileged users may ignore POSIX mode bits.
+
+    const snapshot = tracker.snapshot();
+    expect(snapshot.probes).toContainEqual({ op: "entries-error", path: packages });
+    expect(frontendInputsStillMatch(snapshot)).toBe(true);
+
+    await chmod(packages, 0o700);
+    expect(frontendInputsStillMatch(snapshot)).toBe(false);
+  } finally {
+    await chmod(packages, 0o700);
+  }
 });

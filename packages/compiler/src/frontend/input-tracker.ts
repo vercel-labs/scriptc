@@ -24,6 +24,18 @@ export interface FrontendInputSnapshot {
   stable: boolean;
 }
 
+export interface FrontendSemanticChange {
+  path: string;
+  previous: string;
+  current: string;
+}
+
+export interface FrontendSemanticMatch {
+  changed: FrontendSemanticChange[];
+  currentSources: Map<string, string>;
+  snapshot: FrontendInputSnapshot;
+}
+
 /** Compiler-owned paths whose creation/removal must not invalidate the
  * frontend that produced them. Directory CONTENT remains tracked: only the
  * named artifacts and a generated directory's formerly-missing observation
@@ -33,7 +45,7 @@ export interface FrontendInputExclusions {
   outputDirectories?: Iterable<string>;
 }
 
-function digest(text: string): string {
+export function frontendSourceDigest(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
@@ -119,7 +131,7 @@ export function trackedReadFile(path: string): string | null {
   path = resolve(path);
   try {
     const text = readFileSync(path, "utf8");
-    record({ op: "file", path, digest: digest(text) });
+    record({ op: "file", path, digest: frontendSourceDigest(text) });
     return text;
   } catch {
     record({ op: "read-error", path });
@@ -249,7 +261,7 @@ export function frontendInputsStillMatch(
     switch (probe.op) {
       case "file": {
         try {
-          return digest(readFileSync(probe.path, "utf8")) === probe.digest;
+          return frontendSourceDigest(readFileSync(probe.path, "utf8")) === probe.digest;
         } catch {
           return false;
         }
@@ -317,6 +329,61 @@ export function frontendInputsStillMatch(
       }
     }
   });
+}
+
+/**
+ * Validate all non-source frontend probes exactly while allowing only
+ * caller-approved semantic-equivalent file edits. The old source text is a
+ * cache payload; every unchanged input remains content-hash checked.
+ */
+export function frontendInputsSemanticallyMatch(
+  snapshot: FrontendInputSnapshot,
+  previousSources: ReadonlyMap<string, string>,
+  isSemanticEquivalent: (path: string, previous: string, current: string) => boolean,
+  exclusions: FrontendInputExclusions = {},
+): FrontendSemanticMatch | null {
+  if (!validFrontendInputSnapshot(snapshot)) return null;
+  const sourceProbes = new Map(
+    snapshot.probes
+      .filter((probe): probe is Extract<FrontendInputProbe, { op: "file" }> => probe.op === "file")
+      .map((probe) => [probe.path, probe]),
+  );
+  for (const [path, previous] of previousSources) {
+    if (sourceProbes.get(path)?.digest !== frontendSourceDigest(previous)) return null;
+  }
+  const changed: FrontendSemanticChange[] = [];
+  const currentSources = new Map<string, string>();
+  const adjusted: FrontendInputSnapshot = {
+    ...snapshot,
+    probes: snapshot.probes.map((probe) => {
+      if (probe.op !== "file") return probe;
+      let current: string;
+      try {
+        current = readFileSync(probe.path, "utf8");
+      } catch {
+        return probe;
+      }
+      const previous = previousSources.get(probe.path);
+      const currentDigest = frontendSourceDigest(current);
+      if (previous === undefined || frontendSourceDigest(previous) !== probe.digest) return probe;
+      currentSources.set(probe.path, current);
+      if (currentDigest === probe.digest) return probe;
+      if (!isSemanticEquivalent(probe.path, previous, current)) return probe;
+      changed.push({ path: probe.path, previous, current });
+      return { ...probe, digest: currentDigest };
+    }),
+  };
+  if (!frontendInputsStillMatch(adjusted, exclusions)) return null;
+  for (const [path, previous] of previousSources) {
+    if (!currentSources.has(path)) {
+      try {
+        currentSources.set(path, readFileSync(path, "utf8"));
+      } catch {
+        currentSources.set(path, previous);
+      }
+    }
+  }
+  return { changed, currentSources, snapshot: adjusted };
 }
 
 /** Pure validator used by the persistent-cache reader before any path probes. */

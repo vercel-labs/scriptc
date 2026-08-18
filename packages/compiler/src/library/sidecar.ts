@@ -1624,3 +1624,19 @@ export function buildSidecar(input: SidecarBuildInput): SidecarBuildResult {
     throw e;
   }
 }
+
+/**
+ * A semantic-cache hit has already validated/projected the sidecar. Only the
+ * exact-source identity fields may change after comment trivia edits; retain
+ * the established property order and replace those two values in place.
+ */
+export function updateSidecarIdentity(
+  json: string,
+  buildId: string,
+  sourceHash: string,
+): string {
+  const doc = JSON.parse(json) as SidecarDoc;
+  doc.source_hash = sourceHash;
+  doc.build_id = buildId;
+  return JSON.stringify(doc, null, 2) + "\n";
+}

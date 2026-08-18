@@ -2,10 +2,12 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
+import type { IrModule } from "../ir/nodes.js";
 import { FrontendInputTracker, trackedAccessibleEntries, trackedDirectoryExists, trackedFileExists, trackedReadFile } from "../frontend/input-tracker.js";
 import {
   publishEarlyLibraryCache,
   readEarlyLibraryCache,
+  readSemanticLibraryCache,
   type EarlyLibraryCacheOptions,
 } from "./early-cache.js";
 
@@ -236,6 +238,102 @@ test("early library cache misses on source edits and newly-resolved candidates",
   await writeFile(f.source, "export function value(): number { return 1; }\n");
   await writeFile(f.missing, "export const appeared = true;\n");
   expect(await readEarlyLibraryCache(f.root, f.options, null)).toBeNull();
+});
+
+test("semantic library cache restores and rebases IR after a comment-only edit", async () => {
+  const f = await fixture();
+  const sourceBefore = await readFile(f.source, "utf8");
+  const returnStart = sourceBefore.indexOf("return");
+  const semanticMod = {
+    irVersion: 6,
+    sourceFile: f.source,
+    functions: [{
+      name: "__main",
+      params: [],
+      returnType: { kind: "void" },
+      locals: [],
+      body: [],
+      loc: { file: f.source, start: returnStart, end: returnStart + 6 },
+    }],
+    entry: "__main",
+  } satisfies IrModule;
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  await publishEarlyLibraryCache(f.root, f.options, {
+    cPath: f.cPath,
+    irPath: f.irPath,
+    sidecarPath: f.sidecarPath,
+    native: {
+      backend: "llvm",
+      regex: false,
+      assert: false,
+      inspect: false,
+      symbol: false,
+      searchParams: false,
+      emitter: false,
+      zlib: false,
+      copying: false,
+      textDecoderLegacy: false,
+    },
+    frontend: tracker.snapshot(),
+    semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
+  });
+
+  const sourceAfter = `// inserted comment\n${sourceBefore}`;
+  await writeFile(f.source, sourceAfter);
+  expect(await readEarlyLibraryCache(f.root, f.options, null)).toBeNull();
+  const hit = await readSemanticLibraryCache(f.root, f.options, null);
+  expect(hit).not.toBeNull();
+  expect(hit?.changedSources).toEqual([f.source]);
+  expect(hit?.mod.functions[0]!.loc.start).toBe(sourceAfter.indexOf("return"));
+  expect(hit?.frontend.probes).toContainEqual(expect.objectContaining({
+    op: "file",
+    path: f.source,
+  }));
+});
+
+test("semantic library cache refuses token and directive edits", async () => {
+  const f = await fixture();
+  const sourceBefore = await readFile(f.source, "utf8");
+  const semanticMod = {
+    irVersion: 6,
+    sourceFile: f.source,
+    functions: [{
+      name: "__main",
+      params: [],
+      returnType: { kind: "void" },
+      locals: [],
+      body: [],
+      loc: { file: f.source, start: 0, end: sourceBefore.length },
+    }],
+    entry: "__main",
+  } satisfies IrModule;
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  await publishEarlyLibraryCache(f.root, f.options, {
+    cPath: f.cPath,
+    irPath: f.irPath,
+    sidecarPath: f.sidecarPath,
+    native: {
+      backend: "llvm",
+      regex: false,
+      assert: false,
+      inspect: false,
+      symbol: false,
+      searchParams: false,
+      emitter: false,
+      zlib: false,
+      copying: false,
+      textDecoderLegacy: false,
+    },
+    frontend: tracker.snapshot(),
+    semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
+  });
+
+  await writeFile(f.source, sourceBefore.replace("return 1", "return 2"));
+  expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
+  await writeFile(f.source, `// @ts-expect-error\n${sourceBefore}`);
+  expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
 });
 
 test("early library cache is separated by the host Node version", async () => {

@@ -14,6 +14,7 @@ import {
   canonicalPath,
   compilerReleaseVersion,
   libraryIdentityHashes,
+  updateSidecarIdentity,
   type SidecarIntegerSlotFacts,
   type SidecarIrRecordPattern,
   type SidecarIrTypePattern,
@@ -34,7 +35,7 @@ import type { CoverageInput, NpmStaticStatus } from "./coverage/report.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/profile.js";
 import { hasForeignFfiCallback } from "./backend/ffi-callbacks.js";
 import { FrontendInputTracker, trackedReadFile } from "./frontend/input-tracker.js";
-import { libraryFrontendImplementationFingerprint, publishEarlyLibraryCache, readEarlyLibraryCache, type EarlyLibraryCacheOptions, type EarlyLibraryCachePublish, type EarlyLibraryNativeFeatures } from "./library/early-cache.js";
+import { libraryFrontendImplementationFingerprint, publishEarlyLibraryCache, readEarlyLibraryCache, readSemanticLibraryCache, type EarlyLibraryCacheOptions, type EarlyLibraryCachePublish, type EarlyLibraryNativeFeatures, type SemanticLibraryCacheHit } from "./library/early-cache.js";
 
 export const VERSION = "0.0.1";
 
@@ -1568,6 +1569,94 @@ async function compileLibraryNative(
   });
 }
 
+async function emitSemanticLibraryHit(
+  hit: SemanticLibraryCacheHit,
+  profile: LibraryProfile,
+  opts: CompileLibraryOptions,
+  archivePath: string,
+  cacheRoot: string | null,
+  cacheOptions: EarlyLibraryCacheOptions,
+  timing: (phase: string, detail?: Record<string, unknown>) => void,
+): Promise<CompileLibraryResult> {
+  const mod = hit.mod;
+  const rootDir = dirname(resolve(opts.profilePath));
+  let sidecarJson = hit.sidecarJson;
+  if (profile.sidecar !== null) {
+    if (mod.lib?.identity === undefined || sidecarJson === null) {
+      throw new Error("semantic library cache lost sidecar identity metadata");
+    }
+    const modules = canonicalModuleGraph(rootDir, hit.sourceTexts);
+    const { buildId, sourceHash } = libraryIdentityHashes(
+      compilerReleaseVersion(),
+      profile.profileBytes,
+      modules,
+    );
+    mod.lib.identity.buildId = buildId;
+    sidecarJson = updateSidecarIdentity(sidecarJson, buildId, sourceHash);
+  }
+  const validation = validateModule(mod);
+  if (validation.length > 0) {
+    return {
+      ok: false,
+      diagnostics: validation.map((violation) => iceDiag(violation.message, violation.loc)),
+      sourceTexts: hit.sourceTexts,
+    };
+  }
+  await mkdir(opts.outDir, { recursive: true });
+  const stem = basename(profile.entry).replace(/\.(ts|js|mjs|cjs)$/, "");
+  let cPath: string;
+  if (profile.emission === "llvm") {
+    const ll = emitLlvmModule(mod);
+    cPath = join(opts.outDir, `${stem}.lib.ll`);
+    await writeFile(cPath, ll);
+    timing("semantic-llvm-emit", { output_bytes: Buffer.byteLength(ll) });
+  } else {
+    cPath = join(opts.outDir, `${stem}.lib.c`);
+    await writeFile(cPath, emitModule(mod, hit.sourceTexts.get(profile.entry)));
+    timing("semantic-c-emit");
+  }
+  await rm(join(opts.outDir, `${stem}.lib.${profile.emission === "llvm" ? "c" : "ll"}`), { force: true });
+  let irPath: string | undefined;
+  if (opts.emitIr) {
+    irPath = join(opts.outDir, `${stem}.lib.ir.json`);
+    await writeFile(irPath, serializeModule(mod));
+  }
+  await compileLibraryNative(
+    profile,
+    cPath,
+    archivePath,
+    opts.sanitize ?? false,
+    hit.native,
+  );
+  timing("native-archive");
+  let sidecarPath: string | undefined;
+  if (sidecarJson !== null) {
+    sidecarPath = profile.sidecar!.path !== null
+      ? resolve(dirname(archivePath), profile.sidecar!.path)
+      : `${archivePath}.contract.json`;
+    await writeFile(sidecarPath, sidecarJson);
+  }
+  await publishEarlyLibraryCache(cacheRoot, cacheOptions, {
+    cPath,
+    native: hit.native,
+    frontend: hit.frontend,
+    semantic: { mod, sources: hit.sourceTexts },
+    ...(irPath !== undefined ? { irPath } : {}),
+    ...(sidecarPath !== undefined ? { sidecarPath } : {}),
+  }).catch(() => undefined);
+  await pruneBuildCache(cacheRoot);
+  timing("semantic-cache-publish");
+  timing("complete");
+  return {
+    ok: true,
+    archivePath,
+    cPath,
+    backend: profile.emission,
+    ...(irPath !== undefined ? { irPath } : {}),
+    ...(sidecarPath !== undefined ? { sidecarPath } : {}),
+  };
+}
+
 export async function compileLibrary(opts: CompileLibraryOptions): Promise<CompileLibraryResult> {
   const frontendInputs = new FrontendInputTracker();
   return frontendInputs.run(() => compileLibraryTracked(opts, frontendInputs));
@@ -1729,6 +1818,24 @@ async function compileLibraryTracked(
     };
   }
   timing("early-cache-miss");
+  const semanticHit = await readSemanticLibraryCache(
+    cacheRoot,
+    earlyCacheOptions,
+    profile.sidecar === null ? undefined : profile.sidecar.path,
+  );
+  if (semanticHit !== null) {
+    timing("semantic-cache-hit", { changed_sources: semanticHit.changedSources.length });
+    return emitSemanticLibraryHit(
+      semanticHit,
+      profile,
+      opts,
+      archivePath,
+      cacheRoot,
+      earlyCacheOptions,
+      timing,
+    );
+  }
+  timing("semantic-cache-miss");
 
   // Bare npm specifiers in a library graph take the STATIC-OR-REFUSE
   // posture: "lib" runs the same auto-detection and eligibility bar as
@@ -2009,6 +2116,7 @@ async function compileLibraryTracked(
     cPath,
     native: nativeFeatures,
     frontend: frontendInputs.snapshot(),
+    semantic: { mod, sources: sourceTexts },
     ...(irPath !== undefined ? { irPath } : {}),
     ...(sidecarPath !== undefined ? { sidecarPath } : {}),
   };

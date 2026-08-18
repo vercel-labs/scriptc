@@ -2,8 +2,16 @@ import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdir, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { deserialize as deserializeV8, serialize as serializeV8 } from "node:v8";
+import { gzip, gunzip } from "node:zlib";
 import { compilerReleaseVersion } from "./sidecar.js";
-import { frontendInputsStillMatch, validFrontendInputSnapshot, type FrontendInputExclusions, type FrontendInputSnapshot } from "../frontend/input-tracker.js";
+import type { IrModule } from "../ir/nodes.js";
+import { frontendInputsSemanticallyMatch, frontendInputsStillMatch, validFrontendInputSnapshot, type FrontendInputExclusions, type FrontendInputSnapshot } from "../frontend/input-tracker.js";
+import { rebaseSourceLocations, semanticallyEqualSource } from "./semantic-source.js";
+
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
 
 interface CachedLibraryFile {
   name: string;
@@ -11,13 +19,15 @@ interface CachedLibraryFile {
 }
 
 interface EarlyLibraryCacheStamp {
-  version: 1;
+  version: 2;
   key: string;
   frontend: FrontendInputSnapshot;
   files: {
     translationUnit: CachedLibraryFile;
     ir: CachedLibraryFile | null;
     sidecar: CachedLibraryFile | null;
+    semanticIr: CachedLibraryFile | null;
+    sources: CachedLibraryFile | null;
   };
   native: {
     backend: "c" | "llvm";
@@ -72,6 +82,20 @@ export interface EarlyLibraryCacheHit {
 
 export interface EarlyLibraryCachePublish extends EarlyLibraryCacheHit {
   frontend: FrontendInputSnapshot;
+  semantic?: {
+    mod: IrModule;
+    sources: ReadonlyMap<string, string>;
+  };
+}
+
+export interface SemanticLibraryCacheHit {
+  mod: IrModule;
+  sourceTexts: Map<string, string>;
+  previousSources: Map<string, string>;
+  frontend: FrontendInputSnapshot;
+  sidecarJson: string | null;
+  native: EarlyLibraryNativeFeatures;
+  changedSources: string[];
 }
 
 function validNativeFeatures(value: unknown): value is EarlyLibraryNativeFeatures {
@@ -97,7 +121,7 @@ function digest(bytes: Uint8Array): string {
 
 function cacheKey(options: EarlyLibraryCacheOptions): string {
   return createHash("sha256")
-    .update("early-library-v1\0")
+    .update("early-library-v2\0")
     .update(compilerReleaseVersion()).update("\0")
     .update(resolve(options.profilePath)).update("\0")
     .update(options.profileBytes).update("\0")
@@ -147,7 +171,7 @@ function stampPath(root: string, options: EarlyLibraryCacheOptions): string {
 
 function stampIntegrity(stamp: Omit<EarlyLibraryCacheStamp, "integrity">): string {
   return createHash("sha256")
-    .update("early-library-stamp-v1\0")
+    .update("early-library-stamp-v2\0")
     .update(JSON.stringify(stamp))
     .digest("hex");
 }
@@ -235,7 +259,7 @@ export async function readEarlyLibraryCache(
     const stamp = JSON.parse(await readFile(path, "utf8")) as EarlyLibraryCacheStamp;
     const { integrity, ...unsigned } = stamp;
     if (
-      stamp.version !== 1 ||
+      stamp.version !== 2 ||
       stamp.key !== cacheKey(options) ||
       !validFrontendInputSnapshot(stamp.frontend) ||
       !validNativeFeatures(stamp.native) ||
@@ -247,6 +271,13 @@ export async function readEarlyLibraryCache(
       (stamp.files.sidecar !== null && (
         stamp.files.sidecar?.name !== "contract.json" || !/^[0-9a-f]{64}$/.test(stamp.files.sidecar.digest)
       )) ||
+      (stamp.files.semanticIr !== null && (
+        stamp.files.semanticIr?.name !== "semantic.ir.json.gz" || !/^[0-9a-f]{64}$/.test(stamp.files.semanticIr.digest)
+      )) ||
+      (stamp.files.sources !== null && (
+        stamp.files.sources?.name !== "sources.json.gz" || !/^[0-9a-f]{64}$/.test(stamp.files.sources.digest)
+      )) ||
+      (stamp.files.semanticIr === null) !== (stamp.files.sources === null) ||
       stampIntegrity(unsigned) !== integrity ||
       !frontendInputsStillMatch(
         stamp.frontend,
@@ -305,6 +336,93 @@ export async function readEarlyLibraryCache(
   }
 }
 
+function decodeSources(bytes: Uint8Array): Map<string, string> {
+  const entries = JSON.parse(Buffer.from(bytes).toString("utf8")) as unknown;
+  if (!Array.isArray(entries)) throw new Error("semantic source payload is not an array");
+  const sources = new Map<string, string>();
+  for (const entry of entries) {
+    if (
+      !Array.isArray(entry) || entry.length !== 2 ||
+      typeof entry[0] !== "string" || typeof entry[1] !== "string"
+    ) throw new Error("semantic source payload has an invalid entry");
+    sources.set(entry[0], entry[1]);
+  }
+  return sources;
+}
+
+export async function readSemanticLibraryCache(
+  root: string | null,
+  options: EarlyLibraryCacheOptions,
+  sidecarConfiguredPath: string | null | undefined,
+): Promise<SemanticLibraryCacheHit | null> {
+  if (root === null) return null;
+  const path = stampPath(root, options);
+  try {
+    const stamp = JSON.parse(await readFile(path, "utf8")) as EarlyLibraryCacheStamp;
+    const { integrity, ...unsigned } = stamp;
+    if (
+      stamp.version !== 2 || stamp.key !== cacheKey(options) ||
+      !validFrontendInputSnapshot(stamp.frontend) || !validNativeFeatures(stamp.native) ||
+      stamp.files?.semanticIr?.name !== "semantic.ir.json.gz" ||
+      stamp.files?.sources?.name !== "sources.json.gz" ||
+      !/^[0-9a-f]{64}$/.test(stamp.files.semanticIr.digest) ||
+      !/^[0-9a-f]{64}$/.test(stamp.files.sources.digest) ||
+      (stamp.files.sidecar !== null) !== (sidecarConfiguredPath !== undefined) ||
+      stampIntegrity(unsigned) !== integrity
+    ) return null;
+    const directory = dirname(path);
+    const [irCompressed, sourcesCompressed, sidecar] = await Promise.all([
+      readCachedFile(join(directory, stamp.files.semanticIr.name), stamp.files.semanticIr.digest),
+      readCachedFile(join(directory, stamp.files.sources.name), stamp.files.sources.digest),
+      stamp.files.sidecar === null
+        ? Promise.resolve(null)
+        : readCachedFile(join(directory, stamp.files.sidecar.name), stamp.files.sidecar.digest),
+    ]);
+    if (irCompressed === null || sourcesCompressed === null || (stamp.files.sidecar !== null && sidecar === null)) {
+      return null;
+    }
+    const [irJson, sourcesJson] = await Promise.all([
+      gunzipAsync(irCompressed),
+      gunzipAsync(sourcesCompressed),
+    ]);
+    const previousSources = decodeSources(sourcesJson);
+    const semantic = frontendInputsSemanticallyMatch(
+      stamp.frontend,
+      previousSources,
+      semanticallyEqualSource,
+      frontendOutputExclusions(
+        options,
+        stamp.native.backend,
+        stamp.files.sidecar === null
+          ? undefined
+          : sidecarOutputPath(options, sidecarConfiguredPath ?? null),
+      ),
+    );
+    if (semantic === null || semantic.changed.length === 0) return null;
+    const mod = deserializeV8(irJson) as IrModule;
+    if (mod.irVersion !== 6) return null;
+    rebaseSourceLocations(mod, previousSources, semantic.currentSources);
+    const now = new Date();
+    await Promise.all([
+      path,
+      join(directory, stamp.files.semanticIr.name),
+      join(directory, stamp.files.sources.name),
+      ...(stamp.files.sidecar === null ? [] : [join(directory, stamp.files.sidecar.name)]),
+    ].map((cachePath) => utimes(cachePath, now, now).catch(() => undefined)));
+    return {
+      mod,
+      sourceTexts: semantic.currentSources,
+      previousSources,
+      frontend: semantic.snapshot,
+      sidecarJson: sidecar === null ? null : sidecar.toString("utf8"),
+      native: stamp.native,
+      changedSources: semantic.changed.map((change) => change.path),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function publishEarlyLibraryCache(
   root: string | null,
   options: EarlyLibraryCacheOptions,
@@ -322,20 +440,34 @@ export async function publishEarlyLibraryCache(
       await chmod(target, 0o600);
       return { name, digest: digest(await readFile(target)) };
     };
-    const [translationUnit, ir, sidecar] = await Promise.all([
+    const [translationUnit, ir, sidecar, semanticIr, sources] = await Promise.all([
       publishFile(result.cPath, "program.tu"),
       result.irPath === undefined ? Promise.resolve(null) : publishFile(result.irPath, "program.ir.json"),
       result.sidecarPath === undefined ? Promise.resolve(null) : publishFile(result.sidecarPath, "contract.json"),
+      result.semantic === undefined
+        ? Promise.resolve(null)
+        : gzipAsync(serializeV8(result.semantic.mod), { level: 1 }).then(async (bytes) => {
+            const target = join(stage, "semantic.ir.json.gz");
+            await writeFile(target, bytes, { mode: 0o600 });
+            return { name: "semantic.ir.json.gz", digest: digest(bytes) };
+          }),
+      result.semantic === undefined
+        ? Promise.resolve(null)
+        : gzipAsync(Buffer.from(JSON.stringify([...result.semantic.sources]), "utf8"), { level: 1 }).then(async (bytes) => {
+            const target = join(stage, "sources.json.gz");
+            await writeFile(target, bytes, { mode: 0o600 });
+            return { name: "sources.json.gz", digest: digest(bytes) };
+          }),
     ]);
     if (!frontendInputsStillMatch(
       result.frontend,
       frontendOutputExclusions(options, result.native.backend, result.sidecarPath),
     )) return;
     const unsigned: Omit<EarlyLibraryCacheStamp, "integrity"> = {
-      version: 1,
+      version: 2,
       key: cacheKey(options),
       frontend: result.frontend,
-      files: { translationUnit, ir, sidecar },
+      files: { translationUnit, ir, sidecar, semanticIr, sources },
       native: result.native,
     };
     const stamp: EarlyLibraryCacheStamp = { ...unsigned, integrity: stampIntegrity(unsigned) };
@@ -355,6 +487,8 @@ export async function publishEarlyLibraryCache(
     await install(translationUnit.name);
     if (ir !== null) await install(ir.name);
     if (sidecar !== null) await install(sidecar.name);
+    if (semanticIr !== null) await install(semanticIr.name);
+    if (sources !== null) await install(sources.name);
     await install("stamp.json");
   } finally {
     await rm(stage, { recursive: true, force: true }).catch(() => undefined);

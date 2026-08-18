@@ -4,7 +4,7 @@ import { constants as fsConstants, existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { access, chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { availableParallelism, homedir, tmpdir } from "node:os";
-import { basename, delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { localizeElfObject, mergeAndLocalizeCoffObjects } from "./object-localize.js";
 
@@ -2602,15 +2602,25 @@ async function nativeSourceFiles(
   include: (name: string) => boolean = (name) => name.endsWith(".c") || name.endsWith(".h"),
 ): Promise<string[]> {
   const files: string[] = [];
-  const walk = async (current: string): Promise<void> => {
+  const walk = async (current: string, ancestors: ReadonlySet<string>): Promise<void> => {
+    const canonical = await realpath(current).catch(() => resolve(current));
+    if (ancestors.has(canonical)) return;
+    const nestedAncestors = new Set(ancestors).add(canonical);
     const entries = await readdir(current, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
       const path = join(current, entry.name);
-      if (entry.isDirectory() && recursive) await walk(path);
-      else if (entry.isFile() && include(entry.name)) files.push(path);
+      if (entry.isDirectory() && recursive) {
+        await walk(path, nestedAncestors);
+      } else if (entry.isSymbolicLink()) {
+        const target = await stat(path).catch(() => null);
+        if (target?.isDirectory() && recursive) await walk(path, nestedAncestors);
+        else if (target?.isFile() && include(entry.name)) files.push(path);
+      } else if (entry.isFile() && include(entry.name)) {
+        files.push(path);
+      }
     }
   };
-  await walk(directory);
+  await walk(directory, new Set());
   return files.sort();
 }
 
@@ -3278,13 +3288,16 @@ function ccacheAvailable(): Promise<boolean> {
   return ccacheMemo;
 }
 
-/** Content hash of every .c/.h in the runtime src dir, the Ryū sources
+/** Content hash of every .c/.h in the runtime src tree, the Ryū sources
  * textually included by scr_number.c, and the separately-built vendor pins —
  * everything a binary links that the emitted C bytes don't already cover
  * (npm-embedded C rides inside the emitted C; the engine and standalone
  * vendor archives are pinned by their version constants). The small source
- * tree is hashed on every identity calculation: a stat-only memo can miss a
- * same-size edit whose timestamp was preserved by a copy/sync tool. */
+ * tree is hashed on every identity calculation: recursive enumeration is
+ * required because a newly added nested header can begin shadowing a system
+ * include without changing any previously selected dependency, while content
+ * hashing catches same-size edits whose timestamp was preserved by a copy/sync
+ * tool. */
 async function runtimeFingerprintFresh(rtDir: string): Promise<string> {
   const groups = await runtimeFingerprintInputGroups(rtDir);
   const h = createHash("sha256").update(QJS_COMMIT).update(MBEDTLS_VERSION).update(ZLIB_VERSION);
@@ -3304,7 +3317,9 @@ async function runtimeFingerprintInputGroups(
       { label: "runtime", dir: rtDir },
       { label: "ryu", dir: join(rtDir, "..", "vendor", "ryu") },
     ].map(async (group) => {
-      const names = (await readdir(group.dir)).filter((n) => n.endsWith(".c") || n.endsWith(".h")).sort();
+      const names = (await nativeSourceFiles(group.dir, true))
+        .map((path) => relative(group.dir, path))
+        .sort();
       return { ...group, names };
     }),
   );
@@ -3844,7 +3859,22 @@ async function ensureRuntimeObjects(
           missing.slice(i, i + width).map(async (src) => {
             const tmpObj = join(tmpDir, `${basename(src, ".c")}.o`);
             const argv = [...(useCcache ? ["ccache"] : []), ...ccArgv, ...cflags, "-c", src, "-o", tmpObj];
-            await execFileAsync(argv[0] ?? "clang", argv.slice(1));
+            await execFileAsync(argv[0] ?? "clang", argv.slice(1), useCcache
+              ? {
+                  // ccache direct mode remembers only the headers selected by
+                  // its previous manifest and can miss a newly created,
+                  // higher-priority header. The scriptc object-set key already
+                  // includes the recursive runtime namespace fingerprint, so
+                  // carry it into ccache's own keyspace as well.
+                  env: {
+                    ...process.env,
+                    CCACHE_NAMESPACE: [
+                      process.env["CCACHE_NAMESPACE"],
+                      `scriptc-${setKey}`,
+                    ].filter((value) => value !== undefined && value !== "").join(":"),
+                  },
+                }
+              : undefined);
             compiled.set(src, { object: tmpObj, digest: await fileDigest(tmpObj) });
           }),
         );

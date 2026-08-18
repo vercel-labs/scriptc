@@ -268,6 +268,125 @@ test("the runtime fingerprint includes the textually included Ryū sources", asy
   expect(await runtimeFingerprint(rtDir)).not.toBe(first);
 });
 
+test("the runtime fingerprint includes newly added nested headers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-runtime-fingerprint-nested-"));
+  scratch.push(dir);
+  const rtDir = join(dir, "src");
+  const ryuDir = join(dir, "vendor", "ryu");
+  await Promise.all([
+    mkdir(join(rtDir, "sys"), { recursive: true }),
+    mkdir(ryuDir, { recursive: true }),
+  ]);
+  await writeFile(join(rtDir, "scr_number.c"), "int scriptc_probe;\n");
+  const first = await runtimeFingerprint(rtDir);
+
+  // A new file below an existing include root can win resolution without
+  // changing any path selected by the previous dependency scan.
+  await writeFile(join(rtDir, "sys", "types.h"), "#define SCRIPTC_SHADOW 1\n");
+  expect(await runtimeFingerprint(rtDir)).not.toBe(first);
+});
+
+test.skipIf(process.platform === "win32")(
+  "the runtime fingerprint follows symlinked source files",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-runtime-fingerprint-symlink-"));
+    scratch.push(dir);
+    const rtDir = join(dir, "src");
+    const ryuDir = join(dir, "vendor", "ryu");
+    const target = join(dir, "runtime-target.h");
+    await Promise.all([
+      mkdir(rtDir, { recursive: true }),
+      mkdir(ryuDir, { recursive: true }),
+      writeFile(target, "#define SCRIPTC_SYMLINK 1\n"),
+    ]);
+    await symlink(target, join(rtDir, "linked.h"));
+    const first = await runtimeFingerprint(rtDir);
+
+    await writeFile(target, "#define SCRIPTC_SYMLINK 2\n");
+    expect(await runtimeFingerprint(rtDir)).not.toBe(first);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "new nested runtime headers invalidate complete and output-local artifacts",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-runtime-shadow-"));
+    scratch.push(dir);
+    const cacheRoot = join(dir, "cache");
+    const fakeRuntime = join(dir, "runtime", "src");
+    const projectDir = join(dir, "project");
+    const originalRuntime = runtimeSrcDir();
+    const cPath = join(projectDir, "program.c");
+    const firstOut = join(projectDir, "first");
+    const crossOutput = join(projectDir, "cross-output");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const oldRuntimeDir = process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"];
+
+    try {
+      await Promise.all([
+        cp(originalRuntime, fakeRuntime, { recursive: true }),
+        mkdir(projectDir),
+        mkdir(join(dir, "runtime", "vendor"), { recursive: true }).then(() =>
+          cp(
+            join(originalRuntime, "..", "vendor", "ryu"),
+            join(dir, "runtime", "vendor", "ryu"),
+            { recursive: true },
+          )
+        ),
+      ]);
+      await mkdir(join(fakeRuntime, "sys"));
+      const numberSource = join(fakeRuntime, "scr_number.c");
+      await writeFile(
+        numberSource,
+        `${await readFile(numberSource, "utf8")}\n` +
+          "#ifndef SCRIPTC_SHADOW_VALUE\n#define SCRIPTC_SHADOW_VALUE 1\n#endif\n" +
+          "int scriptc_shadow_value(void) { return SCRIPTC_SHADOW_VALUE; }\n",
+      );
+      await writeFile(
+        cPath,
+        "#include <stdio.h>\nint scriptc_shadow_value(void);\n" +
+          'int main(void) { printf("%d\\n", scriptc_shadow_value()); return 0; }\n',
+      );
+      process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+      process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"] = fakeRuntime;
+      delete process.env["SCRIPTC_NO_CACHE"];
+
+      await compileC({ cPath, outPath: firstOut, cacheIdentity: "scriptc-generated-v1" });
+      expect(execFileSync(firstOut, { encoding: "utf8" }).trim()).toBe("1");
+
+      // scr_runtime.h includes <sys/types.h>. This newly created header wins
+      // the existing -I runtime search without changing any dependency path
+      // selected during the first build.
+      await writeFile(
+        join(fakeRuntime, "sys", "types.h"),
+        "#include_next <sys/types.h>\n#define SCRIPTC_SHADOW_VALUE 2\n",
+      );
+
+      // A new output path bypasses the output-local stamp and probes the
+      // cross-output complete-artifact cache directly.
+      await compileC({
+        cPath,
+        outPath: crossOutput,
+        cacheIdentity: "scriptc-generated-v1",
+      });
+      expect(execFileSync(crossOutput, { encoding: "utf8" }).trim()).toBe("2");
+
+      // The original output has an output-local stamp from the first build;
+      // it must invalidate for the same namespace change.
+      await compileC({ cPath, outPath: firstOut, cacheIdentity: "scriptc-generated-v1" });
+      expect(execFileSync(firstOut, { encoding: "utf8" }).trim()).toBe("2");
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+      if (oldRuntimeDir === undefined) delete process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"];
+      else process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"] = oldRuntimeDir;
+    }
+  },
+);
+
 test("implicit dependency seeds include separately compiled vendor system headers", async () => {
   const includes = await implicitDependencyProbeIncludes(runtimeSrcDir());
   // zlib's crc32.c is compiled independently and is not textually reachable

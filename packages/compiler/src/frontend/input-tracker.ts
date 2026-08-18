@@ -12,6 +12,7 @@ import { resolve } from "node:path";
  */
 export type FrontendInputProbe =
   | { op: "file"; path: string; digest: string }
+  | { op: "read-error"; path: string }
   | { op: "kind"; path: string; kind: "file" | "directory" | "other" | "missing" }
   | { op: "entries"; path: string; files: string[]; directories: string[] }
   | { op: "realpath"; path: string; target: string | null };
@@ -70,6 +71,16 @@ export class FrontendInputTracker {
       // reject a perfectly stable input (`kind` vs `file` are two views of
       // the same current file, not two historical states).
       this.probes.delete(`kind\0${probe.path}`);
+      const failedRead = this.probes.get(`read-error\0${probe.path}`);
+      if (failedRead !== undefined) this.stable = false;
+      this.probes.delete(`read-error\0${probe.path}`);
+    } else if (probe.op === "read-error") {
+      // A path can remain a regular file while its readability changes.
+      // Keep the failed operation itself, rather than reducing it to a kind
+      // probe, so a permission/ACL repair invalidates the cached frontend.
+      const successfulRead = this.probes.get(`file\0${probe.path}`);
+      if (successfulRead !== undefined) this.stable = false;
+      this.probes.delete(`file\0${probe.path}`);
     }
   }
 
@@ -99,7 +110,7 @@ export function trackedReadFile(path: string): string | null {
     record({ op: "file", path, digest: digest(text) });
     return text;
   } catch {
-    record({ op: "kind", path, kind: pathKind(path) });
+    record({ op: "read-error", path });
     return null;
   }
 }
@@ -184,6 +195,14 @@ export function frontendInputsStillMatch(snapshot: FrontendInputSnapshot): boole
           return false;
         }
       }
+      case "read-error": {
+        try {
+          readFileSync(probe.path, "utf8");
+          return false;
+        } catch {
+          return true;
+        }
+      }
       case "kind":
         return pathKind(probe.path) === probe.kind;
       case "entries": {
@@ -226,6 +245,8 @@ export function validFrontendInputSnapshot(snapshot: unknown): snapshot is Front
     switch (value.op) {
       case "file":
         return typeof value.digest === "string" && /^[0-9a-f]{64}$/.test(value.digest);
+      case "read-error":
+        return true;
       case "kind":
         return value.kind === "file" || value.kind === "directory" || value.kind === "other" ||
           value.kind === "missing";

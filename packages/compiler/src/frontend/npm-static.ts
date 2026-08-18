@@ -285,11 +285,14 @@ function packageIsUntyped(path: string): boolean {
   if (hit !== undefined) return hit;
   let untyped = true;
   try {
-    const pkg = JSON.parse(trackedReadFile(`${pkgDir}/package.json`)!) as Record<string, unknown>;
-    if (pkg["types"] !== undefined || pkg["typings"] !== undefined) untyped = false;
-    if (untyped && typeof pkg["exports"] === "object" && pkg["exports"] !== null) {
-      // a "types" condition anywhere inside exports is a claim too
-      untyped = !JSON.stringify(pkg["exports"]).includes('"types"');
+    const pkgText = trackedReadFile(`${pkgDir}/package.json`);
+    if (pkgText !== null) {
+      const pkg = JSON.parse(pkgText) as Record<string, unknown>;
+      if (pkg["types"] !== undefined || pkg["typings"] !== undefined) untyped = false;
+      if (untyped && typeof pkg["exports"] === "object" && pkg["exports"] !== null) {
+        // a "types" condition anywhere inside exports is a claim too
+        untyped = !JSON.stringify(pkg["exports"]).includes('"types"');
+      }
     }
   } catch {
     /* no package.json — keep probing */
@@ -352,7 +355,8 @@ export function npmStaticFsShadow(): NpmStaticFsShadow | null {
       if (target.viaTypes) return undefined;
       if (path.endsWith("/package.json") || path.endsWith("\\package.json")) {
         try {
-          return npmStaticTransformPkgJsonText(trackedReadFile(path)!);
+          const source = trackedReadFile(path);
+          return source === null ? undefined : npmStaticTransformPkgJsonText(source);
         } catch {
           return undefined;
         }
@@ -371,11 +375,14 @@ export function npmStaticFsShadow(): NpmStaticFsShadow | null {
         if (hit !== undefined) return hit ?? undefined;
         let rewritten: string | null = null;
         try {
-          const answer = rewriteBundlerCjsExports(trackedReadFile(path)!, path);
-          if (answer !== null && typeof answer === "object") {
-            reportNpmStaticOffender(target.pkg, answer.degrade);
-          } else {
-            rewritten = answer;
+          const source = trackedReadFile(path);
+          if (source !== null) {
+            const answer = rewriteBundlerCjsExports(source, path);
+            if (answer !== null && typeof answer === "object") {
+              reportNpmStaticOffender(target.pkg, answer.degrade);
+            } else {
+              rewritten = answer;
+            }
           }
         } catch {
           rewritten = null; // unreadable/unparseable: fall through untouched
@@ -442,12 +449,8 @@ export function npmStaticIneligibleReason(
     return "it ships no own .d.ts declaration surface";
   }
   if (jsEntry === null) return "no runtime JS entry resolves";
-  let source: string;
-  try {
-    source = trackedReadFile(jsEntry)!;
-  } catch {
-    return `its runtime entry ${jsEntry} cannot be read`;
-  }
+  const source = trackedReadFile(jsEntry);
+  if (source === null) return `its runtime entry ${jsEntry} cannot be read`;
   if (!looksUnminified(source)) return "its shipped JS looks minified";
   if (hasTransformMarkers(source)) {
     return "its shipped JS carries build-transform markers (bundled/transpiled dist)";

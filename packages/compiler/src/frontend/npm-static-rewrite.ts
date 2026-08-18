@@ -341,12 +341,8 @@ function requireTargetEsModuleStamped(fromFile: string, spec: string, depth = 0)
       dir = parent;
     }
   }
-  let src: string;
-  try {
-    src = trackedReadFile(file)!;
-  } catch {
-    return false;
-  }
+  const src = trackedReadFile(file);
+  if (src === null) return false;
   try {
     if (cjsLexedExportsOf(src, file).exports.has("__esModule")) return true;
   } catch {
@@ -365,7 +361,11 @@ function starTargetNames(file: string): Set<string> {
   try {
     return cjsLexerVisibleNames(
       file,
-      (f) => trackedReadFile(f)!,
+      (f) => {
+        const source = trackedReadFile(f);
+        if (source === null) throw new Error(`cannot read ${f}`);
+        return source;
+      },
       (from, spec) => resolveRelativeCjs(from, spec),
     );
   } catch {

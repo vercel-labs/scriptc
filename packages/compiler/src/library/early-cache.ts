@@ -150,11 +150,13 @@ function stampIntegrity(stamp: Omit<EarlyLibraryCacheStamp, "integrity">): strin
 
 function outputPaths(options: EarlyLibraryCacheOptions, backend: "c" | "llvm"): {
   cPath: string;
+  staleCPath: string;
   irPath: string;
 } {
   const stem = basename(options.entryPath).replace(/\.(ts|js|mjs|cjs)$/, "");
   return {
     cPath: join(options.outDir, `${stem}.lib.${backend === "llvm" ? "ll" : "c"}`),
+    staleCPath: join(options.outDir, `${stem}.lib.${backend === "llvm" ? "c" : "ll"}`),
     irPath: join(options.outDir, `${stem}.lib.ir.json`),
   };
 }
@@ -235,6 +237,7 @@ export async function readEarlyLibraryCache(
 
     const paths = outputPaths(options, stamp.native.backend);
     await installBytes(translationUnit, paths.cPath);
+    await rm(paths.staleCPath, { force: true });
     if (ir !== null) await installBytes(ir, paths.irPath);
     let sidecarPath: string | undefined;
     if (sidecar !== null) {

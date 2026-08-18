@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -30,6 +30,28 @@ test("tracked frontend reads invalidate on byte edits", async () => {
   expect(frontendInputsStillMatch(snapshot)).toBe(true);
 
   await writeFile(file, "export const answer = 2;\n");
+  expect(frontendInputsStillMatch(snapshot)).toBe(false);
+});
+
+test("failed frontend reads invalidate when the same file becomes readable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const file = join(dir, "unreadable.ts");
+  await writeFile(file, "export const repaired = true;\n");
+  await chmod(file, 0o000);
+
+  const tracker = new FrontendInputTracker();
+  const result = tracker.run(() => trackedReadFile(file));
+  if (result !== null) {
+    // Windows and privileged test users may not enforce POSIX mode bits.
+    await chmod(file, 0o600);
+    return;
+  }
+  const snapshot = tracker.snapshot();
+  expect(snapshot.probes).toContainEqual({ op: "read-error", path: file });
+  expect(frontendInputsStillMatch(snapshot)).toBe(true);
+
+  await chmod(file, 0o600);
   expect(frontendInputsStillMatch(snapshot)).toBe(false);
 });
 

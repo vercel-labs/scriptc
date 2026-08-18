@@ -86,6 +86,8 @@ test("early library cache restores generated artifacts and metadata", async () =
     frontend: tracker.snapshot(),
   });
   await Promise.all([rm(f.cPath), rm(f.irPath), rm(f.sidecarPath)]);
+  const staleCPath = join(f.options.outDir, "entry.lib.c");
+  await writeFile(staleCPath, "/* stale c backend */\n");
 
   const hit = await readEarlyLibraryCache(f.root, f.options, null);
   expect(hit).not.toBeNull();
@@ -93,6 +95,7 @@ test("early library cache restores generated artifacts and metadata", async () =
   expect(await readFile(f.cPath, "utf8")).toBe("; generated llvm\n");
   expect(await readFile(f.irPath, "utf8")).toContain("irVersion");
   expect(await readFile(f.sidecarPath, "utf8")).toContain("contract");
+  await expect(readFile(staleCPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 test("early library cache misses on source edits and newly-resolved candidates", async () => {

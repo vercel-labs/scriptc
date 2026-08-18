@@ -6,6 +6,7 @@ import {
   FrontendInputTracker,
   frontendInputsStillMatch,
   trackedAccessibleEntries,
+  trackedDirectoryExists,
   trackedFileExists,
   trackedReadFile,
   validFrontendInputSnapshot,
@@ -96,6 +97,34 @@ test("directory enumeration invalidates workspace discovery", async () => {
   const snapshot = tracker.snapshot();
   await mkdir(join(packages, "new-member"));
   expect(frontendInputsStillMatch(snapshot)).toBe(false);
+});
+
+test("compiler outputs do not invalidate a fresh output directory", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const generatedRoot = join(dir, "generated");
+  const outDir = join(generatedRoot, "nested");
+  const generated = join(outDir, "entry.lib.c");
+
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => {
+    expect(trackedAccessibleEntries(dir)?.directories).toEqual([]);
+    expect(trackedDirectoryExists(generatedRoot)).toBe(false);
+    expect(trackedDirectoryExists(outDir)).toBe(false);
+    expect(trackedAccessibleEntries(outDir)).toBeNull();
+  });
+  const snapshot = tracker.snapshot();
+  const exclusions = {
+    outputPaths: [generated],
+    outputDirectories: [dir, generatedRoot, outDir],
+  };
+
+  await mkdir(outDir, { recursive: true });
+  await writeFile(generated, "/* generated */\n");
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(true);
+
+  await writeFile(join(outDir, "new-source.ts"), "export const appeared = true;\n");
+  expect(frontendInputsStillMatch(snapshot, exclusions)).toBe(false);
 });
 
 test("failed directory enumeration invalidates when the operation starts succeeding", async () => {

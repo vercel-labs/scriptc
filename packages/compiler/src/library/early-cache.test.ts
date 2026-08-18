@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { FrontendInputTracker, trackedFileExists, trackedReadFile } from "../frontend/input-tracker.js";
+import { FrontendInputTracker, trackedAccessibleEntries, trackedDirectoryExists, trackedFileExists, trackedReadFile } from "../frontend/input-tracker.js";
 import {
   publishEarlyLibraryCache,
   readEarlyLibraryCache,
@@ -96,6 +96,85 @@ test("early library cache restores generated artifacts and metadata", async () =
   expect(await readFile(f.irPath, "utf8")).toContain("irVersion");
   expect(await readFile(f.sidecarPath, "utf8")).toContain("contract");
   await expect(readFile(staleCPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("early library cache publishes after creating a fresh output directory", async () => {
+  const f = await fixture();
+  const cacheRoot = await mkdtemp(join(tmpdir(), "scriptc-early-cache-root-"));
+  scratch.push(cacheRoot);
+  const outDir = join(f.options.outDir, "fresh-out");
+  const cPath = join(outDir, "entry.lib.ll");
+  const options = { ...f.options, outDir, emitIr: false };
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => {
+    trackedAccessibleEntries(f.options.outDir);
+    trackedDirectoryExists(outDir);
+    trackedAccessibleEntries(outDir);
+    trackedReadFile(f.source);
+  });
+
+  await mkdir(outDir);
+  await writeFile(cPath, "; generated llvm in fresh output\n");
+  await publishEarlyLibraryCache(cacheRoot, options, {
+    cPath,
+    native: {
+      backend: "llvm",
+      regex: false,
+      assert: false,
+      inspect: false,
+      symbol: false,
+      searchParams: false,
+      emitter: false,
+      zlib: false,
+      copying: false,
+      textDecoderLegacy: false,
+    },
+    frontend: tracker.snapshot(),
+  });
+
+  await rm(cPath);
+  expect((await readEarlyLibraryCache(cacheRoot, options, undefined))?.cPath).toBe(cPath);
+  expect(await readFile(cPath, "utf8")).toContain("fresh output");
+});
+
+test("early library cache hits refresh every payload's LRU time", async () => {
+  const f = await fixture();
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  await publishEarlyLibraryCache(f.root, f.options, {
+    cPath: f.cPath,
+    irPath: f.irPath,
+    sidecarPath: f.sidecarPath,
+    native: {
+      backend: "llvm",
+      regex: false,
+      assert: false,
+      inspect: false,
+      symbol: false,
+      searchParams: false,
+      emitter: false,
+      zlib: false,
+      copying: false,
+      textDecoderLegacy: false,
+    },
+    frontend: tracker.snapshot(),
+  });
+  const earlyRoot = join(f.root, "early-lib");
+  const [key] = await readdir(earlyRoot);
+  const entry = join(earlyRoot, key!);
+  const cachePaths = [
+    join(entry, "stamp.json"),
+    join(entry, "program.tu"),
+    join(entry, "program.ir.json"),
+    join(entry, "contract.json"),
+  ];
+  const old = new Date("2000-01-01T00:00:00.000Z");
+  await Promise.all(cachePaths.map((path) => utimes(path, old, old)));
+
+  expect(await readEarlyLibraryCache(f.root, f.options, null)).not.toBeNull();
+  for (const path of cachePaths) {
+    expect((await stat(path)).mtimeMs).toBeGreaterThan(old.getTime());
+  }
 });
 
 test("early library cache misses on source edits and newly-resolved candidates", async () => {

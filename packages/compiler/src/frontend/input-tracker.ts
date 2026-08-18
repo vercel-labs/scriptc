@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 /**
  * Filesystem observations made while constructing and lowering one frontend
@@ -22,6 +22,15 @@ export interface FrontendInputSnapshot {
   version: 1;
   probes: FrontendInputProbe[];
   stable: boolean;
+}
+
+/** Compiler-owned paths whose creation/removal must not invalidate the
+ * frontend that produced them. Directory CONTENT remains tracked: only the
+ * named artifacts and a generated directory's formerly-missing observation
+ * are excluded. */
+export interface FrontendInputExclusions {
+  outputPaths?: Iterable<string>;
+  outputDirectories?: Iterable<string>;
 }
 
 function digest(text: string): string {
@@ -178,11 +187,65 @@ export function trackedAccessibleEntries(
 }
 
 /** Re-run every recorded probe against the current filesystem. */
-export function frontendInputsStillMatch(snapshot: FrontendInputSnapshot): boolean {
+export function frontendInputsStillMatch(
+  snapshot: FrontendInputSnapshot,
+  exclusions: FrontendInputExclusions = {},
+): boolean {
   if (snapshot.version !== 1 || snapshot.stable !== true || !Array.isArray(snapshot.probes)) {
     return false;
   }
+  const outputPaths = new Set([...(exclusions.outputPaths ?? [])].map((path) => resolve(path)));
+  const outputDirectories = new Set(
+    [...(exclusions.outputDirectories ?? [])].map((path) => resolve(path)),
+  );
+  const generatedOnlyDirectory = (directory: string): boolean => {
+    const allowedFiles = new Set<string>();
+    for (const output of outputPaths) {
+      if (dirname(output) === directory) allowedFiles.add(basename(output));
+    }
+    const allowedDirectories = new Map<string, string>();
+    for (const outputDir of outputDirectories) {
+      if (outputDir !== directory && dirname(outputDir) === directory) {
+        allowedDirectories.set(basename(outputDir), outputDir);
+      }
+    }
+    try {
+      return readdirSync(directory).every((name) => {
+        if (allowedFiles.has(name)) return true;
+        const child = allowedDirectories.get(name);
+        return child !== undefined && generatedOnlyDirectory(child);
+      });
+    } catch {
+      return false;
+    }
+  };
   return snapshot.probes.every((probe) => {
+    if (outputPaths.has(probe.path)) return true;
+    if (outputDirectories.has(probe.path)) {
+      // A fresh output directory can be absent while the frontend runs and
+      // created only when emission starts. Admit it only while its current
+      // contents are exactly the named compiler artifacts; a user file that
+      // appears there still invalidates module resolution.
+      if (probe.op === "kind" && probe.kind === "missing") {
+        return pathKind(probe.path) === "missing" || generatedOnlyDirectory(probe.path);
+      }
+      if (probe.op === "entries-error") {
+        try {
+          readdirSync(probe.path);
+          return generatedOnlyDirectory(probe.path);
+        } catch {
+          return true;
+        }
+      }
+      if (probe.op === "realpath" && probe.target === null) {
+        try {
+          realpathSync(probe.path);
+          return generatedOnlyDirectory(probe.path);
+        } catch {
+          return true;
+        }
+      }
+    }
     switch (probe.op) {
       case "file": {
         try {
@@ -203,6 +266,23 @@ export function frontendInputsStillMatch(snapshot: FrontendInputSnapshot): boole
         return pathKind(probe.path) === probe.kind;
       case "entries": {
         try {
+          const ignored = new Set<string>();
+          for (const output of outputPaths) {
+            if (dirname(output) === probe.path) ignored.add(basename(output));
+          }
+          for (const outputDir of outputDirectories) {
+            if (dirname(outputDir) !== probe.path) continue;
+            const name = basename(outputDir);
+            // If the directory existed during the frontend, keep tracking its
+            // presence. Only suppress a directory introduced by this build.
+            if (
+              !probe.files.includes(name) &&
+              !probe.directories.includes(name) &&
+              generatedOnlyDirectory(outputDir)
+            ) {
+              ignored.add(name);
+            }
+          }
           const files: string[] = [];
           const directories: string[] = [];
           for (const entry of readdirSync(probe.path, { withFileTypes: true })) {
@@ -212,8 +292,10 @@ export function frontendInputsStillMatch(snapshot: FrontendInputSnapshot): boole
           }
           files.sort();
           directories.sort();
-          return JSON.stringify(files) === JSON.stringify(probe.files) &&
-            JSON.stringify(directories) === JSON.stringify(probe.directories);
+          return JSON.stringify(files.filter((name) => !ignored.has(name))) ===
+              JSON.stringify(probe.files.filter((name) => !ignored.has(name))) &&
+            JSON.stringify(directories.filter((name) => !ignored.has(name))) ===
+              JSON.stringify(probe.directories.filter((name) => !ignored.has(name)));
         } catch {
           return false;
         }

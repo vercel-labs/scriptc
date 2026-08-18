@@ -3,7 +3,7 @@ import { chmod, copyFile, mkdir, readFile, readdir, rename, rm, utimes, writeFil
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compilerReleaseVersion } from "./sidecar.js";
-import { frontendInputsStillMatch, validFrontendInputSnapshot, type FrontendInputSnapshot } from "../frontend/input-tracker.js";
+import { frontendInputsStillMatch, validFrontendInputSnapshot, type FrontendInputExclusions, type FrontendInputSnapshot } from "../frontend/input-tracker.js";
 
 interface CachedLibraryFile {
   name: string;
@@ -162,11 +162,41 @@ function outputPaths(options: EarlyLibraryCacheOptions, backend: "c" | "llvm"): 
 }
 
 function sidecarOutputPath(options: EarlyLibraryCacheOptions, configured: string | null): string {
-  const archivePath = options.outPath ?? join(
+  const archivePath = archiveOutputPath(options);
+  return configured !== null ? resolve(dirname(archivePath), configured) : `${archivePath}.contract.json`;
+}
+
+function archiveOutputPath(options: EarlyLibraryCacheOptions): string {
+  return options.outPath ?? join(
     options.outDir,
     `${basename(options.entryPath).replace(/\.(ts|js|mjs|cjs)$/, "")}.lib.a`,
   );
-  return configured !== null ? resolve(dirname(archivePath), configured) : `${archivePath}.contract.json`;
+}
+
+function frontendOutputExclusions(
+  options: EarlyLibraryCacheOptions,
+  backend: "c" | "llvm",
+  sidecarPath: string | undefined,
+): FrontendInputExclusions {
+  const paths = outputPaths(options, backend);
+  const outputArtifacts = [
+    paths.cPath,
+    paths.staleCPath,
+    ...(options.emitIr ? [paths.irPath] : []),
+    archiveOutputPath(options),
+    ...(sidecarPath === undefined ? [] : [sidecarPath]),
+  ].map((path) => resolve(path));
+  const outputDirectories = new Set<string>();
+  for (const artifact of outputArtifacts) {
+    for (let directory = dirname(artifact); ; directory = dirname(directory)) {
+      outputDirectories.add(directory);
+      if (dirname(directory) === directory) break;
+    }
+  }
+  return {
+    outputPaths: outputArtifacts,
+    outputDirectories,
+  };
 }
 
 async function readCachedFile(path: string, expected: string): Promise<Buffer | null> {
@@ -214,7 +244,16 @@ export async function readEarlyLibraryCache(
         stamp.files.sidecar?.name !== "contract.json" || !/^[0-9a-f]{64}$/.test(stamp.files.sidecar.digest)
       )) ||
       stampIntegrity(unsigned) !== integrity ||
-      !frontendInputsStillMatch(stamp.frontend) ||
+      !frontendInputsStillMatch(
+        stamp.frontend,
+        frontendOutputExclusions(
+          options,
+          stamp.native.backend,
+          stamp.files.sidecar === null
+            ? undefined
+            : sidecarOutputPath(options, sidecarConfiguredPath ?? null),
+        ),
+      ) ||
       (stamp.files.ir !== null) !== options.emitIr ||
       (stamp.files.sidecar !== null) !== (sidecarConfiguredPath !== undefined)
     ) return null;
@@ -245,7 +284,12 @@ export async function readEarlyLibraryCache(
       await installBytes(sidecar, sidecarPath);
     }
     const now = new Date();
-    await utimes(path, now, now).catch(() => undefined);
+    await Promise.all([
+      path,
+      join(directory, stamp.files.translationUnit.name),
+      ...(stamp.files.ir === null ? [] : [join(directory, stamp.files.ir.name)]),
+      ...(stamp.files.sidecar === null ? [] : [join(directory, stamp.files.sidecar.name)]),
+    ].map((cachePath) => utimes(cachePath, now, now).catch(() => undefined)));
     return {
       cPath: paths.cPath,
       native: stamp.native,
@@ -279,7 +323,10 @@ export async function publishEarlyLibraryCache(
       result.irPath === undefined ? Promise.resolve(null) : publishFile(result.irPath, "program.ir.json"),
       result.sidecarPath === undefined ? Promise.resolve(null) : publishFile(result.sidecarPath, "contract.json"),
     ]);
-    if (!frontendInputsStillMatch(result.frontend)) return;
+    if (!frontendInputsStillMatch(
+      result.frontend,
+      frontendOutputExclusions(options, result.native.backend, result.sidecarPath),
+    )) return;
     const unsigned: Omit<EarlyLibraryCacheStamp, "integrity"> = {
       version: 1,
       key: cacheKey(options),

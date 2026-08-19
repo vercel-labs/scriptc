@@ -1844,8 +1844,8 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
                 driver,
                 arArgv,
                 buildDir,
-                programObject,
-                [...(identityObject === null ? [] : [identityObject]), ...runtimeObjects, ...lreObjects, ...zlibObjects],
+                [programObject, ...(identityObject === null ? [] : [identityObject])],
+                [...runtimeObjects, ...lreObjects, ...zlibObjects],
                 opts.localizeSymbols,
                 stem,
               ),
@@ -1941,7 +1941,8 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
  * shared by design. Windows embedders additionally link advapi32, iphlpapi,
  * and ws2_32.
  *
- * Member selection matters: a classic archive's unused members (and their
+ * The generated program and optional identity objects are mandatory roots;
+ * support-member selection still matters. A classic archive's unused members (and their
  * undefined references to units library mode excludes, like the
  * fs-promises unit's fiber symbols) never reach an embedder's link. A
  * blind merge of every object would carry those references into the one
@@ -1950,7 +1951,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
  * members the program object transitively needs (the COFF arm implements
  * the same member semantics in process).
  *
- *   Mach-O — one host-ld64 invocation: -r merges program + needed members,
+ *   Mach-O — one host-ld64 invocation: -r merges roots + needed members,
  *            -exported_symbols_list demotes every unlisted global to
  *            private extern, and -r without -keep_private_externs writes
  *            private externs out as non-external symbols. Apple ASan's
@@ -1985,7 +1986,7 @@ async function localizeLibraryObjects(
   driver: CcDriver,
   arArgv: readonly string[],
   buildDir: string,
-  programObject: string,
+  rootObjects: readonly string[],
   supportObjects: readonly string[],
   keepSymbols: readonly string[],
   stem: string,
@@ -2008,14 +2009,15 @@ async function localizeLibraryObjects(
   if (platform === "win32") {
     // COFF has no relocatable-link tool to stage through; the member
     // selection and combine+demote happen in process over the object bytes.
-    const [program, ...support] = await Promise.all(
-      [programObject, ...supportObjects].map((path) => readFile(path)),
-    );
+    const [roots, support] = await Promise.all([
+      Promise.all(rootObjects.map((path) => readFile(path))),
+      Promise.all(supportObjects.map((path) => readFile(path))),
+    ]);
     try {
       await writeFile(
         combined,
-        mergeAndLocalizeCoffObjects(program!, support, new Set(keepSymbols), {
-          program: basename(programObject),
+        mergeAndLocalizeCoffObjects(roots, support, new Set(keepSymbols), {
+          roots: rootObjects.map((path) => basename(path)),
           support: supportObjects.map((path) => basename(path)),
         }),
       );
@@ -2029,10 +2031,10 @@ async function localizeLibraryObjects(
   await run([arArgv[0] ?? "ar", ...arArgv.slice(1), "rcs", staging, ...supportObjects]);
   if (platform === "darwin") {
     await writeFile(keepFile, keepSymbols.map((s) => `_${s}\n`).join(""));
-    await run(["ld", "-r", programObject, staging, "-o", combined, "-exported_symbols_list", keepFile]);
+    await run(["ld", "-r", ...rootObjects, staging, "-o", combined, "-exported_symbols_list", keepFile]);
   } else if (platform === "linux" && driver.target === null) {
     await writeFile(keepFile, keepSymbols.map((s) => `${s}\n`).join(""));
-    await run(["ld", "-r", "--force-group-allocation", programObject, staging, "-o", combined]);
+    await run(["ld", "-r", "--force-group-allocation", ...rootObjects, staging, "-o", combined]);
     await run(["objcopy", `--keep-global-symbols=${keepFile}`, combined]);
   } else if (platform === "linux") {
     // Cross ELF: the cross driver's own lld performs the relocatable merge
@@ -2046,7 +2048,7 @@ async function localizeLibraryObjects(
       ...driver.argv.slice(1),
       "-target", driver.zigTarget ?? driver.target!,
       "-nostdlib",
-      "-r", programObject, staging,
+      "-r", ...rootObjects, staging,
       "-o", combined,
     ]);
     try {

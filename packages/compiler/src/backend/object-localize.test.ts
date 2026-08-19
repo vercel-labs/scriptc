@@ -431,7 +431,7 @@ describe("mergeAndLocalizeCoffObjects", () => {
       ],
     );
     const merged = readCoff(
-      mergeAndLocalizeCoffObjects(program, [needed, unneeded], new Set(["keep_me"])),
+      mergeAndLocalizeCoffObjects([program], [needed, unneeded], new Set(["keep_me"])),
     );
     const byName = new Map(merged.symbols.map((s) => [s.name, s]));
     expect(byName.get("keep_me")!.storageClass).toBe(IMAGE_SYM_CLASS_EXTERNAL);
@@ -444,6 +444,47 @@ describe("mergeAndLocalizeCoffObjects", () => {
     expect(byName.has("excluded_unit_ref")).toBe(false);
     // The program's relocation now addresses the demoted definition.
     expect(merged.sections[0]!.relocs[0]!.sym).toBe(byName.get("helper")!.index);
+  });
+
+  test("includes every root even when no other object references its exports", () => {
+    const program = buildCoff(
+      [text()],
+      [
+        { name: ".text", section: 1, storageClass: IMAGE_SYM_CLASS_STATIC, sectionDef: true },
+        { name: "keep_me", section: 1 },
+      ],
+    );
+    const identity = buildCoff(
+      [text()],
+      [
+        { name: ".text", section: 1, storageClass: IMAGE_SYM_CLASS_STATIC, sectionDef: true },
+        { name: "build_id", section: 1 },
+        { name: "abi_version", section: 1, value: 4 },
+      ],
+    );
+    const unneeded = buildCoff(
+      [text()],
+      [
+        { name: ".text", section: 1, storageClass: IMAGE_SYM_CLASS_STATIC, sectionDef: true },
+        { name: "lonely", section: 1 },
+        { name: "excluded_unit_ref", section: 0 },
+      ],
+    );
+
+    const merged = readCoff(
+      mergeAndLocalizeCoffObjects(
+        [program, identity],
+        [unneeded],
+        new Set(["keep_me", "build_id", "abi_version"]),
+      ),
+    );
+    const byName = new Map(merged.symbols.map((symbol) => [symbol.name, symbol]));
+    for (const name of ["keep_me", "build_id", "abi_version"]) {
+      expect(byName.get(name)?.storageClass).toBe(IMAGE_SYM_CLASS_EXTERNAL);
+      expect(byName.get(name)?.section).toBeGreaterThan(0);
+    }
+    expect(byName.has("lonely")).toBe(false);
+    expect(byName.has("excluded_unit_ref")).toBe(false);
   });
 
   test("does not pull an alternate definition when a selected object already satisfies the reference", () => {
@@ -477,7 +518,7 @@ describe("mergeAndLocalizeCoffObjects", () => {
     );
 
     const merged = readCoff(
-      mergeAndLocalizeCoffObjects(program, [needed, alternate], new Set()),
+      mergeAndLocalizeCoffObjects([program], [needed, alternate], new Set()),
     );
     const byName = new Map(merged.symbols.map((s) => [s.name, s]));
     expect(byName.has("alternate_only")).toBe(false);
@@ -528,7 +569,7 @@ describe("mergeAndLocalizeCoffObjects", () => {
         { name: ".refptr.shared", section: 2 },
       ],
     );
-    const merged = readCoff(mergeAndLocalizeCoffObjects(program, [support], new Set(["keep_me"])));
+    const merged = readCoff(mergeAndLocalizeCoffObjects([program], [support], new Set(["keep_me"])));
     // One survivor section carries the stub; no COMDAT flag remains anywhere.
     const rdata = merged.sections.filter((s) => s.name === ".rdata");
     expect(rdata.length).toBe(1);
@@ -578,7 +619,7 @@ describe("mergeAndLocalizeCoffObjects", () => {
 
   test("COMDAT LARGEST retains the largest selected definition", () => {
     const pair = comdatPair(6, new Uint8Array([1, 2, 3, 4]), new Uint8Array([5, 6, 7, 8, 9]));
-    const merged = readCoff(mergeAndLocalizeCoffObjects(pair.program, pair.support, new Set(["entry"])));
+    const merged = readCoff(mergeAndLocalizeCoffObjects([pair.program], pair.support, new Set(["entry"])));
     const rdata = merged.sections.filter((section) => section.name === ".rdata");
     expect(rdata).toHaveLength(1);
     expect([...rdata[0]!.data]).toEqual([5, 6, 7, 8, 9]);
@@ -620,7 +661,7 @@ describe("mergeAndLocalizeCoffObjects", () => {
     };
     const merged = readCoff(
       mergeAndLocalizeCoffObjects(
-        pair.program,
+        [pair.program],
         [withAssociate(1), withAssociate(2)],
         new Set(["entry"]),
       ),
@@ -633,8 +674,8 @@ describe("mergeAndLocalizeCoffObjects", () => {
   test("COMDAT SAME_SIZE refuses definitions with different sizes", () => {
     const pair = comdatPair(3, new Uint8Array(4), new Uint8Array(8));
     expect(() =>
-      mergeAndLocalizeCoffObjects(pair.program, pair.support, new Set(), {
-        program: "program.o",
+      mergeAndLocalizeCoffObjects([pair.program], pair.support, new Set(), {
+        roots: ["program.o"],
         support: ["one.o", "two.o"],
       }),
     ).toThrow(/SAME_SIZE mismatch.*one\.o.*two\.o/);
@@ -643,8 +684,8 @@ describe("mergeAndLocalizeCoffObjects", () => {
   test("COMDAT EXACT_MATCH refuses equal-size definitions with different contents", () => {
     const pair = comdatPair(4, new Uint8Array([1, 2, 3, 4]), new Uint8Array([1, 2, 3, 5]));
     expect(() =>
-      mergeAndLocalizeCoffObjects(pair.program, pair.support, new Set(), {
-        program: "program.o",
+      mergeAndLocalizeCoffObjects([pair.program], pair.support, new Set(), {
+        roots: ["program.o"],
         support: ["one.o", "two.o"],
       }),
     ).toThrow(/EXACT_MATCH mismatch.*one\.o.*two\.o/);
@@ -653,7 +694,7 @@ describe("mergeAndLocalizeCoffObjects", () => {
   test("COMDAT duplicates refuse conflicting selection kinds", () => {
     const one = comdatPair(2, new Uint8Array(4), new Uint8Array(4));
     const two = comdatPair(3, new Uint8Array(4), new Uint8Array(4));
-    expect(() => mergeAndLocalizeCoffObjects(one.program, [one.support[0]!, two.support[1]!], new Set()))
+    expect(() => mergeAndLocalizeCoffObjects([one.program], [one.support[0]!, two.support[1]!], new Set()))
       .toThrow(/conflicting COMDAT selections/);
   });
 
@@ -676,8 +717,8 @@ describe("mergeAndLocalizeCoffObjects", () => {
       ],
     );
     expect(() =>
-      mergeAndLocalizeCoffObjects(one, [two], new Set(["keep_me"]), {
-        program: "one.o",
+      mergeAndLocalizeCoffObjects([one], [two], new Set(["keep_me"]), {
+        roots: ["one.o"],
         support: ["two.o"],
       }),
     ).toThrow(/duplicate external symbol dup.*one\.o.*two\.o/);
@@ -686,6 +727,6 @@ describe("mergeAndLocalizeCoffObjects", () => {
   test("refuses non-AMD64 machines", () => {
     const object = buildCoff([text()], [{ name: "x", section: 1 }]);
     new DataView(object.buffer, object.byteOffset).setUint16(0, 0xaa64, true);
-    expect(() => mergeAndLocalizeCoffObjects(object, [], new Set())).toThrow(/machine/);
+    expect(() => mergeAndLocalizeCoffObjects([object], [], new Set())).toThrow(/machine/);
   });
 });

@@ -19,13 +19,13 @@
  *                          another archive's copy at the embedder's link.
  *
  *   mergeAndLocalizeCoffObjects
- *                          the COFF combine+demote in one pass: pull
- *                          support objects on undefined-symbol demand (the
- *                          staging-archive member semantics `ld -r` gives
- *                          the other formats), concatenate the selected
- *                          objects' sections, resolve cross-object symbol
- *                          references by index, then demote every defined
- *                          external outside the keep set to a static
+ *                          the COFF combine+demote in one pass: include every
+ *                          root object, pull support objects on undefined-
+ *                          symbol demand (the staging-archive member semantics
+ *                          `ld -r` gives the other formats), concatenate the
+ *                          selected objects' sections, resolve cross-object
+ *                          symbol references by index, then demote every
+ *                          defined external outside the keep set to a static
  *                          symbol.
  *
  * Shared demotion rule (GNU objcopy --keep-global-symbols semantics):
@@ -544,20 +544,21 @@ function coffSectionContentsEqual(a: CoffSection, b: CoffSection): boolean {
   return true;
 }
 
-/** Combine a program object with the support objects it (transitively)
- * needs into ONE COFF object, then demote every defined external outside
- * `keep` to a static symbol. Support objects join on undefined-symbol
+/** Combine mandatory root objects with the support objects they
+ * (transitively) need into ONE COFF object, then demote every defined external
+ * outside `keep` to a static symbol. Support objects join on undefined-symbol
  * demand — the staging-archive member semantics the other formats get from
  * `ld -r` — so an unused member's undefined references never reach the
  * embedder's link. x86_64 only (the one COFF target scriptc produces). */
 export function mergeAndLocalizeCoffObjects(
-  program: Uint8Array,
+  roots: readonly Uint8Array[],
   support: readonly Uint8Array[],
   keep: ReadonlySet<string>,
-  labels?: { program?: string; support?: readonly string[] },
+  labels?: { roots?: readonly string[]; support?: readonly string[] },
 ): Uint8Array {
+  if (roots.length === 0) fail("COFF localization requires at least one root object");
   const objects = [
-    parseCoff(program, labels?.program ?? "program object"),
+    ...roots.map((bytes, i) => parseCoff(bytes, labels?.roots?.[i] ?? `root object ${i}`)),
     ...support.map((bytes, i) => parseCoff(bytes, labels?.support?.[i] ?? `support object ${i}`)),
   ];
   for (const object of objects) {
@@ -571,7 +572,7 @@ export function mergeAndLocalizeCoffObjects(
   // list order wins the pull, matching `ar` member order.
   const definers = new Map<string, number[]>();
   objects.forEach((object, index) => {
-    if (index === 0) return;
+    if (index < roots.length) return;
     for (const sym of object.symbols) {
       if (!coffDefines(sym)) continue;
       const list = definers.get(sym.name);
@@ -579,7 +580,7 @@ export function mergeAndLocalizeCoffObjects(
       else list.push(index);
     }
   });
-  const included: boolean[] = objects.map((_, i) => i === 0);
+  const included: boolean[] = objects.map((_, i) => i < roots.length);
   // Archive extraction consults the linker's CURRENT symbol state: an
   // undefined in a newly pulled member is already satisfied when the
   // program object (or an earlier member) defines it. Record every
@@ -593,8 +594,8 @@ export function mergeAndLocalizeCoffObjects(
       if (coffDefines(sym)) selectedDefinitions.add(sym.name);
     }
   };
-  addDefinitions(objects[0]!);
-  const queue = [0];
+  for (let i = 0; i < roots.length; i++) addDefinitions(objects[i]!);
+  const queue = roots.map((_, i) => i);
   while (queue.length > 0) {
     const object = objects[queue.shift()!]!;
     for (const sym of object.symbols) {

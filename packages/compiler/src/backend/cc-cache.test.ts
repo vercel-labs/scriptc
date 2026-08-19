@@ -2991,3 +2991,66 @@ test("library identity edits reuse the cached large program object", async () =>
     else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
   }
 });
+
+test.skipIf(process.platform === "win32" || zigExecutable === undefined)(
+  "cross-ELF localized archives retain unreferenced identity roots",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-localized-identity-"));
+    scratch.push(dir);
+    const cPath = join(dir, "program.c");
+    const identityCPath = join(dir, "identity.c");
+    const probePath = join(dir, "probe.c");
+    const archivePath = join(dir, "program.lib.a");
+    const probeOutput = join(dir, "probe");
+    const cacheRoot = join(dir, "cache");
+    const target = "x86_64-linux-gnu.2.36";
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const oldCc = process.env["SCRIPTC_CC"];
+    const oldTarget = process.env["SCRIPTC_TARGET"];
+    try {
+      process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      process.env["SCRIPTC_CC"] = "zigcc";
+      process.env["SCRIPTC_TARGET"] = target;
+      await writeFile(cPath, "int scriptc_large_program_value(void) { return 7; }\n");
+      await writeFile(identityCPath, [
+        "unsigned long long scriptc_build_id(void) { return 2; }",
+        "unsigned scriptc_abi_version(void) { return 1; }",
+        "",
+      ].join("\n"));
+      await compileLibArchive({
+        cPath,
+        identityCPath,
+        outPath: archivePath,
+        cacheIdentity: TEST_CACHE_IDENTITY,
+        localizeSymbols: [
+          "scriptc_large_program_value",
+          "scriptc_build_id",
+          "scriptc_abi_version",
+        ],
+      });
+      await writeFile(probePath, [
+        "int scriptc_large_program_value(void);",
+        "unsigned long long scriptc_build_id(void);",
+        "unsigned scriptc_abi_version(void);",
+        "int main(void) {",
+        "  return scriptc_large_program_value() != 7 || scriptc_build_id() != 2 || scriptc_abi_version() != 1;",
+        "}",
+        "",
+      ].join("\n"));
+      execFileSync(zigExecutable!, [
+        "cc", "-target", target, probePath, archivePath, "-lm", "-o", probeOutput,
+      ]);
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+      if (oldCc === undefined) delete process.env["SCRIPTC_CC"];
+      else process.env["SCRIPTC_CC"] = oldCc;
+      if (oldTarget === undefined) delete process.env["SCRIPTC_TARGET"];
+      else process.env["SCRIPTC_TARGET"] = oldTarget;
+    }
+  },
+);

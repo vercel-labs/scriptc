@@ -35,6 +35,22 @@ test("line breaks introduced by comments retain ASI-sensitive identity", () => {
   )).toBe(false);
 });
 
+test("comments cannot merge keywords with Unicode or escaped identifiers", () => {
+  for (const [before, after] of [
+    [
+      "const π = 1, typeofπ = 0; export const value = typeof/**/π ? 1 : 0;\n",
+      "const π = 1, typeofπ = 0; export const value = typeofπ ? 1 : 0;\n",
+    ],
+    [
+      String.raw`const π = 1, typeofπ = 0; export const value = typeof/**/\u03c0 ? 1 : 0;` + "\n",
+      String.raw`const π = 1, typeofπ = 0; export const value = typeof\u03c0 ? 1 : 0;` + "\n",
+    ],
+  ] as const) {
+    expect(semanticallyEqualSource("entry.ts", before, after)).toBe(false);
+    expect(semanticSourceDigest("entry.ts", before)).not.toBe(semanticSourceDigest("entry.ts", after));
+  }
+});
+
 test("ECMAScript line separators retain ASI and single-line-comment boundaries", () => {
   for (const separator of ["\u2028", "\u2029"]) {
     expect(semanticallyEqualSource(

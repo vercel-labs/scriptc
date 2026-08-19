@@ -35,6 +35,22 @@ test("line breaks introduced by comments retain ASI-sensitive identity", () => {
   )).toBe(false);
 });
 
+test("ECMAScript line separators retain ASI and single-line-comment boundaries", () => {
+  for (const separator of ["\u2028", "\u2029"]) {
+    expect(semanticallyEqualSource(
+      "entry.ts",
+      "function f() { return value; }\n",
+      `function f() { return${separator}value; }\n`,
+    )).toBe(false);
+
+    expect(semanticallyEqualSource(
+      "entry.ts",
+      `export const a = 1; // note${separator}export const b = 1;\n`,
+      `export const a = 1; // note${separator}export const b = 2;\n`,
+    )).toBe(false);
+  }
+});
+
 test("source locations rebase across changed comment trivia", () => {
   const before = "// old\nexport function value() { return 1; }\n";
   const after = "/* much longer\n * note\n */\nexport function value() { return 1; }\n";
@@ -44,6 +60,20 @@ test("source locations rebase across changed comment trivia", () => {
   rebaseSourceLocations(payload, new Map([["/entry.ts", before]]), new Map([["/entry.ts", after]]));
   expect(payload.loc.start).toBe(after.indexOf("return"));
   expect(payload.loc.end).toBe(after.indexOf("return") + "return 1".length);
+});
+
+test("source locations at adjacent token boundaries rebase past inserted comments", () => {
+  const before = "export function value() { return left+right; }\n";
+  const after = "export function value() { return left+/* note */right; }\n";
+  const oldStart = before.indexOf("right");
+  const payload = {
+    loc: { file: "/entry.ts", start: oldStart, end: oldStart + "right".length },
+    empty: { file: "/entry.ts", start: oldStart, end: oldStart },
+  };
+  rebaseSourceLocations(payload, new Map([["/entry.ts", before]]), new Map([["/entry.ts", after]]));
+  expect(payload.loc.start).toBe(after.indexOf("right"));
+  expect(payload.loc.end).toBe(after.indexOf("right") + "right".length);
+  expect(payload.empty).toEqual({ file: "/entry.ts", start: after.indexOf("right"), end: after.indexOf("right") });
 });
 
 test("comment markers inside strings, templates, and regex literals are tokens", () => {

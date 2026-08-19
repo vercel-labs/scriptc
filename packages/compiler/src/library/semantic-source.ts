@@ -10,7 +10,9 @@ interface SemanticToken {
   end: number;
 }
 
-const TOKEN_PATTERN = /(?:\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:===|!==|>>>|>>=|<<=|\*\*=|&&=|\|\|=|\?\?=|=>|==|!=|<=|>=|\+\+|--|&&|\|\||\?\?|\?\.|\*\*|<<|>>>|>>|\+=|-=|\*=|\/=|%=|&=|\|=|\^=)|[^\s])/gy;
+const TOKEN_PATTERN = /(?:\s+|\/\/[^\r\n\u2028\u2029]*|\/\*[\s\S]*?\*\/|(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)|(?:[A-Za-z_$][A-Za-z0-9_$]*)|(?:===|!==|>>>|>>=|<<=|\*\*=|&&=|\|\|=|\?\?=|=>|==|!=|<=|>=|\+\+|--|&&|\|\||\?\?|\?\.|\*\*|<<|>>>|>>|\+=|-=|\*=|\/=|%=|&=|\|=|\^=)|[^\s])/gy;
+
+const LINE_BREAK_PATTERN = /[\r\n\u2028\u2029]/;
 
 function commentCanAffectCompilation(path: string, text: string): boolean {
   const extension = extname(path).toLowerCase();
@@ -51,7 +53,7 @@ function semanticTokens(path: string, source: string): SemanticToken[] | null {
     const start = match.index;
     let end = start + text.length;
     if (/^\s+$/.test(text)) {
-      if (/\r|\n/.test(text)) lineBreakBefore = true;
+      if (LINE_BREAK_PATTERN.test(text)) lineBreakBefore = true;
       continue;
     }
     const regexEnd = regexEnds.get(start);
@@ -66,7 +68,7 @@ function semanticTokens(path: string, source: string): SemanticToken[] | null {
     const comment = text.startsWith("//") || text.startsWith("/*");
     if (comment) {
       if (!commentCanAffectCompilation(path, text)) {
-        if (/\r|\n/.test(text)) lineBreakBefore = true;
+        if (LINE_BREAK_PATTERN.test(text)) lineBreakBefore = true;
         continue;
       }
     }
@@ -108,13 +110,18 @@ export function semanticallyEqualSource(
   return left !== null && right !== null && tokensEqual(left, right);
 }
 
-function offsetMapper(path: string, previous: string, current: string): (offset: number) => number {
+interface OffsetMapper {
+  start(offset: number): number;
+  end(offset: number): number;
+}
+
+function offsetMapper(path: string, previous: string, current: string): OffsetMapper {
   const oldTokens = semanticTokens(path, previous);
   const newTokens = semanticTokens(path, current);
   if (oldTokens === null || newTokens === null || !tokensEqual(oldTokens, newTokens)) {
-    return (offset) => offset;
+    return { start: (offset) => offset, end: (offset) => offset };
   }
-  return (offset) => {
+  const map = (offset: number, bias: "start" | "end"): number => {
     if (offset <= 0) return 0;
     if (offset >= previous.length) return current.length;
     let lo = 0;
@@ -122,8 +129,8 @@ function offsetMapper(path: string, previous: string, current: string): (offset:
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
       const token = oldTokens[mid]!;
-      if (offset < token.start) hi = mid - 1;
-      else if (offset > token.end) lo = mid + 1;
+      if (bias === "start" ? offset < token.start : offset <= token.start) hi = mid - 1;
+      else if (bias === "start" ? offset >= token.end : offset > token.end) lo = mid + 1;
       else return newTokens[mid]!.start + Math.min(offset - token.start, token.end - token.start);
     }
     const before = hi >= 0 ? oldTokens[hi] : undefined;
@@ -141,6 +148,10 @@ function offsetMapper(path: string, previous: string, current: string): (offset:
     const fraction = (offset - before.end) / oldGap;
     return Math.round(newBefore.end + fraction * (newAfter.start - newBefore.end));
   };
+  return {
+    start: (offset) => map(offset, "start"),
+    end: (offset) => map(offset, "end"),
+  };
 }
 
 /** Rebase every SrcLoc-shaped object in a deserialized cache payload. */
@@ -149,7 +160,7 @@ export function rebaseSourceLocations<T>(
   previousSources: ReadonlyMap<string, string>,
   currentSources: ReadonlyMap<string, string>,
 ): T {
-  const mappers = new Map<string, (offset: number) => number>();
+  const mappers = new Map<string, OffsetMapper>();
   for (const [path, previous] of previousSources) {
     const current = currentSources.get(path);
     if (current !== undefined) mappers.set(path, offsetMapper(path, previous, current));
@@ -164,8 +175,10 @@ export function rebaseSourceLocations<T>(
     ) {
       const map = mappers.get(record["file"]);
       if (map !== undefined) {
-        record["start"] = map(record["start"]);
-        record["end"] = map(record["end"]);
+        const start = record["start"];
+        const end = record["end"];
+        record["start"] = map.start(start);
+        record["end"] = start === end ? record["start"] : map.end(end);
       }
       return;
     }

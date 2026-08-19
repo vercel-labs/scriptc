@@ -984,9 +984,9 @@ export interface IrLibSection {
   identity?: IrLibIdentity;
 }
 
-/** The profile-declared identity getters' facts, landed on the IR so both
- * backends emit the same constants the sidecar records (V12's identity
- * coherence is one-value-two-writes by construction). */
+/** The profile-declared identity getters' facts, landed on the IR so native
+ * archive assembly emits the same constants the sidecar records (V12's
+ * identity coherence is one-value-two-writes by construction). */
 export interface IrLibIdentity {
   buildIdSymbol: string;
   abiVersionSymbol: string;

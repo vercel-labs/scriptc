@@ -1550,22 +1550,20 @@ async function compileLibraryNative(
   features: EarlyLibraryNativeFeatures,
 ): Promise<void> {
   const localizeSymbols = libraryLocalizeSymbols(profile);
-  let identityCPath: string | undefined;
+  let identityCSource: string | undefined;
   if (profile.sidecar !== null) {
     if (features.buildId === undefined) throw new Error("library identity TU has no build id");
-    const stem = basename(profile.entry).replace(/\.(ts|js|mjs|cjs)$/, "");
-    identityCPath = join(dirname(cPath), `${stem}.lib.identity.c`);
-    await writeFile(identityCPath, [
+    identityCSource = [
       "#include <stdint.h>",
       "#include <inttypes.h>",
       `uint64_t ${profile.sidecar.buildIdSymbol}(void) { return UINT64_C(0x${features.buildId}); }`,
       `uint32_t ${profile.sidecar.abiVersionSymbol}(void) { return ${profile.sidecar.abiVersion}u; }`,
       "",
-    ].join("\n"));
+    ].join("\n");
   }
   await compileLibArchive({
     cPath,
-    ...(identityCPath !== undefined ? { identityCPath } : {}),
+    ...(identityCSource !== undefined ? { identityCSource } : {}),
     outPath: archivePath,
     cacheIdentity: "scriptc-generated-library-v1",
     sanitize,
@@ -2021,9 +2019,9 @@ async function compileLibraryTracked(
   // The ask-2 contract sidecar rides the same invocation. Identity first
   // (schema §2's worked build_id definition over compiler version, profile
   // bytes, and the sorted canonical module graph; source_hash per the
-  // profile's "module-graph" contract) — the u64 lands on the IR so both
-  // backends emit the identity getters from the ONE value the sidecar
-  // records (V12's coherence by construction), then the projection into
+  // profile's "module-graph" contract) — the u64 lands on the IR so native
+  // archive assembly emits the identity getters from the ONE value the
+  // sidecar records (V12's coherence by construction), then the projection into
   // the schema (declaration orders from the AST) and the V1–V14
   // self-check before anything is written.
   let sidecarJson: string | null = null;

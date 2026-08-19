@@ -2942,7 +2942,6 @@ test("library identity edits reuse the cached large program object", async () =>
   scratch.push(dir);
   const cacheRoot = join(dir, "cache");
   const cPath = join(dir, "program.c");
-  const identityCPath = join(dir, "identity.c");
   const outPath = join(dir, "program.lib.a");
   const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
   const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
@@ -2951,10 +2950,9 @@ test("library identity edits reuse the cached large program object", async () =>
     delete process.env["SCRIPTC_NO_CACHE"];
     await mkdir(cacheRoot, { mode: 0o700 });
     await writeFile(cPath, "int scriptc_large_program_value(void) { return 7; }\n");
-    await writeFile(identityCPath, "unsigned long long scriptc_build_id(void) { return 1; }\n");
     await compileLibArchive({
       cPath,
-      identityCPath,
+      identityCSource: "unsigned long long scriptc_build_id(void) { return 1; }\n",
       outPath,
       cacheIdentity: TEST_CACHE_IDENTITY,
     });
@@ -2966,10 +2964,9 @@ test("library identity edits reuse the cached large program object", async () =>
     const old = new Date("2000-01-01T00:00:00.000Z");
     await utimes(objectPath, old, old);
 
-    await writeFile(identityCPath, "unsigned long long scriptc_build_id(void) { return 2; }\n");
     await compileLibArchive({
       cPath,
-      identityCPath,
+      identityCSource: "unsigned long long scriptc_build_id(void) { return 2; }\n",
       outPath,
       cacheIdentity: TEST_CACHE_IDENTITY,
     });
@@ -2998,7 +2995,6 @@ test.skipIf(process.platform === "win32" || zigExecutable === undefined)(
     const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-localized-identity-"));
     scratch.push(dir);
     const cPath = join(dir, "program.c");
-    const identityCPath = join(dir, "identity.c");
     const probePath = join(dir, "probe.c");
     const archivePath = join(dir, "program.lib.a");
     const probeOutput = join(dir, "probe");
@@ -3014,14 +3010,13 @@ test.skipIf(process.platform === "win32" || zigExecutable === undefined)(
       process.env["SCRIPTC_CC"] = "zigcc";
       process.env["SCRIPTC_TARGET"] = target;
       await writeFile(cPath, "int scriptc_large_program_value(void) { return 7; }\n");
-      await writeFile(identityCPath, [
-        "unsigned long long scriptc_build_id(void) { return 2; }",
-        "unsigned scriptc_abi_version(void) { return 1; }",
-        "",
-      ].join("\n"));
       await compileLibArchive({
         cPath,
-        identityCPath,
+        identityCSource: [
+          "unsigned long long scriptc_build_id(void) { return 2; }",
+          "unsigned scriptc_abi_version(void) { return 1; }",
+          "",
+        ].join("\n"),
         outPath: archivePath,
         cacheIdentity: TEST_CACHE_IDENTITY,
         localizeSymbols: [

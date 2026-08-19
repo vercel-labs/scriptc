@@ -1398,11 +1398,11 @@ const LIB_RUNTIME_SOURCES = [
 export interface LibArchiveOptions {
   /** The program TU (.c or .ll — clang compiles either with -c). */
   cPath: string;
-  /** Tiny generated C TU carrying volatile library identity getters. Its
-   * bytes join the complete archive key, but the large program-object cache
-   * is keyed independently so comment-only build-id changes compile only
-   * this file. */
-  identityCPath?: string;
+  /** Tiny generated C source carrying volatile library identity getters.
+   * Its bytes join the complete archive key, but the source itself exists
+   * only in the invocation-private build directory and the large program-
+   * object cache is keyed independently. */
+  identityCSource?: string;
   /** The archive to produce (<name>.lib.a). */
   outPath: string;
   /** Caller-owned identity for the generated TU's complete non-system
@@ -1573,19 +1573,19 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
   let runtimeHash = "";
   let programDependencyHash = "";
   let cachedProgramBytes: Buffer | null = null;
-  let cachedIdentityBytes: Buffer | null = null;
+  const identityBytes = opts.identityCSource === undefined
+    ? null
+    : Buffer.from(opts.identityCSource, "utf8");
   if (root !== null) {
     try {
-      const [cv, fingerprint, programBytes, identityBytes] = await Promise.all([
+      const [cv, fingerprint, programBytes] = await Promise.all([
         ccVersionOnce(driver.argv, toolchainEnv, true),
         runtimeFingerprint(rtDir),
         readFile(opts.cPath),
-        opts.identityCPath === undefined ? Promise.resolve(null) : readFile(opts.identityCPath),
       ]);
       compilerVersion = cv;
       runtimeHash = fingerprint;
       cachedProgramBytes = programBytes;
-      cachedIdentityBytes = identityBytes;
       programDependencyHash = await translationUnitDependencyFingerprint(
         driver,
         cflags,
@@ -1621,8 +1621,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           .update(resolve(opts.cPath)).update("\0")
           .update(programBytes)
           .update("\0identity\0")
-          .update(opts.identityCPath === undefined ? "<none>" : resolve(opts.identityCPath))
-          .update("\0")
+          .update(identityBytes === null ? "<none>" : "<generated>").update("\0")
           .update(identityBytes ?? Buffer.alloc(0))
           .digest("hex");
         cachedArchive = join(root, "lib", key);
@@ -1773,17 +1772,13 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           }
         }
       }
-      const identityObject = opts.identityCPath === undefined
+      const identityObject = identityBytes === null
         ? null
-        : await compileOne(
-            cachedIdentityBytes === null ? opts.identityCPath : await (async () => {
-              const source = join(buildDir, "identity.c");
-              await writeFile(source, cachedIdentityBytes);
-              return source;
-            })(),
-            `${stem}.identity.o`,
-            cachedIdentityBytes === null ? undefined : opts.identityCPath,
-          );
+        : await (async () => {
+            const source = join(buildDir, "identity.c");
+            await writeFile(source, identityBytes);
+            return compileOne(source, `${stem}.identity.o`);
+          })();
       let runtimeObjects: string[] | null = null;
       let cacheInputsStable = true;
       let objectImplicitVerification: Promise<boolean> | null = null;

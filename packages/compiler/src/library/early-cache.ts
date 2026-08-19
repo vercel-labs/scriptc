@@ -214,7 +214,6 @@ function frontendOutputExclusions(
   const outputArtifacts = [
     paths.cPath,
     paths.staleCPath,
-    join(options.outDir, `${basename(options.entryPath).replace(/\.(ts|js|mjs|cjs)$/, "")}.lib.identity.c`),
     ...(options.emitIr ? [paths.irPath] : []),
     archiveOutputPath(options),
     ...(sidecarPath === undefined ? [] : [sidecarPath]),

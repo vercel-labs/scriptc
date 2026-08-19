@@ -2936,3 +2936,58 @@ test("library archives hit by content, invalidate on edits, and reuse runtime ob
     else process.env["PATH"] = oldPath;
   }
 });
+
+test("library identity edits reuse the cached large program object", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-program-object-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const cPath = join(dir, "program.c");
+  const identityCPath = join(dir, "identity.c");
+  const outPath = join(dir, "program.lib.a");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  try {
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    delete process.env["SCRIPTC_NO_CACHE"];
+    await mkdir(cacheRoot, { mode: 0o700 });
+    await writeFile(cPath, "int scriptc_large_program_value(void) { return 7; }\n");
+    await writeFile(identityCPath, "unsigned long long scriptc_build_id(void) { return 1; }\n");
+    await compileLibArchive({
+      cPath,
+      identityCPath,
+      outPath,
+      cacheIdentity: TEST_CACHE_IDENTITY,
+    });
+    const [objectName] = (await readdir(join(cacheRoot, "program-obj")))
+      .filter((name) => !name.endsWith(".sha256"));
+    expect(objectName).toBeDefined();
+    const objectPath = join(cacheRoot, "program-obj", objectName!);
+    const objectDigest = await readFile(`${objectPath}.sha256`, "utf8");
+    const old = new Date("2000-01-01T00:00:00.000Z");
+    await utimes(objectPath, old, old);
+
+    await writeFile(identityCPath, "unsigned long long scriptc_build_id(void) { return 2; }\n");
+    await compileLibArchive({
+      cPath,
+      identityCPath,
+      outPath,
+      cacheIdentity: TEST_CACHE_IDENTITY,
+    });
+    expect(await readFile(`${objectPath}.sha256`, "utf8")).toBe(objectDigest);
+    expect((await stat(objectPath)).mtimeMs).toBeGreaterThan(old.getTime());
+    expect((await readdir(join(cacheRoot, "program-obj"))).filter((name) => !name.endsWith(".sha256"))).toEqual([objectName]);
+    const probeSource = join(dir, "probe.c");
+    const probe = join(dir, "probe");
+    await writeFile(
+      probeSource,
+      "#include <stdio.h>\nint scriptc_large_program_value(void);\nunsigned long long scriptc_build_id(void);\nint main(void) { printf(\"%d %llu\\n\", scriptc_large_program_value(), scriptc_build_id()); }\n",
+    );
+    execFileSync("clang", [probeSource, outPath, "-lm", "-o", probe]);
+    expect(execFileSync(probe, { encoding: "utf8" })).toBe("7 2\n");
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+  }
+});

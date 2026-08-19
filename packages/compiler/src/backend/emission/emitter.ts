@@ -1141,22 +1141,6 @@ export class CEmitter {
       }
       out.push(`  return -1;`, `}`, ``);
     }
-    if (lib.identity !== undefined) {
-      // Profile-declared identity getters (the ask-2 sidecar's boot-time
-      // pairing fence): pure data returns with NO entry prologue — exempt
-      // from the poisoned guard and every runtime touch (ratified), so a
-      // host can read them before init and after a trap.
-      out.push(
-        `uint64_t ${lib.identity.buildIdSymbol}(void) {`,
-        `  return UINT64_C(0x${lib.identity.buildId});`,
-        `}`,
-        ``,
-        `uint32_t ${lib.identity.abiVersionSymbol}(void) {`,
-        `  return ${lib.identity.abiVersion}u;`,
-        `}`,
-        ``,
-      );
-    }
     if (lib.resultResetSymbol !== null) {
       out.push(
         `void ${lib.resultResetSymbol}(void) {`,

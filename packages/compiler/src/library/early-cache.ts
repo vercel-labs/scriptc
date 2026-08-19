@@ -56,6 +56,8 @@ export interface EarlyLibraryNativeFeatures {
   zlib: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  /** Volatile exact-source build identity emitted from the tiny identity TU. */
+  buildId?: string;
 }
 
 export interface EarlyLibraryCacheOptions {
@@ -113,7 +115,8 @@ function validNativeFeatures(value: unknown): value is EarlyLibraryNativeFeature
       native.zlib,
       native.copying,
       native.textDecoderLegacy,
-    ].every((flag) => typeof flag === "boolean");
+    ].every((flag) => typeof flag === "boolean") &&
+    (native.buildId === undefined || /^[0-9a-f]{16}$/.test(native.buildId));
 }
 
 function digest(bytes: Uint8Array): string {
@@ -211,6 +214,7 @@ function frontendOutputExclusions(
   const outputArtifacts = [
     paths.cPath,
     paths.staleCPath,
+    join(options.outDir, `${basename(options.entryPath).replace(/\.(ts|js|mjs|cjs)$/, "")}.lib.identity.c`),
     ...(options.emitIr ? [paths.irPath] : []),
     archiveOutputPath(options),
     ...(sidecarPath === undefined ? [] : [sidecarPath]),

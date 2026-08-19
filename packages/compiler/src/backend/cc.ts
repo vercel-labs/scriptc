@@ -1398,6 +1398,11 @@ const LIB_RUNTIME_SOURCES = [
 export interface LibArchiveOptions {
   /** The program TU (.c or .ll — clang compiles either with -c). */
   cPath: string;
+  /** Tiny generated C TU carrying volatile library identity getters. Its
+   * bytes join the complete archive key, but the large program-object cache
+   * is keyed independently so comment-only build-id changes compile only
+   * this file. */
+  identityCPath?: string;
   /** The archive to produce (<name>.lib.a). */
   outPath: string;
   /** Caller-owned identity for the generated TU's complete non-system
@@ -1568,29 +1573,29 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
   let runtimeHash = "";
   let programDependencyHash = "";
   let cachedProgramBytes: Buffer | null = null;
+  let cachedIdentityBytes: Buffer | null = null;
   if (root !== null) {
     try {
-      const [cv, fingerprint, programBytes] = await Promise.all([
+      const [cv, fingerprint, programBytes, identityBytes] = await Promise.all([
         ccVersionOnce(driver.argv, toolchainEnv, true),
         runtimeFingerprint(rtDir),
         readFile(opts.cPath),
+        opts.identityCPath === undefined ? Promise.resolve(null) : readFile(opts.identityCPath),
       ]);
       compilerVersion = cv;
       runtimeHash = fingerprint;
       cachedProgramBytes = programBytes;
+      cachedIdentityBytes = identityBytes;
+      programDependencyHash = await translationUnitDependencyFingerprint(
+        driver,
+        cflags,
+        opts.cPath,
+        programBytes,
+        toolchainEnv,
+      );
       if (cacheCompleteArchive) {
-        const [av, programDependencies] = await Promise.all([
-          toolVersionOnce(arArgv, toolchainEnv, true),
-          translationUnitDependencyFingerprint(
-            driver,
-            cflags,
-            opts.cPath,
-            programBytes,
-            toolchainEnv,
-          ),
-        ]);
+        const av = await toolVersionOnce(arArgv, toolchainEnv, true);
         archiverVersion = av;
-        programDependencyHash = programDependencies;
         const key = createHash("sha256")
           // v7 adds effective compiler-wrapper invocations for the real runtime
           // and program compile flavors.
@@ -1600,7 +1605,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           .update(implicitToolchain!).update("\0")
           .update(runtimeCompilerInvocation!).update("\0")
           .update(programCompilerInvocation!).update("\0")
-          .update(programDependencies).update("\0")
+          .update(programDependencyHash).update("\0")
           .update(opts.cacheIdentity!).update("\0")
           .update(driver.argv.join("\x1f")).update("\0")
           .update(cv).update("\0")
@@ -1615,6 +1620,10 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           .update(opts.cPath).update("\0")
           .update(resolve(opts.cPath)).update("\0")
           .update(programBytes)
+          .update("\0identity\0")
+          .update(opts.identityCPath === undefined ? "<none>" : resolve(opts.identityCPath))
+          .update("\0")
+          .update(identityBytes ?? Buffer.alloc(0))
           .digest("hex");
         cachedArchive = join(root, "lib", key);
         const tmpOut = privateSiblingPath(opts.outPath, "lib-hit");
@@ -1693,11 +1702,88 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           ? opts.cPath
           : join(buildDir, `program${opts.cPath.endsWith(".ll") ? ".ll" : ".c"}`);
       if (cachedProgramBytes !== null) await writeFile(programSource, cachedProgramBytes);
-      const programObject = await compileOne(
-        programSource,
-        `${stem}.program.o`,
-        cachedProgramBytes === null ? undefined : opts.cPath,
-      );
+      let cachedProgramObject: string | null = null;
+      if (
+        root !== null && cachedProgramBytes !== null && compilerVersion !== "" &&
+        implicitToolchain !== null && programCompilerInvocation !== null
+      ) {
+        const programKey = createHash("sha256")
+          .update("lib-program-obj-v1\0")
+          .update(cacheTargetIdentity(driver)).update("\0")
+          .update(toolchainEnv).update("\0")
+          .update(implicitToolchain).update("\0")
+          .update(programCompilerInvocation).update("\0")
+          .update(opts.cacheIdentity!).update("\0")
+          .update(driver.argv.join("\x1f")).update("\0")
+          .update(compilerVersion).update("\0")
+          .update(runtimeHash).update("\0")
+          .update(programDependencyHash).update("\0")
+          .update(programCompilerArgs.join("\x1f")).update("\0")
+          .update(opts.cPath).update("\0")
+          .update(resolve(opts.cPath)).update("\0")
+          .update(cachedProgramBytes)
+          .digest("hex");
+        cachedProgramObject = join(root, "program-obj", programKey);
+      }
+      const stagedProgramObject = join(buildDir, `${stem}.program.o`);
+      let programObject: string;
+      if (
+        cachedProgramObject !== null &&
+        await copyValidCachedFile(cachedProgramObject, stagedProgramObject)
+      ) {
+        programObject = stagedProgramObject;
+      } else {
+        programObject = await compileOne(
+          programSource,
+          `${stem}.program.o`,
+          cachedProgramBytes === null ? undefined : opts.cPath,
+        );
+        if (cachedProgramObject !== null) {
+          try {
+            const [currentRuntime, currentImplicit, currentInvocation, currentDependencies, currentCompiler] =
+              await Promise.all([
+                runtimeFingerprint(rtDir),
+                implicitToolchainFingerprint(driver, toolchainEnv),
+                effectiveCompilerInvocationFingerprint(
+                  driver,
+                  toolchainEnv,
+                  programCompilerArgs,
+                  programSourceExtension,
+                ),
+                translationUnitDependencyFingerprint(
+                  driver,
+                  cflags,
+                  opts.cPath,
+                  cachedProgramBytes!,
+                  toolchainEnv,
+                ),
+                ccVersionOnce(driver.argv, toolchainEnv, true),
+              ]);
+            if (
+              currentRuntime === runtimeHash &&
+              currentImplicit === implicitToolchain &&
+              currentInvocation === programCompilerInvocation &&
+              currentDependencies === programDependencyHash &&
+              currentCompiler === compilerVersion
+            ) {
+              await publishCachedFile(programObject, cachedProgramObject);
+            }
+          } catch {
+            // Best-effort: the archive build already owns a valid object.
+          }
+        }
+      }
+      const identityObject = opts.identityCPath === undefined
+        ? null
+        : await compileOne(
+            cachedIdentityBytes === null ? opts.identityCPath : await (async () => {
+              const source = join(buildDir, "identity.c");
+              await writeFile(source, cachedIdentityBytes);
+              return source;
+            })(),
+            `${stem}.identity.o`,
+            cachedIdentityBytes === null ? undefined : opts.identityCPath,
+          );
       let runtimeObjects: string[] | null = null;
       let cacheInputsStable = true;
       let objectImplicitVerification: Promise<boolean> | null = null;
@@ -1746,7 +1832,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           );
         }
       }
-      const objects = [programObject, ...runtimeObjects, ...lreObjects, ...zlibObjects];
+      const objects = [programObject, ...(identityObject === null ? [] : [identityObject]), ...runtimeObjects, ...lreObjects, ...zlibObjects];
       // Multi-instance library mode: the archive's one member becomes the
       // combined, symbol-localized object (cached vendor/runtime objects
       // are read-only inputs here — the combine step never mutates them).
@@ -1759,7 +1845,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
                 arArgv,
                 buildDir,
                 programObject,
-                [...runtimeObjects, ...lreObjects, ...zlibObjects],
+                [...(identityObject === null ? [] : [identityObject]), ...runtimeObjects, ...lreObjects, ...zlibObjects],
                 opts.localizeSymbols,
                 stem,
               ),

@@ -2322,26 +2322,6 @@ class LlEmitter {
       });
       out.push(`miss:`, `  ret i32 -1`, `}`, ``);
     }
-    if (lib.identity !== undefined) {
-      // Profile-declared identity getters (the ask-2 sidecar's boot-time
-      // pairing fence): pure data returns with NO entry prologue — exempt
-      // from the poisoned guard and every runtime touch (ratified), so a
-      // host can read them before init and after a trap. The u64 rides
-      // i64 two's-complement (LLVM integer constants are signed).
-      const buildId = BigInt.asIntN(64, BigInt(`0x${lib.identity.buildId}`)).toString();
-      out.push(
-        `define i64 @${lib.identity.buildIdSymbol}() ${FN_ATTRS} { ; identity getter build_id 0x${lib.identity.buildId}`,
-        `entry:`,
-        `  ret i64 ${buildId}`,
-        `}`,
-        ``,
-        `define i32 @${lib.identity.abiVersionSymbol}() ${FN_ATTRS} { ; identity getter abi_version`,
-        `entry:`,
-        `  ret i32 ${lib.identity.abiVersion}`,
-        `}`,
-        ``,
-      );
-    }
     if (lib.resultResetSymbol !== null) {
       out.push(
         `define void @${lib.resultResetSymbol}() ${FN_ATTRS} {`,

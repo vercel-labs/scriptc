@@ -1522,6 +1522,7 @@ function libraryNativeFeatures(
     zlib: moduleUsesZlib(mod),
     copying: moduleUsesCopying(mod),
     textDecoderLegacy: moduleUsesLegacyTextDecoder(mod),
+    ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),
   };
 }
 
@@ -1549,8 +1550,22 @@ async function compileLibraryNative(
   features: EarlyLibraryNativeFeatures,
 ): Promise<void> {
   const localizeSymbols = libraryLocalizeSymbols(profile);
+  let identityCPath: string | undefined;
+  if (profile.sidecar !== null) {
+    if (features.buildId === undefined) throw new Error("library identity TU has no build id");
+    const stem = basename(profile.entry).replace(/\.(ts|js|mjs|cjs)$/, "");
+    identityCPath = join(dirname(cPath), `${stem}.lib.identity.c`);
+    await writeFile(identityCPath, [
+      "#include <stdint.h>",
+      "#include <inttypes.h>",
+      `uint64_t ${profile.sidecar.buildIdSymbol}(void) { return UINT64_C(0x${features.buildId}); }`,
+      `uint32_t ${profile.sidecar.abiVersionSymbol}(void) { return ${profile.sidecar.abiVersion}u; }`,
+      "",
+    ].join("\n"));
+  }
   await compileLibArchive({
     cPath,
+    ...(identityCPath !== undefined ? { identityCPath } : {}),
     outPath: archivePath,
     cacheIdentity: "scriptc-generated-library-v1",
     sanitize,
@@ -1592,6 +1607,7 @@ async function emitSemanticLibraryHit(
       modules,
     );
     mod.lib.identity.buildId = buildId;
+    hit.native.buildId = buildId;
     sidecarJson = updateSidecarIdentity(sidecarJson, buildId, sourceHash);
   }
   const validation = validateModule(mod);

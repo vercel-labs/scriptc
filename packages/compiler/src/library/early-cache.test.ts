@@ -342,7 +342,51 @@ test("semantic library cache refuses token and directive edits", async () => {
   expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
 });
 
-test("semantic C cache refuses comment-only edits outside the entry", async () => {
+test("semantic C cache accepts only line-preserving single-source edits", async () => {
+  const f = await fixture();
+  const sourceBefore = await readFile(f.source, "utf8");
+  const semanticMod = {
+    irVersion: 6,
+    sourceFile: f.source,
+    functions: [{
+      name: "__main",
+      params: [],
+      returnType: { kind: "void" },
+      locals: [],
+      body: [],
+      loc: { file: f.source, start: 0, end: sourceBefore.length },
+    }],
+    entry: "__main",
+  } satisfies IrModule;
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  await publishEarlyLibraryCache(f.root, f.options, {
+    cPath: f.cPath,
+    irPath: f.irPath,
+    sidecarPath: f.sidecarPath,
+    native: {
+      backend: "c",
+      regex: false,
+      assert: false,
+      inspect: false,
+      symbol: false,
+      searchParams: false,
+      emitter: false,
+      zlib: false,
+      copying: false,
+      textDecoderLegacy: false,
+    },
+    frontend: tracker.snapshot(),
+    semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
+  });
+
+  await writeFile(f.source, `/* harmless */ ${sourceBefore}`);
+  expect(await readSemanticLibraryCache(f.root, f.options, null)).not.toBeNull();
+  await writeFile(f.source, `// inserted line\n${sourceBefore}`);
+  expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
+});
+
+test("semantic C cache refuses comment-only edits in multi-source graphs", async () => {
   const f = await fixture();
   const imported = join(dirname(f.source), "helper.ts");
   const entrySource = await readFile(f.source, "utf8");
@@ -389,7 +433,10 @@ test("semantic C cache refuses comment-only edits outside the entry", async () =
     },
   });
 
-  await writeFile(imported, `// inserted comment\n${importedSource}`);
+  await writeFile(f.source, `// inserted entry comment\n${entrySource}`);
+  expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
+  await writeFile(f.source, entrySource);
+  await writeFile(imported, `// inserted imported comment\n${importedSource}`);
   expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
 });
 

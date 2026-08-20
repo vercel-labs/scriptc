@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { createSourceLineRebaser, rebaseSourceLocations, semanticallyEqualSource, semanticSourceDigest } from "./semantic-source.js";
+import { createSourceLineRebaser, rebaseSourceLocations, semanticallyEqualSource, semanticSourceDigest, sourceLineRebaseIsIdentity } from "./semantic-source.js";
 
 test("ordinary TypeScript comments and formatting preserve semantic identity", () => {
   const before = "// old note\nexport function value(): number { return 1; }\n";
@@ -85,6 +85,12 @@ test("source lines rebase across changed comment trivia", () => {
   expect(rebase(2)).toBe(5);
   expect(rebase(3)).toBe(6);
   expect(rebase(4)).toBe(7);
+  expect(sourceLineRebaseIsIdentity("/entry.ts", before, after)).toBe(false);
+  expect(sourceLineRebaseIsIdentity(
+    "/entry.ts",
+    "// old\nexport function value() { return 1; }\n",
+    "/* replacement */\nexport function value() { return 1; }\n",
+  )).toBe(true);
 });
 
 test("source locations at adjacent token boundaries rebase past inserted comments", () => {

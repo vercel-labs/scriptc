@@ -204,6 +204,25 @@ export function createSourceLineRebaser(
   };
 }
 
+/** True when every existing source line keeps its physical line number. This
+ * is the safe subset for reusing a C TU whose annotations retain line numbers
+ * but not enough provenance to distinguish synthetic byte-zero locations. */
+export function sourceLineRebaseIsIdentity(
+  path: string,
+  previous: string,
+  current: string,
+): boolean {
+  const rebase = createSourceLineRebaser(path, previous, current);
+  let line = 1;
+  if (rebase(line) !== line) return false;
+  for (let offset = 0; offset < previous.length; offset++) {
+    if (previous[offset] !== "\n") continue;
+    line++;
+    if (rebase(line) !== line) return false;
+  }
+  return true;
+}
+
 /** Rebase every SrcLoc-shaped object in a deserialized cache payload. */
 export function rebaseSourceLocations<T>(
   value: T,

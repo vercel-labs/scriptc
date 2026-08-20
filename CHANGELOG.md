@@ -6,6 +6,16 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.0.34
+
+### Performance
+
+- **Library builds reuse more validated work.** Unchanged frontends, comment-only edits, lowered IR, and emitted C or LLVM translation units can be restored from the persistent cache while semantic, configuration, package-resolution, toolchain, and source-annotation changes still invalidate safely; volatile library identity is refreshed independently.
+- **Reachable library code is lowered once.** Module assembly reuses retained lowering output without re-lowering function bodies, preserving reached-only artifact filtering, coverage remainder behavior, and output ordering while reducing repeated compiler work.
+- **Same-shape record spreads emit smaller code.** Reusable clone helpers and outlined large-record copies reduce generated C and LLVM code while preserving ownership, integer proofs, and runtime behavior.
+
+<!-- release:end -->
+
 ## 0.0.33
 
 ### Features
@@ -18,8 +28,6 @@ All notable changes to scriptc will be documented in this file.
 ### Performance
 
 - **Repeated builds avoid redundant compiler work.** Validated native-toolchain metadata and same-output artifacts persist across CLI processes with dependency and content checks that preserve cache invalidation; Node 24's bytecode cache reduces CLI startup work, frontend type lowering is memoized and checker prefetch avoids unused AST queries, and library profiles gain a fast `optimization: "dev"` posture plus `SCRIPTC_TIMING=1` phase diagnostics. The compiler CLI now requires Node 24 or newer.
-
-<!-- release:end -->
 
 ## 0.0.32
 

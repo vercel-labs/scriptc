@@ -66,7 +66,7 @@ async function buildContract(
    * directories is exactly what the canonical root-relative paths
    * guarantee, and the V13-style assertions prove it). */
   root = cacheDir,
-): Promise<{ outDir: string; archive: string; sidecarPath: string; doc: SidecarDoc; bytes: Buffer }> {
+): Promise<{ outDir: string; archive: string; cPath: string; sidecarPath: string; doc: SidecarDoc; bytes: Buffer }> {
   const dir = join(fixtureRoot, fixture);
   const outDir = join(root, `${fixture}-${emission}${tag}`);
   mkdirSync(outDir, { recursive: true });
@@ -92,6 +92,7 @@ async function buildContract(
   return {
     outDir,
     archive: result.archivePath,
+    cPath: result.cPath,
     sidecarPath: result.sidecarPath!,
     doc: JSON.parse(bytes.toString("utf8")) as SidecarDoc,
     bytes: bytes as Buffer,
@@ -112,7 +113,7 @@ function nmDefined(archive: string, prefix: string): string[] {
 
 describe.each(EMISSIONS)("contract sidecar, %s emission", (emission) => {
   test("anti-alphabetical declaration order, schema shape, V11/V12 identity", async () => {
-    const { outDir, archive, doc, bytes } = await buildContract("contract", emission);
+    const { outDir, archive, cPath, doc, bytes } = await buildContract("contract", emission);
 
     // The emitter's own self-check ran before writing; the test-side
     // validator agrees the document conforms.
@@ -235,6 +236,21 @@ describe.each(EMISSIONS)("contract sidecar, %s emission", (emission) => {
       snapshot_format: 2,
     });
     expect(nmDefined(archive, "kc_")).toEqual(doc.abi.exports.map((s) => `kc_${s}`).sort());
+
+    // The kept/returned program TU is a complete public artifact, even though
+    // archive assembly privately compiles an identity-free projection beside
+    // its tiny volatile identity object.
+    const keptObject = join(outDir, "kept-program.o");
+    execFileSync("clang", [
+      "-std=c11",
+      "-DSCR_LIB",
+      ...(emission === "llvm"
+        ? ["-Wno-override-module"]
+        : ["-Wno-comment", "-I", join(repoRoot, "packages/runtime/src")]),
+      "-c", cPath,
+      "-o", keptObject,
+    ]);
+    expect(nmDefined(keptObject, "kc_")).toEqual(doc.abi.exports.map((s) => `kc_${s}`).sort());
 
     // V12 + the poisoned-guard exemption, end to end: the probe reads the
     // getters before init and after a trap; both reads equal the

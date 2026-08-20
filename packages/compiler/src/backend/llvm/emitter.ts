@@ -61,6 +61,7 @@
  * lazy-inflate representation as the C debugging backend.
  */
 import { deflateRawSync } from "node:zlib";
+import { LLVM_LIBRARY_IDENTITY_BEGIN, LLVM_LIBRARY_IDENTITY_END } from "../library-identity.js";
 import type {
   IrBytesElem,
   IrExpr,
@@ -2335,6 +2336,7 @@ class LlEmitter {
       // i64 two's-complement (LLVM integer constants are signed).
       const buildId = BigInt.asIntN(64, BigInt(`0x${lib.identity.buildId}`)).toString();
       out.push(
+        LLVM_LIBRARY_IDENTITY_BEGIN,
         `define i64 @${lib.identity.buildIdSymbol}() ${FN_ATTRS} { ; identity getter build_id 0x${lib.identity.buildId}`,
         `entry:`,
         `  ret i64 ${buildId}`,
@@ -2345,6 +2347,7 @@ class LlEmitter {
         `  ret i32 ${lib.identity.abiVersion}`,
         `}`,
         ``,
+        LLVM_LIBRARY_IDENTITY_END,
       );
     }
     if (lib.resultResetSymbol !== null) {

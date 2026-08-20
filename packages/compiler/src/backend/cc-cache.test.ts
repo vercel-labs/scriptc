@@ -2949,9 +2949,14 @@ test("library identity edits reuse the cached large program object", async () =>
     process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
     delete process.env["SCRIPTC_NO_CACHE"];
     await mkdir(cacheRoot, { mode: 0o700 });
-    await writeFile(cPath, "int scriptc_large_program_value(void) { return 7; }\n");
+    const programSource = "int scriptc_large_program_value(void) { return 7; }\n";
+    await writeFile(
+      cPath,
+      `${programSource}unsigned long long scriptc_build_id(void) { return 1; }\n`,
+    );
     await compileLibArchive({
       cPath,
+      programSource,
       identityCSource: "unsigned long long scriptc_build_id(void) { return 1; }\n",
       outPath,
       cacheIdentity: TEST_CACHE_IDENTITY,
@@ -2964,8 +2969,13 @@ test("library identity edits reuse the cached large program object", async () =>
     const old = new Date("2000-01-01T00:00:00.000Z");
     await utimes(objectPath, old, old);
 
+    await writeFile(
+      cPath,
+      `${programSource}unsigned long long scriptc_build_id(void) { return 2; }\n`,
+    );
     await compileLibArchive({
       cPath,
+      programSource,
       identityCSource: "unsigned long long scriptc_build_id(void) { return 2; }\n",
       outPath,
       cacheIdentity: TEST_CACHE_IDENTITY,

@@ -1398,6 +1398,10 @@ const LIB_RUNTIME_SOURCES = [
 export interface LibArchiveOptions {
   /** The program TU (.c or .ll — clang compiles either with -c). */
   cPath: string;
+  /** Invocation-owned program source to compile under `cPath`'s public
+   * spelling. Library assembly uses this for the identity-free projection of
+   * a complete caller-visible TU; its bytes drive every native cache key. */
+  programSource?: string;
   /** Tiny generated C source carrying volatile library identity getters.
    * Its bytes join the complete archive key, but the source itself exists
    * only in the invocation-private build directory and the large program-
@@ -1572,7 +1576,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
   let archiverVersion = "";
   let runtimeHash = "";
   let programDependencyHash = "";
-  let cachedProgramBytes: Buffer | null = null;
+  let cachedProgramBytes = opts.programSource === undefined
+    ? null
+    : Buffer.from(opts.programSource, "utf8");
   const identityBytes = opts.identityCSource === undefined
     ? null
     : Buffer.from(opts.identityCSource, "utf8");
@@ -1581,7 +1587,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
       const [cv, fingerprint, programBytes] = await Promise.all([
         ccVersionOnce(driver.argv, toolchainEnv, true),
         runtimeFingerprint(rtDir),
-        readFile(opts.cPath),
+        cachedProgramBytes === null ? readFile(opts.cPath) : Promise.resolve(cachedProgramBytes),
       ]);
       compilerVersion = cv;
       runtimeHash = fingerprint;

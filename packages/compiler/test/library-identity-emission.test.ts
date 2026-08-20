@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { emitModule } from "../src/index.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
+import { stripLibraryIdentity } from "../src/backend/library-identity.js";
 import type { IrModule } from "../src/ir/nodes.js";
 import { fibModule } from "./fixtures/fib-ir.js";
 
@@ -50,5 +51,15 @@ describe("library identity emission", () => {
     expect(c).not.toContain("ie_abi_version");
     expect(llvm).not.toContain("@ie_build_id");
     expect(llvm).not.toContain("@ie_abi_version");
+    expect(stripLibraryIdentity(emitModule(mod), "c")).toBe(c);
+    expect(stripLibraryIdentity(emitLlvmModule(mod), "llvm")).toBe(llvm);
+
+    mod.lib!.resultResetSymbol = "ie_reset";
+    expect(stripLibraryIdentity(emitModule(mod), "c")).toBe(
+      emitModule(mod, undefined, { emitLibraryIdentity: false }),
+    );
+    expect(stripLibraryIdentity(emitLlvmModule(mod), "llvm")).toBe(
+      emitLlvmModule(mod, { emitLibraryIdentity: false }),
+    );
   });
 });

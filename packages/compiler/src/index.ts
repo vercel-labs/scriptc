@@ -1,8 +1,9 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildCacheRoot, CcCompileError, compileC, compileLibArchive, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/cc.js";
 import { emitModule } from "./backend/emission/emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
+import { stripLibraryIdentity } from "./backend/library-identity.js";
 import { checkerPanicDiag, ffiNativeBuildDiag, libAsyncExportDiag, libAsyncSurfaceDiag, libExportUnresolvedDiag, libGenericExportDiag, libIntBoundaryDiag, libNpmIneligibleDiag, libSidecarDiag, libUnmappableSignatureDiag, iceDiag, isCheckerPanic, LIB_INBOUND_BYTES_TRAP_CODE, LIB_RUNTIME_TRAP_CODES, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import { checkLibraryIntegerSlots, classSeed, hasIntSlots, numberCarrierKind, type FnIntSlots, type IntSlotConfig } from "./library/int-infer.js";
 import { loadLibraryProfile, profileRemediation, profileTeaching, type LibraryProfile } from "./library/profile.js";
@@ -1551,8 +1552,14 @@ async function compileLibraryNative(
 ): Promise<void> {
   const localizeSymbols = libraryLocalizeSymbols(profile);
   let identityCSource: string | undefined;
+  let programSource: string | undefined;
   if (profile.sidecar !== null) {
     if (features.buildId === undefined) throw new Error("library identity TU has no build id");
+    const publicSource = await readFile(cPath, "utf8");
+    programSource = stripLibraryIdentity(publicSource, profile.emission);
+    if (programSource === publicSource) {
+      throw new Error("generated public library TU has no identity region");
+    }
     identityCSource = [
       "#include <stdint.h>",
       "#include <inttypes.h>",
@@ -1563,6 +1570,7 @@ async function compileLibraryNative(
   }
   await compileLibArchive({
     cPath,
+    ...(programSource !== undefined ? { programSource } : {}),
     ...(identityCSource !== undefined ? { identityCSource } : {}),
     outPath: archivePath,
     cacheIdentity: "scriptc-generated-library-v1",
@@ -1620,7 +1628,7 @@ async function emitSemanticLibraryHit(
   const stem = basename(profile.entry).replace(/\.(ts|js|mjs|cjs)$/, "");
   let cPath: string;
   if (profile.emission === "llvm") {
-    const ll = emitLlvmModule(mod, { emitLibraryIdentity: false });
+    const ll = emitLlvmModule(mod);
     cPath = join(opts.outDir, `${stem}.lib.ll`);
     await writeFile(cPath, ll);
     timing("semantic-llvm-emit", { output_bytes: Buffer.byteLength(ll) });
@@ -1628,9 +1636,7 @@ async function emitSemanticLibraryHit(
     cPath = join(opts.outDir, `${stem}.lib.c`);
     await writeFile(
       cPath,
-      emitModule(mod, hit.sourceTexts.get(profile.entry), {
-        emitLibraryIdentity: false,
-      }),
+      emitModule(mod, hit.sourceTexts.get(profile.entry)),
     );
     timing("semantic-c-emit");
   }
@@ -2088,7 +2094,7 @@ async function compileLibraryTracked(
   let cPath: string;
   if (profile.emission === "llvm") {
     try {
-      const ll = emitLlvmModule(mod, { emitLibraryIdentity: false });
+      const ll = emitLlvmModule(mod);
       timing("llvm-emit", { output_bytes: Buffer.byteLength(ll) });
       cPath = join(opts.outDir, `${stem}.lib.ll`);
       await writeFile(cPath, ll);
@@ -2100,9 +2106,7 @@ async function compileLibraryTracked(
     }
   } else {
     cPath = join(opts.outDir, `${stem}.lib.c`);
-    await writeFile(cPath, emitModule(mod, entryText, {
-      emitLibraryIdentity: false,
-    }));
+    await writeFile(cPath, emitModule(mod, entryText));
   }
   await rm(join(opts.outDir, `${stem}.lib.${profile.emission === "llvm" ? "c" : "ll"}`), { force: true });
 

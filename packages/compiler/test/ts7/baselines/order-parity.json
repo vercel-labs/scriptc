@@ -5646,6 +5646,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2691-retained-lowering-record-order.ts": {
+   "order": [
+    "<repo>/tests/corpus/2691-retained-lowering-record-order.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/2700-wasi-core.ts": {
     "order": [
      "<repo>/tests/corpus/2700-wasi-core.ts"
@@ -7699,6 +7705,12 @@
   "<repo>/tests/diagnostics/regex.ts": {
    "order": [
     "<repo>/tests/diagnostics/regex.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/retained-generic-rest-order.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/retained-generic-rest-order.ts"
    ],
    "diags": []
   },

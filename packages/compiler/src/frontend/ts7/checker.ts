@@ -429,12 +429,12 @@ export class CheckerFacade {
     includePropertyAccess = false,
     prefetchSymbolTypes = true,
   ): void {
-    const nodes = allNodes.filter(
+    const symbolNodes = allNodes.filter(
       (n) =>
         (n.kind === SyntaxKind.Identifier ||
-          (includePropertyAccess && n.kind === SyntaxKind.PropertyAccessExpression)) &&
-        !this.symbolAtLocation.has(n),
+          (includePropertyAccess && n.kind === SyntaxKind.PropertyAccessExpression)),
     );
+    const nodes = symbolNodes.filter((n) => !this.symbolAtLocation.has(n));
     // The same bisecting panic fence as the type sweep: tsgo panics on
     // SYMBOL queries too (observed: GetSymbolAtLocation over an
     // `import.defer(...)` callee — the sweep's batch must not turn one
@@ -445,9 +445,16 @@ export class CheckerFacade {
     nodes.forEach((n, i) => this.symbolAtLocation.set(n, symbols[i]));
     if (!prefetchSymbolTypes) return;
     // The walk's companion query: types of the symbols the file mentions.
-    const distinct = [...new Set(symbols.filter((s): s is Ts7Symbol => s !== undefined))].filter(
-      (s) => !this.typeOfSymbol.has(s),
-    );
+    // Include warm node answers too: a preceding symbol-only analysis may
+    // have populated symbolAtLocation without fetching symbol types, and a
+    // later reachable-body wave must still batch those missing types.
+    const distinct = [
+      ...new Set(
+        symbolNodes
+          .map((node) => this.symbolAtLocation.get(node))
+          .filter((symbol): symbol is Ts7Symbol => symbol !== undefined),
+      ),
+    ].filter((symbol) => !this.typeOfSymbol.has(symbol));
     const symbolTypes = chunked(distinct, (chunk) =>
       withPanicFence(chunk, (c) => this.raw.getTypeOfSymbol(c)),
     );

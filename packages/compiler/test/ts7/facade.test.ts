@@ -277,6 +277,46 @@ export function dead(input: number): number {
   expect(Array.isArray(calls["getTypeAtLocation"]!.at(-1)![0])).toBe(false);
 });
 
+test("reachable waves batch symbol types after symbol-only analysis", () => {
+  const locals = Array.from(
+    { length: 24 },
+    (_, index) => `  const local${index} = input + ${index};`,
+  ).join("\n");
+  const w = buildTwoWorlds({
+    "symbol-type-handoff.ts": `
+export function reached(input: number): number {
+${locals}
+  return local23;
+}
+`,
+  }, host);
+  worlds.push(w);
+  const { proxy, counts, calls } = countingChecker(w.p7.project.checker);
+  const facade = new CheckerFacade(proxy);
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const body = sf.statements.find(ad.isFunctionDeclaration)!.body!;
+  const identifiers: Node[] = [];
+  ad.walkPreorder(body, (node) => {
+    if (ad.isIdentifier(node)) identifiers.push(node);
+  });
+
+  facade.prefetchSymbolRoots([body]);
+  expect(counts["getSymbolAtLocation"]).toBe(1);
+  expect(counts["getTypeOfSymbol"] ?? 0).toBe(0);
+
+  facade.prefetchRoots([body]);
+  expect(counts["getSymbolAtLocation"]).toBe(1);
+  expect(counts["getTypeOfSymbol"]).toBe(1);
+  expect(Array.isArray(calls["getTypeOfSymbol"]![0]![0])).toBe(true);
+
+  const warm = { ...counts };
+  for (const node of identifiers) {
+    const symbol = facade.getSymbolAtLocation(node);
+    if (symbol) facade.getTypeOfSymbol(symbol);
+  }
+  expect(counts).toEqual(warm);
+});
+
 test("JavaScript class-shape collection batches constructor field queries", () => {
   const fields = Array.from(
     { length: 24 },

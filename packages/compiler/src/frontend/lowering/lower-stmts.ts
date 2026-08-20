@@ -2533,6 +2533,7 @@ export function isParseArgsDynCheckerType(L: Lowerer, type: ts.Type): boolean {
         const current = L.shapes.get(restT.shapeId) ?? restShape;
         const currentOrder = current.declaredOrder ?? current.fields.map((f) => f.name);
         if (orderMatches(currentOrder)) return;
+        L.requiresHistoricalOrderRelower = true;
         const previous = L.instantiationContext;
         L.instantiationContext = context;
         try {

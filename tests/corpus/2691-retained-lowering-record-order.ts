@@ -126,6 +126,14 @@ function genericReachesEarlierSource<T>(_: T): void {
   console.log(Object.keys(rest).join(","));
 }
 
+function printPartialRecord<T extends { a: number; b: number }>(value: T): void {
+  // Partial<T> derives a fresh shape from T. Its declaration order must
+  // follow T when retained lowering later settles T to the earlier
+  // printFunctionRecord body's {a,b} order.
+  const partial = value as Partial<T>;
+  console.log(Object.keys(partial).join(","));
+}
+
 console.log(Object.keys({ b: 2, a: 1 }).length);
 console.log(Object.values({ b: 2, a: 1 }).length);
 console.log(Object.entries({ b: 2, a: 1 }).length);
@@ -136,6 +144,7 @@ console.log(Object.entries({ b: 2, a: 1 } as { b: number; a: number; [key: strin
 console.log(capturedCount({ b: 2, a: 1 }));
 console.log(assignedCount());
 console.log(inspect({ b: 2, a: 1, next: null } as { b: number; a: number; next: OrderedNode | null }).length);
+printPartialRecord({ a: 1, b: 2 });
 // Runtime reachability encounters the second caller first. The historical
 // emitter visited these caller bodies in source order before it drained the
 // generic-instance queue, so the first instance owns the shared shape's key

@@ -510,13 +510,40 @@ export function lowerToIr(
       });
   for (const d of dynamicCycleDiags) reachableEmit.pushDiag(d);
   for (const d of ffiValidation.diagnostics) reachableEmit.pushDiag(d);
-  const { reachable, result } = reachableEmit.emitReachable(options.libRoots);
+  const emitted = reachableEmit.emitReachable(options.libRoots);
+  const { reachable } = emitted;
+  let result = emitted.result;
+  let resultLowerer = reachableEmit;
   timing("reachable-emit", { reachable: reachable.size });
+  // A generic class-rest support decision can depend on record metadata
+  // whose historical owner is discovered only while retained bodies lower.
+  // If the settled answer is a fence, rerun the ordinary reachable emit so
+  // the PoisonError occurs in its original statement window: later
+  // declarators stay unvisited, bindings block, cascades and stats match the
+  // historical compiler. This is a rare compatibility fallback; programs
+  // without such a settled fence retain checker-backed IR exactly once.
+  if (reachableEmit.requiresHistoricalOrderRelower) {
+    const emit = new Lowerer(program, entry, moduleOrder, dynamic, {
+      reachable,
+      targetPlatform,
+      startupCrash,
+      ffiImports,
+      libraryCallbacks,
+      ffiBindingSymbols: ffiValidation.symbolsByName,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+    });
+    for (const d of dynamicCycleDiags) emit.pushDiag(d);
+    for (const d of ffiValidation.diagnostics) emit.pushDiag(d);
+    result = emit.run();
+    resultLowerer = emit;
+    timing("historical-order-relower");
+  }
   if (options.coverage !== true) return result;
   const remainder = new Lowerer(program, entry, moduleOrder, dynamic, {
     reachable,
     remainder: true,
-    alreadyFlushed: reachableEmit.flushedSymbols,
+    alreadyFlushed: resultLowerer.flushedSymbols,
     targetPlatform,
     ffiImports,
     libraryCallbacks,
@@ -1095,6 +1122,9 @@ export class Lowerer {
   /** Derived shape metadata that depends on another shape's declaration
    * order. These settle before helper bodies rebuild from that metadata. */
   readonly shapeOrderMetadataFinalizers: (() => void)[] = [];
+  /** Settled generic class-rest metadata requires the historical emit
+   * fallback so its fence can poison the original statement atomically. */
+  requiresHistoricalOrderRelower = false;
   /** Helpers that snapshot shape declaration order into their bodies.
    * Reachability lowers inits before the declarations they discover, so
    * these rebuild after the worklist restores historical shape metadata. */

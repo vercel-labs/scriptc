@@ -58,6 +58,12 @@ test("fully static JavaScript program reports 100%", () => {
   expect(out).toContain("fully static");
 });
 
+test("settled generic rest-order fences count each source statement once", () => {
+  const { coverage } = analyze(join(repoRoot, "tests/diagnostics/retained-generic-rest-order.ts"));
+  expect(coverage.diagnostics.map((d) => d.code)).toEqual(["SC1031", "SC2004"]);
+  expect(coverage.stats.statementsFailed).toBe(2);
+});
+
 test("JS inference gaps land where 'any' lands: SC2011 static, island dynamic", async () => {
   // The js-gap fixture's tsconfig turns noImplicitAny off, so the untyped
   // parameter types `any` — the static analysis reports the site as

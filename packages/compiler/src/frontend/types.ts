@@ -100,6 +100,11 @@ export class ShapeRegistry {
     string,
     { order: string[]; priority: DeclaredOrderPriority }[]
   >();
+  /** Derived shapes whose order is inherited from another shape. The
+   * source can settle after the derived shape was interned (notably
+   * Partial<T> inside a retained generic body), so refresh the adopted
+   * writer after all priority candidates have closed. */
+  private readonly derivedDeclaredOrderFinalizers: (() => void)[] = [];
   private currentDeclaredOrderPriority: DeclaredOrderPriority = [0, 0];
   /** All interned shapes in first-seen (`r0`, `r1`, ...) order. */
   readonly shapes: IrRecordShape[] = [];
@@ -178,6 +183,20 @@ export class ShapeRegistry {
       shape.declaredOrder = best.order;
       this.declaredOrderPriority.set(shapeId, best.priority);
     }
+    for (const finalize of this.derivedDeclaredOrderFinalizers) finalize();
+  }
+
+  /** Tracks a derived shape that inherits its key order unchanged from a
+   * source shape. Identity-gating preserves first-writer-wins when an
+   * equivalent derived shape was already adopted from another source. */
+  inheritDeclaredOrder(shapeId: string, originalOrder: string[], sourceShapeId: string): void {
+    this.derivedDeclaredOrderFinalizers.push(
+      this.declaredOrderFinalizer(
+        shapeId,
+        originalOrder,
+        () => this.get(sourceShapeId)?.declaredOrder,
+      ),
+    );
   }
 
   /** Captures the current historical rank for a derived shape whose order
@@ -2966,7 +2985,12 @@ function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | 
   }
   // Fields inherit the source shape's canonical (name-sorted) order — and
   // its declaration order (mapped types preserve property order in TS).
-  return { kind: "record", shapeId: shapes.intern(fields, false, undefined, shape.declaredOrder) };
+  const originalOrder = shape.declaredOrder;
+  const shapeId = shapes.intern(fields, false, undefined, originalOrder);
+  if (originalOrder !== undefined) {
+    shapes.inheritDeclaredOrder(shapeId, originalOrder, bound.shapeId);
+  }
+  return { kind: "record", shapeId };
 }
 
 /** The UNIT-ONLY slot type: the interned `null | undefined` union, the one

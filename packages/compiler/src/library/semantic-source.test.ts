@@ -93,6 +93,15 @@ test("source lines rebase across changed comment trivia", () => {
   )).toBe(true);
 });
 
+test("C source lines reject normalization of non-LF separators", () => {
+  for (const separator of ["\r", "\u2028", "\u2029"]) {
+    const before = `export const first = 1;${separator}export const second = 2;\n`;
+    const after = before.replace(separator, "\n");
+    expect(semanticallyEqualSource("/entry.ts", before, after)).toBe(true);
+    expect(sourceLineRebaseIsIdentity("/entry.ts", before, after)).toBe(false);
+  }
+});
+
 test("source locations at adjacent token boundaries rebase past inserted comments", () => {
   const before = "export function value() { return left+right; }\n";
   const after = "export function value() { return left+/* note */right; }\n";

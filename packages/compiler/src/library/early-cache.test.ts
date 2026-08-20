@@ -386,6 +386,49 @@ test("semantic C cache accepts only line-preserving single-source edits", async 
   expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
 });
 
+test("semantic C cache refuses non-LF separator normalization", async () => {
+  const f = await fixture();
+  for (const separator of ["\r", "\u2028", "\u2029"]) {
+    const sourceBefore = [
+      "export function first(): number { return 1; }",
+      "export function value(): number { return 2; }\n",
+    ].join(separator);
+    await writeFile(f.source, sourceBefore);
+    const tracker = new FrontendInputTracker();
+    tracker.run(() => trackedReadFile(f.source));
+    await publishEarlyLibraryCache(f.root, f.options, {
+      cPath: f.cPath,
+      irPath: f.irPath,
+      sidecarPath: f.sidecarPath,
+      native: {
+        backend: "c",
+        regex: false,
+        assert: false,
+        inspect: false,
+        symbol: false,
+        searchParams: false,
+        emitter: false,
+        zlib: false,
+        copying: false,
+        textDecoderLegacy: false,
+      },
+      frontend: tracker.snapshot(),
+      semantic: {
+        mod: {
+          irVersion: 6,
+          sourceFile: f.source,
+          functions: [],
+          entry: "__main",
+        },
+        sources: new Map([[f.source, sourceBefore]]),
+      },
+    });
+
+    await writeFile(f.source, sourceBefore.replace(separator, "\n"));
+    expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
+  }
+});
+
 test("semantic C cache refuses comment-only edits in multi-source graphs", async () => {
   const f = await fixture();
   const imported = join(dirname(f.source), "helper.ts");

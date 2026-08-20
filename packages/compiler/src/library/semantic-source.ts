@@ -212,6 +212,24 @@ export function sourceLineRebaseIsIdentity(
   previous: string,
   current: string,
 ): boolean {
+  const oldTokens = semanticTokens(path, previous);
+  const newTokens = semanticTokens(path, current);
+  if (oldTokens === null || newTokens === null || !tokensEqual(oldTokens, newTokens)) {
+    return false;
+  }
+  const oldStarts = lineStarts(previous);
+  const newStarts = lineStarts(current);
+  // The C emitter counts only LF bytes. TypeScript also treats bare CR and
+  // the Unicode separators as line breaks, so normalizing one of those to LF
+  // preserves semantic tokens while moving later annotations to a different
+  // emitter line. Check every corresponding token, including multiple
+  // TypeScript lines that the emitter previously collapsed into one.
+  for (let index = 0; index < oldTokens.length; index++) {
+    if (
+      lineAt(oldStarts, oldTokens[index]!.start) !==
+      lineAt(newStarts, newTokens[index]!.start)
+    ) return false;
+  }
   const rebase = createSourceLineRebaser(path, previous, current);
   let line = 1;
   if (rebase(line) !== line) return false;

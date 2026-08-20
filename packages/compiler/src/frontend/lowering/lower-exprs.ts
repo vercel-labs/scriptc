@@ -6438,7 +6438,12 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
       if (dk.type.kind !== "string") {
         L.unsupported("SC1090", keyNode, "indexing records with non-string or non-number keys");
       }
-      return L.maybeNarrow({ kind: "dynKeyGet", key: dk, value: obj, type: DYN, loc }, expr);
+      const read: IrExpr = { kind: "dynKeyGet", key: dk, value: obj, type: DYN, loc };
+      // Absence probes must keep the checked-dynamic undefined produced by
+      // a missing key. The ordinary read narrows to the checker's declared
+      // index value (and therefore validates it); ===/!==, ||, and ?? need
+      // to observe the missing value instead of throwing during that check.
+      return includeUndefined ? read : L.maybeNarrow(read, expr);
     }
     if (litKey !== null) {
       const field = shape.fields.find((f) => f.name === litKey);
@@ -6527,6 +6532,13 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
     if (ts.isPropertyAccessExpression(expr)) {
       const target = L.fieldTarget(expr);
       if (target?.container !== "recordOvf") return null;
+      // A JS file-scope object-literal global is record-shaped to the
+      // checker but stored in the checked-dynamic tree to preserve object
+      // identity. Reuse the normal dyn-aware field read; constructing a
+      // recordKeyGet here would give the validator a dyn receiver.
+      if (target.obj.type.kind === "dyn") {
+        return L.fieldGetExpr(target, locOf(expr), expr);
+      }
       if (
         target.fieldType.kind === "union" &&
         L.armTag(target.fieldType.unionId, UNDEFINED_T) >= 0

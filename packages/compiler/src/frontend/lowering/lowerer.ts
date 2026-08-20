@@ -939,6 +939,10 @@ export class Lowerer {
   /** Synthetic array-HOF loop functions (map/filter/forEach desugar),
    * interned per method + element/callback-result type: key → fn name. */
   readonly arrHofHelpers = new Map<string, string>();
+  /** Helpers that snapshot shape declaration order into their bodies.
+   * Reachability lowers inits before the declarations they discover, so
+   * these rebuild after the worklist restores historical shape metadata. */
+  readonly shapeOrderHelperFinalizers: (() => void)[] = [];
   /** Emit-override specializations (`%C.emit:<event>` — lower-emitter.ts's
    * emit-overrides block): interned names, the drive-loop queue, and the
    * currently-lowering specialization's context (the super-forward
@@ -2455,6 +2459,43 @@ export class Lowerer {
         units.set(`%${cName}.static:${name}`, { order: unitOrder++, lower: () => lowerStaticMethod(this, info, name) });
       }
     }
+    // The old emit pass visited each file's functions and then its classes,
+    // before every module init. Retained reachability discovers those
+    // bodies from the inits, but first-seen record metadata still has to
+    // follow that old order: Object.keys/JSON/inspect observe a shape's
+    // declaredOrder. Keep output sorting separate — this rank controls only
+    // that observable metadata.
+    const metadataPriority = new Map<string, readonly [phase: number, order: number]>();
+    let declarationMetadataOrder = 0;
+    const rank = (name: string): void => {
+      if (units.has(name) && !metadataPriority.has(name)) {
+        metadataPriority.set(name, [1, declarationMetadataOrder++]);
+      }
+    };
+    for (const fp of parts) {
+      for (const decl of fp.fnDecls) {
+        if (!decl.body) continue;
+        const symbol = declSymbolOf(this, decl);
+        if (symbol && !this.genericFnsBySymbol.has(symbol)) {
+          const sig = this.fnSigsBySymbol.get(symbol);
+          if (sig) rank(sig.name);
+        }
+      }
+      for (const decl of fp.classDecls) {
+        const info = this.classes.get(this.classNamer(decl));
+        if (!info) continue;
+        const cName = info.def.name;
+        rank(`%${cName}.constructor`);
+        for (const { mName } of this.classMethodMembers(info)) rank(`%${cName}.${mName}`);
+        for (const name of info.staticMethods?.keys() ?? []) rank(`%${cName}.static:${name}`);
+        for (const prop of info.throwingSetters) rank(`%${cName}.set:${prop}`);
+      }
+    }
+    // Defensive fallback for declaration-like units registered outside
+    // FileParts; they still precede init bodies in the old emit pass.
+    for (const name of units.keys()) rank(name);
+    let expressionMetadataOrder = 0;
+    let instanceMetadataOrder = 0;
 
     const reachable = new Set<string>();
     const queue: string[] = [];
@@ -2471,15 +2512,19 @@ export class Lowerer {
     // edge to them can fire (references require the collected class).
     this.onExprClassCollected = (info: ClassInfo): void => {
       const cName = info.def.name;
-      units.set(`%${cName}.constructor`, { order: unitOrder++, lower: () => this.lowerClassCtor(info) });
+      const register = (name: string, lower: () => IrFunction | null): void => {
+        units.set(name, { order: unitOrder++, lower });
+        metadataPriority.set(name, [3, expressionMetadataOrder++]);
+      };
+      register(`%${cName}.constructor`, () => this.lowerClassCtor(info));
       for (const { mName, member } of this.classMethodMembers(info)) {
-        units.set(`%${cName}.${mName}`, { order: unitOrder++, lower: () => this.lowerClassMethodMember(info, member) });
+        register(`%${cName}.${mName}`, () => this.lowerClassMethodMember(info, member));
       }
       for (const name of info.staticMethods?.keys() ?? []) {
-        units.set(`%${cName}.static:${name}`, { order: unitOrder++, lower: () => lowerStaticMethod(this, info, name) });
+        register(`%${cName}.static:${name}`, () => lowerStaticMethod(this, info, name));
       }
       for (const prop of info.throwingSetters) {
-        units.set(`%${cName}.set:${prop}`, { order: unitOrder++, lower: () => this.throwingSetterFn(info, prop) });
+        register(`%${cName}.set:${prop}`, () => this.throwingSetterFn(info, prop));
       }
     };
     // Generic instances queued by the bodies above lower here (an instance
@@ -2500,20 +2545,33 @@ export class Lowerer {
           // Body-level poisons skip the instance after retaining the
           // diagnostic and every edge fired before poisoning.
           try {
-            instanceFunctions.push(this.lowerGenericInstance(info, inst));
+            instanceFunctions.push(
+              this.shapes.withDeclaredOrderPriority(
+                [4, instanceMetadataOrder++],
+                () => this.lowerGenericInstance(info, inst),
+              ),
+            );
           } catch (e) {
             if (!(e instanceof PoisonError)) throw e;
           }
         }
         while (clsInstLowered < this.genericClassInstances.length) {
-          instanceFunctions.push(...this.lowerClassMembers(this.genericClassInstances[clsInstLowered++]!));
+          instanceFunctions.push(
+            ...this.shapes.withDeclaredOrderPriority(
+              [4, instanceMetadataOrder++],
+              () => this.lowerClassMembers(this.genericClassInstances[clsInstLowered++]!),
+            ),
+          );
         }
         // Emit-override specialization bodies fire edges of their own
         // (the super-forward chain, closures, generic calls) — lower them
         // exactly like generic instances.
         while (specLowered < this.emitSpecQueue.length) {
           try {
-            const fn = lowerEmitOverrideSpec(this, this.emitSpecQueue[specLowered++]!);
+            const fn = this.shapes.withDeclaredOrderPriority(
+              [4, instanceMetadataOrder++],
+              () => lowerEmitOverrideSpec(this, this.emitSpecQueue[specLowered++]!),
+            );
             if (fn) instanceFunctions.push(fn);
           } catch (e) {
             if (!(e instanceof PoisonError)) throw e;
@@ -2522,8 +2580,13 @@ export class Lowerer {
       }
     };
 
-    parts.forEach((fp) => {
-      initFunctions.push(this.lowerFileInit(fp.sf, fp.topStmts, this.initNameOf.get(fp.sf)!));
+    parts.forEach((fp, index) => {
+      initFunctions.push(
+        this.shapes.withDeclaredOrderPriority(
+          [2, index],
+          () => this.lowerFileInit(fp.sf, fp.topStmts, this.initNameOf.get(fp.sf)!),
+        ),
+      );
       drainInstances();
     });
     // LIBRARY mode's extra reachability roots (LowerOptions.libRoots): the
@@ -2538,7 +2601,11 @@ export class Lowerer {
       // stays recorded and the member stays omitted.
       try {
         const name = queue.shift()!;
-        const fn = units.get(name)!.lower();
+        const unit = units.get(name)!;
+        const fn = this.shapes.withDeclaredOrderPriority(
+          metadataPriority.get(name) ?? [3, expressionMetadataOrder++],
+          unit.lower,
+        );
         if (fn) loweredUnits.set(name, fn);
       } catch (e) {
         if (!(e instanceof PoisonError)) throw e;
@@ -2548,6 +2615,7 @@ export class Lowerer {
     const orderedUnits = [...loweredUnits]
       .sort(([left], [right]) => units.get(left)!.order - units.get(right)!.order)
       .map(([, fn]) => fn);
+    for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     const functions = [
       ...orderedUnits,
       ...initFunctions,

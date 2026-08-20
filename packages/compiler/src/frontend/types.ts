@@ -69,6 +69,13 @@ export function isParseArgsDynTypeName(name: string): boolean {
 export class ShapeRegistry {
   private readonly byKey = new Map<string, string>();
   private readonly byId = new Map<string, IrRecordShape>();
+  /** Historical emit-order rank of the declaration-order metadata each
+   * shape kept. Collection runs at rank 0; retained reachability bodies
+   * install their old emit positions while they lower. This lets a body
+   * reached after an init replace metadata the worklist encountered first
+   * when the old emitter would have lowered that body first. */
+  private readonly declaredOrderPriority = new Map<string, readonly [phase: number, order: number]>();
+  private currentDeclaredOrderPriority: readonly [phase: number, order: number] = [0, 0];
   /** All interned shapes in first-seen (`r0`, `r1`, ...) order. */
   readonly shapes: IrRecordShape[] = [];
   /** ts.Types currently being mapped — a BACK-REFERENCE to one of these is
@@ -102,6 +109,34 @@ export class ShapeRegistry {
       (indexValue ? `idx<${typeKey(indexValue)}>!` : "") +
       JSON.stringify(fields.map((f) => [f.name, typeKey(f.type)]))
     );
+  }
+
+  /** Runs one lowering unit under its historical emit-order rank. Shape
+   * ids remain demand-assigned; only first-seen declaration-order metadata
+   * uses this rank, because Object.keys/JSON/inspect observe it. */
+  withDeclaredOrderPriority<T>(priority: readonly [phase: number, order: number], fn: () => T): T {
+    const previous = this.currentDeclaredOrderPriority;
+    this.currentDeclaredOrderPriority = priority;
+    try {
+      return fn();
+    } finally {
+      this.currentDeclaredOrderPriority = previous;
+    }
+  }
+
+  private adoptDeclaredOrder(shape: IrRecordShape, declaredOrder: string[] | undefined): void {
+    if (declaredOrder === undefined) return;
+    const previous = this.declaredOrderPriority.get(shape.id);
+    if (
+      previous !== undefined &&
+      (previous[0] < this.currentDeclaredOrderPriority[0] ||
+        (previous[0] === this.currentDeclaredOrderPriority[0] &&
+          previous[1] <= this.currentDeclaredOrderPriority[1]))
+    ) {
+      return;
+    }
+    shape.declaredOrder = declaredOrder;
+    this.declaredOrderPriority.set(shape.id, this.currentDeclaredOrderPriority);
   }
 
   /** The shape id a back-reference to an in-progress type resolves to:
@@ -145,7 +180,7 @@ export class ShapeRegistry {
       const shape = this.byId.get(id)!;
       shape.fields = fields;
       if (indexValue) shape.indexValue = indexValue;
-      if (declaredOrder) shape.declaredOrder = declaredOrder;
+      this.adoptDeclaredOrder(shape, declaredOrder);
       this.pendingRec.delete(id);
       const key = this.keyOf(fields, false, indexValue);
       if (!this.byKey.has(key)) this.byKey.set(key, id);
@@ -179,6 +214,11 @@ export class ShapeRegistry {
       this.byKey.set(key, id);
       this.byId.set(id, shape);
       this.shapes.push(shape);
+      if (declaredOrder !== undefined) {
+        this.declaredOrderPriority.set(id, this.currentDeclaredOrderPriority);
+      }
+    } else {
+      this.adoptDeclaredOrder(this.byId.get(id)!, declaredOrder);
     }
     return id;
   }

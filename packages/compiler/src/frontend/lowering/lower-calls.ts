@@ -6921,50 +6921,8 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
       helper = `%obj.keys.${L.arrHofHelpers.size}`;
       const ref: IrExpr = { kind: "varRef", localId: "r.0", type: argIr, loc };
       const outRef: IrExpr = { kind: "varRef", localId: "out.0", type: resultT, loc };
-      const body: IrStmt[] = [
-        { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: resultT, loc }, loc },
-      ];
-      const order = shape.declaredOrder ?? shape.fields.map((f) => f.name);
-      for (const name of order) {
-        const f = shape.fields.find((x) => x.name === name)!;
-        const pushStmt: IrStmt = {
-          kind: "exprStmt",
-          expr: {
-            kind: "arrIntrinsic",
-            method: "push",
-            receiver: outRef,
-            args: [{ kind: "strLit", value: f.name, type: STRING, loc }],
-            type: F64,
-            loc,
-          },
-          loc,
-        };
-        // Undefined-armed fields: the push is guarded by a tag test (the
-        // key exists exactly when the arm is not undefined).
-        const utag = f.type.kind === "union" ? L.armTag(f.type.unionId, UNDEFINED_T) : -1;
-        body.push(
-          utag >= 0 && f.type.kind === "union"
-            ? {
-                kind: "if",
-                cond: {
-                  kind: "unionIsTag",
-                  unionId: f.type.unionId,
-                  tag: utag,
-                  negated: true,
-                  value: { kind: "recordGet", obj: ref, shapeId: argIr.shapeId, field: f.name, type: f.type, loc },
-                  type: BOOL,
-                  loc,
-                },
-                then: [pushStmt],
-                else_: null,
-                loc,
-              }
-            : pushStmt,
-        );
-      }
-      body.push({ kind: "return", value: outRef, loc });
       L.arrHofHelpers.set(key, helper);
-      L.liftedFns.push({
+      const fn: IrFunction = {
         name: helper,
         params: [{ localId: "r.0", name: "r", type: argIr }],
         returnType: resultT,
@@ -6972,9 +6930,58 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
           { id: "r.0", name: "r", type: argIr, mutable: true },
           { id: "out.0", name: "out", type: resultT, mutable: false },
         ],
-        body,
+        body: [],
         loc,
-      });
+      };
+      const finalize = (): void => {
+        const current = L.shapes.get(argIr.shapeId) ?? shape;
+        const body: IrStmt[] = [
+          { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: resultT, loc }, loc },
+        ];
+        const order = current.declaredOrder ?? current.fields.map((f) => f.name);
+        for (const name of order) {
+          const f = current.fields.find((x) => x.name === name)!;
+          const pushStmt: IrStmt = {
+            kind: "exprStmt",
+            expr: {
+              kind: "arrIntrinsic",
+              method: "push",
+              receiver: outRef,
+              args: [{ kind: "strLit", value: f.name, type: STRING, loc }],
+              type: F64,
+              loc,
+            },
+            loc,
+          };
+          // Undefined-armed fields: the push is guarded by a tag test (the
+          // key exists exactly when Object.keys would list it).
+          const utag = f.type.kind === "union" ? L.armTag(f.type.unionId, UNDEFINED_T) : -1;
+          body.push(
+            utag >= 0 && f.type.kind === "union"
+              ? {
+                  kind: "if",
+                  cond: {
+                    kind: "unionIsTag",
+                    unionId: f.type.unionId,
+                    tag: utag,
+                    negated: true,
+                    value: { kind: "recordGet", obj: ref, shapeId: argIr.shapeId, field: f.name, type: f.type, loc },
+                    type: BOOL,
+                    loc,
+                  },
+                  then: [pushStmt],
+                  else_: null,
+                  loc,
+                }
+              : pushStmt,
+          );
+        }
+        body.push({ kind: "return", value: outRef, loc });
+        fn.body = body;
+      };
+      finalize();
+      L.shapeOrderHelperFinalizers.push(finalize);
+      L.liftedFns.push(fn);
     }
     return { kind: "call", callee: helper, args: [receiver], type: resultT, loc };
   }

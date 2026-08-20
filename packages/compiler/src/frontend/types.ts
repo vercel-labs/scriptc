@@ -139,6 +139,24 @@ export class ShapeRegistry {
     this.declaredOrderPriority.set(shape.id, this.currentDeclaredOrderPriority);
   }
 
+  /** Captures the current historical rank for a derived shape whose order
+   * must be recomputed after retained reachability settles its source. */
+  declaredOrderFinalizer(
+    shapeId: string,
+    originalOrder: string[],
+    order: () => string[] | undefined,
+  ): () => void {
+    return () => {
+      const shape = this.byId.get(shapeId);
+      // Only the writer whose array the shape actually adopted may revise
+      // it. Another structurally-equal type at the same historical rank
+      // still obeys first-writer-wins.
+      if (shape?.declaredOrder !== originalOrder) return;
+      const next = order();
+      if (next !== undefined) shape.declaredOrder = next;
+    };
+  }
+
   /** The shape id a back-reference to an in-progress type resolves to:
    * reuses the type's persistent recursive id or mints a PLACEHOLDER
    * entry (empty fields) the outer frame finalizes. */

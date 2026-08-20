@@ -939,6 +939,9 @@ export class Lowerer {
   /** Synthetic array-HOF loop functions (map/filter/forEach desugar),
    * interned per method + element/callback-result type: key → fn name. */
   readonly arrHofHelpers = new Map<string, string>();
+  /** Derived shape metadata that depends on another shape's declaration
+   * order. These settle before helper bodies rebuild from that metadata. */
+  readonly shapeOrderMetadataFinalizers: (() => void)[] = [];
   /** Helpers that snapshot shape declaration order into their bodies.
    * Reachability lowers inits before the declarations they discover, so
    * these rebuild after the worklist restores historical shape metadata. */
@@ -2615,6 +2618,7 @@ export class Lowerer {
     const orderedUnits = [...loweredUnits]
       .sort(([left], [right]) => units.get(left)!.order - units.get(right)!.order)
       .map(([, fn]) => fn);
+    for (const finalize of this.shapeOrderMetadataFinalizers) finalize();
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     const functions = [
       ...orderedUnits,

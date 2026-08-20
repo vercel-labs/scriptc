@@ -406,7 +406,8 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
     { id: "r.0", name: "r", type: F64, mutable: false },
     { id: "d.0", name: "d", type: F64, mutable: false },
   ];
-  let body: IrStmt[];
+  let body: IrStmt[] = [];
+  let rebuildShapeOrderBody: (() => void) | null = null;
 
   switch (t.kind) {
     case "array": {
@@ -542,21 +543,27 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         body = [ret(str("{}", loc))];
         break;
       }
-      // Object.keys' declared order (SEMANTICS.md 36's stance).
-      const order = shape.declaredOrder ?? shape.fields.map((f) => f.name);
-      const byName = new Map(shape.fields.map((f) => [f.name, f.type] as const));
-      body = [depthGate("[Object]"), ...begin()];
-      for (const fname of order) {
-        const ft = byName.get(fname);
-        if (!ft) continue;
-        body.push(
-          entry(
-            concatAll([str(`${inspectKey(fname)}: `, loc), child(ft, get(fname, ft))], loc),
-            boolLit(false, loc),
-          ),
-        );
-      }
-      body.push(ret(end(str("", loc), str("{", loc), str("}", loc), false, boolLit(false, loc))));
+      // Object.keys' declared order (SEMANTICS.md 36's stance). Retained
+      // reachability can settle this shape after the helper is first
+      // interned, so rebuild the field walk once metadata is final.
+      rebuildShapeOrderBody = (): void => {
+        const current = L.shapes.get(t.shapeId) ?? shape;
+        const order = current.declaredOrder ?? current.fields.map((f) => f.name);
+        const byName = new Map(current.fields.map((f) => [f.name, f.type] as const));
+        body = [depthGate("[Object]"), ...begin()];
+        for (const fname of order) {
+          const ft = byName.get(fname);
+          if (!ft) continue;
+          body.push(
+            entry(
+              concatAll([str(`${inspectKey(fname)}: `, loc), child(ft, get(fname, ft))], loc),
+              boolLit(false, loc),
+            ),
+          );
+        }
+        body.push(ret(end(str("", loc), str("{", loc), str("}", loc), false, boolLit(false, loc))));
+      };
+      rebuildShapeOrderBody();
       break;
     }
     case "map":
@@ -711,6 +718,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       throw new Error(`inspect helper over unexpected type ${typeKey(t)}`);
   }
 
+  let prependCycleGuard: (() => void) | null = null;
   if (onCycle) {
     // The circular check, FIRST (before the empty-literal and depth
     // answers): a value already on the traversal stack renders
@@ -718,24 +726,27 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
     // (a circular target beyond the depth budget still says Circular).
     locals.push({ id: "cc.0", name: "cc", type: F64, mutable: false });
     const cc = (): IrExpr => ref("cc.0", F64);
-    body.unshift(
-      {
-        kind: "varDecl",
-        localId: "cc.0",
-        init: { kind: "libCall", fn: "insp.circCheck", args: [v()], type: F64, loc },
-        loc,
-      },
-      {
-        kind: "if",
-        cond: { kind: "bin", op: ">", left: cc(), right: num(0, loc), type: BOOL, loc },
-        then: [ret({ kind: "libCall", fn: "insp.circular", args: [cc()], type: STRING, loc })],
-        else_: null,
-        loc,
-      },
-    );
+    prependCycleGuard = (): void => {
+      body.unshift(
+        {
+          kind: "varDecl",
+          localId: "cc.0",
+          init: { kind: "libCall", fn: "insp.circCheck", args: [v()], type: F64, loc },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: { kind: "bin", op: ">", left: cc(), right: num(0, loc), type: BOOL, loc },
+          then: [ret({ kind: "libCall", fn: "insp.circular", args: [cc()], type: STRING, loc })],
+          else_: null,
+          loc,
+        },
+      );
+    };
+    prependCycleGuard();
   }
 
-  L.liftedFns.push({
+  const fn = {
     name,
     params: [
       { localId: "v.0", name: "v", type: t },
@@ -746,7 +757,15 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
     locals,
     body,
     loc,
-  });
+  };
+  if (rebuildShapeOrderBody !== null) {
+    L.shapeOrderHelperFinalizers.push(() => {
+      rebuildShapeOrderBody!();
+      prependCycleGuard?.();
+      fn.body = body;
+    });
+  }
+  L.liftedFns.push(fn);
   return name;
 }
 

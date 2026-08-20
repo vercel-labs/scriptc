@@ -7736,119 +7736,15 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
       valueT = tupleShape.fields.find((f) => f.name === "1")!.type;
     }
 
-    const order = shape.declaredOrder ?? shape.fields.map((f) => f.name);
     const key = `obj.${member}:${argIr.shapeId}:${typeKey(resultT)}`;
     let helper = L.arrHofHelpers.get(key);
     if (!helper) {
       helper = `%obj.${member}.${L.arrHofHelpers.size}`;
       const recT = argIr;
       const ref: IrExpr = { kind: "varRef", localId: "r.0", type: recT, loc };
-      const body: IrStmt[] = [
-        { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: resultT, loc }, loc },
-      ];
       const outRef: IrExpr = { kind: "varRef", localId: "out.0", type: resultT, loc };
-      for (const name of order) {
-        const f = shape.fields.find((x) => x.name === name)!;
-        const raw: IrExpr = { kind: "recordGet", obj: ref, shapeId: argIr.shapeId, field: f.name, type: f.type, loc };
-        // The pushed element per member; null when the field's value
-        // cannot flow into the result element type.
-        const elemOf = (value: IrExpr, vt: IrType): IrExpr | null => {
-          if (!valueT) return null;
-          if (typeEquals(vt, valueT)) return value;
-          if (valueT.kind === "union" && vt.kind !== "union") {
-            const tag = L.armTag(valueT.unionId, vt);
-            if (tag >= 0) {
-              return { kind: "unionWrap", unionId: valueT.unionId, tag, value, type: valueT, loc };
-            }
-          }
-          return null;
-        };
-        // Undefined-armed fields: the push is guarded by a tag test, and
-        // the pushed value is the narrowed non-undefined arm.
-        let guardUndefTag: number | null = null;
-        let value: IrExpr = raw;
-        let vt: IrType = f.type;
-        if (f.type.kind === "union") {
-          const undefTag = L.armTag(f.type.unionId, UNDEFINED_T);
-          if (undefTag >= 0) {
-            guardUndefTag = undefTag;
-            const arms = L.unions.get(f.type.unionId)?.arms ?? [];
-            const others = arms.filter((a) => a.kind !== "undefinedT");
-            if (typeEquals(f.type, valueT ?? f.type)) {
-              // The field union IS the result union (single-field shapes):
-              // push the raw box — but then the undefined skip must NOT
-              // narrow. Handled below via vt === valueT.
-              value = raw;
-              vt = f.type;
-            } else if (others.length === 1) {
-              vt = others[0]!;
-              // A UNIT other arm (`null | undefined` fields — the mixed-
-              // defaults spread idiom; undefined was filtered above, so
-              // the unit is null): units carry no payload, so the guarded
-              // push writes the unit LITERAL — unionNarrow to a unit arm
-              // (and unionWrap of a narrowed unit) is malformed IR; the
-              // literal is the one legal unit spelling.
-              value = isUnitType(vt)
-                ? { kind: "unitLit", unit: "null", type: vt, loc }
-                : { kind: "unionNarrow", unionId: f.type.unionId, tag: L.armTag(f.type.unionId, vt), value: raw, type: vt, loc };
-            } else {
-              L.unsupported(
-                "SC1090",
-                call,
-                `Object.${member} over '${L.fmt(argIr)}' (field '${f.name}' is a multi-arm union that ` +
-                  "cannot re-tag into the result element type — read the fields directly)",
-              );
-            }
-          } else if (!typeEquals(f.type, valueT ?? f.type)) {
-            L.unsupported(
-              "SC1090",
-              call,
-              `Object.${member} over '${L.fmt(argIr)}' (field '${f.name}' is a union that cannot ` +
-                "re-tag into the result element type — read the fields directly)",
-            );
-          }
-        }
-        const coerced = elemOf(value, vt);
-        if (!coerced) {
-          L.unsupported(
-            "SC1090",
-            call,
-            `Object.${member} over '${L.fmt(argIr)}' (field '${f.name}' of type '${L.fmt(f.type)}' ` +
-              `cannot flow into the '${L.fmt(valueT!)}' result element — read the fields directly)`,
-          );
-        }
-        const pushed: IrExpr =
-          member === "values"
-            ? coerced
-            : {
-                kind: "recordLit",
-                fields: [
-                  { name: "0", value: { kind: "strLit", value: f.name, type: STRING, loc } },
-                  { name: "1", value: coerced },
-                ],
-                type: tupleT!,
-                loc,
-              };
-        const pushStmt: IrStmt = {
-          kind: "exprStmt",
-          expr: { kind: "arrIntrinsic", method: "push", receiver: outRef, args: [pushed], type: F64, loc },
-          loc,
-        };
-        body.push(
-          guardUndefTag !== null && f.type.kind === "union"
-            ? {
-                kind: "if",
-                cond: { kind: "unionIsTag", unionId: f.type.unionId, tag: guardUndefTag, negated: true, value: raw, type: BOOL, loc },
-                then: [pushStmt],
-                else_: null,
-                loc,
-              }
-            : pushStmt,
-        );
-      }
-      body.push({ kind: "return", value: outRef, loc });
       L.arrHofHelpers.set(key, helper);
-      L.liftedFns.push({
+      const fn: IrFunction = {
         name: helper,
         params: [{ localId: "r.0", name: "r", type: recT }],
         returnType: resultT,
@@ -7856,9 +7752,120 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
           { id: "r.0", name: "r", type: recT, mutable: true },
           { id: "out.0", name: "out", type: resultT, mutable: false },
         ],
-        body,
+        body: [],
         loc,
-      });
+      };
+      const finalize = (): void => {
+        const current = L.shapes.get(argIr.shapeId) ?? shape;
+        const body: IrStmt[] = [
+          { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: resultT, loc }, loc },
+        ];
+        const order = current.declaredOrder ?? current.fields.map((f) => f.name);
+        for (const name of order) {
+          const f = current.fields.find((x) => x.name === name)!;
+          const raw: IrExpr = { kind: "recordGet", obj: ref, shapeId: argIr.shapeId, field: f.name, type: f.type, loc };
+          // The pushed element per member; null when the field's value
+          // cannot flow into the result element type.
+          const elemOf = (value: IrExpr, vt: IrType): IrExpr | null => {
+            if (!valueT) return null;
+            if (typeEquals(vt, valueT)) return value;
+            if (valueT.kind === "union" && vt.kind !== "union") {
+              const tag = L.armTag(valueT.unionId, vt);
+              if (tag >= 0) {
+                return { kind: "unionWrap", unionId: valueT.unionId, tag, value, type: valueT, loc };
+              }
+            }
+            return null;
+          };
+          // Undefined-armed fields: the push is guarded by a tag test, and
+          // the pushed value is the narrowed non-undefined arm.
+          let guardUndefTag: number | null = null;
+          let value: IrExpr = raw;
+          let vt: IrType = f.type;
+          if (f.type.kind === "union") {
+            const undefTag = L.armTag(f.type.unionId, UNDEFINED_T);
+            if (undefTag >= 0) {
+              guardUndefTag = undefTag;
+              const arms = L.unions.get(f.type.unionId)?.arms ?? [];
+              const others = arms.filter((a) => a.kind !== "undefinedT");
+              if (typeEquals(f.type, valueT ?? f.type)) {
+              // The field union IS the result union (single-field shapes):
+              // push the raw box — but then the undefined skip must NOT
+              // narrow. Handled below via vt === valueT.
+                value = raw;
+                vt = f.type;
+              } else if (others.length === 1) {
+                vt = others[0]!;
+              // A UNIT other arm (`null | undefined` fields — the mixed-
+              // defaults spread idiom; undefined was filtered above, so
+              // the unit is null): units carry no payload, so the guarded
+              // push writes the unit LITERAL — unionNarrow to a unit arm
+              // (and unionWrap of a narrowed unit) is malformed IR; the
+              // literal is the one legal unit spelling.
+                value = isUnitType(vt)
+                  ? { kind: "unitLit", unit: "null", type: vt, loc }
+                  : { kind: "unionNarrow", unionId: f.type.unionId, tag: L.armTag(f.type.unionId, vt), value: raw, type: vt, loc };
+              } else {
+                L.unsupported(
+                  "SC1090",
+                  call,
+                  `Object.${member} over '${L.fmt(argIr)}' (field '${f.name}' is a multi-arm union that ` +
+                    "cannot re-tag into the result element type — read the fields directly)",
+                );
+              }
+            } else if (!typeEquals(f.type, valueT ?? f.type)) {
+              L.unsupported(
+                "SC1090",
+                call,
+                `Object.${member} over '${L.fmt(argIr)}' (field '${f.name}' is a union that cannot ` +
+                  "re-tag into the result element type — read the fields directly)",
+              );
+            }
+          }
+          const coerced = elemOf(value, vt);
+          if (!coerced) {
+            L.unsupported(
+              "SC1090",
+              call,
+              `Object.${member} over '${L.fmt(argIr)}' (field '${f.name}' of type '${L.fmt(f.type)}' ` +
+                `cannot flow into the '${L.fmt(valueT!)}' result element — read the fields directly)`,
+            );
+          }
+          const pushed: IrExpr =
+            member === "values"
+              ? coerced
+              : {
+                  kind: "recordLit",
+                  fields: [
+                    { name: "0", value: { kind: "strLit", value: f.name, type: STRING, loc } },
+                    { name: "1", value: coerced },
+                  ],
+                  type: tupleT!,
+                  loc,
+                };
+          const pushStmt: IrStmt = {
+            kind: "exprStmt",
+            expr: { kind: "arrIntrinsic", method: "push", receiver: outRef, args: [pushed], type: F64, loc },
+            loc,
+          };
+          body.push(
+            guardUndefTag !== null && f.type.kind === "union"
+              ? {
+                  kind: "if",
+                  cond: { kind: "unionIsTag", unionId: f.type.unionId, tag: guardUndefTag, negated: true, value: raw, type: BOOL, loc },
+                  then: [pushStmt],
+                  else_: null,
+                  loc,
+                }
+              : pushStmt,
+          );
+        }
+        body.push({ kind: "return", value: outRef, loc });
+        fn.body = body;
+      };
+      finalize();
+      L.shapeOrderHelperFinalizers.push(finalize);
+      L.liftedFns.push(fn);
     }
     return { kind: "call", callee: helper, args: [receiver], type: resultT, loc };
   }

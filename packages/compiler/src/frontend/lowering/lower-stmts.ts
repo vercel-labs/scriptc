@@ -5380,12 +5380,22 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
           }
         }
         const remaining = shape.fields.filter((f) => !consumed.has(f.name));
+        const restOrder = shape.declaredOrder?.filter((n) => !consumed.has(n));
         const restShapeId = L.shapes.intern(
           remaining.map((f) => ({ name: f.name, type: f.type })),
           false,
           undefined,
-          shape.declaredOrder?.filter((n) => !consumed.has(n)),
+          restOrder,
         );
+        if (restOrder !== undefined) {
+          L.shapeOrderMetadataFinalizers.push(
+            L.shapes.declaredOrderFinalizer(
+              restShapeId,
+              restOrder,
+              () => L.shapes.get(srcType.shapeId)?.declaredOrder?.filter((n) => !consumed.has(n)),
+            ),
+          );
+        }
         const packed: IrExpr = {
           kind: "recordLit",
           fields: remaining.map((f) => ({

@@ -6349,6 +6349,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
       const body: IrStmt[] = [
         { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: resultT, loc }, loc },
       ];
+      const fieldStmts = new Map<string, IrStmt>();
 
       // Declared fields, in declaration order. Undefined-valued fields
       // skip at runtime (the unset-optional convention); values surface
@@ -6417,7 +6418,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
                   loc,
                 };
         }
-        body.push(
+        const fieldStmt: IrStmt =
           utag >= 0 && f.type.kind === "union"
             ? {
                 kind: "if",
@@ -6426,8 +6427,9 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
                 else_: null,
                 loc,
               }
-            : push(pushed),
-        );
+            : push(pushed);
+        fieldStmts.set(f.name, fieldStmt);
+        body.push(fieldStmt);
       }
 
       // The overflow walk: a fresh key snapshot in JS own-key order, each
@@ -6480,8 +6482,9 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
         },
         { kind: "return", value: outRef, loc },
       );
+      const suffix = body.slice(1 + fieldStmts.size);
       L.arrHofHelpers.set(key, helper);
-      L.liftedFns.push({
+      const fn: IrFunction = {
         name: helper,
         params: [{ localId: "r.0", name: "r", type: argIr }],
         returnType: resultT,
@@ -6494,7 +6497,16 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
         ],
         body,
         loc,
+      };
+      L.shapeOrderHelperFinalizers.push(() => {
+        const current = L.shapes.get(argIr.shapeId) ?? shape;
+        const currentOrder = current.declaredOrder ?? current.fields.map((f) => f.name);
+        fn.body = [body[0]!, ...currentOrder.flatMap((name) => {
+          const stmt = fieldStmts.get(name);
+          return stmt ? [stmt] : [];
+        }), ...suffix];
       });
+      L.liftedFns.push(fn);
     }
     return { kind: "call", callee: helper, args: [receiver], type: resultT, loc };
   }
@@ -6876,6 +6888,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
         loc,
       },
     ];
+    const fieldStmts = new Map<string, IrStmt>();
     // Source declared fields in declaration order, skipping unset
     // optionals (stance 37) and the direct-initialized (consumed) names.
     for (const ff of orderedFields) {
@@ -6893,7 +6906,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
         ...(to.fields.some((f) => f.name === ff.name) ? {} : { overflowOnly: true as const }),
         loc,
       };
-      body.push(
+      const fieldStmt: IrStmt =
         utag >= 0 && ff.type.kind === "union"
           ? {
               kind: "if",
@@ -6902,8 +6915,9 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
               else_: null,
               loc,
             }
-          : write,
-      );
+          : write;
+      fieldStmts.set(ff.name, fieldStmt);
+      body.push(fieldStmt);
     }
     // The source overflow, in JS own-key order (only index-signature
     // sources carry one).
@@ -6945,7 +6959,8 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
       );
     }
     body.push({ kind: "return", value: outRef, loc });
-    L.liftedFns.push({
+    const suffix = body.slice(1 + fieldStmts.size);
+    const fn: IrFunction = {
       name,
       params: [{ localId: "s.0", name: "s", type: fromT }],
       returnType: toT,
@@ -6962,7 +6977,16 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
       ],
       body,
       loc,
+    };
+    L.shapeOrderHelperFinalizers.push(() => {
+      const current = L.shapes.get(fromId) ?? from;
+      const currentOrder = current.declaredOrder ?? current.fields.map((f) => f.name);
+      fn.body = [body[0]!, ...currentOrder.flatMap((field) => {
+        const stmt = fieldStmts.get(field);
+        return stmt ? [stmt] : [];
+      }), ...suffix];
     });
+    L.liftedFns.push(fn);
     return name;
   }
 
@@ -7050,6 +7074,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
       const intoSlot = (v: IrExpr, lift: WidthLift | "dyn"): IrExpr =>
         lift === "dyn" ? { kind: "dynFrom", value: v, type: DYN, loc } : L.applyWidthLift(lift, v, tIv, loc);
       const body: IrStmt[] = [];
+      const fieldStmts = new Map<string, IrStmt>();
       for (const ff of plan.fields) {
         const raw: IrExpr = { kind: "recordGet", obj: sRef, shapeId: plan.fromId, field: ff.name, type: ff.type, loc };
         const utag = ff.type.kind === "union" ? L.armTag(ff.type.unionId, UNDEFINED_T) : -1;
@@ -7061,7 +7086,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
           value: intoSlot(raw, ff.lift),
           loc,
         };
-        body.push(
+        const fieldStmt: IrStmt =
           utag >= 0 && ff.type.kind === "union"
             ? {
                 kind: "if",
@@ -7070,8 +7095,9 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
                 else_: null,
                 loc,
               }
-            : write,
-        );
+            : write;
+        fieldStmts.set(ff.name, fieldStmt);
+        body.push(fieldStmt);
       }
       const ksT = arrayOf(STRING);
       const fromShape = L.shapes.get(plan.fromId)!;
@@ -7112,7 +7138,8 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
         );
       }
       body.push({ kind: "return", value: tRef, loc });
-      L.liftedFns.push({
+      const suffix = body.slice(fieldStmts.size);
+      const fn: IrFunction = {
         name,
         params: [
           { localId: "t.0", name: "t", type: toT },
@@ -7132,7 +7159,16 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
         ],
         body,
         loc,
+      };
+      L.shapeOrderHelperFinalizers.push(() => {
+        const current = L.shapes.get(plan.fromId) ?? fromShape;
+        const currentOrder = current.declaredOrder ?? current.fields.map((f) => f.name);
+        fn.body = [...currentOrder.flatMap((field) => {
+          const stmt = fieldStmts.get(field);
+          return stmt ? [stmt] : [];
+        }), ...suffix];
       });
+      L.liftedFns.push(fn);
       return name;
     };
     let acc = L.lowerExprExpecting(call.arguments[0]!, targetIr);

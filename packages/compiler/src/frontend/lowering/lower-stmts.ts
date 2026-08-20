@@ -2507,18 +2507,25 @@ export function isParseArgsDynCheckerType(L: Lowerer, type: ts.Type): boolean {
     const emitOrder = restShape.declaredOrder ?? restShape.fields.map((f) => f.name);
     const orderMatches = (order: readonly string[]): boolean =>
       order.length === remaining.length && order.every((n, i) => n === remaining[i]!.name);
-    if (!orderMatches(emitOrder)) {
-      if (L.instantiationContext === null || L.onEdge === null || isJsSourceFile(blame.getSourceFile())) {
+    const deferOrderCheck =
+      L.instantiationContext !== null &&
+      L.onEdge !== null &&
+      !isJsSourceFile(blame.getSourceFile());
+    if (!deferOrderCheck) {
+      if (!orderMatches(emitOrder)) {
         L.unsupported(
           "SC1031",
           blame,
           "rest bindings over class instances whose packed key order cannot match Node's (Object.keys/JSON.stringify would enumerate the copied fields in a different order)",
         );
       }
+    } else {
       // Retained reachability can learn about an earlier source-order body
-      // only while a generic instance lowers. Defer this metadata-only fence
-      // until that worklist closes; unlike emitted helper bodies, there is no
-      // IR to rebuild here — only the settled support decision matters.
+      // only while a generic instance lowers. Always defer this metadata-only
+      // check until that worklist closes: the initial order can settle from
+      // wrong to right OR from right to wrong. Unlike emitted helper bodies,
+      // there is no IR to rebuild here — only the settled support decision
+      // matters.
       const context = L.instantiationContext;
       const countFailure = !L.suppressStats;
       const sf = blame.getSourceFile();

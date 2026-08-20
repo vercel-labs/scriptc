@@ -1,0 +1,6 @@
+retained-generic-rest-order.ts:19:11 - error SC1031: rest bindings over class instances whose packed key order cannot match Node's (Object.keys/JSON.stringify would enumerate the copied fields in a different order) are not supported yet (instantiating 'laterGeneric' with <number>)
+
+  18 |   earlierOrdinary();
+  19 |   const { ...rest } = new Pair();
+     |           ^~~~~~~
+  20 |   console.log(Object.keys(rest).join(","));

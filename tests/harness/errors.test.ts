@@ -220,6 +220,25 @@ console.log(two(1, 2, loud()));
     );
   });
 
+  test("Array.from fences an unsupported callback result before emission (JS lane)", async () => {
+    // Callback-driven producers learn their result element from the
+    // lowered callback, bypassing mapType's ordinary T[] gate. An empty
+    // Set in JS maps to dyn here; the frontend must replace the statement
+    // with the normal JS runtime fence, never send dyn[] to either emitter.
+    const r = await compileAndRun(
+      "array-from-length-elements",
+      `const arr = Array.from({ length: 2 }, () => new Set());
+console.log(arr.length);
+`,
+      "js",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: 'Array\.from\(\{ length \}, mapper\)' with a callback returning 'unknown'-typed values .* \[SC1090 at .*array-from-length-elements\.js:1\]\n$/,
+    );
+  });
+
   test("extending a property-assigned class ABOVE its assignment is a named deferred fence (JS lane)", async () => {
     // The property-assigned class-expression family (corpus 2032/2033
     // pins what lowers): `exports.O = class extends exports.I {}` with

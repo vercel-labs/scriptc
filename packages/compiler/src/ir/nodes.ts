@@ -369,6 +369,35 @@ export function isUnitType(t: IrType): boolean {
   return t.kind === "undefinedT" || t.kind === "nullT";
 }
 
+/** Element kinds with a real ScrArr storage/RC representation in BOTH
+ * backends. Array-producing lowerings can learn their result element from
+ * a callback rather than through mapType's ordinary T[] gate, so they must
+ * share this predicate instead of reconstructing an array around an
+ * otherwise-valid standalone type (Map, Set, dyn, opaque handles, ...). */
+export function isSupportedArrayElem(t: IrType): boolean {
+  switch (t.kind) {
+    case "f64":
+    case "bool":
+    case "string":
+    case "array":
+    case "bytes":
+    case "record":
+    case "object":
+    case "union":
+    case "func":
+    case "promise":
+    case "jsval":
+    case "regex":
+    case "child":
+    case "netServer":
+    case "symbol":
+    case "classval":
+      return true;
+    default:
+      return false;
+  }
+}
+
 export function arrayOf(elem: IrType): IrType {
   return { kind: "array", elem };
 }

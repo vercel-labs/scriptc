@@ -1,6 +1,6 @@
 import * as ts from "./ts7/adapter.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../ir/nodes.js";
-import { arrayOf, BOOL, bytesOf, canConvertToDyn, CHILD_T, DATE_T, DYN, F64, funcOf, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, JSVAL, mapOf, NULL_T, PROCSTREAM_T, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, setOf, STRING, SYMBOL_T, typeEquals, typeKey, UNDEFINED_T, VOID } from "../ir/nodes.js";
+import { arrayOf, BOOL, bytesOf, canConvertToDyn, CHILD_T, DATE_T, DYN, F64, funcOf, isSupportedArrayElem, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, JSVAL, mapOf, NULL_T, PROCSTREAM_T, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, setOf, STRING, SYMBOL_T, typeEquals, typeKey, UNDEFINED_T, VOID } from "../ir/nodes.js";
 
 import { isJsSourceFile, isNodeTypesPath } from "./program.js";
 import { accessorSlotProp } from "../ir/nodes.js";
@@ -1118,37 +1118,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // the messages-building pattern (`const content: any[] = []`) — which
     // keeps its static array-of-handles representation.
     if (elem?.kind === "jsval" && !(elemTs.flags & ts.TypeFlags.Any)) return JSVAL;
-    // RegExp elements ride REF (scr_regex_retain_v/release_v, no trace —
-    // a regex holds only its bytecode and source): the derived-pattern
-    // idiom `[bases].map(ps => new RegExp(...))` builds real regex
-    // arrays, elements flow into the regex intrinsics unchanged, and
-    // indexOf/includes/=== are the REF kind's pointer identity — exactly
-    // JS object identity for RegExp values.
-    if (
-      !elem ||
-      elem.kind === "void" ||
-      elem.kind === "date" ||
-      elem.kind === "map" ||
-      elem.kind === "set" ||
-      elem.kind === "url" ||
-      elem.kind === "searchParams" ||
-      elem.kind === "stats" ||
-      elem.kind === "fileHandle" ||
-      elem.kind === "spawnRes" ||
-      elem.kind === "netSocket" ||
-      elem.kind === "dgramSocket" ||
-      elem.kind === "testCtx" ||
-      elem.kind === "httpReq" ||
-      elem.kind === "httpRes" ||
-      elem.kind === "httpClientReq" ||
-      elem.kind === "secureCtx" ||
-      elem.kind === "fsWatcher" ||
-      elem.kind === "childStream" ||
-      elem.kind === "procStream" ||
-      elem.kind === "generator"
-    ) {
-      return null; // ScrArr has no closure/map/regex/url element kinds yet
-    }
+    if (!elem) return null;
     // A dyn ELEMENT makes the WHOLE array the checked-dynamic value:
     // `unknown[]`, `object[]`, and the collapsed `(string | object)[]`
     // (the plugins-slot shape) — the checked-dynamic tree has real arrays, so length/
@@ -1158,6 +1128,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // the mapping itself; construction sites build dynArrLit (the checked-dynamic tree
     // array literal) and typed sources convert per element at the slot.
     if (elem.kind === "dyn") return DYN;
+    // The shared predicate is the runtime/backend storage contract. In
+    // particular, valid standalone values such as Map/Set/Date and opaque
+    // handles do not automatically have an array element representation.
+    if (!isSupportedArrayElem(elem)) return null;
     // ChildProcess[] (the running-apps list) and Server[] (the [...set]
     // drain of the auxiliary-server registries): handles are ordinary
     // refcounted REF elements (their `_v` adapters, no trace — both drop

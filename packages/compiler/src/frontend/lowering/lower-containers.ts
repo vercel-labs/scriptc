@@ -4,7 +4,7 @@
  * method surfaces. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
-import { BOOL, BYTES_U8, CAUGHT, DYN, F64, IrBytesElem, IrBytesIntrinsicMethod, IrExpr, IrFunction, IrLocal, IrMapIntrinsicMethod, IrParam, IrRecordShape, IrSetIntrinsicMethod, IrStmt, IrType, JSVAL, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, bytesOf, funcOf, isRefCounted, isSupportedIndexValue, isUnitType, typeEquals } from "../../ir/nodes.js";
+import { BOOL, BYTES_U8, CAUGHT, DYN, F64, IrBytesElem, IrBytesIntrinsicMethod, IrExpr, IrFunction, IrLocal, IrMapIntrinsicMethod, IrParam, IrRecordShape, IrSetIntrinsicMethod, IrStmt, IrType, JSVAL, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, bytesOf, funcOf, isRefCounted, isSupportedArrayElem, isSupportedIndexValue, isUnitType, typeEquals } from "../../ir/nodes.js";
 import { ARRAY_METHODS, MAP_METHODS, SET_COMBINE_METHODS, SET_METHODS, STR_METHODS } from "./surfaces.js";
 import { droppableStatic, isRequireMainFilename, lowerDynObjectLiteral, probeLower, pureReemittable } from "./lower-exprs.js";
 import { forOfVarTarget, lowerDestructuringAssign } from "./lower-stmts.js";
@@ -103,6 +103,27 @@ function lowerOptionalDefaultArg(
 function lowerSplitLimitArg(L: Lowerer, node: ts.Expression | undefined, loc: SrcLoc): IrExpr {
   const defaultValue: IrExpr = { kind: "numLit", value: 4294967295, type: F64, loc };
   return node ? lowerOptionalDefaultArg(L, node, F64, defaultValue) : defaultValue;
+}
+
+/** Callback-driven array producers bypass mapType's ordinary T[] mapping:
+ * the callback is lowered first, then the helper's result array is built
+ * directly from its IR return type. Fence element kinds ScrArr cannot hold
+ * before constructing that array type. */
+function fenceProducedArrayElem(L: Lowerer, node: ts.Node, producer: string, elem: IrType): void {
+  if (elem.kind === "dyn") {
+    L.unsupported(
+      "SC1090",
+      node,
+      `${producer} with a callback returning 'unknown'-typed values (the result array has no static element type — annotate the callback's return)`,
+    );
+  }
+  if (!isSupportedArrayElem(elem)) {
+    L.unsupported(
+      "SC1090",
+      node,
+      `${producer} with a callback returning '${L.fmt(elem)}' values (arrays of this element kind have no representation — store the values individually)`,
+    );
+  }
 }
 
 /** Ambient array method calls. `push`/`unshift`/`pop`/`reverse`/
@@ -631,38 +652,7 @@ function lowerSplitLimitArg(L: Lowerer, node: ts.Expression | undefined, loc: Sr
       // story yet).
       L.badType(call, L.typeOf(call));
     }
-    if (
-      method === "map" &&
-      (fnRet.kind === "map" || fnRet.kind === "set" || fnRet.kind === "url" ||
-        fnRet.kind === "searchParams" || fnRet.kind === "generator" || fnRet.kind === "caught" ||
-        fnRet.kind === "stats" || fnRet.kind === "fileHandle" || fnRet.kind === "spawnRes" || fnRet.kind === "netSocket" ||
-        fnRet.kind === "dgramSocket" || fnRet.kind === "testCtx" || fnRet.kind === "httpReq" ||
-        fnRet.kind === "httpRes" || fnRet.kind === "httpClientReq" || fnRet.kind === "secureCtx" ||
-        fnRet.kind === "fsWatcher" || fnRet.kind === "childStream" || fnRet.kind === "procStream" ||
-        isUnitType(fnRet))
-    ) {
-      // The result would be an array of an element kind ScrArr has no
-      // home for (mapTypeOf's own array exclusions) — the callback return
-      // type bypasses that gate, so it is enforced here: a named fence,
-      // never a mistyped array into the backends.
-      L.unsupported(
-        "SC1090",
-        call,
-        `'.map()' with a callback returning '${L.fmt(fnRet)}' values (arrays of this element kind have no representation — store the values individually)`,
-      );
-    }
-    if (method === "map" && fnRet.kind === "dyn") {
-      // A checked-dynamic callback return would make the result a
-      // dyn-element STATIC array, which has no backend representation
-      // (dynFallbackType's rule: an unmappable element makes the WHOLE
-      // value dyn — but map's fresh array is built here, not by a
-      // declaration, so the honest answer is the fence).
-      L.unsupported(
-        "SC1090",
-        call,
-        "'.map()' with a callback returning 'unknown'-typed values (the result array has no static element type — annotate the callback's return)",
-      );
-    }
+    if (method === "map") fenceProducedArrayElem(L, call, "'.map()'", fnRet);
     // JS applies ToBoolean to whatever the predicate answers, so a non-bool
     // result is not an error — the filter loop wraps the call in the same
     // toBool an `if` statement would apply. The island/dyn shapes, whose
@@ -2537,6 +2527,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     const fnT = fnArg.type as IrType & { kind: "func" };
     const fnRet = fnT.ret;
     if (fnRet.kind === "void" || fnRet.kind === "func") L.badType(call, L.typeOf(call));
+    fenceProducedArrayElem(L, call, "'Array.from({ length }, mapper)'", fnRet);
     const arity = fnT.params.length;
     const key = `fromLen:${typeKey(fnRet)}:${arity}`;
     let helper = L.arrHofHelpers.get(key);

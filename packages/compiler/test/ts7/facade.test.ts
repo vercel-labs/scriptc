@@ -4,6 +4,7 @@
  * the raw checker's answers on the same objects. */
 
 import { afterAll, expect, test } from "vitest";
+import { lowerToIr } from "../../src/frontend/lowering/lowerer.js";
 import { CheckerFacade } from "../../src/frontend/ts7/checker.js";
 import type { Node } from "typescript/unstable/ast";
 import type { Checker, Type } from "typescript/unstable/sync";
@@ -274,6 +275,59 @@ export function dead(input: number): number {
   facade.getTypeAtLocation(identifiers[1]!);
   expect(counts["getTypeAtLocation"]).toBe(before + 2);
   expect(Array.isArray(calls["getTypeAtLocation"]!.at(-1)![0])).toBe(false);
+});
+
+test("coverage remainder batches checker queries for unreachable bodies", () => {
+  const w = buildTwoWorlds({
+    "coverage-remainder.ts": `
+function reached(input: number): number {
+  return input + 1;
+}
+function dead(input: number): number {
+  const record = { value: input };
+  const values = [record.value];
+  return values[0]!;
+}
+console.log(reached(1));
+`,
+  }, host);
+  worlds.push(w);
+  const { proxy, calls } = countingChecker(w.p7.project.checker);
+  const facade = new CheckerFacade(proxy, { project: w.p7.project });
+  // Ts7Program owns one shared facade; install the counting instance so
+  // lowering and this assertion observe the same memo/batch traffic.
+  (w.p7 as unknown as { checkerFacade: CheckerFacade | null }).checkerFacade = facade;
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const deadBody = sf.statements
+    .filter(ad.isFunctionDeclaration)
+    .find((decl) => decl.name?.text === "dead")!.body!;
+  const insideDeadBody = (node: Node): boolean =>
+    node.getStart() >= deadBody.getStart() && node.end <= deadBody.end;
+
+  lowerToIr(w.p7, sf, [sf], { coverage: true });
+
+  const hotTypeKinds = new Set([
+    ad.SyntaxKind.Identifier,
+    ad.SyntaxKind.PropertyAccessExpression,
+    ad.SyntaxKind.ObjectLiteralExpression,
+    ad.SyntaxKind.ArrayLiteralExpression,
+    ad.SyntaxKind.ConditionalExpression,
+  ]);
+  const typeBodyCalls = calls["getTypeAtLocation"] ?? [];
+  expect(typeBodyCalls.some(([arg]) =>
+    Array.isArray(arg) && (arg as Node[]).some(insideDeadBody),
+  )).toBe(true);
+  expect(typeBodyCalls.some(([arg]) =>
+    !Array.isArray(arg) && insideDeadBody(arg as Node) && hotTypeKinds.has((arg as Node).kind),
+  )).toBe(false);
+
+  const symbolBodyCalls = calls["getSymbolAtLocation"] ?? [];
+  expect(symbolBodyCalls.some(([arg]) =>
+    Array.isArray(arg) && (arg as Node[]).some(insideDeadBody),
+  )).toBe(true);
+  expect(symbolBodyCalls.some(([arg]) =>
+    !Array.isArray(arg) && insideDeadBody(arg as Node) && ad.isIdentifier(arg as Node),
+  )).toBe(false);
 });
 
 test("root prefetch panic-fences bad nodes and keeps healthy answers warm", () => {

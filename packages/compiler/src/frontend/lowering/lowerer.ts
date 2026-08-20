@@ -2257,6 +2257,15 @@ export class Lowerer {
 
   run(): LowerResult {
     const parts = this.splitFiles();
+    // The coverage remainder deliberately visits every body that reachable
+    // emit skipped. Those files are already phase-managed, so an ordinary
+    // checker miss would stay a one-node IPC query instead of falling back
+    // to the facade's whole-file batch. Coverage has no dead-body boundary
+    // to preserve: prime each complete file now, reusing the answers the
+    // reachable pass already memoized and batching only the cold remainder.
+    if (this.remainder) {
+      for (const fp of parts) this.checker.prefetchSourceFile(fp.sf);
+    }
     this.collectProgram(parts);
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the

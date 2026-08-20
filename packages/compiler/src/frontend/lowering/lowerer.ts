@@ -2612,6 +2612,20 @@ export class Lowerer {
     // Establish the same managed header/top-level batch here before
     // collection, while the production path simply finds warm memos.
     this.checker.prefetchSourceFileStructures(parts.map((fp) => fp.sf));
+    // Signature collection may read the initializer type of a default whose
+    // body type still admits undefined (for example `value =
+    // process.env.VALUE`). The expression executes only when reached, but
+    // that type query is mandatory now; batch hot defaults across ordinary
+    // declarations before collectProgram visits their signatures.
+    this.checker.prefetchCollectionTypes(
+      parts.flatMap((fp) =>
+        fp.fnDecls
+          .filter((decl) => decl.body !== undefined && decl.typeParameters === undefined)
+          .flatMap((decl) =>
+            decl.parameters.flatMap((param) => param.initializer ? [param.initializer] : []),
+          ),
+      ),
+    );
     // JavaScript class shapes are partly declared by constructor-body
     // assignments. Batch those collection-time queries across declarations
     // before collectProgram visits them one by one; reached body lowering
@@ -6880,9 +6894,23 @@ export class Lowerer {
    * constructor is unreachable. Keep that mandatory work batched without
    * sweeping unrelated dead method bodies. */
   private prefetchClassCollection(decls: readonly ts.ClassLikeDeclaration[]): void {
+    const defaultTypeNodes: ts.Node[] = [];
     const typeNodes: ts.Node[] = [];
     const symbolRoots: ts.Node[] = [];
     for (const decl of decls) {
+      for (const member of decl.members) {
+        if (
+          (ts.isConstructorDeclaration(member) ||
+            ts.isMethodDeclaration(member) ||
+            ts.isGetAccessor(member) ||
+            ts.isSetAccessor(member)) &&
+          (!ts.isMethodDeclaration(member) || member.typeParameters === undefined)
+        ) {
+          for (const param of member.parameters) {
+            if (param.initializer) defaultTypeNodes.push(param.initializer);
+          }
+        }
+      }
       if (!isJsSourceFile(decl.getSourceFile())) continue;
       for (const member of decl.members) {
         if (ts.isConstructorDeclaration(member)) {
@@ -6920,6 +6948,9 @@ export class Lowerer {
           }
         }
       }
+    }
+    if (defaultTypeNodes.length > 0) {
+      this.checker.prefetchCollectionTypes(defaultTypeNodes);
     }
     if (typeNodes.length > 0 || symbolRoots.length > 0) {
       this.checker.prefetchClassCollection(typeNodes, symbolRoots);

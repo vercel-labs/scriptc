@@ -336,6 +336,32 @@ export class CheckerFacade {
     this.prefetchNodes(collectNodes(roots, "reachable"));
   }
 
+  /** Batches symbol queries for every identifier under roots without the
+   * usual companion getTypeOfSymbol batch. Preflight uses this for AST
+   * analyses that themselves inspect deferred bodies for binding identity:
+   * those scans need symbols, but do not consume the symbols' types. */
+  prefetchSymbolRoots(roots: readonly Node[]): void {
+    this.markManaged(roots);
+    this.prefetchSymbolNodes(collectNodes(roots), false, false);
+  }
+
+  /** Exact-node sibling of prefetchSymbolRoots for analyses that first
+   * narrow a large AST walk to the identifier spellings they compare. */
+  prefetchSymbolNodesExact(nodes: readonly Node[]): void {
+    this.markManaged(nodes);
+    this.prefetchSymbolNodes([...new Set(nodes)], false, false);
+  }
+
+  /** Batches the hot getTypeAtLocation nodes structure collection may read
+   * despite their runtime expressions being reachability-deferred. */
+  prefetchCollectionTypes(nodes: readonly Node[]): void {
+    this.markManaged(nodes);
+    // Match ordinary whole-file prefetch's hot-kind boundary. Collection
+    // asks some defaults conditionally; uncommon cold expressions should
+    // remain direct misses only if collection actually consumes them.
+    this.prefetchTypeNodes([...new Set(nodes)]);
+  }
+
   /** Batches the exact body nodes class-shape collection reads before body
    * reachability is known. JavaScript field inference asks for the RHS type
    * and for a symbol on the `this.x` property access itself; ordinary
@@ -347,12 +373,16 @@ export class CheckerFacade {
     symbolRoots: readonly Node[],
   ): void {
     this.markManaged([...typeNodes, ...symbolRoots]);
+    this.prefetchExactTypeNodes(typeNodes);
+    this.prefetchSymbolNodes(collectNodes(symbolRoots, "reachable"), true);
+  }
+
+  private prefetchExactTypeNodes(typeNodes: readonly Node[]): void {
     const distinctTypes = [...new Set(typeNodes)].filter(
       (node) => !this.typeAtLocation.has(node),
     );
     const types = chunked(distinctTypes, (chunk) => this.typesWithPanicFence(chunk));
     distinctTypes.forEach((node, index) => this.typeAtLocation.set(node, types[index]));
-    this.prefetchSymbolNodes(collectNodes(symbolRoots, "reachable"), true);
   }
 
   private markManaged(roots: readonly Node[]): void {
@@ -397,6 +427,7 @@ export class CheckerFacade {
   private prefetchSymbolNodes(
     allNodes: readonly Node[],
     includePropertyAccess = false,
+    prefetchSymbolTypes = true,
   ): void {
     const nodes = allNodes.filter(
       (n) =>
@@ -412,6 +443,7 @@ export class CheckerFacade {
       withPanicFence(chunk, (c) => this.raw.getSymbolAtLocation(c)),
     );
     nodes.forEach((n, i) => this.symbolAtLocation.set(n, symbols[i]));
+    if (!prefetchSymbolTypes) return;
     // The walk's companion query: types of the symbols the file mentions.
     const distinct = [...new Set(symbols.filter((s): s is Ts7Symbol => s !== undefined))].filter(
       (s) => !this.typeOfSymbol.has(s),

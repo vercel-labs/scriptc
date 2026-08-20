@@ -318,6 +318,63 @@ console.log("ok");
   }
 });
 
+test("signature collection batches exact types of deferred function defaults", () => {
+  const defaults = Array.from(
+    { length: 24 },
+    (_, index) =>
+      `function dead${index}(value = process.env.VALUE): string | undefined { return value; }`,
+  ).join("\n");
+  const w = buildTwoWorlds({ "defaults.ts": `${defaults}\nconsole.log("ok");\n` }, host);
+  worlds.push(w);
+  const { proxy, calls } = countingChecker(w.p7.project.checker);
+  const facade = new CheckerFacade(proxy, { project: w.p7.project });
+  (w.p7 as unknown as { checkerFacade: CheckerFacade | null }).checkerFacade = facade;
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const initializers = sf.statements
+    .filter(ad.isFunctionDeclaration)
+    .map((decl) => decl.parameters[0]!.initializer!);
+
+  lowerToIr(w.p7, sf, [sf]);
+
+  const typeCalls = calls["getTypeAtLocation"] ?? [];
+  expect(typeCalls.some(([arg]) =>
+    Array.isArray(arg) && initializers.every((initializer) => (arg as Node[]).includes(initializer)),
+  )).toBe(true);
+  expect(typeCalls.some(([arg]) =>
+    !Array.isArray(arg) && initializers.includes(arg as never),
+  )).toBe(false);
+});
+
+test("class-shape collection batches deferred method default types", () => {
+  const methods = Array.from(
+    { length: 24 },
+    (_, index) =>
+      `  dead${index}(value = process.env.VALUE): string | undefined { return value; }`,
+  ).join("\n");
+  const w = buildTwoWorlds({
+    "class-defaults.ts": `class Dead {\n${methods}\n}\nconsole.log("ok");\n`,
+  }, host);
+  worlds.push(w);
+  const { proxy, calls } = countingChecker(w.p7.project.checker);
+  const facade = new CheckerFacade(proxy, { project: w.p7.project });
+  (w.p7 as unknown as { checkerFacade: CheckerFacade | null }).checkerFacade = facade;
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const cls = sf.statements.find(ad.isClassDeclaration)!;
+  const initializers = cls.members
+    .filter(ad.isMethodDeclaration)
+    .map((member) => member.parameters[0]!.initializer!);
+
+  lowerToIr(w.p7, sf, [sf]);
+
+  const typeCalls = calls["getTypeAtLocation"] ?? [];
+  expect(typeCalls.some(([arg]) =>
+    Array.isArray(arg) && initializers.every((initializer) => (arg as Node[]).includes(initializer)),
+  )).toBe(true);
+  expect(typeCalls.some(([arg]) =>
+    !Array.isArray(arg) && initializers.includes(arg as never),
+  )).toBe(false);
+});
+
 test("coverage remainder batches checker queries for unreachable bodies", () => {
   const w = buildTwoWorlds({
     "coverage-remainder.ts": `

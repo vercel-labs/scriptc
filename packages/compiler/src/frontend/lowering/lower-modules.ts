@@ -653,7 +653,7 @@ export interface FileParts {
         }
       }
     }
-    const reachable = L.reachable;
+    const reachable = L.reachableForArtifacts ?? L.reachable;
     return {
       classes: [...L.classes.values()]
         .map((c) => c.def)

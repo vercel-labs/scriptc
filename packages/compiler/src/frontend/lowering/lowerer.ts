@@ -370,13 +370,13 @@ export interface LowerOptions {
 
 /** The Lowerer's pass configuration (see lowerToIr). */
 export interface LowererMode {
-  /** Names of bodies the discovery pass reached; null lowers everything. */
+  /** Names of bodies a prior reachability pass reached; null lowers everything. */
   reachable?: ReadonlySet<string> | null;
   /** Coverage remainder: lower ONLY bodies outside `reachable`, skip the
    * always-reachable init bodies and module building, and report deferred
    * collection diagnostics nothing flushed. */
   remainder?: boolean;
-  /** Symbols whose deferred diagnostics the emit pass already flushed —
+  /** Symbols whose deferred diagnostics reachable emit already flushed —
    * the remainder must not report them a second time. */
   alreadyFlushed?: ReadonlySet<ts.Symbol>;
   /** The build's target platform (LowerOptions.targetPlatform — lowerToIr
@@ -413,24 +413,22 @@ function directExternalTypeSpecifiersByFile(
   return out;
 }
 
-/** Build lowering runs in two passes over the same ts.Program:
+/** Build lowering runs as a reachability worklist over the ts.Program:
  *
- * 1. DISCOVERY — a worklist computes the set of reachable bodies. Seeds are
+ * 1. REACHABLE EMIT — a worklist computes the set of reachable bodies.
+ *    Seeds are
  *    the per-file init bodies (module top-level statements always run, in
  *    import order); lowering a body yields IR whose call/closure/new/
- *    virtualCall nodes are the edges that enqueue further bodies. The
- *    pass's IR, diagnostics, and stats are discarded — it exists only to
- *    answer "which bodies does the entry reach?".
- * 2. EMIT — a fresh Lowerer lowers in the HISTORICAL order (per file:
- *    function declarations, then class members; then file inits, %main,
- *    generic instances, lifted lambdas), skipping bodies the discovery
- *    pass did not mark. Keeping the emit order (and lambda/instance
- *    numbering) identical to the pre-reachability compiler means a fully
- *    reachable program emits byte-identical C.
+ *    virtualCall nodes are the edges that enqueue further bodies. The pass
+ *    retains that IR. Once the graph closes, those functions are assembled in
+ *    deterministic declaration order beside the already-lowered init,
+ *    generic-instance, and lifted bodies. Checker-backed IR construction
+ *    therefore happens once instead of once for discovery and again for
+ *    emission.
  *
- * `coverage: true` adds a third pass — the REMAINDER — that lowers only
- * the bodies discovery did NOT mark (plus deferred collection diagnostics
- * nothing flushed), reported separately: whole-program analysis without
+ * `coverage: true` adds a second pass — the REMAINDER — that lowers only
+ * the bodies reachable emit did NOT mark (plus deferred collection
+ * diagnostics nothing flushed), reported separately: whole-program analysis without
  * letting unreached code fail builds. */
 export function lowerToIr(
   program: ts.Program,
@@ -438,6 +436,22 @@ export function lowerToIr(
   moduleOrder: ts.SourceFile[],
   options: LowerOptions = {},
 ): LowerResult {
+  const phaseTiming = process.env["SCRIPTC_TIMING"] === "1";
+  const phaseStarted = performance.now();
+  let phaseLast = phaseStarted;
+  const timing = (phase: string, detail: Record<string, unknown> = {}): void => {
+    if (!phaseTiming) return;
+    const now = performance.now();
+    process.stderr.write(
+      `scriptc lowering ${JSON.stringify({
+        phase,
+        phase_ms: Math.round((now - phaseLast) * 10) / 10,
+        total_ms: Math.round((now - phaseStarted) * 10) / 10,
+        ...detail,
+      })}\n`,
+    );
+    phaseLast = now;
+  };
   const dynamic = options.dynamic ?? false;
   const targetPlatform = options.targetPlatform ?? process.platform;
   const startupCrash = options.startupCrash ?? null;
@@ -446,9 +460,8 @@ export function lowerToIr(
   // pass constructs (nothing calls their %init at startup — the import()
   // site's namespace builder does, on the engine microtask, Node's
   // evaluation point for them). Inadmissible static cycles inside the
-  // added subgraph are minted here and handed to the EMIT pass: the
-  // discovery pass's diagnostics are discarded by design, and after this
-  // extension of the shared array no later pass re-walks the subgraph.
+  // added subgraph are minted here and handed to reachable emit after this
+  // extension of the shared array; no later pass re-walks the subgraph.
   const dynamicCycleDiags: ScrDiagnostic[] = [];
   if (dynamic) {
     appendDynamicImportModules(program, moduleOrder, (cycle, reason) => {
@@ -464,47 +477,39 @@ export function lowerToIr(
     directExternalTypeSpecifiersByFile(externalTypes);
   const validation = new Lowerer(program, entry, moduleOrder, dynamic, {
     targetPlatform,
+    startupCrash,
     ffiImports,
     libraryCallbacks,
     externalTypes,
     externalTypeSpecifiersByFile,
   });
   const ffiValidation = validateFfiImports(validation);
-  // Discovery must use the same exact-symbol ownership as emit. Otherwise a
-  // local function shadowing a configured ambient name is mistaken for FFI
-  // while computing reachability, even though emit would correctly lower it
-  // as ordinary TypeScript. FFI-free builds reuse the validation lowerer
-  // (validation is an immediate no-op there), retaining the historical
-  // two-pass construction cost.
-  const discovery = ffiImports.length === 0
+  timing("ffi-validate");
+  // Reachability must use the same exact-symbol ownership as FFI validation.
+  // Otherwise a local function shadowing a configured ambient name is mistaken for FFI
+  // while computing reachability, even though ordinary lowering would
+  // correctly handle it as TypeScript. FFI-free builds reuse the validation
+  // lowerer because validation is an immediate no-op there.
+  const reachableEmit = ffiImports.length === 0
     ? validation
     : new Lowerer(program, entry, moduleOrder, dynamic, {
         targetPlatform,
+        startupCrash,
         ffiImports,
         libraryCallbacks,
         externalTypes,
         externalTypeSpecifiersByFile,
         ffiBindingSymbols: ffiValidation.symbolsByName,
       });
-  const reachable = discovery.discover(options.libRoots);
-  const emit = new Lowerer(program, entry, moduleOrder, dynamic, {
-    reachable,
-    targetPlatform,
-    startupCrash,
-    ffiImports,
-    libraryCallbacks,
-    ffiBindingSymbols: ffiValidation.symbolsByName,
-    externalTypes,
-    externalTypeSpecifiersByFile,
-  });
-  for (const d of dynamicCycleDiags) emit.pushDiag(d);
-  for (const d of ffiValidation.diagnostics) emit.pushDiag(d);
-  const result = emit.run();
+  for (const d of dynamicCycleDiags) reachableEmit.pushDiag(d);
+  for (const d of ffiValidation.diagnostics) reachableEmit.pushDiag(d);
+  const { reachable, result } = reachableEmit.emitReachable(options.libRoots);
+  timing("reachable-emit", { reachable: reachable.size });
   if (options.coverage !== true) return result;
   const remainder = new Lowerer(program, entry, moduleOrder, dynamic, {
     reachable,
     remainder: true,
-    alreadyFlushed: emit.flushedSymbols,
+    alreadyFlushed: reachableEmit.flushedSymbols,
     targetPlatform,
     ffiImports,
     libraryCallbacks,
@@ -1169,7 +1174,7 @@ export class Lowerer {
     functionsSkipped: 0,
   };
 
-  /** Discovery-pass edge sink (null in the emit pass): every resolution of
+  /** Reachability edge sink: every resolution of
    * a reference to a lowerable body reports its name here — recorded even
    * when the enclosing statement later poisons. */
   onEdge: ((name: string) => void) | null = null;
@@ -1223,9 +1228,12 @@ export class Lowerer {
     return this.ctx.scopes;
   }
 
-  /** Names of bodies the discovery pass reached; null lowers everything
-   * (the discovery pass itself). */
+  /** Names of bodies a prior reachability pass reached; null lowers everything. */
   readonly reachable: ReadonlySet<string> | null;
+  /** Reachability computed by this same Lowerer when retained worklist IR
+   * is assembled directly. The configured reachable set remains null so
+   * demand-driven instance lowering keeps its existing gates. */
+  reachableForArtifacts: ReadonlySet<string> | null = null;
   /** Coverage remainder mode: the reachability gate inverts (see wantBody)
    * and no module is built. */
   readonly remainder: boolean;
@@ -1345,9 +1353,7 @@ export class Lowerer {
     // --dynamic: modules reachable only through dynamic import() joined
     // moduleOrder BEFORE any pass constructed — lowerToIr runs
     // appendDynamicImportModules once on the shared array (a per-pass run
-    // here minted cycle refusals into the DISCOVERY pass, whose
-    // diagnostics are discarded by design, and the extended order left
-    // nothing for the emit pass to re-detect).
+    // here would repeatedly extend the graph and duplicate cycle reports).
     this.moduleOrder.forEach((sf, i) => {
       this.fileTag.set(sf, sf === entry ? "" : `%m${i}.`);
     });
@@ -1383,7 +1389,7 @@ export class Lowerer {
    * namespace path (nsPathPrefix), so `namespace A { export class C }`
    * and a top-level `class C` never collide. Class EXPRESSIONS name by
    * SOURCE POSITION (`%cx<start>.<name>`): deterministic across the
-   * discovery and emit passes (no counter can drift between them),
+   * builds (no counter can drift between invocations),
    * program-unique through the file qualifier, and collision-free with
    * user identifiers ('%'). */
   readonly classNamer = (decl: ts.ClassLikeDeclaration): string =>
@@ -2043,8 +2049,8 @@ export class Lowerer {
     };
   }
 
-  /** True when this body should lower: everything with no reachable set
-   * (discovery), the marked bodies in the emit pass, and exactly the
+  /** True when this body should lower: everything with no reachable set,
+   * the marked bodies in an externally-gated pass, and exactly the
    * UNMARKED bodies in the coverage remainder. */
   wantBody(name: string): boolean {
     if (this.reachable === null) return true;
@@ -2104,7 +2110,7 @@ export class Lowerer {
     // inline require statements call theirs mid-body, and the guards make
     // revisits cache hits — Node's evaluation order over the WHOLE graph
     // falls out of the nesting. The coverage remainder skips them — they
-    // are reachable by definition, already counted by the emit pass.
+    // are reachable by definition, already counted by reachable emit.
     if (!this.remainder) {
       for (const fp of parts) {
         functions.push(this.lowerFileInit(fp.sf, fp.topStmts, this.initNameOf.get(fp.sf)!));
@@ -2189,6 +2195,13 @@ export class Lowerer {
         ...(this.npmLazyTraps ? { npmLazyTraps: this.npmLazyTraps } : {}),
       };
     }
+
+    return this.finishModule(functions);
+  }
+
+  /** Final retention, pruning, and module assembly shared by ordinary emit
+   * and the retained reachability worklist. */
+  finishModule(functions: IrFunction[]): LowerResult {
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the
@@ -2373,7 +2386,7 @@ export class Lowerer {
 
   /** Whether run() counts a signature-blocked declaration in
    * stats.functionsSkipped: whole-program passes and the coverage
-   * remainder do; the reachability emit pass leaves the counting to the
+   * remainder do; an externally-gated emit pass leaves the counting to the
    * remainder (the declaration was never reached). */
   countsSkips(): boolean {
     return this.reachable === null || this.remainder;
@@ -2381,9 +2394,10 @@ export class Lowerer {
 
   /* ── reachability ─────────────────────────────────────────────────── */
 
-  /** The discovery pass: computes the set of body names the program's entry
-   * reaches. Seeds are the per-file init bodies (top-level statements always
-   * run); edges fire from RESOLUTION sites while a body lowers (noteEdge /
+  /** Reachable emit: computes the set of body names the program's entry
+   * reaches and retains each body IR as it lowers. Seeds are the per-file
+   * init bodies (top-level statements always run); edges fire from
+   * RESOLUTION sites while a body lowers (noteEdge /
    * noteVirtualEdge) — direct calls, closure creation (a taken closure may
    * be called indirectly), `new`, super calls, accessor invocations, and
    * virtual dispatch. Recording at resolution time (not off the produced
@@ -2393,19 +2407,20 @@ export class Lowerer {
    * demand-driven) and lifted lambdas lower inline with their enclosing
    * body; both fire edges through the same hooks and are not units
    * themselves. */
-  discover(extraRoots?: readonly string[]): Set<string> {
+  emitReachable(extraRoots?: readonly string[]): { reachable: Set<string>; result: LowerResult } {
     const parts = this.splitFiles();
     this.collectProgram(parts);
     // Decorated classes analyze post-collection here too: the %init seeds
     // lower the decoration calls, whose edges (decorator bodies, construct
-    // thunks) the emit pass must see.
+    // thunks) reachable emit must see.
     for (const info of this.classes.values()) analyzeClassDecoration(this, info);
     this.prepareModuleInits(parts);
 
     // Every lowerable body, by emitted-function name. The names double as
-    // the reachable-set keys the emit pass gates on — deterministic across
-    // Lowerer instances by construction (qualified declaration names).
-    const units = new Map<string, () => IrFunction | null>();
+    // retained-function keys and are deterministic by construction
+    // (qualified declaration names).
+    const units = new Map<string, { order: number; lower: () => IrFunction | null }>();
+    let unitOrder = 0;
     for (const fp of parts) {
       for (const decl of fp.fnDecls) {
         // Overload signatures share the implementation's symbol (and so
@@ -2415,7 +2430,7 @@ export class Lowerer {
         const declSymbol = declSymbolOf(this, decl);
         if (!declSymbol || this.genericFnsBySymbol.has(declSymbol)) continue;
         const sig = this.fnSigsBySymbol.get(declSymbol);
-        if (sig) units.set(sig.name, () => this.lowerFunction(decl));
+        if (sig) units.set(sig.name, { order: unitOrder++, lower: () => this.lowerFunction(decl) });
       }
     }
     for (const info of this.classes.values()) {
@@ -2428,21 +2443,24 @@ export class Lowerer {
       // A FAMILY has no constructor function and no instance members —
       // only its statics are units.
       if (!info.generic) {
-        units.set(`%${cName}.constructor`, () => this.lowerClassCtor(info));
+        units.set(`%${cName}.constructor`, { order: unitOrder++, lower: () => this.lowerClassCtor(info) });
         for (const { mName, member } of this.classMethodMembers(info)) {
-          units.set(`%${cName}.${mName}`, () => this.lowerClassMethodMember(info, member));
+          units.set(`%${cName}.${mName}`, { order: unitOrder++, lower: () => this.lowerClassMethodMember(info, member) });
         }
         for (const prop of info.throwingSetters) {
-          units.set(`%${cName}.set:${prop}`, () => this.throwingSetterFn(info, prop));
+          units.set(`%${cName}.set:${prop}`, { order: unitOrder++, lower: () => this.throwingSetterFn(info, prop) });
         }
       }
       for (const name of info.staticMethods?.keys() ?? []) {
-        units.set(`%${cName}.static:${name}`, () => lowerStaticMethod(this, info, name));
+        units.set(`%${cName}.static:${name}`, { order: unitOrder++, lower: () => lowerStaticMethod(this, info, name) });
       }
     }
 
     const reachable = new Set<string>();
     const queue: string[] = [];
+    const loweredUnits = new Map<string, IrFunction>();
+    const initFunctions: IrFunction[] = [];
+    const instanceFunctions: IrFunction[] = [];
     this.onEdge = (name: string): void => {
       if (reachable.has(name)) return;
       reachable.add(name);
@@ -2453,15 +2471,15 @@ export class Lowerer {
     // edge to them can fire (references require the collected class).
     this.onExprClassCollected = (info: ClassInfo): void => {
       const cName = info.def.name;
-      units.set(`%${cName}.constructor`, () => this.lowerClassCtor(info));
+      units.set(`%${cName}.constructor`, { order: unitOrder++, lower: () => this.lowerClassCtor(info) });
       for (const { mName, member } of this.classMethodMembers(info)) {
-        units.set(`%${cName}.${mName}`, () => this.lowerClassMethodMember(info, member));
+        units.set(`%${cName}.${mName}`, { order: unitOrder++, lower: () => this.lowerClassMethodMember(info, member) });
       }
       for (const name of info.staticMethods?.keys() ?? []) {
-        units.set(`%${cName}.static:${name}`, () => lowerStaticMethod(this, info, name));
+        units.set(`%${cName}.static:${name}`, { order: unitOrder++, lower: () => lowerStaticMethod(this, info, name) });
       }
       for (const prop of info.throwingSetters) {
-        units.set(`%${cName}.set:${prop}`, () => this.throwingSetterFn(info, prop));
+        units.set(`%${cName}.set:${prop}`, { order: unitOrder++, lower: () => this.throwingSetterFn(info, prop) });
       }
     };
     // Generic instances queued by the bodies above lower here (an instance
@@ -2479,24 +2497,24 @@ export class Lowerer {
       ) {
         while (instLowered < this.instantiationQueue.length) {
           const { info, inst } = this.instantiationQueue[instLowered++]!;
-          // Body-level poisons skip the instance here too (the emit pass
-          // re-records the diagnostic; discovery only needs the edges the
-          // body fired before poisoning).
+          // Body-level poisons skip the instance after retaining the
+          // diagnostic and every edge fired before poisoning.
           try {
-            this.lowerGenericInstance(info, inst);
+            instanceFunctions.push(this.lowerGenericInstance(info, inst));
           } catch (e) {
             if (!(e instanceof PoisonError)) throw e;
           }
         }
         while (clsInstLowered < this.genericClassInstances.length) {
-          this.lowerClassMembers(this.genericClassInstances[clsInstLowered++]!);
+          instanceFunctions.push(...this.lowerClassMembers(this.genericClassInstances[clsInstLowered++]!));
         }
         // Emit-override specialization bodies fire edges of their own
         // (the super-forward chain, closures, generic calls) — lower them
-        // for discovery exactly like generic instances.
+        // exactly like generic instances.
         while (specLowered < this.emitSpecQueue.length) {
           try {
-            lowerEmitOverrideSpec(this, this.emitSpecQueue[specLowered++]!);
+            const fn = lowerEmitOverrideSpec(this, this.emitSpecQueue[specLowered++]!);
+            if (fn) instanceFunctions.push(fn);
           } catch (e) {
             if (!(e instanceof PoisonError)) throw e;
           }
@@ -2505,7 +2523,7 @@ export class Lowerer {
     };
 
     parts.forEach((fp) => {
-      this.lowerFileInit(fp.sf, fp.topStmts, this.initNameOf.get(fp.sf)!);
+      initFunctions.push(this.lowerFileInit(fp.sf, fp.topStmts, this.initNameOf.get(fp.sf)!));
       drainInstances();
     });
     // LIBRARY mode's extra reachability roots (LowerOptions.libRoots): the
@@ -2516,20 +2534,34 @@ export class Lowerer {
     while (queue.length > 0) {
       // A body-level poison outside the per-statement catches (a fenced
       // constructor/method parameter default lowered by declareParams):
-      // discovery only needs the edges the body fired before poisoning —
-      // the emit pass re-records the diagnostic and skips the member.
+      // every edge fired before poisoning remains retained; the diagnostic
+      // stays recorded and the member stays omitted.
       try {
-        units.get(queue.shift()!)!();
+        const name = queue.shift()!;
+        const fn = units.get(name)!.lower();
+        if (fn) loweredUnits.set(name, fn);
       } catch (e) {
         if (!(e instanceof PoisonError)) throw e;
       }
       drainInstances();
     }
-    return reachable;
+    const orderedUnits = [...loweredUnits]
+      .sort(([left], [right]) => units.get(left)!.order - units.get(right)!.order)
+      .map(([, fn]) => fn);
+    const functions = [
+      ...orderedUnits,
+      ...initFunctions,
+      this.buildMain(),
+      ...instanceFunctions,
+      ...this.liftedFns,
+      ...this.implicitFns,
+    ];
+    this.reachableForArtifacts = reachable;
+    return { reachable, result: this.finishModule(functions) };
   }
 
-  /** Discovery hook (see discover): fires when lowering resolves a
-   * reference to a lowerable body. Inert in the emit pass. */
+  /** Reachability hook (see emitReachable): fires when lowering resolves a
+   * reference to a lowerable body. */
   noteEdge(name: string): void {
     if (this.onEdge) this.onEdge(name);
   }

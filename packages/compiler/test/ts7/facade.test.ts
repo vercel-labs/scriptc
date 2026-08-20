@@ -18,21 +18,27 @@ afterAll(() => {
   host.close();
 });
 
-function countingChecker(raw: Checker): { proxy: Checker; counts: Record<string, number> } {
+function countingChecker(raw: Checker): {
+  proxy: Checker;
+  counts: Record<string, number>;
+  calls: Record<string, unknown[][]>;
+} {
   const counts: Record<string, number> = {};
+  const calls: Record<string, unknown[][]> = {};
   const proxy = new Proxy(raw, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (typeof value === "function" && typeof prop === "string") {
         return (...args: unknown[]) => {
           counts[prop] = (counts[prop] ?? 0) + 1;
+          (calls[prop] ??= []).push(args);
           return (value as (...a: unknown[]) => unknown).apply(target, args);
         };
       }
       return value;
     },
   });
-  return { proxy, counts };
+  return { proxy, counts, calls };
 }
 
 function build(): { w: TwoWorlds; facade: CheckerFacade; counts: Record<string, number> } {
@@ -169,6 +175,153 @@ test("explicit prefetchSourceFile primes hot kinds and direct fallbacks memoize"
     facade.getSymbolAtLocation(n);
   }
   expect(counts).toEqual(afterWalk);
+});
+
+test("managed structure and body waves batch across roots without touching deferred code", () => {
+  const w = buildTwoWorlds({
+    "waves.ts": `
+export function reached(input: number = Math.random()): number {
+  const reachedLocal = { value: input };
+  return reachedLocal.value;
+}
+export function dead(input: string): string {
+  const deadLocal = [input];
+  return deadLocal[0]!;
+}
+export class Holder {
+  value = Math.random();
+}
+export function withClass(): number {
+  class Nested {
+    method(): number { return Math.random(); }
+  }
+  return new Nested().method();
+}
+const top = reached(1);
+void top;
+`,
+  }, host);
+  worlds.push(w);
+  const { proxy, counts, calls } = countingChecker(w.p7.project.checker);
+  const facade = new CheckerFacade(proxy);
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const functions = sf.statements.filter(ad.isFunctionDeclaration);
+  const cls = sf.statements.find(ad.isClassDeclaration)!;
+  const withClass = functions[2]!;
+  const nested = withClass.body!.statements.find(ad.isClassDeclaration)!;
+  const reachedBody = functions[0]!.body!;
+  const deadBody = functions[1]!.body!;
+  const nestedMethodBody = nested.members.find(ad.isMethodDeclaration)!.body!;
+  const defaultValue = functions[0]!.parameters[0]!.initializer!;
+  const fieldValue = cls.members.find(ad.isPropertyDeclaration)!.initializer!;
+  const inside = (node: Node, root: Node): boolean =>
+    node.getStart() >= root.getStart() && node.end <= root.end;
+
+  facade.prefetchSourceFileStructures([sf]);
+  const headerTypeNodes = calls["getTypeAtLocation"]?.[0]?.[0] as Node[];
+  const headerSymbolNodes = calls["getSymbolAtLocation"]?.[0]?.[0] as Node[];
+  expect(headerTypeNodes.length).toBeGreaterThan(0);
+  expect(headerSymbolNodes.length).toBeGreaterThan(0);
+  const deferred = [reachedBody, deadBody, defaultValue, fieldValue];
+  expect(headerTypeNodes.every((node) => deferred.every((root) => !inside(node, root)))).toBe(true);
+  expect(headerSymbolNodes.every((node) => deferred.every((root) => !inside(node, root)))).toBe(true);
+
+  const beforeBodies = { ...counts };
+  facade.prefetchRoots([reachedBody, deadBody, defaultValue, fieldValue]);
+  expect(counts["getTypeAtLocation"]).toBe((beforeBodies["getTypeAtLocation"] ?? 0) + 1);
+  expect(counts["getSymbolAtLocation"]).toBe((beforeBodies["getSymbolAtLocation"] ?? 0) + 1);
+  const bodyTypeNodes = calls["getTypeAtLocation"]!.at(-1)![0] as Node[];
+  expect(bodyTypeNodes.some((node) => inside(node, reachedBody))).toBe(true);
+  expect(bodyTypeNodes.some((node) => inside(node, deadBody))).toBe(true);
+  expect(bodyTypeNodes.some((node) => inside(node, defaultValue))).toBe(true);
+  expect(bodyTypeNodes.some((node) => inside(node, fieldValue))).toBe(true);
+
+  const beforeOuterBody = { ...counts };
+  facade.prefetchRoots([withClass.body!]);
+  expect(counts["getTypeAtLocation"]).toBe((beforeOuterBody["getTypeAtLocation"] ?? 0) + 1);
+  const outerTypeNodes = calls["getTypeAtLocation"]!.at(-1)![0] as Node[];
+  expect(outerTypeNodes.some((node) => inside(node, withClass.body!))).toBe(true);
+  expect(outerTypeNodes.every((node) => !inside(node, nestedMethodBody))).toBe(true);
+
+  const warm = { ...counts };
+  facade.prefetchRoots([reachedBody, deadBody, defaultValue, fieldValue]);
+  expect(counts).toEqual(warm);
+});
+
+test("managed misses stay direct instead of falling back to whole-file prefetch", () => {
+  const w = buildTwoWorlds({
+    "managed.ts": `
+export function dead(input: number): number {
+  const first = input + 1;
+  const second = first + 1;
+  return second;
+}
+`,
+  }, host);
+  worlds.push(w);
+  const { proxy, counts, calls } = countingChecker(w.p7.project.checker);
+  const facade = new CheckerFacade(proxy);
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const body = sf.statements.find(ad.isFunctionDeclaration)!.body!;
+  const identifiers: Node[] = [];
+  ad.walkPreorder(body, (node) => {
+    if (ad.isIdentifier(node)) identifiers.push(node);
+  });
+
+  facade.prefetchSourceFileStructures([sf]);
+  const before = counts["getTypeAtLocation"] ?? 0;
+  facade.getTypeAtLocation(identifiers[0]!);
+  facade.getTypeAtLocation(identifiers[1]!);
+  expect(counts["getTypeAtLocation"]).toBe(before + 2);
+  expect(Array.isArray(calls["getTypeAtLocation"]!.at(-1)![0])).toBe(false);
+});
+
+test("root prefetch panic-fences bad nodes and keeps healthy answers warm", () => {
+  const w = buildTwoWorlds({
+    "panic.ts": `
+export function f(input: number): number {
+  const healthy = input + 1;
+  const poison = healthy + 1;
+  return poison;
+}
+`,
+  }, host);
+  worlds.push(w);
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const body = sf.statements.find(ad.isFunctionDeclaration)!.body!;
+  const identifiers: Node[] = [];
+  ad.walkPreorder(body, (node) => {
+    if (ad.isIdentifier(node)) identifiers.push(node);
+  });
+  const poison = identifiers.find((node) => node.getText(sf) === "poison")!;
+  const healthy = identifiers.find((node) => node.getText(sf) === "healthy")!;
+  const raw = w.p7.project.checker;
+  let panics = 0;
+  const panicky = new Proxy(raw, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop === "getTypeAtLocation") {
+        return (nodes: Node | Node[]) => {
+          if (Array.isArray(nodes) && nodes.includes(poison)) {
+            panics++;
+            throw new Error("synthetic checker panic");
+          }
+          return (value as (nodes: Node | Node[]) => unknown).call(target, nodes);
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as Checker;
+  const facade = new CheckerFacade(panicky);
+
+  facade.prefetchRoots([body]);
+  expect(panics).toBeGreaterThan(1);
+  expect(facade.getTypeAtLocation(healthy)).toBe(raw.getTypeAtLocation(healthy));
+  expect(facade.getTypeAtLocation(poison)).toBe(raw.getAnyType());
+  const warmPanics = panics;
+  facade.prefetchRoots([body]);
+  facade.getTypeAtLocation(poison);
+  expect(panics).toBe(warmPanics);
 });
 
 test("autoPrefetch: false degrades to per-call queries (the escape hatch works)", () => {

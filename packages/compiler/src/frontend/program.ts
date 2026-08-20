@@ -1794,13 +1794,14 @@ function preflight7(load: LoadResult): {
     for (const d of errorsOf(load.projectWorld())) diags.push(toPassthrough(d));
   }
 
+  // Preflight and lowering share this CheckerFacade. Claim executable
+  // source files after workspace discovery and the tsc gate but before
+  // structural preflight checker queries, so a miss cannot trigger the old
+  // whole-file sweep (and eagerly fetch every dead body's answers). The
+  // structure wave includes declaration headers and top-level code;
+  // reachable bodies are added by lowering's worklists.
   const ambient = ambientDtsPath();
-  // node_modules JS that no --npm-static opt-in claims is NOT program
-  // source even when maxNodeModuleJsDepth pulled it into the checker's
-  // program (see nodeModulesJsSuppressed above): its execution home is the
-  // island, so preflight's statement walks skip it — no import fences, no
-  // module edges, no statement counts from files the lowering never lowers.
-  const userFiles = program
+  const programFiles = program
     .getSourceFiles()
     .filter(
       (sf) =>
@@ -1808,13 +1809,16 @@ function preflight7(load: LoadResult): {
         !sf.isDeclarationFile &&
         !sf.fileName.endsWith(".json") &&
         (!isNodeModulesPath(sf.fileName) || npmStaticPackageOfPath(sf.fileName) !== null) &&
-        // Workspace-linked shipped JS (see islandJsFile): its execution
-        // home is the island exactly like node_modules JS, so no import
-        // fences, no module edges, no statement counts from it. Its .ts
-        // files (a workspace package imported bare AND reached relatively)
-        // stay program source — only the island-bound JS steps out.
         !islandJsFile(sf.fileName),
     );
+  program.getTypeChecker().prefetchSourceFileStructures(programFiles);
+
+  // node_modules JS that no --npm-static opt-in claims is NOT program
+  // source even when maxNodeModuleJsDepth pulled it into the checker's
+  // program (see nodeModulesJsSuppressed above): its execution home is the
+  // island, so preflight's statement walks skip it — no import fences, no
+  // module edges, no statement counts from files the lowering never lowers.
+  const userFiles = programFiles;
 
   // Node stops at the nearest package.json even when it is malformed, and
   // an explicit CommonJS scope (or .cjs/.cts extension) disables ambiguous-

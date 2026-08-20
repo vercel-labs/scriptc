@@ -13,15 +13,14 @@
  *    memoize (warm re-query of 21 nodes costs 2.5-3.8 ms; the survey's
  *    finding), so this layer is where reuse lives.
  *
- * 2. PER-FILE BATCH PREFETCH. The first getTypeAtLocation/getSymbolAtLocation
- *    miss in a source file walks the whole file client-side (free — the AST
- *    is local) and issues the ARRAY overloads for every node, chunked, then
- *    answers all later queries for that file from the memo. The lowering's
- *    walk touches most of a file anyway, so prefetching the file is the
- *    batching lever without changing a single call site. prefetchSourceFile()
- *    exposes the same hook explicitly. Symbol prefetch also batch-fetches
- *    getTypeOfSymbol over every symbol the file mentions (5,333 calls of the
- *    mock-gateway census ride that pattern).
+ * 2. PHASE-AWARE BATCH PREFETCH. Ordinary callers keep the whole-file
+ *    first-miss fallback, but the compiler explicitly batches declaration
+ *    headers, top-level code, and each newly reachable body wave. Managed
+ *    files then use direct memoized misses instead of accidentally sweeping
+ *    every unreachable body. prefetchSourceFile() retains the whole-file
+ *    escape hatch. Symbol prefetch also batch-fetches getTypeOfSymbol over
+ *    every symbol each batch surfaces (5,333 calls of the mock-gateway
+ *    census ride that pattern).
  *
  * 3. CLIENT-SIDE FAST PATHS. getBaseTypeOfLiteralType — the census's single
  *    hottest method (9,059 calls on mock-gateway) — is answered locally from
@@ -104,17 +103,76 @@ const TYPE_PREFETCH_KINDS = new Set<SyntaxKind>([
   SyntaxKind.ConditionalExpression,
 ]);
 
-/** Preorder sweep of the whole file, ITERATIVE (walkPreorder): the obvious
+/** Function-like declarations whose body is deferred until reachability
+ * asks for it. Header prefetch walks their names, type parameters, params,
+ * and return types but leaves the body for a later explicit body wave. */
+const DEFERRED_BODY_OWNERS = new Set<SyntaxKind>([
+  SyntaxKind.FunctionDeclaration,
+  SyntaxKind.FunctionExpression,
+  SyntaxKind.ArrowFunction,
+  SyntaxKind.MethodDeclaration,
+  SyntaxKind.Constructor,
+  SyntaxKind.GetAccessor,
+  SyntaxKind.SetAccessor,
+]);
+
+type PrefetchWalk = "all" | "structure" | "reachable";
+
+function isClassLikeKind(kind: SyntaxKind): boolean {
+  return kind === SyntaxKind.ClassDeclaration || kind === SyntaxKind.ClassExpression;
+}
+
+function isClassMember(node: Node | undefined): boolean {
+  return node?.parent !== undefined && isClassLikeKind(node.parent.kind);
+}
+
+function isDeferredExecutableRoot(node: Node, walk: PrefetchWalk): boolean {
+  if (walk === "all") return false;
+  const parent = node.parent as (Node & {
+    body?: Node;
+    initializer?: Node;
+    modifiers?: readonly Node[];
+  }) | undefined;
+  if (parent === undefined) return false;
+  if (DEFERRED_BODY_OWNERS.has(parent.kind) && parent.body === node) {
+    // Structure collection defers every function-like body. A reached
+    // outer body still eagerly lowers nested closures/functions, but class
+    // methods remain independent reachability units.
+    return walk === "structure" || isClassMember(parent);
+  }
+  // Parameter defaults execute on function entry, not while its signature
+  // is collected. Keep an unreachable declaration's default cold too.
+  if (parent.kind === SyntaxKind.Parameter && parent.initializer === node) {
+    return walk === "structure" || isClassMember(parent.parent);
+  }
+  // Instance field initializers execute in the constructor. Static fields
+  // remain declaration-time code and therefore stay in the structure wave.
+  return (
+    parent.kind === SyntaxKind.PropertyDeclaration &&
+    parent.initializer === node &&
+    !parent.modifiers?.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword)
+  );
+}
+
+/** Preorder sweep of one or more roots, ITERATIVE (walkPreorder): the obvious
  * recursive forEachChild walk overflowed the stack HERE, in the prefetch
  * sweep, on the binderBinaryExpressionStress chains — before lowering could
- * answer with its SC1090 nesting fence. */
-function collectNodes(sf: Node): Node[] {
+ * answer with its SC1090 nesting fence. Overlapping roots are identity-
+ * deduped so a header/body wave never sends the same node twice. */
+function collectNodes(roots: readonly Node[], walk: PrefetchWalk = "all"): Node[] {
   const nodes: Node[] = [];
-  walkPreorder(sf, (n, depth) => {
-    nodes.push(n);
-    if (depth >= PREFETCH_MAX_DEPTH) return "skip";
-    return undefined;
-  });
+  const seen = new Set<Node>();
+  for (const root of roots) {
+    walkPreorder(root, (n, depth) => {
+      if (n !== root && isDeferredExecutableRoot(n, walk)) return "skip";
+      if (!seen.has(n)) {
+        seen.add(n);
+        nodes.push(n);
+      }
+      if (depth >= PREFETCH_MAX_DEPTH) return "skip";
+      return undefined;
+    });
+  }
   return nodes;
 }
 
@@ -148,6 +206,11 @@ export class CheckerFacade {
   /** Files whose nodes have been batch-prefetched, per query kind. */
   private readonly prefetchedTypes = new WeakSet<SourceFile>();
   private readonly prefetchedSymbols = new WeakSet<SourceFile>();
+  /** Files owned by explicit phase-aware prefetch. A miss in one of these
+   * files must stay a direct memoized query; falling back to whole-file
+   * prefetch would silently pull every unreachable body back into a build. */
+  private readonly managedTypes = new WeakSet<SourceFile>();
+  private readonly managedSymbols = new WeakSet<SourceFile>();
   private unknownType: Type | null = null;
   /** Intrinsic singletons (string/number/bigint/boolean), fetched once. */
   private readonly intrinsics = new Map<string, Type>();
@@ -254,14 +317,46 @@ export class CheckerFacade {
     this.prefetchSymbols(sf);
   }
 
+  /** Batches the non-body structure of many files as ONE logical wave.
+   * Top-level executable statements, class field initializers/static blocks,
+   * and every declaration header are included; function/method/constructor
+   * bodies wait for reachability. Calling this also opts the files out of
+   * accidental whole-file first-miss prefetch. */
+  prefetchSourceFileStructures(files: readonly SourceFile[]): void {
+    this.markManaged(files);
+    this.prefetchNodes(collectNodes(files, "structure"));
+  }
+
+  /** Batches all checker-hot nodes under many reached roots. Lowering uses
+   * this for all init bodies together and for each declaration/instance
+   * worklist wave. The roots may overlap; identity deduplication and the
+   * answer memos make warm repeats free. */
+  prefetchRoots(roots: readonly Node[]): void {
+    this.markManaged(roots);
+    this.prefetchNodes(collectNodes(roots, "reachable"));
+  }
+
+  private markManaged(roots: readonly Node[]): void {
+    for (const root of roots) {
+      const sf = root.getSourceFile();
+      this.managedTypes.add(sf);
+      this.managedSymbols.add(sf);
+    }
+  }
+
+  private prefetchNodes(nodes: readonly Node[]): void {
+    this.prefetchTypeNodes(nodes);
+    this.prefetchSymbolNodes(nodes);
+  }
+
   private prefetchTypes(sf: SourceFile): void {
     if (this.prefetchedTypes.has(sf)) return;
     this.prefetchedTypes.add(sf);
-    this.prefetchTypesIn(sf);
+    this.prefetchTypeNodes(collectNodes([sf]));
   }
 
-  private prefetchTypesIn(root: Node): void {
-    const nodes = collectNodes(root).filter(
+  private prefetchTypeNodes(allNodes: readonly Node[]): void {
+    const nodes = allNodes.filter(
       (n) => TYPE_PREFETCH_KINDS.has(n.kind) && !this.typeAtLocation.has(n),
     );
     const types = chunked(nodes, (chunk) => this.typesWithPanicFence(chunk));
@@ -277,11 +372,11 @@ export class CheckerFacade {
   private prefetchSymbols(sf: SourceFile): void {
     if (this.prefetchedSymbols.has(sf)) return;
     this.prefetchedSymbols.add(sf);
-    this.prefetchSymbolsIn(sf);
+    this.prefetchSymbolNodes(collectNodes([sf]));
   }
 
-  private prefetchSymbolsIn(root: Node): void {
-    const nodes = collectNodes(root).filter(
+  private prefetchSymbolNodes(allNodes: readonly Node[]): void {
+    const nodes = allNodes.filter(
       (n) => n.kind === SyntaxKind.Identifier && !this.symbolAtLocation.has(n),
     );
     // The same bisecting panic fence as the type sweep: tsgo panics on
@@ -305,8 +400,11 @@ export class CheckerFacade {
   private autoPrefetch(node: Node, kind: "types" | "symbols"): void {
     if (this.options.autoPrefetch === false) return;
     const sf = node.getSourceFile();
-    if (kind === "types") this.prefetchTypes(sf);
-    else this.prefetchSymbols(sf);
+    if (kind === "types") {
+      if (!this.managedTypes.has(sf)) this.prefetchTypes(sf);
+    } else if (!this.managedSymbols.has(sf)) {
+      this.prefetchSymbols(sf);
+    }
   }
 
   getTypeAtLocation(node: Node): Type {

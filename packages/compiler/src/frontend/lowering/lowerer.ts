@@ -2599,6 +2599,10 @@ export class Lowerer {
    * themselves. */
   emitReachable(extraRoots?: readonly string[]): { reachable: Set<string>; result: LowerResult } {
     const parts = this.splitFiles();
+    // Direct lowering callers do not necessarily run program preflight.
+    // Establish the same managed header/top-level batch here before
+    // collection, while the production path simply finds warm memos.
+    this.checker.prefetchSourceFileStructures(parts.map((fp) => fp.sf));
     this.collectProgram(parts);
     // Decorated classes analyze post-collection here too: the %init seeds
     // lower the decoration calls, whose edges (decorator bodies, construct
@@ -2609,7 +2613,27 @@ export class Lowerer {
     // Every lowerable body, by emitted-function name. The names double as
     // retained-function keys and are deterministic by construction
     // (qualified declaration names).
-    const units = new Map<string, { order: number; lower: () => IrFunction | null }>();
+    const units = new Map<string, {
+      order: number;
+      roots: readonly ts.Node[];
+      lower: () => IrFunction | null;
+    }>();
+    const bodyRoots = (...roots: (ts.Node | undefined | null)[]): ts.Node[] =>
+      roots.filter((root): root is ts.Node => root !== undefined && root !== null);
+    const functionRoots = (decl: ts.FunctionLikeDeclaration): ts.Node[] => bodyRoots(
+      ...decl.parameters.map((param) => param.initializer),
+      decl.body,
+    );
+    const classCtorRoots = (info: ClassInfo): ts.Node[] => bodyRoots(
+      ...(info.ctor?.parameters ?? []).map((param) => param.initializer),
+      info.ctor?.body,
+      ...info.fieldOrder.map((field) => field.initializer),
+    );
+    const classMemberRoots = (info: ClassInfo): ts.Node[] => [
+      ...classCtorRoots(info),
+      ...[...this.classMethodMembers(info)].flatMap(({ member }) => functionRoots(member)),
+      ...[...(info.staticMethods?.values() ?? [])].flatMap(({ member }) => functionRoots(member)),
+    ];
     let unitOrder = 0;
     for (const fp of parts) {
       for (const decl of fp.fnDecls) {
@@ -2620,7 +2644,13 @@ export class Lowerer {
         const declSymbol = declSymbolOf(this, decl);
         if (!declSymbol || this.genericFnsBySymbol.has(declSymbol)) continue;
         const sig = this.fnSigsBySymbol.get(declSymbol);
-        if (sig) units.set(sig.name, { order: unitOrder++, lower: () => this.lowerFunction(decl) });
+        if (sig) {
+          units.set(sig.name, {
+            order: unitOrder++,
+            roots: functionRoots(decl),
+            lower: () => this.lowerFunction(decl),
+          });
+        }
       }
     }
     for (const info of this.classes.values()) {
@@ -2633,16 +2663,32 @@ export class Lowerer {
       // A FAMILY has no constructor function and no instance members —
       // only its statics are units.
       if (!info.generic) {
-        units.set(`%${cName}.constructor`, { order: unitOrder++, lower: () => this.lowerClassCtor(info) });
+        units.set(`%${cName}.constructor`, {
+          order: unitOrder++,
+          roots: classCtorRoots(info),
+          lower: () => this.lowerClassCtor(info),
+        });
         for (const { mName, member } of this.classMethodMembers(info)) {
-          units.set(`%${cName}.${mName}`, { order: unitOrder++, lower: () => this.lowerClassMethodMember(info, member) });
+          units.set(`%${cName}.${mName}`, {
+            order: unitOrder++,
+            roots: functionRoots(member),
+            lower: () => this.lowerClassMethodMember(info, member),
+          });
         }
         for (const prop of info.throwingSetters) {
-          units.set(`%${cName}.set:${prop}`, { order: unitOrder++, lower: () => this.throwingSetterFn(info, prop) });
+          units.set(`%${cName}.set:${prop}`, {
+            order: unitOrder++,
+            roots: [],
+            lower: () => this.throwingSetterFn(info, prop),
+          });
         }
       }
-      for (const name of info.staticMethods?.keys() ?? []) {
-        units.set(`%${cName}.static:${name}`, { order: unitOrder++, lower: () => lowerStaticMethod(this, info, name) });
+      for (const [name, entry] of info.staticMethods ?? []) {
+        units.set(`%${cName}.static:${name}`, {
+          order: unitOrder++,
+          roots: functionRoots(entry.member),
+          lower: () => lowerStaticMethod(this, info, name),
+        });
       }
     }
     // The old emit pass visited each file's functions and then its classes,
@@ -2706,19 +2752,31 @@ export class Lowerer {
     // edge to them can fire (references require the collected class).
     this.onExprClassCollected = (info: ClassInfo): void => {
       const cName = info.def.name;
-      const register = (name: string, lower: () => IrFunction | null): void => {
-        units.set(name, { order: unitOrder++, lower });
+      const register = (
+        name: string,
+        roots: readonly ts.Node[],
+        lower: () => IrFunction | null,
+      ): void => {
+        units.set(name, { order: unitOrder++, roots, lower });
         metadataPriority.set(name, [3, expressionMetadataOrder++]);
       };
-      register(`%${cName}.constructor`, () => this.lowerClassCtor(info));
+      register(`%${cName}.constructor`, classCtorRoots(info), () => this.lowerClassCtor(info));
       for (const { mName, member } of this.classMethodMembers(info)) {
-        register(`%${cName}.${mName}`, () => this.lowerClassMethodMember(info, member));
+        register(
+          `%${cName}.${mName}`,
+          functionRoots(member),
+          () => this.lowerClassMethodMember(info, member),
+        );
       }
-      for (const name of info.staticMethods?.keys() ?? []) {
-        register(`%${cName}.static:${name}`, () => lowerStaticMethod(this, info, name));
+      for (const [name, entry] of info.staticMethods ?? []) {
+        register(
+          `%${cName}.static:${name}`,
+          functionRoots(entry.member),
+          () => lowerStaticMethod(this, info, name),
+        );
       }
       for (const prop of info.throwingSetters) {
-        register(`%${cName}.set:${prop}`, () => this.throwingSetterFn(info, prop));
+        register(`%${cName}.set:${prop}`, [], () => this.throwingSetterFn(info, prop));
       }
     };
     // Generic instances queued by the bodies above lower here (an instance
@@ -2735,46 +2793,81 @@ export class Lowerer {
         specLowered < this.emitSpecQueue.length
       ) {
         while (clsInstLowered < this.genericClassInstances.length) {
-          const info = this.genericClassInstances[clsInstLowered++]!;
-          const owner = demandOwner();
-          this.genericClassDemandOwner.set(info, owner);
-          const ref = this.genericClassDemandPriority.get(info) ?? { rank: [4, instanceMetadataOrder++] };
-          this.genericClassDemandPriority.set(info, ref);
-          instanceFunctions.push(...this.withGenericDemandOwner(owner, () =>
-            this.shapes.withDeclaredOrderPriority(ref, () => this.lowerClassMembers(info))));
+          const waveEnd = this.genericClassInstances.length;
+          this.checker.prefetchRoots(
+            this.genericClassInstances.slice(clsInstLowered, waveEnd).flatMap(classMemberRoots),
+          );
+          while (clsInstLowered < waveEnd) {
+            const info = this.genericClassInstances[clsInstLowered++]!;
+            const owner = demandOwner();
+            this.genericClassDemandOwner.set(info, owner);
+            const ref = this.genericClassDemandPriority.get(info) ?? { rank: [4, instanceMetadataOrder++] };
+            this.genericClassDemandPriority.set(info, ref);
+            instanceFunctions.push(...this.withGenericDemandOwner(owner, () =>
+              this.shapes.withDeclaredOrderPriority(ref, () => this.lowerClassMembers(info))));
+          }
         }
         while (instLowered < this.instantiationQueue.length) {
-          const { info, inst } = this.instantiationQueue[instLowered++]!;
-          const owner = demandOwner();
-          this.genericFunctionDemandOwner.set(inst, owner);
-          const ref = this.genericDemandPriority.get(inst) ?? { rank: [4, instanceMetadataOrder++] };
-          this.genericDemandPriority.set(inst, ref);
-          // Body-level poisons skip the instance after retaining the
-          // diagnostic and every edge fired before poisoning.
-          try {
-            instanceFunctions.push(this.withGenericDemandOwner(owner, () =>
-              this.shapes.withDeclaredOrderPriority(ref, () => this.lowerGenericInstance(info, inst))));
-          } catch (e) {
-            if (!(e instanceof PoisonError)) throw e;
+          const waveEnd = this.instantiationQueue.length;
+          this.checker.prefetchRoots(
+            this.instantiationQueue
+              .slice(instLowered, waveEnd)
+              .flatMap(({ info }) => functionRoots(info.decl)),
+          );
+          while (instLowered < waveEnd) {
+            const { info, inst } = this.instantiationQueue[instLowered++]!;
+            const owner = demandOwner();
+            this.genericFunctionDemandOwner.set(inst, owner);
+            const ref = this.genericDemandPriority.get(inst) ?? { rank: [4, instanceMetadataOrder++] };
+            this.genericDemandPriority.set(inst, ref);
+            // Body-level poisons skip the instance after retaining the
+            // diagnostic and every edge fired before poisoning.
+            try {
+              instanceFunctions.push(this.withGenericDemandOwner(owner, () =>
+                this.shapes.withDeclaredOrderPriority(ref, () => this.lowerGenericInstance(info, inst))));
+            } catch (e) {
+              if (!(e instanceof PoisonError)) throw e;
+            }
           }
         }
         // Emit-override specialization bodies fire edges of their own
         // (the super-forward chain, closures, generic calls) — lower them
         // exactly like generic instances.
         while (specLowered < this.emitSpecQueue.length) {
-          try {
-            const fn = this.shapes.withDeclaredOrderPriority(
-              [4, instanceMetadataOrder++],
-              () => lowerEmitOverrideSpec(this, this.emitSpecQueue[specLowered++]!),
-            );
-            if (fn) instanceFunctions.push(fn);
-          } catch (e) {
-            if (!(e instanceof PoisonError)) throw e;
+          const waveEnd = this.emitSpecQueue.length;
+          this.checker.prefetchRoots(
+            this.emitSpecQueue
+              .slice(specLowered, waveEnd)
+              .flatMap(({ info }) =>
+                info.emitOverride ? functionRoots(info.emitOverride.decl) : []),
+          );
+          while (specLowered < waveEnd) {
+            try {
+              const fn = this.shapes.withDeclaredOrderPriority(
+                [4, instanceMetadataOrder++],
+                () => lowerEmitOverrideSpec(this, this.emitSpecQueue[specLowered++]!),
+              );
+              if (fn) instanceFunctions.push(fn);
+            } catch (e) {
+              if (!(e instanceof PoisonError)) throw e;
+            }
           }
         }
       }
     };
 
+    // Module inits are the unconditional root wave. Structure prefetch
+    // already covered ordinary top-level expressions, but this full-root
+    // pass also picks up nested/lifted function bodies and the class
+    // declaration-time code that splitFiles hoists out of topStmts.
+    this.checker.prefetchRoots([
+      ...parts.flatMap((fp) => fp.topStmts),
+      ...[...this.classes.values()].flatMap((info) => [
+        ...info.staticFields.map((field) => field.initializer),
+        ...(info.staticBlocks ?? []),
+        ...(info.classDecorators?.nodes ?? []),
+      ]),
+    ]);
     parts.forEach((fp, index) => {
       const priority = [2, index] as const;
       const owner = demandOwner(priority);
@@ -2793,25 +2886,31 @@ export class Lowerer {
     // seed the worklist beside the init bodies. Unknown names are inert
     // (the export-map resolution reports them as SC4002 later).
     for (const root of extraRoots ?? []) this.onEdge?.(root);
-    while (queue.length > 0) {
-      // A body-level poison outside the per-statement catches (a fenced
-      // constructor/method parameter default lowered by declareParams):
-      // every edge fired before poisoning remains retained; the diagnostic
-      // stays recorded and the member stays omitted.
-      try {
-        const name = queue.shift()!;
-        const unit = units.get(name)!;
-        const priority = metadataPriority.get(name) ?? [3, expressionMetadataOrder++];
-        const owner = demandOwner(priority);
-        const fn = this.withGenericDemandOwner(
-          owner,
-          () => this.shapes.withDeclaredOrderPriority(priority, unit.lower),
-        );
-        if (fn) loweredUnits.set(name, fn);
-      } catch (e) {
-        if (!(e instanceof PoisonError)) throw e;
+    const drainUnits = (): void => {
+      while (queue.length > 0) {
+        const wave = queue.splice(0);
+        this.checker.prefetchRoots(wave.flatMap((name) => units.get(name)!.roots));
+        for (const name of wave) {
+          // A body-level poison outside the per-statement catches (a fenced
+          // constructor/method parameter default lowered by declareParams):
+          // every edge fired before poisoning remains retained; the diagnostic
+          // stays recorded and the member stays omitted.
+          try {
+            const unit = units.get(name)!;
+            const priority = metadataPriority.get(name) ?? [3, expressionMetadataOrder++];
+            const owner = demandOwner(priority);
+            const fn = this.withGenericDemandOwner(
+              owner,
+              () => this.shapes.withDeclaredOrderPriority(priority, unit.lower),
+            );
+            if (fn) loweredUnits.set(name, fn);
+          } catch (e) {
+            if (!(e instanceof PoisonError)) throw e;
+          }
+        }
       }
-    }
+    };
+    drainUnits();
     this.restoreGenericInstanceOrder();
     this.restoreGenericClassInstanceOrder();
     // Generic bodies can reach ordinary declarations, whose bodies can in
@@ -2821,21 +2920,7 @@ export class Lowerer {
     for (;;) {
       drainInstances();
       if (queue.length === 0) break;
-      while (queue.length > 0) {
-        try {
-          const name = queue.shift()!;
-          const unit = units.get(name)!;
-          const priority = metadataPriority.get(name) ?? [3, expressionMetadataOrder++];
-          const owner = demandOwner(priority);
-          const fn = this.withGenericDemandOwner(
-            owner,
-            () => this.shapes.withDeclaredOrderPriority(priority, unit.lower),
-          );
-          if (fn) loweredUnits.set(name, fn);
-        } catch (e) {
-          if (!(e instanceof PoisonError)) throw e;
-        }
-      }
+      drainUnits();
       this.restoreGenericInstanceOrder(instLowered);
       this.restoreGenericClassInstanceOrder(clsInstLowered);
     }

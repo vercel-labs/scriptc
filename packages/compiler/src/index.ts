@@ -41,7 +41,7 @@ export const VERSION = "0.0.1";
 
 export { compileC, runtimeSrcDir, type CcOptions } from "./backend/cc.js";
 export { ANDROID_MIN_API, IPHONEOS_MIN_VERSION, isAndroidTarget, isIosTarget, isMobileTarget, mobileLibraryTarget, mobileTargetRefusal } from "./backend/cc.js";
-export { emitModule } from "./backend/emission/emitter.js";
+export { emitModule, type CEmitOptions } from "./backend/emission/emitter.js";
 export type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
 export { renderAll, renderDiagnostic } from "./diagnostics/render.js";
 export { renderCoverage, type CoverageInput } from "./coverage/report.js";
@@ -1620,13 +1620,18 @@ async function emitSemanticLibraryHit(
   const stem = basename(profile.entry).replace(/\.(ts|js|mjs|cjs)$/, "");
   let cPath: string;
   if (profile.emission === "llvm") {
-    const ll = emitLlvmModule(mod);
+    const ll = emitLlvmModule(mod, { emitLibraryIdentity: false });
     cPath = join(opts.outDir, `${stem}.lib.ll`);
     await writeFile(cPath, ll);
     timing("semantic-llvm-emit", { output_bytes: Buffer.byteLength(ll) });
   } else {
     cPath = join(opts.outDir, `${stem}.lib.c`);
-    await writeFile(cPath, emitModule(mod, hit.sourceTexts.get(profile.entry)));
+    await writeFile(
+      cPath,
+      emitModule(mod, hit.sourceTexts.get(profile.entry), {
+        emitLibraryIdentity: false,
+      }),
+    );
     timing("semantic-c-emit");
   }
   await rm(join(opts.outDir, `${stem}.lib.${profile.emission === "llvm" ? "c" : "ll"}`), { force: true });
@@ -2083,7 +2088,7 @@ async function compileLibraryTracked(
   let cPath: string;
   if (profile.emission === "llvm") {
     try {
-      const ll = emitLlvmModule(mod);
+      const ll = emitLlvmModule(mod, { emitLibraryIdentity: false });
       timing("llvm-emit", { output_bytes: Buffer.byteLength(ll) });
       cPath = join(opts.outDir, `${stem}.lib.ll`);
       await writeFile(cPath, ll);
@@ -2095,7 +2100,9 @@ async function compileLibraryTracked(
     }
   } else {
     cPath = join(opts.outDir, `${stem}.lib.c`);
-    await writeFile(cPath, emitModule(mod, entryText));
+    await writeFile(cPath, emitModule(mod, entryText, {
+      emitLibraryIdentity: false,
+    }));
   }
   await rm(join(opts.outDir, `${stem}.lib.${profile.emission === "llvm" ? "c" : "ll"}`), { force: true });
 

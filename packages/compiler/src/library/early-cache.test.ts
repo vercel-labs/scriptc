@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import type { IrModule } from "../ir/nodes.js";
 import { FrontendInputTracker, trackedAccessibleEntries, trackedDirectoryExists, trackedFileExists, trackedReadFile } from "../frontend/input-tracker.js";
@@ -339,6 +339,57 @@ test("semantic library cache refuses token and directive edits", async () => {
   await writeFile(f.source, sourceBefore.replace("return 1", "return 2"));
   expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
   await writeFile(f.source, `// @ts-expect-error\n${sourceBefore}`);
+  expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
+});
+
+test("semantic C cache refuses comment-only edits outside the entry", async () => {
+  const f = await fixture();
+  const imported = join(dirname(f.source), "helper.ts");
+  const entrySource = await readFile(f.source, "utf8");
+  const importedSource = "export function helper(): number { return 1; }\n";
+  await writeFile(imported, importedSource);
+  const semanticMod = {
+    irVersion: 6,
+    sourceFile: f.source,
+    functions: [{
+      name: "__main",
+      params: [],
+      returnType: { kind: "void" },
+      locals: [],
+      body: [],
+      loc: { file: f.source, start: 0, end: entrySource.length },
+    }],
+    entry: "__main",
+  } satisfies IrModule;
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => {
+    trackedReadFile(f.source);
+    trackedReadFile(imported);
+  });
+  await publishEarlyLibraryCache(f.root, f.options, {
+    cPath: f.cPath,
+    irPath: f.irPath,
+    sidecarPath: f.sidecarPath,
+    native: {
+      backend: "c",
+      regex: false,
+      assert: false,
+      inspect: false,
+      symbol: false,
+      searchParams: false,
+      emitter: false,
+      zlib: false,
+      copying: false,
+      textDecoderLegacy: false,
+    },
+    frontend: tracker.snapshot(),
+    semantic: {
+      mod: semanticMod,
+      sources: new Map([[f.source, entrySource], [imported, importedSource]]),
+    },
+  });
+
+  await writeFile(imported, `// inserted comment\n${importedSource}`);
   expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
 });
 

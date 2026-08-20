@@ -91,8 +91,14 @@ function escapedRegExp(text: string): string {
 function sourceCommentPattern(sourceFile: string): RegExp {
   // Emission appends these comments at physical line ends. Requiring that
   // boundary prevents source-looking text inside a generated C string from
-  // being mistaken for an annotation and changing program semantics.
-  return new RegExp(` /\\* ${escapedRegExp(sourceFile)}:(\\d+) \\*/(?=\\r?\\n|$)`, "g");
+  // being mistaken for an annotation and changing program semantics. An
+  // uninitialized reference declaration appends its own `/* let ... */`
+  // explanation after the location, so admit that one generated suffix too.
+  return new RegExp(
+    ` /\\* ${escapedRegExp(sourceFile)}:(\\d+) \\*/` +
+      `(?= /\\* let [^\\r\\n]*; \\*/(?=\\r?\\n|$)|\\r?\\n|$)`,
+    "g",
+  );
 }
 
 /** Refresh the source-line annotations retained in a caller-visible C TU. */

@@ -410,6 +410,14 @@ export async function readSemanticLibraryCache(
       ),
     );
     if (semantic === null || semantic.changed.length === 0) return null;
+    // C source annotations are rendered through the entry source's line
+    // table, including locations originating in imported modules. Rebasing
+    // cached imported locations therefore cannot reproduce a fresh lowering
+    // exactly; take the normal frontend path for that uncommon edit shape.
+    if (
+      stamp.native.backend === "c" &&
+      semantic.changed.some((change) => change.path !== resolve(options.entryPath))
+    ) return null;
     const mod = deserializeV8(irJson) as IrModule;
     if (mod.irVersion !== IR_VERSION) return null;
     rebaseSourceLocations(mod, previousSources, semantic.currentSources);

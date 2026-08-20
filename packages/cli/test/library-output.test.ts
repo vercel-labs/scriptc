@@ -20,10 +20,17 @@ test("library identity source stays private and cannot overwrite a sidecar", asy
   const profilePath = join(dir, "profile.json");
   try {
     await mkdir(cacheRoot, { mode: 0o700 });
+    await writeFile(join(dir, "helper.ts"), [
+      "export function initialValue(): number {",
+      "  return 1;",
+      "}",
+      "",
+    ].join("\n"));
     await writeFile(join(dir, "lib.ts"), [
+      "import { initialValue } from \"./helper.js\";",
       "export interface Model { value: number; }",
       "export type Msg = { kind: \"noop\" } | { kind: \"set\"; value: number };",
-      "export function init(): Model { return { value: 1 }; }",
+      "export function init(): Model { return { value: initialValue() }; }",
       "export function update(model: Model, msg: Msg): Model {",
       "  return msg.kind === \"set\" ? { value: msg.value } : model;",
       "}",
@@ -58,10 +65,13 @@ test("library identity source stays private and cannot overwrite a sidecar", asy
         },
       }, null, 2)}\n`,
     );
-    const runBuild = async (): Promise<void> => {
+    const runBuild = async (keepC = false): Promise<void> => {
       await execFileAsync(
         process.execPath,
-        ["--import", tsxLoader, cliEntry, "build", "--lib", "--profile", profilePath, "--no-keep-c"],
+        [
+          "--import", tsxLoader, cliEntry, "build", "--lib", "--profile", profilePath,
+          ...(keepC ? [] : ["--no-keep-c"]),
+        ],
         {
           env: {
             ...process.env,
@@ -87,6 +97,19 @@ test("library identity source stays private and cannot overwrite a sidecar", asy
     ].join("\n"));
     await runBuild();
     expect((await readdir(outDir)).sort()).toEqual(["contract.json", "lib.lib.a"]);
+
+    // Imported trivia is semantically unchanged too, but the cached C text
+    // cannot be line-rebased through the entry-only annotation table. That
+    // shape must take the normal frontend path and match a forced cache miss.
+    await writeFile(join(dir, "helper.ts"), [
+      "// harmless helper comment",
+      await readFile(join(dir, "helper.ts"), "utf8"),
+    ].join("\n"));
+    await runBuild(true);
+    const fallbackC = await readFile(join(outDir, "lib.lib.c"), "utf8");
+    await rm(join(cacheRoot, "early-lib"), { recursive: true, force: true });
+    await runBuild(true);
+    expect(await readFile(join(outDir, "lib.lib.c"), "utf8")).toBe(fallbackC);
 
     // This name collided with the former fixed `<stem>.lib.identity.c`
     // output. Repeat to exercise the exact early-cache-hit ordering that used

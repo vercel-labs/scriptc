@@ -81,6 +81,7 @@ describe("library identity emission", () => {
     const emitted = [
       `value(); /* ${sourceFile}:3 */`,
       `const char *text = " /* ${sourceFile}:5 */";`,
+      `slot = NULL; /* ${sourceFile}:7 */ /* let slot; */`,
       `other(); /* ${sourceFile}:9 */`,
       "",
     ].join("\n");
@@ -88,12 +89,13 @@ describe("library identity emission", () => {
       [
         `value(); /* ${sourceFile}:7 */`,
         `const char *text = " /* ${sourceFile}:5 */";`,
+        `slot = NULL; /* ${sourceFile}:11 */ /* let slot; */`,
         `other(); /* ${sourceFile}:13 */`,
         "",
       ].join("\n"),
     );
     expect(stripLibrarySourceComments(emitted, sourceFile)).toBe(
-      `value();\nconst char *text = " /* ${sourceFile}:5 */";\nother();\n`,
+      `value();\nconst char *text = " /* ${sourceFile}:5 */";\nslot = NULL; /* let slot; */\nother();\n`,
     );
   });
 

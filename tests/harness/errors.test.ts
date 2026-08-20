@@ -239,6 +239,44 @@ console.log(arr.length);
     );
   });
 
+  test.each([
+    {
+      label: "flatMap",
+      name: "flatmap-elements",
+      producer: "'.flatMap()'",
+      result: "'Set<number>' values \\(arrays of this element kind have no representation — store the values individually\\)",
+      line: 1,
+      source: `const arr = [1].flatMap(() => new Set([1]));
+console.log(arr.length);
+`,
+    },
+    {
+      label: "tuple map",
+      name: "tuple-map-elements",
+      producer: "'.map()'",
+      result: "'unknown'-typed values \\(the result array has no static element type — annotate the callback's return\\)",
+      line: 3,
+      source: `/** @type {[number]} */
+const tuple = [1];
+const arr = tuple.map(() => new Set());
+console.log(arr.length);
+`,
+    },
+  ])("$label fences an unsupported callback result before emission (JS lane)", async ({ name, producer, result, line, source }) => {
+    // Both paths construct the ordinary map helper from the lowered
+    // callback return type. They must share Array.from/.map's frontend
+    // fence rather than leave the validator to report an internal error.
+    const r = await compileAndRun(name, source, "js");
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    const quotedProducer = producer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    expect(r.stderr).toMatch(
+      new RegExp(
+        `^Uncaught Error: ${quotedProducer} with a callback returning ${result} are not supported yet \\[SC1090 at .*${name}\\.js:${line}\\]\\n$`,
+      ),
+    );
+  });
+
   test("extending a property-assigned class ABOVE its assignment is a named deferred fence (JS lane)", async () => {
     // The property-assigned class-expression family (corpus 2032/2033
     // pins what lowers): `exports.O = class extends exports.I {}` with

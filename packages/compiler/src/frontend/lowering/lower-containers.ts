@@ -818,6 +818,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     const { fnArg, arity } = hofCallbackArg(L, argNode, [snapshotElem], arrayOf(snapshotElem));
     const fnRet = fnArg.type.ret;
     if (fnRet.kind === "void" || fnRet.kind === "func") L.badType(call, L.typeOf(call));
+    fenceProducedArrayElem(L, call, "'.map()'", fnRet);
     const helper = arrayHofHelper(L, "map", snapshotElem, fnRet, arity, loc);
     return { kind: "call", callee: helper, args: [snapshot, fnArg], type: arrayOf(fnRet), loc };
   }
@@ -1370,6 +1371,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     if (fnRet.kind !== "array") {
       // No flatten happens: exactly map's loop, map's helper.
       if (fnRet.kind === "void" || fnRet.kind === "func") L.badType(call, L.typeOf(call));
+      fenceProducedArrayElem(L, call, "'.flatMap()'", fnRet);
       const helper = arrayHofHelper(L, "map", elem, fnRet, arity, loc);
       return { kind: "call", callee: helper, args: [receiver, fnArg], type: arrayOf(fnRet), loc };
     }

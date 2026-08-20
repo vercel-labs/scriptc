@@ -54,6 +54,78 @@ function printRecursiveRecord(): void {
   console.log(inspect(value));
 }
 
+class GenericOrderedPair {
+  genericFirst = 1;
+  genericSecond = 2;
+}
+
+function genericSourceFirst<T>(_: T): void {
+  // This rest lowering checks order immediately; a helper finalizer cannot
+  // repair it after the wrong generic instance has already fenced.
+  const { ...value } = new GenericOrderedPair();
+  console.log(Object.keys(value).join(","));
+}
+
+function genericSourceSecond<T>(_: T): void {
+  const value = { genericSecond: 2, genericFirst: 1 };
+  console.log(Object.keys(value).length);
+}
+
+function callGenericSourceFirst(): void {
+  genericSourceFirst(1);
+}
+
+function callGenericSourceSecond(): void {
+  genericSourceSecond(1);
+}
+
+class GenericClassSourceFirst<T> {
+  constructor(_: T) {
+    const { ...value } = new GenericOrderedPair();
+    console.log(Object.keys(value).join(","));
+  }
+}
+
+class GenericClassSourceSecond<T> {
+  constructor(_: T) {
+    const value = { genericSecond: 2, genericFirst: 1 };
+    console.log(Object.keys(value).length);
+  }
+}
+
+function constructGenericClassSourceFirst(): void {
+  new GenericClassSourceFirst(1);
+}
+
+function constructGenericClassSourceSecond(): void {
+  new GenericClassSourceSecond(1);
+}
+
+class NestedGenericOrderedPair {
+  nestedFirst = 1;
+  nestedSecond = 2;
+}
+
+function nestedGenericInstanceSourceFirst<T>(_: T): void {
+  const value = { nestedFirst: 1, nestedSecond: 2 };
+  console.log(Object.keys(value).length);
+}
+
+function nestedGenericSourceFirst(): void {
+  nestedGenericInstanceSourceFirst(1);
+}
+
+function genericReachesEarlierSource<T>(_: T): void {
+  const value = { nestedSecond: 2, nestedFirst: 1 };
+  console.log(Object.keys(value).length);
+  // Reachability learns about this earlier declaration only while this
+  // instance lowers. Its metadata must still settle before the rest-order
+  // support decision becomes final.
+  nestedGenericSourceFirst();
+  const { ...rest } = new NestedGenericOrderedPair();
+  console.log(Object.keys(rest).join(","));
+}
+
 console.log(Object.keys({ b: 2, a: 1 }).length);
 console.log(Object.values({ b: 2, a: 1 }).length);
 console.log(Object.entries({ b: 2, a: 1 }).length);
@@ -64,6 +136,15 @@ console.log(Object.entries({ b: 2, a: 1 } as { b: number; a: number; [key: strin
 console.log(capturedCount({ b: 2, a: 1 }));
 console.log(assignedCount());
 console.log(inspect({ b: 2, a: 1, next: null } as { b: number; a: number; next: OrderedNode | null }).length);
+// Runtime reachability encounters the second caller first. The historical
+// emitter visited these caller bodies in source order before it drained the
+// generic-instance queue, so the first instance owns the shared shape's key
+// order.
+callGenericSourceSecond();
+callGenericSourceFirst();
+constructGenericClassSourceSecond();
+constructGenericClassSourceFirst();
+genericReachesEarlierSource(1);
 
 printFunctionRecord();
 printIndexRecord();

@@ -2406,6 +2406,7 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
     const key = mapped.map(typeKey).join(",");
     const existing = gci.instances.get(key);
     if (existing) {
+      if (existing.info) L.noteGenericClassInstanceDemand(existing.info);
       return existing.poisoned ? null : { kind: "object", className: existing.name };
     }
     // The generic-fn cap, same rationale (polymorphic recursion through
@@ -2444,6 +2445,7 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
     }
     entry.info = info;
     L.genericClassInstances.push(info);
+    L.noteGenericClassInstanceDemand(info);
     L.onLateClassCollected?.(info);
     return { kind: "object", className: name };
   }

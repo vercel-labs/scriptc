@@ -83,6 +83,7 @@ import {
   isUnitOnlyTsType,
   mapType,
   ShapeRegistry,
+  type DeclaredOrderPriorityRef,
   typeKey,
   type TypeMapperCtx,
   UnionRegistry,
@@ -113,6 +114,12 @@ import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
  * function can never collide with it (mangling is injective per prefix). */
 export const ENTRY_NAME = "%main";
+
+interface GenericDemandOwner {
+  priority?: readonly [phase: number, order: number];
+  functionDemands: GenericInstance[];
+  classDemands: ClassInfo[];
+}
 
 /** One step of the copy-reshape width relation (widthLiftPlan): how a
  * source-typed value enters a destination slot. Pure data — the plan half;
@@ -873,6 +880,152 @@ export class Lowerer {
   /** Monomorphization worklist: instances queued by call sites, drained in
    * run() (processing an instance body can queue more). */
   readonly instantiationQueue: { info: GenericFnInfo; inst: GenericInstance }[] = [];
+  /** Historical emit rank of the retained declaration/init body currently
+   * lowering, and the earliest such owner that demanded each generic
+   * instance. Reachability can encounter a later caller first; the minimum
+   * rank recovers the old emitter's source-order monomorphization queue. */
+  private genericDemandOwner: GenericDemandOwner | null = null;
+  private readonly genericDemandRoots: GenericDemandOwner[] = [];
+  private readonly genericFunctionDemandOwner = new Map<GenericInstance, GenericDemandOwner>();
+  private readonly genericClassDemandOwner = new Map<ClassInfo, GenericDemandOwner>();
+  private readonly genericDemandPriority = new Map<GenericInstance, DeclaredOrderPriorityRef>();
+  private readonly genericClassDemandPriority = new Map<ClassInfo, DeclaredOrderPriorityRef>();
+
+  private withGenericDemandOwner<T>(
+    owner: GenericDemandOwner,
+    fn: () => T,
+  ): T {
+    const previous = this.genericDemandOwner;
+    this.genericDemandOwner = owner;
+    try {
+      return fn();
+    } finally {
+      this.genericDemandOwner = previous;
+    }
+  }
+
+  noteGenericInstanceDemand(inst: GenericInstance): void {
+    const owner = this.genericDemandOwner;
+    owner?.functionDemands.push(inst);
+    const ref = this.genericDemandPriority.get(inst) ?? { rank: [4, Number.MAX_SAFE_INTEGER] };
+    const currentRank = owner?.priority;
+    if (currentRank && (
+      currentRank[0] < ref.rank[0]! ||
+      (currentRank[0] === ref.rank[0] && currentRank[1] < (ref.rank[1] ?? 0))
+    )) {
+      ref.rank = currentRank;
+    }
+    this.genericDemandPriority.set(inst, ref);
+  }
+
+  noteGenericClassInstanceDemand(info: ClassInfo): void {
+    const owner = this.genericDemandOwner;
+    owner?.classDemands.push(info);
+    const ref = this.genericClassDemandPriority.get(info) ?? { rank: [4, Number.MAX_SAFE_INTEGER] };
+    const currentRank = owner?.priority;
+    if (currentRank && (
+      currentRank[0] < ref.rank[0]! ||
+      (currentRank[0] === ref.rank[0] && currentRank[1] < (ref.rank[1] ?? 0))
+    )) {
+      ref.rank = currentRank;
+    }
+    this.genericClassDemandPriority.set(info, ref);
+  }
+
+  /** The old emitter lowered all reachable declarations in source order,
+   * then every init, before draining generic instances FIFO. Reorder the
+   * retained queue from those recorded demands before any generic body
+   * lowers, so immediate support decisions see the same shape metadata too. */
+  private restoreGenericInstanceOrder(from = 0): void {
+    const tail = this.instantiationQueue.slice(from);
+    const discoveryOrder = new Map(tail.map((entry, index) => [entry.inst, index] as const));
+    tail.sort((left, right) => {
+      const a = this.genericDemandPriority.get(left.inst)?.rank;
+      const b = this.genericDemandPriority.get(right.inst)?.rank;
+      if (a !== undefined && b !== undefined) {
+        const phase = a[0]! - b[0]!;
+        if (phase !== 0) return phase;
+        const order = a[1]! - b[1]!;
+        if (order !== 0) return order;
+      } else if (a !== undefined) {
+        return -1;
+      } else if (b !== undefined) {
+        return 1;
+      }
+      return discoveryOrder.get(left.inst)! - discoveryOrder.get(right.inst)!;
+    });
+    this.instantiationQueue.splice(from, tail.length, ...tail);
+  }
+
+  private restoreGenericClassInstanceOrder(from = 0): void {
+    const tail = this.genericClassInstances.slice(from);
+    const discoveryOrder = new Map(tail.map((info, index) => [info, index] as const));
+    tail.sort((left, right) => {
+      const a = this.genericClassDemandPriority.get(left)?.rank;
+      const b = this.genericClassDemandPriority.get(right)?.rank;
+      if (a !== undefined && b !== undefined) {
+        const phase = a[0]! - b[0]!;
+        if (phase !== 0) return phase;
+        const order = a[1]! - b[1]!;
+        if (order !== 0) return order;
+      } else if (a !== undefined) {
+        return -1;
+      } else if (b !== undefined) {
+        return 1;
+      }
+      return discoveryOrder.get(left)! - discoveryOrder.get(right)!;
+    });
+    this.genericClassInstances.splice(from, tail.length, ...tail);
+  }
+
+  private settleGenericDemandPriorities(): void {
+    const functionQueue: GenericInstance[] = [];
+    const classQueue: ClassInfo[] = [];
+    const seenFunctions = new Set<GenericInstance>();
+    const seenClasses = new Set<ClassInfo>();
+    const enqueue = (owner: GenericDemandOwner): void => {
+      for (const info of owner.classDemands) {
+        if (seenClasses.has(info)) continue;
+        seenClasses.add(info);
+        classQueue.push(info);
+      }
+      for (const inst of owner.functionDemands) {
+        if (seenFunctions.has(inst)) continue;
+        seenFunctions.add(inst);
+        functionQueue.push(inst);
+      }
+    };
+    for (const root of [...this.genericDemandRoots].sort((a, b) => {
+      const left = a.priority!;
+      const right = b.priority!;
+      return left[0] - right[0] || left[1] - right[1];
+    })) enqueue(root);
+    let classIndex = 0;
+    let functionIndex = 0;
+    let order = 0;
+    while (classIndex < classQueue.length || functionIndex < functionQueue.length) {
+      while (classIndex < classQueue.length) {
+        const info = classQueue[classIndex++]!;
+        this.genericClassDemandPriority.get(info)!.rank = [4, order++];
+        const owner = this.genericClassDemandOwner.get(info);
+        if (owner) enqueue(owner);
+      }
+      while (functionIndex < functionQueue.length) {
+        const inst = functionQueue[functionIndex++]!;
+        this.genericDemandPriority.get(inst)!.rank = [4, order++];
+        const owner = this.genericFunctionDemandOwner.get(inst);
+        if (owner) enqueue(owner);
+      }
+    }
+    for (const info of this.genericClassInstances) {
+      const ref = this.genericClassDemandPriority.get(info);
+      if (ref && ref.rank[1] === Number.MAX_SAFE_INTEGER) ref.rank = [4, order++];
+    }
+    for (const { inst } of this.instantiationQueue) {
+      const ref = this.genericDemandPriority.get(inst);
+      if (ref && ref.rank[1] === Number.MAX_SAFE_INTEGER) ref.rank = [4, order++];
+    }
+  }
   /** Non-null while an instance body lowers: type-parameter symbol →
    * concrete IR type, consulted inside mapType's recursion. */
   typeParamBindings: Map<ts.Symbol, IrType> | null = null;
@@ -2499,7 +2652,15 @@ export class Lowerer {
     for (const name of units.keys()) rank(name);
     let expressionMetadataOrder = 0;
     let instanceMetadataOrder = 0;
-
+    const demandOwner = (priority?: readonly [number, number]): GenericDemandOwner => {
+      const owner: GenericDemandOwner = {
+        ...(priority ? { priority } : {}),
+        functionDemands: [],
+        classDemands: [],
+      };
+      if (priority) this.genericDemandRoots.push(owner);
+      return owner;
+    };
     const reachable = new Set<string>();
     const queue: string[] = [];
     const loweredUnits = new Map<string, IrFunction>();
@@ -2543,28 +2704,29 @@ export class Lowerer {
         clsInstLowered < this.genericClassInstances.length ||
         specLowered < this.emitSpecQueue.length
       ) {
+        while (clsInstLowered < this.genericClassInstances.length) {
+          const info = this.genericClassInstances[clsInstLowered++]!;
+          const owner = demandOwner();
+          this.genericClassDemandOwner.set(info, owner);
+          const ref = this.genericClassDemandPriority.get(info) ?? { rank: [4, instanceMetadataOrder++] };
+          this.genericClassDemandPriority.set(info, ref);
+          instanceFunctions.push(...this.withGenericDemandOwner(owner, () =>
+            this.shapes.withDeclaredOrderPriority(ref, () => this.lowerClassMembers(info))));
+        }
         while (instLowered < this.instantiationQueue.length) {
           const { info, inst } = this.instantiationQueue[instLowered++]!;
+          const owner = demandOwner();
+          this.genericFunctionDemandOwner.set(inst, owner);
+          const ref = this.genericDemandPriority.get(inst) ?? { rank: [4, instanceMetadataOrder++] };
+          this.genericDemandPriority.set(inst, ref);
           // Body-level poisons skip the instance after retaining the
           // diagnostic and every edge fired before poisoning.
           try {
-            instanceFunctions.push(
-              this.shapes.withDeclaredOrderPriority(
-                [4, instanceMetadataOrder++],
-                () => this.lowerGenericInstance(info, inst),
-              ),
-            );
+            instanceFunctions.push(this.withGenericDemandOwner(owner, () =>
+              this.shapes.withDeclaredOrderPriority(ref, () => this.lowerGenericInstance(info, inst))));
           } catch (e) {
             if (!(e instanceof PoisonError)) throw e;
           }
-        }
-        while (clsInstLowered < this.genericClassInstances.length) {
-          instanceFunctions.push(
-            ...this.shapes.withDeclaredOrderPriority(
-              [4, instanceMetadataOrder++],
-              () => this.lowerClassMembers(this.genericClassInstances[clsInstLowered++]!),
-            ),
-          );
         }
         // Emit-override specialization bodies fire edges of their own
         // (the super-forward chain, closures, generic calls) — lower them
@@ -2584,13 +2746,17 @@ export class Lowerer {
     };
 
     parts.forEach((fp, index) => {
+      const priority = [2, index] as const;
+      const owner = demandOwner(priority);
       initFunctions.push(
-        this.shapes.withDeclaredOrderPriority(
-          [2, index],
-          () => this.lowerFileInit(fp.sf, fp.topStmts, this.initNameOf.get(fp.sf)!),
+        this.withGenericDemandOwner(
+          owner,
+          () => this.shapes.withDeclaredOrderPriority(
+            priority,
+            () => this.lowerFileInit(fp.sf, fp.topStmts, this.initNameOf.get(fp.sf)!),
+          ),
         ),
       );
-      drainInstances();
     });
     // LIBRARY mode's extra reachability roots (LowerOptions.libRoots): the
     // profile-mapped exports are called from outside the graph, so they
@@ -2605,19 +2771,49 @@ export class Lowerer {
       try {
         const name = queue.shift()!;
         const unit = units.get(name)!;
-        const fn = this.shapes.withDeclaredOrderPriority(
-          metadataPriority.get(name) ?? [3, expressionMetadataOrder++],
-          unit.lower,
+        const priority = metadataPriority.get(name) ?? [3, expressionMetadataOrder++];
+        const owner = demandOwner(priority);
+        const fn = this.withGenericDemandOwner(
+          owner,
+          () => this.shapes.withDeclaredOrderPriority(priority, unit.lower),
         );
         if (fn) loweredUnits.set(name, fn);
       } catch (e) {
         if (!(e instanceof PoisonError)) throw e;
       }
+    }
+    this.restoreGenericInstanceOrder();
+    this.restoreGenericClassInstanceOrder();
+    // Generic bodies can reach ordinary declarations, whose bodies can in
+    // turn queue more instances. Continue to the joint fixpoint; the initial
+    // queue above is the only portion whose discovery order differed from
+    // historical emit order.
+    for (;;) {
       drainInstances();
+      if (queue.length === 0) break;
+      while (queue.length > 0) {
+        try {
+          const name = queue.shift()!;
+          const unit = units.get(name)!;
+          const priority = metadataPriority.get(name) ?? [3, expressionMetadataOrder++];
+          const owner = demandOwner(priority);
+          const fn = this.withGenericDemandOwner(
+            owner,
+            () => this.shapes.withDeclaredOrderPriority(priority, unit.lower),
+          );
+          if (fn) loweredUnits.set(name, fn);
+        } catch (e) {
+          if (!(e instanceof PoisonError)) throw e;
+        }
+      }
+      this.restoreGenericInstanceOrder(instLowered);
+      this.restoreGenericClassInstanceOrder(clsInstLowered);
     }
     const orderedUnits = [...loweredUnits]
       .sort(([left], [right]) => units.get(left)!.order - units.get(right)!.order)
       .map(([, fn]) => fn);
+    this.settleGenericDemandPriorities();
+    this.shapes.settleDeclaredOrderPriorities();
     for (const finalize of this.shapeOrderMetadataFinalizers) finalize();
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     const functions = [

@@ -1121,6 +1121,7 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
       info.instances.set(key, inst);
       L.instantiationQueue.push({ info, inst });
     }
+    L.noteGenericInstanceDemand(inst);
     return inst;
   }
 

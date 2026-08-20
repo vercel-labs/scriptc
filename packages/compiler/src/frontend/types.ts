@@ -61,6 +61,27 @@ export function isParseArgsDynTypeName(name: string): boolean {
   return PARSE_ARGS_DYN_TYPES.has(name);
 }
 
+export interface DeclaredOrderPriorityRef {
+  rank: readonly number[];
+}
+
+export type DeclaredOrderPriority = readonly number[] | DeclaredOrderPriorityRef;
+
+function priorityRank(priority: DeclaredOrderPriority): readonly number[] {
+  return "rank" in priority ? priority.rank : priority;
+}
+
+function comparePriority(left: DeclaredOrderPriority, right: DeclaredOrderPriority): number {
+  const a = priorityRank(left);
+  const b = priorityRank(right);
+  const length = Math.max(a.length, b.length);
+  for (let i = 0; i < length; i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
 /** The frontend's record-shape interner. Records are monomorphic structural
  * shapes: fields sorted by name form the canonical identity, and two types
  * with the same canonical field list share one shapeId (and later one C
@@ -74,8 +95,12 @@ export class ShapeRegistry {
    * install their old emit positions while they lower. This lets a body
    * reached after an init replace metadata the worklist encountered first
    * when the old emitter would have lowered that body first. */
-  private readonly declaredOrderPriority = new Map<string, readonly [phase: number, order: number]>();
-  private currentDeclaredOrderPriority: readonly [phase: number, order: number] = [0, 0];
+  private readonly declaredOrderPriority = new Map<string, DeclaredOrderPriority>();
+  private readonly declaredOrderCandidates = new Map<
+    string,
+    { order: string[]; priority: DeclaredOrderPriority }[]
+  >();
+  private currentDeclaredOrderPriority: DeclaredOrderPriority = [0, 0];
   /** All interned shapes in first-seen (`r0`, `r1`, ...) order. */
   readonly shapes: IrRecordShape[] = [];
   /** ts.Types currently being mapped — a BACK-REFERENCE to one of these is
@@ -114,7 +139,7 @@ export class ShapeRegistry {
   /** Runs one lowering unit under its historical emit-order rank. Shape
    * ids remain demand-assigned; only first-seen declaration-order metadata
    * uses this rank, because Object.keys/JSON/inspect observe it. */
-  withDeclaredOrderPriority<T>(priority: readonly [phase: number, order: number], fn: () => T): T {
+  withDeclaredOrderPriority<T>(priority: DeclaredOrderPriority, fn: () => T): T {
     const previous = this.currentDeclaredOrderPriority;
     this.currentDeclaredOrderPriority = priority;
     try {
@@ -126,17 +151,33 @@ export class ShapeRegistry {
 
   private adoptDeclaredOrder(shape: IrRecordShape, declaredOrder: string[] | undefined): void {
     if (declaredOrder === undefined) return;
+    const candidates = this.declaredOrderCandidates.get(shape.id);
+    const candidate = { order: declaredOrder, priority: this.currentDeclaredOrderPriority };
+    if (candidates) candidates.push(candidate);
+    else this.declaredOrderCandidates.set(shape.id, [candidate]);
     const previous = this.declaredOrderPriority.get(shape.id);
-    if (
-      previous !== undefined &&
-      (previous[0] < this.currentDeclaredOrderPriority[0] ||
-        (previous[0] === this.currentDeclaredOrderPriority[0] &&
-          previous[1] <= this.currentDeclaredOrderPriority[1]))
-    ) {
+    if (previous !== undefined && comparePriority(previous, this.currentDeclaredOrderPriority) <= 0) {
       return;
     }
     shape.declaredOrder = declaredOrder;
     this.declaredOrderPriority.set(shape.id, this.currentDeclaredOrderPriority);
+  }
+
+  /** Mutable generic-instance ranks settle only after reachability closes.
+   * Re-choose each shape's first historical writer from the retained
+   * candidates before derived metadata and helper bodies finalize. */
+  settleDeclaredOrderPriorities(): void {
+    for (const [shapeId, candidates] of this.declaredOrderCandidates) {
+      let best = candidates[0];
+      if (!best) continue;
+      for (const candidate of candidates.slice(1)) {
+        if (comparePriority(candidate.priority, best.priority) < 0) best = candidate;
+      }
+      const shape = this.byId.get(shapeId);
+      if (!shape) continue;
+      shape.declaredOrder = best.order;
+      this.declaredOrderPriority.set(shapeId, best.priority);
+    }
   }
 
   /** Captures the current historical rank for a derived shape whose order
@@ -233,6 +274,9 @@ export class ShapeRegistry {
       this.byId.set(id, shape);
       this.shapes.push(shape);
       if (declaredOrder !== undefined) {
+        this.declaredOrderCandidates.set(id, [
+          { order: declaredOrder, priority: this.currentDeclaredOrderPriority },
+        ]);
         this.declaredOrderPriority.set(id, this.currentDeclaredOrderPriority);
       }
     } else {

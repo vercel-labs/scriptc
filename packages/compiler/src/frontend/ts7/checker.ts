@@ -336,6 +336,25 @@ export class CheckerFacade {
     this.prefetchNodes(collectNodes(roots, "reachable"));
   }
 
+  /** Batches the exact body nodes class-shape collection reads before body
+   * reachability is known. JavaScript field inference asks for the RHS type
+   * and for a symbol on the `this.x` property access itself; ordinary
+   * prefetch intentionally covers neither uncommon RHS kinds nor symbols
+   * on non-identifiers. Descendants of symbol roots join because computed
+   * `this[key]` declarations resolve the key identifier too. */
+  prefetchClassCollection(
+    typeNodes: readonly Node[],
+    symbolRoots: readonly Node[],
+  ): void {
+    this.markManaged([...typeNodes, ...symbolRoots]);
+    const distinctTypes = [...new Set(typeNodes)].filter(
+      (node) => !this.typeAtLocation.has(node),
+    );
+    const types = chunked(distinctTypes, (chunk) => this.typesWithPanicFence(chunk));
+    distinctTypes.forEach((node, index) => this.typeAtLocation.set(node, types[index]));
+    this.prefetchSymbolNodes(collectNodes(symbolRoots, "reachable"), true);
+  }
+
   private markManaged(roots: readonly Node[]): void {
     for (const root of roots) {
       const sf = root.getSourceFile();
@@ -375,9 +394,15 @@ export class CheckerFacade {
     this.prefetchSymbolNodes(collectNodes([sf]));
   }
 
-  private prefetchSymbolNodes(allNodes: readonly Node[]): void {
+  private prefetchSymbolNodes(
+    allNodes: readonly Node[],
+    includePropertyAccess = false,
+  ): void {
     const nodes = allNodes.filter(
-      (n) => n.kind === SyntaxKind.Identifier && !this.symbolAtLocation.has(n),
+      (n) =>
+        (n.kind === SyntaxKind.Identifier ||
+          (includePropertyAccess && n.kind === SyntaxKind.PropertyAccessExpression)) &&
+        !this.symbolAtLocation.has(n),
     );
     // The same bisecting panic fence as the type sweep: tsgo panics on
     // SYMBOL queries too (observed: GetSymbolAtLocation over an

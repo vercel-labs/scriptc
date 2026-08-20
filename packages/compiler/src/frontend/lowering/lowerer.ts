@@ -93,7 +93,7 @@ import { CompoundOp, IslandFnEntry, boundaryIntoIslandMsg, boundaryOutOfIslandMs
 import { FileParts, splitFiles, collectProgram, collectNpmImports, collectJsonImports, moduleArtifacts, collectGlobals, declSymbolOf, defaultExportSymbolOf, lowerFileInit, lowerDefaultExport, buildMain, appendDynamicImportModules } from "./lower-modules.js";
 import { ClassInfo, ClassIteratorInfo, GenericClassInfo, registerBuiltinErrorClasses, registerBuiltinEmitterClass, registerBuiltinStreamClasses, builtinErrorInfoOf, builtinEmitterInfoOf, builtinStreamInfoOf, analyzeClassDecoration, classIteratorDrainCall, classIteratorNextCall, classIteratorOf, classIteratorOpenCall, classIteratorRestDrainCall, classMemberNameOf, classValueRef, collectClassShape, exactClassOfReceiver, collectClassShapeInner, ctorAbiEquals, findMethodOn, findStaticOn, findGenericMethodOn, findGenericStaticOn, genericClassInstanceType, isSubclassOf, inHierarchy, overrideBelow, staticShadowBelow, upcastTo, lowerClassMembers, lowerClassCtor, lowerClassExpression, lowerClassExpressionInfo, lowerClassMethodMember, lowerClassValueProperty, lowerStaticMethod, throwingSetterFn, fieldInitStmts, lowerStaticFieldInits, lowerStaticFieldRead, lowerDerivedCtorBody, superCallStmt, lowerSuperMethodCall, superThisRef, lowerSuperAccessorRead, lowerSuperAccessorWrite, inheritsBuiltinErrorCtor, inheritsBuiltinEmitterCtor, errorMessageArg, lowerNew, accessorCall } from "./lower-classes.js";
 import { MixinFnShape, mixinCallClassInfoOf, mixinIntersectionInstanceType } from "./lower-mixins.js";
-import { ParamShape, FnSig, GenericFnInfo, GenericInstance, bindingNeverReassigned, bodyReadsArguments, isThisParameter, paramShape, paramShapes, checkDefaultParamBodyType, completeArgs, wrappedUndefined, undefinedArgFor, requireExactArityValue, bodyReturnType, declaredReturnType, collectSignature, collectSignatureInner, collectGenericSignature, genericFnOf, lowerGenericCall, lowerGenericFnValue, inferTypeParamBindings, lowerGenericInstance, lowerCall, lowerFfiCall, lowerTimersMemberCall, lowerPromiseMethodCall, lowerFilterNarrowCall, isTopLevelFnSymbol, lowerNestedFunctionDecl, lambdaSignature, lowerLambda, lowerFunction, validateFfiImports } from "./lower-calls.js";
+import { ParamShape, FnSig, GenericFnInfo, GenericInstance, bindingNeverReassigned, bodyReadsArguments, implicitMonoFile, isThisParameter, paramShape, paramShapes, checkDefaultParamBodyType, completeArgs, wrappedUndefined, undefinedArgFor, requireExactArityValue, bodyReturnType, declaredReturnType, collectSignature, collectSignatureInner, collectGenericSignature, genericFnOf, lowerGenericCall, lowerGenericFnValue, inferTypeParamBindings, lowerGenericInstance, lowerCall, lowerFfiCall, lowerTimersMemberCall, lowerPromiseMethodCall, lowerFilterNarrowCall, isTopLevelFnSymbol, lowerNestedFunctionDecl, lambdaSignature, lowerLambda, lowerFunction, validateFfiImports } from "./lower-calls.js";
 import { lowerArrayMethodCall, lowerBufferStaticCall, lowerBytesMethodCall, lowerBytesNew, lowerMapMethodCall, lowerMapForEachCall, buildMapForEachFn, lowerRecordOvfCaptureHelper, lowerEnvToPairsHelper, lowerSetMethodCall, lowerSetForEachCall, buildSetForEachFn, lowerRegexMethodCall, lowerStringMethodCall } from "./lower-containers.js";
 import { lowerStreamModuleCall } from "./lower-stream.js";
 import { lowerEmitOverrideSpec, type EmitSpecCtx, type EmitSpecRequest } from "./lower-emitter.js";
@@ -2612,6 +2612,11 @@ export class Lowerer {
     // Establish the same managed header/top-level batch here before
     // collection, while the production path simply finds warm memos.
     this.checker.prefetchSourceFileStructures(parts.map((fp) => fp.sf));
+    // JavaScript class shapes are partly declared by constructor-body
+    // assignments. Batch those collection-time queries across declarations
+    // before collectProgram visits them one by one; reached body lowering
+    // will reuse the same answers later.
+    this.prefetchClassCollection(parts.flatMap((fp) => fp.classDecls));
     this.collectProgram(parts);
     // Decorated classes analyze post-collection here too: the %init seeds
     // lower the decoration calls, whose edges (decorator bodies, construct
@@ -6869,6 +6874,58 @@ export class Lowerer {
 
   /* ── classes ──────────────────────────────────────────────────────── */
 
+  /** Checker work class SHAPE collection performs inside otherwise
+   * deferred JavaScript bodies. Constructor assignments declare fields,
+   * so collection asks for each `this.x` symbol and RHS type even when the
+   * constructor is unreachable. Keep that mandatory work batched without
+   * sweeping unrelated dead method bodies. */
+  private prefetchClassCollection(decls: readonly ts.ClassLikeDeclaration[]): void {
+    const typeNodes: ts.Node[] = [];
+    const symbolRoots: ts.Node[] = [];
+    for (const decl of decls) {
+      if (!isJsSourceFile(decl.getSourceFile())) continue;
+      for (const member of decl.members) {
+        if (ts.isConstructorDeclaration(member)) {
+          for (const param of member.parameters) {
+            if (param.initializer) typeNodes.push(param.initializer);
+          }
+          for (const stmt of member.body?.statements ?? []) {
+            if (!ts.isExpressionStatement(stmt) || !ts.isBinaryExpression(stmt.expression)) continue;
+            if (stmt.expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) continue;
+            const lhs = stmt.expression.left;
+            if (
+              (ts.isPropertyAccessExpression(lhs) || ts.isElementAccessExpression(lhs)) &&
+              lhs.expression.kind === ts.SyntaxKind.ThisKeyword
+            ) {
+              symbolRoots.push(lhs);
+              // Field inference normally uses the symbol's type, but its
+              // panic/undefined fallback asks for the assignment node too.
+              typeNodes.push(lhs, stmt.expression.right);
+            }
+          }
+          continue;
+        }
+        if (
+          ts.isMethodDeclaration(member) ||
+          ts.isGetAccessor(member) ||
+          ts.isSetAccessor(member)
+        ) {
+          for (const param of member.parameters) {
+            if (param.initializer) typeNodes.push(param.initializer);
+          }
+          // npm-static implicit-any classification resolves body parameter
+          // references while collecting the method's shape.
+          if (implicitMonoFile(decl.getSourceFile()) && member.body) {
+            symbolRoots.push(member.body);
+          }
+        }
+      }
+    }
+    if (typeNodes.length > 0 || symbolRoots.length > 0) {
+      this.checker.prefetchClassCollection(typeNodes, symbolRoots);
+    }
+  }
+
   collectClassShape(decl: ts.ClassDeclaration): void {
     return collectClassShape(this, decl);
   }
@@ -6876,6 +6933,11 @@ export class Lowerer {
   collectClassShapeInner(decl: ts.ClassLikeDeclaration, jsNameOverride?: string,
     inst?: { family: ClassInfo; name: string; bindings: Map<ts.Symbol, IrType>; typeArgsText: string; ordinal: number },
     mixin?: { base: ClassInfo; name: string; call: ts.CallExpression; bindings: Map<ts.Symbol, IrType>; context: string; ordinal: number },): void {
+    // Late class expressions and mixin/generic instances do not participate
+    // in emitReachable's initial declaration wave. Prime their mandatory
+    // shape queries at the collection boundary; initial declarations are
+    // already warm and this is memo-free.
+    this.prefetchClassCollection([decl]);
     return collectClassShapeInner(this, decl, jsNameOverride, inst, mixin);
   }
 

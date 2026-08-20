@@ -277,6 +277,47 @@ export function dead(input: number): number {
   expect(Array.isArray(calls["getTypeAtLocation"]!.at(-1)![0])).toBe(false);
 });
 
+test("JavaScript class-shape collection batches constructor field queries", () => {
+  const fields = Array.from(
+    { length: 24 },
+    (_, index) => `    this.value${index} = { nested: input };`,
+  ).join("\n");
+  const w = buildTwoWorlds({
+    "dead-class.js": `
+class Dead {
+  constructor(input) {
+${fields}
+  }
+  method() {
+    return this.value0.nested;
+  }
+}
+console.log("ok");
+`,
+  }, host);
+  worlds.push(w);
+  const { proxy, calls } = countingChecker(w.p7.project.checker);
+  const facade = new CheckerFacade(proxy, { project: w.p7.project });
+  (w.p7 as unknown as { checkerFacade: CheckerFacade | null }).checkerFacade = facade;
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const cls = sf.statements.find(ad.isClassDeclaration)!;
+  const ctor = cls.members.find(ad.isConstructorDeclaration)!;
+  const insideCtor = (node: Node): boolean =>
+    node.getStart() >= ctor.getStart() && node.end <= ctor.end;
+
+  lowerToIr(w.p7, sf, [sf]);
+
+  for (const name of ["getTypeAtLocation", "getSymbolAtLocation"]) {
+    const checkerCalls = calls[name] ?? [];
+    expect(checkerCalls.some(([arg]) =>
+      Array.isArray(arg) && (arg as Node[]).some(insideCtor),
+    )).toBe(true);
+    expect(checkerCalls.some(([arg]) =>
+      !Array.isArray(arg) && insideCtor(arg as Node),
+    )).toBe(false);
+  }
+});
+
 test("coverage remainder batches checker queries for unreachable bodies", () => {
   const w = buildTwoWorlds({
     "coverage-remainder.ts": `

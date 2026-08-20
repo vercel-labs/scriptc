@@ -1,8 +1,9 @@
 import { describe, expect, test } from "vitest";
 import { emitModule } from "../src/index.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
-import { stripLibraryIdentity } from "../src/backend/library-identity.js";
+import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "../src/backend/library-identity.js";
 import type { IrModule } from "../src/ir/nodes.js";
+import { rebaseSourceLocations, createSourceLineRebaser } from "../src/library/semantic-source.js";
 import { fibModule } from "./fixtures/fib-ir.js";
 
 const libraryModule = (): IrModule => ({
@@ -61,5 +62,75 @@ describe("library identity emission", () => {
     expect(stripLibraryIdentity(emitLlvmModule(mod), "llvm")).toBe(
       emitLlvmModule(mod, { emitLibraryIdentity: false }),
     );
+  });
+
+  test("cached public TUs refresh only their identity region", () => {
+    const mod = libraryModule();
+    const identity = {
+      ...mod.lib!.identity!,
+      buildId: "0123456789abcdef",
+    };
+    const expected = libraryModule();
+    expected.lib!.identity = identity;
+    expect(replaceLibraryIdentity(emitModule(mod), "c", identity)).toBe(emitModule(expected));
+    expect(replaceLibraryIdentity(emitLlvmModule(mod), "llvm", identity)).toBe(emitLlvmModule(expected));
+  });
+
+  test("C source-line annotations can be refreshed and removed", () => {
+    const sourceFile = "/tmp/entry[1].ts";
+    const emitted = [
+      `value(); /* ${sourceFile}:3 */`,
+      `const char *text = " /* ${sourceFile}:5 */";`,
+      `other(); /* ${sourceFile}:9 */`,
+      "",
+    ].join("\n");
+    expect(rebaseLibrarySourceComments(emitted, sourceFile, (line) => line + 4)).toBe(
+      [
+        `value(); /* ${sourceFile}:7 */`,
+        `const char *text = " /* ${sourceFile}:5 */";`,
+        `other(); /* ${sourceFile}:13 */`,
+        "",
+      ].join("\n"),
+    );
+    expect(stripLibrarySourceComments(emitted, sourceFile)).toBe(
+      `value();\nconst char *text = " /* ${sourceFile}:5 */";\nother();\n`,
+    );
+  });
+
+  test("cached C annotations match a fresh emission after a comment edit", () => {
+    const before = "// old note\nfunction fib() {\n  return 1;\n}\n";
+    const after = "/* longer\n * replacement note\n */\n\nfunction fib() {\n  return 1;\n}\n";
+    // JSON round-tripping gives every SrcLoc its own object, matching
+    // deserialized semantic-cache payloads rather than this fixture's shared
+    // hand-written `loc` constant.
+    const cachedMod = JSON.parse(JSON.stringify(libraryModule())) as IrModule;
+    const oldOffset = before.indexOf("return");
+    const setLocations = (value: unknown): void => {
+      if (value === null || typeof value !== "object") return;
+      const record = value as Record<string, unknown>;
+      if (
+        record["file"] === "fib.ts" &&
+        typeof record["start"] === "number" &&
+        typeof record["end"] === "number"
+      ) {
+        record["start"] = oldOffset;
+        record["end"] = oldOffset + "return".length;
+        return;
+      }
+      Object.values(record).forEach(setLocations);
+    };
+    setLocations(cachedMod);
+    const currentMod = structuredClone(cachedMod);
+    rebaseSourceLocations(
+      currentMod,
+      new Map([["fib.ts", before]]),
+      new Map([["fib.ts", after]]),
+    );
+    const restored = rebaseLibrarySourceComments(
+      emitModule(cachedMod, before),
+      "fib.ts",
+      createSourceLineRebaser("fib.ts", before, after),
+    );
+    expect(restored).toBe(emitModule(currentMod, after));
   });
 });

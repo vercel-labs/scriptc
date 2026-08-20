@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { buildCacheRoot, CcCompileError, compileC, compileLibArchive, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/cc.js";
 import { emitModule } from "./backend/emission/emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
-import { stripLibraryIdentity } from "./backend/library-identity.js";
+import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "./backend/library-identity.js";
 import { checkerPanicDiag, ffiNativeBuildDiag, libAsyncExportDiag, libAsyncSurfaceDiag, libExportUnresolvedDiag, libGenericExportDiag, libIntBoundaryDiag, libNpmIneligibleDiag, libSidecarDiag, libUnmappableSignatureDiag, iceDiag, isCheckerPanic, LIB_INBOUND_BYTES_TRAP_CODE, LIB_RUNTIME_TRAP_CODES, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import { checkLibraryIntegerSlots, classSeed, hasIntSlots, numberCarrierKind, type FnIntSlots, type IntSlotConfig } from "./library/int-infer.js";
 import { loadLibraryProfile, profileRemediation, profileTeaching, type LibraryProfile } from "./library/profile.js";
@@ -37,6 +37,7 @@ import { loadFfiProfile, type FfiProfile } from "./ffi/profile.js";
 import { hasForeignFfiCallback } from "./backend/ffi-callbacks.js";
 import { FrontendInputTracker, trackedReadFile } from "./frontend/input-tracker.js";
 import { libraryFrontendImplementationFingerprint, publishEarlyLibraryCache, readEarlyLibraryCache, readSemanticLibraryCache, type EarlyLibraryCacheOptions, type EarlyLibraryCachePublish, type EarlyLibraryNativeFeatures, type SemanticLibraryCacheHit } from "./library/early-cache.js";
+import { createSourceLineRebaser } from "./library/semantic-source.js";
 
 export const VERSION = "0.0.1";
 
@@ -1553,13 +1554,17 @@ async function compileLibraryNative(
   const localizeSymbols = libraryLocalizeSymbols(profile);
   let identityCSource: string | undefined;
   let programSource: string | undefined;
+  if (profile.sidecar !== null || profile.emission === "c") {
+    const publicSource = await readFile(cPath, "utf8");
+    programSource = publicSource;
+  }
   if (profile.sidecar !== null) {
     if (features.buildId === undefined) throw new Error("library identity TU has no build id");
-    const publicSource = await readFile(cPath, "utf8");
-    programSource = stripLibraryIdentity(publicSource, profile.emission);
-    if (programSource === publicSource) {
+    const withoutIdentity = stripLibraryIdentity(programSource!, profile.emission);
+    if (withoutIdentity === programSource) {
       throw new Error("generated public library TU has no identity region");
     }
+    programSource = withoutIdentity;
     identityCSource = [
       "#include <stdint.h>",
       "#include <inttypes.h>",
@@ -1567,6 +1572,9 @@ async function compileLibraryNative(
       `uint32_t ${profile.sidecar.abiVersionSymbol}(void) { return ${profile.sidecar.abiVersion}u; }`,
       "",
     ].join("\n");
+  }
+  if (profile.emission === "c") {
+    programSource = stripLibrarySourceComments(programSource!, profile.entry);
   }
   await compileLibArchive({
     cPath,
@@ -1626,20 +1634,27 @@ async function emitSemanticLibraryHit(
   }
   await mkdir(opts.outDir, { recursive: true });
   const stem = basename(profile.entry).replace(/\.(ts|js|mjs|cjs)$/, "");
-  let cPath: string;
-  if (profile.emission === "llvm") {
-    const ll = emitLlvmModule(mod);
-    cPath = join(opts.outDir, `${stem}.lib.ll`);
-    await writeFile(cPath, ll);
-    timing("semantic-llvm-emit", { output_bytes: Buffer.byteLength(ll) });
-  } else {
-    cPath = join(opts.outDir, `${stem}.lib.c`);
-    await writeFile(
-      cPath,
-      emitModule(mod, hit.sourceTexts.get(profile.entry)),
-    );
-    timing("semantic-c-emit");
+  const cPath = join(opts.outDir, `${stem}.lib.${profile.emission === "llvm" ? "ll" : "c"}`);
+  let translationUnit = hit.translationUnit;
+  if (profile.sidecar !== null) {
+    translationUnit = replaceLibraryIdentity(translationUnit, profile.emission, mod.lib!.identity!);
   }
+  if (profile.emission === "llvm") {
+    await writeFile(cPath, translationUnit);
+  } else {
+    const previous = hit.previousSources.get(mod.sourceFile);
+    const current = hit.sourceTexts.get(mod.sourceFile);
+    if (previous === undefined || current === undefined) {
+      throw new Error("semantic library cache lost the entry source text");
+    }
+    translationUnit = rebaseLibrarySourceComments(
+      translationUnit,
+      mod.sourceFile,
+      createSourceLineRebaser(mod.sourceFile, previous, current),
+    );
+    await writeFile(cPath, translationUnit);
+  }
+  timing("semantic-tu-restore", { output_bytes: Buffer.byteLength(translationUnit) });
   await rm(join(opts.outDir, `${stem}.lib.${profile.emission === "llvm" ? "c" : "ll"}`), { force: true });
   let irPath: string | undefined;
   if (opts.emitIr) {

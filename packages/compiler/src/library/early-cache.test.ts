@@ -285,11 +285,17 @@ test("semantic library cache restores and rebases IR after a comment-only edit",
   const hit = await readSemanticLibraryCache(f.root, f.options, null);
   expect(hit).not.toBeNull();
   expect(hit?.changedSources).toEqual([f.source]);
+  expect(hit?.translationUnit).toBe("; generated llvm\n");
   expect(hit?.mod.functions[0]!.loc.start).toBe(sourceAfter.indexOf("return"));
   expect(hit?.frontend.probes).toContainEqual(expect.objectContaining({
     op: "file",
     path: f.source,
   }));
+
+  const earlyRoot = join(f.root, "early-lib");
+  const [key] = await readdir(earlyRoot);
+  await writeFile(join(earlyRoot, key!, "program.tu"), "corrupt\n");
+  expect(await readSemanticLibraryCache(f.root, f.options, null)).toBeNull();
 });
 
 test("semantic library cache refuses token and directive edits", async () => {

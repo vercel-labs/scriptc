@@ -93,6 +93,7 @@ export interface EarlyLibraryCachePublish extends EarlyLibraryCacheHit {
 
 export interface SemanticLibraryCacheHit {
   mod: IrModule;
+  translationUnit: string;
   sourceTexts: Map<string, string>;
   previousSources: Map<string, string>;
   frontend: FrontendInputSnapshot;
@@ -367,22 +368,28 @@ export async function readSemanticLibraryCache(
     if (
       stamp.version !== 2 || stamp.key !== cacheKey(options) ||
       !validFrontendInputSnapshot(stamp.frontend) || !validNativeFeatures(stamp.native) ||
+      stamp.files?.translationUnit?.name !== "program.tu" ||
       stamp.files?.semanticIr?.name !== "semantic.ir.json.gz" ||
       stamp.files?.sources?.name !== "sources.json.gz" ||
+      !/^[0-9a-f]{64}$/.test(stamp.files.translationUnit.digest) ||
       !/^[0-9a-f]{64}$/.test(stamp.files.semanticIr.digest) ||
       !/^[0-9a-f]{64}$/.test(stamp.files.sources.digest) ||
       (stamp.files.sidecar !== null) !== (sidecarConfiguredPath !== undefined) ||
       stampIntegrity(unsigned) !== integrity
     ) return null;
     const directory = dirname(path);
-    const [irCompressed, sourcesCompressed, sidecar] = await Promise.all([
+    const [translationUnit, irCompressed, sourcesCompressed, sidecar] = await Promise.all([
+      readCachedFile(join(directory, stamp.files.translationUnit.name), stamp.files.translationUnit.digest),
       readCachedFile(join(directory, stamp.files.semanticIr.name), stamp.files.semanticIr.digest),
       readCachedFile(join(directory, stamp.files.sources.name), stamp.files.sources.digest),
       stamp.files.sidecar === null
         ? Promise.resolve(null)
         : readCachedFile(join(directory, stamp.files.sidecar.name), stamp.files.sidecar.digest),
     ]);
-    if (irCompressed === null || sourcesCompressed === null || (stamp.files.sidecar !== null && sidecar === null)) {
+    if (
+      translationUnit === null || irCompressed === null || sourcesCompressed === null ||
+      (stamp.files.sidecar !== null && sidecar === null)
+    ) {
       return null;
     }
     const [irJson, sourcesJson] = await Promise.all([
@@ -409,12 +416,14 @@ export async function readSemanticLibraryCache(
     const now = new Date();
     await Promise.all([
       path,
+      join(directory, stamp.files.translationUnit.name),
       join(directory, stamp.files.semanticIr.name),
       join(directory, stamp.files.sources.name),
       ...(stamp.files.sidecar === null ? [] : [join(directory, stamp.files.sidecar.name)]),
     ].map((cachePath) => utimes(cachePath, now, now).catch(() => undefined)));
     return {
       mod,
+      translationUnit: translationUnit.toString("utf8"),
       sourceTexts: semantic.currentSources,
       previousSources,
       frontend: semantic.snapshot,

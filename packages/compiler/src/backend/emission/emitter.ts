@@ -62,7 +62,7 @@ import { emitAsyncScaffolding, childDataThunkFor, childExitThunkFor, childExitTh
 import { emitNpmEmbedding, islandAdapter, islandTypedAdapter } from "./emit-island.js";
 import { emitFunction, emitBlock, emitStmts, emitStmt, emitTryCatch, emitSwitch, mergeBrace, emitBranchInto, emitCondition } from "./emit-stmts.js";
 import { emitExpr } from "./emit-exprs.js";
-import { C_LIBRARY_IDENTITY_BEGIN, C_LIBRARY_IDENTITY_END } from "../library-identity.js";
+import { emitLibraryIdentityLines } from "../library-identity.js";
 
 export interface CEmitOptions {
   /** Library archive assembly may move the volatile identity getters into a
@@ -1158,18 +1158,7 @@ export class CEmitter {
       // pairing fence): pure data returns with NO entry prologue — exempt
       // from the poisoned guard and every runtime touch (ratified), so a
       // host can read them before init and after a trap.
-      out.push(
-        C_LIBRARY_IDENTITY_BEGIN,
-        `uint64_t ${lib.identity.buildIdSymbol}(void) {`,
-        `  return UINT64_C(0x${lib.identity.buildId});`,
-        `}`,
-        ``,
-        `uint32_t ${lib.identity.abiVersionSymbol}(void) {`,
-        `  return ${lib.identity.abiVersion}u;`,
-        `}`,
-        ``,
-        C_LIBRARY_IDENTITY_END,
-      );
+      out.push(...emitLibraryIdentityLines("c", lib.identity));
     }
     if (lib.resultResetSymbol !== null) {
       out.push(

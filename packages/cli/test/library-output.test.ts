@@ -79,6 +79,15 @@ test("library identity source stays private and cannot overwrite a sidecar", asy
     await runBuild();
     expect((await readdir(outDir)).sort()).toEqual(["contract.json", "lib.lib.a"]);
 
+    // A comment-only edit takes the semantic cache path: restore the emitted
+    // TU, refresh its private identity object, and still honor --no-keep-c.
+    await writeFile(join(dir, "lib.ts"), [
+      "// harmless rebuild comment",
+      await readFile(join(dir, "lib.ts"), "utf8"),
+    ].join("\n"));
+    await runBuild();
+    expect((await readdir(outDir)).sort()).toEqual(["contract.json", "lib.lib.a"]);
+
     // This name collided with the former fixed `<stem>.lib.identity.c`
     // output. Repeat to exercise the exact early-cache-hit ordering that used
     // to restore JSON and then overwrite it with generated C.

@@ -154,6 +154,56 @@ function offsetMapper(path: string, previous: string, current: string): OffsetMa
   };
 }
 
+function lineStarts(source: string): number[] {
+  const starts = [0];
+  for (let offset = 0; offset < source.length; offset++) {
+    if (source[offset] === "\n") starts.push(offset + 1);
+  }
+  return starts;
+}
+
+function lineAt(starts: readonly number[], offset: number): number {
+  let lo = 0;
+  let hi = starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (starts[mid]! <= offset) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo + 1;
+}
+
+/** Build a cheap old-line to current-line mapper for semantically identical
+ * sources. C emission records only a location's line, not its byte offset, so
+ * representative semantic tokens anchor each old line across trivia edits. */
+export function createSourceLineRebaser(
+  path: string,
+  previous: string,
+  current: string,
+): (line: number) => number {
+  const oldTokens = semanticTokens(path, previous);
+  const newTokens = semanticTokens(path, current);
+  if (oldTokens === null || newTokens === null || !tokensEqual(oldTokens, newTokens)) {
+    return (line) => line;
+  }
+  const oldStarts = lineStarts(previous);
+  const newStarts = lineStarts(current);
+  const firstTokenByLine = new Map<number, number>();
+  for (let index = 0; index < oldTokens.length; index++) {
+    const line = lineAt(oldStarts, oldTokens[index]!.start);
+    if (!firstTokenByLine.has(line)) firstTokenByLine.set(line, index);
+  }
+  const mapper = offsetMapper(path, previous, current);
+  return (line): number => {
+    if (!Number.isSafeInteger(line) || line < 1 || line > oldStarts.length) return line;
+    const tokenIndex = firstTokenByLine.get(line);
+    const offset = tokenIndex === undefined
+      ? mapper.start(oldStarts[line - 1]!)
+      : newTokens[tokenIndex]!.start;
+    return lineAt(newStarts, offset);
+  };
+}
+
 /** Rebase every SrcLoc-shaped object in a deserialized cache payload. */
 export function rebaseSourceLocations<T>(
   value: T,

@@ -64,10 +64,22 @@ const test = Object.assign(
 const trustInstrumentedCompilerWrapper = (): void => {
   process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] = "1";
 };
-const zigExecutable = (process.env["PATH"] ?? "")
-  .split(delimiter)
-  .map((entry) => join(entry === "" ? process.cwd() : entry, "zig"))
-  .find((candidate) => existsSync(candidate));
+const executableOnPath = (name: string): string | undefined =>
+  (process.env["PATH"] ?? "")
+    .split(delimiter)
+    .map((entry) => join(entry === "" ? process.cwd() : entry, name))
+    .find((candidate) => existsSync(candidate));
+const zigExecutable = executableOnPath("zig");
+const clangExecutable = executableOnPath("clang");
+const arExecutable = executableOnPath("ar");
+const ldExecutable = executableOnPath("ld");
+const objcopyExecutable = executableOnPath("objcopy");
+const nativeShardMergeAvailable =
+  process.platform === "darwin"
+    ? ldExecutable !== undefined
+    : process.platform === "linux"
+      ? ldExecutable !== undefined && objcopyExecutable !== undefined
+      : process.platform === "win32" && process.arch === "x64";
 const completeArtifacts = async (root: string, kind: "bin" | "lib"): Promise<string[]> =>
   (await readdir(join(root, kind))).filter((name) => !name.endsWith(".sha256"));
 const cacheTreeBytes = async (root: string): Promise<number> => {
@@ -3000,7 +3012,7 @@ test("library identity edits reuse the cached large program object", async () =>
   }
 });
 
-test.skipIf(process.platform === "win32")(
+test.skipIf(!nativeShardMergeAvailable)(
   "LLVM library shards reuse unaffected program objects after a localized edit",
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-program-shards-"));
@@ -3085,6 +3097,136 @@ entry:
     }
   },
 );
+
+test.skipIf(!nativeShardMergeAvailable)(
+  "LLVM merged-object and archive caches separate shard projections and public-symbol keep sets",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-program-shard-abi-"));
+    scratch.push(dir);
+    const cacheRoot = join(dir, "cache");
+    const cPath = join(dir, "program.ll");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const programSource = [
+      "define i64 @foo() {",
+      "entry:",
+      "  ret i64 1",
+      "}",
+      "",
+      "define i64 @bar() {",
+      "entry:",
+      "  ret i64 2",
+      "}",
+      "",
+    ].join("\n");
+    const programShards = [
+      {
+        name: "program-f000.ll",
+        source: "define i64 @foo() {\nentry:\n  ret i64 1\n}\ndeclare i64 @bar()\n",
+      },
+      {
+        name: "program-f001.ll",
+        source: "declare i64 @foo()\ndefine i64 @bar() {\nentry:\n  ret i64 2\n}\n",
+      },
+    ];
+    try {
+      process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      await mkdir(cacheRoot, { mode: 0o700 });
+      await writeFile(cPath, programSource);
+      const build = async (
+        symbol: "foo" | "bar",
+        outPath: string,
+        shards = programShards,
+      ): Promise<void> => {
+        await compileLibArchive({
+          cPath,
+          programSource,
+          programShards: shards,
+          programPublicSymbols: [symbol],
+          outPath,
+          cacheIdentity: TEST_CACHE_IDENTITY,
+          optimization: "dev",
+        });
+      };
+      await build("foo", join(dir, "foo.lib.a"));
+      const barArchive = join(dir, "bar.lib.a");
+      await build("bar", barArchive);
+
+      expect(await completeArtifacts(cacheRoot, "lib")).toHaveLength(2);
+      expect(
+        (await readdir(join(cacheRoot, "program-obj"))).filter((name) => !name.endsWith(".sha256")),
+      ).toHaveLength(2);
+      const probeSource = join(dir, "probe.c");
+      const probe = join(dir, "probe");
+      await writeFile(probeSource, "long long bar(void);\nint main(void) { return bar() != 2; }\n");
+      execFileSync("clang", [probeSource, barArchive, "-lm", "-o", probe]);
+      expect(execFileSync(probe, { encoding: "utf8" })).toBe("");
+
+      // The canonical TU and ABI stay fixed, but the exact shard projection
+      // changes. The merged-object tier must not reuse the previous layout.
+      await build("bar", join(dir, "bar-commented.lib.a"), [
+        { ...programShards[0]!, source: `; projection edit\n${programShards[0]!.source}` },
+        programShards[1]!,
+      ]);
+      expect(await completeArtifacts(cacheRoot, "lib")).toHaveLength(3);
+      expect(
+        (await readdir(join(cacheRoot, "program-obj"))).filter((name) => !name.endsWith(".sha256")),
+      ).toHaveLength(3);
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    }
+  },
+);
+
+test.skipIf(
+  process.platform === "win32" || clangExecutable === undefined || arExecutable === undefined,
+)("LLVM library shards fall back to the canonical TU without host merge tools", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-program-shard-fallback-"));
+  scratch.push(dir);
+  const binDir = join(dir, "bin");
+  const cPath = join(dir, "program.ll");
+  const outPath = join(dir, "program.lib.a");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  const oldPath = process.env["PATH"];
+  const programSource = "define i64 @public_value() {\nentry:\n  ret i64 7\n}\n";
+  try {
+    await mkdir(binDir);
+    await Promise.all([
+      symlink(clangExecutable!, join(binDir, "clang")),
+      symlink(arExecutable!, join(binDir, "ar")),
+    ]);
+    process.env["PATH"] = binDir;
+    process.env["SCRIPTC_NO_CACHE"] = "1";
+    delete process.env["SCRIPTC_CACHE_DIR"];
+    await writeFile(cPath, programSource);
+    await compileLibArchive({
+      cPath,
+      programSource,
+      // If compilation reaches either shard, this build fails. Missing ld
+      // (and objcopy on Linux) must select the valid canonical TU instead.
+      programShards: [
+        { name: "program-f000.ll", source: "not valid LLVM IR\n" },
+        { name: "program-f001.ll", source: "also not valid LLVM IR\n" },
+      ],
+      programPublicSymbols: ["public_value"],
+      outPath,
+      optimization: "dev",
+    });
+    expect(await readFile(outPath)).not.toHaveLength(0);
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    if (oldPath === undefined) delete process.env["PATH"];
+    else process.env["PATH"] = oldPath;
+  }
+});
 
 test.skipIf(process.platform === "win32" || zigExecutable === undefined)(
   "cross-ELF localized archives retain unreferenced identity roots",

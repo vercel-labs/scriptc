@@ -2552,6 +2552,40 @@ test("frontend-generated same-output builds no-op only while output and dependen
   }
 });
 
+test("artifact-ready callbacks expose native dependencies on builds and validated hits", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-artifact-ready-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const cPath = join(dir, "program.c");
+  const outPath = join(dir, "program");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  try {
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    delete process.env["SCRIPTC_NO_CACHE"];
+    await writeFile(cPath, "int main(void) { return 0; }\n");
+    const observations: string[][] = [];
+    const build = (): Promise<void> => compileC({
+      cPath,
+      outPath,
+      cacheIdentity: "scriptc-generated-v1",
+      onArtifactReady: async ({ dependencies }) => {
+        observations.push(dependencies.map((dependency) => dependency.path));
+      },
+    });
+    await build();
+    await build();
+    expect(observations).toHaveLength(2);
+    expect(observations[0]!.length).toBeGreaterThan(0);
+    expect(observations[1]).toEqual(observations[0]);
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+  }
+});
+
 test.skipIf(process.platform === "win32")(
   "output-local hits follow symlinked header targets",
   async () => {

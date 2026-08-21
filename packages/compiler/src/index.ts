@@ -155,6 +155,9 @@ export interface CompileOptions {
    * wasm32-wasi is a production LLVM target and never takes the automatic
    * C fallback; a missing LLVM lowering there is SC3001. */
   backend?: "c" | "llvm";
+  /** Native optimization posture. Release is the shipped -O2 default; dev
+   * uses -O0 and stable multi-TU object caching for large LLVM programs. */
+  optimization?: "release" | "dev";
   /** --npm-static: package names whose shipped, unminified JS compiles
    * STATICALLY as program modules (inference types the bodies; statements
    * the lowering cannot prove become runtime fences). "auto" opts in every
@@ -848,10 +851,12 @@ function executableNativeFeatures(
   mod: IrModule,
   backend: "c" | "llvm",
   dynamic: boolean,
+  optimization: "release" | "dev",
   llvmRefusal?: string,
 ): EarlyExecutableNativeFeatures {
   return {
     backend,
+    ...(optimization === "dev" ? { optimization: "dev" as const } : {}),
     ...(llvmRefusal === undefined ? {} : { llvmRefusal }),
     dynamic,
     regex: moduleUsesRegex(mod),
@@ -895,12 +900,25 @@ async function compileExecutableNative(
   outPath: string,
   sanitize: boolean,
   ffi: FfiProfile | null,
+  programSplit: ReturnType<typeof splitLlvmProgram> = null,
   onArtifactReady?: NonNullable<Parameters<typeof compileC>[0]["onArtifactReady"]>,
 ): Promise<void> {
+  const effectiveProgramSplit =
+    programSplit ??
+    (features.optimization === "dev" && features.backend === "llvm" && !sanitize
+      ? splitLlvmProgram(await readFile(cPath, "utf8"))
+      : null);
   await compileC({
     cPath,
     outPath,
     cacheIdentity: "scriptc-generated-v1",
+    ...(features.optimization === "dev" ? { optimization: "dev" as const } : {}),
+    ...(effectiveProgramSplit === null
+      ? {}
+      : {
+          programShards: effectiveProgramSplit.shards,
+          programPublicSymbols: effectiveProgramSplit.publicSymbols,
+        }),
     sanitize,
     dynamic: features.dynamic,
     regex: features.regex,
@@ -998,6 +1016,7 @@ async function compileTracked(
     sanitize: opts.sanitize ?? false,
     dynamic: opts.dynamic ?? false,
     backend: opts.backend ?? "auto",
+    ...(opts.optimization === "dev" ? { optimization: "dev" as const } : {}),
     npmStatic: opts.npmStatic ?? null,
     ffiProfile:
       opts.ffiProfilePath === undefined || ffiProfileBytes === null
@@ -1036,6 +1055,7 @@ async function compileTracked(
         opts.outPath,
         opts.sanitize ?? false,
         ffi,
+        null,
         async ({ dependencies }) => {
           await publishEarlyExecutableCache(cacheRoot, earlyCacheOptions, {
             ...earlyHit,
@@ -1142,6 +1162,7 @@ async function compileTracked(
   // (the frontend ran once, the IR is backend-agnostic — nothing recompiles).
   let cPath = join(opts.outDir, `${stem}.c`);
   let backend: "c" | "llvm" = "c";
+  let llvmSource: string | null = null;
   let llvmRefusal: string | undefined;
   if (opts.backend !== "c") {
     try {
@@ -1151,6 +1172,7 @@ async function compileTracked(
       });
       cPath = join(opts.outDir, `${stem}.ll`);
       await writeFile(cPath, ll);
+      llvmSource = ll;
       backend = "llvm";
     } catch (err) {
       if (!(err instanceof LlvmUnsupportedError)) throw err;
@@ -1181,8 +1203,14 @@ async function compileTracked(
     lowered.module,
     backend,
     opts.dynamic ?? false,
+    opts.optimization ?? "release",
     llvmRefusal,
   );
+  const programSplit =
+    backend === "llvm" && (opts.optimization ?? "release") === "dev" &&
+      !(opts.sanitize ?? false) && llvmSource !== null
+      ? splitLlvmProgram(llvmSource)
+      : null;
   await mkdir(dirname(opts.outPath), { recursive: true });
   let publishedExecutable = false;
   try {
@@ -1192,6 +1220,7 @@ async function compileTracked(
       opts.outPath,
       opts.sanitize ?? false,
       ffi,
+      programSplit,
       async ({ dependencies }) => {
         await publishEarlyExecutableCache(cacheRoot, earlyCacheOptions, {
           cPath,

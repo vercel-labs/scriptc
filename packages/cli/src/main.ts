@@ -83,9 +83,9 @@ async function main(): Promise<number> {
     if (inputArg) {
       fail("scriptc build --lib takes no input positional: the profile names the entry module");
     }
-    if (values.dynamic || values.backend !== undefined || values.ffi !== undefined || (values["npm-static"] ?? []).length > 0 || externalTypeArgs.length > 0) {
+    if (values.dynamic || values.backend !== undefined || values.optimization !== undefined || values.ffi !== undefined || (values["npm-static"] ?? []).length > 0 || externalTypeArgs.length > 0) {
       fail(
-        "scriptc build --lib takes no --dynamic/--backend/--npm-static/--ffi/--external-types: the profile pins the emission, npm imports are judged automatically, outbound FFI belongs to executable builds, and external type mappings belong to coverage",
+        "scriptc build --lib takes no --dynamic/--backend/--optimization/--npm-static/--ffi/--external-types: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, and external type mappings belong to coverage",
       );
     }
     const profilePath = resolve(profileArg);
@@ -146,6 +146,10 @@ async function main(): Promise<number> {
   if (backend !== undefined && backend !== "c" && backend !== "llvm") {
     fail(`unknown backend "${backend}" (supported: c, llvm)\n\n${USAGE}`);
   }
+  const optimization = values.optimization;
+  if (optimization !== undefined && optimization !== "release" && optimization !== "dev") {
+    fail(`unknown optimization "${optimization}" (supported: release, dev)\n\n${USAGE}`);
+  }
 
   // --npm-static: repeatable and comma-splittable; the literal "auto"
   // switches to eligibility-based detection (mixing "auto" with names
@@ -195,7 +199,13 @@ async function main(): Promise<number> {
       if (ffiProfilePath !== undefined) {
         fail("--ffi is a TypeScript/JavaScript compiler feature and cannot be combined with --from-c");
       }
-      await compileC({ cPath: input, outPath, sanitize: values.sanitize, dynamic: values.dynamic });
+      await compileC({
+        cPath: input,
+        outPath,
+        sanitize: values.sanitize,
+        dynamic: values.dynamic,
+        ...(optimization !== undefined ? { optimization } : {}),
+      });
       return outPath;
     }
     const result = await compile(input, {
@@ -205,6 +215,7 @@ async function main(): Promise<number> {
       sanitize: values.sanitize,
       dynamic: values.dynamic,
       ...(backend !== undefined ? { backend } : {}),
+      ...(optimization !== undefined ? { optimization } : {}),
       ...(npmStatic !== undefined ? { npmStatic } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
     });

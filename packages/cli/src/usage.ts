@@ -25,6 +25,10 @@ Options:
                      --backend llvm fails with that construct named
                      wasm32-wasi is LLVM-only unless --backend c is explicit;
                      its C inspection lane accepts async-free programs only
+      --optimization <release|dev>
+                     native optimization posture (default: release/-O2). dev
+                     uses -O0 and stable cached LLVM object shards for faster
+                     edits of large programs
       --from-c       treat input as a C (or .ll) file (toolchain plumbing/debugging)
       --keep-c       keep the generated program TU next to the executable
                      (default; the .ll — or the .c under --backend=c or
@@ -60,6 +64,7 @@ Options:
 export const CLI_OPTIONS = {
   out: { type: "string", short: "o" },
   backend: { type: "string" },
+  optimization: { type: "string" },
   "from-c": { type: "boolean", default: false },
   "keep-c": { type: "boolean", default: true },
   "emit-ir": { type: "boolean", default: false },

@@ -15,6 +15,8 @@ interface CachedExecutableFile {
 
 export interface EarlyExecutableNativeFeatures {
   backend: "c" | "llvm";
+  /** Omitted is the historical release posture. */
+  optimization?: "dev";
   llvmRefusal?: string;
   dynamic: boolean;
   regex: boolean;
@@ -69,6 +71,8 @@ export interface EarlyExecutableCacheOptions {
   sanitize: boolean;
   dynamic: boolean;
   backend: "auto" | "c" | "llvm";
+  /** Omitted is the historical release posture and preserves v1 keys. */
+  optimization?: "dev";
   npmStatic: readonly string[] | "auto" | null;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
@@ -150,6 +154,7 @@ function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeat
   if (value === null || typeof value !== "object") return false;
   const native = value as Partial<EarlyExecutableNativeFeatures>;
   return (native.backend === "c" || native.backend === "llvm") &&
+    (native.optimization === undefined || native.optimization === "dev") &&
     (native.llvmRefusal === undefined || typeof native.llvmRefusal === "string") &&
     BOOLEAN_NATIVE_KEYS.every((key) => typeof native[key] === "boolean");
 }
@@ -168,7 +173,9 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     .update(options.emitIr ? "emit-ir" : "no-ir").update("\0")
     .update(options.sanitize ? "sanitize" : "plain").update("\0")
     .update(options.dynamic ? "dynamic" : "static").update("\0")
-    .update(options.backend).update("\0")
+    .update(options.backend).update("\0");
+  if (options.optimization === "dev") hash.update("optimization-dev\0");
+  hash
     .update(options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -200,7 +207,9 @@ function routeKey(options: EarlyExecutableRouteOptions): string {
     .update(options.emitIr ? "emit-ir" : "no-ir").update("\0")
     .update(options.sanitize ? "sanitize" : "plain").update("\0")
     .update(options.dynamic ? "dynamic" : "static").update("\0")
-    .update(options.backend).update("\0")
+    .update(options.backend).update("\0");
+  if (options.optimization === "dev") hash.update("optimization-dev\0");
+  hash
     .update(options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"

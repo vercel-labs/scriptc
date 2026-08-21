@@ -60,6 +60,8 @@ async function tryFastPath(): Promise<number | null> {
   ) return null;
   const backend = values.backend;
   if (backend !== undefined && backend !== "c" && backend !== "llvm") return null;
+  const optimization = values.optimization;
+  if (optimization !== undefined && optimization !== "release" && optimization !== "dev") return null;
   const npmRaw = (values["npm-static"] ?? [])
     .flatMap((value) => value.split(","))
     .map((value) => value.trim())
@@ -105,6 +107,7 @@ async function tryFastPath(): Promise<number | null> {
     sanitize: values.sanitize,
     dynamic: values.dynamic,
     backend: backend ?? "auto",
+    ...(optimization === "dev" ? { optimization: "dev" as const } : {}),
     npmStatic,
     ffiProfile: ffiPath === null ? null : { path: ffiPath, bytes: ffiBytes! },
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${arch}`,

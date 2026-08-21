@@ -6,10 +6,12 @@ import { access, chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile
 import { availableParallelism, homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { localizeElfObject, mergeAndLocalizeCoffObjects } from "./object-localize.js";
 
 const execFileAsync = promisify(execFile);
+const CC_IMPLEMENTATION_PATH = fileURLToPath(import.meta.url);
 
 /** Test lanes run against one immutable checkout and one immutable toolchain
  * for the lifetime of each Vitest worker. Production deliberately rediscovers
@@ -878,18 +880,22 @@ export function vendorCacheTargetFlavor(
 }
 
 /** Vendor prerequisites live outside the content-addressed build root, so
- * their directory name must carry the same environment and resolved compiler
- * identity as the artifacts that consume them. The short digest keeps the
- * cache path readable while preventing build-order contamination. */
+ * their directory name must carry the environment, resolved compiler, owned
+ * source bytes, and build-recipe identity of the artifacts that consume them.
+ * The short digest keeps the cache path readable while preventing build-order
+ * and cross-installation contamination. */
 export function vendorCacheBuildIdentity(
   environmentFingerprint: string,
   compilerIdentity: string,
+  nativeSourceIdentity: string,
 ): string {
   return createHash("sha256")
-    .update("vendor-toolchain-v1\0")
+    .update("vendor-toolchain-v2\0")
     .update(environmentFingerprint)
     .update("\0")
     .update(compilerIdentity)
+    .update("\0")
+    .update(nativeSourceIdentity)
     .digest("hex")
     .slice(0, 20);
 }
@@ -921,7 +927,11 @@ async function currentVendorCacheBuildIdentity(
       ].join("\0");
     }),
   );
-  return vendorCacheBuildIdentity(environmentFingerprint, identities.join("\x1f"));
+  return vendorCacheBuildIdentity(
+    environmentFingerprint,
+    identities.join("\x1f"),
+    await runtimeFingerprint(runtimeSrcDir()),
+  );
 }
 
 function engineArchivePath(
@@ -1151,7 +1161,6 @@ async function ensureLreObjects(
     `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
   const vendor = vendorEngineDir();
   const objects = lreObjectPaths(sanitize, driver, buildIdentity, cacheRoot);
-  const cacheDir = dirname(objects[0]!);
   if ((await Promise.all(objects.map(fileExists))).every(Boolean)) return objects;
 
   await mkdir(cacheRoot, { recursive: true });
@@ -1230,7 +1239,6 @@ async function ensureZlibObjects(
     `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
   const vendor = vendorZlibDir();
   const objects = zlibObjectPaths(sanitize, driver, buildIdentity, cacheRoot);
-  const cacheDir = dirname(objects[0]!);
   if ((await Promise.all(objects.map(fileExists))).every(Boolean)) return objects;
 
   await mkdir(cacheRoot, { recursive: true });
@@ -1367,7 +1375,6 @@ async function ensureTlsArchive(
   const arArgv = driver.target !== null ? [...driver.argv.slice(0, 1), "ar"] : ["ar"];
   const vendor = vendorTlsDir();
   const archive = tlsArchivePath(sanitize, driver, buildIdentity, cacheRoot);
-  const cacheDir = dirname(archive);
   if (await fileExists(archive)) return archive;
 
   await mkdir(cacheRoot, { recursive: true });
@@ -1814,7 +1821,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     }
   }
 
-  const transientVendorRoot = persistentDriverCache && implicitToolchain !== null
+  const transientVendorRoot = root !== null && implicitToolchain !== null
     ? null
     : join(
         tmpdir(),
@@ -3809,19 +3816,20 @@ function ccacheAvailable(): Promise<boolean> {
   return ccacheMemo;
 }
 
-/** Content hash of every .c/.h in the runtime src tree, the Ryū sources
- * textually included by scr_number.c, and the separately-built vendor pins —
- * everything a binary links that the emitted C bytes don't already cover
- * (npm-embedded C rides inside the emitted C; the engine and standalone
- * vendor archives are pinned by their version constants). The small source
- * tree is hashed on every identity calculation: recursive enumeration is
- * required because a newly added nested header can begin shadowing a system
- * include without changing any previously selected dependency, while content
- * hashing catches same-size edits whose timestamp was preserved by a copy/sync
- * tool. */
+/** Content hash of every owned native source/header plus this backend's build
+ * recipe implementation. It keys complete artifacts, runtime objects, and the
+ * separately built vendor prerequisites, so two installed scriptc versions or
+ * worktrees can share a user cache without exchanging outputs produced from
+ * different vendored bytes or compile/archive recipes. Recursive enumeration
+ * also catches a newly added nested header that begins shadowing a system
+ * include, while content hashing catches same-size timestamp-preserving edits. */
 async function runtimeFingerprintFresh(rtDir: string): Promise<string> {
   const groups = await runtimeFingerprintInputGroups(rtDir);
-  const h = createHash("sha256").update(QJS_COMMIT).update(MBEDTLS_VERSION).update(ZLIB_VERSION);
+  const h = createHash("sha256")
+    .update("native-owned-inputs-v2\0")
+    .update(QJS_COMMIT).update(MBEDTLS_VERSION).update(ZLIB_VERSION)
+    .update("\0backend-recipe\0")
+    .update(await readFile(CC_IMPLEMENTATION_PATH));
   for (const group of groups) {
     for (const n of group.names) {
       h.update(group.label).update("/").update(n).update("\0").update(await readFile(join(group.dir, n))).update("\0");
@@ -3837,6 +3845,10 @@ async function runtimeFingerprintInputGroups(
     [
       { label: "runtime", dir: rtDir },
       { label: "ryu", dir: join(rtDir, "..", "vendor", "ryu") },
+      { label: "quickjs-ng", dir: join(rtDir, "..", "vendor", "quickjs-ng") },
+      { label: "mbedtls", dir: join(rtDir, "..", "vendor", "mbedtls") },
+      { label: "zlib", dir: join(rtDir, "..", "vendor", "zlib") },
+      { label: "curl", dir: join(rtDir, "..", "vendor", "curl") },
     ].map(async (group) => {
       const names = (await nativeSourceFiles(group.dir, true))
         .map((path) => relative(group.dir, path))
@@ -3847,9 +3859,12 @@ async function runtimeFingerprintInputGroups(
 }
 
 async function runtimeFingerprintInputPaths(rtDir: string): Promise<string[]> {
-  return (await runtimeFingerprintInputGroups(rtDir)).flatMap((group) =>
-    group.names.map((name) => join(group.dir, name))
-  );
+  return [
+    ...(await runtimeFingerprintInputGroups(rtDir)).flatMap((group) =>
+      group.names.map((name) => join(group.dir, name))
+    ),
+    CC_IMPLEMENTATION_PATH,
+  ];
 }
 
 const stableRuntimeFingerprintMemos = new Map<string, Promise<string>>();
@@ -4853,7 +4868,7 @@ async function compileCInternal(
   // must follow the same rule instead of silently surviving in the user cache.
   // A private root gives this invocation the usual vendor build recipe
   // without publishing or reusing those prerequisites.
-  const transientVendorRoot = persistentDriverCache && implicitToolchain !== null
+  const transientVendorRoot = root !== null && implicitToolchain !== null
     ? null
     : join(
         tmpdir(),
@@ -4889,7 +4904,10 @@ async function compileCInternal(
     curlFetch && driver.target !== null
       ? curlStubDirPath(driver, vendorBuildIdentity, vendorCacheRoot)
       : null;
-  const materializeVendorPrerequisites = async (stageRoot?: string): Promise<void> => {
+  const materializeVendorPrerequisites = async (
+    stageRoot?: string,
+    materializeCacheRoot: string = vendorCacheRoot,
+  ): Promise<void> => {
     // Preserve the historical order to avoid multiplying first-build resource
     // pressure when several large vendor sets are cold simultaneously.
     if (dynamic) {
@@ -4897,11 +4915,11 @@ async function compileCInternal(
         sanitize,
         driver,
         vendorBuildIdentity,
-        vendorCacheRoot,
+        materializeCacheRoot,
       );
       cacheWarmPaths?.add(cachedArchive);
       const materialize = async (): Promise<string[]> => [
-        await ensureEngineArchive(sanitize, driver, vendorBuildIdentity, vendorCacheRoot),
+        await ensureEngineArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
       ];
       const paths = stageRoot === undefined
         ? await materialize()
@@ -4913,11 +4931,11 @@ async function compileCInternal(
         sanitize,
         driver,
         vendorBuildIdentity,
-        vendorCacheRoot,
+        materializeCacheRoot,
       );
       cacheWarmPaths?.add(cachedArchive);
       const materialize = async (): Promise<string[]> => [
-        await ensureTlsArchive(sanitize, driver, vendorBuildIdentity, vendorCacheRoot),
+        await ensureTlsArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
       ];
       const paths = stageRoot === undefined
         ? await materialize()
@@ -4929,10 +4947,10 @@ async function compileCInternal(
         sanitize,
         driver,
         vendorBuildIdentity,
-        vendorCacheRoot,
+        materializeCacheRoot,
       )) cacheWarmPaths?.add(object);
       const materialize = async (): Promise<string[]> =>
-        await ensureLreObjects(sanitize, driver, vendorBuildIdentity, vendorCacheRoot);
+        await ensureLreObjects(sanitize, driver, vendorBuildIdentity, materializeCacheRoot);
       lreObjects = stageRoot === undefined
         ? await materialize()
         : await stageVendorInputs(materialize, join(stageRoot, "lre"));
@@ -4942,21 +4960,21 @@ async function compileCInternal(
         sanitize,
         driver,
         vendorBuildIdentity,
-        vendorCacheRoot,
+        materializeCacheRoot,
       )) cacheWarmPaths?.add(object);
       const materialize = async (): Promise<string[]> =>
-        await ensureZlibObjects(sanitize, driver, vendorBuildIdentity, vendorCacheRoot);
+        await ensureZlibObjects(sanitize, driver, vendorBuildIdentity, materializeCacheRoot);
       zlibObjects = stageRoot === undefined
         ? await materialize()
         : await stageVendorInputs(materialize, join(stageRoot, "zlib"));
     }
     if (curlStubDir !== null) {
       cacheWarmPaths?.add(join(
-        curlStubDirPath(driver, vendorBuildIdentity, vendorCacheRoot),
+        curlStubDirPath(driver, vendorBuildIdentity, materializeCacheRoot),
         "libcurl.so",
       ));
       const materialize = async (): Promise<string[]> => [
-        join(await ensureCurlStub(driver, vendorBuildIdentity, vendorCacheRoot), "libcurl.so"),
+        join(await ensureCurlStub(driver, vendorBuildIdentity, materializeCacheRoot), "libcurl.so"),
       ];
       const paths = stageRoot === undefined
         ? await materialize()
@@ -5210,6 +5228,18 @@ async function compileCInternal(
       );
     }
   };
+  const runUncachedBuild = async (): Promise<void> => {
+    const privateVendorRoot = transientVendorRoot ?? join(
+      tmpdir(),
+      `scriptc-vendor-fallback-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    try {
+      await materializeVendorPrerequisites(undefined, privateVendorRoot);
+      await runClang(buildArgs((p) => p));
+    } finally {
+      await rm(privateVendorRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+  };
 
   let runtimeCompilerInvocation: string | null = null;
   let programCompilerInvocation: string | null = null;
@@ -5298,14 +5328,7 @@ async function compileCInternal(
 
   if (root === null) {
     // The exact historical command line, byte for byte.
-    try {
-      await materializeVendorPrerequisites();
-      await runClang(buildArgs((p) => p));
-    } finally {
-      if (transientVendorRoot !== null) {
-        await rm(transientVendorRoot, { recursive: true, force: true }).catch(() => undefined);
-      }
-    }
+    await runUncachedBuild();
     return;
   }
 
@@ -5327,8 +5350,7 @@ async function compileCInternal(
         cause: error,
       });
     }
-    await materializeVendorPrerequisites();
-    await runClang(buildArgs((p) => p));
+    await runUncachedBuild();
     return;
   }
   // Caller-supplied native inputs can all hide mutable dependencies: `-l`

@@ -263,14 +263,18 @@ test("the toolchain environment joins cache identities", () => {
     runtimeObjects: false,
   });
 
-  expect(vendorCacheBuildIdentity(base, "compiler-one")).not.toBe(
-    vendorCacheBuildIdentity(base, "compiler-two"),
+  expect(vendorCacheBuildIdentity(base, "compiler-one", "sources-one")).not.toBe(
+    vendorCacheBuildIdentity(base, "compiler-two", "sources-one"),
   );
-  expect(vendorCacheBuildIdentity(base, "compiler-one")).not.toBe(
+  expect(vendorCacheBuildIdentity(base, "compiler-one", "sources-one")).not.toBe(
     vendorCacheBuildIdentity(
       toolchainEnvironmentFingerprint({ MACOSX_DEPLOYMENT_TARGET: "11.0" }),
       "compiler-one",
+      "sources-one",
     ),
+  );
+  expect(vendorCacheBuildIdentity(base, "compiler-one", "sources-one")).not.toBe(
+    vendorCacheBuildIdentity(base, "compiler-one", "sources-two"),
   );
 });
 
@@ -1833,6 +1837,125 @@ test("the hard disable bypasses vendor prerequisite caches", async () => {
     else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
   }
 });
+
+test.skipIf(process.platform === "win32")(
+  "shared vendor prerequisites re-key when vendored source bytes change",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-vendor-source-identity-"));
+    scratch.push(dir);
+    const cacheRoot = join(dir, "cache");
+    const fakeRuntimeRoot = join(dir, "runtime");
+    const fakeRuntime = join(fakeRuntimeRoot, "src");
+    const originalRuntime = runtimeSrcDir();
+    const cPath = join(dir, "program.c");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const oldRuntimeDir = process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"];
+    const oldVendorCacheDir = process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+
+    try {
+      await Promise.all([
+        cp(originalRuntime, fakeRuntime, { recursive: true }),
+        mkdir(join(fakeRuntimeRoot, "vendor"), { recursive: true }).then(() =>
+          Promise.all(["quickjs-ng", "ryu"].map((name) =>
+            cp(
+              join(originalRuntime, "..", "vendor", name),
+              join(fakeRuntimeRoot, "vendor", name),
+              { recursive: true },
+            )
+          ))
+        ),
+      ]);
+      process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+      process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"] = fakeRuntime;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+      await writeFile(cPath, "int main(void) { return 0; }\n");
+
+      await compileC({
+        cPath,
+        outPath: join(dir, "first"),
+        cacheIdentity: TEST_CACHE_IDENTITY,
+        regex: true,
+      });
+      const vendorRoot = join(cacheRoot, "vendor");
+      expect((await readdir(vendorRoot)).filter((name) => name.includes("-lre-"))).toHaveLength(1);
+
+      const libregexp = join(fakeRuntimeRoot, "vendor", "quickjs-ng", "libregexp.c");
+      await writeFile(libregexp, `${await readFile(libregexp, "utf8")}\n/* cache identity probe */\n`);
+      await writeFile(cPath, "int main(void) { return 0; } /* second */\n");
+      await compileC({
+        cPath,
+        outPath: join(dir, "second"),
+        cacheIdentity: TEST_CACHE_IDENTITY,
+        regex: true,
+      });
+      expect((await readdir(vendorRoot)).filter((name) => name.includes("-lre-"))).toHaveLength(2);
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+      if (oldRuntimeDir === undefined) delete process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"];
+      else process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"] = oldRuntimeDir;
+      if (oldVendorCacheDir === undefined) delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+      else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
+    }
+  },
+  120_000,
+);
+
+test.skipIf(process.platform === "win32")(
+  "uncached arbitrary C keeps vendor prerequisites outside a read-only runtime package",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-readonly-runtime-"));
+    scratch.push(dir);
+    const fakeRuntimeRoot = join(dir, "runtime");
+    const fakeRuntime = join(fakeRuntimeRoot, "src");
+    const fakeVendor = join(fakeRuntimeRoot, "vendor");
+    const originalRuntime = runtimeSrcDir();
+    const cPath = join(dir, "program.c");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const oldRuntimeDir = process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"];
+    const oldVendorCacheDir = process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+
+    try {
+      await Promise.all([
+        cp(originalRuntime, fakeRuntime, { recursive: true }),
+        mkdir(fakeVendor, { recursive: true }).then(() =>
+          Promise.all(["quickjs-ng", "ryu"].map((name) =>
+            cp(join(originalRuntime, "..", "vendor", name), join(fakeVendor, name), {
+              recursive: true,
+            })
+          ))
+        ),
+      ]);
+      process.env["SCRIPTC_CACHE_DIR"] = join(dir, "cache");
+      process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"] = fakeRuntime;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+      await writeFile(cPath, "int main(void) { return 0; }\n");
+      await chmod(fakeVendor, 0o555);
+
+      const outPath = join(dir, "program");
+      await compileC({ cPath, outPath, regex: true });
+      expect((await stat(outPath)).isFile()).toBe(true);
+      await expect(stat(join(fakeVendor, ".cache"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await chmod(fakeVendor, 0o755).catch(() => undefined);
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+      if (oldRuntimeDir === undefined) delete process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"];
+      else process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"] = oldRuntimeDir;
+      if (oldVendorCacheDir === undefined) delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+      else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
+    }
+  },
+  120_000,
+);
 
 test("native cache warming seeds exact runtime and vendor families without complete binaries", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-cache-warm-"));

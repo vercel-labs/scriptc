@@ -1,5 +1,5 @@
 import { execFile, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { access, chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
@@ -184,20 +184,21 @@ export async function executableNativeEnvironmentFingerprint(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
   const configuredCompiler = env["SCRIPTC_CC"] ?? "";
-  const compilerCommand = configuredCompiler === "zigcc"
-    ? "zig"
-    : configuredCompiler === "" || configuredCompiler === "clang"
-      ? "clang"
-      : null;
-  const compilerIdentity = compilerCommand === null
-    ? `<unsupported:${configuredCompiler}>`
-    : (await resolvedTool(compilerCommand, env))?.cacheIdentity ?? `<unresolved:${compilerCommand}>`;
+  let compilerIdentity: string;
+  try {
+    compilerIdentity = await effectiveCompilerEnvironmentIdentity(resolveCc(env), env);
+  } catch {
+    // A failed trace cannot safely describe a reusable native posture. Keep
+    // the build working, but make this invocation miss every persistent early
+    // entry so compileC performs its full discovery and validation.
+    compilerIdentity = `<unavailable:${configuredCompiler}:${randomUUID()}>`;
+  }
   const hash = createHash("sha256")
-    .update("executable-native-environment-v1\0")
+    .update("executable-native-environment-v2\0")
     .update(toolchainEnvironmentFingerprint(env)).update("\0")
-    // PATH text alone is not a resolution proof: a newly-created executable
-    // in an earlier existing directory changes what spawn selects without
-    // changing PATH. Re-resolve the configured driver on every early lookup.
+    // PATH text alone is not a resolution proof, and on Darwin /usr/bin/clang
+    // is a stable shim whose selected Xcode compiler can change underneath it.
+    // Re-resolve and trace the effective driver on every early lookup.
     .update(compilerIdentity).update("\0");
   for (const name of [
     "PATH",
@@ -2547,6 +2548,57 @@ interface ResolvedTool {
   canonicalPath: string;
   cacheIdentity: string;
   fileIdentity: string;
+}
+
+/** Identity of the compiler implementation and configuration selected by a
+ * fresh driver invocation. In particular, Darwin's stable /usr/bin/clang shim
+ * exposes the currently selected Xcode clang only in its `-###` trace. The
+ * normalized trace also covers output-affecting default driver configuration
+ * that can change while argv[0] and PATH retain the same spelling. */
+async function effectiveCompilerEnvironmentIdentity(
+  driver: Pick<CcDriver, "argv" | "targetArgs">,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  const compiler = driver.argv[0] ?? "clang";
+  const resolvedDriver = await resolvedTool(compiler, env);
+  if (resolvedDriver === null) return `<unresolved:${compiler}>`;
+  const probeDir = await mkdtemp(join(tmpdir(), "scriptc-early-cc-probe-"));
+  try {
+    const source = join(probeDir, "empty.c");
+    const object = join(probeDir, "empty.o");
+    await writeFile(source, "int scriptc_early_driver_probe;\n");
+    const trace = await execFileAsync(
+      compiler,
+      [
+        ...driver.argv.slice(1),
+        ...driver.targetArgs,
+        "-###",
+        "-std=c11",
+        "-c",
+        source,
+        "-o",
+        object,
+      ],
+      { cwd: probeDir, env, maxBuffer: 16 * 1024 * 1024 },
+    );
+    const effectiveSpellings: string[] = [];
+    for (const line of `${trace.stdout}\n${trace.stderr}`.split(/\r?\n/)) {
+      const tokens = driverTraceCandidates(line);
+      const cc1 = tokens.indexOf("-cc1");
+      if (cc1 > 0) effectiveSpellings.push(tokens[cc1 - 1]!);
+    }
+    const effective = effectiveSpellings.length === 1
+      ? await resolvedTool(effectiveSpellings[0]!, env)
+      : null;
+    return createHash("sha256")
+      .update("effective-compiler-environment-v1\0")
+      .update(resolvedDriver.cacheIdentity).update("\0")
+      .update(normalizedProbeInvocation(trace, probeDir)).update("\0")
+      .update(effective?.cacheIdentity ?? `<unresolved-effective:${effectiveSpellings.join("\x1f")}>`)
+      .digest("hex");
+  } finally {
+    await rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 /** Resolve the executable the OS will select for an argv[0] spelling. The

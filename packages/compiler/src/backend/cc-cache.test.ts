@@ -10,6 +10,7 @@ import {
   ccVersionOnce,
   compileC,
   compileLibArchive,
+  executableNativeEnvironmentFingerprint,
   implicitDependencyProbeIncludes,
   parseLinkTraceFiles,
   resolveBuildCacheRoot,
@@ -128,6 +129,45 @@ test("the production cache root follows overrides, platform defaults, and the ha
     "/Users/tester/AppData/Local/scriptc/cache/build",
   );
 });
+
+test.skipIf(process.platform === "win32")(
+  "the early executable identity follows a compiler selected behind a stable driver",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-effective-compiler-"));
+    scratch.push(dir);
+    const binDir = join(dir, "bin");
+    const selector = join(dir, "selected");
+    const firstCompiler = join(dir, "clang-first");
+    const secondCompiler = join(dir, "clang-second");
+    await mkdir(binDir);
+    await Promise.all([
+      writeFile(firstCompiler, "#!/bin/sh\nexit 0\n"),
+      writeFile(secondCompiler, "#!/bin/sh\nexit 0\n"),
+      writeFile(
+        join(binDir, "clang"),
+        "#!/bin/sh\nselected=$(cat \"$SCRIPTC_TEST_EFFECTIVE_COMPILER\")\nprintf '\"%s\" \"-cc1\"\\n' \"$selected\" >&2\n",
+      ),
+      writeFile(selector, `${firstCompiler}\n`),
+    ]);
+    await Promise.all([
+      chmod(firstCompiler, 0o755),
+      chmod(secondCompiler, 0o755),
+      chmod(join(binDir, "clang"), 0o755),
+    ]);
+    const env = {
+      ...process.env,
+      PATH: `${binDir}${delimiter}${process.env["PATH"] ?? ""}`,
+      SCRIPTC_TEST_EFFECTIVE_COMPILER: selector,
+    };
+
+    const first = await executableNativeEnvironmentFingerprint(env);
+    expect(await executableNativeEnvironmentFingerprint(env)).toBe(first);
+    await writeFile(selector, `${secondCompiler}\n`);
+    const second = await executableNativeEnvironmentFingerprint(env);
+
+    expect(second).not.toBe(first);
+  },
+);
 
 test("native cache identities separate host architectures while cross targets remain explicit", () => {
   expect(cacheTargetIdentity({ target: null }, "darwin", "arm64")).toBe("native:darwin:arm64");

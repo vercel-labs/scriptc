@@ -3,7 +3,7 @@ import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { analyze, buildTargetPlatform, compile, compileC, compileLibrary, isExactExternalTypeSpecifier, renderAll, renderCoverage, resolveProvenanceSources, setProvenanceSources } from "@scriptc/compiler";
+import { analyze, buildTargetPlatform, compile, compileC, compileLibrary, isExactExternalTypeSpecifier, renderAll, renderCoverage, resolveProvenanceSources, setProvenanceSources, warmNativeCaches, type NativeCacheWarmProfile } from "@scriptc/compiler";
 import { defaultExecutableName } from "./paths.js";
 import { CLI_OPTIONS, USAGE } from "./usage.js";
 
@@ -67,6 +67,35 @@ async function main(): Promise<number> {
   }
 
   const [command, inputArg] = positionals;
+  if (command === "cache") {
+    if (inputArg !== "warm") fail(`unknown cache command "${inputArg ?? ""}" (supported: warm)\n\n${USAGE}`);
+    if (values.lib || values.dynamic || values.backend !== undefined || values["from-c"] || values.ffi !== undefined || values.profile !== undefined || (values["npm-static"] ?? []).length > 0 || values["provenance-sources"] || externalTypeArgs.length > 0 || values.out !== undefined || values["emit-ir"] || !values["keep-c"]) {
+      fail(`scriptc cache warm takes only native optimization/sanitizer options and profile names\n\n${USAGE}`);
+    }
+    const optimization = values.optimization;
+    if (optimization !== undefined && optimization !== "release" && optimization !== "dev") {
+      fail(`unknown optimization "${optimization}" (supported: release, dev)\n\n${USAGE}`);
+    }
+    const profileArgs = positionals.slice(2);
+    const knownProfiles = new Set<NativeCacheWarmProfile>(["runtime", "tls", "dynamic"]);
+    for (const profile of profileArgs) {
+      if (!knownProfiles.has(profile as NativeCacheWarmProfile)) {
+        fail(`unknown cache warm profile "${profile}" (supported: runtime, tls, dynamic)`);
+      }
+    }
+    const result = await warmNativeCaches({
+      ...(optimization === undefined ? {} : { optimization }),
+      sanitize: values.sanitize,
+      ...(profileArgs.length === 0
+        ? {}
+        : { profiles: profileArgs as NativeCacheWarmProfile[] }),
+    });
+    process.stdout.write(`${result.cacheRoot}\n`);
+    for (const profile of result.profiles) {
+      process.stdout.write(`${profile.profile}\t${Math.round(profile.elapsedMs)}ms\n`);
+    }
+    return 0;
+  }
   if (command !== "build" && command !== "run" && command !== "coverage") {
     fail(`unknown command "${command}"\n\n${USAGE}`);
   }

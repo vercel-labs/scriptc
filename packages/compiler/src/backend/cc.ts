@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { access, chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { availableParallelism, homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { localizeElfObject, mergeAndLocalizeCoffObjects } from "./object-localize.js";
 
@@ -128,17 +129,6 @@ const MUTABLE_COMPILE_ENV_KEYS = [
   "CCC_ADD_ARGS",
   "CLANG_CONFIG_FILE_SYSTEM_DIR",
   "CLANG_CONFIG_FILE_USER_DIR",
-  // The direct runtime build does not consume the conventional Make/CMake
-  // variables, but the lazily-built QuickJS prerequisite does. Their values
-  // can name mutable tools, headers, libraries, and toolchain files, so a
-  // stable spelling is not a safe persistent-cache identity.
-  "CC",
-  "CFLAGS",
-  "CPPFLAGS",
-  "LDFLAGS",
-  "AR",
-  "RANLIB",
-  "CMAKE_TOOLCHAIN_FILE",
   // `zig cc` resolves its bundled headers/runtime through ZIG_LIB_DIR and a
   // caller-selected native libc description through ZIG_LIBC. Both values name
   // mutable compiler inputs whose contents can change behind a stable path.
@@ -503,7 +493,7 @@ export function runtimeSrcDir(): string {
  * the scr_platform.h contract with kqueue and epoll backends; libregexp,
  * zlib, mbedTLS, and the engine archive (--dynamic) build per target
  * (ensureLreObjects / ensureZlibObjects / ensureTlsArchive /
- * buildEngineArchiveCross — host zlib builds still link the system libz,
+ * buildEngineArchiveDirect — host zlib builds still link the system libz,
  * byte-identically).
  * Windows triples (x86_64-windows-gnu, mingw-w64 headers and CRT via zig)
  * have no gates left: events, net/http, fetch, watch, zlib, dgram/dns,
@@ -862,14 +852,18 @@ function vendorEngineDir(): string {
   return join(runtimeSrcDir(), "..", "vendor", "quickjs-ng");
 }
 
-/** Vendor prerequisites have historically lived beside their source trees.
- * The test-only override gives cache-ordering tests a disposable root without
- * renaming package-local artifacts that parallel workers may be using. */
-function vendorBuildCacheRoot(): string {
+/** Vendor prerequisites follow the per-user build root when persistent cache
+ * validation succeeds. Keeping generated objects out of node_modules makes
+ * npm installations, read-only package stores, and explicit cache warming all
+ * share one writable cache. The test-only override remains the first choice;
+ * callers without a validated root retain the historical package-local
+ * default (ordinary builds give those callers a private transient root). */
+function vendorBuildCacheRoot(buildRoot?: string): string {
   const testRoot = process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
-  return testRoot === undefined
+  if (testRoot !== undefined) return resolve(testRoot);
+  return buildRoot === undefined
     ? join(runtimeSrcDir(), "..", "vendor", ".cache")
-    : resolve(testRoot);
+    : join(buildRoot, "vendor");
 }
 
 /** Cross targets already carry their architecture in the explicit triple.
@@ -886,7 +880,7 @@ export function vendorCacheTargetFlavor(
 /** Vendor prerequisites live outside the content-addressed build root, so
  * their directory name must carry the same environment and resolved compiler
  * identity as the artifacts that consume them. The short digest keeps the
- * package-local path readable while preventing build-order contamination. */
+ * cache path readable while preventing build-order contamination. */
 export function vendorCacheBuildIdentity(
   environmentFingerprint: string,
   compilerIdentity: string,
@@ -906,13 +900,13 @@ async function currentVendorCacheBuildIdentity(
   driver: Pick<CcDriver, "argv" | "target">,
   environmentFingerprint: string,
 ): Promise<string> {
-  // Native vendor recipes additionally use bare clang/ar and CMake; cross
+  // Native vendor recipes additionally use bare clang/ar; cross
   // recipes use the zig driver for compilation and `zig ar`. Include every
-  // executable that can affect the package-local prerequisite, not just the
+  // executable that can affect the cached prerequisite, not just the
   // final program's driver.
   const commands = [
     driver.argv[0] ?? "clang",
-    ...(driver.target === null ? ["clang", "cc", "ar", "ranlib", "cmake"] : []),
+    ...(driver.target === null ? ["clang", "ar"] : []),
   ].filter((command, index, all) => all.indexOf(command) === index);
   const identities = await Promise.all(
     commands.map(async (command) => {
@@ -977,7 +971,7 @@ async function installArtifact(
 }
 
 /** The engine archive for one flavor, built lazily on the first --dynamic
- * compile (~10s) and cached under vendor/.cache/<commit>-<flavor>-<target>-<toolchain>/ — unlike
+ * compile and cached under <build-cache>/vendor/<commit>-<flavor>-<target>-<toolchain>/ — unlike
  * the runtime's own sources (recompiled every build, ~100ms), the engine is
  * far too big to rebuild per compile. The plain flavor is ALWAYS MinSizeRel
  * regardless of the program's optimization level: measured binary delta is
@@ -989,66 +983,21 @@ async function installArtifact(
  * private temp dir and publish with an atomic rename — first one wins,
  * losers discard their work and use the winner's archive.
  *
- * SCRIPTC_TARGET adds a per-target cache flavor built WITHOUT CMake (the
- * mbedTLS recipe): the qjs library target is just four TUs
- * (QJS_ENGINE_SOURCES) compiled with `zig cc -target <triple>` under the
- * same flags CMake's MinSizeRel/Debug+ASan configurations apply, packed
- * with `zig ar`. Host builds keep the exact historical CMake recipe. */
+ * The qjs library target is just four TUs (QJS_ENGINE_SOURCES), so both host
+ * and cross builds use the same direct per-TU recipe. This removes CMake from
+ * the runtime dependency set and lets cache warming compile exactly the
+ * archive a later program consumes. Host builds use clang + ar; cross builds
+ * use the selected zig driver + zig ar. */
 async function ensureEngineArchive(
   sanitize: boolean,
   driver: CcDriver,
   buildIdentity: string,
   cacheRoot: string = vendorBuildCacheRoot(),
 ): Promise<string> {
-  const flavor = `${sanitize ? "asan" : "plain"}-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
-  const vendor = vendorEngineDir();
   const archive = engineArchivePath(sanitize, driver, buildIdentity, cacheRoot);
   const cacheDir = dirname(archive);
   if (await fileExists(archive)) return archive;
-  if (driver.target !== null) return buildEngineArchiveCross(sanitize, driver, cacheRoot, cacheDir);
-
-  await mkdir(cacheRoot, { recursive: true });
-  const buildDir = await mkdtemp(join(cacheRoot, `build-${flavor}-`));
-  const stageDir = `${buildDir}.stage`;
-  try {
-    const configureArgs = [
-      "-S", vendor,
-      "-B", buildDir,
-      ...(sanitize
-        ? ["-DCMAKE_BUILD_TYPE=Debug", "-DQJS_ENABLE_ASAN=ON"]
-        : ["-DCMAKE_BUILD_TYPE=MinSizeRel"]),
-      "-DQJS_BUILD_EXAMPLES=OFF",
-      "-DQJS_ENABLE_INSTALL=OFF",
-    ];
-    try {
-      await execFileAsync("cmake", configureArgs);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new Error(
-          "--dynamic builds the embedded engine once with CMake, which was not found on PATH.\n" +
-            "Install cmake (e.g. `brew install cmake`) and retry. Static builds do not need it.",
-        );
-      }
-      throw new Error(
-        `cmake failed configuring the embedded engine (${vendor}).\n\n` +
-          subprocessFailureDetail(err),
-      );
-    }
-    await execFileAsync("cmake", [
-      "--build", buildDir,
-      "--target", "qjs",
-      `-j${availableParallelism()}`,
-    ]);
-    // Publish only the archive, atomically: rename fails if a concurrent
-    // build won the race, and the winner's archive is just as good.
-    await mkdir(stageDir);
-    await copyFile(join(buildDir, "libqjs.a"), join(stageDir, "libqjs.a"));
-    await rename(stageDir, cacheDir).catch(() => undefined);
-  } finally {
-    await rm(buildDir, { recursive: true, force: true });
-    await rm(stageDir, { recursive: true, force: true });
-  }
-  return archive;
+  return buildEngineArchiveDirect(sanitize, driver, cacheRoot, cacheDir);
 }
 
 /** The qjs library target's source list (CMakeLists.txt `qjs_sources` with
@@ -1056,8 +1005,8 @@ async function ensureEngineArchive(
  * compiles exactly these. */
 const QJS_ENGINE_SOURCES = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
 
-/** The engine archive for a CROSS target, per-TU `zig cc` compiles + `zig
- * ar` (no CMake — the mbedTLS recipe). The flags mirror what the CMake
+/** The engine archive for one target, per-TU compiler invocations plus ar.
+ * The flags mirror what the former CMake
  * configurations apply to the qjs library target: gnu11 (CMAKE_C_EXTENSIONS
  * ON), hidden visibility, -funsigned-char, -DQUICKJS_NG_BUILD and
  * -D_GNU_SOURCE (qjs_defines; linux targetArgs already carry the latter),
@@ -1065,10 +1014,11 @@ const QJS_ENGINE_SOURCES = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"
  * (-O0 -ggdb -fno-omit-frame-pointer -fsanitize=address
  * -fno-sanitize-recover=all) for asan. Same atomic-rename publish as every
  * vendor cache. */
-async function buildEngineArchiveCross(sanitize: boolean, driver: CcDriver, cacheRoot: string, cacheDir: string): Promise<string> {
+async function buildEngineArchiveDirect(sanitize: boolean, driver: CcDriver, cacheRoot: string, cacheDir: string): Promise<string> {
   const vendor = vendorEngineDir();
   const archive = join(cacheDir, "libqjs.a");
-  const arArgv = [...driver.argv.slice(0, 1), "ar"];
+  const compileArgv = driver.target === null ? ["clang"] : driver.argv;
+  const arArgv = driver.target === null ? ["ar"] : [...driver.argv.slice(0, 1), "ar"];
   const cflags = [
     "-std=gnu11",
     ...driver.targetArgs,
@@ -1092,8 +1042,8 @@ async function buildEngineArchiveCross(sanitize: boolean, driver: CcDriver, cach
       await Promise.all(
         QJS_ENGINE_SOURCES.slice(i, i + width).map((src) =>
           execFileAsync(
-            driver.argv[0] ?? "clang",
-            [...driver.argv.slice(1), ...cflags, "-c", join(vendor, src), "-o", join(buildDir, `${basename(src, ".c")}.o`)],
+            compileArgv[0] ?? "clang",
+            [...compileArgv.slice(1), ...cflags, "-c", join(vendor, src), "-o", join(buildDir, `${basename(src, ".c")}.o`)],
             { cwd: buildDir },
           ),
         ),
@@ -1136,7 +1086,7 @@ function lreObjectPaths(
 
 /** The libregexp objects for one flavor, compiled lazily on the first
  * regex-using static build (~1s) and cached like the engine archive —
- * vendor/.cache/<commit>-lre-<flavor>-<target>-<toolchain>/*.o — with the same atomic-rename
+ * <build-cache>/vendor/<commit>-lre-<flavor>-<target>-<toolchain>/*.o — with the same atomic-rename
  * publish (parallel first builds race safely; losers discard their work).
  * Plain is -Os (size class matters: the regex fence pins regex-using
  * binaries well under the engine class); asan matches the final link so
@@ -1221,7 +1171,7 @@ function zlibObjectPaths(
 
 /** The zlib objects for one flavor, compiled lazily on the first zlib-using
  * CROSS build (~1s) and cached like the lre objects —
- * vendor/.cache/zlib-<version>-<flavor>-<target>-<toolchain>/*.o — with the same atomic-rename
+ * <build-cache>/vendor/zlib-<version>-<flavor>-<target>-<toolchain>/*.o — with the same atomic-rename
  * publish (parallel first builds race safely; losers discard their work).
  * Plain is -Os, asan matches the final link so the sanitized lane
  * instruments the codec too. The flavor keys the driver and target exactly
@@ -1299,7 +1249,7 @@ function curlStubDirPath(
 
 /** The libcurl import stub for one CROSS target, generated lazily on the
  * first fetch-using cross build and cached like the zlib objects —
- * vendor/.cache/curl-stub-<target>-<toolchain>/libcurl.so, atomic-rename publish. The
+ * <build-cache>/vendor/curl-stub-<target>-<toolchain>/libcurl.so, atomic-rename publish. The
  * stub is empty definitions of CURL_STUB_SYMBOLS compiled `-shared` with
  * `-soname libcurl.so.4`: linking against it satisfies scr_fetch_curl.c's
  * references and records a plain `DT_NEEDED libcurl.so.4`, which the
@@ -1360,7 +1310,7 @@ function tlsArchivePath(
 
 /** The mbedTLS archive for one flavor, compiled lazily on the first
  * TLS-using build (~15s over ~110 TUs, parallelized) and cached like the
- * engine archive — vendor/.cache/mbedtls-<version>-<flavor>-<target>-<toolchain>/libmbedtls.a —
+ * engine archive — <build-cache>/vendor/mbedtls-<version>-<flavor>-<target>-<toolchain>/libmbedtls.a —
  * with the same atomic-rename publish (parallel first builds race safely;
  * losers discard their work). Plain is -Os (the TLS stack is link-gated
  * but still wants its size class small); asan matches the final link so
@@ -1390,7 +1340,9 @@ async function ensureTlsArchive(
   await mkdir(cacheRoot, { recursive: true });
   const buildDir = await mkdtemp(join(cacheRoot, `build-mbedtls-${flavor}-`));
   try {
-    const sources = (await readdir(join(vendor, "library"))).filter((n) => n.endsWith(".c")).sort();
+    const sources = (await readdir(join(vendor, "library")))
+      .filter((name) => !name.startsWith(".") && name.endsWith(".c"))
+      .sort();
     const cflags = [
       "-std=c11",
       ...driver.targetArgs,
@@ -1842,7 +1794,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
         tmpdir(),
         `scriptc-lib-vendor-${process.pid}-${Math.random().toString(36).slice(2)}`,
       );
-  const vendorCacheRoot = transientVendorRoot ?? vendorBuildCacheRoot();
+  const vendorCacheRoot = transientVendorRoot ?? vendorBuildCacheRoot(root ?? undefined);
   try {
     const lreObjects = regex
       ? await ensureLreObjects(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
@@ -4562,7 +4514,10 @@ async function pruneCache(root: string): Promise<void> {
  * unchanged programs skip payload code generation/linking via the binary
  * cache after lightweight metadata probes, and misses link the program's own
  * TU against cached per-flavor runtime objects. */
-export async function compileC(opts: CcOptions): Promise<void> {
+async function compileCInternal(
+  opts: CcOptions,
+  cacheWarmOnly: boolean,
+): Promise<void> {
   const rtDir = runtimeSrcDir();
   const sanitize = opts.sanitize ?? false;
   const optimization = opts.optimization ?? "release";
@@ -4632,7 +4587,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
     // See the resolveCc block: these inputs are built on and for the HOST
     // (vendored archives, system libs). Regex, zlib, and the engine archive
     // are NOT here: their vendored sources are plain C that ensureLreObjects
-    // / ensureZlibObjects / buildEngineArchiveCross compile per target with
+    // / ensureZlibObjects / buildEngineArchiveDirect compile per target with
     // the driver itself — win32 included (the Windows lane runs the
     // @dynamic corpus and the zlib program against the box's Node). The
     // NATIVE fetch rides the socket units and cross-compiles with them —
@@ -4702,6 +4657,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
   // FFI/native-input builds and the public arbitrary-C cache API stay on the
   // strict path because their dependency graphs are caller-owned.
   if (
+    !cacheWarmOnly &&
     root !== null &&
     cachePolicy.completeArtifacts &&
     opts.cacheIdentity === "scriptc-generated-v1" &&
@@ -4835,8 +4791,8 @@ export async function compileC(opts: CcOptions): Promise<void> {
   );
   // Mutable include/SDK/config inputs can change behind a stable environment
   // spelling. The complete/runtime cache is disabled below; vendor objects
-  // must follow the same rule instead of silently surviving in package-local
-  // .cache. A private root gives this invocation the usual vendor build recipe
+  // must follow the same rule instead of silently surviving in the user cache.
+  // A private root gives this invocation the usual vendor build recipe
   // without publishing or reusing those prerequisites.
   const transientVendorRoot = persistentDriverCache && implicitToolchain !== null
     ? null
@@ -4844,7 +4800,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
         tmpdir(),
         `scriptc-vendor-${process.pid}-${Math.random().toString(36).slice(2)}`,
       );
-  const vendorCacheRoot = transientVendorRoot ?? vendorBuildCacheRoot();
+  const vendorCacheRoot = transientVendorRoot ?? vendorBuildCacheRoot(root ?? undefined);
   // Every vendor output path is deterministic from pins, flags, driver, and
   // target. Build the command/key from those paths now, but do not materialize
   // them until a complete-binary lookup has missed.
@@ -5254,6 +5210,7 @@ export async function compileC(opts: CcOptions): Promise<void> {
   // rebuilt. Keep the safe runtime-object cache, but force a fresh final link
   // whenever the caller supplies either form.
   let cacheCompleteArtifact =
+    !cacheWarmOnly &&
     cachePolicy.completeArtifacts &&
     (opts.linkInputs?.length ?? 0) === 0 &&
     (opts.systemLibraries?.length ?? 0) === 0;
@@ -5779,4 +5736,76 @@ export async function compileC(opts: CcOptions): Promise<void> {
   // Runtime-object population is itself a cache write, including on builds
   // whose native link inputs disable complete-artifact publication.
   await pruneCache(root).catch(() => undefined);
+}
+
+export async function compileC(opts: CcOptions): Promise<void> {
+  await compileCInternal(opts, false);
+}
+
+export type NativeCacheWarmProfile = "runtime" | "tls" | "dynamic";
+
+export interface WarmNativeCachesOptions {
+  /** Native object posture to seed. Defaults to the shipped release/-O2 lane. */
+  optimization?: "release" | "dev";
+  /** Seed ASan + RC-audit objects instead of the ordinary lane. */
+  sanitize?: boolean;
+  /** Feature families to seed. Defaults to every expensive native family. */
+  profiles?: readonly NativeCacheWarmProfile[];
+}
+
+export interface WarmNativeCachesResult {
+  cacheRoot: string;
+  profiles: { profile: NativeCacheWarmProfile; elapsedMs: number }[];
+}
+
+/** Populate expensive native prerequisites against the current compiler,
+ * target, SDK, and environment. The resulting entries use the exact same
+ * identities and validators as ordinary builds; this merely pays their cost
+ * before a developer's first program asks for them. Synthetic link products
+ * are discarded and never enter the complete-executable cache. */
+export async function warmNativeCaches(
+  options: WarmNativeCachesOptions = {},
+): Promise<WarmNativeCachesResult> {
+  const cacheRoot = cacheRootDir();
+  if (cacheRoot === null) {
+    throw new Error(
+      "the native build cache is disabled (unset SCRIPTC_NO_CACHE and use a non-empty SCRIPTC_CACHE_DIR)",
+    );
+  }
+  await ensurePrivateCacheRoot(
+    cacheRoot,
+    process.env["SCRIPTC_CACHE_DIR"] === undefined,
+  );
+  const requested = options.profiles ?? ["runtime", "tls", "dynamic"];
+  const profiles = [...new Set(requested)];
+  if (profiles.length === 0) return { cacheRoot, profiles: [] };
+  const known = new Set<NativeCacheWarmProfile>(["runtime", "tls", "dynamic"]);
+  for (const profile of profiles) {
+    if (!known.has(profile)) throw new Error(`unknown native cache warm profile '${profile}'`);
+  }
+
+  const workDir = await mkdtemp(join(tmpdir(), "scriptc-cache-warm-"));
+  const cPath = join(workDir, "warm.c");
+  await writeFile(cPath, "int main(void) { return 0; }\n");
+  try {
+    const results = await Promise.all(profiles.map(async (profile) => {
+      const started = performance.now();
+      await compileCInternal({
+        cPath,
+        outPath: join(workDir, process.platform === "win32" ? `${profile}.exe` : profile),
+        cacheIdentity: "scriptc-native-cache-warm-v1",
+        optimization: options.optimization ?? "release",
+        sanitize: options.sanitize ?? false,
+        ...(profile === "tls" ? { fetch: true } : {}),
+        ...(profile === "dynamic" ? { dynamic: true } : {}),
+      }, true);
+      return {
+        profile,
+        elapsedMs: Math.round((performance.now() - started) * 10) / 10,
+      };
+    }));
+    return { cacheRoot, profiles: results };
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }

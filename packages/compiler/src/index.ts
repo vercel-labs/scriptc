@@ -44,7 +44,15 @@ import { compilerImplementationIdentity } from "./library/implementation-identit
 
 export const VERSION = "0.0.1";
 
-export { compileC, runtimeSrcDir, type CcOptions } from "./backend/cc.js";
+export {
+  compileC,
+  runtimeSrcDir,
+  warmNativeCaches,
+  type CcOptions,
+  type NativeCacheWarmProfile,
+  type WarmNativeCachesOptions,
+  type WarmNativeCachesResult,
+} from "./backend/cc.js";
 export { ANDROID_MIN_API, IPHONEOS_MIN_VERSION, isAndroidTarget, isIosTarget, isMobileTarget, mobileLibraryTarget, mobileTargetRefusal } from "./backend/cc.js";
 export { emitModule, type CEmitOptions } from "./backend/emission/emitter.js";
 export type { ScrDiagnostic } from "./diagnostics/diagnostic.js";

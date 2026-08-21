@@ -1,6 +1,6 @@
 # CLI Reference
 
-The CLI has three commands. `scriptc --help` prints this same surface.
+The CLI has four commands. `scriptc --help` prints this same surface.
 
 ```console
 $ scriptc --help
@@ -13,6 +13,8 @@ Usage:
   scriptc coverage <file.ts|.js> --dynamic  what a --dynamic build compiles, and what still blocks it
   scriptc coverage <file.ts|.js> --external-types <specifier=file.d.ts>
                                             type-resolve an embedder-provided module for analysis
+  scriptc cache warm [runtime|tls|dynamic…] prebuild expensive native cache families
+                                            for the current compiler/SDK/target
 ```
 
 ## scriptc build
@@ -49,6 +51,10 @@ Note: `run` does not forward extra command-line arguments to the program. To pas
 ## scriptc coverage
 
 Analyzes the program without producing a binary and reports, statement by statement, what compiles statically, what needs the embedded dynamic engine, and what blocks the rest. With `--dynamic` it answers a different question: what would a `--dynamic` build compile, and what still blocks it. Both forms are covered in depth in [Coverage Reports](/coverage).
+
+## scriptc cache warm
+
+Prebuilds the release runtime objects, native TLS archive, and dynamic-engine archive against the currently selected compiler, SDK, and target. npm installations run this best-effort automatically; use the explicit command when preparing a container image, CI runner, or installation whose lifecycle scripts were disabled. Pass one or more of `runtime`, `tls`, and `dynamic` to seed only those families. The entries use the ordinary strict cache identities, and later builds still revalidate their compiler and dependency inputs.
 
 ## Options
 

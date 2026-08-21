@@ -13,6 +13,8 @@ Usage:
                                             profile-declared C symbols; a profile
                                             with a sidecar section also gets the
                                             contract sidecar JSON beside the archive
+  scriptc cache warm [runtime|tls|dynamic…] prebuild expensive native cache families
+                                            for the current compiler/SDK/target
 
 Options:
   -o, --out <path>   output path (default: .scriptc/<name>[.exe|.wasm])

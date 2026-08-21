@@ -27,7 +27,7 @@ The QuickJS-ng JavaScript engine, embedded by the opt-in `--dynamic` build mode 
 
 The tree is a plain snapshot of the upstream commit with directories the library build does not need removed (tests/, docs/, examples/, test262 fixtures, CI config, generator scripts). No vendored file is modified; to update, re-clone upstream at the new commit, delete its .git directory, apply the same trim, and update this file.
 
-The engine archive (libqjs.a) is built lazily on the first `--dynamic` compile into `.cache/<commit>-<flavor>-<target>-<toolchain>/` next to this file — one flavor per lane (plain, asan), native platform/architecture or explicit cross target, and compiler environment/identity. The cache directory is gitignored and safe to delete.
+The engine archive (libqjs.a) is prebuilt best-effort during npm installation (or explicitly by `scriptc cache warm`) and otherwise built lazily on the first `--dynamic` compile. It lives under the per-user build cache's `vendor/<commit>-<flavor>-<target>-<toolchain>/` directory — one flavor per lane (plain, asan), native platform/architecture or explicit cross target, and compiler environment/identity.
 
 ## zlib/
 
@@ -37,7 +37,7 @@ The engine archive (libqjs.a) is built lazily on the first `--dynamic` compile i
 
 The CROSS-target arm of node:zlib (see packages/runtime/src/scr_zlib.c): host builds keep the historical system `-lz` link (macOS ships libz), but zig's cross sysroots have no libz, so SCRIPTC_TARGET builds compile this vendored copy per target instead. Only the flat `*.c`/`*.h` at the distribution root are vendored (LICENSE beside them) — contrib, tests, build machinery, and docs are not. No vendored file is modified; the gz* file-I/O TUs are vendored for faithfulness but never compiled (nothing references the gzFile API — see ZLIB_SOURCES in packages/compiler/src/backend/cc.ts). To update, re-fetch the release tarball, copy the same flat set, and bump `ZLIB_VERSION` in cc.ts.
 
-The objects build lazily on the first zlib-using cross compile into `.cache/zlib-<version>-<flavor>-<target>-<toolchain>/` next to this file — one flavor per driver/target and compiler environment/identity (the lre-objects pattern). Zlib-free binaries never compile any of this; compressed OUTPUT bytes are zlib-version-dependent, which is why the corpus only compares round-trips and fixed-blob inflation.
+The objects build lazily on the first zlib-using cross compile into the per-user build cache's `vendor/zlib-<version>-<flavor>-<target>-<toolchain>/` directory — one flavor per driver/target and compiler environment/identity (the lre-objects pattern). Zlib-free binaries never compile any of this; compressed OUTPUT bytes are zlib-version-dependent, which is why the corpus only compares round-trips and fixed-blob inflation.
 
 ## curl/
 
@@ -47,7 +47,7 @@ The objects build lazily on the first zlib-using cross compile into `.cache/zlib
 
 HEADERS ONLY — no curl C source is vendored and none is ever compiled. These headers now serve ONLY the RETIRED curl reference implementation of fetch (packages/runtime/src/scr_fetch_curl.c, selected by `SCRIPTC_FETCH_CURL=1`; kept compilable for one release as the native flip's reference — see scr_fetch.c, the default, which rides scr_net/scr_tls/scr_http/zlib and touches nothing here). Under the flag: host builds link the system `-lcurl` (macOS ships libcurl), and linux-gnu CROSS builds compile scr_fetch_curl.c against these headers, then link against a generated STUB `libcurl.so` (soname `libcurl.so.4`, empty definitions of exactly the symbols scr_fetch_curl.c calls — see CURL_STUB_SYMBOLS in packages/compiler/src/backend/cc.ts) so the produced binary records a plain `DT_NEEDED libcurl.so.4` that the TARGET system's real libcurl satisfies at load time, the standard cross-link import-stub technique. The 7.88.1 pin is a floor, not a lock: scr_fetch_curl.c's newest requirement is CURLOPT_PROTOCOLS_STR (7.85.0) and the unversioned symbol references bind to any libcurl.so.4. This whole directory leaves with scr_fetch_curl.c when the reference retires for good.
 
-The stub builds lazily on the first flag-selected fetch cross compile into `.cache/curl-stub-<target>-<toolchain>/` next to this file (the zlib-objects pattern). Default builds never see any of this, and no build ever compiles curl itself.
+The stub builds lazily on the first flag-selected fetch cross compile into the per-user build cache's `vendor/curl-stub-<target>-<toolchain>/` directory (the zlib-objects pattern). Default builds never see any of this, and no build ever compiles curl itself.
 
 ## mbedtls/
 
@@ -57,4 +57,4 @@ The stub builds lazily on the first flag-selected fetch cross compile into `.cac
 
 The TLS provider behind node:tls/node:https (see the design note atop packages/runtime/src/scr_tls.c for why mbedTLS over SecureTransport/BoringSSL/libtls). Only `include/` and `library/` are vendored (LICENSE beside them) — tests, docs, programs, scripts, and CMake machinery are not. No vendored file is modified and no custom config is applied (the stock `mbedtls_config.h` builds every `library/*.c` standalone with clang); to update, re-fetch the release tarball, copy the same two directories, and bump `MBEDTLS_VERSION` in packages/compiler/src/backend/cc.ts.
 
-The archive (libmbedtls.a) is built lazily on the first TLS-using compile into `.cache/mbedtls-<version>-<flavor>-<target>-<toolchain>/` next to this file — one flavor per lane (plain, asan), native platform/architecture or explicit cross target, and compiler environment/identity, the libqjs.a pattern. TLS-free binaries never compile or link any of this.
+The archive (libmbedtls.a) is prebuilt best-effort during npm installation (or explicitly by `scriptc cache warm`) and otherwise built lazily on the first TLS-using compile. It lives under the per-user build cache's `vendor/mbedtls-<version>-<flavor>-<target>-<toolchain>/` directory — one flavor per lane (plain, asan), native platform/architecture or explicit cross target, and compiler environment/identity, the libqjs.a pattern. TLS-free binaries never compile or link any of this.

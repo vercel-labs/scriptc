@@ -21,6 +21,7 @@ import {
   toolchainEnvironmentFingerprint,
   vendorCacheBuildIdentity,
   vendorCacheTargetFlavor,
+  warmNativeCaches,
 } from "./cc.js";
 import { splitLlvmProgram } from "./llvm/split.js";
 
@@ -246,9 +247,11 @@ test("the toolchain environment joins cache identities", () => {
     completeArtifacts: false,
     runtimeObjects: false,
   });
+  // scriptc invokes its compiler and archiver directly; conventional build-
+  // system variables do not alter those commands.
   expect(toolchainEnvironmentCachePolicy({ CFLAGS: "-I/headers" })).toEqual({
-    completeArtifacts: false,
-    runtimeObjects: false,
+    completeArtifacts: true,
+    runtimeObjects: true,
   });
   expect(toolchainEnvironmentCachePolicy({ ZIG_LIB_DIR: "/zig/lib" })).toEqual({
     completeArtifacts: false,
@@ -1827,6 +1830,50 @@ test("the hard disable bypasses vendor prerequisite caches", async () => {
     else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
     if (oldVendorCacheDir === undefined) delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
     else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
+  }
+});
+
+test("native cache warming seeds exact runtime and vendor families without complete binaries", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-cache-warm-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const vendorCacheRoot = join(cacheRoot, "vendor");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  const oldVendorCacheDir = process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+  try {
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+    delete process.env["SCRIPTC_NO_CACHE"];
+    const warmed = await warmNativeCaches({ profiles: ["runtime", "tls", "dynamic"] });
+    expect(warmed.cacheRoot).toBe(cacheRoot);
+    expect(warmed.profiles.map(({ profile }) => profile)).toEqual(["runtime", "tls", "dynamic"]);
+    expect(warmed.profiles.every(({ elapsedMs }) => elapsedMs >= 0)).toBe(true);
+    expect((await readdir(join(cacheRoot, "obj"), { withFileTypes: true })).filter((e) => e.isDirectory())).toHaveLength(3);
+    expect(await readdir(join(cacheRoot, "bin")).catch(() => [])).toEqual([]);
+    const vendorEntries = await readdir(vendorCacheRoot);
+    expect(vendorEntries.some((name) => name.startsWith("mbedtls-"))).toBe(true);
+    expect(vendorEntries.some((name) => /^3c8f3d689539-plain-/.test(name))).toBe(true);
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    if (oldVendorCacheDir === undefined) delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+    else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
+  }
+}, 120_000);
+
+test("native cache warming follows the hard cache disable", async () => {
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  try {
+    process.env["SCRIPTC_NO_CACHE"] = "1";
+    await expect(warmNativeCaches({ profiles: ["runtime"] })).rejects.toThrow(
+      "native build cache is disabled",
+    );
+  } finally {
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
   }
 });
 

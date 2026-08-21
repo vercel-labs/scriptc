@@ -14,13 +14,15 @@
     "scriptc": "dist/bootstrap.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "scripts"
   ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json"
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "postinstall": "node scripts/warm-cache.mjs"
   },
   "dependencies": {
     "@scriptc/compiler": "workspace:*"

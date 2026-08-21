@@ -1865,6 +1865,62 @@ test("native cache warming seeds exact runtime and vendor families without compl
   }
 }, 120_000);
 
+test("dynamic builds promote staged vendor archives before bounded LRU eviction", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-vendor-lru-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const cPath = join(dir, "program.c");
+  const outPath = join(dir, "program");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  const oldMax = process.env["SCRIPTC_CACHE_MAX_MB"];
+  const oldVendorCacheDir = process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+  try {
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    delete process.env["SCRIPTC_NO_CACHE"];
+    delete process.env["SCRIPTC_CACHE_MAX_MB"];
+    delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+    await writeFile(cPath, "int main(void) { return 0; }\n");
+    await warmNativeCaches({ profiles: ["dynamic"] });
+
+    const vendorRoot = join(cacheRoot, "vendor");
+    const engineDir = (await readdir(vendorRoot)).find((name) =>
+      /^3c8f3d689539-plain-/.test(name)
+    );
+    expect(engineDir).toBeDefined();
+    const engineArchive = join(vendorRoot, engineDir!, "libqjs.a");
+    const initialBytes = await cacheTreeBytes(cacheRoot);
+    const capMb = Math.max(4, Math.ceil(initialBytes * 2 / (1024 * 1024)));
+    const filler = join(cacheRoot, "filler.bin");
+    const staleArchiveTime = new Date("2000-01-01T00:00:00.000Z");
+    const fillerTime = new Date("2001-01-01T00:00:00.000Z");
+    await writeFile(filler, Buffer.alloc(capMb * 1024 * 1024));
+    await utimes(engineArchive, staleArchiveTime, staleArchiveTime);
+    await utimes(filler, fillerTime, fillerTime);
+    process.env["SCRIPTC_CACHE_MAX_MB"] = String(capMb);
+
+    await compileC({
+      cPath,
+      outPath,
+      cacheIdentity: TEST_CACHE_IDENTITY,
+      dynamic: true,
+    });
+
+    expect((await stat(outPath)).isFile()).toBe(true);
+    expect((await stat(engineArchive)).mtimeMs).toBeGreaterThan(fillerTime.getTime());
+    expect(await cacheTreeBytes(cacheRoot)).toBeLessThanOrEqual(capMb * 1024 * 1024);
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    if (oldMax === undefined) delete process.env["SCRIPTC_CACHE_MAX_MB"];
+    else process.env["SCRIPTC_CACHE_MAX_MB"] = oldMax;
+    if (oldVendorCacheDir === undefined) delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+    else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
+  }
+}, 120_000);
+
 test("native cache warming follows the hard cache disable", async () => {
   const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
   try {

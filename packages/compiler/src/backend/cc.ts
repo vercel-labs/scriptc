@@ -996,6 +996,7 @@ async function stageVendorInputs(
     await mkdir(stageDir, { recursive: true });
     const sources = await materialize();
     try {
+      const now = new Date();
       return await Promise.all(sources.map(async (source) => {
         const destination = join(stageDir, basename(source));
         try {
@@ -1003,6 +1004,10 @@ async function stageVendorInputs(
         } catch {
           await copyFile(source, destination);
         }
+        // Vendor prerequisites share the cache root's mtime-based LRU. A
+        // successful stage is a cache read, so promote the shared source name
+        // best-effort (it may have raced an eviction after the hard link).
+        await utimes(source, now, now).catch(() => undefined);
         return destination;
       }));
     } catch (error) {

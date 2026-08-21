@@ -507,6 +507,55 @@ export async function readRoutedExecutableCache(
   }
 }
 
+/** Publish the lightweight lookup metadata for an already-validated payload.
+ * Full-compiler cache hits call this as a repair path: route/proof files can be
+ * evicted independently of the larger executable entry, and one fallback
+ * lookup should make later CLI invocations lightweight again. */
+export async function publishEarlyExecutableRoute(
+  root: string | null,
+  options: EarlyExecutableCacheOptions,
+): Promise<void> {
+  if (root === null) return;
+  const proofDestination = implementationProofPath(root, options.implementation);
+  const proofUnsigned: Omit<EarlyExecutableImplementationProof, "integrity"> = {
+    version: 1,
+    implementation: options.implementation,
+    dependencies: options.implementationDependencies,
+  };
+  const proof: EarlyExecutableImplementationProof = {
+    ...proofUnsigned,
+    integrity: implementationProofIntegrity(proofUnsigned),
+  };
+  await mkdir(dirname(proofDestination), { recursive: true, mode: 0o700 });
+  const proofTmp = `${proofDestination}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    await writeFile(proofTmp, `${JSON.stringify(proof)}\n`, { mode: 0o600 });
+    await installCacheMetadata(proofTmp, proofDestination);
+  } finally {
+    await rm(proofTmp, { force: true }).catch(() => undefined);
+  }
+
+  const routeOptions: EarlyExecutableRouteOptions = options;
+  const routeDestination = routePath(root, routeOptions);
+  const routeUnsigned: Omit<EarlyExecutableRouteStamp, "integrity"> = {
+    version: 1,
+    key: cacheKey(options),
+    implementation: options.implementation,
+  };
+  const route: EarlyExecutableRouteStamp = {
+    ...routeUnsigned,
+    integrity: routeIntegrity(routeUnsigned),
+  };
+  await mkdir(dirname(routeDestination), { recursive: true, mode: 0o700 });
+  const routeTmp = `${routeDestination}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    await writeFile(routeTmp, `${JSON.stringify(route)}\n`, { mode: 0o600 });
+    await installCacheMetadata(routeTmp, routeDestination);
+  } finally {
+    await rm(routeTmp, { force: true }).catch(() => undefined);
+  }
+}
+
 export async function publishEarlyExecutableCache(
   root: string | null,
   options: EarlyExecutableCacheOptions,
@@ -565,57 +614,7 @@ export async function publishEarlyExecutableCache(
     if (ir !== null) await install(ir.name);
     if (executable !== null) await install(executable.name);
     await install("stamp.json");
-    const routeOptions: EarlyExecutableRouteOptions = {
-      entryPath: options.entryPath,
-      outDir: options.outDir,
-      outPath: options.outPath,
-      emitIr: options.emitIr,
-      sanitize: options.sanitize,
-      dynamic: options.dynamic,
-      backend: options.backend,
-      npmStatic: options.npmStatic,
-      ffiProfile: options.ffiProfile,
-      target: options.target,
-      compiler: options.compiler,
-      nativeEnvironment: options.nativeEnvironment,
-      nodeVersion: options.nodeVersion,
-    };
-    const proofDestination = implementationProofPath(root, options.implementation);
-    const proofUnsigned: Omit<EarlyExecutableImplementationProof, "integrity"> = {
-      version: 1,
-      implementation: options.implementation,
-      dependencies: options.implementationDependencies,
-    };
-    const proof: EarlyExecutableImplementationProof = {
-      ...proofUnsigned,
-      integrity: implementationProofIntegrity(proofUnsigned),
-    };
-    await mkdir(dirname(proofDestination), { recursive: true, mode: 0o700 });
-    const proofTmp = `${proofDestination}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
-    try {
-      await writeFile(proofTmp, `${JSON.stringify(proof)}\n`, { mode: 0o600 });
-      await installCacheMetadata(proofTmp, proofDestination);
-    } finally {
-      await rm(proofTmp, { force: true }).catch(() => undefined);
-    }
-    const routeDestination = routePath(root, routeOptions);
-    const routeUnsigned: Omit<EarlyExecutableRouteStamp, "integrity"> = {
-      version: 1,
-      key: cacheKey(options),
-      implementation: options.implementation,
-    };
-    const route: EarlyExecutableRouteStamp = {
-      ...routeUnsigned,
-      integrity: routeIntegrity(routeUnsigned),
-    };
-    await mkdir(dirname(routeDestination), { recursive: true, mode: 0o700 });
-    const routeTmp = `${routeDestination}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
-    try {
-      await writeFile(routeTmp, `${JSON.stringify(route)}\n`, { mode: 0o600 });
-      await installCacheMetadata(routeTmp, routeDestination);
-    } finally {
-      await rm(routeTmp, { force: true }).catch(() => undefined);
-    }
+    await publishEarlyExecutableRoute(root, options);
   } finally {
     await rm(stage, { recursive: true, force: true }).catch(() => undefined);
   }

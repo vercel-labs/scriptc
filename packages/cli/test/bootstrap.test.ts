@@ -35,18 +35,46 @@ test("bootstrap exact builds use the routed cache and source edits fall through"
   const cacheRoot = join(dir, "cache");
   const entry = join(dir, "main.ts");
   const outPath = join(dir, process.platform === "win32" ? "program.exe" : "program");
+  const preload = join(dir, "reject-full-compiler.mjs");
   const env = { ...process.env, SCRIPTC_CACHE_DIR: cacheRoot, SCRIPTC_TIMING: "1" };
-  const build = (): Promise<{ stderr: string }> =>
-    execFileAsync(process.execPath, [bootstrap, "build", entry, "-o", outPath], {
+  const build = (rejectFullCompiler = false): Promise<{ stderr: string }> =>
+    execFileAsync(process.execPath, [
+      ...(rejectFullCompiler ? ["--import", preload] : []),
+      bootstrap,
+      "build",
+      entry,
+      "-o",
+      outPath,
+    ], {
       env,
       maxBuffer: 4 * 1024 * 1024,
     });
   try {
     await mkdir(cacheRoot, { mode: 0o700 });
-    await writeFile(entry, 'console.log("one");\n');
+    await Promise.all([
+      writeFile(entry, 'console.log("one");\n'),
+      writeFile(preload, [
+        "import { registerHooks } from 'node:module';",
+        "registerHooks({ load(url, context, nextLoad) {",
+        "  if (url.includes('/packages/compiler/dist/index.js')) throw new Error('compiler graph loaded');",
+        "  return nextLoad(url, context);",
+        "}});",
+        "",
+      ].join("\n")),
+    ]);
     expect((await build()).stderr).toContain("scriptc lowering");
     expect((await build()).stderr).not.toContain("scriptc lowering");
     expect((await execFileAsync(outPath)).stdout).toBe("one\n");
+
+    // Route metadata can be evicted independently of the executable payload.
+    // One full-compiler fallback must repair it so the following invocation is
+    // once again able to run with the package root import forbidden.
+    await Promise.all([
+      rm(join(cacheRoot, "early-exe-route"), { recursive: true, force: true }),
+      rm(join(cacheRoot, "early-exe-implementation"), { recursive: true, force: true }),
+    ]);
+    expect((await build()).stderr).not.toContain("scriptc lowering");
+    await expect(build(true)).resolves.toMatchObject({ stderr: "" });
 
     await writeFile(entry, 'console.log("two");\n');
     expect((await build()).stderr).toContain("scriptc lowering");

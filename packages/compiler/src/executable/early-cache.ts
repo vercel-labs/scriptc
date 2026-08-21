@@ -5,6 +5,8 @@ import type { FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { frontendInputsStillMatch, validFrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import { nativeArtifactDependenciesStillMatch, type NativeArtifactDependency } from "../backend/cc.js";
+import type { CompilerImplementationDependency } from "../library/implementation-identity.js";
+import { compilerImplementationDependenciesStillMatch, compilerImplementationRoot } from "../library/implementation-identity.js";
 
 interface CachedExecutableFile {
   name: string;
@@ -76,6 +78,26 @@ export interface EarlyExecutableCacheOptions {
   nativeEnvironment: string;
   nodeVersion: string;
   implementation: string;
+  implementationDependencies: CompilerImplementationDependency[];
+}
+
+export type EarlyExecutableRouteOptions = Omit<
+  EarlyExecutableCacheOptions,
+  "implementation" | "implementationDependencies"
+>;
+
+interface EarlyExecutableRouteStamp {
+  version: 1;
+  key: string;
+  implementation: string;
+  integrity: string;
+}
+
+interface EarlyExecutableImplementationProof {
+  version: 1;
+  implementation: string;
+  dependencies: CompilerImplementationDependency[];
+  integrity: string;
 }
 
 export interface EarlyExecutableCacheHit {
@@ -165,6 +187,75 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
       .update(options.ffiProfile.bytes);
   }
   return hash.digest("hex");
+}
+
+function routeKey(options: EarlyExecutableRouteOptions): string {
+  const hash = createHash("sha256")
+    .update("early-executable-route-v1\0")
+    .update(compilerReleaseVersion()).update("\0")
+    .update(compilerImplementationRoot()).update("\0")
+    .update(resolve(options.entryPath)).update("\0")
+    .update(resolve(options.outDir)).update("\0")
+    .update(resolve(options.outPath)).update("\0")
+    .update(options.emitIr ? "emit-ir" : "no-ir").update("\0")
+    .update(options.sanitize ? "sanitize" : "plain").update("\0")
+    .update(options.dynamic ? "dynamic" : "static").update("\0")
+    .update(options.backend).update("\0")
+    .update(options.npmStatic === null
+      ? "<npm-static-off>"
+      : options.npmStatic === "auto"
+        ? "<npm-static-auto>"
+        : JSON.stringify(options.npmStatic)).update("\0")
+    .update(options.target).update("\0")
+    .update(options.compiler.join("\x1f")).update("\0")
+    .update(options.nativeEnvironment).update("\0")
+    .update(options.nodeVersion).update("\0");
+  if (options.ffiProfile === null) {
+    hash.update("<ffi-off>");
+  } else {
+    hash
+      .update(resolve(options.ffiProfile.path)).update("\0")
+      .update(options.ffiProfile.bytes);
+  }
+  return hash.digest("hex");
+}
+
+function routePath(root: string, options: EarlyExecutableRouteOptions): string {
+  return join(root, "early-exe-route", routeKey(options));
+}
+
+function routeIntegrity(stamp: Omit<EarlyExecutableRouteStamp, "integrity">): string {
+  return createHash("sha256")
+    .update("early-executable-route-stamp-v1\0")
+    .update(JSON.stringify(stamp))
+    .digest("hex");
+}
+
+function implementationProofPath(root: string, implementation: string): string {
+  const install = createHash("sha256")
+    .update("early-executable-install-v1\0")
+    .update(compilerImplementationRoot())
+    .digest("hex");
+  return join(root, "early-exe-implementation", install, implementation);
+}
+
+function implementationProofIntegrity(
+  proof: Omit<EarlyExecutableImplementationProof, "integrity">,
+): string {
+  return createHash("sha256")
+    .update("early-executable-implementation-proof-v1\0")
+    .update(JSON.stringify(proof))
+    .digest("hex");
+}
+
+async function installCacheMetadata(source: string, destination: string): Promise<void> {
+  await rename(source, destination).catch(async () => {
+    // Windows does not replace an existing destination with rename(). Route
+    // and implementation-proof files are republished on every full compile,
+    // so use the same replacement fallback as the payload cache below.
+    await rm(destination, { force: true });
+    await rename(source, destination);
+  });
 }
 
 function stampPath(root: string, options: EarlyExecutableCacheOptions): string {
@@ -368,6 +459,54 @@ export async function readEarlyExecutableCache(
   }
 }
 
+/** Follow the exact-invocation route without hashing/importing the complete
+ * compiler package. The full compiler publishes a content digest plus a
+ * metadata replay proof; any implementation change turns this into a miss. */
+export async function readRoutedExecutableCache(
+  root: string | null,
+  options: EarlyExecutableRouteOptions,
+): Promise<EarlyExecutableCacheHit | null> {
+  if (root === null) return null;
+  try {
+    const routeFile = routePath(root, options);
+    const route = JSON.parse(
+      await readFile(routeFile, "utf8"),
+    ) as EarlyExecutableRouteStamp;
+    const { integrity, ...unsigned } = route;
+    if (
+      route.version !== 1 ||
+      !/^[0-9a-f]{64}$/.test(route.key) ||
+      !/^[0-9a-f]{64}$/.test(route.implementation) ||
+      routeIntegrity(unsigned) !== integrity
+    ) return null;
+    const proofFile = implementationProofPath(root, route.implementation);
+    const proof = JSON.parse(await readFile(proofFile, "utf8")) as EarlyExecutableImplementationProof;
+    const { integrity: proofIntegrity, ...proofUnsigned } = proof;
+    if (
+      proof.version !== 1 || proof.implementation !== route.implementation ||
+      !Array.isArray(proof.dependencies) ||
+      implementationProofIntegrity(proofUnsigned) !== proofIntegrity ||
+      !(await compilerImplementationDependenciesStillMatch(proof.dependencies))
+    ) return null;
+    const complete: EarlyExecutableCacheOptions = {
+      ...options,
+      implementation: route.implementation,
+      implementationDependencies: proof.dependencies,
+    };
+    if (cacheKey(complete) !== route.key) return null;
+    const hit = await readEarlyExecutableCache(root, complete);
+    if (hit?.executableRestored !== true) return null;
+    const now = new Date();
+    await Promise.all([
+      routeFile,
+      proofFile,
+    ].map((cachePath) => utimes(cachePath, now, now).catch(() => undefined)));
+    return hit;
+  } catch {
+    return null;
+  }
+}
+
 export async function publishEarlyExecutableCache(
   root: string | null,
   options: EarlyExecutableCacheOptions,
@@ -426,6 +565,57 @@ export async function publishEarlyExecutableCache(
     if (ir !== null) await install(ir.name);
     if (executable !== null) await install(executable.name);
     await install("stamp.json");
+    const routeOptions: EarlyExecutableRouteOptions = {
+      entryPath: options.entryPath,
+      outDir: options.outDir,
+      outPath: options.outPath,
+      emitIr: options.emitIr,
+      sanitize: options.sanitize,
+      dynamic: options.dynamic,
+      backend: options.backend,
+      npmStatic: options.npmStatic,
+      ffiProfile: options.ffiProfile,
+      target: options.target,
+      compiler: options.compiler,
+      nativeEnvironment: options.nativeEnvironment,
+      nodeVersion: options.nodeVersion,
+    };
+    const proofDestination = implementationProofPath(root, options.implementation);
+    const proofUnsigned: Omit<EarlyExecutableImplementationProof, "integrity"> = {
+      version: 1,
+      implementation: options.implementation,
+      dependencies: options.implementationDependencies,
+    };
+    const proof: EarlyExecutableImplementationProof = {
+      ...proofUnsigned,
+      integrity: implementationProofIntegrity(proofUnsigned),
+    };
+    await mkdir(dirname(proofDestination), { recursive: true, mode: 0o700 });
+    const proofTmp = `${proofDestination}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+    try {
+      await writeFile(proofTmp, `${JSON.stringify(proof)}\n`, { mode: 0o600 });
+      await installCacheMetadata(proofTmp, proofDestination);
+    } finally {
+      await rm(proofTmp, { force: true }).catch(() => undefined);
+    }
+    const routeDestination = routePath(root, routeOptions);
+    const routeUnsigned: Omit<EarlyExecutableRouteStamp, "integrity"> = {
+      version: 1,
+      key: cacheKey(options),
+      implementation: options.implementation,
+    };
+    const route: EarlyExecutableRouteStamp = {
+      ...routeUnsigned,
+      integrity: routeIntegrity(routeUnsigned),
+    };
+    await mkdir(dirname(routeDestination), { recursive: true, mode: 0o700 });
+    const routeTmp = `${routeDestination}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+    try {
+      await writeFile(routeTmp, `${JSON.stringify(route)}\n`, { mode: 0o600 });
+      await installCacheMetadata(routeTmp, routeDestination);
+    } finally {
+      await rm(routeTmp, { force: true }).catch(() => undefined);
+    }
   } finally {
     await rm(stage, { recursive: true, force: true }).catch(() => undefined);
   }

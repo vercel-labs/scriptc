@@ -5,65 +5,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { analyze, buildTargetPlatform, compile, compileC, compileLibrary, isExactExternalTypeSpecifier, renderAll, renderCoverage, resolveProvenanceSources, setProvenanceSources } from "@scriptc/compiler";
 import { defaultExecutableName } from "./paths.js";
-
-const USAGE = `scriptc — TypeScript/JavaScript to native and WebAssembly executables (experimental)
-
-Usage:
-  scriptc build <file.ts|.js> [options]     compile to an executable target artifact
-  scriptc run <file.ts|.js> [options]       compile and run
-  scriptc coverage <file.ts|.js>            how much compiles statically, and why not
-  scriptc coverage <file.ts|.js> --dynamic  what a --dynamic build compiles, and what still blocks it
-  scriptc coverage <file.ts|.js> --external-types <specifier=file.d.ts>
-                                            type-resolve an embedder-provided module for analysis
-  scriptc build --lib --profile <p.json>    library mode: compile the profile's entry
-                                            module to a linkable static archive
-                                            (<name>.lib.a) exporting the
-                                            profile-declared C symbols; a profile
-                                            with a sidecar section also gets the
-                                            contract sidecar JSON beside the archive
-
-Options:
-  -o, --out <path>   output path (default: .scriptc/<name>[.exe|.wasm])
-      --backend <b>  code generator. llvm is the default and the output that
-                     ships; c emits readable C for inspecting what the
-                     compiler produced, and program behavior is identical
-                     either way. On native targets, a program outside the LLVM tier still
-                     builds — the default lane emits C for it and a one-line
-                     stderr note names the construct — while an explicit
-                     --backend llvm fails with that construct named
-                     wasm32-wasi is LLVM-only unless --backend c is explicit;
-                     its C inspection lane accepts async-free programs only
-      --from-c       treat input as a C (or .ll) file (toolchain plumbing/debugging)
-      --keep-c       keep the generated program TU next to the executable
-                     (default; the .ll — or the .c under --backend=c or
-                     when the build fell back)
-      --no-keep-c    delete the generated program TU after compiling
-      --emit-ir      also write the IR as JSON next to the executable
-      --sanitize     build with ASan + runtime RC audit
-      --dynamic      embed the dynamic engine (adds ~620KB; static stays the default)
-      --ffi <file>   bind signature-only TypeScript declarations to native
-                     C symbols and link the manifest's archives/libraries
-      --npm-static <pkg[,pkg…]|auto>
-                     compile the named npm packages' shipped JS statically as
-                     program modules (repeatable; "auto" opts in every eligible
-                     direct import: own .d.ts, unminified JS, no build-transform
-                     markers). A package preflight refuses falls back to the
-                     island (--dynamic) with a coverage-report note — opt-in,
-                     experimental
-      --provenance-sources
-                     EXPERIMENTAL: compile npm dependencies from their
-                     provenance-attested SOURCE (fetched at the attested
-                     commit) as static program modules; packages without a
-                     usable attestation keep the island path (a note, never
-                     a failure)
-      --external-types <specifier=file.d.ts>
-                     coverage only: map an exact bare module specifier to a
-                     local declaration file. The declaration supplies types
-                     for analysis; the host module remains an explicit
-                     external-boundary blocker (repeatable)
-  -h, --help         show this help
-  -v, --version      print the version
-`;
+import { CLI_OPTIONS, USAGE } from "./usage.js";
 
 /** The version of the installed package. Read from the manifest rather than
  * baked in by the build, so a stamped release and a source checkout answer
@@ -109,26 +51,6 @@ function parseCli(): ReturnType<typeof parseArgs<{ options: typeof CLI_OPTIONS; 
     fail(`scriptc: ${msg}\n\n${USAGE}`);
   }
 }
-
-const CLI_OPTIONS = {
-  out: { type: "string", short: "o" },
-  // No parseArgs default: unset means the compiler's default lane
-  // (LLVM with the transparent C fallback); an explicit value pins.
-  backend: { type: "string" },
-  "from-c": { type: "boolean", default: false },
-  "keep-c": { type: "boolean", default: true },
-  "emit-ir": { type: "boolean", default: false },
-  sanitize: { type: "boolean", default: false },
-  dynamic: { type: "boolean", default: false },
-  ffi: { type: "string" },
-  "npm-static": { type: "string", multiple: true },
-  "provenance-sources": { type: "boolean", default: false },
-  "external-types": { type: "string", multiple: true },
-  lib: { type: "boolean", default: false },
-  profile: { type: "string" },
-  help: { type: "boolean", short: "h", default: false },
-  version: { type: "boolean", short: "v", default: false },
-} as const;
 
 async function main(): Promise<number> {
   const { values, positionals } = parseCli();

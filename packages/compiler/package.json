@@ -14,6 +14,7 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
+    "./startup-cache": "./dist/startup-cache.js",
     "./scriptc.d.ts": "./ambient/scriptc.d.ts",
     "./scriptc-overrides.d.ts": "./ambient/scriptc-overrides.d.ts",
     "./scriptc-node-fallback.d.ts": "./ambient/scriptc-node-fallback.d.ts",

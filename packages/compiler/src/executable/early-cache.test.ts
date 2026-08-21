@@ -7,6 +7,7 @@ import { nativeArtifactDependenciesStillMatch } from "../backend/cc.js";
 import {
   publishEarlyExecutableCache,
   readEarlyExecutableCache,
+  readRoutedExecutableCache,
   type EarlyExecutableCacheOptions,
   type EarlyExecutableNativeFeatures,
 } from "./early-cache.js";
@@ -88,7 +89,8 @@ async function fixture(): Promise<{
       compiler: ["clang"],
       nativeEnvironment: "test-native-environment",
       nodeVersion: "v24-test",
-      implementation: "test-implementation",
+      implementation: "a".repeat(64),
+      implementationDependencies: [],
     },
   };
 }
@@ -237,6 +239,85 @@ test("early executable cache restores a validated final binary", async () => {
   const staleNative = await readEarlyExecutableCache(f.root, f.options);
   expect(staleNative?.executableRestored).toBe(false);
   expect(await readFile(f.options.outPath, "utf8")).toBe("keep-current\n");
+});
+
+test("routed executable hits require an unchanged compiler implementation proof", async () => {
+  const f = await fixture();
+  const dependency = join(f.options.outDir, "compiler-file.js");
+  const nativeDependency = join(f.options.outDir, "native-tool");
+  await Promise.all([
+    writeFile(dependency, "compiler-v1\n"),
+    writeFile(nativeDependency, "tool-v1\n"),
+    writeFile(f.options.outPath, "native-v1\n"),
+  ]);
+  const [implementationInfo, nativeInfo] = await Promise.all([
+    stat(dependency),
+    stat(nativeDependency),
+  ]);
+  f.options.implementationDependencies = [{
+    path: dependency,
+    kind: "file",
+    dev: implementationInfo.dev,
+    ino: implementationInfo.ino,
+    size: implementationInfo.size,
+    mtimeMs: implementationInfo.mtimeMs,
+    ctimeMs: implementationInfo.ctimeMs,
+  }];
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  await publishEarlyExecutableCache(f.root, f.options, {
+    cPath: f.cPath,
+    irPath: f.irPath,
+    native,
+    executableRestored: true,
+    nativeDependencies: [{
+      path: nativeDependency,
+      kind: "file",
+      dev: nativeInfo.dev,
+      ino: nativeInfo.ino,
+      size: nativeInfo.size,
+      mtimeMs: nativeInfo.mtimeMs,
+      ctimeMs: nativeInfo.ctimeMs,
+    }],
+    frontend: tracker.snapshot(),
+  });
+  const route = { ...f.options };
+  delete (route as Partial<EarlyExecutableCacheOptions>).implementation;
+  delete (route as Partial<EarlyExecutableCacheOptions>).implementationDependencies;
+  const routeDirectory = join(f.root, "early-exe-route");
+  const [routeName] = await readdir(routeDirectory);
+  const routePath = join(routeDirectory, routeName!);
+  const proofInstallDirectory = join(f.root, "early-exe-implementation");
+  const [proofInstall] = await readdir(proofInstallDirectory);
+  const proofPath = join(proofInstallDirectory, proofInstall!, f.options.implementation);
+  const old = new Date("2000-01-01T00:00:00.000Z");
+  await Promise.all([routePath, proofPath].map((path) => utimes(path, old, old)));
+  expect(await readRoutedExecutableCache(f.root, route)).not.toBeNull();
+  for (const path of [routePath, proofPath]) {
+    expect((await stat(path)).mtimeMs).toBeGreaterThan(old.getTime());
+  }
+
+  // Publishing the same route again must replace its metadata on every
+  // platform (notably Windows, whose rename does not overwrite files).
+  await publishEarlyExecutableCache(f.root, f.options, {
+    cPath: f.cPath,
+    irPath: f.irPath,
+    native,
+    executableRestored: true,
+    nativeDependencies: [{
+      path: nativeDependency,
+      kind: "file",
+      dev: nativeInfo.dev,
+      ino: nativeInfo.ino,
+      size: nativeInfo.size,
+      mtimeMs: nativeInfo.mtimeMs,
+      ctimeMs: nativeInfo.ctimeMs,
+    }],
+    frontend: tracker.snapshot(),
+  });
+  expect(await readRoutedExecutableCache(f.root, route)).not.toBeNull();
+  await writeFile(dependency, "compiler-v2\n");
+  expect(await readRoutedExecutableCache(f.root, route)).toBeNull();
 });
 
 test("native dependency validation rejects malformed cache data", async () => {

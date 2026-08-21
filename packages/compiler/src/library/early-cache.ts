@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdir, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { chmod, copyFile, mkdir, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { deserialize as deserializeV8, serialize as serializeV8 } from "node:v8";
 import { gzip, gunzip } from "node:zlib";
@@ -10,6 +9,7 @@ import type { IrModule } from "../ir/nodes.js";
 import { IR_VERSION } from "../ir/serialize.js";
 import { frontendInputsSemanticallyMatch, frontendInputsStillMatch, validFrontendInputSnapshot, type FrontendInputExclusions, type FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { rebaseSourceLocations, semanticallyEqualSource, sourceLineRebaseIsIdentity } from "./semantic-source.js";
+import { compilerImplementationIdentity } from "./implementation-identity.js";
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
@@ -150,24 +150,7 @@ function cacheKey(options: EarlyLibraryCacheOptions): string {
  * mixed installs without hashing the TypeScript source tree beside it.
  */
 export async function libraryFrontendImplementationFingerprint(): Promise<string> {
-  const moduleDir = dirname(fileURLToPath(import.meta.url));
-  const implementationRoot = resolve(moduleDir, "..", "..");
-  const files: string[] = [];
-  const walk = async (directory: string): Promise<void> => {
-    const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) await walk(path);
-      else if (entry.isFile()) files.push(path);
-    }
-  };
-  await walk(implementationRoot);
-  const hash = createHash("sha256").update("scriptc-frontend-implementation-v1\0");
-  for (const file of files) {
-    hash.update(relative(implementationRoot, file)).update("\0").update(await readFile(file)).update("\0");
-  }
-  return hash.digest("hex");
+  return (await compilerImplementationIdentity(false)).digest;
 }
 
 function stampPath(root: string, options: EarlyLibraryCacheOptions): string {

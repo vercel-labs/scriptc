@@ -1468,6 +1468,7 @@ function updateProgramShardCacheIdentity(
   hash: ReturnType<typeof createHash>,
   shards: readonly { name: string; source: string }[] | undefined,
   publicSymbols: readonly string[] | undefined,
+  mergeIdentity: string | undefined,
 ): void {
   hash.update("\0program-shards\0");
   if (shards === undefined) {
@@ -1485,33 +1486,49 @@ function updateProgramShardCacheIdentity(
     hash.update("<present>\0");
     for (const symbol of publicSymbols) hash.update(symbol).update("\0");
   }
+  hash.update("\0program-shard-merge\0");
+  hash.update(mergeIdentity === undefined ? "<none>\0" : `<present>\0${mergeIdentity}\0`);
 }
 
-/** Whether this target can turn LLVM shard objects back into the canonical
- * program member. Sharding is only a build optimization: a missing host merge
- * tool or an object class the in-process localizers do not support must retain
- * the ordinary single-TU compile instead of making a valid library fail. */
-async function libraryProgramShardMergeAvailable(driver: CcDriver): Promise<boolean> {
+/** Identity of the machinery that turns LLVM shard objects back into the
+ * canonical program member, or null when the target cannot do so. Sharding is
+ * only a build optimization: a missing host tool or unsupported object class
+ * retains the ordinary single-TU compile. The identity joins every cache tier
+ * that contains merged bytes; raw shard-object keys deliberately omit it. */
+async function libraryProgramShardMergeIdentity(driver: CcDriver): Promise<string | null> {
   const platform = targetPlatform(driver);
   // Mach-O merging uses the host's ld64. A Darwin target produced from a
   // non-Darwin host can still compile as one canonical Zig TU, but the host's
   // ELF/COFF linker cannot combine those objects.
   if (platform === "darwin") {
-    return process.platform === "darwin" && await resolvedTool("ld") !== null;
+    if (process.platform !== "darwin") return null;
+    const ld = await resolvedToolIdentity("ld");
+    return ld === null ? null : `program-shard-merge-darwin-v1\0${ld}`;
   }
   if (platform === "linux") {
     if (driver.target === null) {
-      const [ld, objcopy] = await Promise.all([resolvedTool("ld"), resolvedTool("objcopy")]);
-      return ld !== null && objcopy !== null;
+      const [ld, objcopy] = await Promise.all([
+        resolvedToolIdentity("ld"),
+        resolvedToolIdentity("objcopy"),
+      ]);
+      return ld === null || objcopy === null
+        ? null
+        : `program-shard-merge-linux-v1\0${ld}\0${objcopy}`;
     }
     const arch = driver.target.split("-", 1)[0];
-    return arch === "x86_64" || arch === "aarch64";
+    if (arch !== "x86_64" && arch !== "aarch64") return null;
+    const compiler = await resolvedToolIdentity(driver.argv[0] ?? "zig");
+    return compiler === null
+      ? null
+      : `program-shard-merge-cross-elf-v1\0${arch}\0${compiler}`;
   }
   if (platform === "win32") {
     const arch = driver.target?.split("-", 1)[0] ?? process.arch;
-    return arch === "x86_64" || arch === "x64";
+    return arch === "x86_64" || arch === "x64"
+      ? `program-shard-merge-coff-v1\0${arch}`
+      : null;
   }
-  return false;
+  return null;
 }
 
 export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> {
@@ -1532,10 +1549,10 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     opts.programPublicSymbols !== undefined
       ? opts.programShards
       : null;
-  const programShards =
-    programShardsRequested !== null && await libraryProgramShardMergeAvailable(driver)
-      ? programShardsRequested
-      : null;
+  const programShardMergeIdentity = programShardsRequested === null
+    ? null
+    : await libraryProgramShardMergeIdentity(driver);
+  const programShards = programShardMergeIdentity === null ? null : programShardsRequested;
   const programPublicSymbols = programShards === null ? undefined : opts.programPublicSymbols;
   const sanitize = opts.sanitize ?? false;
   const optimization = opts.optimization ?? "release";
@@ -1686,11 +1703,11 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
         const av = await toolVersionOnce(arArgv, toolchainEnv, true);
         archiverVersion = av;
         const key = createHash("sha256")
-          // v9 adds the public-symbol keep set beside the optional native
-          // shards. The canonical TU still keys source semantics; shard and
-          // keep bytes key the exact merged program object so ABI projections
-          // and single-/multi-TU producers never collide.
-          .update("lib-v9\0")
+          // v10 adds the shard-merge implementation/tool identity. The
+          // canonical TU still keys source semantics; shard, keep, and merge
+          // bytes key the exact merged program object so ABI projections,
+          // tool replacements, and single-/multi-TU producers never collide.
+          .update("lib-v10\0")
           .update(cacheTargetIdentity(driver)).update("\0")
           .update(toolchainEnv).update("\0")
           .update(implicitToolchain!).update("\0")
@@ -1715,6 +1732,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           key,
           programShards ?? undefined,
           programPublicSymbols,
+          programShardMergeIdentity ?? undefined,
         );
         const keyHex = key
           .update("\0identity\0")
@@ -1806,7 +1824,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
         implicitToolchain !== null && programCompilerInvocation !== null
       ) {
         const programKey = createHash("sha256")
-          .update("lib-program-obj-v2\0")
+          .update("lib-program-obj-v3\0")
           .update(cacheTargetIdentity(driver)).update("\0")
           .update(toolchainEnv).update("\0")
           .update(implicitToolchain).update("\0")
@@ -1824,112 +1842,130 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           programKey,
           programShards ?? undefined,
           programPublicSymbols,
+          programShardMergeIdentity ?? undefined,
         );
         const programKeyHex = programKey.digest("hex");
         cachedProgramObject = join(root, "program-obj", programKeyHex);
       }
       const stagedProgramObject = join(buildDir, `${stem}.program.o`);
       let programObject: string;
+      let programShardFallback = false;
       if (
         cachedProgramObject !== null &&
         await copyValidCachedFile(cachedProgramObject, stagedProgramObject)
       ) {
         programObject = stagedProgramObject;
       } else if (programShards !== null) {
-        const shardEntries = programShards.map((shard, index) => {
-          const sourcePath = join(buildDir, shard.name);
-          const staged = join(buildDir, `${stem}.program-${index.toString().padStart(3, "0")}.o`);
-          let cachePath: string | null = null;
-          if (
-            root !== null && compilerVersion !== "" && implicitToolchain !== null &&
-            programCompilerInvocation !== null
-          ) {
-            const key = createHash("sha256")
-              .update("lib-program-shard-v1\0")
-              .update(cacheTargetIdentity(driver)).update("\0")
-              .update(toolchainEnv).update("\0")
-              .update(implicitToolchain).update("\0")
-              .update(programCompilerInvocation).update("\0")
-              .update(opts.cacheIdentity!).update("\0")
-              .update(driver.argv.join("\x1f")).update("\0")
-              .update(compilerVersion).update("\0")
-              .update(runtimeHash).update("\0")
-              .update(programDependencyHash).update("\0")
-              .update(programCompilerArgs.join("\x1f")).update("\0")
-              .update(opts.cPath).update("\0")
-              .update(resolve(opts.cPath)).update("\0")
-              .update(shard.name).update("\0")
-              .update(shard.source)
-              .digest("hex");
-            cachePath = join(root, "program-shard", key);
-          }
-          return { ...shard, sourcePath, staged, cachePath, missed: false };
-        });
-        const shardWidth = Math.min(8, availableParallelism());
-        for (let i = 0; i < shardEntries.length; i += shardWidth) {
-          await Promise.all(shardEntries.slice(i, i + shardWidth).map(async (entry) => {
-            await writeFile(entry.sourcePath, entry.source);
+        try {
+          const shardEntries = programShards.map((shard, index) => {
+            const sourcePath = join(buildDir, shard.name);
+            const staged = join(buildDir, `${stem}.program-${index.toString().padStart(3, "0")}.o`);
+            let cachePath: string | null = null;
             if (
-              entry.cachePath !== null &&
-              await copyValidCachedFile(entry.cachePath, entry.staged)
-            ) return;
-            entry.missed = true;
-            await compileOne(entry.sourcePath, basename(entry.staged), opts.cPath);
-          }));
-        }
-        const publishable = shardEntries.filter(
-          (entry) => entry.missed && entry.cachePath !== null,
-        );
-        const mergedProgramObject = await localizeLibraryObjects(
-          driver,
-          arArgv,
-          buildDir,
-          shardEntries.map((entry) => entry.staged),
-          [],
-          programPublicSymbols!,
-          `${stem}.program`,
-        );
-        // Keep the canonical archive member spelling. The fact that native
-        // compilation used shards is an implementation detail; consumers and
-        // deterministic cache tests continue to see `<stem>.program.o`.
-        await rename(mergedProgramObject, stagedProgramObject);
-        programObject = stagedProgramObject;
-        if (cachedProgramObject !== null || publishable.length > 0) {
-          try {
-            const [currentRuntime, currentImplicit, currentInvocation, currentDependencies, currentCompiler] =
-              await Promise.all([
-                runtimeFingerprint(rtDir),
-                implicitToolchainFingerprint(driver, toolchainEnv),
-                effectiveCompilerInvocationFingerprint(
-                  driver,
-                  toolchainEnv,
-                  programCompilerArgs,
-                  programSourceExtension,
-                ),
-                translationUnitDependencyFingerprint(
-                  driver,
-                  cflags,
-                  opts.cPath,
-                  cachedProgramBytes!,
-                  toolchainEnv,
-                ),
-                ccVersionOnce(driver.argv, toolchainEnv, true),
-              ]);
-            if (
-              currentRuntime === runtimeHash && currentImplicit === implicitToolchain &&
-              currentInvocation === programCompilerInvocation &&
-              currentDependencies === programDependencyHash && currentCompiler === compilerVersion
+              root !== null && compilerVersion !== "" && implicitToolchain !== null &&
+              programCompilerInvocation !== null
             ) {
-              await Promise.all([
-                ...(cachedProgramObject === null
-                  ? []
-                  : [publishCachedFile(programObject, cachedProgramObject)]),
-                ...publishable.map((entry) => publishCachedFile(entry.staged, entry.cachePath!)),
-              ]);
+              const key = createHash("sha256")
+                .update("lib-program-shard-v1\0")
+                .update(cacheTargetIdentity(driver)).update("\0")
+                .update(toolchainEnv).update("\0")
+                .update(implicitToolchain).update("\0")
+                .update(programCompilerInvocation).update("\0")
+                .update(opts.cacheIdentity!).update("\0")
+                .update(driver.argv.join("\x1f")).update("\0")
+                .update(compilerVersion).update("\0")
+                .update(runtimeHash).update("\0")
+                .update(programDependencyHash).update("\0")
+                .update(programCompilerArgs.join("\x1f")).update("\0")
+                .update(opts.cPath).update("\0")
+                .update(resolve(opts.cPath)).update("\0")
+                .update(shard.name).update("\0")
+                .update(shard.source)
+                .digest("hex");
+              cachePath = join(root, "program-shard", key);
             }
-          } catch {
-            // Best-effort: the merged program object is already valid.
+            return { ...shard, sourcePath, staged, cachePath, missed: false };
+          });
+          const shardWidth = Math.min(8, availableParallelism());
+          for (let i = 0; i < shardEntries.length; i += shardWidth) {
+            await Promise.all(shardEntries.slice(i, i + shardWidth).map(async (entry) => {
+              await writeFile(entry.sourcePath, entry.source);
+              if (
+                entry.cachePath !== null &&
+                await copyValidCachedFile(entry.cachePath, entry.staged)
+              ) return;
+              entry.missed = true;
+              await compileOne(entry.sourcePath, basename(entry.staged), opts.cPath);
+            }));
           }
+          const publishable = shardEntries.filter(
+            (entry) => entry.missed && entry.cachePath !== null,
+          );
+          const mergedProgramObject = await localizeLibraryObjects(
+            driver,
+            arArgv,
+            buildDir,
+            shardEntries.map((entry) => entry.staged),
+            [],
+            programPublicSymbols!,
+            `${stem}.program`,
+          );
+          // Keep the canonical archive member spelling. The fact that native
+          // compilation used shards is an implementation detail; consumers and
+          // deterministic cache tests continue to see `<stem>.program.o`.
+          await rename(mergedProgramObject, stagedProgramObject);
+          programObject = stagedProgramObject;
+          if (cachedProgramObject !== null || publishable.length > 0) {
+            try {
+              const [currentRuntime, currentImplicit, currentInvocation, currentDependencies, currentCompiler, currentMerge] =
+                await Promise.all([
+                  runtimeFingerprint(rtDir),
+                  implicitToolchainFingerprint(driver, toolchainEnv),
+                  effectiveCompilerInvocationFingerprint(
+                    driver,
+                    toolchainEnv,
+                    programCompilerArgs,
+                    programSourceExtension,
+                  ),
+                  translationUnitDependencyFingerprint(
+                    driver,
+                    cflags,
+                    opts.cPath,
+                    cachedProgramBytes!,
+                    toolchainEnv,
+                  ),
+                  ccVersionOnce(driver.argv, toolchainEnv, true),
+                  libraryProgramShardMergeIdentity(driver),
+                ]);
+              if (
+                currentRuntime === runtimeHash && currentImplicit === implicitToolchain &&
+                currentInvocation === programCompilerInvocation &&
+                currentDependencies === programDependencyHash && currentCompiler === compilerVersion &&
+                currentMerge === programShardMergeIdentity
+              ) {
+                await Promise.all([
+                  ...(cachedProgramObject === null
+                    ? []
+                    : [publishCachedFile(programObject, cachedProgramObject)]),
+                  ...publishable.map((entry) => publishCachedFile(entry.staged, entry.cachePath!)),
+                ]);
+              }
+            } catch {
+              // Best-effort: the merged program object is already valid.
+            }
+          }
+        } catch {
+          // Sharding is only an optimization. A present but incompatible or
+          // failing merge tool (or a shard-only compiler failure) must not
+          // turn a valid canonical LLVM TU into a failed library build. Do not
+          // publish this retry under shard-derived object/archive cache keys.
+          programShardFallback = true;
+          if (cachedProgramBytes !== null) await writeFile(programSource, cachedProgramBytes);
+          programObject = await compileOne(
+            programSource,
+            `${stem}.program.o`,
+            cachedProgramBytes === null ? undefined : opts.cPath,
+          );
         }
       } else {
         programObject = await compileOne(
@@ -2072,7 +2108,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
         compilerVersion !== "" &&
         archiverVersion !== ""
       ) {
-        const [currentRuntime, currentImplicit, currentRuntimeInvocation, currentProgramInvocation, currentProgramDependencies, currentCompiler, currentArchiver] =
+        const [currentRuntime, currentImplicit, currentRuntimeInvocation, currentProgramInvocation, currentProgramDependencies, currentCompiler, currentArchiver, currentProgramShardMerge] =
           await Promise.all([
             runtimeFingerprint(rtDir).catch(() => null),
             implicitToolchainFingerprint(driver, toolchainEnv).catch(() => null),
@@ -2094,16 +2130,21 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
             ).catch(() => null),
             ccVersionOnce(driver.argv, toolchainEnv, true).catch(() => null),
             toolVersionOnce(arArgv, toolchainEnv, true).catch(() => null),
+            programShards === null
+              ? Promise.resolve(null)
+              : libraryProgramShardMergeIdentity(driver).catch(() => null),
           ]);
         runtimeStillMatchesKey =
           cacheInputsStable &&
+          !programShardFallback &&
           currentRuntime === runtimeHash &&
           currentImplicit === implicitToolchain &&
           currentRuntimeInvocation === runtimeCompilerInvocation &&
           currentProgramInvocation === programCompilerInvocation &&
           currentProgramDependencies === programDependencyHash &&
           currentCompiler === compilerVersion &&
-          currentArchiver === archiverVersion;
+          currentArchiver === archiverVersion &&
+          currentProgramShardMerge === programShardMergeIdentity;
       }
       if (cachedArchive !== null && root !== null && runtimeStillMatchesKey) {
         try {

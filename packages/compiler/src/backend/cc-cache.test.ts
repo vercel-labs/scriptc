@@ -3183,6 +3183,103 @@ test.skipIf(!nativeShardMergeAvailable)(
 );
 
 test.skipIf(
+  process.platform === "win32" || clangExecutable === undefined || arExecutable === undefined ||
+  ldExecutable === undefined || (process.platform === "linux" && objcopyExecutable === undefined),
+)("LLVM merged-object caches follow in-place shard merge-tool replacements", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-program-shard-merge-tool-"));
+  scratch.push(dir);
+  const binDir = join(dir, "bin");
+  const cacheRoot = join(dir, "cache");
+  const mergeLog = join(dir, "merge.log");
+  const cPath = join(dir, "program.ll");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  const oldPath = process.env["PATH"];
+  const oldRealLd = process.env["SCRIPTC_TEST_REAL_LD"];
+  const oldMergeLog = process.env["SCRIPTC_TEST_MERGE_LOG"];
+  const programSource = [
+    "define i64 @foo() {",
+    "entry:",
+    "  ret i64 1",
+    "}",
+    "",
+    "define i64 @bar() {",
+    "entry:",
+    "  ret i64 2",
+    "}",
+    "",
+  ].join("\n");
+  const programShards = [
+    {
+      name: "program-f000.ll",
+      source: "define i64 @foo() {\nentry:\n  ret i64 1\n}\ndeclare i64 @bar()\n",
+    },
+    {
+      name: "program-f001.ll",
+      source: "declare i64 @foo()\ndefine i64 @bar() {\nentry:\n  ret i64 2\n}\n",
+    },
+  ];
+  const ldWrapper = (generation: string): string => `#!/bin/sh
+printf '${generation}\\n' >> "$SCRIPTC_TEST_MERGE_LOG"
+exec "$SCRIPTC_TEST_REAL_LD" "$@"
+`;
+  try {
+    await Promise.all([mkdir(binDir), mkdir(cacheRoot, { mode: 0o700 })]);
+    await Promise.all([
+      symlink(clangExecutable!, join(binDir, "clang")),
+      symlink(arExecutable!, join(binDir, "ar")),
+      ...(process.platform === "linux"
+        ? [symlink(objcopyExecutable!, join(binDir, "objcopy"))]
+        : []),
+      writeFile(join(binDir, "ld"), ldWrapper("first")),
+      writeFile(cPath, programSource),
+    ]);
+    await chmod(join(binDir, "ld"), 0o755);
+    process.env["PATH"] = binDir;
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    process.env["SCRIPTC_TEST_REAL_LD"] = ldExecutable!;
+    process.env["SCRIPTC_TEST_MERGE_LOG"] = mergeLog;
+    delete process.env["SCRIPTC_NO_CACHE"];
+    const build = (outPath: string): Promise<void> => compileLibArchive({
+      cPath,
+      programSource,
+      programShards,
+      programPublicSymbols: ["foo", "bar"],
+      outPath,
+      cacheIdentity: TEST_CACHE_IDENTITY,
+      optimization: "dev",
+    });
+
+    await build(join(dir, "first.lib.a"));
+    await writeFile(join(binDir, "ld"), ldWrapper("second"));
+    await chmod(join(binDir, "ld"), 0o755);
+    await build(join(dir, "second.lib.a"));
+
+    expect((await readFile(mergeLog, "utf8")).trim().split("\n")).toEqual(["first", "second"]);
+    expect(await completeArtifacts(cacheRoot, "lib")).toHaveLength(2);
+    expect(
+      (await readdir(join(cacheRoot, "program-obj"))).filter((name) => !name.endsWith(".sha256")),
+    ).toHaveLength(2);
+    // The compiler and shard IR did not change; only merged outputs split by
+    // localization-tool identity.
+    expect(
+      (await readdir(join(cacheRoot, "program-shard"))).filter((name) => !name.endsWith(".sha256")),
+    ).toHaveLength(2);
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    if (oldPath === undefined) delete process.env["PATH"];
+    else process.env["PATH"] = oldPath;
+    if (oldRealLd === undefined) delete process.env["SCRIPTC_TEST_REAL_LD"];
+    else process.env["SCRIPTC_TEST_REAL_LD"] = oldRealLd;
+    if (oldMergeLog === undefined) delete process.env["SCRIPTC_TEST_MERGE_LOG"];
+    else process.env["SCRIPTC_TEST_MERGE_LOG"] = oldMergeLog;
+  }
+});
+
+test.skipIf(
   process.platform === "win32" || clangExecutable === undefined || arExecutable === undefined,
 )("LLVM library shards fall back to the canonical TU without host merge tools", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-program-shard-fallback-"));
@@ -3218,6 +3315,88 @@ test.skipIf(
       optimization: "dev",
     });
     expect(await readFile(outPath)).not.toHaveLength(0);
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    if (oldPath === undefined) delete process.env["PATH"];
+    else process.env["PATH"] = oldPath;
+  }
+});
+
+test.skipIf(
+  process.platform === "win32" || clangExecutable === undefined || arExecutable === undefined ||
+  (process.platform === "linux" && objcopyExecutable === undefined),
+)("LLVM library shards fall back when an available host merge tool fails", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-program-shard-merge-failure-"));
+  scratch.push(dir);
+  const binDir = join(dir, "bin");
+  const cacheRoot = join(dir, "cache");
+  const cPath = join(dir, "program.ll");
+  const outPath = join(dir, "program.lib.a");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  const oldPath = process.env["PATH"];
+  const programSource = [
+    "define i64 @public_value() {",
+    "entry:",
+    "  ret i64 7",
+    "}",
+    "",
+    "define i64 @other_value() {",
+    "entry:",
+    "  ret i64 9",
+    "}",
+    "",
+  ].join("\n");
+  try {
+    await Promise.all([mkdir(binDir), mkdir(cacheRoot, { mode: 0o700 })]);
+    await Promise.all([
+      symlink(clangExecutable!, join(binDir, "clang")),
+      symlink(arExecutable!, join(binDir, "ar")),
+      ...(process.platform === "linux"
+        ? [symlink(objcopyExecutable!, join(binDir, "objcopy"))]
+        : []),
+      writeFile(join(binDir, "ld"), "#!/bin/sh\nexit 1\n"),
+      writeFile(cPath, programSource),
+    ]);
+    await chmod(join(binDir, "ld"), 0o755);
+    process.env["PATH"] = binDir;
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    delete process.env["SCRIPTC_NO_CACHE"];
+    await compileLibArchive({
+      cPath,
+      programSource,
+      programShards: [
+        {
+          name: "program-f000.ll",
+          source: "define i64 @public_value() {\nentry:\n  ret i64 7\n}\ndeclare i64 @other_value()\n",
+        },
+        {
+          name: "program-f001.ll",
+          source: "declare i64 @public_value()\ndefine i64 @other_value() {\nentry:\n  ret i64 9\n}\n",
+        },
+      ],
+      programPublicSymbols: ["public_value", "other_value"],
+      outPath,
+      cacheIdentity: TEST_CACHE_IDENTITY,
+      optimization: "dev",
+    });
+    const probeSource = join(dir, "probe.c");
+    const probe = join(dir, "probe");
+    await writeFile(
+      probeSource,
+      "long long public_value(void);\nint main(void) { return public_value() != 7; }\n",
+    );
+    execFileSync(clangExecutable!, [probeSource, outPath, "-lm", "-o", probe]);
+    expect(execFileSync(probe, { encoding: "utf8" })).toBe("");
+    // The canonical retry is valid for this invocation, but must not occupy a
+    // key describing merged shard bytes. A repaired merge tool retries the
+    // optimization instead of receiving a poisoned completed/object hit.
+    expect(await readdir(join(cacheRoot, "lib")).catch(() => [])).toEqual([]);
+    expect(await readdir(join(cacheRoot, "program-obj")).catch(() => [])).toEqual([]);
+    expect(await readdir(join(cacheRoot, "program-shard")).catch(() => [])).toEqual([]);
   } finally {
     if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
     else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;

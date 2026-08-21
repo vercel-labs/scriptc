@@ -299,6 +299,31 @@ test("manifest validation is strict and source-facing", () => {
   }
 });
 
+test("manifest parsing and cache identity use one byte snapshot", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-ffi-snapshot-"));
+  const path = join(dir, "profile.json");
+  try {
+    const first = Buffer.from(JSON.stringify({
+      ffi_format: 1,
+      functions: [{ name: "first", symbol: "first", params: [], returns: "void" }],
+    }));
+    const second = Buffer.from(JSON.stringify({
+      ffi_format: 1,
+      functions: [{ name: "second", symbol: "second", params: [], returns: "void" }],
+    }));
+    writeFileSync(path, first);
+    const loaded = loadFfiProfile(path);
+    writeFileSync(path, second);
+
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    expect(loaded.profile.functions.map((fn) => fn.name)).toEqual(["first"]);
+    expect(Buffer.from(loaded.profileBytes)).toEqual(first);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("manifest validation reports a missing native link input", () => {
   const path = join(cacheRoot, "missing-library.json");
   mkdirSync(cacheRoot, { recursive: true });

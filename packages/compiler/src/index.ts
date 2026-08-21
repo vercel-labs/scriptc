@@ -947,16 +947,12 @@ async function compileTracked(
   let ffiProfileBytes: Uint8Array | null = null;
   if (opts.ffiProfilePath !== undefined) {
     const ffiProfilePath = resolve(opts.ffiProfilePath);
-    try {
-      ffiProfileBytes = await readFile(ffiProfilePath);
-    } catch {
-      // loadFfiProfile below owns the public diagnostic wording.
-    }
     const loaded = loadFfiProfile(ffiProfilePath);
     if (!loaded.ok) {
       return { ok: false, diagnostics: loaded.diagnostics, sourceTexts: new Map() };
     }
     ffi = loaded.profile;
+    ffiProfileBytes = loaded.profileBytes;
   }
   const buildPlatform = buildTargetPlatform();
   // Mobile triples are library-mode targets: the archive an embedding app
@@ -1007,7 +1003,7 @@ async function compileTracked(
         : { path: opts.ffiProfilePath, bytes: ffiProfileBytes },
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}`,
     compiler: [process.env["SCRIPTC_CC"] ?? "clang"],
-    nativeEnvironment: executableNativeEnvironmentFingerprint(),
+    nativeEnvironment: await executableNativeEnvironmentFingerprint(),
     nodeVersion: process.version,
     implementation: await libraryFrontendImplementationFingerprint(),
   };

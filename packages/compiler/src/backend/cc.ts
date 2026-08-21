@@ -180,12 +180,25 @@ export function toolchainEnvironmentFingerprint(env: NodeJS.ProcessEnv = process
  * executable build selects before compileC has a chance to rediscover it.
  * The early whole-program cache keys this exact posture before restoring a
  * final binary; compileC retains its deeper inode/content validation. */
-export function executableNativeEnvironmentFingerprint(
+export async function executableNativeEnvironmentFingerprint(
   env: NodeJS.ProcessEnv = process.env,
-): string {
+): Promise<string> {
+  const configuredCompiler = env["SCRIPTC_CC"] ?? "";
+  const compilerCommand = configuredCompiler === "zigcc"
+    ? "zig"
+    : configuredCompiler === "" || configuredCompiler === "clang"
+      ? "clang"
+      : null;
+  const compilerIdentity = compilerCommand === null
+    ? `<unsupported:${configuredCompiler}>`
+    : (await resolvedTool(compilerCommand, env))?.cacheIdentity ?? `<unresolved:${compilerCommand}>`;
   const hash = createHash("sha256")
     .update("executable-native-environment-v1\0")
-    .update(toolchainEnvironmentFingerprint(env)).update("\0");
+    .update(toolchainEnvironmentFingerprint(env)).update("\0")
+    // PATH text alone is not a resolution proof: a newly-created executable
+    // in an earlier existing directory changes what spawn selects without
+    // changing PATH. Re-resolve the configured driver on every early lookup.
+    .update(compilerIdentity).update("\0");
   for (const name of [
     "PATH",
     "SCRIPTC_FETCH_CURL",

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
 
@@ -72,3 +72,46 @@ test("exact executable repeats skip lowering while edits and damaged outputs sta
     await rm(dir, { recursive: true, force: true });
   }
 }, 120_000);
+
+test.skipIf(process.platform === "win32")(
+  "an executable appearing earlier on unchanged PATH invalidates the early binary",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-cli-executable-path-"));
+    // Keep the mutable tool directory outside the frontend/native output tree:
+    // this pins driver resolution itself rather than incidental directory
+    // dependency tracking under outDir.
+    const toolDir = await mkdtemp(join(tmpdir(), "scriptc-cli-tool-path-"));
+    const cacheRoot = join(dir, "cache");
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "program");
+    const path = `${toolDir}${delimiter}${process.env["PATH"] ?? ""}`;
+    const build = (): Promise<void> =>
+      execFileAsync(
+        process.execPath,
+        ["--import", tsxLoader, cliEntry, "build", entry, "-o", outPath],
+        {
+          env: { ...process.env, PATH: path, SCRIPTC_CACHE_DIR: cacheRoot },
+          maxBuffer: 4 * 1024 * 1024,
+        },
+      ).then(() => undefined);
+    try {
+      await mkdir(cacheRoot, { mode: 0o700 });
+      await writeFile(entry, 'console.log("cached");\n');
+      await build();
+
+      const clang = join(toolDir, "clang");
+      await writeFile(clang, "#!/bin/sh\nprintf 'new clang selected\\n' >&2\nexit 97\n");
+      await chmod(clang, 0o755);
+
+      await expect(build()).rejects.toMatchObject({
+        stderr: expect.stringContaining("new clang selected"),
+      });
+    } finally {
+      await Promise.all([
+        rm(dir, { recursive: true, force: true }),
+        rm(toolDir, { recursive: true, force: true }),
+      ]);
+    }
+  },
+  120_000,
+);

@@ -145,6 +145,17 @@ export interface FfiProfile {
   systemLibraries: string[];
 }
 
+export type FfiProfileLoadResult =
+  | {
+      ok: true;
+      profile: FfiProfile;
+      /** Exact manifest snapshot parsed into `profile`. Executable cache keys
+       * use these same bytes so a concurrent file replacement cannot split
+       * the cache identity from the frontend/native configuration. */
+      profileBytes: Uint8Array;
+    }
+  | { ok: false; diagnostics: ScrDiagnostic[] };
+
 class FfiProfileError extends Error {
   constructor(readonly detail: string) {
     super(detail);
@@ -292,7 +303,7 @@ function callbackParam(
 /** Parse and strictly validate one outbound native-FFI manifest. */
 export function loadFfiProfile(
   profilePath: string,
-): { ok: true; profile: FfiProfile } | { ok: false; diagnostics: ScrDiagnostic[] } {
+): FfiProfileLoadResult {
   const fail = (detail: string): { ok: false; diagnostics: ScrDiagnostic[] } => ({
     ok: false,
     diagnostics: [ffiProfileDiag(detail, profilePath)],
@@ -575,6 +586,7 @@ export function loadFfiProfile(
     }
     return {
       ok: true,
+      profileBytes: bytes,
       profile: {
         ffiFormat: format,
         functions: resolvedFunctions,

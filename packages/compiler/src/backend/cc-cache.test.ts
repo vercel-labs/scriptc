@@ -1976,8 +1976,61 @@ test("native cache warming seeds exact runtime and vendor families without compl
     expect((await readdir(join(cacheRoot, "obj"), { withFileTypes: true })).filter((e) => e.isDirectory())).toHaveLength(3);
     expect(await readdir(join(cacheRoot, "bin")).catch(() => [])).toEqual([]);
     const vendorEntries = await readdir(vendorCacheRoot);
-    expect(vendorEntries.some((name) => name.startsWith("mbedtls-"))).toBe(true);
-    expect(vendorEntries.some((name) => /^3c8f3d689539-plain-/.test(name))).toBe(true);
+    const tlsEntry = vendorEntries.find((name) => name.startsWith("mbedtls-"));
+    const engineEntry = vendorEntries.find((name) => /^3c8f3d689539-plain-/.test(name));
+    expect(tlsEntry).toBeDefined();
+    expect(engineEntry).toBeDefined();
+    expect((await stat(join(vendorCacheRoot, tlsEntry!, "libmbedtls.a.sha256"))).isFile()).toBe(true);
+    expect((await stat(join(vendorCacheRoot, engineEntry!, "libqjs.a.sha256"))).isFile()).toBe(true);
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    if (oldVendorCacheDir === undefined) delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+    else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
+  }
+}, 120_000);
+
+test("damaged shared vendor archives are rejected and rebuilt before linking", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-vendor-integrity-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const cPath = join(dir, "program.c");
+  const outPath = join(dir, "program");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  const oldVendorCacheDir = process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+  const corruption = Buffer.from("scriptc-corrupt-vendor-archive\n");
+  try {
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    delete process.env["SCRIPTC_NO_CACHE"];
+    delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+    await writeFile(cPath, "int main(void) { return 0; }\n");
+    await warmNativeCaches({ profiles: ["dynamic"] });
+
+    const vendorRoot = join(cacheRoot, "vendor");
+    const engineDir = (await readdir(vendorRoot)).find((name) =>
+      /^3c8f3d689539-plain-/.test(name)
+    );
+    expect(engineDir).toBeDefined();
+    const engineArchive = join(vendorRoot, engineDir!, "libqjs.a");
+    expect((await stat(`${engineArchive}.sha256`)).isFile()).toBe(true);
+    await writeFile(engineArchive, corruption);
+
+    await compileC({
+      cPath,
+      outPath,
+      cacheIdentity: TEST_CACHE_IDENTITY,
+      dynamic: true,
+    });
+
+    expect((await stat(outPath)).isFile()).toBe(true);
+    const repaired = await readFile(engineArchive);
+    expect(repaired).not.toEqual(corruption);
+    expect((await readFile(`${engineArchive}.sha256`, "utf8")).trim()).toBe(
+      createHash("sha256").update(repaired).digest("hex"),
+    );
   } finally {
     if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
     else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;

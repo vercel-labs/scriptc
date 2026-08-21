@@ -951,6 +951,20 @@ async function fileExists(path: string): Promise<boolean> {
   );
 }
 
+/** Vendor prerequisites are shared persistent cache entries, so they carry
+ * the same adjacent content digest as runtime objects and complete artifacts.
+ * Missing/invalid pairs are rebuilt. Do not remove them during validation: a
+ * concurrent publisher installs data before its digest, and that temporary
+ * invalid window must not let a reader unlink the publisher's data. */
+async function validVendorArtifact(path: string): Promise<boolean> {
+  return validCachedFile(path);
+}
+
+function protectCachedArtifact(paths: Set<string> | undefined, path: string): void {
+  paths?.add(path);
+  paths?.add(cacheDigestPath(path));
+}
+
 function privateSiblingPath(destination: string, label: string): string {
   // Keep the temporary component independent of the caller's basename. A
   // destination can validly consume the filesystem's entire NAME_MAX budget;
@@ -981,15 +995,32 @@ async function installArtifact(
 }
 
 /** Publish one finished vendor prerequisite from disposable build scratch.
+ * The shared data and digest use the ordinary atomic cache publisher.
  * Concurrent builders produce equivalent bytes; on platforms where rename
- * cannot replace the winner, accepting that already-published file preserves
- * the first-writer-wins contract. */
+ * cannot replace the winner, accept only a checksum-verified winner. */
 async function publishVendorArtifact(source: string, destination: string): Promise<void> {
-  try {
-    await installArtifact(source, destination);
-  } catch (error) {
-    if (!(await fileExists(destination))) throw error;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await publishCachedFile(source, destination);
+    } catch (error) {
+      // A concurrent equivalent publisher may have won on a platform where
+      // rename cannot replace an existing file. Accept only its verified pair.
+      if (await validCachedFile(destination)) return;
+      if (attempt > 0) throw error;
+      // Otherwise the existing pair is genuinely stale/corrupt and blocked
+      // replacement (notably on Windows). Remove it only after a complete
+      // replacement is ready in private scratch, then retry once.
+      await Promise.all([
+        rm(destination, { force: true }).catch(() => undefined),
+        rm(cacheDigestPath(destination), { force: true }).catch(() => undefined),
+      ]);
+      continue;
+    }
+    // Close publication races where another writer replaced only one member
+    // of the pair between this publisher's two atomic renames.
+    if (await validCachedFile(destination)) return;
   }
+  throw new Error(`vendor cache publication failed integrity validation: ${destination}`);
 }
 
 /** Pin cache-backed vendor inputs under an invocation-private directory before
@@ -1053,7 +1084,7 @@ async function ensureEngineArchive(
 ): Promise<string> {
   const archive = engineArchivePath(sanitize, driver, buildIdentity, cacheRoot);
   const cacheDir = dirname(archive);
-  if (await fileExists(archive)) return archive;
+  if (await validVendorArtifact(archive)) return archive;
   return buildEngineArchiveDirect(sanitize, driver, cacheRoot, cacheDir);
 }
 
@@ -1161,7 +1192,7 @@ async function ensureLreObjects(
     `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
   const vendor = vendorEngineDir();
   const objects = lreObjectPaths(sanitize, driver, buildIdentity, cacheRoot);
-  if ((await Promise.all(objects.map(fileExists))).every(Boolean)) return objects;
+  if ((await Promise.all(objects.map(validVendorArtifact))).every(Boolean)) return objects;
 
   await mkdir(cacheRoot, { recursive: true });
   const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-lre-${flavor}-`));
@@ -1239,7 +1270,7 @@ async function ensureZlibObjects(
     `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
   const vendor = vendorZlibDir();
   const objects = zlibObjectPaths(sanitize, driver, buildIdentity, cacheRoot);
-  if ((await Promise.all(objects.map(fileExists))).every(Boolean)) return objects;
+  if ((await Promise.all(objects.map(validVendorArtifact))).every(Boolean)) return objects;
 
   await mkdir(cacheRoot, { recursive: true });
   const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-zlib-${flavor}-`));
@@ -1313,7 +1344,7 @@ async function ensureCurlStub(
 ): Promise<string> {
   const cacheDir = curlStubDirPath(driver, buildIdentity, cacheRoot);
   const lib = join(cacheDir, "libcurl.so");
-  if (await fileExists(lib)) return cacheDir;
+  if (await validVendorArtifact(lib)) return cacheDir;
 
   await mkdir(cacheRoot, { recursive: true });
   const buildDir = await mkdtemp(join(tmpdir(), "scriptc-vendor-curl-stub-"));
@@ -1375,7 +1406,7 @@ async function ensureTlsArchive(
   const arArgv = driver.target !== null ? [...driver.argv.slice(0, 1), "ar"] : ["ar"];
   const vendor = vendorTlsDir();
   const archive = tlsArchivePath(sanitize, driver, buildIdentity, cacheRoot);
-  if (await fileExists(archive)) return archive;
+  if (await validVendorArtifact(archive)) return archive;
 
   await mkdir(cacheRoot, { recursive: true });
   const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-mbedtls-${flavor}-`));
@@ -4917,7 +4948,7 @@ async function compileCInternal(
         vendorBuildIdentity,
         materializeCacheRoot,
       );
-      cacheWarmPaths?.add(cachedArchive);
+      protectCachedArtifact(cacheWarmPaths, cachedArchive);
       const materialize = async (): Promise<string[]> => [
         await ensureEngineArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
       ];
@@ -4933,7 +4964,7 @@ async function compileCInternal(
         vendorBuildIdentity,
         materializeCacheRoot,
       );
-      cacheWarmPaths?.add(cachedArchive);
+      protectCachedArtifact(cacheWarmPaths, cachedArchive);
       const materialize = async (): Promise<string[]> => [
         await ensureTlsArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
       ];
@@ -4948,7 +4979,7 @@ async function compileCInternal(
         driver,
         vendorBuildIdentity,
         materializeCacheRoot,
-      )) cacheWarmPaths?.add(object);
+      )) protectCachedArtifact(cacheWarmPaths, object);
       const materialize = async (): Promise<string[]> =>
         await ensureLreObjects(sanitize, driver, vendorBuildIdentity, materializeCacheRoot);
       lreObjects = stageRoot === undefined
@@ -4961,7 +4992,7 @@ async function compileCInternal(
         driver,
         vendorBuildIdentity,
         materializeCacheRoot,
-      )) cacheWarmPaths?.add(object);
+      )) protectCachedArtifact(cacheWarmPaths, object);
       const materialize = async (): Promise<string[]> =>
         await ensureZlibObjects(sanitize, driver, vendorBuildIdentity, materializeCacheRoot);
       zlibObjects = stageRoot === undefined
@@ -4969,7 +5000,7 @@ async function compileCInternal(
         : await stageVendorInputs(materialize, join(stageRoot, "zlib"));
     }
     if (curlStubDir !== null) {
-      cacheWarmPaths?.add(join(
+      protectCachedArtifact(cacheWarmPaths, join(
         curlStubDirPath(driver, vendorBuildIdentity, materializeCacheRoot),
         "libcurl.so",
       ));

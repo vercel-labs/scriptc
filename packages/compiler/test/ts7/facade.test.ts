@@ -5,6 +5,7 @@
 
 import { afterAll, expect, test } from "vitest";
 import { lowerToIr } from "../../src/frontend/lowering/lowerer.js";
+import { clearWorkspacePackages, registerWorkspacePackage } from "../../src/frontend/shared.js";
 import { CheckerFacade } from "../../src/frontend/ts7/checker.js";
 import type { Node } from "typescript/unstable/ast";
 import type { Checker, Type } from "typescript/unstable/sync";
@@ -156,6 +157,63 @@ test("isTupleType agrees with the raw checker; only object types round-trip, onc
   const before = counts["isTupleType"] ?? 0;
   for (const t of types) facade.isTupleType(t);
   expect(counts["isTupleType"] ?? 0).toBe(before);
+});
+
+test("isArrayType agrees with the raw checker and skips visibly non-object types", () => {
+  const { facade, counts, w } = build();
+  const raw = w.p7.project.checker;
+  const types = new Set<Type>();
+  for (const node of collectNodes(w)) types.add(facade.getTypeAtLocation(node));
+  expect(types.size).toBeGreaterThan(30);
+
+  let objectTypes = 0;
+  let arrays = 0;
+  for (const type of types) {
+    if (type.flags & ad.TypeFlags.Object) objectTypes++;
+    const viaFacade = facade.isArrayType(type);
+    expect(viaFacade, raw.typeToString(type)).toBe(raw.isArrayType(type));
+    if (viaFacade) arrays++;
+  }
+  expect(arrays).toBeGreaterThan(0);
+  expect(counts["isArrayType"] ?? 0).toBeLessThanOrEqual(objectTypes);
+
+  const before = counts["isArrayType"] ?? 0;
+  for (const type of types) facade.isArrayType(type);
+  expect(counts["isArrayType"] ?? 0).toBe(before);
+});
+
+test("union and intersection constituents are fetched once per immutable type", () => {
+  const { w } = build();
+  const raw = w.p7.project.checker;
+  const calls = new Map<Type, number>();
+  const originals = new Map<Type, () => readonly Type[] | undefined>();
+  const compound = new Set<Type>();
+  for (const node of collectNodes(w)) {
+    const type = raw.getTypeAtLocation(node);
+    if (type === undefined || !(type.isUnionType() || type.isIntersectionType())) continue;
+    compound.add(type);
+  }
+  expect(compound.size).toBeGreaterThan(0);
+  try {
+    for (const type of compound) {
+      const withConstituents = type as Type & { getTypes(): readonly Type[] | undefined };
+      const original = withConstituents.getTypes.bind(withConstituents);
+      originals.set(type, original);
+      withConstituents.getTypes = () => {
+        calls.set(type, (calls.get(type) ?? 0) + 1);
+        return original();
+      };
+    }
+    for (const type of compound) {
+      const first = ad.constituentTypes(type);
+      expect(ad.constituentTypes(type)).toBe(first);
+      expect(calls.get(type)).toBe(1);
+    }
+  } finally {
+    for (const [type, original] of originals) {
+      (type as Type & { getTypes(): readonly Type[] | undefined }).getTypes = original;
+    }
+  }
 });
 
 test("explicit prefetchSourceFile primes hot kinds and direct fallbacks memoize", () => {
@@ -412,6 +470,43 @@ test("class-shape collection batches deferred method default types", () => {
   )).toBe(true);
   expect(typeCalls.some(([arg]) =>
     !Array.isArray(arg) && initializers.includes(arg as never),
+  )).toBe(false);
+});
+
+test("eager npm-static implicit instances batch their committed body", () => {
+  const w = buildTwoWorlds({
+    "eager-implicit.js": `
+function pick(value) {
+  const row = { value };
+  return row.value;
+}
+console.log(pick(42));
+`,
+  }, host);
+  worlds.push(w);
+  const { proxy, calls } = countingChecker(w.p7.project.checker);
+  const facade = new CheckerFacade(proxy, { project: w.p7.project });
+  (w.p7 as unknown as { checkerFacade: CheckerFacade | null }).checkerFacade = facade;
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const fn = sf.statements.find(ad.isFunctionDeclaration)!;
+  const insideBody = (node: Node): boolean =>
+    node.getStart() >= fn.body!.getStart() && node.end <= fn.body!.end;
+
+  // Mark this fixture as an opted-in package file: that is the only gate
+  // separating ordinary JS from npm-static implicit-any monomorphization.
+  registerWorkspacePackage("eager-implicit", w.dir);
+  try {
+    lowerToIr(w.p7, sf, [sf]);
+  } finally {
+    clearWorkspacePackages();
+  }
+
+  const typeCalls = calls["getTypeAtLocation"] ?? [];
+  expect(typeCalls.some(([arg]) =>
+    Array.isArray(arg) && (arg as Node[]).some(insideBody),
+  )).toBe(true);
+  expect(typeCalls.some(([arg]) =>
+    !Array.isArray(arg) && insideBody(arg as Node),
   )).toBe(false);
 });
 

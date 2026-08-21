@@ -1973,7 +1973,7 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
           const argIdent = c.arguments[0] as ts.Identifier;
           const sym = L.resolveValueSymbol(argIdent);
           const t = L.checker.getTypeAtLocation(argIdent);
-          const constituents = t.isUnionType() ? t.getTypes() : [];
+          const constituents = t.isUnionType() ? ts.constituentTypes(t) : [];
           const nonArray = constituents.filter((a) => !L.checker.isArrayType(a) && !L.checker.isTupleType(a));
           const mapped = L.mapTypeOf(t);
           const armCount = mapped?.kind === "union" ? L.arrayValueTags(mapped.unionId).length : 0;
@@ -4028,7 +4028,7 @@ export function lowerOptionalChain(L: Lowerer, expr: ts.CallExpression | ts.Prop
    * for effect and are not stored. Null for every other target. */
   function settledDropNames(L: Lowerer, tsType: ts.Type): Set<string> | null {
     let names: Set<string> | null = null;
-    const parts: readonly ts.Type[] = tsType.isUnionType() ? tsType.getTypes() : [tsType];
+    const parts: readonly ts.Type[] = tsType.isUnionType() ? ts.constituentTypes(tsType) : [tsType];
     for (const part of parts) {
       const sym = part.getSymbol();
       if (
@@ -4104,7 +4104,7 @@ export function lowerOptionalChain(L: Lowerer, expr: ts.CallExpression | ts.Prop
     if (t.isNumberLiteralType()) return String(t.value);
     if (t.isUnionType()) {
       let out: string | null = null;
-      for (const arm of t.getTypes()) {
+      for (const arm of ts.constituentTypes(t)) {
         const s = arm.isStringLiteralType() ? arm.value : arm.isNumberLiteralType() ? String(arm.value) : null;
         if (s === null || (out !== null && s !== out)) return null;
         out = s;
@@ -4480,7 +4480,7 @@ function literalUnionArmOf(
    * types only into their own unit; otherwise the widened IR pair must be
    * equal or width-liftable. */
   const fits = (litT: ts.Type, ftT: ts.Type): boolean => {
-    if (ftT.isUnionType()) return ftT.getTypes().some((a) => fits(litT, a));
+    if (ftT.isUnionType()) return ts.constituentTypes(ftT).some((a) => fits(litT, a));
     if (ftT.isStringLiteralType()) return litT.isStringLiteralType() && litT.value === ftT.value;
     if (ftT.isNumberLiteralType()) return litT.isNumberLiteralType() && litT.value === ftT.value;
     if (ftT.flags & ts.TypeFlags.BooleanLiteral) {
@@ -4496,7 +4496,7 @@ function literalUnionArmOf(
   };
   const armShapeIds = new Set(recordArms.map((a) => a.shapeId));
   const candidates = new Set<string>();
-  for (const member of tsType.getTypes()) {
+  for (const member of ts.constituentTypes(tsType)) {
     const mMapped = L.mapTypeOf(member);
     if (mMapped?.kind !== "record" || !armShapeIds.has(mMapped.shapeId) || candidates.has(mMapped.shapeId)) continue;
     const shape = L.shapes.get(mMapped.shapeId);
@@ -4642,7 +4642,7 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
     // slot's field types (`lanIp: string | null`), which the literal's own
     // type narrows away (a field written as `lanIp: null` types as bare
     // `null`, which maps to nothing on its own).
-    if (tsType.isUnionType() && tsType.getTypes().some((t) => t.getSymbol()?.name === "PromiseLike")) {
+    if (tsType.isUnionType() && ts.constituentTypes(tsType).some((t) => t.getSymbol()?.name === "PromiseLike")) {
       tsType = L.checker.getAwaitedType(tsType) ?? tsType;
     }
     let mapped = L.mapTypeOf(tsType);
@@ -4672,7 +4672,7 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
       if (ctxShape && !ctxShape.indexValue && !ctxShape.tuple) {
         const names = new Set(ctxShape.fields.map((f) => f.name));
         const ctxHasProp = (name: string): boolean => {
-          const members = tsType.isUnionType() ? tsType.getTypes() : [tsType];
+          const members = tsType.isUnionType() ? ts.constituentTypes(tsType) : [tsType];
           return members.some((m) => L.checker.getPropertyOfType(m, name) !== undefined);
         };
         const extraOf = (text: string): boolean => !names.has(text) && !ctxHasProp(text);
@@ -8223,7 +8223,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
     const direct = L.mapTypeOf(t);
     if (rooted(direct)) return direct;
     if (t.isIntersectionType()) {
-      for (const part of t.getTypes()) {
+      for (const part of ts.constituentTypes(t)) {
         const m = L.mapTypeOf(part);
         if (rooted(m)) return m;
       }
@@ -8444,7 +8444,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
       const arm = def.arms[tags[0]!]!;
       // The checker-side arm: the union part whose (widened) mapping IS
       // the proven IR arm — what typeOf answers inside the branch.
-      const parts = valT.isUnionType() ? valT.getTypes() : [valT];
+      const parts = valT.isUnionType() ? ts.constituentTypes(valT) : [valT];
       const tsArm = parts.find((p) => {
         const m = L.mapTypeOf(L.checker.getBaseTypeOfLiteralType(p));
         return m !== null && typeEquals(m, arm);

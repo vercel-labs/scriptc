@@ -792,7 +792,7 @@ export interface GenericInstance {
    * instead of the generic supported-types recitation; a no-op for every
    * other unmappable type (the caller's badType reports those). */
   function fenceGenericSignatureResult(L: Lowerer, blame: ts.Node, t: ts.Type): void {
-    const parts = t.isUnionType() ? t.getTypes() : [t];
+    const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
     if (!parts.some((p) => L.checker.getCallSignatures(p).some((s) => (s.typeParameters?.length ?? 0) > 0))) {
       return;
     }
@@ -1243,8 +1243,8 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
       // unbound type parameter surfaces as a mapping diagnostic later).
       if (declared.isUnionType()) {
         const unitFlags = ts.TypeFlags.Undefined | ts.TypeFlags.Null;
-        const dParts = declared.getTypes().filter((t) => !(t.flags & unitFlags));
-        const iParts: readonly ts.Type[] = inst.isUnionType() ? inst.getTypes().filter((t) => !(t.flags & unitFlags)) : [inst];
+        const dParts = ts.constituentTypes(declared).filter((t) => !(t.flags & unitFlags));
+        const iParts: readonly ts.Type[] = inst.isUnionType() ? ts.constituentTypes(inst).filter((t) => !(t.flags & unitFlags)) : [inst];
         if (dParts.length === 1 && iParts.length === 1) unify(dParts[0]!, iParts[0]!, depth + 1);
         return;
       }
@@ -1643,7 +1643,7 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
         // A `Fn | undefined`-flavored slot: the value can only inhabit the
         // one callable arm — judge by it (the requireExactArityValue union
         // rule).
-        const callable = pinT.getTypes().map((t) => L.checker.getCallSignatures(t)).filter((s) => s.length === 1);
+        const callable = ts.constituentTypes(pinT).map((t) => L.checker.getCallSignatures(t)).filter((s) => s.length === 1);
         if (callable.length === 1) target = callable[0]![0]!;
       }
     }
@@ -1980,6 +1980,16 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
     // the pinned signature over a missing body, which the linker never
     // sees because the poison also fenced the call statement.
     try {
+      // Implicit-any instances lower EAGERLY at the call site so their
+      // inferred return type is available immediately. They therefore do
+      // not pass through emitReachable's queued generic-instance wave,
+      // which normally batches checker work before lowering a body. Prime
+      // this exact committed instance body here; repeated instantiations of
+      // the same declaration find the facade memos warm.
+      L.checker.prefetchRoots([
+        ...info.decl.parameters.flatMap((param) => param.initializer ? [param.initializer] : []),
+        ...(info.decl.body ? [info.decl.body] : []),
+      ]);
       const fn = L.lowerGenericInstance(info, inst);
       L.implicitFns.push(fn);
     } catch (e) {

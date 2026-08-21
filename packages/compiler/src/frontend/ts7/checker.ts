@@ -27,9 +27,12 @@
  *    type.flags plus the intrinsic-type singletons for the literal kinds
  *    5.9.3 maps to intrinsics (string/number/bigint/boolean literals), with
  *    IPC only for enum-ish and union types. isTupleType answers shape-true
- *    and non-object-false locally and round-trips (memoized) only for
- *    object types. Both verified against the raw checker AND against 5.9.3
- *    by the adapter's suites. */
+ *    and non-object-false locally; isArrayType likewise answers
+ *    non-object-false locally. Both round-trip (memoized) only where object
+ *    identity needs the checker. Immutable union/intersection constituents
+ *    are memoized too because TypeScript 7's Type.getTypes() otherwise
+ *    repeats an IPC request. All paths are verified against the raw checker
+ *    and against 5.9.3 by the adapter's suites. */
 
 import type { Node, SourceFile } from "typescript/unstable/ast";
 import type {
@@ -97,11 +100,31 @@ const PREFETCH_MAX_DEPTH = 512;
  * only 29k ever requested). */
 const TYPE_PREFETCH_KINDS = new Set<SyntaxKind>([
   SyntaxKind.Identifier,
+  SyntaxKind.ThisKeyword,
   SyntaxKind.PropertyAccessExpression,
+  SyntaxKind.ElementAccessExpression,
+  SyntaxKind.CallExpression,
+  SyntaxKind.NewExpression,
   SyntaxKind.ObjectLiteralExpression,
   SyntaxKind.ArrayLiteralExpression,
   SyntaxKind.ConditionalExpression,
 ]);
+
+/** The TypeScript 7 client identity-dedupes immutable types but does not
+ * memoize Type.getTypes(): every union/intersection inspection otherwise
+ * repeats getTypesOfType over IPC. Keep that derived answer beside the
+ * adapter, shared by preflight and lowering regardless of which facade
+ * helper led to the type. */
+const constituentTypesOf = new WeakMap<Type, readonly Type[]>();
+
+export function constituentTypes(type: Type): readonly Type[] {
+  let types = constituentTypesOf.get(type);
+  if (types === undefined) {
+    types = (type as Type & { getTypes(): readonly Type[] | undefined }).getTypes() ?? [];
+    constituentTypesOf.set(type, types);
+  }
+  return types;
+}
 
 /** Function-like declarations whose body is deferred until reachability
  * asks for it. Header prefetch walks their names, type parameters, params,
@@ -656,6 +679,11 @@ export class CheckerFacade {
   }
 
   isArrayType(type: Type): boolean {
+    // Arrays are object types. The raw checker agrees that primitive,
+    // union/intersection, and type-parameter objects themselves are not
+    // arrays (a narrowed array arm arrives as its object type), so avoid a
+    // request for every visibly non-object type just as isTupleType does.
+    if (!(type.flags & TypeFlags.Object)) return false;
     let answer = this.arrayTypeAnswer.get(type);
     if (answer === undefined) {
       answer = this.raw.isArrayType(type);
@@ -729,7 +757,7 @@ export class CheckerFacade {
   private computeAwaitedType(type: Type, depth: number): Type | undefined {
     if (depth > 8) return undefined; // matches 5.9.3's unwrap depth fence
     if (type.isUnionType()) {
-      const arms = type.getTypes();
+      const arms = constituentTypes(type);
       const awaited = arms.map((arm) => this.computeAwaitedType(arm, depth + 1));
       if (awaited.some((arm) => arm === undefined)) return undefined;
       // No arm was a promise: awaiting the union is the union itself

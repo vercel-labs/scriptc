@@ -1920,7 +1920,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         // A runtime string whose TYPE pins every possible value to the
         // supported literals — the modes resolve at the call instead.
-        const arms: readonly ts.Type[] = t.isUnionType() ? t.getTypes() : [t];
+        const arms: readonly ts.Type[] = t.isUnionType() ? ts.constituentTypes(t) : [t];
         if (
           arms.length > 0 &&
           arms.every(
@@ -4480,7 +4480,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
       if (!node) return dflt;
       const nodeType = L.typeOf(node);
-      const parts: readonly ts.Type[] = nodeType.isUnionType() ? nodeType.getTypes() : [nodeType];
+      const parts: readonly ts.Type[] = nodeType.isUnionType() ? ts.constituentTypes(nodeType) : [nodeType];
       const supported = parts.every(
         (t) =>
           (t.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null)) !== 0 ||

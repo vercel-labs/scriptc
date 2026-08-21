@@ -636,7 +636,7 @@ export function neverTaintedJsType(L: Lowerer, node: ts.Node, t: ts.Type): boole
   if (!isJsSourceFile(node.getSourceFile())) return false;
   const walk = (x: ts.Type, depth: number): boolean => {
     if (depth === 0) return false;
-    if (x.isUnionType()) return x.getTypes().some((a) => walk(a, depth - 1));
+    if (x.isUnionType()) return ts.constituentTypes(x).some((a) => walk(a, depth - 1));
     if (L.checker.isArrayType(x) || L.checker.isTupleType(x)) {
       return L.checker
         .getTypeArguments(x as ts.TypeReference)
@@ -3188,7 +3188,7 @@ export class Lowerer {
     // story through its callable arm. After the package check: a
     // package-declared generic signature stays the package's story.
     {
-      const parts = widened.isUnionType() ? widened.getTypes() : [widened];
+      const parts = widened.isUnionType() ? ts.constituentTypes(widened) : [widened];
       if (
         parts.some((p) =>
           this.checker.getCallSignatures(p).some((s) => (s.typeParameters?.length ?? 0) > 0),
@@ -3576,9 +3576,9 @@ export class Lowerer {
       // when one constituent is; a union is array-proven only when EVERY
       // arm is, so an ordinary `any[] | string` never qualifies.
       if ((part.flags & ts.TypeFlags.Intersection) !== 0) {
-        return (part as ts.UnionOrIntersectionType).getTypes().some(visit);
+        return ts.constituentTypes(part).some(visit);
       }
-      if (part.isUnionType()) return part.getTypes().every(visit);
+      if (part.isUnionType()) return ts.constituentTypes(part).every(visit);
       return false;
     };
     return visit(t);
@@ -6475,7 +6475,7 @@ export class Lowerer {
       } else {
         const t = this.typeOf(d.initializer);
         if (!isUnitOnlyTsType(t)) return null;
-        for (const p of t.isUnionType() ? t.getTypes() : [t]) {
+        for (const p of t.isUnionType() ? ts.constituentTypes(t) : [t]) {
           units.add((p.flags & ts.TypeFlags.Null) !== 0 ? "null" : "undefined");
         }
       }
@@ -7682,7 +7682,7 @@ export class Lowerer {
       }
       if (d && ts.isVariableDeclaration(d) && d.initializer === undefined) {
         const t = this.checker.getTypeOfSymbol(symbol);
-        const parts = t.isUnionType() ? t.getTypes() : [t];
+        const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
         if (parts.some((p) => this.checker.getCallSignatures(p).some((s) => (s.typeParameters?.length ?? 0) > 0))) {
           this.unsupported(
             "SC1030",

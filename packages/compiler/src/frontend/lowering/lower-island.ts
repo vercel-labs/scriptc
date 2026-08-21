@@ -707,7 +707,7 @@ function fenceRequestInitObject(
 ): void {
   const contextual = L.checker.getContextualType(init);
   const contextualArms =
-    contextual?.isUnionType() ? contextual.getTypes() : contextual ? [contextual] : [];
+    contextual?.isUnionType() ? ts.constituentTypes(contextual) : contextual ? [contextual] : [];
   const rows = NODE24_FETCH_COMPAT_PROFILE.inventory.entries.filter((entry) =>
     entry.owner === "RequestInit" && entry.placement === "dictionary"
   );
@@ -1154,7 +1154,7 @@ function fetchElementMemberNames(
   if (key.isStringLiteralType()) return [key.value];
   if (!key.isUnionType()) return null;
   const members: string[] = [];
-  for (const arm of key.getTypes()) {
+  for (const arm of ts.constituentTypes(key)) {
     if (!arm.isStringLiteralType()) return null;
     if (!members.includes(arm.value)) members.push(arm.value);
   }
@@ -3359,7 +3359,7 @@ export function lowerStaticReadableStreamReaderCall(
     const pkg = L.npmPackageOfSymbol(type.getAliasSymbol() ?? type.getSymbol());
     if (pkg) return pkg;
     if (type.isUnionType()) {
-      for (const part of type.getTypes()) {
+      for (const part of ts.constituentTypes(type)) {
         const partPkg = L.npmPackageOf(part);
         if (partPkg) return partPkg;
       }

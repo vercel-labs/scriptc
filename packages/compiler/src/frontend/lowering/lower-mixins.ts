@@ -502,7 +502,7 @@ function instantiateMixinCall(L: Lowerer, call: ts.CallExpression, shape: MixinF
  * bindings, heritage clauses) participate: they are registered before
  * any body lowers in BOTH passes, so discovery and emit answer alike. */
 export function mixinIntersectionInstanceType(L: Lowerer, widened: ts.Type): IrType | null {
-  const parts = widened.isIntersectionType() ? widened.getTypes() : null;
+  const parts = widened.isIntersectionType() ? ts.constituentTypes(widened) : null;
   if (!parts || L.mixinInstancesByClassNode.size === 0) return null;
   const mixinParts: ts.ClassLikeDeclaration[] = [];
   const plainParts: string[] = [];

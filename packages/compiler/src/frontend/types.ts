@@ -1025,7 +1025,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // falls through to the general union branch below, whose per-part
   // recursion re-enters here with the pure enum parts.
   if (flags & ts.TypeFlags.EnumLike) {
-    const parts = widened.isUnionType() ? widened.getTypes() : [widened];
+    const parts = widened.isUnionType() ? ts.constituentTypes(widened) : [widened];
     if (parts.every((p) => p.flags & ts.TypeFlags.EnumLike)) {
       let hasNum = false;
       let hasStr = false;
@@ -1218,7 +1218,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     ]);
     let handle: IrType | null = null;
     let refined = true;
-    for (const part of widened.getTypes()) {
+    for (const part of ts.constituentTypes(widened)) {
       const mapped = mapType(part, ctx);
       if (mapped && HANDLE_KINDS.has(mapped.kind)) {
         if (handle !== null && handle.kind !== mapped.kind) {
@@ -2602,7 +2602,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const sensitivityAtEntry = contextResolutions;
     try {
       const byKey = new Map<string, IrType>();
-      for (const part of widened.getTypes()) {
+      for (const part of ts.constituentTypes(widened)) {
         // A `void` PART is inhabited only by undefined (`Promise<void> |
         // void` return types, `string | void`): it becomes the undefinedT
         // unit arm, exactly like an undefined part — the value either
@@ -2630,7 +2630,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         if (mapped?.kind === "jsval") return JSVAL;
         if (!mapped) {
           // Before failing the whole union, let a LATER jsval part absorb.
-          for (const rest of widened.getTypes()) {
+          for (const rest of ts.constituentTypes(widened)) {
             if (mapType(rest, ctx)?.kind === "jsval") return JSVAL;
           }
           return null;
@@ -2747,12 +2747,12 @@ function mapNarrowedTypeParam(type: ts.Type, ctx: TypeMapperCtx): IrType | null 
     if (c.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) return (allowUndefined = true);
     if (c.flags & ts.TypeFlags.Null) return (allowNull = true);
     // A companion UNION (`T & ({} | null)`): each part is an allowance.
-    if (c.isUnionType()) return c.getTypes().every(visitCompanion);
+    if (c.isUnionType()) return ts.constituentTypes(c).every(visitCompanion);
     return false;
   };
   const visitPart = (part: ts.Type): boolean => {
     if (!part.isIntersectionType()) return false;
-    for (const p of part.getTypes()) {
+    for (const p of ts.constituentTypes(part)) {
       if (p.flags & ts.TypeFlags.TypeParameter) {
         if (tp && tp !== p) return false; // two different parameters: not this pattern
         tp = p;
@@ -2762,7 +2762,7 @@ function mapNarrowedTypeParam(type: ts.Type, ctx: TypeMapperCtx): IrType | null 
     }
     return true;
   };
-  const parts: readonly ts.Type[] = type.isUnionType() ? type.getTypes() : [type];
+  const parts: readonly ts.Type[] = type.isUnionType() ? ts.constituentTypes(type) : [type];
   if (!parts.every(visitPart) || !tp) return undefined;
   const bound = resolveTypeParam(tp);
   if (!bound) return null;
@@ -3058,7 +3058,7 @@ export function genResultRecord(
  * a value). */
 export function isUnitOnlyTsType(t: ts.Type): boolean {
   const UNIT = ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null;
-  const parts: readonly ts.Type[] = t.isUnionType() ? t.getTypes() : [t];
+  const parts: readonly ts.Type[] = t.isUnionType() ? ts.constituentTypes(t) : [t];
   return parts.every((p) => (p.flags & UNIT) !== 0);
 }
 
@@ -3106,7 +3106,7 @@ function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): Ir
   if (!widened.isIntersectionType()) return null;
   if (checker.getCallSignatures(widened).length !== 1) return null;
   let funcPart: ts.Type | null = null;
-  for (const part of widened.getTypes()) {
+  for (const part of ts.constituentTypes(widened)) {
     if (checker.getCallSignatures(part).length > 0) {
       if (funcPart) return null; // exactly one callable part
       funcPart = part;
@@ -3164,7 +3164,7 @@ function isMappedShape(t: ts.Type): boolean {
 function recordProvenanceOk(t: ts.Type, ctx: TypeMapperCtx): boolean {
   const { checker } = ctx;
   if (t.isIntersectionType()) {
-    return t.getTypes().every(
+    return ts.constituentTypes(t).every(
       (part) => {
         const partSym = part.getSymbol();
         return (part.flags & ts.TypeFlags.Object) !== 0 &&
@@ -3298,7 +3298,7 @@ function mapRecordTypeInner(widened: ts.Type, ctx: TypeMapperCtx): IrType | Reco
     const stringKey = (k: ts.Type): boolean =>
       (k.flags & ts.TypeFlags.String) !== 0 ||
       (k.isIntersectionType() &&
-        k.getTypes().every(
+        ts.constituentTypes(k).every(
           (p) =>
             (p.flags & ts.TypeFlags.String) !== 0 ||
             ((p.flags & ts.TypeFlags.Object) !== 0 &&
@@ -3694,7 +3694,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
   // arm kind with no union home. Unions have no symbol, so a null answer
   // falls through to the residual fence, never to a false lib claim.
   if (widened.isUnionType()) {
-    const parts = widened.getTypes();
+    const parts = ts.constituentTypes(widened);
     const UNIT = ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null;
     const dataArms = parts.filter((p) => (p.flags & UNIT) === 0);
     // A union carrying an 'object'/'unknown'-flavored arm rides the

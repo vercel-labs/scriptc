@@ -1120,7 +1120,7 @@ function nonInertTopLevel7(program: ts.Program, sf: ts.SourceFile): ts.Node | nu
    * ToString/ToNumber/ToPrimitive can never reach a user valueOf. */
   const primitiveTyped = (e: ts.Expression): boolean => {
     const t = checker.getTypeAtLocation(e);
-    const parts = t.isUnionType() ? t.getTypes() : [t];
+    const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
     return parts.every((p) => (p.flags & PRIM) !== 0);
   };
   /** The identifier's symbol lives entirely in declaration files — a

@@ -138,7 +138,7 @@ function primitiveProtoValueIsIgnored(L: Lowerer, node: ts.Expression): boolean 
     ts.TypeFlags.Void |
     ts.TypeFlags.Never;
   const t = L.typeOf(node);
-  const parts = t.isUnionType() ? t.getTypes() : [t];
+  const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
   return parts.every((p) => (p.flags & primitive) !== 0);
 }
 

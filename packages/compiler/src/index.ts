@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { buildCacheRoot, CcCompileError, compileC, compileLibArchive, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/cc.js";
 import { emitModule } from "./backend/emission/emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
+import { splitLlvmProgram } from "./backend/llvm/split.js";
 import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "./backend/library-identity.js";
 import { checkerPanicDiag, ffiNativeBuildDiag, libAsyncExportDiag, libAsyncSurfaceDiag, libExportUnresolvedDiag, libGenericExportDiag, libIntBoundaryDiag, libNpmIneligibleDiag, libSidecarDiag, libUnmappableSignatureDiag, iceDiag, isCheckerPanic, LIB_INBOUND_BYTES_TRAP_CODE, LIB_RUNTIME_TRAP_CODES, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import { checkLibraryIntegerSlots, classSeed, hasIntSlots, numberCarrierKind, type FnIntSlots, type IntSlotConfig } from "./library/int-infer.js";
@@ -1554,7 +1555,10 @@ async function compileLibraryNative(
   const localizeSymbols = libraryLocalizeSymbols(profile);
   let identityCSource: string | undefined;
   let programSource: string | undefined;
-  if (profile.sidecar !== null || profile.emission === "c") {
+  if (
+    profile.sidecar !== null || profile.emission === "c" ||
+    (profile.emission === "llvm" && profile.optimization === "dev" && !sanitize)
+  ) {
     const publicSource = await readFile(cPath, "utf8");
     programSource = publicSource;
   }
@@ -1576,10 +1580,20 @@ async function compileLibraryNative(
   if (profile.emission === "c") {
     programSource = stripLibrarySourceComments(programSource!, profile.entry);
   }
+  const llvmSplit =
+    profile.emission === "llvm" && profile.optimization === "dev" && !sanitize && programSource !== undefined
+      ? splitLlvmProgram(programSource)
+      : null;
   await compileLibArchive({
     cPath,
     ...(programSource !== undefined ? { programSource } : {}),
     ...(identityCSource !== undefined ? { identityCSource } : {}),
+    ...(llvmSplit !== null
+      ? {
+          programShards: llvmSplit.shards,
+          programPublicSymbols: llvmSplit.publicSymbols,
+        }
+      : {}),
     outPath: archivePath,
     cacheIdentity: "scriptc-generated-library-v1",
     sanitize,

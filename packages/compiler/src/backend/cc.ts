@@ -1372,6 +1372,11 @@ async function ensureTlsArchive(
  * objects apart from executable-lane objects). Persistent builds cache the
  * completed archive by program-TU content and cache runtime objects separately,
  * so an edit recompiles only the changed program object before re-archiving.
+ * Large LLVM dev TUs split further into stable symbol-hash shards: compile
+ * those in parallel, cache each object independently, then relocatably merge
+ * them back into the archive's one canonical program member. A localized edit
+ * recompiles only the changed buckets; exact repeats use the merged-object or
+ * completed-archive tiers and never repeat the merge.
  * The base set narrows from the executable lane's unconditional sources:
  * scr_async.c (fibers, timers, the loop) and scr_child.c drop — the
  * async_free refusal already guarantees nothing references them — and
@@ -1402,6 +1407,14 @@ export interface LibArchiveOptions {
    * spelling. Library assembly uses this for the identity-free projection of
    * a complete caller-visible TU; its bytes drive every native cache key. */
   programSource?: string;
+  /** Optional equivalent LLVM modules for native compilation. The public
+   * `programSource` remains the canonical TU/cache identity; these stable
+   * shards compile independently and are relocatably merged into one program
+   * object before archive assembly. */
+  programShards?: readonly { name: string; source: string }[];
+  /** Canonical externally visible definitions retained while the shard merge
+   * demotes generated cross-shard linkage back to local symbols. */
+  programPublicSymbols?: readonly string[];
   /** Tiny generated C source carrying volatile library identity getters.
    * Its bytes join the complete archive key, but the source itself exists
    * only in the invocation-private build directory and the large program-
@@ -1603,9 +1616,10 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
         const av = await toolVersionOnce(arArgv, toolchainEnv, true);
         archiverVersion = av;
         const key = createHash("sha256")
-          // v7 adds effective compiler-wrapper invocations for the real runtime
-          // and program compile flavors.
-          .update("lib-v7\0")
+          // v8 adds the optional native program-shard set. The canonical TU
+          // still keys source semantics; shard bytes key the exact archive
+          // object layout so single- and multi-TU producers never collide.
+          .update("lib-v8\0")
           .update(cacheTargetIdentity(driver)).update("\0")
           .update(toolchainEnv).update("\0")
           .update(implicitToolchain!).update("\0")
@@ -1626,11 +1640,16 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           .update(opts.cPath).update("\0")
           .update(resolve(opts.cPath)).update("\0")
           .update(programBytes)
+          .update("\0program-shards\0");
+        for (const shard of opts.programShards ?? []) {
+          key.update(shard.name).update("\0").update(shard.source).update("\0");
+        }
+        const keyHex = key
           .update("\0identity\0")
           .update(identityBytes === null ? "<none>" : "<generated>").update("\0")
           .update(identityBytes ?? Buffer.alloc(0))
           .digest("hex");
-        cachedArchive = join(root, "lib", key);
+        cachedArchive = join(root, "lib", keyHex);
         const tmpOut = privateSiblingPath(opts.outPath, "lib-hit");
         try {
           await mkdir(dirname(opts.outPath), { recursive: true });
@@ -1706,7 +1725,24 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
         cachedProgramBytes === null
           ? opts.cPath
           : join(buildDir, `program${opts.cPath.endsWith(".ll") ? ".ll" : ".c"}`);
-      if (cachedProgramBytes !== null) await writeFile(programSource, cachedProgramBytes);
+      const shardNames = new Set<string>();
+      const programShardsValid = opts.programShards?.every((shard) => {
+        if (
+          basename(shard.name) !== shard.name || !shard.name.endsWith(".ll") ||
+          shardNames.has(shard.name)
+        ) return false;
+        shardNames.add(shard.name);
+        return true;
+      }) === true;
+      const programShards =
+        opts.cPath.endsWith(".ll") &&
+        programShardsValid && opts.programShards !== undefined && opts.programShards.length > 1 &&
+        opts.programPublicSymbols !== undefined
+          ? opts.programShards
+          : null;
+      if (cachedProgramBytes !== null && programShards === null) {
+        await writeFile(programSource, cachedProgramBytes);
+      }
       let cachedProgramObject: string | null = null;
       if (
         root !== null && cachedProgramBytes !== null && compilerVersion !== "" &&
@@ -1737,6 +1773,102 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
         await copyValidCachedFile(cachedProgramObject, stagedProgramObject)
       ) {
         programObject = stagedProgramObject;
+      } else if (programShards !== null) {
+        const shardEntries = programShards.map((shard, index) => {
+          const sourcePath = join(buildDir, shard.name);
+          const staged = join(buildDir, `${stem}.program-${index.toString().padStart(3, "0")}.o`);
+          let cachePath: string | null = null;
+          if (
+            root !== null && compilerVersion !== "" && implicitToolchain !== null &&
+            programCompilerInvocation !== null
+          ) {
+            const key = createHash("sha256")
+              .update("lib-program-shard-v1\0")
+              .update(cacheTargetIdentity(driver)).update("\0")
+              .update(toolchainEnv).update("\0")
+              .update(implicitToolchain).update("\0")
+              .update(programCompilerInvocation).update("\0")
+              .update(opts.cacheIdentity!).update("\0")
+              .update(driver.argv.join("\x1f")).update("\0")
+              .update(compilerVersion).update("\0")
+              .update(runtimeHash).update("\0")
+              .update(programDependencyHash).update("\0")
+              .update(programCompilerArgs.join("\x1f")).update("\0")
+              .update(opts.cPath).update("\0")
+              .update(resolve(opts.cPath)).update("\0")
+              .update(shard.name).update("\0")
+              .update(shard.source)
+              .digest("hex");
+            cachePath = join(root, "program-shard", key);
+          }
+          return { ...shard, sourcePath, staged, cachePath, missed: false };
+        });
+        const shardWidth = Math.min(8, availableParallelism());
+        for (let i = 0; i < shardEntries.length; i += shardWidth) {
+          await Promise.all(shardEntries.slice(i, i + shardWidth).map(async (entry) => {
+            await writeFile(entry.sourcePath, entry.source);
+            if (
+              entry.cachePath !== null &&
+              await copyValidCachedFile(entry.cachePath, entry.staged)
+            ) return;
+            entry.missed = true;
+            await compileOne(entry.sourcePath, basename(entry.staged), opts.cPath);
+          }));
+        }
+        const publishable = shardEntries.filter(
+          (entry) => entry.missed && entry.cachePath !== null,
+        );
+        const mergedProgramObject = await localizeLibraryObjects(
+          driver,
+          arArgv,
+          buildDir,
+          shardEntries.map((entry) => entry.staged),
+          [],
+          opts.programPublicSymbols!,
+          `${stem}.program`,
+        );
+        // Keep the canonical archive member spelling. The fact that native
+        // compilation used shards is an implementation detail; consumers and
+        // deterministic cache tests continue to see `<stem>.program.o`.
+        await rename(mergedProgramObject, stagedProgramObject);
+        programObject = stagedProgramObject;
+        if (cachedProgramObject !== null || publishable.length > 0) {
+          try {
+            const [currentRuntime, currentImplicit, currentInvocation, currentDependencies, currentCompiler] =
+              await Promise.all([
+                runtimeFingerprint(rtDir),
+                implicitToolchainFingerprint(driver, toolchainEnv),
+                effectiveCompilerInvocationFingerprint(
+                  driver,
+                  toolchainEnv,
+                  programCompilerArgs,
+                  programSourceExtension,
+                ),
+                translationUnitDependencyFingerprint(
+                  driver,
+                  cflags,
+                  opts.cPath,
+                  cachedProgramBytes!,
+                  toolchainEnv,
+                ),
+                ccVersionOnce(driver.argv, toolchainEnv, true),
+              ]);
+            if (
+              currentRuntime === runtimeHash && currentImplicit === implicitToolchain &&
+              currentInvocation === programCompilerInvocation &&
+              currentDependencies === programDependencyHash && currentCompiler === compilerVersion
+            ) {
+              await Promise.all([
+                ...(cachedProgramObject === null
+                  ? []
+                  : [publishCachedFile(programObject, cachedProgramObject)]),
+                ...publishable.map((entry) => publishCachedFile(entry.staged, entry.cachePath!)),
+              ]);
+            }
+          } catch {
+            // Best-effort: the merged program object is already valid.
+          }
+        }
       } else {
         programObject = await compileOne(
           programSource,
@@ -2029,13 +2161,16 @@ async function localizeLibraryObjects(
     }
     return combined;
   }
-  await run([arArgv[0] ?? "ar", ...arArgv.slice(1), "rcs", staging, ...supportObjects]);
+  const supportArgs = supportObjects.length === 0 ? [] : [staging];
+  if (supportObjects.length > 0) {
+    await run([arArgv[0] ?? "ar", ...arArgv.slice(1), "rcs", staging, ...supportObjects]);
+  }
   if (platform === "darwin") {
     await writeFile(keepFile, keepSymbols.map((s) => `_${s}\n`).join(""));
-    await run(["ld", "-r", ...rootObjects, staging, "-o", combined, "-exported_symbols_list", keepFile]);
+    await run(["ld", "-r", ...rootObjects, ...supportArgs, "-o", combined, "-exported_symbols_list", keepFile]);
   } else if (platform === "linux" && driver.target === null) {
     await writeFile(keepFile, keepSymbols.map((s) => `${s}\n`).join(""));
-    await run(["ld", "-r", "--force-group-allocation", ...rootObjects, staging, "-o", combined]);
+    await run(["ld", "-r", "--force-group-allocation", ...rootObjects, ...supportArgs, "-o", combined]);
     await run(["objcopy", `--keep-global-symbols=${keepFile}`, combined]);
   } else if (platform === "linux") {
     // Cross ELF: the cross driver's own lld performs the relocatable merge
@@ -2049,7 +2184,7 @@ async function localizeLibraryObjects(
       ...driver.argv.slice(1),
       "-target", driver.zigTarget ?? driver.target!,
       "-nostdlib",
-      "-r", ...rootObjects, staging,
+      "-r", ...rootObjects, ...supportArgs,
       "-o", combined,
     ]);
     try {
@@ -2071,7 +2206,7 @@ async function localizeLibraryObjects(
  * Content-addressed caches that let repeat builds of unchanged programs skip
  * payload code generation/linking — the test lanes' dominant cost. Executable
  * lookups still run lightweight dependency and link-input metadata probes.
- * Three keyspaces under the cache root:
+ * Principal keyspaces under the cache root:
  *
  *   bin/<key>       — whole program binaries. key = sha256(resolved clang
  *                     identity/version, target + compiler/linker environment,
@@ -2100,6 +2235,14 @@ async function localizeLibraryObjects(
  *                     target/flags, gated source set, caller dependency
  *                     identity, TU path, and program-TU bytes.
  *                     Checksum-verified hits skip native code generation and ar.
+ *
+ *   program-obj/<key> — the canonical library program object, after any LLVM
+ *                     shard merge. Exact TU repeats reuse it directly.
+ *
+ *   program-shard/<key> — stable LLVM dev-library buckets keyed by their IR
+ *                     text and complete toolchain/TU identity. Local edits
+ *                     retain every bucket whose definitions/declarations did
+ *                     not change.
  *
  *   obj/<set>/<f>.o — per-flavor runtime objects for cache-miss builds. The
  *                     historical single invocation recompiles every runtime

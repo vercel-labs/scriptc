@@ -21,6 +21,7 @@ import {
   vendorCacheBuildIdentity,
   vendorCacheTargetFlavor,
 } from "./cc.js";
+import { splitLlvmProgram } from "./llvm/split.js";
 
 const scratch: string[] = [];
 const TEST_CACHE_IDENTITY = "cc-cache-tests-v1";
@@ -2998,6 +2999,92 @@ test("library identity edits reuse the cached large program object", async () =>
     else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
   }
 });
+
+test.skipIf(process.platform === "win32")(
+  "LLVM library shards reuse unaffected program objects after a localized edit",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-lib-program-shards-"));
+    scratch.push(dir);
+    const cacheRoot = join(dir, "cache");
+    const cPath = join(dir, "program.ll");
+    const outPath = join(dir, "program.lib.a");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const source = (value: number): string => `%Pair = type { i64, i64 }
+@private_value = internal global i64 ${value}
+
+define internal i64 @left() {
+entry:
+  %v = load i64, ptr @private_value
+  ret i64 %v
+}
+
+define internal i64 @right() {
+entry:
+  %v = call i64 @left()
+  ret i64 %v
+}
+
+define i64 @scriptc_public_value() {
+entry:
+  %v = call i64 @right()
+  ret i64 %v
+}
+`;
+    try {
+      process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      await mkdir(cacheRoot, { mode: 0o700 });
+      const build = async (value: number): Promise<void> => {
+        const programSource = source(value);
+        const split = splitLlvmProgram(programSource, { minimumBytes: 0, targetBytes: 64 * 1024 });
+        expect(split?.shards).toHaveLength(3);
+        await writeFile(cPath, programSource);
+        await compileLibArchive({
+          cPath,
+          programSource,
+          programShards: split!.shards,
+          programPublicSymbols: split!.publicSymbols,
+          outPath,
+          cacheIdentity: TEST_CACHE_IDENTITY,
+          optimization: "dev",
+        });
+      };
+      await build(7);
+      const initial = (await readdir(join(cacheRoot, "program-shard")))
+        .filter((name) => !name.endsWith(".sha256"));
+      expect(initial).toHaveLength(3);
+
+      await build(9);
+      const after = (await readdir(join(cacheRoot, "program-shard")))
+        .filter((name) => !name.endsWith(".sha256"));
+      expect(after).toHaveLength(4);
+      expect(initial.filter((name) => after.includes(name))).toHaveLength(3);
+      const old = new Date("2000-01-01T00:00:00.000Z");
+      await Promise.all(after.map((name) => utimes(join(cacheRoot, "program-shard", name), old, old)));
+      await build(9);
+      for (const name of after) {
+        // The completed archive hit returns before shard lookup/merge; exact
+        // repeats do not even touch the per-bucket object cache.
+        expect((await stat(join(cacheRoot, "program-shard", name))).mtimeMs).toBe(old.getTime());
+      }
+
+      const probeSource = join(dir, "probe.c");
+      const probe = join(dir, "probe");
+      await writeFile(
+        probeSource,
+        "#include <stdio.h>\nlong long scriptc_public_value(void);\nint main(void) { printf(\"%lld\\n\", scriptc_public_value()); }\n",
+      );
+      execFileSync("clang", [probeSource, outPath, "-lm", "-o", probe]);
+      expect(execFileSync(probe, { encoding: "utf8" })).toBe("9\n");
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    }
+  },
+);
 
 test.skipIf(process.platform === "win32" || zigExecutable === undefined)(
   "cross-ELF localized archives retain unreferenced identity roots",

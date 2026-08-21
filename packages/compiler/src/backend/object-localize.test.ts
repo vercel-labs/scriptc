@@ -487,6 +487,35 @@ describe("mergeAndLocalizeCoffObjects", () => {
     expect(byName.has("excluded_unit_ref")).toBe(false);
   });
 
+  test("resolves cross-references between program-shard roots and demotes their private links", () => {
+    const first = buildCoff(
+      [text([{ va: 0, sym: 3, type: 4 }])],
+      [
+        { name: ".text", section: 1, storageClass: IMAGE_SYM_CLASS_STATIC, sectionDef: true },
+        { name: "private_a", section: 1 },
+        { name: "private_b", section: 0 },
+      ],
+    );
+    const second = buildCoff(
+      [text([{ va: 0, sym: 3, type: 4 }])],
+      [
+        { name: ".text", section: 1, storageClass: IMAGE_SYM_CLASS_STATIC, sectionDef: true },
+        { name: "private_b", section: 1 },
+        { name: "private_a", section: 0 },
+        { name: "public_entry", section: 1, value: 4 },
+      ],
+    );
+    const merged = readCoff(
+      mergeAndLocalizeCoffObjects([first, second], [], new Set(["public_entry"])),
+    );
+    const byName = new Map(merged.symbols.map((symbol) => [symbol.name, symbol]));
+    expect(byName.get("private_a")?.storageClass).toBe(IMAGE_SYM_CLASS_STATIC);
+    expect(byName.get("private_b")?.storageClass).toBe(IMAGE_SYM_CLASS_STATIC);
+    expect(byName.get("public_entry")?.storageClass).toBe(IMAGE_SYM_CLASS_EXTERNAL);
+    expect(merged.sections[0]!.relocs[0]!.sym).toBe(byName.get("private_b")!.index);
+    expect(merged.sections[1]!.relocs[0]!.sym).toBe(byName.get("private_a")!.index);
+  });
+
   test("does not pull an alternate definition when a selected object already satisfies the reference", () => {
     // program defines foo and needs bar; the first support member defines
     // bar and calls back into foo. A real archive link stops there. The

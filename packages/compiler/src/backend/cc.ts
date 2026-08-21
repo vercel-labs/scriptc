@@ -1627,11 +1627,14 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     }
   }
   let implicitToolchain: string | null = null;
+  let implicitCompileToolchain: string | null = null;
   let runtimeCompilerInvocation: string | null = null;
   let programCompilerInvocation: string | null = null;
   if (persistentDriverCache) {
     try {
-      implicitToolchain = await implicitToolchainFingerprint(driver, toolchainEnv);
+      const fingerprints = await implicitToolchainFingerprints(driver, toolchainEnv);
+      implicitToolchain = fingerprints.complete;
+      implicitCompileToolchain = fingerprints.compile;
     } catch {
       // An identity probe is cache machinery, never a reason a valid native
       // compile should fail. Disable every persistent tier for this invocation.
@@ -1862,14 +1865,21 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
             const staged = join(buildDir, `${stem}.program-${index.toString().padStart(3, "0")}.o`);
             let cachePath: string | null = null;
             if (
-              root !== null && compilerVersion !== "" && implicitToolchain !== null &&
+              root !== null && compilerVersion !== "" && implicitCompileToolchain !== null &&
               programCompilerInvocation !== null
             ) {
               const key = createHash("sha256")
-                .update("lib-program-shard-v1\0")
+                // v2 removes the broad implicit-toolchain fingerprint: it
+                // includes the linker selected by the driver, but raw shard
+                // objects are compile-only outputs. The compile-only toolchain
+                // identity retains compiler/config/header/assembler inputs;
+                // the effective program invocation pins this exact flag lane.
+                // Merge-tool identity belongs only to the merged-object and
+                // completed-archive tiers.
+                .update("lib-program-shard-v2\0")
                 .update(cacheTargetIdentity(driver)).update("\0")
                 .update(toolchainEnv).update("\0")
-                .update(implicitToolchain).update("\0")
+                .update(implicitCompileToolchain).update("\0")
                 .update(programCompilerInvocation).update("\0")
                 .update(opts.cacheIdentity!).update("\0")
                 .update(driver.argv.join("\x1f")).update("\0")
@@ -1917,10 +1927,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           programObject = stagedProgramObject;
           if (cachedProgramObject !== null || publishable.length > 0) {
             try {
-              const [currentRuntime, currentImplicit, currentInvocation, currentDependencies, currentCompiler, currentMerge] =
+              const [currentRuntime, currentInvocation, currentDependencies, currentCompiler] =
                 await Promise.all([
                   runtimeFingerprint(rtDir),
-                  implicitToolchainFingerprint(driver, toolchainEnv),
                   effectiveCompilerInvocationFingerprint(
                     driver,
                     toolchainEnv,
@@ -1935,18 +1944,29 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
                     toolchainEnv,
                   ),
                   ccVersionOnce(driver.argv, toolchainEnv, true),
-                  libraryProgramShardMergeIdentity(driver),
                 ]);
-              if (
-                currentRuntime === runtimeHash && currentImplicit === implicitToolchain &&
+              const shardInputsStillMatch =
+                currentRuntime === runtimeHash &&
                 currentInvocation === programCompilerInvocation &&
-                currentDependencies === programDependencyHash && currentCompiler === compilerVersion &&
-                currentMerge === programShardMergeIdentity
-              ) {
+                currentDependencies === programDependencyHash && currentCompiler === compilerVersion;
+              const currentFingerprints = shardInputsStillMatch
+                ? await implicitToolchainFingerprints(driver, toolchainEnv)
+                : null;
+              const compileInputsStillMatch =
+                shardInputsStillMatch &&
+                currentFingerprints?.compile === implicitCompileToolchain;
+              let mergedInputsStillMatch = false;
+              if (compileInputsStillMatch && cachedProgramObject !== null) {
+                const currentMerge = await libraryProgramShardMergeIdentity(driver).catch(() => null);
+                mergedInputsStillMatch =
+                  currentFingerprints?.complete === implicitToolchain &&
+                  currentMerge === programShardMergeIdentity;
+              }
+              if (compileInputsStillMatch) {
                 await Promise.all([
-                  ...(cachedProgramObject === null
-                    ? []
-                    : [publishCachedFile(programObject, cachedProgramObject)]),
+                  ...(mergedInputsStillMatch
+                    ? [publishCachedFile(programObject, cachedProgramObject!)]
+                    : []),
                   ...publishable.map((entry) => publishCachedFile(entry.staged, entry.cachePath!)),
                 ]);
               }
@@ -2745,6 +2765,14 @@ interface ImplicitToolchainProbe {
   dependencyFingerprint: string;
   invocationPaths: string[];
   tools: { spelling: string; identity: string | null; path: string | null }[];
+  compileToolSpellings: string[];
+}
+
+interface ImplicitToolchainFingerprints {
+  /** Compiler inputs plus assembler identity: safe for compile-only objects. */
+  compile: string;
+  /** The compile identity plus the driver's selected linker identity. */
+  complete: string;
 }
 
 interface ImplicitLinkerProbe {
@@ -3189,10 +3217,10 @@ function translationUnitDependencyFingerprint(
  * change that redirects includes cannot hide behind an unchanged old path
  * list. Dependency discovery must succeed on every cache-enabled invocation;
  * a prior path list cannot reveal a new higher-priority header. */
-async function implicitToolchainFingerprintFresh(
+async function implicitToolchainFingerprintsFresh(
   driver: Pick<CcDriver, "argv" | "targetArgs" | "target">,
   environmentFingerprint: string,
-): Promise<string> {
+): Promise<ImplicitToolchainFingerprints> {
   let probe: ImplicitToolchainProbe;
   const compiler = driver.argv[0] ?? "clang";
   const compilerIdentity = await resolvedToolIdentity(compiler);
@@ -3255,7 +3283,8 @@ async function implicitToolchainFingerprintFresh(
           { cwd: probeDir, maxBuffer: 16 * 1024 * 1024 },
         ),
       ]);
-      const toolSpellings = [linker.stdout.trim(), assembler.stdout.trim()].filter(
+      const assemblerSpelling = assembler.stdout.trim();
+      const toolSpellings = [linker.stdout.trim(), assemblerSpelling].filter(
         (value, index, all) => value !== "" && all.indexOf(value) === index,
       );
       const sourceSet = new Set(sources);
@@ -3286,53 +3315,71 @@ async function implicitToolchainFingerprintFresh(
             };
           }),
         ),
+        compileToolSpellings: assemblerSpelling === "" ? [] : [assemblerSpelling],
       };
     } finally {
       await rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
-  const hash = createHash("sha256")
-    .update("implicit-toolchain-v2\0")
-    .update(environmentFingerprint)
-    .update("\0")
-    .update(probe.compilerIdentity)
-    .update("\0")
-    .update(probe.compilerInvocation)
-    .update("\0")
-    .update(driver.argv.join("\x1f"))
-    .update("\0")
-    .update(driver.targetArgs.join("\x1f"))
-    .update("\0")
-    .update(probe.dependencies.join("\x1f"))
-    .update("\0")
-    .update(probe.dependencyFingerprint)
-    .update("\0");
-  for (const tool of probe.tools) {
-    const currentIdentity = await resolvedToolIdentity(tool.spelling);
-    hash
-      .update(tool.spelling)
+  const tools = await Promise.all(probe.tools.map(async (tool) => ({
+    ...tool,
+    currentIdentity: await resolvedToolIdentity(tool.spelling),
+  })));
+  const fingerprint = (
+    domain: string,
+    selectedTools: readonly (typeof tools)[number][],
+  ): string => {
+    const hash = createHash("sha256")
+      .update(domain)
+      .update(environmentFingerprint)
       .update("\0")
-      .update(currentIdentity ?? tool.identity ?? "<unresolved>")
+      .update(probe.compilerIdentity)
+      .update("\0")
+      .update(probe.compilerInvocation)
+      .update("\0")
+      .update(driver.argv.join("\x1f"))
+      .update("\0")
+      .update(driver.targetArgs.join("\x1f"))
+      .update("\0")
+      .update(probe.dependencies.join("\x1f"))
+      .update("\0")
+      .update(probe.dependencyFingerprint)
       .update("\0");
-  }
-  return rememberFingerprintDependencies(
-    hash.digest("hex"),
-    [
-      ...probe.dependencies,
-      ...probe.invocationPaths,
-      ...probe.tools.flatMap((tool) => tool.path === null ? [] : [tool.path]),
-    ],
-    probe.dependencies,
-    probe.dependencyFingerprint,
-  );
+    for (const tool of selectedTools) {
+      hash
+        .update(tool.spelling)
+        .update("\0")
+        .update(tool.currentIdentity ?? tool.identity ?? "<unresolved>")
+        .update("\0");
+    }
+    return rememberFingerprintDependencies(
+      hash.digest("hex"),
+      [
+        ...probe.dependencies,
+        ...probe.invocationPaths,
+        ...selectedTools.flatMap((tool) => tool.path === null ? [] : [tool.path]),
+      ],
+      probe.dependencies,
+      probe.dependencyFingerprint,
+    );
+  };
+  const compileSpellingSet = new Set(probe.compileToolSpellings);
+  return {
+    // Preserve the established complete fingerprint domain and byte stream.
+    complete: fingerprint("implicit-toolchain-v2\0", tools),
+    compile: fingerprint(
+      "implicit-compile-toolchain-v1\0",
+      tools.filter((tool) => compileSpellingSet.has(tool.spelling)),
+    ),
+  };
 }
 
-const stableImplicitToolchainMemos = new Map<string, Promise<string>>();
-function implicitToolchainFingerprint(
+const stableImplicitToolchainMemos = new Map<string, Promise<ImplicitToolchainFingerprints>>();
+function implicitToolchainFingerprints(
   driver: Pick<CcDriver, "argv" | "targetArgs" | "target">,
   environmentFingerprint: string,
-): Promise<string> {
+): Promise<ImplicitToolchainFingerprints> {
   const key = [
     environmentFingerprint,
     driver.argv.join("\x1f"),
@@ -3341,7 +3388,16 @@ function implicitToolchainFingerprint(
     runtimeSrcDir(),
   ].join("\0");
   return stableTestMemo(stableImplicitToolchainMemos, key, () =>
-    implicitToolchainFingerprintFresh(driver, environmentFingerprint),
+    implicitToolchainFingerprintsFresh(driver, environmentFingerprint),
+  );
+}
+
+function implicitToolchainFingerprint(
+  driver: Pick<CcDriver, "argv" | "targetArgs" | "target">,
+  environmentFingerprint: string,
+): Promise<string> {
+  return implicitToolchainFingerprints(driver, environmentFingerprint).then(
+    (fingerprints) => fingerprints.complete,
   );
 }
 

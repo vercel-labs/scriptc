@@ -27,6 +27,14 @@ test("cache warm accepts focused profiles and rejects unknown ones", async () =>
     await expect(
       execFileAsync(process.execPath, [bootstrap, "cache", "warm", "unknown"], { env }),
     ).rejects.toMatchObject({ stderr: expect.stringContaining("unknown cache warm profile") });
+
+    await expect(
+      execFileAsync(process.execPath, [bootstrap, "cache", "warm", "runtime"], {
+        env: { ...env, CPATH: dir },
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("requires a persistently cacheable compiler environment"),
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

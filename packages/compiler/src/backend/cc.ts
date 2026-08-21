@@ -970,6 +970,48 @@ async function installArtifact(
   }
 }
 
+/** Publish one finished vendor prerequisite from disposable build scratch.
+ * Concurrent builders produce equivalent bytes; on platforms where rename
+ * cannot replace the winner, accepting that already-published file preserves
+ * the first-writer-wins contract. */
+async function publishVendorArtifact(source: string, destination: string): Promise<void> {
+  try {
+    await installArtifact(source, destination);
+  } catch (error) {
+    if (!(await fileExists(destination))) throw error;
+  }
+}
+
+/** Pin cache-backed vendor inputs under an invocation-private directory before
+ * linking/archiving. The shared LRU may unlink their cache names at any time;
+ * hard links (or copies where links are unavailable) keep active inputs alive.
+ * A sweep can race the initial pin, so rematerialize and retry once. */
+async function stageVendorInputs(
+  materialize: () => Promise<string[]>,
+  stageDir: string,
+): Promise<string[]> {
+  let lastError: unknown = new Error("vendor cache input disappeared while staging");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await rm(stageDir, { recursive: true, force: true }).catch(() => undefined);
+    await mkdir(stageDir, { recursive: true });
+    const sources = await materialize();
+    try {
+      return await Promise.all(sources.map(async (source) => {
+        const destination = join(stageDir, basename(source));
+        try {
+          await link(source, destination);
+        } catch {
+          await copyFile(source, destination);
+        }
+        return destination;
+      }));
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 /** The engine archive for one flavor, built lazily on the first --dynamic
  * compile and cached under <build-cache>/vendor/<commit>-<flavor>-<target>-<toolchain>/ — unlike
  * the runtime's own sources (recompiled every build, ~100ms), the engine is
@@ -1035,7 +1077,7 @@ async function buildEngineArchiveDirect(sanitize: boolean, driver: CcDriver, cac
     "-I", vendor,
   ];
   await mkdir(cacheRoot, { recursive: true });
-  const buildDir = await mkdtemp(join(cacheRoot, `build-qjs-${driver.target ?? "host"}-`));
+  const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-qjs-${driver.target ?? "host"}-`));
   try {
     const width = Math.min(QJS_ENGINE_SOURCES.length, availableParallelism());
     for (let i = 0; i < QJS_ENGINE_SOURCES.length; i += width) {
@@ -1050,14 +1092,7 @@ async function buildEngineArchiveDirect(sanitize: boolean, driver: CcDriver, cac
       );
     }
     await execFileAsync(arArgv[0] ?? "ar", [...arArgv.slice(1), "rcs", join(buildDir, "libqjs.a"), ...QJS_ENGINE_SOURCES.map((s) => join(buildDir, `${basename(s, ".c")}.o`))]);
-    // Atomic publish: rename fails if a concurrent build won the race, and
-    // the winner's archive is just as good.
-    const stageDir = `${buildDir}.stage`;
-    await mkdir(stageDir);
-    await copyFile(join(buildDir, "libqjs.a"), join(stageDir, "libqjs.a"));
-    await rename(stageDir, cacheDir).catch(async () => {
-      await rm(stageDir, { recursive: true, force: true });
-    });
+    await publishVendorArtifact(join(buildDir, "libqjs.a"), archive);
   } finally {
     await rm(buildDir, { recursive: true, force: true });
   }
@@ -1115,7 +1150,7 @@ async function ensureLreObjects(
   if ((await Promise.all(objects.map(fileExists))).every(Boolean)) return objects;
 
   await mkdir(cacheRoot, { recursive: true });
-  const buildDir = await mkdtemp(join(cacheRoot, `build-lre-${flavor}-`));
+  const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-lre-${flavor}-`));
   try {
     // One -c per invocation: zig's COFF driver rejects multiple -c inputs
     // in a single command ("coff does not support linking multiple
@@ -1136,9 +1171,9 @@ async function ensureLreObjects(
         { cwd: buildDir },
       );
     }
-    // Atomic publish: rename fails if a concurrent build won the race, and
-    // the winner's objects are just as good.
-    await rename(buildDir, cacheDir).catch(() => undefined);
+    await Promise.all(objects.map((destination) =>
+      publishVendorArtifact(join(buildDir, basename(destination)), destination)
+    ));
   } finally {
     await rm(buildDir, { recursive: true, force: true });
   }
@@ -1194,7 +1229,7 @@ async function ensureZlibObjects(
   if ((await Promise.all(objects.map(fileExists))).every(Boolean)) return objects;
 
   await mkdir(cacheRoot, { recursive: true });
-  const buildDir = await mkdtemp(join(cacheRoot, `build-zlib-${flavor}-`));
+  const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-zlib-${flavor}-`));
   try {
     // One -c per invocation, the lre recipe (zig's COFF driver rejects
     // multiple -c inputs in a single command).
@@ -1213,9 +1248,9 @@ async function ensureZlibObjects(
         { cwd: buildDir },
       );
     }
-    // Atomic publish: rename fails if a concurrent build won the race, and
-    // the winner's objects are just as good.
-    await rename(buildDir, cacheDir).catch(() => undefined);
+    await Promise.all(objects.map((destination) =>
+      publishVendorArtifact(join(buildDir, basename(destination)), destination)
+    ));
   } finally {
     await rm(buildDir, { recursive: true, force: true });
   }
@@ -1268,7 +1303,7 @@ async function ensureCurlStub(
   if (await fileExists(lib)) return cacheDir;
 
   await mkdir(cacheRoot, { recursive: true });
-  const buildDir = await mkdtemp(join(cacheRoot, `build-curl-stub-`));
+  const buildDir = await mkdtemp(join(tmpdir(), "scriptc-vendor-curl-stub-"));
   try {
     const src = join(buildDir, "stub.c");
     await writeFile(src, CURL_STUB_SYMBOLS.map((s) => `void ${s}(void) {}\n`).join(""));
@@ -1280,14 +1315,7 @@ async function ensureCurlStub(
       src,
       "-o", join(buildDir, "libcurl.so"),
     ]);
-    // Atomic publish: rename fails if a concurrent build won the race, and
-    // the winner's stub is just as good.
-    const stageDir = `${buildDir}.stage`;
-    await mkdir(stageDir);
-    await copyFile(join(buildDir, "libcurl.so"), join(stageDir, "libcurl.so"));
-    await rename(stageDir, cacheDir).catch(async () => {
-      await rm(stageDir, { recursive: true, force: true });
-    });
+    await publishVendorArtifact(join(buildDir, "libcurl.so"), lib);
   } finally {
     await rm(buildDir, { recursive: true, force: true });
   }
@@ -1338,7 +1366,7 @@ async function ensureTlsArchive(
   if (await fileExists(archive)) return archive;
 
   await mkdir(cacheRoot, { recursive: true });
-  const buildDir = await mkdtemp(join(cacheRoot, `build-mbedtls-${flavor}-`));
+  const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-mbedtls-${flavor}-`));
   try {
     const sources = (await readdir(join(vendor, "library")))
       .filter((name) => !name.startsWith(".") && name.endsWith(".c"))
@@ -1362,14 +1390,7 @@ async function ensureTlsArchive(
       );
     }
     await execFileAsync(arArgv[0] ?? "ar", [...arArgv.slice(1), "rcs", join(buildDir, "libmbedtls.a"), ...sources.map((s) => join(buildDir, `${basename(s, ".c")}.o`))]);
-    // Atomic publish: rename fails if a concurrent build won the race, and
-    // the winner's archive is just as good.
-    const stageDir = `${buildDir}.stage`;
-    await mkdir(stageDir);
-    await copyFile(join(buildDir, "libmbedtls.a"), join(stageDir, "libmbedtls.a"));
-    await rename(stageDir, cacheDir).catch(async () => {
-      await rm(stageDir, { recursive: true, force: true });
-    });
+    await publishVendorArtifact(join(buildDir, "libmbedtls.a"), archive);
   } finally {
     await rm(buildDir, { recursive: true, force: true });
   }
@@ -1796,14 +1817,20 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
       );
   const vendorCacheRoot = transientVendorRoot ?? vendorBuildCacheRoot(root ?? undefined);
   try {
-    const lreObjects = regex
-      ? await ensureLreObjects(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
-      : [];
-    const zlibObjects = opts.zlib
-      ? await ensureZlibObjects(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
-      : [];
     const buildDir = await mkdtemp(join(tmpdir(), "scriptc-lib-"));
     try {
+      const lreObjects = regex
+        ? await stageVendorInputs(
+            () => ensureLreObjects(sanitize, driver, vendorBuildIdentity, vendorCacheRoot),
+            join(buildDir, "vendor-lre"),
+          )
+        : [];
+      const zlibObjects = opts.zlib
+        ? await stageVendorInputs(
+            () => ensureZlibObjects(sanitize, driver, vendorBuildIdentity, vendorCacheRoot),
+            join(buildDir, "vendor-zlib"),
+          )
+        : [];
       const compileOne = async (
         src: string,
         objName: string,
@@ -4354,6 +4381,7 @@ async function ensureRuntimeObjects(
   sources: string[],
   keyPrefix: string,
   verifyInputs: () => Promise<boolean>,
+  protectedPaths?: Set<string>,
 ): Promise<Map<string, string>> {
   const setKey = createHash("sha256")
     .update(keyPrefix)
@@ -4362,6 +4390,13 @@ async function ensureRuntimeObjects(
     .slice(0, 24);
   const objDir = join(root, "obj", setKey);
   const objOf = (src: string): string => join(objDir, `${basename(src, ".c")}.o`);
+  if (protectedPaths !== undefined) {
+    for (const source of sources) {
+      const object = objOf(source);
+      protectedPaths.add(object);
+      protectedPaths.add(cacheDigestPath(object));
+    }
+  }
   const present = await Promise.all(sources.map((s) => validCachedFile(objOf(s))));
   const missing = sources.filter((_, i) => !present[i]);
   if (missing.length > 0) {
@@ -4373,9 +4408,9 @@ async function ensureRuntimeObjects(
       ccArgv[0] === "clang" &&
       (await ccacheAvailable());
     await mkdir(objDir, { recursive: true });
-    const tmpDir = await mkdtemp(join(root, "obj", "build-"));
+    const tmpDir = await mkdtemp(join(tmpdir(), "scriptc-cache-obj-"));
     try {
-      const compiled = new Map<string, { object: string; digest: string }>();
+      const compiled = new Map<string, string>();
       // Modest parallelism: a flavor's objects build once, but several cold
       // workers can race here — keep each build's CPU footprint small.
       const width = 4;
@@ -4400,7 +4435,7 @@ async function ensureRuntimeObjects(
                   },
                 }
               : undefined);
-            compiled.set(src, { object: tmpObj, digest: await fileDigest(tmpObj) });
+            compiled.set(src, tmpObj);
           }),
         );
       }
@@ -4410,12 +4445,7 @@ async function ensureRuntimeObjects(
       if (!(await verifyInputs())) throw new CacheInputsChangedError();
       for (const [src, built] of compiled) {
         const destination = objOf(src);
-        const tmpDigest = `${built.object}.sha256`;
-        await writeFile(tmpDigest, `${built.digest}\n`);
-        // Publish data first and its verifier second. A concurrent reader in
-        // the tiny gap sees a missing/mismatched digest and falls back safely.
-        await rename(built.object, destination);
-        await rename(tmpDigest, cacheDigestPath(destination));
+        await publishCachedFile(built, destination);
       }
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
@@ -4466,7 +4496,7 @@ export async function stageRuntimeObjects(
  * mtimes. Active links use private staged names/hard links, so cache names can
  * be unlinked safely. */
 const rootWriteCounts = new Map<string, number>();
-async function pruneCache(root: string): Promise<void> {
+async function pruneCache(root: string, protectedPaths?: ReadonlySet<string>): Promise<void> {
   const configuredCap = process.env["SCRIPTC_CACHE_MAX_MB"];
   const writes = (rootWriteCounts.get(root) ?? 0) + 1;
   rootWriteCounts.set(root, writes);
@@ -4480,6 +4510,14 @@ async function pruneCache(root: string): Promise<void> {
       const p = join(dir, ent.name);
       if (ent.isDirectory()) await walk(p);
       else if (ent.isFile()) {
+        // Atomic publishers use private names until their data/digest or
+        // metadata stamp is complete. They are active writes, not LRU entries.
+        if (
+          ent.name.startsWith(".scriptc-") ||
+          ent.name.startsWith(".tmp-") ||
+          ent.name.includes(".tmp-")
+        ) continue;
+        if (protectedPaths?.has(p)) continue;
         const s = await stat(p).catch(() => null);
         if (s !== null) files.push({ path: p, size: s.size, mtimeMs: s.mtimeMs });
       }
@@ -4517,6 +4555,7 @@ async function pruneCache(root: string): Promise<void> {
 async function compileCInternal(
   opts: CcOptions,
   cacheWarmOnly: boolean,
+  cacheWarmPaths?: Set<string>,
 ): Promise<void> {
   const rtDir = runtimeSrcDir();
   const sanitize = opts.sanitize ?? false;
@@ -4634,13 +4673,23 @@ async function compileCInternal(
     opts.cacheIdentity === undefined || !persistentDriverCache
       ? null
       : configuredCacheRoot;
+  if (cacheWarmOnly && root === null) {
+    throw new Error(
+      "native cache warming requires a persistently cacheable compiler environment",
+    );
+  }
   if (root !== null) {
     try {
       await ensurePrivateCacheRoot(
         root,
         process.env["SCRIPTC_CACHE_DIR"] === undefined,
       );
-    } catch {
+    } catch (error) {
+      if (cacheWarmOnly) {
+        throw new Error("native cache warming could not prepare the persistent cache root", {
+          cause: error,
+        });
+      }
       root = null;
     }
   }
@@ -4779,9 +4828,14 @@ async function compileCInternal(
           );
         }
       }
-    } catch {
+    } catch (error) {
       // Cache discovery is best-effort. In particular, a compiler wrapper can
       // compile successfully without implementing the metadata probes.
+      if (cacheWarmOnly) {
+        throw new Error("native cache warming could not validate the compiler toolchain", {
+          cause: error,
+        });
+      }
       root = null;
     }
   }
@@ -4804,47 +4858,105 @@ async function compileCInternal(
   // Every vendor output path is deterministic from pins, flags, driver, and
   // target. Build the command/key from those paths now, but do not materialize
   // them until a complete-binary lookup has missed.
-  const engineArchive = dynamic
+  let engineArchive = dynamic
     ? engineArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
-  const tlsArchive = tls
+  let tlsArchive = tls
     ? tlsArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
   // --dynamic + regex shares the archive's libregexp (its host hooks and
   // ours would collide; see scr_regex.c) — the standalone objects are for
   // static builds only.
-  const lreObjects = regex && !dynamic
+  let lreObjects = regex && !dynamic
     ? lreObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : [];
   // Vendored zlib is the CROSS story only — host builds keep the exact
   // historical `-lz` system link (see CcOptions.zlib). The native fetch's
   // gzip decoder rides the same objects/link.
-  const zlibObjects =
+  let zlibObjects =
     ((opts.zlib ?? false) || nativeFetch) && driver.target !== null
       ? zlibObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
       : [];
   // The libcurl import stub is likewise CROSS-only — host builds keep the
   // exact historical system `-lcurl` link (see CcOptions.fetch). Curl
   // reference builds only.
-  const curlStubDir =
+  let curlStubDir =
     curlFetch && driver.target !== null
       ? curlStubDirPath(driver, vendorBuildIdentity, vendorCacheRoot)
       : null;
-  const materializeVendorPrerequisites = async (): Promise<void> => {
+  const materializeVendorPrerequisites = async (stageRoot?: string): Promise<void> => {
     // Preserve the historical order to avoid multiplying first-build resource
     // pressure when several large vendor sets are cold simultaneously.
     if (dynamic) {
-      await ensureEngineArchive(sanitize, driver, vendorBuildIdentity, vendorCacheRoot);
+      const cachedArchive = engineArchivePath(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        vendorCacheRoot,
+      );
+      cacheWarmPaths?.add(cachedArchive);
+      const materialize = async (): Promise<string[]> => [
+        await ensureEngineArchive(sanitize, driver, vendorBuildIdentity, vendorCacheRoot),
+      ];
+      const paths = stageRoot === undefined
+        ? await materialize()
+        : await stageVendorInputs(materialize, join(stageRoot, "engine"));
+      engineArchive = paths[0]!;
     }
-    if (tls) await ensureTlsArchive(sanitize, driver, vendorBuildIdentity, vendorCacheRoot);
+    if (tls) {
+      const cachedArchive = tlsArchivePath(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        vendorCacheRoot,
+      );
+      cacheWarmPaths?.add(cachedArchive);
+      const materialize = async (): Promise<string[]> => [
+        await ensureTlsArchive(sanitize, driver, vendorBuildIdentity, vendorCacheRoot),
+      ];
+      const paths = stageRoot === undefined
+        ? await materialize()
+        : await stageVendorInputs(materialize, join(stageRoot, "tls"));
+      tlsArchive = paths[0]!;
+    }
     if (regex && !dynamic) {
-      await ensureLreObjects(sanitize, driver, vendorBuildIdentity, vendorCacheRoot);
+      for (const object of lreObjectPaths(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        vendorCacheRoot,
+      )) cacheWarmPaths?.add(object);
+      const materialize = async (): Promise<string[]> =>
+        await ensureLreObjects(sanitize, driver, vendorBuildIdentity, vendorCacheRoot);
+      lreObjects = stageRoot === undefined
+        ? await materialize()
+        : await stageVendorInputs(materialize, join(stageRoot, "lre"));
     }
     if (zlibObjects.length > 0) {
-      await ensureZlibObjects(sanitize, driver, vendorBuildIdentity, vendorCacheRoot);
+      for (const object of zlibObjectPaths(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        vendorCacheRoot,
+      )) cacheWarmPaths?.add(object);
+      const materialize = async (): Promise<string[]> =>
+        await ensureZlibObjects(sanitize, driver, vendorBuildIdentity, vendorCacheRoot);
+      zlibObjects = stageRoot === undefined
+        ? await materialize()
+        : await stageVendorInputs(materialize, join(stageRoot, "zlib"));
     }
     if (curlStubDir !== null) {
-      await ensureCurlStub(driver, vendorBuildIdentity, vendorCacheRoot);
+      cacheWarmPaths?.add(join(
+        curlStubDirPath(driver, vendorBuildIdentity, vendorCacheRoot),
+        "libcurl.so",
+      ));
+      const materialize = async (): Promise<string[]> => [
+        join(await ensureCurlStub(driver, vendorBuildIdentity, vendorCacheRoot), "libcurl.so"),
+      ];
+      const paths = stageRoot === undefined
+        ? await materialize()
+        : await stageVendorInputs(materialize, join(stageRoot, "curl"));
+      curlStubDir = dirname(paths[0]!);
     }
   };
   // rt() maps each runtime source's path on the command line: identity for
@@ -5167,9 +5279,14 @@ async function compileCInternal(
           );
         }
       }
-    } catch {
+    } catch (error) {
       // Preserve the uncached build for wrappers that compile successfully but
       // cannot provide a dry-run trace for the real build flavor.
+      if (cacheWarmOnly) {
+        throw new Error("native cache warming could not validate the compiler invocation", {
+          cause: error,
+        });
+      }
       root = null;
     }
   }
@@ -5196,10 +5313,15 @@ async function compileCInternal(
       runtimeFingerprint(rtDir),
       readFile(opts.cPath),
     ]));
-  } catch {
+  } catch (error) {
     // A version/fingerprint probe is an optimization boundary. If the compiler
     // itself can still compile, preserve the pre-cache behavior instead of
     // surfacing a metadata command's failure as the build result.
+    if (cacheWarmOnly) {
+      throw new Error("native cache warming could not validate cache inputs", {
+        cause: error,
+      });
+    }
     await materializeVendorPrerequisites();
     await runClang(buildArgs((p) => p));
     return;
@@ -5365,6 +5487,29 @@ async function compileCInternal(
       localArtifactDependencyPaths = null;
     }
   }
+  // Warm-only builds deliberately do not need linker/header identity for a
+  // complete executable, but they still need a stable runtime-object key.
+  // The ordinary complete-artifact path computes these values above.
+  if (cacheWarmOnly && preBuildDependencies === null) {
+    try {
+      const [dependencies, invocation] = await Promise.all([
+        translationUnitDependencyFingerprint(
+          driver,
+          cflags,
+          opts.cPath,
+          cBytes,
+          toolchainEnv,
+        ),
+        effectiveCompilerInvocationFingerprint(driver, toolchainEnv, cflags),
+      ]);
+      programDependencies = dependencies;
+      if (runtimeCompilerInvocation === null) runtimeCompilerInvocation = invocation;
+    } catch (error) {
+      throw new Error("native cache warming could not validate runtime-object inputs", {
+        cause: error,
+      });
+    }
+  }
   const binDir = join(root, "bin");
   let keyHex: string | null = null;
   let cachedBin: string | null = null;
@@ -5446,8 +5591,6 @@ async function compileCInternal(
     }
   }
 
-  await materializeVendorPrerequisites();
-
   // Miss: link the program's own TU against cached per-flavor runtime objects.
   // Collect the runtime sources this build actually compiles (the same
   // conditionals as the command line, by construction).
@@ -5458,6 +5601,7 @@ async function compileCInternal(
   });
   const buildDir = await mkdtemp(join(tmpdir(), "scriptc-cache-build-"));
   try {
+    await materializeVendorPrerequisites(join(buildDir, "vendor-inputs"));
     // Freeze the exact bytes used for the key. Generated TUs live at stable
     // paths under .scriptc/, so two builds can otherwise overwrite that path
     // between hashing and clang and publish one invocation's code under the
@@ -5509,10 +5653,16 @@ async function compileCInternal(
         `obj-v5\0${cacheTargetIdentity(driver)}\0${toolchainEnv}\0${implicitToolchain}\0${runtimeCompilerInvocation}\0${ccName}\0${cv}\0${fingerprint}\0`,
         async () =>
           await objectImplicitToolchainStillMatches(),
+        cacheWarmPaths,
       );
       objects = await stageRuntimeObjects(cached, join(buildDir, "runtime-objects"));
     } catch (err) {
       if (err instanceof CacheInputsChangedError) cacheInputsStable = false;
+      if (cacheWarmOnly) {
+        throw new Error("native cache warming could not persist runtime objects", {
+          cause: err,
+        });
+      }
       objects = null; // cache trouble is never a build failure
     }
 
@@ -5735,7 +5885,7 @@ async function compileCInternal(
   }
   // Runtime-object population is itself a cache write, including on builds
   // whose native link inputs disable complete-artifact publication.
-  await pruneCache(root).catch(() => undefined);
+  await pruneCache(root, cacheWarmPaths).catch(() => undefined);
 }
 
 export async function compileC(opts: CcOptions): Promise<void> {
@@ -5758,6 +5908,13 @@ export interface WarmNativeCachesResult {
   profiles: { profile: NativeCacheWarmProfile; elapsedMs: number }[];
 }
 
+export function supportedNativeCacheWarmProfiles(
+  driver: CcDriver,
+): readonly NativeCacheWarmProfile[] {
+  if (isMobileTarget(driver.target) || targetPlatform(driver) === "wasi") return [];
+  return ["runtime", "tls", "dynamic"];
+}
+
 /** Populate expensive native prerequisites against the current compiler,
  * target, SDK, and environment. The resulting entries use the exact same
  * identities and validators as ordinary builds; this merely pays their cost
@@ -5776,17 +5933,37 @@ export async function warmNativeCaches(
     cacheRoot,
     process.env["SCRIPTC_CACHE_DIR"] === undefined,
   );
-  const requested = options.profiles ?? ["runtime", "tls", "dynamic"];
-  const profiles = [...new Set(requested)];
-  if (profiles.length === 0) return { cacheRoot, profiles: [] };
   const known = new Set<NativeCacheWarmProfile>(["runtime", "tls", "dynamic"]);
-  for (const profile of profiles) {
+  for (const profile of options.profiles ?? []) {
     if (!known.has(profile)) throw new Error(`unknown native cache warm profile '${profile}'`);
+  }
+  if (options.profiles?.length === 0) return { cacheRoot, profiles: [] };
+  const mobileTarget = mobileLibraryTarget();
+  if (mobileTarget !== null) {
+    throw new Error(
+      `native cache warming targets executable builds and is unsupported for SCRIPTC_TARGET=${mobileTarget}`,
+    );
+  }
+  const driver = resolveCc();
+  const supported = supportedNativeCacheWarmProfiles(driver);
+  if (supported.length === 0) {
+    throw new Error(
+      `native cache warming targets persistently cached native executables and is unsupported for SCRIPTC_TARGET=${driver.target}`,
+    );
+  }
+  const profiles = [...new Set(options.profiles ?? supported)];
+  for (const profile of profiles) {
+    if (!supported.includes(profile)) {
+      throw new Error(
+        `native cache warm profile '${profile}' is unsupported for SCRIPTC_TARGET=${driver.target}`,
+      );
+    }
   }
 
   const workDir = await mkdtemp(join(tmpdir(), "scriptc-cache-warm-"));
   const cPath = join(workDir, "warm.c");
   await writeFile(cPath, "int main(void) { return 0; }\n");
+  const protectedPaths = new Set<string>();
   try {
     const results = await Promise.all(profiles.map(async (profile) => {
       const started = performance.now();
@@ -5798,12 +5975,18 @@ export async function warmNativeCaches(
         sanitize: options.sanitize ?? false,
         ...(profile === "tls" ? { fetch: true } : {}),
         ...(profile === "dynamic" ? { dynamic: true } : {}),
-      }, true);
+      }, true, protectedPaths);
       return {
         profile,
         elapsedMs: Math.round((performance.now() - started) * 10) / 10,
       };
     }));
+    await pruneCache(cacheRoot).catch(() => undefined);
+    if (!(await Promise.all([...protectedPaths].map(fileExists))).every(Boolean)) {
+      throw new Error(
+        `SCRIPTC_CACHE_MAX_MB is too small to retain the requested native cache warm profiles (${profiles.join(", ")})`,
+      );
+    }
     return { cacheRoot, profiles: results };
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => undefined);

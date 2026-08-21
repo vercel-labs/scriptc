@@ -54,7 +54,7 @@ Analyzes the program without producing a binary and reports, statement by statem
 
 ## scriptc cache warm
 
-Prebuilds the release runtime objects, native TLS archive, and dynamic-engine archive against the currently selected compiler, SDK, and target. npm installations run this best-effort automatically; use the explicit command when preparing a container image, CI runner, or installation whose lifecycle scripts were disabled. Pass one or more of `runtime`, `tls`, and `dynamic` to seed only those families. The entries use the ordinary strict cache identities, and later builds still revalidate their compiler and dependency inputs.
+Prebuilds the release runtime objects and native TLS/dynamic-engine archives against the currently selected compiler, SDK, and target. npm installations run this best-effort automatically; use the explicit command when preparing a container image, CI runner, or installation whose lifecycle scripts were disabled. Pass one or more of `runtime`, `tls`, and `dynamic` to seed only those families. Warming applies to persistently cached native executable targets; WASI and mobile library targets report a target-level error. It also reports an error when mutable toolchain inputs have disabled persistent caching, rather than doing disposable work. The entries use the ordinary strict cache identities, and later builds still revalidate their compiler and dependency inputs.
 
 ## Options
 

@@ -83,13 +83,18 @@ async function main(): Promise<number> {
         fail(`unknown cache warm profile "${profile}" (supported: runtime, tls, dynamic)`);
       }
     }
-    const result = await warmNativeCaches({
-      ...(optimization === undefined ? {} : { optimization }),
-      sanitize: values.sanitize,
-      ...(profileArgs.length === 0
-        ? {}
-        : { profiles: profileArgs as NativeCacheWarmProfile[] }),
-    });
+    let result;
+    try {
+      result = await warmNativeCaches({
+        ...(optimization === undefined ? {} : { optimization }),
+        sanitize: values.sanitize,
+        ...(profileArgs.length === 0
+          ? {}
+          : { profiles: profileArgs as NativeCacheWarmProfile[] }),
+      });
+    } catch (error) {
+      fail(`scriptc: ${error instanceof Error ? error.message : String(error)}`);
+    }
     process.stdout.write(`${result.cacheRoot}\n`);
     for (const profile of result.profiles) {
       process.stdout.write(`${profile.profile}\t${Math.round(profile.elapsedMs)}ms\n`);

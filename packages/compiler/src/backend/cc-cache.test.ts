@@ -17,6 +17,7 @@ import {
   runtimeFingerprint,
   runtimeSrcDir,
   stageRuntimeObjects,
+  supportedNativeCacheWarmProfiles,
   toolchainEnvironmentCachePolicy,
   toolchainEnvironmentFingerprint,
   vendorCacheBuildIdentity,
@@ -1876,6 +1877,65 @@ test("native cache warming follows the hard cache disable", async () => {
     else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
   }
 });
+
+test("native cache warming refuses environments that disable persistent objects", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-cache-warm-disabled-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldCpath = process.env["CPATH"];
+  try {
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    process.env["CPATH"] = dir;
+    await expect(warmNativeCaches({ profiles: ["runtime"] })).rejects.toThrow(
+      "requires a persistently cacheable compiler environment",
+    );
+    expect(await readdir(cacheRoot)).toEqual([]);
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldCpath === undefined) delete process.env["CPATH"];
+    else process.env["CPATH"] = oldCpath;
+  }
+});
+
+test("native cache warm profiles follow target capabilities", () => {
+  expect(supportedNativeCacheWarmProfiles({
+    argv: ["zig", "cc"],
+    target: "wasm32-wasi",
+    zigTarget: "wasm32-wasi",
+    targetArgs: [],
+    linkArgs: [],
+  })).toEqual([]);
+  expect(supportedNativeCacheWarmProfiles({
+    argv: ["zig", "cc"],
+    target: "aarch64-apple-ios",
+    zigTarget: "aarch64-ios.15.0",
+    targetArgs: [],
+    linkArgs: [],
+  })).toEqual([]);
+});
+
+test("parallel native cache warming fails cleanly when the bounded cache cannot retain its profiles", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-cache-warm-cap-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldMax = process.env["SCRIPTC_CACHE_MAX_MB"];
+  try {
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    process.env["SCRIPTC_CACHE_MAX_MB"] = "2.5";
+    await expect(warmNativeCaches()).rejects.toThrow(
+      "SCRIPTC_CACHE_MAX_MB is too small to retain the requested native cache warm profiles",
+    );
+    expect(await readdir(cacheRoot)).not.toEqual([]);
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldMax === undefined) delete process.env["SCRIPTC_CACHE_MAX_MB"];
+    else process.env["SCRIPTC_CACHE_MAX_MB"] = oldMax;
+  }
+}, 120_000);
 
 test.skipIf(process.platform !== "darwin")(
   "vendor object caches separate deployment-target environments",

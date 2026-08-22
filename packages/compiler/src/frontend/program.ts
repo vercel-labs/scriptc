@@ -40,7 +40,7 @@
  *    that path (no snapshot pins it). */
 
 import { builtinModules } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
@@ -167,6 +167,36 @@ function adoptProjectConfig7(
   for (const key of ADOPTED_OPTIONS) {
     const value = parsed.options[key];
     if (value !== undefined) adopted[key] = value;
+  }
+  // `paths` is a real, well-supported tsgo checker option, but `baseUrl`
+  // itself is not — tsgo rejects it outright ("Option 'baseUrl' has been
+  // removed. Please remove it from your configuration. Use '"paths": {"*":
+  // ["./*"]}' instead."), so it never joins `adopted` on its own. The
+  // synthesized virtual tsconfig (ts7/program.ts) is also written BESIDE THE
+  // ENTRY FILE, not beside this real tsconfig.json, so relative `paths`
+  // targets can't simply pass through either: they're resolved to absolute
+  // paths here, against the real config's resolved `baseUrl` (tsgo's own
+  // parser already makes that absolute — hence the isAbsolute guard rather
+  // than a bare join) or, absent one, the config's own directory (tsc's
+  // default), or tsgo resolves them against the wrong base entirely.
+  const rawPaths = parsed.options["paths"];
+  if (rawPaths !== undefined && typeof rawPaths === "object" && rawPaths !== null) {
+    const configDir = dirname(configFile);
+    const rawBaseUrl = parsed.options["baseUrl"];
+    const base =
+      typeof rawBaseUrl !== "string"
+        ? configDir
+        : isAbsolute(rawBaseUrl)
+          ? rawBaseUrl
+          : join(configDir, rawBaseUrl);
+    const abs = (p: string): string => (isAbsolute(p) ? p : join(base, p));
+    const paths: Record<string, string[]> = {};
+    for (const [key, value] of Object.entries(rawPaths as Record<string, unknown>)) {
+      if (Array.isArray(value)) {
+        paths[key] = value.filter((v): v is string => typeof v === "string").map(abs);
+      }
+    }
+    adopted["paths"] = paths;
   }
   const nullChecks = adopted["strictNullChecks"] ?? adopted["strict"] ?? false;
   if (nullChecks !== true) {

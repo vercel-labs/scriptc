@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -62,6 +62,35 @@ console.log(required.value);
     expect(checkPreflight(load).map((diag) => diag.code)).toContain("SC1013");
     expect(calls.some(([arg]) => Array.isArray(arg) && arg.length > 24)).toBe(true);
     expect(calls.some(([arg]) => !Array.isArray(arg))).toBe(false);
+  } finally {
+    load.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("adopts tsconfig paths/baseUrl so tsgo resolves aliased imports", () => {
+  const tempRoot = process.platform === "win32" ? tmpdir() : "/tmp";
+  const dir = mkdtempSync(join(tempRoot, "scriptc-preflight-paths-"));
+  writeFileSync(
+    join(dir, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { strictNullChecks: true, baseUrl: ".", paths: { "@/*": ["./src/*"] } },
+    }),
+  );
+  const srcDir = join(dir, "src");
+  mkdirSync(srcDir);
+  writeFileSync(join(dir, "entry.ts"), `import { value } from "@/dep";\nconsole.log(value);\n`);
+  writeFileSync(join(srcDir, "dep.ts"), "export const value = 1;\n");
+  const entry = join(dir, "entry.ts");
+
+  const load = loadProgram(entry);
+  try {
+    // Before the fix, tsgo never learns about `paths`/`baseUrl` and reports
+    // SC0001 "Cannot find module '@/dep'". SC1010 (own resolver has no
+    // opinion on bare-specifier aliases outside npm/imports-field) is a
+    // separate, pre-existing limitation and is unaffected by this fix.
+    const codes = checkPreflight(load).map((diag) => diag.code);
+    expect(codes).not.toContain("SC0001");
   } finally {
     load.dispose();
     rmSync(dir, { recursive: true, force: true });

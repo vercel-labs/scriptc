@@ -42,4 +42,13 @@ use(7);
 // comma spelling hands its left operand to the same statement lowering
 void (flag ? a() : b(), 0);
 
+// `return` in a void function drops the value too; each branch completes
+// the return, so trailing statements stay unreachable
+function ret(f: boolean): void {
+  if (f) return deep ? a() : b();
+  log += "tail";
+}
+ret(true);
+ret(false);
+
 console.log(log);

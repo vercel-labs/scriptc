@@ -2233,6 +2233,10 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
       const p = n.parent;
       if (!p) return false;
       if (ts.isExpressionStatement(p)) return true;
+      // `return e;` in a void-returning function drops the value too: the
+      // return lowering reshapes the ternary into branching arms that each
+      // complete the return.
+      if (ts.isReturnStatement(p)) return L.ctx.returnType.kind === "void";
       if (ts.isVoidExpression(p)) {
         n = p;
         continue;

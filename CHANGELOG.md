@@ -6,6 +6,20 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.0.35
+
+### Performance
+
+- **Development builds reach native output sooner.** Exact executable cache hits route through the lightweight CLI before loading the compiler, while uncached dev builds use `-O0` and split large LLVM programs and libraries into stable, parallel, independently cached objects. npm installation also warms toolchain-specific runtime, TLS, and dynamic-engine artifacts for later builds.
+- **The TypeScript frontend asks the checker for less work.** Lowering batches structure, reachable-body, call, receiver, and implicit-instance queries by phase, memoizes immutable type constituents, and avoids querying dead bodies or visibly non-object array candidates.
+
+### Fixes
+
+- **Unsupported `Array.from` element shapes refuse cleanly.** Mapper results that the backends cannot represent are diagnosed or deferred before emission instead of reaching a C emitter crash.
+- **JSDoc record equality reads preserve dynamic property behavior.** Dot and bracket reads used by strict-equality and missing-key probes now route through checked-dynamic lookup, preserving absent properties and object identity.
+
+<!-- release:end -->
+
 ## 0.0.34
 
 ### Performance
@@ -13,8 +27,6 @@ All notable changes to scriptc will be documented in this file.
 - **Library builds reuse more validated work.** Unchanged frontends, comment-only edits, lowered IR, and emitted C or LLVM translation units can be restored from the persistent cache while semantic, configuration, package-resolution, toolchain, and source-annotation changes still invalidate safely; volatile library identity is refreshed independently.
 - **Reachable library code is lowered once.** Module assembly reuses retained lowering output without re-lowering function bodies, preserving reached-only artifact filtering, coverage remainder behavior, and output ordering while reducing repeated compiler work.
 - **Same-shape record spreads emit smaller code.** Reusable clone helpers and outlined large-record copies reduce generated C and LLVM code while preserving ownership, integer proofs, and runtime behavior.
-
-<!-- release:end -->
 
 ## 0.0.33
 

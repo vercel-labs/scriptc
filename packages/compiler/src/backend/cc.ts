@@ -764,13 +764,29 @@ function findMingwGccLibDir(mingwRoot: string): string | null {
 }
 
 /** Resolve native platform flags independently of the machine running tests,
- * so the host-Linux contract remains pinned on every development host. */
+ * so the host-Linux contract remains pinned on every development host.
+ * `viaZig` distinguishes the two host-native drivers `resolveCc` can select
+ * (bare clang vs `zig cc`): on win32 they need OPPOSITE handling, unlike
+ * every other platform/driver combination here. Bare clang's own default
+ * target on Windows is the MSVC ABI, with none of the POSIX surface
+ * (dirent.h, unistd.h, ssize_t) this project's C sources need — it must be
+ * pointed at an external MinGW-w64 install via --target=x86_64-w64-mingw32.
+ * `zig cc`, by contrast, ships its OWN bundled mingw-w64 sysroot for its
+ * `x86_64-windows-gnu` target (see the module doc comment) and needs no
+ * external MinGW at all — worse, `--target=x86_64-w64-mingw32` is clang's
+ * LLVM triple spelling, not one of zig's own target-query spellings, and
+ * zig's `-target` parser hard-errors on it ("unable to parse target query
+ * 'x86_64-w64-mingw32': UnknownOperatingSystem"), confirmed against a real
+ * zig 0.16 install. Feeding it to zig doesn't just make findMingwRoot's
+ * external-install requirement pointless for zig users — it breaks the
+ * build outright. */
 function nativePlatformArgs(
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv = process.env,
+  viaZig = false,
 ): Pick<CcDriver, "targetArgs" | "linkArgs"> {
   if (platform === "linux") return { targetArgs: ["-D_GNU_SOURCE"], linkArgs: ["-lm"] };
-  if (platform === "win32") {
+  if (platform === "win32" && !viaZig) {
     // clang's own default target here is the MSVC ABI (this project never
     // targeted Windows until now — its docs only ever named macOS/Linux
     // toolchains). MinGW-w64's headers/libs are the POSIX-compatible
@@ -829,7 +845,12 @@ export function resolveCc(
     throw new Error(`unknown SCRIPTC_CC '${cc}' (supported: clang, zigcc)`);
   }
   if (target === "") {
-    return { argv: ["zig", "cc"], target: null, zigTarget: null, ...nativePlatformArgs(hostPlatform, env) };
+    return {
+      argv: ["zig", "cc"],
+      target: null,
+      zigTarget: null,
+      ...nativePlatformArgs(hostPlatform, env, /* viaZig */ true),
+    };
   }
   if (target.includes("wasi") && target !== "wasm32-wasi") {
     throw new Error(`unsupported WASI target '${target}' (supported: wasm32-wasi)`);

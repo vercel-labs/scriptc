@@ -385,6 +385,21 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
           }
           return L.jsvalIn(fence, valueNode);
         };
+        // A property key's runtime text, for every key shape this literal
+        // can carry: `name`/string-literal keys spell themselves; a
+        // COMPUTED key (`[Methods.POST]: {...}`, `[E.member]: v` — an
+        // enum-member or other compile-time-constant string reference in
+        // brackets, extremely common for method/route tables) folds
+        // through the same literalComputedKey/foldedStringKeyOf machinery
+        // every other computed-key call site in this file already uses.
+        // null for a key with no compile-time-constant spelling (a runtime-
+        // computed key — keeps the fence).
+        const foldedKeyTextOf = (n: ts.PropertyName): string | null =>
+          ts.isIdentifier(n) || ts.isStringLiteral(n)
+            ? n.text
+            : ts.isComputedPropertyName(n)
+              ? foldedStringKeyOf(L, n.expression)
+              : null;
         // The member's SHAPE decides the fence's granularity: syntactic
         // functions and checker-callable values keep the call-time
         // closure; everything else (call results, awaits, data reads —
@@ -402,8 +417,15 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
           if (ts.isArrowFunction(inner) || ts.isFunctionExpression(inner)) return true;
           return L.checker.getCallSignatures(L.typeOf(src)).length > 0;
         };
+        // `name` carries both the property's key text and a node to blame
+        // in diagnostics/source-locations. A plain `name: value`/shorthand
+        // key IS that node; a computed key that folds to a compile-time
+        // string constant (`[Methods.POST]: {...}`, `[E.member]: v` — see
+        // literalComputedKey/foldedStringKeyOf) has no single text-bearing
+        // node of its own, so its ComputedPropertyName stands in for loc
+        // purposes while the folded string supplies the text.
         const pushProp = (
-          name: ts.Identifier | ts.StringLiteral,
+          name: { text: string; node: ts.Node },
           value: IrExpr,
           valueNode: ts.Node,
           into: IrExpr[][],
@@ -425,8 +447,8 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
           for (const args of into) {
             args.push({
               kind: "jsMarshal",
-              value: { kind: "strLit", value: name.text, type: STRING, loc: locOf(name) },
-              type: JSVAL, loc: locOf(name),
+              value: { kind: "strLit", value: name.text, type: STRING, loc: locOf(name.node) },
+              type: JSVAL, loc: locOf(name.node),
             });
             args.push(marshaled);
           }
@@ -455,7 +477,7 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
               spread = { cond, whenTrue: cs.whenTrue };
               for (const p of cs.props) {
                 const v = ts.isPropertyAssignment(p) ? L.lowerExpr(p.initializer) : L.lowerShorthandValue(p);
-                pushProp(p.name, v, p, [argsWith]);
+                pushProp({ text: p.name.text, node: p.name }, v, p, [argsWith]);
               }
               continue;
             }
@@ -519,14 +541,14 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
                   ? (L.rejectThisInObjectMethod(prop.body), L.lowerLambda(prop))
                   : null;
           } catch (err) {
-            const nameText =
-              name && (ts.isIdentifier(name) || ts.isStringLiteral(name)) ? name.text : null;
+            const nameText = name ? foldedKeyTextOf(name) : null;
             const asGetter = nameText !== null && spread === null && !funcShapedMember(prop);
             value = islandMemberFence(valueDiagsBefore, err, prop, asGetter ? nameText : null);
             if (value === null) continue; // registered as a fence getter — no data property
           }
-          if (value && name && (ts.isIdentifier(name) || ts.isStringLiteral(name))) {
-            pushProp(name, value, prop, [argsWithout, argsWith]);
+          const nameText = name ? foldedKeyTextOf(name) : null;
+          if (value && name && nameText !== null) {
+            pushProp({ text: nameText, node: name }, value, prop, [argsWithout, argsWith]);
           } else {
             L.unsupported(
               "SC1090",
@@ -7147,6 +7169,16 @@ export function lowerTemplate(L: Lowerer, expr: ts.TemplateExpression): IrExpr {
       if (targetTs.flags & ts.TypeFlags.Any) return inner;
       const target = L.mapTypeOf(targetTs);
       if (!target) L.badType(expr.type, targetTs);
+      // A target type that ITSELF maps to the jsval representation (an
+      // npm/ambient-declared type with no static shape of its own — same
+      // island-handle kind the receiver already is) is the same erasure as
+      // `targetTs.flags & Any` above, spelled through a named type alias
+      // instead of the literal keyword. `boundarySafe` answers for the
+      // JSON-representable VALIDATION targets below; a jsval target has no
+      // validation story because it has no static shape to validate
+      // against — it stays a checked cast of 'any' to 'any' (formatIrType
+      // prints jsval as "any"), which is not a real narrowing at all.
+      if (target.kind === "jsval") return inner;
       if (!L.boundarySafe(target)) {
         L.unsupported(
           "SC1090",
@@ -10060,6 +10092,17 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
       const key: IrExpr = { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) };
       return { kind: "dynKeyGet", key, value, type: DYN, loc: locOf(expr) };
     }
+    // A checker-union receiver whose VALUE lowered to a checked-dynamic
+    // island handle (`jsval` — an npm/chain-derived value the checker
+    // widened into a union, e.g. an optional-chained receiver whose
+    // narrowed arms all trace back to one dynamic value): the generic
+    // island property read, same shape isIslandExpr's own jsval branch
+    // above uses. Not a dynKeyGet — the two dynamic worlds (dyn's checked-
+    // dynamic tree and jsval's island handles) never share a value
+    // representation.
+    if (value.type.kind === "jsval") {
+      return { kind: "jsOp", op: "getProp", name: expr.name.text, args: [value], type: JSVAL, loc: locOf(expr) };
+    }
     if (value.type.kind === "record") {
       const shape = L.shapes.get(value.type.shapeId);
       const f = shape?.fields.find((x) => x.name === expr.name.text);
@@ -10076,7 +10119,11 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
       return null;
     }
     if (value.type.kind !== "union") {
-      throw new InternalCompilerError("lowerer bug: union-typed receiver lowered to a non-union");
+      throw new InternalCompilerError(
+        `lowerer bug: union-typed receiver lowered to a non-union (kind=${value.type.kind}) ` +
+          `at ${expr.getSourceFile().fileName}:${expr.getSourceFile().getLineAndCharacterOfPosition(expr.getStart()).line + 1} ` +
+          `text=${expr.getText().slice(0, 120)}`,
+      );
     }
     const def = L.unions.get(value.type.unionId);
     if (!def) throw new InternalCompilerError(`lowerer bug: unknown union ${value.type.unionId}`);

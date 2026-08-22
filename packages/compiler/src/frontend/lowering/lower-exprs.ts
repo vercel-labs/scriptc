@@ -2184,6 +2184,20 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
               (useCtx && ctxMapped
                 ? ctxMapped
                 : L.irTypeOf(expr)));
+      // A VOID join (`flag ? a() : b()` over two void arms): the conditional
+      // carries no value, so it only compiles where JS discards it — those
+      // sites (lowerExprStatement, the void-returning concise arrow bodies)
+      // reshape the already-lowered pieces into if/else AFTER this returns.
+      // A CONSUMED void result has no representation, so every other site is
+      // fenced by name here rather than tripping the validator's
+      // "ternary must not be void" ICE downstream.
+      if (type.kind === "void" && !discardedVoidTernarySite(L, expr)) {
+        L.unsupported(
+          "SC1090",
+          expr,
+          "a conditional expression over 'void' in value position (write it as an if/else statement, or as a void-returning arrow body)",
+        );
+      }
       // Each arm flows into the ternary's type through the slot-coercion
       // path: union arms wrap, dyn slots reject the non-dyn arm with
       // SC1101, mismatched record shapes get SC2002; coerceInto is
@@ -2199,6 +2213,54 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
       } finally {
         for (const n of falseArmNarrows) L.chainNarrowedType.delete(n);
       }
+  }
+
+/** True when JS discards this conditional expression's value at exactly
+   * this site: an expression statement — the `void e` and comma spellings
+   * included, they hand their operands to the same statement lowering — or
+   * the concise body of a void-returning arrow. Those are the paths that
+   * reshape a lowered VOID ternary into if/else statements
+   * (lowerExprStatement / the concise-arrow-body lowerings), so the void
+   * join is legal here. An ARM of another conditional counts only when the
+   * enclosing ternary ITSELF joins to void — that is the ternary the
+   * reshape rewrites, recursively. Everywhere else the undefined result is
+   * CONSUMED, which no expression shape carries, and lowerTernary fences
+   * by name. */
+  function discardedVoidTernarySite(L: Lowerer, expr: ts.ConditionalExpression): boolean {
+    let n: ts.Node = expr;
+    for (;;) {
+      while (n.parent && ts.isParenthesizedExpression(n.parent)) n = n.parent;
+      const p = n.parent;
+      if (!p) return false;
+      if (ts.isExpressionStatement(p)) return true;
+      if (ts.isVoidExpression(p)) {
+        n = p;
+        continue;
+      }
+      if (ts.isBinaryExpression(p) && p.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+        n = p;
+        continue;
+      }
+      // An arm counts only under a ternary that ITSELF joins to void —
+      // that is the ternary the reshape rewrites into if/else. A sibling
+      // value (`c ? a() : 0`) makes the join non-void: the enclosing
+      // ternary stays an expression, its void arm would need control flow
+      // mid-expression, and the fence fires here.
+      if (
+        ts.isConditionalExpression(p) &&
+        (p.whenTrue === n || p.whenFalse === n) &&
+        (L.checker.getTypeAtLocation(p).flags & ts.TypeFlags.Void) !== 0
+      ) {
+        n = p;
+        continue;
+      }
+      if (ts.isArrowFunction(p) && p.body === n && !ts.isBlock(p.body)) {
+        const sig = L.checker.getSignatureFromDeclaration(p);
+        if (!sig) return false;
+        return (L.checker.getReturnTypeOfSignature(sig).flags & ts.TypeFlags.Void) !== 0;
+      }
+      return false;
+    }
   }
 
 /** Checker-driven union narrowing. tsc's control-flow analysis narrows a

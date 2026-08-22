@@ -18,6 +18,7 @@ import { mixinFnShapeOf } from "./lower-mixins.js";
 import { bufEncoding, dynStringReceiver, lowerArrayFromCall, lowerDynArrayFilterCall, lowerDynArrayFlatMapCall, lowerGroupByStaticCall, lowerIteratorHelperCall, lowerObjectAssignIndexShape, lowerObjectFromEntriesCall, lowerObjectIterOverIndexShape, lowerRegexMethodCall, lowerStringMethodCall, lowerTupleReadMethodCall } from "./lower-containers.js";
 import { lowerChildStreamMethodCall, lowerCreateRequireCall, lowerDirentMethodCall, lowerFileHandleMethodCall, lowerPerfHooksCall, lowerProcStreamMethodCall, lowerReflectApplyCall, lowerWatcherMethodCall } from "./lower-builtins.js";
 import { droppableStatic, lowerAbsenceProbe, lowerPromiseAllTupleCall, lowerPromiseRejectCall, probeLower, templateRawTextOf } from "./lower-exprs.js";
+import { voidTernaryIfStmtOrExprStmt } from "./lower-stmts.js";
 import { httpClientFnBindingOf, isStreamUndefCallExpr, lowerCompatReqStreamOptionalCall, lowerHttpClientFnCall } from "./lower-server.js";
 import { EMITTER_API_MEMBERS, exactInstanceClassOf, findGenericMethodOn, lowerClassGenericMethodCall, lowerStaticMethodCall, type ClassInfo } from "./lower-classes.js";
 import { emitterRooted, lowerEmitterMethodCall } from "./lower-emitter.js";
@@ -1456,7 +1457,7 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
         if (fnCtx.inferReturn) {
           const value = L.lowerExpr(decl.body);
           if (value.type.kind === "void") {
-            body.push({ kind: "exprStmt", expr: value, loc: locOf(decl.body) });
+            body.push(voidTernaryIfStmtOrExprStmt(value, locOf(decl.body)));
             bodyReturn = resolveInferredReturn(L, inst, fnCtx.inferReturn, body, decl);
             appendImplicitUndefinedReturn(L, body, bodyReturn, locOf(decl));
           } else {
@@ -1468,7 +1469,7 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
         } else {
           const value = L.lowerExprExpecting(decl.body, bodyReturn);
           if (bodyReturn.kind === "void") {
-            body.push({ kind: "exprStmt", expr: value, loc: locOf(decl.body) });
+            body.push(voidTernaryIfStmtOrExprStmt(value, locOf(decl.body)));
           } else {
             body.push({ kind: "return", value, loc: locOf(decl.body) });
           }
@@ -5815,7 +5816,9 @@ const inliningPredicates = new Set<ts.Symbol>();
             body = [L.lowerExprStatement(stripped)];
           } else {
             const value = L.lowerExpr(bodyExpr);
-            body = value.kind === "unitLit" ? [] : [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }];
+            body = value.kind === "unitLit"
+              ? []
+              : [voidTernaryIfStmtOrExprStmt(value, locOf(node.body!))];
           }
         } else {
           let value = L.lowerExpr(bodyExpr);
@@ -5828,7 +5831,7 @@ const inliningPredicates = new Set<ts.Symbol>();
           }
           body =
             value.type.kind === "void" && L.wrappedUndefined(bodyReturn, locOf(node.body!))
-              ? [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }]
+              ? [voidTernaryIfStmtOrExprStmt(value, locOf(node.body!))]
               : [
                   {
                     kind: "return",

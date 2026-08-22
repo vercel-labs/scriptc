@@ -1,0 +1,13 @@
+void-ternary-value-position.ts:11:11 - error SC1090: a conditional expression over 'void' in value position (write it as an if/else statement, or as a void-returning arrow body) is not supported yet
+
+  10 | }
+  11 | const x = process.argv.length > 99 ? a() : b();
+     |           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  12 | console.log(typeof x);
+
+void-ternary-value-position.ts:17:9 - error SC1090: a conditional expression over 'void' in value position (write it as an if/else statement, or as a void-returning arrow body) is not supported yet
+
+  16 | const flag = process.argv.length > 99;
+  17 | flag ? (flag ? a() : b()) : 0;
+     |         ^~~~~~~~~~~~~~~~
+  18 | 

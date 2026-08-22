@@ -4707,7 +4707,39 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
     // and the IR has no bare-unit VALUE outside a union wrap — drop it
     // instead of tripping the validator's bare-unitLit rule.
     if (value.kind === "unitLit") return { kind: "block", body: [], loc: locOf(expr) };
+    // `flag ? a() : b();` over two void arms: statement position discards
+    // the value, so the exact form is if/else over the same lowered pieces
+    // (a void ternary EXPRESSION is fenced everywhere else).
+    if (value.kind === "ternary" && value.type.kind === "void") return voidTernaryIfStmt(value);
     return { kind: "exprStmt", expr: value, loc: locOf(expr) };
+  }
+
+/** Statement form of a lowered VOID ternary: JS evaluates the condition,
+   * runs exactly the taken arm, and discards both arms' values — an if/else
+   * over the already-lowered pieces does precisely that (each arm is void,
+   * so nothing observable is dropped). The validator fences void ternaries
+   * as EXPRESSIONS ("ternary must not be void"), so every discarded-value
+   * site routes through here instead of wrapping one in an exprStmt. An
+   * arm can itself be a nested void ternary (`deep ? (flag ? a() : b())
+   * : c()` — the inner sits in value position while the outer lowers), so
+   * the rewrite recurses. */
+  export function voidTernaryIfStmt(value: IrExpr & { kind: "ternary" }): IrStmt {
+    return {
+      kind: "if",
+      cond: value.cond,
+      then: [voidTernaryIfStmtOrExprStmt(value.then, value.then.loc)],
+      else_: [voidTernaryIfStmtOrExprStmt(value.else_, value.else_.loc)],
+      loc: value.loc,
+    };
+  }
+
+/** The statement a lowered VOID expression lands in at a discarded-value
+   * site (concise arrow bodies returning void): the if/else form when the
+   * expression is a void ternary, the plain exprStmt otherwise. */
+  export function voidTernaryIfStmtOrExprStmt(value: IrExpr, loc: SrcLoc): IrStmt {
+    return value.kind === "ternary" && value.type.kind === "void"
+      ? voidTernaryIfStmt(value)
+      : { kind: "exprStmt", expr: value, loc };
   }
 
 /** True for a statement-position expression whose evaluation cannot be

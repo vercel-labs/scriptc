@@ -10,6 +10,7 @@ import { isNpmStaticPackage } from "../npm-static.js";
 import { isJsSourceFileName, isRelativeSpecifier } from "../shared.js";
 import { canonicalBuiltinModule, cjsExportAssignmentOf, cjsExportDiscardReason, isCjsJsFile, isJsSourceFile, isRequireStatement, locOf, makeCycleAdmission, orderedImportsOf, resolveImport, resolveNpmImport } from "../program.js";
 import type { CycleEdge } from "../program.js";
+import { resolveProjectImport } from "../resolve.js";
 import { invalidJsonModuleDiag, npmEmbedFailedDiag, requiresDynamicImportDiag } from "../../diagnostics/diagnostic.js";
 import { BOOL, DYN, IrClassDef, IrExpr, IrFunction, IrGlobal, IrRecordShape, IrStmt, IrType, IrUnionDef, JSVAL, RUNTIME_ERROR_CLASSES, STRING, SrcLoc, VOID, arrayOf, canConvertToDyn, isUnitType } from "../../ir/nodes.js";
 import { ENTRY_NAME, PoisonError, boundIdentifiersOf, dynFallbackType, dynUndefinedExpr, importCallHandleType, newFnCtx, uncheckedOverloadHandleCall } from "./lowerer.js";
@@ -70,14 +71,34 @@ export interface FileParts {
    * module namespace (lowerOwnModuleImport): a non-declaration program file
    * that is not JSON and not CommonJS-flavored (a CJS namespace is built
    * from module.exports through Node's lexer — a different surface with no
-   * static story here). Null for everything else. */
+   * static story here). Null for everything else.
+   *
+   * Relative/absolute specifiers resolve through the checker (resolveImport,
+   * program.ts's own tsgo-backed answer). A BARE specifier reaching this far
+   * can still name a program module: a package importing its OWN name
+   * through its package.json self-name "exports" (or, once a project's
+   * `paths` are adopted, a tsconfig alias) — the checker resolves that
+   * specifier too, so lowering must agree or a bare dynamic import that the
+   * checker admitted lowers as a program-module namespace build while never
+   * having been added to the compiled module graph (appendDynamicImportModules
+   * walks resolveImport/resolveProjectImport's own answers, not this
+   * function's — a mismatch here strands the edge). resolve.ts's
+   * resolveProjectImport is the SAME resolver appendDynamicImportModules'
+   * static-edge walk and the npm-import chokepoint both already trust for
+   * bare project-internal specifiers, so reusing it here keeps every bare-
+   * specifier answer in the compiler on one resolver. */
   export function dynamicImportProgramTargetOf(
     program: ts.Program,
     sf: ts.SourceFile,
     spec: string,
   ): ts.SourceFile | null {
-    if (!isRelativeSpecifier(spec) && !spec.startsWith("/")) return null;
-    const dep = resolveImport(program, sf, spec);
+    let dep: ts.SourceFile | null;
+    if (isRelativeSpecifier(spec) || spec.startsWith("/")) {
+      dep = resolveImport(program, sf, spec);
+    } else {
+      const resolved = resolveProjectImport(sf.fileName, spec);
+      dep = resolved !== null ? (program.getSourceFile(resolved) ?? null) : null;
+    }
     if (!dep || dep.isDeclarationFile) return null;
     if (dep.fileName.endsWith(".json") || dep.fileName.endsWith(".cts")) return null;
     if (isCjsJsFile(dep)) return null;

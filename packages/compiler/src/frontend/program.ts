@@ -50,7 +50,7 @@ import {
   tscPassthroughDiag,
   unsupportedDiag,
 } from "../diagnostics/diagnostic.js";
-import { isNodeModulesPath, nearestInvalidPackageJsonPath, nearestPackageType, nearestPkgJsonPath, projectDtsRuntimeSibling, resolveBareModule, resolveProjectImport, resolveRelativeModule, resolveTypeDirective, setProjectRealm } from "./resolve.js";
+import { isNodeModulesPath, nearestInvalidPackageJsonPath, nearestPackageType, nearestPkgJsonPath, projectDtsRuntimeSibling, resolveBareModule, resolveProjectImport, resolveRelativeModule, resolveTypeDirective, setProjectRealm, setTsconfigPaths } from "./resolve.js";
 import { probeNodeImportRefusal, probeNodeRequireRefusal } from "./npm.js";
 import { isNpmStaticPackage, npmStaticActive, npmStaticFsShadow, npmStaticPackageOfPath, reportNpmStaticOffender, setNpmStaticPackages } from "./npm-static.js";
 import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
@@ -321,6 +321,15 @@ function loadProgram7(
   externalTypes: ReadonlyMap<string, string> = new Map(),
 ): LoadResult & { disposeAll: () => void } {
   const config = adoptProjectConfig7(host, entryPath);
+  // resolveProjectImport (resolve.ts) needs the same paths map handed to
+  // tsgo above — see setTsconfigPaths's doc comment. One program load, one
+  // registry write; a later load (a second entry point in the same
+  // process) overwrites it, matching how tsgo itself is reconfigured per
+  // program.
+  const configPaths = config.options["paths"];
+  setTsconfigPaths(
+    configPaths && typeof configPaths === "object" ? (configPaths as Record<string, string[]>) : null,
+  );
   const nodeTypes = config.configFile ? resolveNodeTypes7(entryPath) : null;
   // skipLibCheck is FORCED with @types/node in the program: checking a
   // third-party lib's internals against OUR lib choice (es2025, no dyn) is

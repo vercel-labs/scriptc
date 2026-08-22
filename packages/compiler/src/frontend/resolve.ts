@@ -232,6 +232,55 @@ function loadAsDirectory(base: string): string | null {
   return null;
 }
 
+/* tsconfig `paths` registry — populated once per program load (program.ts's
+ * adoptProjectConfig7, which already parses the real tsconfig for the
+ * checker) with the SAME absolutized map handed to tsgo. tsgo resolves
+ * `paths` natively; this module's own resolveProjectImport only understands
+ * package.json self-name "exports" and the "#alias" imports field, so an
+ * alias with no package.json counterpart at all (a project's `@/*` pointing
+ * at its own src tree, distinct from its package name) previously had no
+ * project-internal resolver to answer it — SC1010 "package not installed"
+ * even though the checker resolved the same specifier fine. Values are
+ * already absolute (the same targets tsgo's synthesized tsconfig uses), so
+ * candidates need only the ordinary bundler extension-substitution pass. */
+let tsconfigPaths: Record<string, string[]> | null = null;
+
+export function setTsconfigPaths(paths: Record<string, string[]> | null): void {
+  tsconfigPaths = paths;
+}
+
+/** Longest-prefix `paths` match, mirroring package.json "exports" pattern
+ * precedence (resolveExportsTypes below) rather than tsconfig's declared
+ * first-match-wins order — the two are equivalent for well-formed configs
+ * (a project should never declare two `paths` keys where a shorter one is
+ * also a prefix of the specifier and a real ambiguity would result), and
+ * longest-prefix avoids depending on object key enumeration order. */
+function resolveViaTsconfigPaths(specifier: string): string | null {
+  if (tsconfigPaths === null) return null;
+  let best: { targets: string[]; prefix: string; suffix: string } | null = null;
+  for (const [key, targets] of Object.entries(tsconfigPaths)) {
+    const star = key.indexOf("*");
+    const prefix = star < 0 ? key : key.slice(0, star);
+    const suffix = star < 0 ? "" : key.slice(star + 1);
+    if (
+      specifier.startsWith(prefix) &&
+      specifier.length >= prefix.length + suffix.length &&
+      specifier.endsWith(suffix) &&
+      (best === null || prefix.length > best.prefix.length)
+    ) {
+      best = { targets, prefix, suffix };
+    }
+  }
+  if (best === null) return null;
+  const wildcard = specifier.slice(best.prefix.length, specifier.length - best.suffix.length);
+  for (const target of best.targets) {
+    const path = target.includes("*") ? target.split("*").join(wildcard) : target;
+    const answer = loadAsFile(path) ?? loadAsDirectory(path) ?? (isFile(path) ? path : null);
+    if (answer !== null) return answer;
+  }
+  return null;
+}
+
 /** The RUNTIME sibling of a PROJECT declaration twin — "src/index.js" for
  * "src/index.d.ts" when both exist OUTSIDE node_modules — or null. Node
  * loads the JS (declaration files do not exist in its world), and a
@@ -504,6 +553,15 @@ export function nearestInvalidPackageJsonPath(fromFile: string): string | null {
  * Relative specifiers, real node_modules packages, and builtins are other
  * resolvers' business; callers try those first. */
 export function resolveProjectImport(fromFile: string, specifier: string): string | null {
+  const answer = resolveProjectImportViaPackageJson(fromFile, specifier);
+  // tsconfig `paths` fallback: an alias with no package.json counterpart at
+  // all (see resolveViaTsconfigPaths above) — never consulted for "#alias"
+  // specifiers, which are exclusively package.json's own imports-field
+  // business and must not silently pick up an unrelated `paths` entry.
+  return answer ?? (specifier.startsWith("#") ? null : resolveViaTsconfigPaths(specifier));
+}
+
+function resolveProjectImportViaPackageJson(fromFile: string, specifier: string): string | null {
   // --provenance-sources (flag-gated; the registry is empty otherwise): a
   // registered bare specifier answers its attested SOURCE entry — the one
   // chokepoint that makes preflight's user-module edges, the module
@@ -542,7 +600,14 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
   }
   if (target === null) return null;
   const path = join(pkgDir, target);
-  return loadAsFile(path) ?? (isFile(path) ? path : null);
+  // Mirrors resolveRelativeModule below: a package.json "exports"/"imports"
+  // target can itself be a DIRECTORY (a wildcard subpath landing on
+  // "./src/foo", answered by "./src/foo/index.ts") — this resolver was
+  // missing that fallback entirely, unlike every other resolver in this
+  // module, so a self-name specifier landing on a directory answered null
+  // (SC1010 "package not installed") even though the exact same directory
+  // resolves fine as a relative import one character away.
+  return loadAsFile(path) ?? loadAsDirectory(path) ?? (isFile(path) ? path : null);
 }
 
 /* 5.9.3 with allowJs resolves node_modules in TWO FULL PASSES (probed): the

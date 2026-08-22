@@ -716,12 +716,92 @@ function androidNdkSysroot(env: NodeJS.ProcessEnv): string {
   );
 }
 
+/** MinGW-w64 install roots to probe, in order, when SCRIPTC_MINGW_ROOT is
+ * unset — mirrors the Android NDK auto-discovery above (explicit env var
+ * first, then the common install locations for the platform). MSYS2's own
+ * default (C:\msys64\mingw64) covers both its official installer and every
+ * package manager that wraps it (winget, choco, scoop); a bare mingw-w64
+ * standalone install commonly lands at C:\mingw64. */
+function mingwRootCandidates(env: NodeJS.ProcessEnv): string[] {
+  const explicit = env["SCRIPTC_MINGW_ROOT"];
+  if (explicit !== undefined && explicit !== "") return [explicit];
+  return ["C:\\msys64\\mingw64", "C:\\mingw64", "C:\\msys2\\mingw64"];
+}
+
+function findMingwRoot(env: NodeJS.ProcessEnv): string {
+  for (const root of mingwRootCandidates(env)) {
+    if (existsSync(join(root, "include", "dirent.h"))) return root;
+  }
+  throw new Error(
+    "no MinGW-w64 install was found — clang's own default target on Windows is the MSVC ABI, " +
+      "whose C runtime has none of the POSIX headers (dirent.h, unistd.h) or types (ssize_t) " +
+      "this project's runtime C sources need. Install MSYS2 (winget install MSYS2.MSYS2) and its " +
+      "mingw-w64-x86_64-gcc package (pacman -S mingw-w64-x86_64-gcc), and/or set " +
+      "SCRIPTC_MINGW_ROOT to the mingw64 directory (its default install path is C:\\msys64\\mingw64).",
+  );
+}
+
+/** clang targeting MinGW still links against a few of GCC's OWN runtime
+ * support libraries (libgcc.a, libgcc_eh.a — software float/int helpers and
+ * the DWARF-2 unwinder MinGW's exception model uses), which live under a
+ * GCC-VERSION-specific subdirectory clang has no reason to already know
+ * (it is not the compiler that put them there) — glob for it rather than
+ * pinning a version this project doesn't control the upgrade schedule of. */
+function findMingwGccLibDir(mingwRoot: string): string | null {
+  const base = join(mingwRoot, "lib", "gcc", "x86_64-w64-mingw32");
+  let versions: string[];
+  try {
+    versions = readdirSync(base);
+  } catch {
+    return null;
+  }
+  versions.sort().reverse();
+  for (const version of versions) {
+    const dir = join(base, version);
+    if (existsSync(join(dir, "libgcc.a"))) return dir;
+  }
+  return null;
+}
+
 /** Resolve native platform flags independently of the machine running tests,
  * so the host-Linux contract remains pinned on every development host. */
-function nativePlatformArgs(platform: NodeJS.Platform): Pick<CcDriver, "targetArgs" | "linkArgs"> {
-  return platform === "linux"
-    ? { targetArgs: ["-D_GNU_SOURCE"], linkArgs: ["-lm"] }
-    : { targetArgs: [], linkArgs: [] };
+function nativePlatformArgs(
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv = process.env,
+): Pick<CcDriver, "targetArgs" | "linkArgs"> {
+  if (platform === "linux") return { targetArgs: ["-D_GNU_SOURCE"], linkArgs: ["-lm"] };
+  if (platform === "win32") {
+    // clang's own default target here is the MSVC ABI (this project never
+    // targeted Windows until now — its docs only ever named macOS/Linux
+    // toolchains). MinGW-w64's headers/libs are the POSIX-compatible
+    // surface clang already knows how to target via --target=x86_64-w64-
+    // mingw32 — the exact same shape as Linux's -D_GNU_SOURCE branch above:
+    // a target-specific flag set on the SAME compiler, not a different one.
+    const mingwRoot = findMingwRoot(env);
+    const gccLibDir = findMingwGccLibDir(mingwRoot);
+    return {
+      targetArgs: [
+        "--target=x86_64-w64-mingw32",
+        `-isystem${mingwRoot}\\include`,
+      ],
+      linkArgs: [
+        `-L${mingwRoot}\\lib`,
+        `-B${mingwRoot}\\bin`,
+        // libgcc.a/libgcc_eh.a (software helpers + the unwinder MinGW's
+        // exception model uses) — see findMingwGccLibDir. Absent only for a
+        // MinGW install with no GCC at all (clang-only toolchains exist),
+        // which nothing in this codebase's runtime C currently needs.
+        ...(gccLibDir !== null ? [`-L${gccLibDir}`] : []),
+        // winpthreads: MinGW's <pthread_time.h> (pulled in by <time.h>)
+        // aliases clock_gettime/nanosleep to ITS OWN 64-bit-safe
+        // clock_gettime64/nanosleep64 (MinGW's own convention — unrelated
+        // to glibc's _TIME_BITS=64 Y2038 story, but the same idea); those
+        // symbols' actual definitions live in winpthreads, not the CRT.
+        "-lwinpthread",
+      ],
+    };
+  }
+  return { targetArgs: [], linkArgs: [] };
 }
 
 export function resolveCc(
@@ -730,7 +810,7 @@ export function resolveCc(
 ): CcDriver {
   const cc = env["SCRIPTC_CC"] ?? "";
   const target = env["SCRIPTC_TARGET"] ?? "";
-  const hostArgs = nativePlatformArgs(hostPlatform);
+  const hostArgs = nativePlatformArgs(hostPlatform, env);
   if (cc === "" || cc === "clang") {
     if (target !== "") {
       throw new Error(

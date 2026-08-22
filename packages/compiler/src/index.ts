@@ -1,6 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { buildCacheRoot, CcCompileError, compileC, compileLibArchive, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/cc.js";
+import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/cc.js";
 import { emitModule } from "./backend/emission/emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
 import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
@@ -8,12 +8,13 @@ import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdenti
 import { checkerPanicDiag, ffiNativeBuildDiag, libAsyncExportDiag, libAsyncSurfaceDiag, libExportUnresolvedDiag, libGenericExportDiag, libIntBoundaryDiag, libNpmIneligibleDiag, libSidecarDiag, libUnmappableSignatureDiag, iceDiag, isCheckerPanic, LIB_INBOUND_BYTES_TRAP_CODE, LIB_RUNTIME_TRAP_CODES, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import { checkLibraryIntegerSlots, classSeed, hasIntSlots, numberCarrierKind, type FnIntSlots, type IntSlotConfig } from "./library/int-infer.js";
 import { loadLibraryProfile, profileRemediation, profileTeaching, type LibraryProfile } from "./library/profile.js";
-import { decorateLibraryRefusals, evaluateLibraryFences } from "./library/fence-eval.js";
+import { clearFenceEvalCaches, decorateLibraryRefusals, evaluateLibraryFences } from "./library/fence-eval.js";
 import { assembleTrapTeaching } from "./library/trap-teaching.js";
 import {
   buildSidecar,
   canonicalModuleGraph,
   canonicalPath,
+  clearSidecarCaches,
   compilerReleaseVersion,
   libraryIdentityHashes,
   updateSidecarIdentity,
@@ -850,7 +851,15 @@ export function analyze(entryPath: string, opts: AnalyzeOptions = {}): AnalyzeRe
 }
 
 /** The whole pipeline: load → preflight → lower → validate → emit C → clang. */
+function clearCompileSessionCaches(): void {
+  clearResolveCaches();
+  clearCcCaches();
+  clearSidecarCaches();
+  clearFenceEvalCaches();
+}
+
 export async function compile(entryPath: string, opts: CompileOptions): Promise<CompileResult> {
+  clearCompileSessionCaches();
   const frontendInputs = new FrontendInputTracker();
   return frontendInputs.run(() => compileTracked(entryPath, opts, frontendInputs));
 }
@@ -1878,6 +1887,7 @@ async function emitSemanticLibraryHit(
 }
 
 export async function compileLibrary(opts: CompileLibraryOptions): Promise<CompileLibraryResult> {
+  clearCompileSessionCaches();
   const frontendInputs = new FrontendInputTracker();
   return frontendInputs.run(() => compileLibraryTracked(opts, frontendInputs));
 }

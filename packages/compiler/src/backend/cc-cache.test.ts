@@ -456,6 +456,73 @@ test("implicit dependency seeds include separately compiled vendor system header
   expect(includes).toContain("<stdatomic.h>");
 });
 
+test.skipIf(
+  process.platform === "win32" || clangExecutable === undefined || arExecutable === undefined ||
+  ldExecutable === undefined,
+)(
+  "public native builds re-probe ccache availability after PATH changes",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-ccache-reset-"));
+    scratch.push(dir);
+    const binDir = join(dir, "bin");
+    const cacheRoot = join(dir, "cache");
+    const cPath = join(dir, "program.c");
+    const ccacheLog = join(dir, "ccache.log");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const oldPath = process.env["PATH"];
+    const oldCcacheLog = process.env["SCRIPTC_TEST_CCACHE_LOG"];
+
+    try {
+      await Promise.all([mkdir(binDir), mkdir(cacheRoot, { mode: 0o700 })]);
+      await Promise.all([
+        symlink(clangExecutable!, join(binDir, "clang")),
+        symlink(arExecutable!, join(binDir, "ar")),
+        symlink(ldExecutable!, join(binDir, "ld")),
+        writeFile(cPath, "int main(void) { return 0; }\n"),
+      ]);
+      process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+      process.env["PATH"] = binDir;
+      delete process.env["SCRIPTC_NO_CACHE"];
+
+      await compileC({
+        cPath,
+        outPath: join(dir, "first"),
+        cacheIdentity: TEST_CACHE_IDENTITY,
+        regex: true,
+      });
+
+      await writeFile(
+        join(binDir, "ccache"),
+        `#!/bin/sh
+if [ "$1" = "--version" ]; then exit 0; fi
+printf '%s\n' "$*" >> "$SCRIPTC_TEST_CCACHE_LOG"
+exec "$@"
+`,
+      );
+      await chmod(join(binDir, "ccache"), 0o755);
+      process.env["SCRIPTC_TEST_CCACHE_LOG"] = ccacheLog;
+
+      await compileC({
+        cPath,
+        outPath: join(dir, "second"),
+        cacheIdentity: TEST_CACHE_IDENTITY,
+        dynamic: true,
+      });
+      expect((await readFile(ccacheLog, "utf8")).trim()).not.toBe("");
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+      if (oldPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = oldPath;
+      if (oldCcacheLog === undefined) delete process.env["SCRIPTC_TEST_CCACHE_LOG"];
+      else process.env["SCRIPTC_TEST_CCACHE_LOG"] = oldCcacheLog;
+    }
+  },
+);
+
 test.skipIf(process.platform === "win32")(
   "opaque compiler wrappers bypass persistent caches",
   async () => {

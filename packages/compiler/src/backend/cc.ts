@@ -1618,6 +1618,7 @@ async function resolveProgramShardMergeIdentity(driver: CcDriver): Promise<strin
 }
 
 export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> {
+  clearCcCaches();
   const rtDir = runtimeSrcDir();
   const driver = resolveCc();
   const shardNames = new Set<string>();
@@ -3839,6 +3840,14 @@ function implicitLinkerFingerprint(
 }
 
 let ccacheMemo: Promise<boolean> | null = null;
+
+/** Reset process observations whose validity is bounded to one public native
+ * build. A long-lived caller may change PATH or install/remove ccache between
+ * invocations; the next build must probe that environment again. */
+export function clearCcCaches(): void {
+  ccacheMemo = null;
+}
+
 function ccacheAvailable(): Promise<boolean> {
   ccacheMemo ??= execFileAsync("ccache", ["--version"]).then(
     () => true,
@@ -5947,6 +5956,7 @@ async function compileCInternal(
 }
 
 export async function compileC(opts: CcOptions): Promise<void> {
+  clearCcCaches();
   await compileCInternal(opts, false);
 }
 
@@ -5981,6 +5991,7 @@ export function supportedNativeCacheWarmProfiles(
 export async function warmNativeCaches(
   options: WarmNativeCachesOptions = {},
 ): Promise<WarmNativeCachesResult> {
+  clearCcCaches();
   const cacheRoot = cacheRootDir();
   if (cacheRoot === null) {
     throw new Error(

@@ -126,6 +126,11 @@ interface FenceTaxonomy {
 
 let taxonomy: FenceTaxonomy | null = null;
 
+/** The taxonomy is a compilation-session view of the release manifest. */
+export function clearFenceEvalCaches(): void {
+  taxonomy = null;
+}
+
 function builtinRootId(mod: string): string {
   return `node-builtin.${mod.split("/").join(".")}`;
 }

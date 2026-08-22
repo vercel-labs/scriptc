@@ -145,6 +145,12 @@ export interface SidecarDoc {
 
 let releaseVersion: string | null = null;
 
+/** The package version is stable within one compilation, but a long-lived
+ * source/worktree process may observe a release stamp between compilations. */
+export function clearSidecarCaches(): void {
+  releaseVersion = null;
+}
+
 /** The compiler's exact release identifier — the published package
  * version, read once from the compiler package's own package.json (this
  * module lives two levels below the package root in src/ and dist/

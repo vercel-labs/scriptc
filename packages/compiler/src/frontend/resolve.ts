@@ -826,11 +826,12 @@ export function resolveTypeDirective(name: string, fromFile: string): string | n
   }
 }
 
-/** Test hook: the package.json cache holds across programs (fine within one
- * compile; a long-lived test process editing fixtures must reset it). */
+/** Resolver metadata and the active project realm are shared within one
+ * compile, never across compiles in a long-lived process. */
 export function clearResolveCaches(): void {
   pkgJsonCache.clear();
   workspaceMembersCache.clear();
+  projectRealmPkgJson = null;
 }
 
 /** True when `path` is under a node_modules directory (the

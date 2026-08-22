@@ -82,6 +82,12 @@ export function renderDiagnostic(
   return out.join("\n");
 }
 
+// Above this many diagnostics, rendering every one (each carrying its own
+// source-line context) can push the joined report past V8's max string
+// length (RangeError: Invalid string length) — cap the render and say so,
+// rather than crashing the whole report.
+const MAX_RENDERED_DIAGNOSTICS = 1000;
+
 export function renderAll(
   diags: ScrDiagnostic[],
   sourceTextByFile: Map<string, string>,
@@ -90,10 +96,15 @@ export function renderAll(
   const sorted = [...diags].sort(
     (a, b) => a.loc.file.localeCompare(b.loc.file) || a.loc.start - b.loc.start,
   );
-  return sorted
+  const shown = sorted.slice(0, MAX_RENDERED_DIAGNOSTICS);
+  const rendered = shown
     .map((d) => {
       const text = sourceTextByFile.get(d.loc.file);
       return renderDiagnostic(d, text === undefined ? undefined : { text }, opts);
     })
     .join("\n\n");
+  const omitted = sorted.length - shown.length;
+  return omitted > 0
+    ? `${rendered}\n\n... ${omitted} more diagnostic${omitted === 1 ? "" : "s"} not shown (${sorted.length} total)`
+    : rendered;
 }

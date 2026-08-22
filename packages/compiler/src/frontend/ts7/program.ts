@@ -26,7 +26,7 @@ import type {
 } from "typescript/unstable/sync";
 import type { SourceFile } from "typescript/unstable/ast";
 import { CheckerFacade } from "./checker.js";
-import { enumKeyOf, ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget } from "./enums.js";
+import { enumKeyOf, JsxEmit, ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget } from "./enums.js";
 import { tsgoPath } from "../shared.js";
 import { trackedAccessibleEntries, trackedDirectoryExists, trackedFileExists, trackedReadFile, trackedRealpath } from "../input-tracker.js";
 
@@ -71,15 +71,29 @@ function serializeOptions(options: Ts7CompilerOptions): Record<string, unknown> 
           lib.startsWith("lib.") && lib.endsWith(".d.ts") ? lib.slice(4, -5) : lib,
         );
         break;
-      // TypeScript's JsxEmit enum: None=0, Preserve=1, React=2,
-      // ReactNative=3, ReactJSX=4, ReactJSXDev=5 — same reverse-mapping
-      // need as target/module/moduleResolution/moduleDetection above, but
-      // JsxEmit isn't one of this adapter's mirrored enums, so the string
-      // table is spelled out directly instead of going through enumKeyOf.
-      case "jsx":
-        out[key] =
-          ["none", "preserve", "react", "react-native", "react-jsx", "react-jsxdev"][value as number] ?? value;
+      // Same reverse-mapping need as target/module/moduleResolution/
+      // moduleDetection above — JsxEmit is one more hidden enum (enums.ts),
+      // reverse-mapped the same symbolic way rather than a hardcoded
+      // positional table (7.0.2 renumbers React/ReactNative relative to
+      // 5.9.3; see enums.ts's JsxEmit comment). Unlike the other enums here,
+      // JsxEmit's tsconfig spelling isn't a plain lowercase of its key
+      // (ReactNative -> "react-native", ReactJSX -> "react-jsx", ReactJSXDev
+      // -> "react-jsxdev") — the enumKeyOf lookup still comes from the
+      // enum's own symbolic reverse mapping (never a hardcoded number), only
+      // the KEY-NAME-TO-SPELLING step below is a fixed table.
+      case "jsx": {
+        const jsxKey = enumKeyOf(JsxEmit as never, value as number);
+        const jsxSpelling: Record<string, string> = {
+          None: "none",
+          Preserve: "preserve",
+          React: "react",
+          ReactNative: "react-native",
+          ReactJSX: "react-jsx",
+          ReactJSXDev: "react-jsxdev",
+        };
+        out[key] = (jsxKey && jsxSpelling[jsxKey]) ?? value;
         break;
+      }
       default: {
         if (typeof value === "number" && key !== "maxNodeModuleJsDepth") {
           throw new Error(`ts7 createProgram: unhandled enum-valued compiler option '${key}'`);

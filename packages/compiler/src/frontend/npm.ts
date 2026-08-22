@@ -135,7 +135,7 @@ export interface EmbeddedModule {
  * guard). Export names that aren't identifiers ("dash-name") use string
  * ModuleExportNames — every name does, uniformly; the locals are e0, e1, …
  * temps. */
-export function cjsEsmFacadeSource(key: string, names: readonly string[]): string {
+function cjsEsmFacadeSource(key: string, names: readonly string[]): string {
   const uniq = [...new Set(names)].filter((n) => n !== "default" && n !== "module.exports");
   const parts = [
     `const m=globalThis.__scr_require(${JSON.stringify(key)});`,
@@ -1796,13 +1796,4 @@ export class NpmGraphBuilder {
       }
     }
   }
-}
-
-/** One-call convenience over NpmGraphBuilder. */
-export function buildNpmRuntimeGraph(
-  imports: readonly { fromFile: string; specifier: string }[],
-): NpmRuntimeGraph {
-  const b = new NpmGraphBuilder();
-  for (const i of imports) b.addImport(i.fromFile, i.specifier);
-  return b.finish();
 }

@@ -479,7 +479,7 @@ function dynPromiseAdapter(
  * receiver binding. This deliberately small whitelist enables borrowed
  * receivers in typed-array hot loops while side-effecting/calling shapes
  * retain the full snapshot ownership required by JS evaluation order. */
-export function isStableBytesOperand(e: IrExpr, receiverLocalId: string): boolean {
+function isStableBytesOperand(e: IrExpr, receiverLocalId: string): boolean {
   switch (e.kind) {
     case "numLit":
     case "boolLit":

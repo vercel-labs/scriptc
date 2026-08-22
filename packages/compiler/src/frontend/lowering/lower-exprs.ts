@@ -1946,7 +1946,7 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
    * array type's role when the caller knows the slot's array type and tsc's
    * API doesn't surface it (a ternary as a SPREAD source — lowerArrayLiteral
    * threads the literal's own type in). */
-  export function lowerTernary(L: Lowerer, expr: ts.ConditionalExpression,
+  function lowerTernary(L: Lowerer, expr: ts.ConditionalExpression,
     expected?: IrType & { kind: "array" },): IrExpr {
     const loc = locOf(expr);
       // `Array.isArray(x) ? x : [x]` over a `T | readonly T[]` union: tsc
@@ -2520,7 +2520,7 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
    * the same trust-the-checker bet as lowerUnitComparison. Null (fence)
    * when this isn't a null-literal comparison or the operand has no
    * lowering here (dyn/jsval/void). */
-  export function lowerLooseNullCompare(L: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc,): IrExpr | null {
+  function lowerLooseNullCompare(L: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc,): IrExpr | null {
     const negated = expr.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
     const unwrap = (e: ts.Expression): ts.Expression =>
       ts.isParenthesizedExpression(e) ? unwrap(e.expression) : e;
@@ -2830,7 +2830,7 @@ export function pureReemittable(e: IrExpr): boolean {
    * lowering's re-dispatch walk past its own step. `f?.()` steps stay out
    * (a call carrying the token has no member step to re-enter — the
    * split-it fence keeps them). */
-  export function chainTailDot(
+  function chainTailDot(
     L: Lowerer,
     expr: ts.Expression,
   ): ts.PropertyAccessExpression | ts.ElementAccessExpression | null {
@@ -2890,7 +2890,7 @@ export function pureReemittable(e: IrExpr): boolean {
    * island ('any') receivers answer their tails through their own
    * undefined-propagating reads and stay out; never-nullish receivers fold
    * at the token's own entry. */
-  export function chainTailClaimed(L: Lowerer, expr: ts.Expression): boolean {
+  function chainTailClaimed(L: Lowerer, expr: ts.Expression): boolean {
     const tail = chainTailDot(L, expr);
     if (!tail) return false;
     const recvT = L.mapTypeOf(L.typeOf(tail.expression));
@@ -2904,7 +2904,7 @@ export function pureReemittable(e: IrExpr): boolean {
    * nullish), so a dyn tail read must answer undefined instead of
    * throwing. Walks the receiver spine only; the argument of the access
    * itself is not part of the guard. */
-  export function chainGuardedByQuestionDot(expr: ts.Expression): boolean {
+  function chainGuardedByQuestionDot(expr: ts.Expression): boolean {
     let cur: ts.Expression = expr;
     for (;;) {
       if (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur)) {
@@ -5967,7 +5967,7 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
    * would capture the value under construction (an RC cycle), and the
    * generic lexical-this walk would silently bind an ENCLOSING method's
    * `this`; the fence names the fix (capture a binding instead). */
-  export function rejectThisInObjectAccessor(L: Lowerer, node: ts.Node): void {
+  function rejectThisInObjectAccessor(L: Lowerer, node: ts.Node): void {
     if (node.kind === ts.SyntaxKind.ThisKeyword) {
       L.unsupported(
         "SC1090",
@@ -6584,7 +6584,7 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
    * exactly the key JS derives; negative/computed keys stay runtime
    * expressions and canonicalize through ensureString instead). Null for
    * everything else. */
-  export function recordKeyLiteralText(node: ts.Expression): string | null {
+  function recordKeyLiteralText(node: ts.Expression): string | null {
     if (ts.isStringLiteral(node)) return node.text;
     if (ts.isNumericLiteral(node)) return String(Number(node.text));
     return null;
@@ -6598,7 +6598,7 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
    * are pure, so the static field read may skip evaluating the key exactly
    * like a syntactic literal. Null anywhere the type keeps more than one
    * key. */
-  export function recordKeyTypeLiteralText(L: Lowerer, node: ts.Expression): string | null {
+  function recordKeyTypeLiteralText(L: Lowerer, node: ts.Expression): string | null {
     if (!ts.isIdentifier(node)) return null;
     let t: ts.Type = L.typeOf(node);
     if (t.flags & ts.TypeFlags.TypeParameter) {
@@ -7362,7 +7362,7 @@ export function lowerPrefixUnary(L: Lowerer, expr: ts.PrefixUnaryExpression): Ir
    * backend reads/writes through the box); record fields and array
    * elements keep the fence in value position (statement-position `obj.f++`
    * still desugars through the compound-field path). */
-  export function lowerIncDec(
+  function lowerIncDec(
     L: Lowerer,
     expr: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression,
     prefix: boolean,
@@ -8468,7 +8468,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
    * maybeNarrow's unionNarrow as usual. Null when neither side is a typeof
    * over a union-typed operand or the literal side isn't a literal (the
    * bare-typeof value form then composes with strEq for pure operands). */
-  export function lowerUnionTypeofTest(L: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr | null {
+  function lowerUnionTypeofTest(L: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr | null {
     const negated = expr.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
     for (const [a, b] of [
       [expr.left, expr.right],
@@ -8522,7 +8522,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
    * fence — an object-narrowed `unknown` read has no lowering anyway (a
    * checked cast `v as T` is the supported extraction). Null when neither
    * side is a typeof over a dyn-typed operand (not this pattern). */
-  export function lowerDynTypeofTest(L: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr | null {
+  function lowerDynTypeofTest(L: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr | null {
     const negated = expr.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
     for (const [a, b] of [
       [expr.left, expr.right],
@@ -8651,7 +8651,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
    * CJS model types the read off the replacement — identity-blind). Null
    * everywhere else: no replacement, a real attachment of this name, a
    * shadowing binding named `exports`, or write position. */
-  export function lowerReplacedExportsRead(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+  function lowerReplacedExportsRead(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
     if (expr.questionDotToken) return null;
     const recv = expr.expression;
     if (!ts.isIdentifier(recv) || recv.text !== "exports") return null;
@@ -8684,7 +8684,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
    * exactly. Null when the identifier doesn't resolve to such a property
    * (or it has no getter: a setter-only read answers undefined in Node —
    * rare enough to keep fenced). */
-  export function cjsExportAccessorRead(L: Lowerer, ident: ts.Identifier): IrExpr | null {
+  function cjsExportAccessorRead(L: Lowerer, ident: ts.Identifier): IrExpr | null {
     const symbol = L.resolveValueSymbol(ident);
     const getter = symbol ? L.checker.declarationsOf(symbol).find(ts.isGetAccessorDeclaration) : undefined;
     if (!getter) return null;
@@ -8718,7 +8718,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
    * expression's `this` is its own). Null everywhere else — non-getter
    * siblings and absent names keep their per-site fences (none of the
    * probed suite shapes read them). */
-  export function lowerCjsExportTableThisMember(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+  function lowerCjsExportTableThisMember(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
     if (expr.expression.kind !== ts.SyntaxKind.ThisKeyword || expr.questionDotToken) return null;
     if (!isJsSourceFile(expr.getSourceFile())) return null;
     // The enclosing accessor, crossing only arrow boundaries (arrows
@@ -9251,7 +9251,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
    * idiom over multiple shapes), index-signature keys, class instances,
    * and dyn/unknown stay fenced. Keys are literal strings — a computed key
    * over a shape would need the runtime key table. */
-  export function lowerInExpression(L: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  function lowerInExpression(L: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
     // `#name in obj` — the ergonomic brand check (ES2022) — resolves
     // before any string-key machinery: the left operand is a private
     // NAME, not a value.
@@ -9635,7 +9635,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
    * only needs to track escapes, character classes, and `(` kinds; tsc
    * has already syntax-checked the literal, so a malformed pattern here
    * answers null and the engine's lazy compile reports it. */
-  export function namedCaptureGroupsOfPattern(pattern: string): { name: string; index: number }[] | null {
+  function namedCaptureGroupsOfPattern(pattern: string): { name: string; index: number }[] | null {
     const groups: { name: string; index: number }[] = [];
     let captureIndex = 0;
     let inClass = false;
@@ -9687,7 +9687,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
    * `const regexp = /(?<m>\d+)/` shape), or `new RegExp("...")` over a
    * string literal (the cooked text IS the pattern). Null when the regex
    * only exists at runtime — .groups consumers fence there. */
-  export function staticRegexPatternOf(L: Lowerer, e: ts.Expression): string | null {
+  function staticRegexPatternOf(L: Lowerer, e: ts.Expression): string | null {
     let expr = e;
     for (;;) {
       if (ts.isParenthesizedExpression(expr) || ts.isNonNullExpression(expr)) {
@@ -9850,7 +9850,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
    * prefix (the Object.groupBy stance, ledgered). Null when the receiver
    * isn't a match slice or the regex isn't traceable — the caller's
    * member fence (with the groups hint) names the gap. */
-  export function lowerMatchGroupsRead(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+  function lowerMatchGroupsRead(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
     if (expr.name.text !== "groups" || expr.questionDotToken !== undefined) return null;
     const loc = locOf(expr);
     const strArr = arrayOf(STRING);
@@ -10496,7 +10496,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
 
 /** `obj[k]` as an assignable field target — the symbol-keyed twin of
    * fieldTarget's class branch (the receiver lowers here, exactly once). */
-  export function symbolFieldTarget(L: Lowerer, expr: ts.ElementAccessExpression): FieldTarget | null {
+  function symbolFieldTarget(L: Lowerer, expr: ts.ElementAccessExpression): FieldTarget | null {
     const info = symbolFieldInfo(L, expr);
     if (!info) return null;
     const obj = L.lowerExpr(expr.expression);
@@ -10907,7 +10907,7 @@ function lowerStreamObjectProperty(L: Lowerer, expr: ts.PropertyAccessExpression
  * `Number(s)` lowering emits), Boolean the emptiness test. Interning makes
  * every reference the SAME immortal closure, so `opt.type === String`
  * compares like JS function identity. */
-export function primitiveCtorClosure(
+function primitiveCtorClosure(
   L: Lowerer,
   name: "String" | "Number" | "Boolean",
   loc: SrcLoc,

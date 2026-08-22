@@ -154,7 +154,7 @@ export function own<T>(table: Record<string, T | undefined>, key: string): T | u
 /** Sentinel binding key for `this` (which has no ts.Symbol): a stable
  * object identity used in the same scope/capture maps as real symbols, so
  * arrows capturing `this` ride the ordinary capture machinery. */
-export const THIS_BINDING = { escapedName: "%this" } as unknown as ts.Symbol;
+const THIS_BINDING = { escapedName: "%this" } as unknown as ts.Symbol;
 
 /* ── the island boundary, in one voice ────────────────────────────────
  * Whether a value can cross between the static world and the island is
@@ -250,7 +250,7 @@ export interface LowerStats {
  * visit; descending would attribute a nested island statement to every
  * enclosing construct too). The top-level statement object itself is
  * always visited. */
-export const IR_STMT_KINDS = new Set([
+const IR_STMT_KINDS = new Set([
   "varDecl", "assign", "exprStmt", "if", "while", "doWhile", "switch",
   "arraySet", "forOf", "return", "fieldSet", "recordSet", "break",
   "continue", "block", "tryCatch", "throw", "rethrow", "runtimeFence",

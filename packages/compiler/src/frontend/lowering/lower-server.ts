@@ -27,15 +27,6 @@ import {
 } from "./surfaces.js";
 import { conditionalSpreadOf } from "./lower-exprs.js";
 
-/** The lowered value members of the net module — the surfaces.ts table's
- * spoke-side twin (the call SHAPES are all special-cased here, so the
- * entries carry no param/result rows). */
-export const NET_MODULE_FNS: ReadonlySet<string> = new Set([
-  "createServer",
-  "connect",
-  "createConnection",
-]);
-
 const NARROW_DATA_HINT =
   'write/end take one string or one Uint8Array/Buffer value (narrow unions first)';
 
@@ -4333,7 +4324,7 @@ export function lowerSocketInstanceOf(L: Lowerer, expr: ts.BinaryExpression, loc
 
 /** True when `node` reads `.headers` off an IncomingMessage — the
  * receiver shape of both header-read forms. */
-export function isHttpReqHeaders(L: Lowerer, node: ts.Expression): boolean {
+function isHttpReqHeaders(L: Lowerer, node: ts.Expression): boolean {
   return (
     ts.isPropertyAccessExpression(node) &&
     !node.questionDotToken &&

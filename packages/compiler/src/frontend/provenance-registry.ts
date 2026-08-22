@@ -105,15 +105,6 @@ export function isProvenanceSourceFile(fileName: string): boolean {
   return false;
 }
 
-/** The registered package owning `fileName`, or null. */
-export function provenancePackageOfFile(fileName: string): ProvenancePackageSource | null {
-  if (state === null) return null;
-  for (let i = 0; i < state.packageDirs.length; i++) {
-    if (fileName.startsWith(state.packageDirs[i]!)) return state.sources.packages[i]!;
-  }
-  return null;
-}
-
 /** tsconfig "paths" for the registered entries — loadProgram feeds these
  * to tsgo so the checker resolves registered bare specifiers to the same
  * source files the preflight resolver answers. */

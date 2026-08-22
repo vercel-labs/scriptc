@@ -982,7 +982,7 @@ export function emitterInvokeThunkFor(E: CEmitter, cbT: IrType): string {
  * scr_stream_final_done, "d" scr_stream_destroy_done, "t"
  * scr_stream_transform_done, "l" scr_stream_flush_done. Args arrive
  * callee-owned (+1) per the universal convention and are released here. */
-export function streamDoneFnFor(E: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: IrType): string {
+function streamDoneFnFor(E: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: IrType): string {
   if (doneT.kind !== "func") {
     throw new Error("emitter bug: stream done callback not a func (frontend must fence)");
   }

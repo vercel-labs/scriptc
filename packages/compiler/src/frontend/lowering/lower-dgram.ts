@@ -18,11 +18,6 @@ const DGRAM_SURFACE_HINT =
   "bind, connect, send, address, close, unref/ref, and on/once of " +
   "message/listening/close/connect/error are the supported dgram.Socket members";
 
-/** The lowered value members of the dgram/dns modules — the surfaces.ts
- * tables' spoke-side twins (call shapes are all special-cased here). */
-export const DGRAM_MODULE_FNS: ReadonlySet<string> = new Set(["createSocket"]);
-export const DNS_MODULE_FNS: ReadonlySet<string> = new Set(["lookup"]);
-
 /** VOID-result socket calls are usable as statements and as concise arrow
  * bodies; anything consuming the result (Node returns `this` where this
  * surface returns void) is fenced — the lower-server stance. */

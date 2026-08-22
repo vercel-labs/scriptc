@@ -636,7 +636,7 @@ function fenceProducedArrayElem(L: Lowerer, node: ts.Node, producer: string, ele
    * visited), elements are read fresh each iteration, callbacks run
    * left-to-right and receive whatever prefix of (element, index, array)
    * they declare. */
-  export function lowerArrayHofCall(L: Lowerer, call: ts.CallExpression,
+  function lowerArrayHofCall(L: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,
     method: "map" | "filter" | "forEach",
     elem: IrType,): IrExpr {
@@ -719,7 +719,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
    * combo. Named `%arr.<method>.<n>` ('%' keeps it out of the user
    * namespace); rides `liftedFns` into the module like a lifted lambda (it
    * is a plain function — no captures). */
-  export function arrayHofHelper(L: Lowerer, method: "map" | "filter" | "forEach",
+  function arrayHofHelper(L: Lowerer, method: "map" | "filter" | "forEach",
     elem: IrType,
     fnRet: IrType,
     arity: number,
@@ -916,7 +916,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
    * (pushSpread), then each argument pushes (element) or spreads (array)
    * in order; the receiver and array arguments are only READ. Rides
    * liftedFns like the HOF helpers (a plain function — no captures). */
-  export function arrayConcatHelper(L: Lowerer, elem: IrType, shape: ("e" | "a")[], loc: SrcLoc): string {
+  function arrayConcatHelper(L: Lowerer, elem: IrType, shape: ("e" | "a")[], loc: SrcLoc): string {
     const key = `concat:${typeKey(elem)}:${shape.join("")}`;
     const existing = L.arrHofHelpers.get(key);
     if (existing) return existing;
@@ -966,7 +966,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
    * `arity` is the callback's declared parameter count (1–3): the loop
    * passes the index and the receiver itself after the element when the
    * callback names them, exactly the arguments JS supplies. */
-  export function buildArrayHofFn(L: Lowerer, name: string,
+  function buildArrayHofFn(L: Lowerer, name: string,
     method: "map" | "filter" | "forEach",
     elem: IrType,
     fnRet: IrType,
@@ -1086,7 +1086,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
    * backwards (`i = n - 1; i >= 0; i--`), exactly the es2023 spec's
    * descending index walk. All require a bool-returning callback
    * (JS's ToBoolean of arbitrary predicate results has no lowering). */
-  export function lowerArrayFindLikeCall(L: Lowerer, call: ts.CallExpression,
+  function lowerArrayFindLikeCall(L: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,
     method: "find" | "findIndex" | "findLast" | "findLastIndex" | "some" | "every",
     elem: IrType,): IrExpr {
@@ -1347,7 +1347,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
    * which IS map — those calls share map's interned helper. A union return
    * mixing array and non-array arms would need a per-value flatten decision
    * — fenced. */
-  export function lowerArrayFlatMapCall(L: Lowerer, call: ts.CallExpression,
+  function lowerArrayFlatMapCall(L: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,
     elem: IrType,): IrExpr {
     const loc = locOf(call);
@@ -1482,7 +1482,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
    * initial value, the element type without one. The callback may declare
    * any prefix of (acc, element, index, array). Without an initial value an
    * empty receiver throws Node's exact TypeError at runtime. */
-  export function lowerArrayReduceCall(L: Lowerer, call: ts.CallExpression,
+  function lowerArrayReduceCall(L: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,
     method: "reduce" | "reduceRight",
     elem: IrType,): IrExpr {
@@ -1641,7 +1641,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
    * relational operators. For numbers that default is the notorious string
    * sort ([10, 9, 1] → [1, 10, 9]), deliberately fenced toward an explicit
    * comparator. */
-  export function lowerArraySortCall(L: Lowerer, call: ts.CallExpression,
+  function lowerArraySortCall(L: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,
     elem: IrType,
     arrT: IrType & { kind: "array" },): IrExpr {
@@ -2323,7 +2323,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
    * The result is the checker's own `T | undefined` union, the find
    * machinery's wrap rules (an undefined-armed element type passes
    * through). */
-  export function lowerArrayAtCall(L: Lowerer, call: ts.CallExpression,
+  function lowerArrayAtCall(L: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,
     elem: IrType,): IrExpr {
     const loc = locOf(call);
@@ -4033,7 +4033,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
    * desugar substitutes the builtin has/size for the spec's observable
    * calls, which is exact for Sets and wrong for anything else (a Map or
    * a custom { has, size, keys } object fences). */
-  export function lowerSetCombineCall(L: Lowerer, call: ts.CallExpression,
+  function lowerSetCombineCall(L: Lowerer, call: ts.CallExpression,
     name: string,
     receiver: IrExpr,
     setT: IrType & { kind: "set" },): IrExpr {

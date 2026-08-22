@@ -32,7 +32,7 @@ import type { WalkerHost } from "./walkers.js";
 
 /** ScrDynKind values (scr_runtime.h). */
 /** ScrDynHandleTag numeric values (scr_runtime.h's enum order). */
-export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
+const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   httpReq: 0,
   httpRes: 1,
   netSocket: 2,

@@ -1062,7 +1062,7 @@ function isWriteTarget(id: ts.Identifier): boolean {
 }
 
 /** The nearest class at-or-above `info` declaring an emit override. */
-export function emitOverrideAtOrAbove(info: ClassInfo | null | undefined): ClassInfo | null {
+function emitOverrideAtOrAbove(info: ClassInfo | null | undefined): ClassInfo | null {
   for (let c: ClassInfo | null = info ?? null; c; c = c.base) {
     if (c.emitOverride) return c;
   }
@@ -1095,7 +1095,7 @@ function topmostEmitOverridesBelow(info: ClassInfo): ClassInfo[] {
 /** An emit-override class COMPARABLE to `info` (ancestor-or-self or
  * descendant — a dynamic instance under this static type could dispatch
  * through it), or null. The meta-registration fence's test. */
-export function emitOverrideComparable(info: ClassInfo): ClassInfo | null {
+function emitOverrideComparable(info: ClassInfo): ClassInfo | null {
   const above = emitOverrideAtOrAbove(info);
   if (above) return above;
   const below: ClassInfo[] = [];
@@ -1107,7 +1107,7 @@ export function emitOverrideComparable(info: ClassInfo): ClassInfo | null {
  * method on the class (vtable participation — the ABI is `(this, ...tuple)
  * => bool` for every declarer of one event, override-exact by
  * construction) and queues the body for the drive loop's fixpoint. */
-export function ensureEmitSpec(L: Lowerer, info: ClassInfo, event: string, tuple: IrType[]): void {
+function ensureEmitSpec(L: Lowerer, info: ClassInfo, event: string, tuple: IrType[]): void {
   const mName = `emit:${event}`;
   const key = `%${info.def.name}.${mName}`;
   if (L.emitSpecDone.has(key)) return;

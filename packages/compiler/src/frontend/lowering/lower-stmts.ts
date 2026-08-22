@@ -437,7 +437,7 @@ export function provenanceElidedConstDecl(L: Lowerer, decl: ts.VariableDeclarati
    * a loop re-ASSIGNS the one binding per pass and never resets it — the
    * classic capture semantics fall out: closures made in a loop share the
    * single boxed binding, where `let` gets a fresh box per iteration. */
-  export function hoistVarBinding(L: Lowerer, symbol: ts.Symbol, nameNode: ts.Identifier): IrLocal {
+  function hoistVarBinding(L: Lowerer, symbol: ts.Symbol, nameNode: ts.Identifier): IrLocal {
     const existing = L.hoistedVars.get(symbol);
     if (existing) return existing;
     // The parameter merge: the symbol already binds a function-root local.
@@ -625,7 +625,7 @@ export function provenanceElidedConstDecl(L: Lowerer, decl: ts.VariableDeclarati
    * after consuming them: an unused label costs nothing, and a labeled
    * jump naming one fences by name at the jump site instead of compiling
    * against the wrong target. */
-  export function lowerLabeled(L: Lowerer, stmt: ts.LabeledStatement): IrStmt | IrStmt[] | null {
+  function lowerLabeled(L: Lowerer, stmt: ts.LabeledStatement): IrStmt | IrStmt[] | null {
     const labels: string[] = [];
     let inner: ts.Statement = stmt;
     while (ts.isLabeledStatement(inner)) {
@@ -1959,7 +1959,7 @@ export function isParseArgsDynCheckerType(L: Lowerer, type: ts.Type): boolean {
    * source's field under exactly that name, and pure keys make skipping
    * the evaluation exact). Null for runtime-valued keys — the callers
    * fence, or route island sources to the engine pattern. */
-  export function patternKeyNameOf(L: Lowerer, prop: ts.PropertyName): string | null {
+  function patternKeyNameOf(L: Lowerer, prop: ts.PropertyName): string | null {
     if (ts.isIdentifier(prop) || ts.isPrivateIdentifier(prop)) return prop.text;
     if (ts.isComputedPropertyName(prop)) return L.foldedStringKeyOf(prop.expression);
     // A numeric-literal key spells JS's canonical ToPropertyKey form
@@ -2636,7 +2636,7 @@ export function isParseArgsDynCheckerType(L: Lowerer, type: ts.Type): boolean {
    * Null when any element has no engine form (computed keys — a compiled
    * expression the pattern text cannot carry — or untransportable
    * defaults). */
-  export function enginePatternSpec(L: Lowerer, pattern: ts.ArrayBindingPattern | ts.ObjectBindingPattern,
+  function enginePatternSpec(L: Lowerer, pattern: ts.ArrayBindingPattern | ts.ObjectBindingPattern,
   ): { text: string; binds: ts.Identifier[]; extras: ts.Expression[] } | null {
     const binds: ts.Identifier[] = [];
     const extras: ts.Expression[] = [];
@@ -3583,7 +3583,7 @@ export function lowerVarDecl(L: Lowerer, decl: ts.VariableDeclaration, isLet: bo
    *   the chain's final else reproduces that as long as its body exits or
    *   is last).
    * Case bodies share ONE lexical scope, exactly like the real switch. */
-  export function lowerUnionSwitch(L: Lowerer, stmt: ts.SwitchStatement, disc: IrExpr): IrStmt {
+  function lowerUnionSwitch(L: Lowerer, stmt: ts.SwitchStatement, disc: IrExpr): IrStmt {
     const loc = locOf(stmt);
     if (disc.type.kind !== "union") throw new Error("lowerer bug: non-union disc");
     const unionType = disc.type;
@@ -6558,7 +6558,7 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
 /** A DIRECT `s.matchAll(re)` call: a stdlib matchAll property call on a
    * string-typed receiver with one regex-typed argument (parens stripped).
    * The shape the companion-index machinery serves. */
-  export function directMatchAllCallOf(L: Lowerer, e: ts.Expression): ts.CallExpression | null {
+  function directMatchAllCallOf(L: Lowerer, e: ts.Expression): ts.CallExpression | null {
     let src = e;
     while (ts.isParenthesizedExpression(src)) src = src.expression;
     if (
@@ -7213,7 +7213,7 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
    * local, `var` assigns the hoisted shared slot, a pre-declared
    * identifier target assigns per pass; destructuring heads are tsc
    * errors. */
-  export function lowerForIn(L: Lowerer, stmt: ts.ForInStatement): IrStmt {
+  function lowerForIn(L: Lowerer, stmt: ts.ForInStatement): IrStmt {
     const labels = L.takeLabels();
     const loc = locOf(stmt);
     if (stdlibGlobalNameOf(L, stmt.expression) === "globalThis") {

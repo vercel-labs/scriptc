@@ -277,7 +277,7 @@ function lowerBuiltinOptionalDefault(
    * LOWERS (import.meta has no value representation): it only names the
    * file whose directory anchors the returned require's relative
    * resolution, and every supported spelling names the call's own file. */
-  export function createRequireBaseCallOf(L: Lowerer, expr: ts.Expression): ts.CallExpression | null {
+  function createRequireBaseCallOf(L: Lowerer, expr: ts.Expression): ts.CallExpression | null {
     const e = stripTypeCasts(expr);
     if (!ts.isCallExpression(e) || e.questionDotToken) return null;
     if (!ts.isIdentifier(e.expression)) return null;
@@ -497,7 +497,7 @@ function lowerBuiltinOptionalDefault(
    * alias from the module, or `require("http2").constants` inline. The
    * object itself never materializes; each member read bakes as its
    * literal. */
-  export function builtinConstantsModuleOf(L: Lowerer, node: ts.Expression): string | null {
+  function builtinConstantsModuleOf(L: Lowerer, node: ts.Expression): string | null {
     let module: string | null = null;
     if (ts.isPropertyAccessExpression(node) && !node.questionDotToken) {
       if (node.name.text !== "constants") return null;
@@ -537,7 +537,7 @@ function lowerBuiltinOptionalDefault(
    * value; provenance-checked like console/process, so the bare
    * identifier and the globalThis.performance member both land here and
    * a user's own `performance` binding never does). */
-  export function isPerfHooksPerformanceExpr(L: Lowerer, node: ts.Expression): boolean {
+  function isPerfHooksPerformanceExpr(L: Lowerer, node: ts.Expression): boolean {
     if (L.isStdlibGlobal(node, "performance")) return true;
     if (ts.isIdentifier(node)) {
       const bi = builtinImportOf(L, node);
@@ -5072,7 +5072,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * watches one inode), signal, and non-utf8 encodings fence by name;
    * undocumented keys drop like Node. An open watcher keeps the loop
    * alive until watcher.close(). */
-  export function lowerFsWatchCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  function lowerFsWatchCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (expr.arguments.length < 1 || expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement)) {
       L.noLowering(
         "fs.watch with this argument shape",
@@ -5494,7 +5494,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * member-by-member; the result type must be the interned Dirent record
    * array from types.ts — anything else (encoding: 'buffer', a user alias
    * reshaping Dirent) fences honestly. */
-  export function lowerFsReaddirTypesCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  function lowerFsReaddirTypesCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
     const optsNode = call.arguments[1]!;
     if (!ts.isObjectLiteralExpression(optsNode)) {
       L.noLowering(
@@ -5708,7 +5708,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * tolerated: @types/node's Dict) — the networkInterfaces verification
    * stance. The default decoder is the one lowered decoder; a custom
    * decodeURIComponent option fences by name. */
-  export function lowerQuerystringParseCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  function lowerQuerystringParseCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (call.arguments.length > 4 || call.arguments.some(ts.isSpreadElement)) {
       L.noLowering(`querystring.parse with ${call.arguments.length} arguments`, call);
     }
@@ -5792,7 +5792,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * (scr_qs_stringify), so arrays expand to repeated keys and
    * null/undefined values are empty. The default encoder is the one
    * lowered encoder; a custom encodeURIComponent option fences by name. */
-  export function lowerQuerystringStringifyCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  function lowerQuerystringStringifyCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (call.arguments.length > 4 || call.arguments.some(ts.isSpreadElement)) {
       L.noLowering(`querystring.stringify with ${call.arguments.length} arguments`, call);
     }
@@ -5856,7 +5856,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     return { kind: "libCall", fn: "qs.stringify", args: [obj, sep, eq], type: STRING, loc };
   }
 
-  export function lowerOsNetworkInterfacesCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  function lowerOsNetworkInterfacesCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (call.arguments.length !== 0) {
       L.noLowering(`networkInterfaces with ${call.arguments.length} arguments`, call, "networkInterfaces() takes no arguments");
     }

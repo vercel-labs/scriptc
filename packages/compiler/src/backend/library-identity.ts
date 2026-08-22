@@ -1,9 +1,9 @@
 export type LibraryEmission = "c" | "llvm";
 
-export const C_LIBRARY_IDENTITY_BEGIN = "/* scriptc-library-identity: begin */";
-export const C_LIBRARY_IDENTITY_END = "/* scriptc-library-identity: end */";
-export const LLVM_LIBRARY_IDENTITY_BEGIN = "; scriptc-library-identity: begin";
-export const LLVM_LIBRARY_IDENTITY_END = "; scriptc-library-identity: end";
+const C_LIBRARY_IDENTITY_BEGIN = "/* scriptc-library-identity: begin */";
+const C_LIBRARY_IDENTITY_END = "/* scriptc-library-identity: end */";
+const LLVM_LIBRARY_IDENTITY_BEGIN = "; scriptc-library-identity: begin";
+const LLVM_LIBRARY_IDENTITY_END = "; scriptc-library-identity: end";
 
 export interface LibraryIdentityValues {
   buildIdSymbol: string;

@@ -95,7 +95,7 @@ export interface ScopeEntry extends Temp {
   boxed?: boolean;
 }
 
-export function ffiNativeTypeC(
+function ffiNativeTypeC(
   cls: IrFfiCallbackParamClass | IrFfiValueParamClass | IrFfiReturnClass,
 ): string {
   switch (cls) {

@@ -1711,7 +1711,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * value, and fulfill dst with it (scr_dyn_new_promise_adapting's
    * callback; rejections never reach an adapter — the runtime copies them
    * raw). Interned per inner typeKey. */
-  export function promiseDynAdapterHelper(E: CEmitter, inner: IrType): string {
+  function promiseDynAdapterHelper(E: CEmitter, inner: IrType): string {
     const key = typeKey(inner);
     const existing = E.promiseDynAdapters.get(key);
     if (existing) return existing;
@@ -1796,7 +1796,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
   }
 
 /** The call thunk for one closure signature (see the block comment). */
-  export function dynFuncThunkHelper(E: CEmitter, t: IrType & { kind: "func" }): string {
+  function dynFuncThunkHelper(E: CEmitter, t: IrType & { kind: "func" }): string {
     const key = typeKey(t);
     const existing = E.dynFuncThunks.get(key);
     if (existing) return existing;
@@ -1894,7 +1894,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * function a func-targeted dynCheck wraps a non-identical boxed
    * signature in. caps[0] is an untraced obj-box owning the dyn function
    * value. */
-  export function dynFuncAdapterHelper(E: CEmitter, t: IrType & { kind: "func" }): string {
+  function dynFuncAdapterHelper(E: CEmitter, t: IrType & { kind: "func" }): string {
     const key = typeKey(t);
     const existing = E.dynFuncAdapters.get(key);
     if (existing) return existing;

@@ -192,7 +192,7 @@ function shapeOfMembers(file: ts.SourceFile, members: readonly ts.Node[], onBad:
 /** The syntactic shape of a type node, over the closed vocabulary the
  * sidecar schema can express. Anything else lands as `unsupported` with
  * the source text preserved for the refusal message. */
-export function typeShape(file: ts.SourceFile, node: ts.TypeNode): ContractTypeShape {
+function typeShape(file: ts.SourceFile, node: ts.TypeNode): ContractTypeShape {
   switch (node.kind) {
     case ts.SyntaxKind.BooleanKeyword:
       return { k: "bool" };

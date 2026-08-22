@@ -816,7 +816,7 @@ export function resolveCc(
 
 /** Musl intentionally has no predefined libc macro. The explicit Zig target
  * is therefore the source of truth for selecting its small runtime shim. */
-export function isMuslTarget(driver: Pick<CcDriver, "target">): boolean {
+function isMuslTarget(driver: Pick<CcDriver, "target">): boolean {
   return driver.target?.includes("linux-musl") ?? false;
 }
 

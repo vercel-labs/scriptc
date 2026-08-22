@@ -594,7 +594,7 @@ export const EMITTER_API_MEMBERS: ReadonlySet<string> = new Set([
    * `@dec(...)` evaluates the CALLEE before any argument — and property
    * chains throw at their ROOT (`@instance.decorate` reads `instance`
    * first). */
-  export function ambientDecoratorThrowNameOf(L: Lowerer, dExpr: ts.Expression): string | null {
+  function ambientDecoratorThrowNameOf(L: Lowerer, dExpr: ts.Expression): string | null {
     let e: ts.Expression = dExpr;
     while (ts.isParenthesizedExpression(e)) e = e.expression;
     const target = ts.isCallExpression(e) ? e.expression : e;
@@ -2456,7 +2456,7 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
    * Coverage counts a generic class's statements once: only the FIRST
    * instantiation contributes (the lowerGenericInstance rule). A no-op
    * for ordinary classes. */
-  export function withInstanceBindings<T>(L: Lowerer, info: ClassInfo, fn: () => T): T {
+  function withInstanceBindings<T>(L: Lowerer, info: ClassInfo, fn: () => T): T {
     const gi = info.genericInstance;
     if (!gi) {
       // MIXIN instantiations ride the same mechanism: T (the base
@@ -2735,7 +2735,7 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
    * object, each replacing decorator's non-undefined result feeding the
    * next application; the final value binds the class name (the mutable
    * classval global) when any decorator can replace. */
-  export function lowerClassDecoration(L: Lowerer, info: ClassInfo): IrStmt[] {
+  function lowerClassDecoration(L: Lowerer, info: ClassInfo): IrStmt[] {
     const cd = info.classDecorators;
     if (!cd || cd.poisoned || cd.shapes === undefined || info.decl === null) return [];
     const loc = locOf(info.decl);
@@ -3542,7 +3542,7 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
    * method `name` — overrideBelow's twin: generic methods have no vtable
    * slot, so a call that could reach an override compiles only when the
    * receiver's runtime class is statically exact. */
-  export function genericOverrideBelow(L: Lowerer, info: ClassInfo, name: string): boolean {
+  function genericOverrideBelow(L: Lowerer, info: ClassInfo, name: string): boolean {
     return info.subclasses.some(
       (s) => s.genericMethods?.has(name) === true || genericOverrideBelow(L, s, name),
     );
@@ -4254,7 +4254,7 @@ export function lowerClassMembers(L: Lowerer, info: ClassInfo): IrFunction[] {
    * null when the generic class extends nothing, exactly the source's
    * story (tsc forbids super() there). Ordinary classes answer their base
    * unchanged. */
-  export function superBaseOf(info: ClassInfo): ClassInfo | null {
+  function superBaseOf(info: ClassInfo): ClassInfo | null {
     const b = info.base;
     return b?.generic ? b.base : b;
   }
@@ -4297,7 +4297,7 @@ export function lowerClassMembers(L: Lowerer, info: ClassInfo): IrFunction[] {
    * Each assignment reads the parameter's BODY local (defaults already
    * applied by the declareParams prologue), whose type the collection made
    * the field's type — slot-exact by construction. */
-  export function paramPropInitStmts(L: Lowerer, info: ClassInfo, thisLocal: IrLocal): IrStmt[] {
+  function paramPropInitStmts(L: Lowerer, info: ClassInfo, thisLocal: IrLocal): IrStmt[] {
     const out: IrStmt[] = [];
     const thisType: IrType = { kind: "object", className: info.def.name };
     for (const pp of info.paramProps ?? []) {
@@ -4646,7 +4646,7 @@ export function lowerClassMembers(L: Lowerer, info: ClassInfo): IrFunction[] {
    * super() with default options; passing options through an inherited
    * constructor would need the literal at the new-site to plumb, so it
    * asks for a declared constructor instead). */
-  export function inheritsBuiltinStreamCtor(L: Lowerer, info: ClassInfo): boolean {
+  function inheritsBuiltinStreamCtor(L: Lowerer, info: ClassInfo): boolean {
     for (let c: ClassInfo | null = info; c; c = c.base) {
       if (c.builtinStream) return true;
       if (c.ctor) return false;
@@ -4699,7 +4699,7 @@ function genericNewTarget(L: Lowerer, expr: ts.NewExpression, info: ClassInfo): 
  * the binding never initializes (the %init ReferenceError unwinds first),
  * so `new`, the class as a value, and `extends` all fence — reaching one
  * in compiled code would require executing past the throw. */
-export function fenceDecorationThrows(L: Lowerer, info: ClassInfo, blame: ts.Node): void {
+function fenceDecorationThrows(L: Lowerer, info: ClassInfo, blame: ts.Node): void {
   if (info.decorationThrows === undefined) return;
   L.unsupported(
     "SC1090",
@@ -5730,7 +5730,7 @@ export function lowerNew(L: Lowerer, expr: ts.NewExpression): IrExpr {
  * `time = async <T>(...) => {...}` or `= function g<T>(...) {...}`
  * (parens stripped): bindingGenericFnNodeOf's shape rule, member form.
  * Null when the field isn't that shape. */
-export function genericFieldFnNodeOf(member: ts.PropertyDeclaration): ts.FunctionExpression | ts.ArrowFunction | null {
+function genericFieldFnNodeOf(member: ts.PropertyDeclaration): ts.FunctionExpression | ts.ArrowFunction | null {
   if (member.initializer === undefined) return null;
   let init: ts.Expression = member.initializer;
   while (ts.isParenthesizedExpression(init)) init = init.expression;

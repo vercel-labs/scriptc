@@ -878,19 +878,6 @@ export function libFenceDiag(
   return diag;
 }
 
-/** SC4006 — island/dynamic machinery on the library path: --dynamic,
- * --npm-static as a FLAG, `any`-typed island surface. Bare npm imports
- * themselves are not this code: an eligible package compiles statically
- * as part of the library graph, an ineligible one refuses SC4013. */
-export function libDynamicDiag(what: string, loc: SrcLoc): ScrDiagnostic {
-  return {
-    code: "SC4006",
-    message: `${what} is not available in library mode — the island engine and embedded npm graphs are executable-lane machinery`,
-    loc,
-    hint: "library artifacts are provable only for the static tier: no engine, no hidden init, no threads",
-  };
-}
-
 /** SC4007 — a mapped export whose signature keeps type parameters: every
  * compiled function is one concrete signature (the SC2005 monomorphization
  * rule, re-anchored at the profile entry). */
@@ -1011,11 +998,6 @@ export const LIB_RUNTIME_TRAP_CODES = [
   "SC4019",
   "SC4025",
 ] as const;
-
-/** SC4025 — the unregistered host-callback trap's code (the runtime
- * family entry above; exported for the resolver that assembles the trap
- * message and the tests that pin it). */
-export const LIB_CALLBACK_UNREGISTERED_TRAP_CODE = "SC4025";
 
 /** SC4024 — a host-callback reference the profile cannot serve. Library
  * mode maps signature-only ambient function declarations onto the

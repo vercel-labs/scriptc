@@ -139,7 +139,7 @@ export function buildClassGraph(mod: IrModule, fnByName: Map<string, IrFunction>
 /** The root's slot list as seen by one class: the implementation the class
  * dispatches to, or null outside the slot's declaring subtree / on a
  * fully-abstract chain (vtEntriesFor, ported). */
-export function vtEntriesFor(meta: LlClassMeta): { slot: LlVtSlot; impl: LlClassMeta | null }[] {
+function vtEntriesFor(meta: LlClassMeta): { slot: LlVtSlot; impl: LlClassMeta | null }[] {
   return meta.root.slots.map((slot) => {
     if (!(slot.declarer.pre <= meta.pre && meta.pre <= slot.declarer.post)) {
       return { slot, impl: null };
@@ -168,7 +168,7 @@ export function classStructSym(className: string): string {
  * struct embeds ScrEmitter's remaining prefix (the registry pointer and
  * the display-name slot) after the vtable word, so an upcast to
  * ScrEmitter* is the usual pointer reinterpret (emit-shapes.ts's rule). */
-export function emitterRooted(meta: LlClassMeta): boolean {
+function emitterRooted(meta: LlClassMeta): boolean {
   return meta.root.def.name === RUNTIME_EMITTER_CLASS;
 }
 
@@ -176,7 +176,7 @@ export function emitterRooted(meta: LlClassMeta): boolean {
  * embeds the FULL ScrStream prefix (registry, display name, state
  * pointer) and its RC/trace helpers delegate the state block to
  * scr_stream_st_* (emit-shapes.ts's streamRooted). */
-export function streamRooted(meta: LlClassMeta): boolean {
+function streamRooted(meta: LlClassMeta): boolean {
   for (let m = meta.base; m; m = m.base) {
     if (RUNTIME_STREAM_CLASSES.has(m.def.name)) return true;
   }

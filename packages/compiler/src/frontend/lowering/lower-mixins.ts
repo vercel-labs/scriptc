@@ -226,7 +226,7 @@ export function mixinFnOfCallee(L: Lowerer, callee: ts.Expression): MixinFnShape
 
 /** The arrow/function-expression initializer of a CONST binding — the
  * value-binding spelling of a mixin function declaration. */
-export function mixinFnNodeOfBinding(
+function mixinFnNodeOfBinding(
   decl: ts.VariableDeclaration,
 ): ts.ArrowFunction | ts.FunctionExpression | null {
   if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return null;

@@ -261,8 +261,7 @@ export const LIB_PARAM_CLASSES = ["f64", "bool", "string", "bytes", "u8", "u32",
 export const LIB_RETURN_CLASSES = ["f64", "bool", "string", "bytes", "void", "i64", "u64"] as const;
 
 /** Ask 4's declared integer classes (the prove-or-refuse pair). */
-export const LIB_INT_CLASSES = ["i64", "u64"] as const;
-export type LibIntClass = (typeof LIB_INT_CLASSES)[number];
+export type LibIntClass = "i64" | "u64";
 
 export type LibParamClass = (typeof LIB_PARAM_CLASSES)[number];
 export type LibReturnClass = (typeof LIB_RETURN_CLASSES)[number];
@@ -274,15 +273,15 @@ export type LibReturnClass = (typeof LIB_RETURN_CLASSES)[number];
  * declared integer classes stay export-map surface: an outbound i64/u64
  * demands the prove-or-refuse machinery, which is scoped to export
  * returns today. */
-export const LIB_CALLBACK_PARAM_CLASSES = ["f64", "bool", "string", "bytes", "u8", "u32", "i32"] as const;
+const LIB_CALLBACK_PARAM_CLASSES = ["f64", "bool", "string", "bytes", "u8", "u32", "i32"] as const;
 /** Marshalling classes legal in a CALLBACK RETURN position (inbound: host
  * → compiled code). Scalars only — every conversion to f64 is exact by
  * construction; a buffer return would need an ownership contract the mode
  * does not define (the FFI format-1 ruling). */
-export const LIB_CALLBACK_RETURN_CLASSES = ["f64", "bool", "u8", "u32", "i32", "void"] as const;
+const LIB_CALLBACK_RETURN_CLASSES = ["f64", "bool", "u8", "u32", "i32", "void"] as const;
 /** The runtime's fixed channel-slot capacity (scr_library.c's
  * SCR_LIB_MAX_CALLBACKS — keep the two in step). */
-export const LIB_MAX_CALLBACKS = 32;
+const LIB_MAX_CALLBACKS = 32;
 
 export type LibCallbackParamClass = (typeof LIB_CALLBACK_PARAM_CLASSES)[number];
 export type LibCallbackReturnClass = (typeof LIB_CALLBACK_RETURN_CLASSES)[number];

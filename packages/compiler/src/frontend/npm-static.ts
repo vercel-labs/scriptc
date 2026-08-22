@@ -82,10 +82,6 @@ export function npmStaticActive(): boolean {
   return activePackages.size > 0;
 }
 
-export function npmStaticPackages(): ReadonlySet<string> {
-  return activePackages;
-}
-
 export function isNpmStaticPackage(name: string | null): boolean {
   return name !== null && activePackages.has(name);
 }
@@ -242,7 +238,7 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
 /** npmStaticTransformPkgJson over a package.json TEXT (the fs shadow's
  * form). Malformed documents pass through untouched — resolution reports
  * them exactly as it always did. */
-export function npmStaticTransformPkgJsonText(text: string): string {
+function npmStaticTransformPkgJsonText(text: string): string {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -423,13 +419,13 @@ const TRANSFORM_MARKERS = ["__webpack_require__"];
 /** Unminified-JS heuristic over an entry source: at least two lines and
  * an average line length under 200 characters (minified dists are one
  * enormous line; readable code averages well under 100). */
-export function looksUnminified(source: string): boolean {
+function looksUnminified(source: string): boolean {
   const lines = source.split("\n");
   if (lines.length < 2) return false;
   return source.length / lines.length <= 200;
 }
 
-export function hasTransformMarkers(source: string): boolean {
+function hasTransformMarkers(source: string): boolean {
   return TRANSFORM_MARKERS.some((m) => source.includes(m));
 }
 

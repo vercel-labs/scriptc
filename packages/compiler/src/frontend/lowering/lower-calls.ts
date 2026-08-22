@@ -1072,7 +1072,7 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
    * (`const f: (x: number) => number = identity`) reuse one compiled
    * instance. `makeBindings` runs only for a NEW key (binding inference
    * costs checker walks). */
-  export function internGenericInstance(L: Lowerer, blame: ts.Node,
+  function internGenericInstance(L: Lowerer, blame: ts.Node,
     info: GenericFnInfo,
     params: ParamShape[],
     returnType: IrType,
@@ -1129,7 +1129,7 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
    * (`K extends keyof T`) — the parameters whose bound literal is semantic
    * (the body's `o[k]` reads the named field), computed once per info from
    * the declaration's syntax. */
-  export function keyofConstrainedTypeParams(info: GenericFnInfo): Set<ts.Symbol> {
+  function keyofConstrainedTypeParams(info: GenericFnInfo): Set<ts.Symbol> {
     if (info.keyofTps) return info.keyofTps;
     const out = new Set<ts.Symbol>();
     info.decl.typeParameters?.forEach((tpDecl, i) => {
@@ -1175,7 +1175,7 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
    * DEFAULT (`<T = number>`), mapped — the checker already substituted the
    * default into every resolved signature, so this only fills the bindings
    * an instance body's mapType consults. */
-  export function bindDefaultTypeParams(L: Lowerer, typeParams: readonly ts.Symbol[],
+  function bindDefaultTypeParams(L: Lowerer, typeParams: readonly ts.Symbol[],
     typeParamDecls: readonly ts.TypeParameterDeclaration[] | undefined,
     bindings: Map<ts.Symbol, IrType>,
     tsBindings?: Map<ts.Symbol, ts.Type>,): void {
@@ -1197,7 +1197,7 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
    * completed signature a VALUE reference is pinned to (the contextual
    * type's one call signature). Mutates `bindings`; already-bound
    * parameters (explicit type arguments) win. */
-  export function unifySignatureBindings(L: Lowerer, info: GenericFnInfo,
+  function unifySignatureBindings(L: Lowerer, info: GenericFnInfo,
     rsig: ts.Signature,
     bindings: Map<ts.Symbol, IrType>,
     tsBindings?: Map<ts.Symbol, ts.Type>,): void {
@@ -1935,7 +1935,7 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
 /** The all-dyn DEFAULT instance — today's compiled body exactly: what a
    * VALUE reference of an implicit-any function names (indirect calls
    * carry no per-site types to bind). */
-  export function implicitDefaultInstance(L: Lowerer, blame: ts.Node, info: GenericFnInfo): GenericInstance {
+  function implicitDefaultInstance(L: Lowerer, blame: ts.Node, info: GenericFnInfo): GenericInstance {
     const shapes: ParamShape[] = info.decl.parameters.map((param, i) =>
       info.implicitParams![i] ? { type: DYN, mode: "required" as const } : L.paramShape(param),
     );
@@ -2339,7 +2339,7 @@ export function islandPrimitiveExit(L: Lowerer, call: ts.CallExpression, result:
 /** The timer surface's member names — the ambient globals AND the
    * node:timers module's exports (one set: Node's timers module re-exports
    * the globals). */
-  export const TIMER_MODULE_MEMBERS: ReadonlySet<string> = new Set([
+  const TIMER_MODULE_MEMBERS: ReadonlySet<string> = new Set([
     "setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate",
   ]);
 
@@ -4538,7 +4538,7 @@ export function lowerCall(L: Lowerer, expr: ts.CallExpression): IrExpr {
    * Answers null when neither lane fits (typed .ts spreads keep
    * completeArgs' rest packing and its fences). JS sources only — the
    * same guard as the over-arity dynCall precedent. */
-  export function lowerSpreadArgsCall(L: Lowerer, expr: ts.CallExpression, callee: IrExpr, loc: SrcLoc): IrExpr | null {
+  function lowerSpreadArgsCall(L: Lowerer, expr: ts.CallExpression, callee: IrExpr, loc: SrcLoc): IrExpr | null {
     if (!isJsSourceFile(expr.getSourceFile())) return null;
     if (!expr.arguments.some((a) => ts.isSpreadElement(a))) return null;
     if (callee.type.kind !== "dyn" && callee.type.kind !== "func" && callee.type.kind !== "jsval") return null;
@@ -4614,7 +4614,7 @@ export function lowerCall(L: Lowerer, expr: ts.CallExpression): IrExpr {
    * (dynRest/islandRest, whose packs are built per-argument): the shapes
    * the runtime-arity lane (lowerSpreadArgsCall) serves. Typed `rest`
    * slots keep completeArgs' same-element spread packing. */
-  export function spreadNeedsRuntimeArity(shapes: readonly ParamShape[], argNodes: readonly ts.Expression[]): boolean {
+  function spreadNeedsRuntimeArity(shapes: readonly ParamShape[], argNodes: readonly ts.Expression[]): boolean {
     const restAt = shapes.findIndex((s) => s.mode === "rest" || s.mode === "dynRest" || s.mode === "islandRest");
     return argNodes.some(
       (a, i) =>
@@ -4777,7 +4777,7 @@ const DYN_PROTO_METHOD_NAMES = new Set([
  * runtime runs the real method for the receiver's kind, throws Node's
  * is-not-a-function where the kind's prototype lacks the name, and
  * fences LOUDLY on real-but-unimplemented pairs. */
-export const DYN_DISPATCH_METHODS = new Set([
+const DYN_DISPATCH_METHODS = new Set([
   "apply", "call",
   "push", "pop", "shift", "unshift", "slice", "at",
   "indexOf", "lastIndexOf", "includes", "join", "concat", "reverse", "sort",
@@ -4992,7 +4992,7 @@ const inliningPredicates = new Set<ts.Symbol>();
    * explicit-radix number form keeps its island lowering (ISLAND_SURFACE);
    * null for other receivers, argument shapes, or non-lib members (a
    * user's own `.toString` takes the ordinary paths). */
-  export function lowerNumberToStringCall(L: Lowerer, call: ts.CallExpression,
+  function lowerNumberToStringCall(L: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (L.chainBlocked(call, access)) return null;
     if (access.name.text !== "toString" || call.arguments.length !== 0) return null;
@@ -5013,7 +5013,7 @@ const inliningPredicates = new Set<ts.Symbol>();
    * unions stay out — `(undefined).toString()` THROWS in JS, and
    * claiming it here would silently print "undefined" instead. Null for
    * other receivers/arms (the narrow-first fences stay). */
-  export function lowerUnionToStringCall(L: Lowerer, call: ts.CallExpression,
+  function lowerUnionToStringCall(L: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
     if (access.name.text !== "toString" || call.arguments.length !== 0) return null;
@@ -5041,7 +5041,7 @@ const inliningPredicates = new Set<ts.Symbol>();
    * is the USER's symbol, which never lands here). Pure receivers elide
    * evaluation; effectful ones evaluate through an interned identity
    * helper so the receiver's effects keep their place. */
-  export function lowerDefaultToStringCall(L: Lowerer, call: ts.CallExpression,
+  function lowerDefaultToStringCall(L: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
     if (access.name.text !== "toString" || call.arguments.length !== 0) return null;
@@ -5170,7 +5170,7 @@ const inliningPredicates = new Set<ts.Symbol>();
    *     lowering above) and `charAt(i)` — the two the element hook needs
    *     beyond this file's own claims.
    * Null elsewhere: non-literal keys, other members, other receivers. */
-  export function lowerPrimitiveProtoCall(L: Lowerer, call: ts.CallExpression,
+  function lowerPrimitiveProtoCall(L: Lowerer, call: ts.CallExpression,
     recv: ts.Expression, name: string, memberSym: ts.Symbol | undefined,): IrExpr | null {
     if (call.questionDotToken) return null;
     if (!L.isStdlibSymbol(memberSym)) return null;
@@ -8232,7 +8232,7 @@ export function lowerFunction(L: Lowerer, decl: ts.FunctionDeclaration): IrFunct
 /** Strips the value-preserving wrappers off an expression: parens,
    * non-null assertions, `as`/`satisfies`/angle-bracket casts. What
    * remains is the expression that actually evaluates. */
-  export function stripValueWrappers(e: ts.Expression): ts.Expression {
+  function stripValueWrappers(e: ts.Expression): ts.Expression {
     let v: ts.Expression = e;
     for (;;) {
       if (
@@ -8271,7 +8271,7 @@ export function lowerFunction(L: Lowerer, decl: ts.FunctionDeclaration): IrFunct
    * the value fact alone). Cached per symbol; the pre-seeded null entry
    * guards probe cycles (mutually-assigned bindings resolve link by link,
    * declaration order). */
-  export function nullishValueUnitOf(L: Lowerer, sym: ts.Symbol | null): "null" | "undefined" | null {
+  function nullishValueUnitOf(L: Lowerer, sym: ts.Symbol | null): "null" | "undefined" | null {
     if (!sym) return null;
     const cached = L.nullishBindings.get(sym);
     if (cached !== undefined) return cached;
@@ -8762,7 +8762,7 @@ export function lowerFunction(L: Lowerer, decl: ts.FunctionDeclaration): IrFunct
     "forEach", "keys", "values", "entries", "toString",
   ]);
 
-  export function lowerObjLitGenericMethodCall(L: Lowerer, call: ts.CallExpression,
+  function lowerObjLitGenericMethodCall(L: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (L.chainBlocked(access, call)) return null;
     const name = access.name.text;

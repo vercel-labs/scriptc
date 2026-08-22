@@ -106,7 +106,7 @@ export interface AbsVal {
 
 const normZero = (x: number): number => (Object.is(x, -0) ? 0 : x);
 
-export function absVal(lo: number, hi: number, whole: boolean, maybeNaN: boolean, spelling?: string): AbsVal {
+function absVal(lo: number, hi: number, whole: boolean, maybeNaN: boolean, spelling?: string): AbsVal {
   lo = normZero(lo);
   hi = normZero(hi);
   // Infinities are not integers: a set with a non-finite bound may
@@ -118,22 +118,22 @@ export function absVal(lo: number, hi: number, whole: boolean, maybeNaN: boolean
 }
 
 /** Any f64 a caller could pass — unbounded, not whole, NaN included. */
-export const TOP: AbsVal = { lo: -Infinity, hi: Infinity, whole: false, maybeNaN: true };
+const TOP: AbsVal = { lo: -Infinity, hi: Infinity, whole: false, maybeNaN: true };
 /** The empty set (unreachable): lo > hi and no NaN. */
-export const BOTTOM: AbsVal = { lo: Infinity, hi: -Infinity, whole: true, maybeNaN: false };
+const BOTTOM: AbsVal = { lo: Infinity, hi: -Infinity, whole: true, maybeNaN: false };
 
-export const isBottom = (v: AbsVal): boolean => v.lo > v.hi && !v.maybeNaN;
-export const isSingleton = (v: AbsVal): boolean => v.lo === v.hi && !v.maybeNaN;
+const isBottom = (v: AbsVal): boolean => v.lo > v.hi && !v.maybeNaN;
+const isSingleton = (v: AbsVal): boolean => v.lo === v.hi && !v.maybeNaN;
 const hasNumeric = (v: AbsVal): boolean => v.lo <= v.hi;
 
-export function constVal(value: number, spelling?: string): AbsVal {
+function constVal(value: number, spelling?: string): AbsVal {
   if (Number.isNaN(value)) return { lo: Infinity, hi: -Infinity, whole: false, maybeNaN: true };
   return absVal(value, value, Number.isInteger(value), false, spelling);
 }
 
 /** Least upper bound: interval hull, wholeness/NaN pessimism, spelling
  * kept only when both sides carry the same one. */
-export function join(a: AbsVal, b: AbsVal): AbsVal {
+function join(a: AbsVal, b: AbsVal): AbsVal {
   if (isBottom(a)) return b;
   if (isBottom(b)) return a;
   const numA = hasNumeric(a);
@@ -145,7 +145,7 @@ export function join(a: AbsVal, b: AbsVal): AbsVal {
   return absVal(lo, hi, whole, a.maybeNaN || b.maybeNaN, spelling);
 }
 
-export function sameVal(a: AbsVal, b: AbsVal): boolean {
+function sameVal(a: AbsVal, b: AbsVal): boolean {
   return a.lo === b.lo && a.hi === b.hi && a.whole === b.whole && a.maybeNaN === b.maybeNaN && a.spelling === b.spelling;
 }
 
@@ -157,7 +157,7 @@ export function sameVal(a: AbsVal, b: AbsVal): boolean {
 const WIDEN_THRESHOLDS = [0, 2 ** 31 - 1, 2 ** 32 - 1, SAFE_MAX, Infinity];
 const WIDEN_THRESHOLDS_NEG = [0, -(2 ** 31), SAFE_MIN, -Infinity];
 
-export function widen(prev: AbsVal, next: AbsVal): AbsVal {
+function widen(prev: AbsVal, next: AbsVal): AbsVal {
   if (isBottom(prev)) return next;
   let lo = next.lo;
   let hi = next.hi;
@@ -277,17 +277,17 @@ function transferBitwise(op: IrNumBinOp, a: AbsVal, b: AbsVal): AbsVal {
 }
 
 /** JS `~`: ToInt32, complement — whole, int32 range, whatever the input. */
-export function transferBitNot(a: AbsVal): AbsVal {
+function transferBitNot(a: AbsVal): AbsVal {
   if (isSingleton(a)) return constVal(~a.lo);
   return absVal(-(2 ** 31), 2 ** 31 - 1, true, false);
 }
 
-export function transferNeg(a: AbsVal): AbsVal {
+function transferNeg(a: AbsVal): AbsVal {
   if (!hasNumeric(a)) return { ...BOTTOM, maybeNaN: a.maybeNaN };
   return absVal(-a.hi, -a.lo, a.whole, a.maybeNaN);
 }
 
-export function transferBin(op: IrNumBinOp, a: AbsVal, b: AbsVal): AbsVal {
+function transferBin(op: IrNumBinOp, a: AbsVal, b: AbsVal): AbsVal {
   switch (op) {
     case "+": return transferAdd(a, b);
     case "-": return transferSub(a, b);
@@ -307,20 +307,20 @@ export function transferBin(op: IrNumBinOp, a: AbsVal, b: AbsVal): AbsVal {
  * input maps to a whole output, so these discharge the WHOLENESS
  * obligation. They do not discharge range (an unbounded input stays
  * unbounded) or NaN (Math.trunc(NaN) is NaN — maybeNaN propagates). */
-export function transferMathRound(fn: "trunc" | "floor" | "ceil" | "round", a: AbsVal): AbsVal {
+function transferMathRound(fn: "trunc" | "floor" | "ceil" | "round", a: AbsVal): AbsVal {
   if (!hasNumeric(a)) return { ...BOTTOM, maybeNaN: a.maybeNaN };
   const f = fn === "trunc" ? Math.trunc : fn === "floor" ? Math.floor : fn === "ceil" ? Math.ceil : Math.round;
   return absVal(f(a.lo), f(a.hi), true, a.maybeNaN);
 }
 
-export function transferAbs(a: AbsVal): AbsVal {
+function transferAbs(a: AbsVal): AbsVal {
   if (!hasNumeric(a)) return { ...BOTTOM, maybeNaN: a.maybeNaN };
   const lo = a.lo <= 0 && a.hi >= 0 ? 0 : Math.min(Math.abs(a.lo), Math.abs(a.hi));
   return absVal(lo, Math.max(Math.abs(a.lo), Math.abs(a.hi)), a.whole, a.maybeNaN);
 }
 
 /** Math.min/max propagate NaN from ANY argument, exactly as JS does. */
-export function transferMinMax(fn: "min" | "max", args: AbsVal[]): AbsVal {
+function transferMinMax(fn: "min" | "max", args: AbsVal[]): AbsVal {
   const maybeNaN = args.some((v) => v.maybeNaN);
   if (args.some((v) => !hasNumeric(v))) return { ...BOTTOM, maybeNaN };
   const lo = fn === "min" ? Math.min(...args.map((v) => v.lo)) : Math.max(...args.map((v) => v.lo));
@@ -354,7 +354,7 @@ export interface IntVerdict {
 /** Does an integer literal's source spelling survive the trip through
  * f64? Parse, convert, format back, compare (numeric separators were
  * stripped by the frontend — they are spelling sugar, not value). */
-export function spellingRoundTrips(spelling: string): boolean {
+function spellingRoundTrips(spelling: string): boolean {
   return String(Number(spelling)) === spelling;
 }
 
@@ -363,7 +363,7 @@ export function spellingRoundTrips(spelling: string): boolean {
  * fractional wholeness — the FIRST failure names the refusal (a value
  * both fractional and out of range hears about the more fundamental
  * problem). */
-export function checkBoundary(v: AbsVal, path: string, cls: IntClass, loc: SrcLoc): IntVerdict {
+function checkBoundary(v: AbsVal, path: string, cls: IntClass, loc: SrcLoc): IntVerdict {
   // Representability first: the author wrote a number the program never held.
   if (v.spelling !== undefined && !spellingRoundTrips(v.spelling)) {
     return {

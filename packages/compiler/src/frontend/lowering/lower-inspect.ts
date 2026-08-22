@@ -60,7 +60,7 @@ function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
 /** strEscape's quote ladder over a COMPILE-TIME string (record field
  * names, format-string chunks never pass through here — only keys).
  * Mirrors scr_inspect.c's insp_quote_into byte-for-byte. */
-export function inspectQuote(s: string): string {
+function inspectQuote(s: string): string {
   const hasSingle = s.includes("'");
   const quote = !hasSingle ? "'" : !s.includes('"') ? '"' : !s.includes("`") && !s.includes("${") ? "`" : "'";
   let body = "";
@@ -778,7 +778,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
  * exactly as inspect at the given depth. Unions dispatch per arm AT
  * RUNTIME through an interned helper, so a string arm stays verbatim
  * while its sibling arms inspect. Callers check inspectSupport first. */
-export function formatValueExpr(L: Lowerer, t: IrType, value: IrExpr, depth: number, loc: SrcLoc): IrExpr {
+function formatValueExpr(L: Lowerer, t: IrType, value: IrExpr, depth: number, loc: SrcLoc): IrExpr {
   switch (t.kind) {
     case "string":
       return value;

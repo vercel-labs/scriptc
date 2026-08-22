@@ -47,7 +47,7 @@ import { F64, IrExpr, IrStmt, IrType, STRING } from "../../ir/nodes.js";
  * ambient (`declare namespace/module`, `declare global`, string-named
  * modules — .d.ts surface or user-file declares) or a non-instantiated
  * body (only type-world statements inside). */
-export function nsZeroRuntime(decl: ts.ModuleDeclaration): boolean {
+function nsZeroRuntime(decl: ts.ModuleDeclaration): boolean {
   if (isAmbientModuleDecl(decl)) return true;
   if (!ts.isIdentifier(decl.name)) return true; // string-named: ambient by grammar
   return nsTypeOnlyBody(decl);
@@ -55,7 +55,7 @@ export function nsZeroRuntime(decl: ts.ModuleDeclaration): boolean {
 
 /** Ambient module declaration: carries `declare` itself, sits in an
  * ambient ancestor, or is the `declare global` augmentation. */
-export function isAmbientModuleDecl(decl: ts.ModuleDeclaration): boolean {
+function isAmbientModuleDecl(decl: ts.ModuleDeclaration): boolean {
   if (decl.flags & ts.NodeFlags.Ambient) return true;
   for (let p: ts.Node | undefined = decl; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
     if (ts.isModuleDeclaration(p)) {
@@ -89,7 +89,7 @@ function nsTypeOnlyBody(decl: ts.ModuleDeclaration): boolean {
  * declaration's block flattened (the object exists once a block ran;
  * merged ambient declarations don't subtract), "typeOnly"/"ambient" when
  * none did. Null for non-namespace symbols. */
-export function nsSymbolRuntimeKind(L: Lowerer, sym: ts.Symbol): "instantiated" | "typeOnly" | "ambient" | null {
+function nsSymbolRuntimeKind(L: Lowerer, sym: ts.Symbol): "instantiated" | "typeOnly" | "ambient" | null {
   if (!(sym.flags & (ts.SymbolFlags.ValueModule | ts.SymbolFlags.NamespaceModule))) return null;
   let sawTypeOnly = false;
   let sawNamespace = false;
@@ -181,7 +181,7 @@ export function nsPathPrefix(node: ts.Node, modifierDecl?: ts.Node): string {
  * non-instantiated one, whose only value members are import= aliases), or
  * null. The walk stops at class/function boundaries: a static member of a
  * class INSIDE a namespace is the class's business, not the namespace's. */
-export function nsBlockKindOfSymbol(L: Lowerer, sym: ts.Symbol): "flattened" | "typeOnly" | null {
+function nsBlockKindOfSymbol(L: Lowerer, sym: ts.Symbol): "flattened" | "typeOnly" | null {
   for (const d of L.checker.declarationsOf(sym)) {
     // TYPE declarations don't make a member a namespace VALUE: a class
     // static `C.B` whose name also carries `namespace C { export
@@ -219,7 +219,7 @@ export function nsBlockKindOfSymbol(L: Lowerer, sym: ts.Symbol): "flattened" | "
  * Builtin/stdlib module namespaces (string-named ambient modules in
  * .d.ts files) and npm packages answer null — their own chokepoints and
  * fences keep ownership. */
-export function moduleNsSourceFileOf(L: Lowerer, e: ts.Expression): ts.SourceFile | null {
+function moduleNsSourceFileOf(L: Lowerer, e: ts.Expression): ts.SourceFile | null {
   let sym: ts.Symbol | undefined;
   if (ts.isIdentifier(e)) {
     sym = L.checker.getSymbolAtLocation(e);

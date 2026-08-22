@@ -433,9 +433,9 @@ export interface IslandFnEntry {
   ret: IrType;
 }
 
-export const ISL_N1: IslandFnEntry = { args: [F64], ret: F64 };
+const ISL_N1: IslandFnEntry = { args: [F64], ret: F64 };
 
-export const ISL_N2: IslandFnEntry = { args: [F64, F64], ret: F64 };
+const ISL_N2: IslandFnEntry = { args: [F64, F64], ret: F64 };
 
 export const boundaryIntoIslandMsg = (typeName: string): string =>
   `passing a value of type '${typeName}' into dynamically-executed ('any'-typed) code ` +
@@ -782,7 +782,7 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
   // node:net and node:http lower ENTIRELY through the server spoke
   // (lower-server.ts — every call shape is special-cased: closures, the
   // optional connect host, writeHead's literal headers); the member list
-  // is NET_MODULE_FNS there. The modules still need keys here so future
+  // is the lower-server dispatch there. The modules still need keys here so future
   // table entries have a home, and so the "recognized module, unlowered
   // member" fence wording applies.
   net: {
@@ -1140,7 +1140,7 @@ const URL_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
  * TARGET: a win32 triple compiles Node-on-Windows semantics — `path` is
  * path.win32 and url's bridge takes the win32 flavors. Fence wording is
  * unaffected — callers keep naming the module the source spelled. */
-export function builtinModuleFnsOf(L: Lowerer, module: string): Record<string, BuiltinModuleFn | undefined> | undefined {
+function builtinModuleFnsOf(L: Lowerer, module: string): Record<string, BuiltinModuleFn | undefined> | undefined {
   if (L.targetPlatform === "win32") {
     if (module === "path") return BUILTIN_MODULE_FNS["path/win32"];
     if (module === "url") return URL_WIN32_MODULE_FNS;
@@ -1199,7 +1199,7 @@ export function builtinConstLit(value: string | number | boolean, loc: { file: s
  * Node ships one frozen singleton; each read here mints a fresh string
  * array — a divergence only mutation could observe, and mutating Node's
  * frozen array throws anyway. */
-export const NODE_BUILTIN_MODULES_V24: readonly string[] = [
+const NODE_BUILTIN_MODULES_V24: readonly string[] = [
   "_http_agent", "_http_client", "_http_common", "_http_incoming",
   "_http_outgoing", "_http_server", "_stream_duplex", "_stream_passthrough",
   "_stream_readable", "_stream_transform", "_stream_wrap", "_stream_writable",
@@ -1233,7 +1233,7 @@ export function builtinModulesArrayLit(loc: { file: string; start: number; end: 
 /** Member-specific hints for RECOGNIZED builtin modules whose member has
  * no lowering. deflateSync/inflateSync lower now (Buffers are real);
  * the rest of the zlib surface points at the lowered pair. */
-export const ZLIB_HINT =
+const ZLIB_HINT =
   "deflateSync and inflateSync are the lowered zlib surface";
 
 /** The loose-equality quartet's shared hint: == coercion has no lowering

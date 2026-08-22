@@ -71,7 +71,7 @@ export interface FileParts {
    * that is not JSON and not CommonJS-flavored (a CJS namespace is built
    * from module.exports through Node's lexer — a different surface with no
    * static story here). Null for everything else. */
-  export function dynamicImportProgramTargetOf(
+  function dynamicImportProgramTargetOf(
     program: ts.Program,
     sf: ts.SourceFile,
     spec: string,

@@ -13,11 +13,11 @@ import { PoisonError } from "./lowerer.js";
 /** Wall-clock budget for one comptime callback. Evaluation happens inside
  * the compiler (node:vm), so a runaway loop would hang the BUILD — the vm
  * timeout turns it into a diagnostic instead. */
-export const COMPTIME_TIMEOUT_MS = 2000;
+const COMPTIME_TIMEOUT_MS = 2000;
 
 /** Names a compile-time-computed JS value in a comptime result diagnostic
  * ("expected 'number' at $.t[2], got undefined"). */
-export function describeComptimeValue(v: unknown): string {
+function describeComptimeValue(v: unknown): string {
   if (v === undefined) return "undefined";
   if (v === null) return "null";
   if (Array.isArray(v)) return "an array";

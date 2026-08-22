@@ -551,7 +551,7 @@ export function formatIrType(t: IrType, shapes: ShapeRegistry, unions: UnionRegi
  * first in ascending numeric order, everything else follows in the given
  * (insertion/declaration) order. This is JS's enumeration order for the
  * objects records model — Object.keys, JSON.stringify, spread, inspect. */
-export function esOwnKeyOrder(names: string[]): string[] {
+function esOwnKeyOrder(names: string[]): string[] {
   const isArrayIndex = (name: string): boolean => {
     const n = Number(name);
     return Number.isInteger(n) && n >= 0 && n < 4294967295 && String(n) === name;
@@ -3578,7 +3578,7 @@ const STDLIB_CONTAINERS: Record<string, { role: (i: number) => string }> = {
  * machinery), promises, regexes, generators, handles, nested unions —
  * would DEGRADE (identity, methods, dispatch) riding dyn, so those arms
  * keep their existing homes and fences. */
-export function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
+function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
   switch (arm.kind) {
     case "dyn":
     case "f64":

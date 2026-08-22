@@ -933,12 +933,6 @@ export const NODE24_FETCH_COMPAT_PROFILE = {
   },
 } satisfies FetchCompatProfile;
 
-export const STATIC_REQUEST_INIT_KEYS = new Set(
-  NODE24_FETCH_COMPAT_PROFILE.requestInit.map((entry) =>
-    entry.id.slice("stdlib.fetch.request-init.".length)
-  ),
-);
-
 export const STATIC_RESPONSE_READS = new Set(
   NODE24_FETCH_COMPAT_PROFILE.members.responseReads,
 );

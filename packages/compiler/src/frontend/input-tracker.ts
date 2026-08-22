@@ -45,7 +45,7 @@ export interface FrontendInputExclusions {
   outputDirectories?: Iterable<string>;
 }
 
-export function frontendSourceDigest(text: string): string {
+function frontendSourceDigest(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
@@ -117,10 +117,6 @@ export class FrontendInputTracker {
       stable: this.stable,
     };
   }
-}
-
-export function frontendInputTrackingActive(): boolean {
-  return activeTracker.getStore() !== undefined;
 }
 
 function record(probe: FrontendInputProbe): void {

@@ -810,19 +810,27 @@ export function resolveCc(
 ): CcDriver {
   const cc = env["SCRIPTC_CC"] ?? "";
   const target = env["SCRIPTC_TARGET"] ?? "";
-  const hostArgs = nativePlatformArgs(hostPlatform, env);
+  // Computed lazily, only at the two return sites that actually use it
+  // (below): every cross-compile target (iOS, Android, wasm, ...) builds
+  // its own explicit targetArgs/linkArgs and never touches this. On
+  // win32, nativePlatformArgs THROWS when no MinGW-w64 install is found —
+  // eagerly computing this here would make every zig-cc cross-compile
+  // target refuse to resolve on a Windows host with no local MinGW,
+  // even though none of them need it.
   if (cc === "" || cc === "clang") {
     if (target !== "") {
       throw new Error(
         `SCRIPTC_TARGET=${target} requires SCRIPTC_CC=zigcc — the default clang path has no cross-target sysroots.`,
       );
     }
-    return { argv: ["clang"], target: null, zigTarget: null, ...hostArgs };
+    return { argv: ["clang"], target: null, zigTarget: null, ...nativePlatformArgs(hostPlatform, env) };
   }
   if (cc !== "zigcc") {
     throw new Error(`unknown SCRIPTC_CC '${cc}' (supported: clang, zigcc)`);
   }
-  if (target === "") return { argv: ["zig", "cc"], target: null, zigTarget: null, ...hostArgs };
+  if (target === "") {
+    return { argv: ["zig", "cc"], target: null, zigTarget: null, ...nativePlatformArgs(hostPlatform, env) };
+  }
   if (target.includes("wasi") && target !== "wasm32-wasi") {
     throw new Error(`unsupported WASI target '${target}' (supported: wasm32-wasi)`);
   }

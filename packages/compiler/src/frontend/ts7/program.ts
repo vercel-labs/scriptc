@@ -71,6 +71,15 @@ function serializeOptions(options: Ts7CompilerOptions): Record<string, unknown> 
           lib.startsWith("lib.") && lib.endsWith(".d.ts") ? lib.slice(4, -5) : lib,
         );
         break;
+      // TypeScript's JsxEmit enum: None=0, Preserve=1, React=2,
+      // ReactNative=3, ReactJSX=4, ReactJSXDev=5 — same reverse-mapping
+      // need as target/module/moduleResolution/moduleDetection above, but
+      // JsxEmit isn't one of this adapter's mirrored enums, so the string
+      // table is spelled out directly instead of going through enumKeyOf.
+      case "jsx":
+        out[key] =
+          ["none", "preserve", "react", "react-native", "react-jsx", "react-jsxdev"][value as number] ?? value;
+        break;
       default: {
         if (typeof value === "number" && key !== "maxNodeModuleJsDepth") {
           throw new Error(`ts7 createProgram: unhandled enum-valued compiler option '${key}'`);

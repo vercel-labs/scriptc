@@ -44,6 +44,14 @@ export interface LlvmProgramSplitOptions {
 
 const DEFAULT_TARGET_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MINIMUM_BYTES = 4 * 1024 * 1024;
+// Library edits pay a relocatable merge/archive cost after shard compilation,
+// but their stable per-bucket object cache starts winning earlier than the
+// executable lane's whole-program posture. Node 24 Linux profiling across
+// 1.62–3.24MB generated modules found the crossover at roughly 2MB; four
+// function buckets were the best general tradeoff for the 2.15MB target and
+// remained profitable through 3.24MB. Executables retain the defaults above.
+const LIBRARY_TARGET_BYTES = 768 * 1024;
+const LIBRARY_MINIMUM_BYTES = 2 * 1024 * 1024;
 
 interface FunctionDef {
   source: string;
@@ -235,4 +243,12 @@ export function splitLlvmProgram(
       ...functions.filter((fn) => !fn.promoted).map((fn) => fn.symbol),
     ],
   };
+}
+
+/** Dev-library policy tuned independently from executable splitting. */
+export function splitLlvmLibraryProgram(source: string): LlvmProgramSplit | null {
+  return splitLlvmProgram(source, {
+    minimumBytes: LIBRARY_MINIMUM_BYTES,
+    targetBytes: LIBRARY_TARGET_BYTES,
+  });
 }

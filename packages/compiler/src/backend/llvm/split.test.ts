@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "vitest";
-import { splitLlvmProgram } from "./split.js";
+import { splitLlvmLibraryProgram, splitLlvmProgram } from "./split.js";
 
 const scratch: string[] = [];
 afterAll(async () => {
@@ -75,6 +75,20 @@ test("thread-local program state conservatively keeps the single-TU path", () =>
     "@hidden_value = internal thread_local global i64 7",
   );
   expect(splitLlvmProgram(tls, { minimumBytes: 0, targetBytes: 64 * 1024 })).toBeNull();
+});
+
+test("dev libraries split at the measured 2MB crossover while executables retain 4MB", () => {
+  const body = Array.from({ length: 700 }, (_, i) =>
+    `define internal i64 @library_pad_${i}() #0 {\nentry:\n  ; ${"x".repeat(3072)}\n  ret i64 ${i}\n}\n`,
+  ).join("\n");
+  const source = SAMPLE.replace("define i64 @public_entry", `${body}\ndefine i64 @public_entry`);
+  expect(Buffer.byteLength(source)).toBeGreaterThan(2 * 1024 * 1024);
+  expect(Buffer.byteLength(source)).toBeLessThan(4 * 1024 * 1024);
+  expect(splitLlvmProgram(source)).toBeNull();
+  expect(splitLlvmLibraryProgram(source)?.shards).toHaveLength(5);
+
+  const belowCrossover = source.slice(0, Math.floor(1.9 * 1024 * 1024));
+  expect(splitLlvmLibraryProgram(belowCrossover)).toBeNull();
 });
 
 test("every shard compiles and its merged object exposes only canonical public definitions", async () => {

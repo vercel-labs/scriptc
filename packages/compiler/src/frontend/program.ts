@@ -79,6 +79,11 @@ import { trackedFileExists } from "./input-tracker.js";
 
 const BASE_OPTIONS: ts.Ts7CompilerOptions = {
   strict: true,
+  // Default lib surface — overridden below by the project's own tsconfig
+  // `lib` when it sets one (BASE_OPTIONS loses to `adopted` in the merge).
+  // A project that never declares `lib` keeps exactly this narrow, no-DOM
+  // default.
+  lib: ["lib.es2025.d.ts"],
 };
 
 const FORCED_OPTIONS: ts.Ts7CompilerOptions = {
@@ -93,7 +98,6 @@ const FORCED_OPTIONS: ts.Ts7CompilerOptions = {
   // classification is intentionally independent below; this option is only
   // the binder's scope decision.
   moduleDetection: ts.ModuleDetectionKind.Force,
-  lib: ["lib.es2025.d.ts"],
   types: [],
   allowImportingTsExtensions: true,
   allowJs: true,
@@ -167,6 +171,23 @@ function adoptProjectConfig7(
   for (const key of ADOPTED_OPTIONS) {
     const value = parsed.options[key];
     if (value !== undefined) adopted[key] = value;
+  }
+  const rawJsx = parsed.options["jsx"];
+  if (typeof rawJsx === "number") adopted["jsx"] = rawJsx;
+  const rawJsxImportSource = parsed.options["jsxImportSource"];
+  if (typeof rawJsxImportSource === "string") adopted["jsxImportSource"] = rawJsxImportSource;
+  // A project's own `lib` choice (e.g. `dom` for code that reuses browser
+  // component prop types via `import type`, even where the runtime path is
+  // dead for a given compile target) was previously unreachable: `lib` was
+  // FORCED to a narrow no-DOM default with no override. Adopting it here
+  // (BASE_OPTIONS still supplies that narrow default for projects that never
+  // set `lib`) lets a whole-program compile satisfy type-only-imported code
+  // outside its own reachable surface without every such project needing to
+  // avoid `import type` reuse across platform-specific implementations.
+  const rawLib = parsed.options["lib"];
+  if (Array.isArray(rawLib)) {
+    const lib = rawLib.filter((v): v is string => typeof v === "string");
+    if (lib.length > 0) adopted["lib"] = lib;
   }
   const nullChecks = adopted["strictNullChecks"] ?? adopted["strict"] ?? false;
   if (nullChecks !== true) {

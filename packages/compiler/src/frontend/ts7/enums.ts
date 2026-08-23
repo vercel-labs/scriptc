@@ -88,6 +88,27 @@ export const ModuleDetectionKind: ModuleDetectionKindEnum =
   loadHiddenEnum<ModuleDetectionKindEnum>("moduleDetectionKind", "ModuleDetectionKind");
 export type ModuleDetectionKind = number;
 
+/* JsxEmit isn't re-exported from unstable/ast or unstable/sync either — same
+ * hidden dist/enums placement as ModuleResolutionKind/ModuleDetectionKind
+ * above. Worth calling out by name: 7.0.2 renumbers React/ReactNative
+ * relative to 5.9.3 (None=0 Preserve=1 ReactNative=2 React=3 ReactJSX=4
+ * ReactJSXDev=5, vs 5.9.3's React=2/ReactNative=3) — exactly the silent-lie
+ * risk this file's own top comment warns about, so this goes through the
+ * same symbolic reverse-mapping as everything else here rather than a
+ * hardcoded positional table. */
+interface JsxEmitEnum {
+  readonly None: number;
+  readonly Preserve: number;
+  readonly React: number;
+  readonly ReactNative: number;
+  readonly ReactJSX: number;
+  readonly ReactJSXDev: number;
+  readonly [key: string | number]: string | number;
+}
+
+export const JsxEmit: JsxEmitEnum = loadHiddenEnum<JsxEmitEnum>("jsxEmit", "JsxEmit");
+export type JsxEmit = number;
+
 /** Reverse-maps a numeric enum value to its TS7 key name ("ESNext",
  * "Bundler") — the spelling tsgo's tsconfig JSON parser accepts (lowercased
  * by the caller where needed). Symbolic by construction: the name comes from

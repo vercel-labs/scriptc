@@ -1,4 +1,3 @@
-import { InternalCompilerError } from "../errors.js";
 /* scriptc IR — the only interface between frontend and backends.
  *
  * Design rules (see docs/ir.md for node-by-node semantics):
@@ -158,6 +157,20 @@ export type IrType =
    * lean allocation, no trace header. Same container rules: union arms
    * fine, arrays/maps/JSON fenced. */
   | { kind: "dgramSocket" }
+  /** A node:midi input port handle (scr_midi.c — linked only when the IR
+   * uses the midi surface, the moduleUsesMidi switch). Heap, refcounted,
+   * MUTABLE like dgramSocket: the loop's midi hook delivers time-stamped
+   * messages and fires its listeners. An OPEN input is a live source that
+   * holds the loop alive (the bound-socket story); listeners are held only
+   * until the handle settles (closePort, or the exit-time cleanup) — the
+   * dgramSocket ownership story, so lean allocation, no trace header. Same
+   * container rules: union arms fine, arrays/maps/JSON fenced. */
+  | { kind: "midiInput" }
+  /** A node:midi output port handle (scr_midi.c — same unit as midiInput).
+   * Heap, refcounted like midiInput, but an output NEVER holds the loop
+   * alive (sendMessage is fire-and-forget, like a connected dgram send).
+   * No listeners — lean, no trace header. */
+  | { kind: "midiOutput" }
   /** A node:test TestContext handle (scr_test.c — linked only when the
    * IR uses the node:test surface). Heap, refcounted, no cycles (the
    * runner tree owns the children; the parent edge is a borrowed
@@ -312,131 +325,6 @@ export type IrType =
   | { kind: "nullT" }
   | { kind: "void" }; // return position only
 
-const POINTER_HANDLE_KINDS = [
-  "stats",
-  "fileHandle",
-  "spawnRes",
-  "child",
-  "netServer",
-  "netSocket",
-  "http2Session",
-  "http2Stream",
-  "dgramSocket",
-  "testCtx",
-  "httpReq",
-  "httpRes",
-  "httpClientReq",
-  "secureCtx",
-  "fsWatcher",
-  "childStream",
-] as const satisfies readonly IrType["kind"][];
-
-interface IrKindSet<K extends IrType["kind"]> extends ReadonlySet<IrType["kind"]> {
-  has(kind: IrType["kind"]): kind is K;
-}
-
-function irKindSet<const K extends readonly IrType["kind"][]>(kinds: K): IrKindSet<K[number]> {
-  return new Set<IrType["kind"]>(kinds) as unknown as IrKindSet<K[number]>;
-}
-
-/** The opaque runtime handle kinds. procStream is the one scalar handle;
- * every other handle has pointer representation. */
-const HANDLE_KIND_LIST = [
-  ...POINTER_HANDLE_KINDS,
-  "procStream",
-] as const;
-export type HandleKind = typeof HANDLE_KIND_LIST[number];
-type HandleType = Extract<IrType, { kind: HandleKind }>;
-export const HANDLE_KINDS = irKindSet(HANDLE_KIND_LIST);
-
-/** The IR kinds represented as pointers in both native backends. */
-const POINTER_KIND_LIST = [
-  "string",
-  "array",
-  "map",
-  "set",
-  "regex",
-  "bytes",
-  "url",
-  "searchParams",
-  "symbol",
-  ...POINTER_HANDLE_KINDS,
-  "func",
-  "object",
-  "classval",
-  "record",
-  "union",
-  "dyn",
-  "jsval",
-  "caught",
-  "promise",
-  "generator",
-] as const;
-export type PointerKind = typeof POINTER_KIND_LIST[number];
-export const POINTER_KINDS = irKindSet(POINTER_KIND_LIST);
-
-/** Runtime RC symbol stem for each IR type kind. An empty stem means the
- * kind is scalar/unit or uses an emitted per-shape helper (object/record).
- * Keeping this exhaustive makes a new runtime handle kind a compile error
- * until its one retain/release family is named here. */
-export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
-  f64: "",
-  date: "",
-  string: "scr_str",
-  bool: "",
-  array: "scr_arr",
-  map: "scr_map",
-  set: "scr_map",
-  regex: "scr_regex",
-  bytes: "scr_bytes",
-  url: "scr_url",
-  searchParams: "scr_sp",
-  symbol: "scr_sym",
-  stats: "scr_stats",
-  fileHandle: "scr_file_handle",
-  spawnRes: "scr_spawn_res",
-  child: "scr_child",
-  netServer: "scr_net_server",
-  netSocket: "scr_net_sock",
-  http2Session: "scr_http2_session",
-  http2Stream: "scr_http2_stream",
-  dgramSocket: "scr_dgram",
-  testCtx: "scr_testctx",
-  httpReq: "scr_http_req",
-  httpRes: "scr_http_res",
-  httpClientReq: "scr_http_client",
-  childStream: "scr_child_stream",
-  procStream: "",
-  fsWatcher: "scr_watcher",
-  secureCtx: "scr_secure_ctx",
-  func: "scr_closure",
-  object: "",
-  classval: "scr_classobj",
-  record: "",
-  union: "scr_union",
-  dyn: "scr_dyn",
-  jsval: "scr_jsval",
-  caught: "scr_caught",
-  promise: "scr_promise",
-  generator: "scr_gen",
-  undefinedT: "",
-  nullT: "",
-  void: "",
-};
-
-/** The runtime-provided RC family for a type, or null when the backend must
- * use an emitted class/record helper (or the type is not refcounted). */
-export function runtimeRcStem(t: IrType): string | null {
-  if (t.kind === "object") {
-    if (RUNTIME_ERROR_CLASSES.has(t.className)) return "scr_error";
-    if (t.className === RUNTIME_EMITTER_CLASS) return "scr_emitter";
-    if (RUNTIME_STREAM_CLASSES.has(t.className)) return "scr_stream";
-    return null;
-  }
-  const stem = RUNTIME_RC_STEMS[t.kind];
-  return stem === "" ? null : stem;
-}
-
 /** The ref kinds whose values are JS OBJECTS for truthiness: always true
  * ([] and {} included) — toBool accepts them (the operand still evaluates;
  * the test is constant), and per-union truthiness helpers answer their
@@ -446,7 +334,7 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   // constant-true answer.
   "symbol",
   "date", "array", "map", "set", "regex", "url", "searchParams", "stats", "fileHandle", "spawnRes", "child",
-  "netServer", "netSocket", "http2Session", "http2Stream", "dgramSocket", "testCtx", "httpReq", "httpRes", "httpClientReq",
+  "netServer", "netSocket", "http2Session", "http2Stream", "dgramSocket", "midiInput", "midiOutput", "testCtx", "httpReq", "httpRes", "httpClientReq",
   "secureCtx", "fsWatcher", "childStream", "procStream", "bytes", "func", "object", "record", "promise",
   // A generator object is a JS object: always truthy.
   "generator",
@@ -472,6 +360,8 @@ export const NETSOCKET_T: IrType = { kind: "netSocket" };
 export const HTTP2SESSION_T: IrType = { kind: "http2Session" };
 export const HTTP2STREAM_T: IrType = { kind: "http2Stream" };
 export const DGRAMSOCK_T: IrType = { kind: "dgramSocket" };
+export const MIDIIN_T: IrType = { kind: "midiInput" };
+export const MIDIOUT_T: IrType = { kind: "midiOutput" };
 export const TESTCTX_T: IrType = { kind: "testCtx" };
 export const HTTPREQ_T: IrType = { kind: "httpReq" };
 export const HTTPRES_T: IrType = { kind: "httpRes" };
@@ -518,6 +408,9 @@ export function isSupportedArrayElem(t: IrType): boolean {
     case "netServer":
     case "symbol":
     case "classval":
+    // Dates are scalar f64 (epoch-ms) at the C level — stored in SCR_ELEM_F64
+    // slots. Array element reads re-box the ms value into a date handle.
+    case "date":
       return true;
     default:
       return false;
@@ -666,7 +559,6 @@ export function unionFuncSetArmsOk(arms: IrType[]): boolean {
  * canonical) shapeId/unionId, so keys stay finite and comparable. Lives in
  * the IR (not the frontend) because both ends need it. */
 export function typeKey(t: IrType): string {
-  if (HANDLE_KINDS.has(t.kind)) return t.kind;
   switch (t.kind) {
     case "f64":
     case "date":
@@ -676,6 +568,25 @@ export function typeKey(t: IrType): string {
     case "url":
     case "searchParams":
     case "symbol":
+    case "stats":
+    case "fileHandle":
+    case "spawnRes":
+    case "child":
+    case "netServer":
+    case "netSocket":
+    case "http2Session":
+    case "http2Stream":
+    case "dgramSocket":
+    case "midiInput":
+    case "midiOutput":
+    case "testCtx":
+    case "httpReq":
+    case "httpRes":
+    case "httpClientReq":
+    case "secureCtx":
+    case "fsWatcher":
+    case "childStream":
+    case "procStream":
     case "dyn":
     case "jsval":
     case "caught":
@@ -708,9 +619,9 @@ export function typeKey(t: IrType): string {
     case "generator":
       return `generator<${typeKey(t.yieldT)},${typeKey(t.retT)},${typeKey(t.nextT)}>`;
     default: {
-      const _exhaustive: never = t as Exclude<typeof t, HandleType>;
+      const _exhaustive: never = t;
       void _exhaustive;
-      throw new InternalCompilerError("unreachable");
+      throw new Error("unreachable");
     }
   }
 }
@@ -756,7 +667,80 @@ export function typeEquals(a: IrType, b: IrType): boolean {
  * this — adding a refcounted kind must not grow new per-kind checks outside
  * the type-directed helpers. */
 export function isRefCounted(t: IrType): boolean {
-  return RUNTIME_RC_STEMS[t.kind] !== "" || t.kind === "object" || t.kind === "record";
+  return (
+    t.kind === "string" ||
+    t.kind === "array" ||
+    t.kind === "map" ||
+    t.kind === "set" ||
+    // Every regex value is an immortal interned literal today, so its
+    // retains/releases are no-ops — riding the uniform machinery anyway
+    // means dynamic construction can arrive without a redesign.
+    t.kind === "regex" ||
+    // URL, Stats, and spawnSync-result instances are ordinary refcounted
+    // heap values (immutable, no cycles — strings/scalars inside only).
+    t.kind === "url" ||
+    // URLSearchParams lists are ordinary refcounted heap values (strings
+    // plus at most the owning-URL edge — no cycles).
+    t.kind === "searchParams" ||
+    // Symbols are the same story: immutable identity values holding at
+    // most two strings.
+    t.kind === "symbol" ||
+    t.kind === "stats" ||
+    t.kind === "fileHandle" ||
+    t.kind === "spawnRes" ||
+    t.kind === "child" ||
+    // net handles are refcounted like child (listeners drop at settle,
+    // so lean allocation — see the IrType comment).
+    t.kind === "netServer" ||
+    t.kind === "netSocket" ||
+    // h2 sessions/streams are refcounted like the net pair (listeners
+    // drop at settlement; the session→stream↔session cycle breaks there).
+    t.kind === "http2Session" ||
+    t.kind === "http2Stream" ||
+    t.kind === "dgramSocket" ||
+    // midi input/output handles are refcounted like dgramSocket (listeners
+    // drop at closePort, so lean allocation — see the IrType comment).
+    t.kind === "midiInput" ||
+    t.kind === "midiOutput" ||
+    // TestContext handles are refcounted like dgramSocket (the runner
+    // tree owns children; no cycles through the handle).
+    t.kind === "testCtx" ||
+    t.kind === "httpReq" ||
+    t.kind === "httpRes" ||
+    t.kind === "httpClientReq" ||
+    // SecureContext handles are refcounted like url/stats (immutable, no
+    // cycles — parsed cert/key material inside only).
+    t.kind === "secureCtx" ||
+    // FSWatcher handles are refcounted like child (listeners drop at
+    // close, so lean allocation — see the IrType comment).
+    t.kind === "fsWatcher" ||
+    // Child-output streams are refcounted like child (listeners drop at
+    // EOF — see the IrType comment).
+    t.kind === "childStream" ||
+    // Typed arrays / Buffers are ordinary refcounted heap values (mutable,
+    // no cycles — raw bytes inside only).
+    t.kind === "bytes" ||
+    t.kind === "func" ||
+    t.kind === "object" ||
+    // Every class object is an immortal emitted static, so its
+    // retains/releases are no-ops — riding the uniform machinery (the
+    // regex-literal stance) keeps every container and box path unchanged.
+    t.kind === "classval" ||
+    t.kind === "record" ||
+    // The union CONTAINER is heap/refcounted regardless of which arm it
+    // holds (uniform representation keeps the RC discipline simple).
+    t.kind === "union" ||
+    t.kind === "promise" ||
+    // A generator object is a refcounted handle over its paused fiber and
+    // typed channel slots (ScrGen — lean allocation, no cycle header).
+    t.kind === "generator" ||
+    // A dyn value is a refcounted JSON dyn tree (ScrDyn).
+    t.kind === "dyn" ||
+    // An island value is a refcounted cell owning one engine value.
+    t.kind === "jsval" ||
+    // A catch binding is a refcounted snapshot box (ScrCaught).
+    t.kind === "caught"
+  );
 }
 
 /* ── module ────────────────────────────────────────────────────────────── */
@@ -2063,6 +2047,13 @@ export type IrLibFn =
    * round() is half-away-from-zero and floor(x+0.5) drifts at the
    * epsilon boundary). Borrow nothing; never throw. */
   | "math.abs"
+  | "math.sin"
+  | "math.cos"
+  | "math.sqrt"
+  | "math.exp"
+  | "math.log"
+  | "math.pow"
+  | "math.fround"
   | "math.round"
   /** Math.trunc / Math.ceil — C trunc()/ceil() ARE the JS operations
    * (NaN/±0/±Infinity pass through bit-exactly; ceil(-0.5) is -0 in IEEE
@@ -2510,6 +2501,26 @@ export type IrLibFn =
   | "dgram.onClose"
   | "dgram.onConnect"
   | "dns.lookup"
+  /** node:midi (scr_midi.c + the loop's midi hook — linked only when one
+   * of these appears on the IR; moduleUsesMidi is the switch). Input and
+   * Output handles construct through new*; the port surface enumerates,
+   * opens (real or virtual), and closes; sendArray/sendBytes marshal a
+   * number[] or Uint8Array to the wire; onMessage MOVES its callback into
+   * the input's registry and fires it (deltaTime, number[]) on the loop
+   * thread through the per-arity adapter (scr_midi_msg_thunk0/1/2). Opens
+   * and sends may-throw (bad index, closed port, no backend). */
+  | "midi.newInput"
+  | "midi.newOutput"
+  | "midi.portCount"
+  | "midi.portName"
+  | "midi.openPort"
+  | "midi.openVirtual"
+  | "midi.closePort"
+  | "midi.isOpen"
+  | "midi.ignoreTypes"
+  | "midi.sendArray"
+  | "midi.sendBytes"
+  | "midi.onMessage"
   /** node:test (scr_test.c — linked only when one of these appears on
    * the IR; moduleUsesNodeTest is the switch, and the main epilogue asks
    * scr_test_exit_code() for the process's exit status). Strings are
@@ -5318,7 +5329,7 @@ export function jsOpResultKind(op: IrJsOp): "jsval" | "bool" | "string" | "void"
     default: {
       const _exhaustive: never = op;
       void _exhaustive;
-      throw new InternalCompilerError("unreachable");
+      throw new Error("unreachable");
     }
   }
 }
@@ -5374,7 +5385,6 @@ function isJsonSafeAt(
   inRecordField: boolean,
   visiting: Set<string>,
 ): boolean {
-  if (HANDLE_KINDS.has(t.kind)) return false;
   switch (t.kind) {
     case "f64":
     case "string":
@@ -5440,6 +5450,25 @@ function isJsonSafeAt(
     // Buffers as {type:"Buffer",data:[...]} in Node — neither shape is
     // representable type-directedly; rejected like Maps.
     case "bytes":
+    case "stats":
+    case "fileHandle":
+    case "spawnRes":
+    case "child":
+    case "netServer":
+    case "netSocket":
+    case "http2Session":
+    case "http2Stream":
+    case "dgramSocket":
+    case "midiInput":
+    case "midiOutput":
+    case "testCtx":
+    case "httpReq":
+    case "httpRes":
+    case "httpClientReq":
+    case "secureCtx":
+    case "fsWatcher":
+    case "childStream":
+    case "procStream":
     case "dyn":
     case "jsval":
     case "caught":
@@ -5458,9 +5487,9 @@ function isJsonSafeAt(
     case "nullT":
       return true;
     default: {
-      const _exhaustive: never = t as Exclude<typeof t, HandleType>;
+      const _exhaustive: never = t;
       void _exhaustive;
-      throw new InternalCompilerError("unreachable");
+      throw new Error("unreachable");
     }
   }
 }
@@ -6297,6 +6326,14 @@ export function moduleUsesDynAsync(mod: IrModule): boolean {
       found = true;
       return;
     }
+    // Promise values crossing the checked-dynamic boundary are boxed by
+    // emit-walkers through scr_dyn_new_promise_adapting(). That constructor
+    // lives in scr_async_dyn.c, so promise-typed IR must pull that TU in even
+    // when the program never awaits a dyn value.
+    if (node.type !== undefined && node.type.kind === "promise") {
+      found = true;
+      return;
+    }
     for (const key of Object.keys(v)) visit((v as Record<string, unknown>)[key]);
   };
   visit(mod);
@@ -6567,6 +6604,37 @@ export function moduleUsesDgram(mod: IrModule): boolean {
   return found;
 }
 
+/** True when the module contains any midi.* libCall — the link switch
+ * that pulls scr_midi.c into the binary and has the emitted main call the
+ * midi install/dispatch hook (cc.ts + emitter; the moduleUsesDgram shape,
+ * with the ALSA/CoreMIDI/WinMM link flags gated on the same answer).
+ * midi-free programs pay zero bytes and keep their exact link line. Same
+ * generic-walk shape as moduleUsesDgram. */
+export function moduleUsesMidi(mod: IrModule): boolean {
+  let found = false;
+  const visit = (v: unknown): void => {
+    if (found || v === null || typeof v !== "object") return;
+    if (Array.isArray(v)) {
+      for (const item of v) visit(item);
+      return;
+    }
+    const node = v as { kind?: unknown; fn?: unknown };
+    if (node.kind === "libCall" && typeof node.fn === "string" && node.fn.startsWith("midi.")) {
+      found = true;
+      return;
+    }
+    // A midi HANDLE TYPE left behind by a fenced statement still emits a
+    // release call — the unit must link (the moduleUsesDgram type story).
+    if (node.kind === "midiInput" || node.kind === "midiOutput") {
+      found = true;
+      return;
+    }
+    for (const key of Object.keys(v)) visit((v as Record<string, unknown>)[key]);
+  };
+  visit(mod);
+  return found;
+}
+
 /** True when the module contains any http.* libCall — the link switch
  * that pulls scr_http.c into the binary (cc.ts; moduleUsesNet already
  * answers true for these, so scr_net.c comes along). */
@@ -6765,6 +6833,8 @@ const LIB_MODE_REFUSED_KINDS: ReadonlyMap<string, string> = new Map([
   ["http2Session", "the node:http2 surface"],
   ["http2Stream", "the node:http2 surface"],
   ["dgramSocket", "the node:dgram surface"],
+  ["midiInput", "the node:midi surface"],
+  ["midiOutput", "the node:midi surface"],
   ["fsWatcher", "fs.watch"],
   ["testCtx", "the node:test surface"],
   ["httpReq", "the node:http surface"],
@@ -6826,6 +6896,7 @@ export function moduleLibAsyncSurface(mod: IrModule): { surface: string; loc: Sr
     [moduleUsesHttpServer(mod), "the node:http surface"],
     [moduleUsesHttp2(mod), "the node:http2 surface"],
     [moduleUsesDgram(mod), "the node:dgram surface"],
+    [moduleUsesMidi(mod), "the node:midi surface"],
     [moduleUsesFsWatch(mod), "fs.watch"],
     [moduleUsesStream(mod), "the node:stream surface"],
     [moduleUsesTls(mod), "the node:tls surface"],
@@ -7258,6 +7329,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dgram.address",
   "dgram.close",
   "dgram.closeCb",
+  // node:midi synchronous throws: allocation failure on construct, a bad
+  // port index or absent backend on open, a virtual port where the platform
+  // has none (WinMM), and send on a closed output.
+  "midi.newInput",
+  "midi.newOutput",
+  "midi.portName",
+  "midi.openPort",
+  "midi.openVirtual",
+  "midi.sendArray",
+  "midi.sendBytes",
   // The assert surface: every entry point except sameValue, bytesDeepEq,
   // and the shape accumulator's begin/slot/test calls throws the
   // catchable AssertionError on failure.

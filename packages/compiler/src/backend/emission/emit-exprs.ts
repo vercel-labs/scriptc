@@ -1,4 +1,3 @@
-import { InternalCompilerError } from "../../errors.js";
 /* Expression C emission: the whole IrExpr dispatch (emitExpr) — every IR
  * expression lands in a fresh C temp, with RC ownership tracked on the
  * emitter's frames (see the discipline comment in emitter core). */
@@ -62,7 +61,7 @@ function streamTypedRefCommitAdapter(
   if (t.kind !== "record") return "NULL";
   const shape = E.recordsById.get(t.shapeId);
   if (!shape) {
-    throw new InternalCompilerError(`emitter bug: stream typed-ref commit of unknown shape ${t.shapeId}`);
+    throw new Error(`emitter bug: stream typed-ref commit of unknown shape ${t.shapeId}`);
   }
   const commit = `${snapshot}_commit`;
   E.walkerProtos.push(
@@ -158,7 +157,7 @@ function streamTypedRefAdapter(
   if (t.kind === "record") {
     const shape = E.recordsById.get(t.shapeId);
     if (!shape) {
-      throw new InternalCompilerError(
+      throw new Error(
         `emitter bug: stream typed-ref materialize of unknown shape ${t.shapeId}`,
       );
     }
@@ -203,7 +202,7 @@ function streamTypedRefAdapter(
       `  ScrDyn *d = scr_dyn_new_arr();`,
       `  for (size_t sc_i = 0; sc_i < v->len; sc_i++) {`,
     );
-    if (elem.kind === "f64") {
+    if (elem.kind === "f64" || elem.kind === "date") {
       lines.push(
         `    scr_dyn_arr_push(d, ${box(elem, "scr_arr_get_f64(v, (double)sc_i)")});`,
       );
@@ -237,7 +236,7 @@ function liveDynRefAdapter(
   const existing = E.liveDynRefAdapters.get(key);
   if (existing) return existing;
   if (!streamTypedRefEligible(t)) {
-    throw new InternalCompilerError(`emitter bug: live dyn ref of ${key}`);
+    throw new Error(`emitter bug: live dyn ref of ${key}`);
   }
   const prefix = `sc_ldr_${E.liveDynRefAdapters.size}`;
   const defs: string[] = [];
@@ -265,13 +264,13 @@ function liveDynUnionRefAdapter(
   if (existing) return existing;
   const union = E.unionsById.get(t.unionId);
   if (!union) {
-    throw new InternalCompilerError(`emitter bug: live dyn ref of unknown union ${t.unionId}`);
+    throw new Error(`emitter bug: live dyn ref of unknown union ${t.unionId}`);
   }
   const mutableArms = union.arms
     .map((arm, tag) => ({ arm, tag }))
     .filter(({ arm }) => streamTypedRefEligible(arm));
   if (mutableArms.length === 0) {
-    throw new InternalCompilerError(`emitter bug: live dyn ref of immutable union ${key}`);
+    throw new Error(`emitter bug: live dyn ref of immutable union ${key}`);
   }
 
   const sym = `sc_ldu_${E.liveDynUnionRefAdapters.size}`;
@@ -331,7 +330,7 @@ function streamFromArrayAdapter(
     ? E.unionsById.get(elem.unionId)
     : undefined;
   if (elem.kind === "union" && !unionDef) {
-    throw new InternalCompilerError(`emitter bug: streamFrom of unknown union ${elem.unionId}`);
+    throw new Error(`emitter bug: streamFrom of unknown union ${elem.unionId}`);
   }
   const unionRefArms = unionDef?.arms
     .map((arm, tag) => ({ arm, tag }))
@@ -437,7 +436,7 @@ function dynPromiseAdapter(
   inner: IrType,
 ): string {
   if (!isRefCounted(inner) || inner.kind === "dyn") {
-    throw new InternalCompilerError(
+    throw new Error(
       `dynamic promise adapter requires a concrete reference type, got ${typeKey(inner)}`,
     );
   }
@@ -480,7 +479,7 @@ function dynPromiseAdapter(
  * receiver binding. This deliberately small whitelist enables borrowed
  * receivers in typed-array hot loops while side-effecting/calling shapes
  * retain the full snapshot ownership required by JS evaluation order. */
-function isStableBytesOperand(e: IrExpr, receiverLocalId: string): boolean {
+export function isStableBytesOperand(e: IrExpr, receiverLocalId: string): boolean {
   switch (e.kind) {
     case "numLit":
     case "boolLit":
@@ -554,7 +553,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
       case "unitLit":
         // unitLits are consumed inline by the unionWrap case (a unit arm is
         // tag-only); one reaching the generic dispatch escaped its wrap.
-        throw new InternalCompilerError(`emitter bug: bare unitLit '${e.unit}'`);
+        throw new Error(`emitter bug: bare unitLit '${e.unit}'`);
       case "varRef": {
         const integerLoopIndex = E.integerLoopIndex(e);
         if (integerLoopIndex !== null) return E.newTemp(e.type, `(double)${integerLoopIndex}`);
@@ -651,7 +650,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           return old;
         }
         if (!local && !E.globalsById.has(e.localId)) {
-          throw new InternalCompilerError(`emitter bug: incDec of unknown binding ${e.localId}`);
+          throw new Error(`emitter bug: incDec of unknown binding ${e.localId}`);
         }
         const target = local ? mangleLocal(e.localId) : mangleGlobal(e.localId);
         const t = E.newTemp(e.type, e.prefix ? `${target} ${one}` : target);
@@ -704,7 +703,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           return v;
         }
         if (!local && !E.globalsById.has(e.localId)) {
-          throw new InternalCompilerError(`emitter bug: assignExpr to unknown binding ${e.localId}`);
+          throw new Error(`emitter bug: assignExpr to unknown binding ${e.localId}`);
         }
         const target = local ? mangleLocal(e.localId) : mangleGlobal(e.localId);
         if (isRefCounted(v.type)) {
@@ -860,7 +859,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             E.line(`}`);
             return { name: "", type: e.type };
           }
-          if (e.type.kind !== "dyn") throw new InternalCompilerError("emitter bug: dyn optChain result kind");
+          if (e.type.kind !== "dyn") throw new Error("emitter bug: dyn optChain result kind");
           const name = `sc_t${E.tempCounter++}`;
           E.line(`${cDecl(e.type, name)};`);
           E.line(`if (${test}) {`);
@@ -878,12 +877,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           E.currentFrame().push({ name, type: e.type });
           return { name, type: e.type };
         }
-        if (e.receiver.type.kind !== "union") throw new InternalCompilerError("emitter bug: optChain receiver is not a union");
+        if (e.receiver.type.kind !== "union") throw new Error("emitter bug: optChain receiver is not a union");
         const def = E.unionsById.get(e.receiver.type.unionId);
-        if (!def) throw new InternalCompilerError(`emitter bug: optChain of unknown union ${e.receiver.type.unionId}`);
+        if (!def) throw new Error(`emitter bug: optChain of unknown union ${e.receiver.type.unionId}`);
         const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
         const narrowIdx = def.arms.findIndex((a) => !isUnitType(a));
-        if (unitTags.length === 0 || narrowIdx < 0) throw new InternalCompilerError("emitter bug: optChain union arms");
+        if (unitTags.length === 0 || narrowIdx < 0) throw new Error("emitter bug: optChain union arms");
         const narrowed = def.arms[narrowIdx]!;
         const r = E.emitExpr(e.receiver);
         const bind = `sc_t${E.tempCounter++}`;
@@ -931,9 +930,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           E.currentFrame().push({ name, type: e.type });
           return { name, type: e.type };
         }
-        if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: optChain result is not a union");
+        if (e.type.kind !== "union") throw new Error("emitter bug: optChain result is not a union");
         const undefTag = E.undefinedArmTag(e.type);
-        if (undefTag < 0) throw new InternalCompilerError("emitter bug: optChain result lacks its undefined arm");
+        if (undefTag < 0) throw new Error("emitter bug: optChain result lacks its undefined arm");
         const name = `sc_t${E.tempCounter++}`;
         E.line(`${cDecl(e.type, name)};`);
         E.line(`if (${test}) {`);
@@ -953,7 +952,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
       }
       case "chainRecv": {
         const bound = E.chainTemps.get(e.id);
-        if (!bound) throw new InternalCompilerError(`emitter bug: chainRecv "${e.id}" outside its chain`);
+        if (!bound) throw new Error(`emitter bug: chainRecv "${e.id}" outside its chain`);
         return E.newTemp(
           e.type,
           isRefCounted(e.type) ? retainCallC(e.type, bound.name) : bound.name,
@@ -963,7 +962,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // `u || d` narrowed to the single non-unit arm: nullish's dance
         // with the per-union TRUTHY helper as the test — truthy extracts
         // the arm (+1 for ref kinds), falsy releases and runs the default.
-        if (e.left.type.kind !== "union") throw new InternalCompilerError("emitter bug: orDefault left is not a union");
+        if (e.left.type.kind !== "union") throw new Error("emitter bug: orDefault left is not a union");
         const l = E.emitExpr(e.left);
         E.moveTemp(l);
         const name = `sc_t${E.tempCounter++}`;
@@ -1047,11 +1046,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           if (isRefCounted(e.type)) E.currentFrame().push({ name, type: e.type });
           return { name, type: e.type };
         }
-        if (e.left.type.kind !== "union") throw new InternalCompilerError("emitter bug: nullish left is not a union");
+        if (e.left.type.kind !== "union") throw new Error("emitter bug: nullish left is not a union");
         const def = E.unionsById.get(e.left.type.unionId);
-        if (!def) throw new InternalCompilerError(`emitter bug: nullish of unknown union ${e.left.type.unionId}`);
+        if (!def) throw new Error(`emitter bug: nullish of unknown union ${e.left.type.unionId}`);
         const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
-        if (unitTags.length === 0) throw new InternalCompilerError("emitter bug: nullish union lacks unit arms");
+        if (unitTags.length === 0) throw new Error("emitter bug: nullish union lacks unit arms");
         const l = E.emitExpr(e.left);
         E.moveTemp(l);
         const name = `sc_t${E.tempCounter++}`;
@@ -1213,7 +1212,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           default: {
             const _exhaustive: never = method;
             void _exhaustive;
-            throw new InternalCompilerError("unreachable");
+            throw new Error("unreachable");
           }
         }
       }
@@ -1258,12 +1257,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "match": {
             // +1 string[] or NULL from the runtime; the `string[] | null`
             // union wraps type-directedly, the process.envGet convention.
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: match result not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: match result not a union");
             const def = E.unionsById.get(e.type.unionId);
             const arrTag = def ? def.arms.findIndex((a) => a.kind === "array") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (arrTag < 0 || nullTag < 0) {
-              throw new InternalCompilerError("emitter bug: match union lacks its arms");
+              throw new Error("emitter bug: match union lacks its arms");
             }
             const m = E.newTemp(arrayOf(STRING), `scr_regex_match(${r.name}, ${args[0]!.name})`);
             E.moveTemp(m); // moves into the union box when present; NULL otherwise
@@ -1308,7 +1307,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           default: {
             const _exhaustive: never = method;
             void _exhaustive;
-            throw new InternalCompilerError("unreachable");
+            throw new Error("unreachable");
           }
         }
       }
@@ -1320,7 +1319,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // elements copy in — _get_ref returns +1 and _push_ref takes
         // ownership, so the copy loop is RC-balanced; the length is
         // snapshotted before the loop.
-        if (e.type.kind !== "array") throw new InternalCompilerError("emitter bug: arrayLit of non-array type");
+        if (e.type.kind !== "array") throw new Error("emitter bug: arrayLit of non-array type");
         const elem = e.type.elem;
         const arr = E.newTemp(e.type, E.arrNewC(elem, e.elems.length));
         const acc = elemAccess(elem);
@@ -1348,7 +1347,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // ref element kind (assign before reading — SEMANTICS.md 46). The
         // `i <= n - 1` bound is ToLength for the lengths that terminate:
         // fractions truncate, negative/NaN produce an empty array.
-        if (e.type.kind !== "array") throw new InternalCompilerError("emitter bug: arrayNewLen of non-array type");
+        if (e.type.kind !== "array") throw new Error("emitter bug: arrayNewLen of non-array type");
         const elem = e.type.elem;
         const n = E.emitExpr(e.length);
         const arr = E.newTemp(e.type, E.arrNewC(elem, 0));
@@ -1369,7 +1368,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
       case "arrayGet": {
         const arr = E.emitExpr(e.arr);
         const idx = E.emitExpr(e.index);
-        if (e.arr.type.kind !== "array") throw new InternalCompilerError("emitter bug: arrayGet on non-array");
+        if (e.arr.type.kind !== "array") throw new Error("emitter bug: arrayGet on non-array");
         // Ref-element reads return +1 (the runtime retains); newTemp
         // registers the owned temp in the frame like any other.
         const acc = elemAccess(e.arr.type.elem);
@@ -1377,7 +1376,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
       }
       case "arrIntrinsic": {
         const r = E.emitExpr(e.receiver);
-        if (e.receiver.type.kind !== "array") throw new InternalCompilerError("emitter bug: arrIntrinsic on non-array");
+        if (e.receiver.type.kind !== "array") throw new Error("emitter bug: arrIntrinsic on non-array");
         const acc = elemAccess(e.receiver.type.elem);
         const method = e.method;
         switch (method) {
@@ -1508,12 +1507,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // element out (ref ownership moves into the union box) with
             // the tail sliding down. Union construction is type-directed
             // here, the envGet convention.
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: shift result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: shift result is not a union");
             const elemT = e.receiver.type.elem;
             const def = E.unionsById.get(e.type.unionId);
             const tag = def ? def.arms.findIndex((a) => typeEquals(a, elemT)) : -1;
             const undefTag = E.undefinedArmTag(e.type);
-            if (tag < 0 || undefTag < 0) throw new InternalCompilerError("emitter bug: shift union lacks its arms");
+            if (tag < 0 || undefTag < 0) throw new Error("emitter bug: shift union lacks its arms");
             const absent = E.unitInstanceRef(e.type.unionId, undefTag);
             const present =
               elemT.kind === "f64"
@@ -1529,7 +1528,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           default: {
             const _exhaustive: never = method;
             void _exhaustive;
-            throw new InternalCompilerError("unreachable");
+            throw new Error("unreachable");
           }
         }
       }
@@ -1539,7 +1538,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // every form hands back +1. Only the f64 (length) form can throw
         // (Node's "Invalid typed array length" RangeError) — pending check
         // after the temp joins its frame.
-        if (e.type.kind !== "bytes") throw new InternalCompilerError("emitter bug: bytesNew of non-bytes type");
+        if (e.type.kind !== "bytes") throw new Error("emitter bug: bytesNew of non-bytes type");
         const kind = bytesElemKindC(e.type.elem);
         if (!e.source) return E.newTemp(e.type, `scr_bytes_new(${kind}, 0)`);
         const src = E.emitExpr(e.source);
@@ -1554,7 +1553,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         if (e.source.type.kind === "array") {
           return E.newTemp(e.type, `scr_bytes_from_arr(${kind}, ${src.name})`);
         }
-        throw new InternalCompilerError(`emitter bug: bytesNew source of kind ${e.source.type.kind}`);
+        throw new Error(`emitter bug: bytesNew source of kind ${e.source.type.kind}`);
       }
       case "bytesIntrinsic": {
         // Receiver and args are borrowed frame temps; string/bytes results
@@ -1566,20 +1565,20 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // never emits as a value; the remaining args are plain f64s.
         if (e.method === "readNum" || e.method === "writeNum" || e.method === "readNumVar" || e.method === "writeNumVar") {
           const tok = e.args[0]!;
-          if (tok.kind !== "strLit") throw new InternalCompilerError(`emitter bug: bytesIntrinsic ${e.method} kind must be a strLit`);
+          if (tok.kind !== "strLit") throw new Error(`emitter bug: bytesIntrinsic ${e.method} kind must be a strLit`);
           const r0 = E.emitExpr(e.receiver);
           const rest = e.args.slice(1).map((a) => E.emitExpr(a));
           let call: string;
           if (e.method === "readNum" || e.method === "writeNum") {
             const spec = BYTES_NUM_KIND_C[tok.value];
-            if (!spec) throw new InternalCompilerError(`emitter bug: bytes numeric kind '${tok.value}'`);
+            if (!spec) throw new Error(`emitter bug: bytes numeric kind '${tok.value}'`);
             call =
               e.method === "readNum"
                 ? `scr_bytes_read_num(${r0.name}, ${rest[0]!.name}, ${spec.kind}, ${spec.le})`
                 : `scr_bytes_write_num(${r0.name}, ${rest[0]!.name}, ${rest[1]!.name}, ${spec.kind}, ${spec.le})`;
           } else {
             const spec = BYTES_NUM_VAR_C[tok.value];
-            if (!spec) throw new InternalCompilerError(`emitter bug: bytes variable-width kind '${tok.value}'`);
+            if (!spec) throw new Error(`emitter bug: bytes variable-width kind '${tok.value}'`);
             call =
               e.method === "readNumVar"
                 ? `scr_bytes_read_var(${r0.name}, ${rest[0]!.name}, ${rest[1]!.name}, ${spec.sign}, ${spec.le})`
@@ -1601,7 +1600,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return E.newTemp(e.type, `(double)${r.name}->len`);
           case "byteLength":
             if (e.receiver.type.kind !== "bytes") {
-              throw new InternalCompilerError("emitter bug: bytesIntrinsic byteLength on non-bytes");
+              throw new Error("emitter bug: bytesIntrinsic byteLength on non-bytes");
             }
             return E.newTemp(
               e.type,
@@ -1610,7 +1609,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "get":
             // Any invalid index traps (the array runtime's discipline).
             if (e.receiver.type.kind !== "bytes") {
-              throw new InternalCompilerError("emitter bug: bytesIntrinsic get on non-bytes");
+              throw new Error("emitter bug: bytesIntrinsic get on non-bytes");
             }
             return E.newTemp(
               e.type,
@@ -1823,7 +1822,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           default: {
             const _exhaustive: never = method;
             void _exhaustive;
-            throw new InternalCompilerError("unreachable");
+            throw new Error("unreachable");
           }
         }
       }
@@ -1834,7 +1833,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // value type carries a collector header (record/object/union values
         // can point back at the map) — such maps allocate with the header,
         // scalar/string/array-valued maps stay lean (docs/memory.md).
-        if (e.type.kind !== "map") throw new InternalCompilerError("emitter bug: mapNew of non-map type");
+        if (e.type.kind !== "map") throw new Error("emitter bug: mapNew of non-map type");
         const value = e.type.value;
         const rc = isRefCounted(value) ? vAdapters(value) : null;
         const m = E.newTemp(
@@ -1857,7 +1856,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
       }
       case "mapIntrinsic": {
         const r = E.emitExpr(e.receiver);
-        if (e.receiver.type.kind !== "map") throw new InternalCompilerError("emitter bug: mapIntrinsic on non-map");
+        if (e.receiver.type.kind !== "map") throw new Error("emitter bug: mapIntrinsic on non-map");
         const { key, value } = e.receiver.type;
         const kAcc = mapKeyAccess(key);
         const vAcc = elemAccess(value);
@@ -1873,10 +1872,10 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // in canonical arm order, so V's tags coincide with the result
             // union's and no re-tag exists (validated).
             const k = E.emitExpr(e.args[0]!);
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: map get result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: map get result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const undefTag = E.undefinedArmTag(e.type);
-            if (!def || undefTag < 0) throw new InternalCompilerError("emitter bug: map get union lacks its undefined arm");
+            if (!def || undefTag < 0) throw new Error("emitter bug: map get union lacks its undefined arm");
             const absent = E.unitInstanceRef(e.type.unionId, undefTag);
             if (value.kind === "union") {
               const t = E.newTemp(
@@ -1887,7 +1886,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               return t;
             }
             const valueTag = def.arms.findIndex((a) => typeEquals(a, value));
-            if (valueTag < 0) throw new InternalCompilerError("emitter bug: map get union lacks its value arm");
+            if (valueTag < 0) throw new Error("emitter bug: map get union lacks its value arm");
             if (value.kind === "f64" || value.kind === "bool") {
               const out = `sc_t${E.tempCounter++}`;
               const found = `sc_t${E.tempCounter++}`;
@@ -1952,7 +1951,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           default: {
             const _exhaustive: never = method;
             void _exhaustive;
-            throw new InternalCompilerError("unreachable");
+            throw new Error("unreachable");
           }
         }
       }
@@ -1962,7 +1961,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // never read back). No RC entry points, no trace: f64/string
         // elements cannot point back, so sets are never cycle-capable and
         // always allocate lean.
-        if (e.type.kind !== "set") throw new InternalCompilerError("emitter bug: setNew of non-set type");
+        if (e.type.kind !== "set") throw new Error("emitter bug: setNew of non-set type");
         // Handle-kind elements (identity hashing) carry their RC adapters
         // at construction — the scr_arr_new_ref technique.
         const elemAcc = mapKeyAccess(e.type.elem);
@@ -1984,7 +1983,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
       }
       case "setIntrinsic": {
         const r = E.emitExpr(e.receiver);
-        if (e.receiver.type.kind !== "set") throw new InternalCompilerError("emitter bug: setIntrinsic on non-set");
+        if (e.receiver.type.kind !== "set") throw new Error("emitter bug: setIntrinsic on non-set");
         const kAcc = mapKeyAccess(e.receiver.type.elem);
         const method = e.method;
         switch (method) {
@@ -2032,7 +2031,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           default: {
             const _exhaustive: never = method;
             void _exhaustive;
-            throw new InternalCompilerError("unreachable");
+            throw new Error("unreachable");
           }
         }
       }
@@ -2123,7 +2122,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
         }
         const entry = E.ffiByName.get(e.import);
-        if (!entry) throw new InternalCompilerError(`emitter bug: unknown FFI import ${e.import}`);
+        if (!entry) throw new Error(`emitter bug: unknown FFI import ${e.import}`);
         const args = e.args.map((arg) => E.emitExpr(arg));
         const sourceArgs = new Map<number, Temp>();
         const callbackArgs = new Map<string, Temp>();
@@ -2191,7 +2190,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           if (isFfiContextParam(param)) {
             const callback = callbackArgs.get(param.context);
-            if (!callback) throw new InternalCompilerError(`emitter bug: FFI context '${param.context}' has no callback arg`);
+            if (!callback) throw new Error(`emitter bug: FFI context '${param.context}' has no callback arg`);
             nativeArgs.push(`(void *)${callback.name}`);
             return;
           }
@@ -2275,7 +2274,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
       }
       case "closure": {
         const target = E.fnByName.get(e.fnName);
-        if (!target) throw new InternalCompilerError(`emitter bug: closure over unknown function ${e.fnName}`);
+        if (!target) throw new Error(`emitter bug: closure over unknown function ${e.fnName}`);
         if (target.captures === undefined) {
           // Declared function as a value: the interned immortal closure —
           // every mention yields the same pointer, so `f === f` is true.
@@ -2298,7 +2297,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         const callee = E.emitExpr(e.callee);
         const args = e.args.map((a) => E.emitExpr(a));
         for (const a of args) E.moveTemp(a); // callee owns its params
-        if (e.callee.type.kind !== "func") throw new InternalCompilerError("emitter bug: callValue on non-func");
+        if (e.callee.type.kind !== "func") throw new Error("emitter bug: callValue on non-func");
         const cast = cFnPtrCast(e.callee.type);
         const argList = [callee.name, ...args.map((a) => a.name)].join(", ");
         const call = `(${cast}${callee.name}->fn)(${argList})`;
@@ -2343,11 +2342,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // +1 object as void * and the site reinterprets to the static
         // class (a runtime descendant is the ordinary upcast story).
         if (e.callee.type.kind !== "classval") {
-          throw new InternalCompilerError("emitter bug: newValue on non-classval callee");
+          throw new Error("emitter bug: newValue on non-classval callee");
         }
         const cls = e.callee.type.className;
         const ctor = E.fnByName.get(`%${cls}.constructor`);
-        if (!ctor) throw new InternalCompilerError(`emitter bug: newValue on ${cls} without a constructor`);
+        if (!ctor) throw new Error(`emitter bug: newValue on ${cls} without a constructor`);
         const callee = E.emitExpr(e.callee);
         const args = e.args.map((a) => E.emitExpr(a));
         for (const a of args) E.moveTemp(a); // the constructor owns its params
@@ -2392,7 +2391,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // carries; the target's interval is a compile-time constant.
         const v = E.emitExpr(e.value);
         const target = E.classMeta.get(e.className);
-        if (!target) throw new InternalCompilerError(`emitter bug: instanceOf against unknown class ${e.className}`);
+        if (!target) throw new Error(`emitter bug: instanceOf against unknown class ${e.className}`);
         return E.newTemp(
           e.type,
           `${v.name}->vt->pre >= ${target.pre} && ${v.name}->vt->pre <= ${target.post}`,
@@ -2404,12 +2403,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // class), whose signature the slot pointer carries — the receiver
         // upcasts to it, another prefix-layout reinterpret.
         const meta = E.classMeta.get(e.className);
-        if (!meta) throw new InternalCompilerError(`emitter bug: virtualCall on unknown class ${e.className}`);
+        if (!meta) throw new Error(`emitter bug: virtualCall on unknown class ${e.className}`);
         const slot = meta.root.slots.find(
           (sl) =>
             sl.method === e.method && sl.declarer.pre <= meta.pre && meta.pre <= sl.declarer.post,
         );
-        if (!slot) throw new InternalCompilerError(`emitter bug: no vtable slot for ${e.className}.${e.method}`);
+        if (!slot) throw new Error(`emitter bug: no vtable slot for ${e.className}.${e.method}`);
         const args = e.args.map((a) => E.emitExpr(a));
         for (const a of args) E.moveTemp(a); // callees own their params
         const recv = args[0]!.name;
@@ -2445,7 +2444,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // never an old value to release. OVERFLOW entries (undeclared keys
         // of an index-signature shape) insert into the shape's overflow
         // map in the same interleaved order — the map takes ownership.
-        if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: recordLit of non-record type");
+        if (e.type.kind !== "record") throw new Error("emitter bug: recordLit of non-record type");
         const rec = E.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
         for (const f of e.fields) {
           if (f.drop) {
@@ -2473,7 +2472,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         return rec;
       }
       case "recordClone": {
-        if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: recordClone of non-record type");
+        if (e.type.kind !== "record") throw new Error("emitter bug: recordClone of non-record type");
         E.recordCloneShapes.add(e.type.shapeId);
         // Source first, then each override in source order. The helper
         // returns a fully retained owned clone; replacement unlinks before
@@ -2675,7 +2674,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         }
         if (arm.kind === "f64") return E.newTemp(e.type, `scr_union_new_f64(${e.tag}, ${v.name})`);
         if (arm.kind === "bool") return E.newTemp(e.type, `scr_union_new_bool(${e.tag}, ${v.name})`);
-        throw new InternalCompilerError(`emitter bug: unionWrap of ${arm.kind}`);
+        throw new Error(`emitter bug: unionWrap of ${arm.kind}`);
       }
       case "unionNarrow": {
         // Tag-UNCHECKED payload extraction: the frontend emits this only
@@ -2685,7 +2684,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // releases with this statement's frame as usual.
         const u = E.emitExpr(e.value);
         const arm = e.type;
-        if (isUnitType(arm)) throw new InternalCompilerError(`emitter bug: unionNarrow to unit arm ${arm.kind}`);
+        if (isUnitType(arm)) throw new Error(`emitter bug: unionNarrow to unit arm ${arm.kind}`);
         if (arm.kind === "f64") return E.newTemp(arm, `scr_union_get_f64(${u.name})`);
         if (arm.kind === "bool") return E.newTemp(arm, `scr_union_get_bool(${u.name})`);
         const payload = `(${cType(arm).trim()})scr_union_peek(${u.name})`;
@@ -2698,14 +2697,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // this frame.
         const u = E.emitExpr(e.value);
         const def = E.unionsById.get(e.unionId);
-        if (!def) throw new InternalCompilerError(`emitter bug: unionDisc of unknown union ${e.unionId}`);
+        if (!def) throw new Error(`emitter bug: unionDisc of unknown union ${e.unionId}`);
         const name = `sc_t${E.tempCounter++}`;
         E.line(`${cDecl(e.type, name)};`);
         E.line(`switch (${u.name}->tag) {`);
         E.indent++;
         def.arms.forEach((arm, i) => {
           if (arm.kind !== "record" && arm.kind !== "object") {
-            throw new InternalCompilerError(`emitter bug: unionDisc arm of kind ${arm.kind}`);
+            throw new Error(`emitter bug: unionDisc arm of kind ${arm.kind}`);
           }
           // cType names the arm's struct (incl. the runtime ScrError for
           // builtin error arms, whose members are unmangled).
@@ -2733,7 +2732,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         const u = E.emitExpr(e.value);
         const k = E.emitExpr(e.key);
         const def = E.unionsById.get(e.unionId);
-        if (!def) throw new InternalCompilerError(`emitter bug: unionKeyGet of unknown union ${e.unionId}`);
+        if (!def) throw new Error(`emitter bug: unionKeyGet of unknown union ${e.unionId}`);
         const resultDef = e.type.kind === "union" ? E.unionsById.get(e.type.unionId) : undefined;
         const literal = e.key.kind === "strLit" ? e.key.value : null;
         const name = `sc_t${E.tempCounter++}`;
@@ -2744,7 +2743,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           if (isUnitType(arm)) {
             const tag = resultDef?.arms.findIndex((a) => a.kind === "undefinedT") ?? -1;
             if (tag < 0 || e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: unionKeyGet unit arm without an undefined result arm");
+              throw new Error("emitter bug: unionKeyGet unit arm without an undefined result arm");
             }
             E.line(`case ${i}: ${name} = ${E.unitInstanceRef(e.type.unionId, tag)}; break;`);
             return;
@@ -2761,7 +2760,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             }
             const tag = resultDef?.arms.findIndex((a) => typeEquals(a, arm.elem)) ?? -1;
             if (tag < 0 || e.type.kind !== "union" || isUnitType(arm.elem)) {
-              throw new InternalCompilerError(`emitter bug: unionKeyGet element ${arm.elem.kind} outside the join`);
+              throw new Error(`emitter bug: unionKeyGet element ${arm.elem.kind} outside the join`);
             }
             const wrapped =
               arm.elem.kind === "f64"
@@ -2777,9 +2776,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             E.line(`case ${i}: ${name} = ${wrapped}; break;`);
             return;
           }
-          if (arm.kind !== "record") throw new InternalCompilerError(`emitter bug: unionKeyGet arm of kind ${arm.kind}`);
+          if (arm.kind !== "record") throw new Error(`emitter bug: unionKeyGet arm of kind ${arm.kind}`);
           const shape = E.recordsById.get(arm.shapeId);
-          if (!shape) throw new InternalCompilerError(`emitter bug: unionKeyGet arm of unknown shape ${arm.shapeId}`);
+          if (!shape) throw new Error(`emitter bug: unionKeyGet arm of unknown shape ${arm.shapeId}`);
           const declared = literal !== null ? shape.fields.find((f) => f.name === literal) : undefined;
           if (declared) {
             const ft = declared.type;
@@ -2790,7 +2789,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             }
             const tag = resultDef?.arms.findIndex((a) => typeEquals(a, ft)) ?? -1;
             if (tag < 0 || e.type.kind !== "union" || isUnitType(ft)) {
-              throw new InternalCompilerError(`emitter bug: unionKeyGet arm answer ${ft.kind} outside the join`);
+              throw new Error(`emitter bug: unionKeyGet arm answer ${ft.kind} outside the join`);
             }
             const wrapped =
               ft.kind === "f64"
@@ -2932,7 +2931,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         const c = E.emitExpr(e.value);
         if (e.test === "instanceof") {
           const target = E.classMeta.get(e.className!);
-          if (!target) throw new InternalCompilerError(`emitter bug: caughtTest against unknown class ${e.className}`);
+          if (!target) throw new Error(`emitter bug: caughtTest against unknown class ${e.className}`);
           const test = `scr_caught_instanceof(${c.name}, ${target.pre}, ${target.post})`;
           return E.newTemp(e.type, e.negated ? `!${test}` : test);
         }
@@ -2946,7 +2945,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // the NULL dummy harmlessly. Box borrowed.
         const c = E.emitExpr(e.value);
         const target = E.classMeta.get(e.className);
-        if (!target) throw new InternalCompilerError(`emitter bug: caughtCheck against unknown class ${e.className}`);
+        if (!target) throw new Error(`emitter bug: caughtCheck against unknown class ${e.className}`);
         const display = e.className.startsWith("%") ? e.className.slice(1) : e.className;
         return E.fallibleTemp(
           e.type,
@@ -2966,7 +2965,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         if (e.type.kind === "object") {
           return E.newTemp(e.type, `(${cType(e.type).trim()})${c.name}->retain_fn(${c.name}->payload)`);
         }
-        throw new InternalCompilerError(`emitter bug: caughtNarrow to ${e.type.kind}`);
+        throw new Error(`emitter bug: caughtNarrow to ${e.type.kind}`);
       }
       case "caughtToDyn": {
         // The caught snapshot converting to a dyn value (an unknown
@@ -2992,16 +2991,16 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // entries settle inline, the first rejection wins, later
           // rejections count as handled. A void inner type passes no
           // values array and the result fulfills void.
-          if (e.type.kind !== "promise") throw new InternalCompilerError("emitter bug: promise.all type");
+          if (e.type.kind !== "promise") throw new Error("emitter bug: promise.all type");
           const entries = e.args[0]!;
           if (entries.type.kind !== "array" || entries.type.elem.kind !== "promise") {
-            throw new InternalCompilerError("emitter bug: promise.all argument");
+            throw new Error("emitter bug: promise.all argument");
           }
           const ps = E.emitExpr(entries);
           if (e.type.inner.kind === "void") {
             return E.newTemp(e.type, `scr_promise_all(${ps.name}, NULL, NULL)`);
           }
-          if (e.type.inner.kind !== "array") throw new InternalCompilerError("emitter bug: promise.all result");
+          if (e.type.inner.kind !== "array") throw new Error("emitter bug: promise.all result");
           const elem = e.type.inner.elem;
           const store =
             elem.kind === "f64"
@@ -3026,11 +3025,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // nothing (no waiters can exist yet), and enters the unhandled
           // ledger until an await/then observes it. The cell is consumed
           // immediately, so no pending check runs in between.
-          if (e.type.kind !== "promise") throw new InternalCompilerError("emitter bug: promise.reject type");
+          if (e.type.kind !== "promise") throw new Error("emitter bug: promise.reject type");
           const reason = E.emitExpr(e.args[0]!);
           const t = e.args[0]!.type;
           if (t.kind !== "object" && t.kind !== "dyn") {
-            throw new InternalCompilerError("emitter bug: promise.reject reason");
+            throw new Error("emitter bug: promise.reject reason");
           }
           const p = E.newTemp(e.type, `scr_promise_new()`);
           E.moveTemp(reason); // the cell takes ownership
@@ -3056,7 +3055,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // moveTemp keeps the frame from double-releasing), matching the
           // async-return trampoline's fulfill exactly. No waiters exist
           // yet, so the wake is a no-op.
-          if (e.type.kind !== "promise") throw new InternalCompilerError("emitter bug: promise.resolve type");
+          if (e.type.kind !== "promise") throw new Error("emitter bug: promise.resolve type");
           const p = E.newTemp(e.type, `scr_promise_new()`);
           if (e.args.length === 0) {
             E.line(`scr_promise_fulfill_void(${p.name});${E.srcComment(e.loc)}`);
@@ -3092,10 +3091,10 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // park a callback waiter. The interned adapter converts each
           // entry's payload to the result's inner type; entry temps stay
           // frame-owned (race_add retains what it keeps).
-          if (e.type.kind !== "promise") throw new InternalCompilerError("emitter bug: promise.race type");
+          if (e.type.kind !== "promise") throw new Error("emitter bug: promise.race type");
           const result = E.newTemp(e.type, `scr_promise_new()`);
           for (const entry of e.args) {
-            if (entry.type.kind !== "promise") throw new InternalCompilerError("emitter bug: promise.race entry");
+            if (entry.type.kind !== "promise") throw new Error("emitter bug: promise.race entry");
             const p = E.emitExpr(entry);
             const adapter = E.raceAdapterFor(entry.type.inner, e.type.inner);
             E.line(`scr_promise_race_add(${result.name}, ${p.name}, &${adapter});${E.srcComment(e.loc)}`);
@@ -3119,7 +3118,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               E.line(`${arr}[${i}].tag = SCR_ARG_BOOL; ${arr}[${i}].v.b = ${a.name};`);
               break;
             default:
-              throw new InternalCompilerError(`${e.name} arg of type ${a.type.kind}`);
+              throw new Error(`${e.name} arg of type ${a.type.kind}`);
           }
         });
         const consoleFn = e.name === "console.error" ? "scr_console_error" : "scr_console_log";
@@ -3157,7 +3156,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "fetch.responseText":
           case "fetch.responseBytes": {
             if (e.type.kind !== "promise") {
-              throw new InternalCompilerError(`emitter bug: ${fn} result`);
+              throw new Error(`emitter bug: ${fn} result`);
             }
             const runtimeFn =
               fn === "fetch.responseText"
@@ -3203,7 +3202,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return finish(`scr_fetch_stream_from(${arg(0)})`);
           case "fetch.readerRead": {
             if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
-              throw new InternalCompilerError("emitter bug: fetch.readerRead result");
+              throw new Error("emitter bug: fetch.readerRead result");
             }
             const source = E.newTemp(
               { kind: "promise", inner: DYN },
@@ -3315,7 +3314,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // set) and answers NULL then, so the pending check runs
             // before any allocation.
             if (e.type.kind !== "array" || e.type.elem.kind !== "record") {
-              throw new InternalCompilerError("emitter bug: readdirTypesSync result is not a record array");
+              throw new Error("emitter bug: readdirTypesSync result is not a record array");
             }
             const recT = e.type.elem;
             const snap = `sc_t${E.tempCounter++}`;
@@ -3405,26 +3404,26 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // bucket in snapshot order; a first row makes the bucket (a
             // fresh Info[] wrapped into the `Info[] | undefined` union arm
             // the overflow map stores).
-            if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: networkInterfaces result is not a record");
+            if (e.type.kind !== "record") throw new Error("emitter bug: networkInterfaces result is not a record");
             const dictShape = E.recordsById.get(e.type.shapeId);
             const iv = dictShape?.indexValue;
-            if (!dictShape || iv?.kind !== "union") throw new InternalCompilerError("emitter bug: networkInterfaces dict shape");
+            if (!dictShape || iv?.kind !== "union") throw new Error("emitter bug: networkInterfaces dict shape");
             const ivDef = E.unionsById.get(iv.unionId);
             const arrTag = ivDef?.arms.findIndex((a) => a.kind === "array") ?? -1;
             const arrT = ivDef?.arms[arrTag];
-            if (arrT?.kind !== "array" || arrT.elem.kind !== "union") throw new InternalCompilerError("emitter bug: networkInterfaces bucket type");
+            if (arrT?.kind !== "array" || arrT.elem.kind !== "union") throw new Error("emitter bug: networkInterfaces bucket type");
             const infoT = arrT.elem;
             const infoDef = E.unionsById.get(infoT.unionId);
-            if (!infoDef || infoDef.arms.length !== 2) throw new InternalCompilerError("emitter bug: networkInterfaces Info union");
+            if (!infoDef || infoDef.arms.length !== 2) throw new Error("emitter bug: networkInterfaces Info union");
             const tag6 = infoDef.arms.findIndex(
               (a) => a.kind === "record" && E.recordsById.get(a.shapeId)?.fields.find((f) => f.name === "scopeid")?.type.kind === "f64",
             );
             const tag4 = 1 - tag6;
             const armShape = (tag: number): { t: IrType & { kind: "record" }; shape: IrRecordShape } => {
               const t = infoDef.arms[tag];
-              if (t?.kind !== "record") throw new InternalCompilerError("emitter bug: networkInterfaces Info arm");
+              if (t?.kind !== "record") throw new Error("emitter bug: networkInterfaces Info arm");
               const shape = E.recordsById.get(t.shapeId);
-              if (!shape) throw new InternalCompilerError("emitter bug: networkInterfaces Info shape");
+              if (!shape) throw new Error("emitter bug: networkInterfaces Info shape");
               return { t, shape };
             };
             const dict = E.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
@@ -3440,7 +3439,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               const { t, shape } = armShape(tag);
               const cidrT = shape.fields.find((f) => f.name === "cidr")?.type;
               const cidrDef = cidrT?.kind === "union" ? E.unionsById.get(cidrT.unionId) : undefined;
-              if (cidrT?.kind !== "union" || !cidrDef) throw new InternalCompilerError("emitter bug: networkInterfaces cidr type");
+              if (cidrT?.kind !== "union" || !cidrDef) throw new Error("emitter bug: networkInterfaces cidr type");
               const cidrStrTag = cidrDef.arms.findIndex((a) => a.kind === "string");
               const cidrNullTag = cidrDef.arms.findIndex((a) => a.kind === "nullT");
               const r = `sc_t${E.tempCounter++}`;
@@ -3460,7 +3459,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
                 E.line(`${r}->${mangleField("scopeid")} = scr_os_ifaddrs_scopeid(${snap}, ${i});`);
               } else {
                 const st = shape.fields.find((f) => f.name === "scopeid")?.type;
-                if (st?.kind !== "union") throw new InternalCompilerError("emitter bug: networkInterfaces IPv4 scopeid type");
+                if (st?.kind !== "union") throw new Error("emitter bug: networkInterfaces IPv4 scopeid type");
                 const undefTag = E.undefinedArmTag(st);
                 E.line(`${r}->${mangleField("scopeid")} = scr_union_retain(${E.unitInstanceRef(st.unionId, undefTag)});`);
               }
@@ -3523,6 +3522,30 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // halves and naive floor(x+0.5) drifts at the epsilon boundary).
           case "math.abs":
             return finish(`fabs(${arg(0)})`);
+          // Math.sqrt is IEEE-754 correctly-rounded in both libm and the JS
+          // spec, so it is bit-exact. Math.sin/cos/exp/log/pow are NOT
+          // required to be correctly rounded by either spec — libm and
+          // V8's fdlibm-derived Math agree to double precision but may
+          // differ by a ULP or two on transcendental inputs. Domain
+          // errors (sqrt of a negative, log of zero/negative, 0**negative)
+          // fall out of IEEE-754 the same way in C and JS: NaN or ±Infinity,
+          // never a throw.
+          case "math.sin":
+            return finish(`sin(${arg(0)})`);
+          case "math.cos":
+            return finish(`cos(${arg(0)})`);
+          case "math.sqrt":
+            return finish(`sqrt(${arg(0)})`);
+          case "math.exp":
+            return finish(`exp(${arg(0)})`);
+          case "math.log":
+            return finish(`log(${arg(0)})`);
+          case "math.pow":
+            return finish(`pow(${arg(0)}, ${arg(1)})`);
+          // Math.fround — narrow to float32 and widen back to double,
+          // matching the JS single-precision rounding. No throw.
+          case "math.fround":
+            return finish(`(double)(float)(${arg(0)})`);
           case "math.round":
             return finish(`scr_math_round(${arg(0)})`);
           // The scalar Math.min/max (scr_lib.c — fmin/fmax drop NaN, so
@@ -3602,13 +3625,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // `string | undefined` — the child.stdout pattern with a
             // string arm: the runtime answers a +1 string or NULL.
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError(`emitter bug: ${e.fn} result is not a union`);
+              throw new Error(`emitter bug: ${e.fn} result is not a union`);
             }
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const undefTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
             if (strTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError(`emitter bug: ${e.fn} union lacks its arms`);
+              throw new Error(`emitter bug: ${e.fn} union lacks its arms`);
             }
             const get = e.fn === "sym.desc" ? "scr_sym_desc" : "scr_sym_key_for";
             const raw = E.newTemp(STRING, `${get}(${arg(0)})`);
@@ -3662,13 +3685,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // `string | null` — the sym.desc pattern with a null arm: the
             // runtime answers a +1 string or NULL.
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: sp.get result is not a union");
+              throw new Error("emitter bug: sp.get result is not a union");
             }
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (strTag < 0 || nullTag < 0) {
-              throw new InternalCompilerError("emitter bug: sp.get union lacks its arms");
+              throw new Error("emitter bug: sp.get union lacks its arms");
             }
             const raw = E.newTemp(STRING, `scr_sp_get(${arg(0)}, ${arg(1)})`);
             E.moveTemp(raw); // ownership passes into the union arm below
@@ -3718,14 +3741,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // The frontend verified the shape (lowerQuerystringParseCall);
             // lookups here only guard emitter bugs. Args: qs, sep, eq,
             // maxKeys.
-            if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: qs.parse result is not a record");
+            if (e.type.kind !== "record") throw new Error("emitter bug: qs.parse result is not a record");
             const dictShape = E.recordsById.get(e.type.shapeId);
             const iv = dictShape?.indexValue;
-            if (!dictShape || iv?.kind !== "union") throw new InternalCompilerError("emitter bug: qs.parse dict shape");
+            if (!dictShape || iv?.kind !== "union") throw new Error("emitter bug: qs.parse dict shape");
             const ivDef = E.unionsById.get(iv.unionId);
             const strTag = ivDef?.arms.findIndex((a) => a.kind === "string") ?? -1;
             const arrTag = ivDef?.arms.findIndex((a) => a.kind === "array") ?? -1;
-            if (strTag < 0 || arrTag < 0) throw new InternalCompilerError("emitter bug: qs.parse index union lacks its arms");
+            if (strTag < 0 || arrTag < 0) throw new Error("emitter bug: qs.parse index union lacks its arms");
             const dict = E.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
             E.line(
               `scr_qs_parse_into(${dict.name}->${OVERFLOW_MEMBER}, ${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${strTag}, ${arrTag});${E.srcComment(e.loc)}`,
@@ -3762,7 +3785,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // eventType string).
             E.usesTimers = true;
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: fs.watchCb callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: fs.watchCb callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_watch_thunk0" : "scr_watch_thunk_event";
@@ -3844,13 +3867,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // death and spawn failure yield the interned null-arm
             // instance (the runtime exposes a has_status flag + code).
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: spawnRes.status result is not a union");
+              throw new Error("emitter bug: spawnRes.status result is not a union");
             }
             const def = E.unionsById.get(e.type.unionId);
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (f64Tag < 0 || nullTag < 0) {
-              throw new InternalCompilerError("emitter bug: spawnRes.status union lacks its arms");
+              throw new Error("emitter bug: spawnRes.status union lacks its arms");
             }
             const present = `scr_union_new_f64(${f64Tag}, scr_spawn_res_status(${arg(0)}))`;
             const absent = E.unitInstanceRef(e.type.unionId, nullTag);
@@ -3868,13 +3891,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // null for a normal exit or spawn failure) — the has/get pair
             // wrapped type-directedly like spawnRes.status.
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: spawnRes.signal result is not a union");
+              throw new Error("emitter bug: spawnRes.signal result is not a union");
             }
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (strTag < 0 || nullTag < 0) {
-              throw new InternalCompilerError("emitter bug: spawnRes.signal union lacks its arms");
+              throw new Error("emitter bug: spawnRes.signal union lacks its arms");
             }
             const sv = E.newTemp(
               STRING,
@@ -3890,13 +3913,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // spawn failure hands back a fresh +1 %Error (ownership moves
             // into the union box); otherwise the interned undefined arm.
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: spawnRes.error result is not a union");
+              throw new Error("emitter bug: spawnRes.error result is not a union");
             }
             const def = E.unionsById.get(e.type.unionId);
             const errTag = def ? def.arms.findIndex((a) => a.kind === "object" && a.className === "%Error") : -1;
             const undefTag = E.undefinedArmTag(e.type);
             if (errTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: spawnRes.error union lacks its arms");
+              throw new Error("emitter bug: spawnRes.error union lacks its arms");
             }
             const errT: IrType = { kind: "object", className: "%Error" };
             const ev = E.newTemp(errT, `scr_spawn_res_error(${arg(0)})`);
@@ -3912,14 +3935,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // death) — the spawnRes.status construction over the has/get
             // runtime pairs.
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError(`emitter bug: ${e.fn} result is not a union`);
+              throw new Error(`emitter bug: ${e.fn} result is not a union`);
             }
             const def = E.unionsById.get(e.type.unionId);
             const wantUnit = e.fn === "child.pid" ? "undefinedT" : "nullT";
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
             const unitTag = def ? def.arms.findIndex((a) => a.kind === wantUnit) : -1;
             if (f64Tag < 0 || unitTag < 0) {
-              throw new InternalCompilerError(`emitter bug: ${e.fn} union lacks its arms`);
+              throw new Error(`emitter bug: ${e.fn} union lacks its arms`);
             }
             const has = e.fn === "child.pid" ? "scr_child_has_pid" : "scr_child_has_exit_code";
             const get = e.fn === "child.pid" ? "scr_child_pid" : "scr_child_exit_code";
@@ -3932,13 +3955,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // `Readable | null` — the child.pid pattern with a REF arm:
             // the runtime answers a +1 stream handle or NULL (not piped).
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError(`emitter bug: ${e.fn} result is not a union`);
+              throw new Error(`emitter bug: ${e.fn} result is not a union`);
             }
             const def = E.unionsById.get(e.type.unionId);
             const streamTag = def ? def.arms.findIndex((a) => a.kind === "childStream") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (streamTag < 0 || nullTag < 0) {
-              throw new InternalCompilerError(`emitter bug: ${e.fn} union lacks its arms`);
+              throw new Error(`emitter bug: ${e.fn} union lacks its arms`);
             }
             const get = e.fn === "child.stdout" ? "scr_child_stdout" : "scr_child_stderr";
             const raw = E.newTemp(CHILDSTREAM_T, `${get}(${arg(0)})`);
@@ -3954,7 +3977,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // `Buffer | string` chunk (the chunk wraps at its Buffer arm).
             E.usesTimers = true; // a flowing stream holds the loop
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: stream.onData callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: stream.onData callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const param = cbT.params[0];
@@ -4008,7 +4031,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // because the `number | null` union's tags are program data
             // (a zero-param listener gets the runtime's ignoring thunk).
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: child.onExit callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: child.onExit callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -4030,7 +4053,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return finish(`scr_net_create_server(NULL, NULL)`);
           case "net.createServerCb": {
             const cbT = e.args[0]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: net.createServerCb handler not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: net.createServerCb handler not a func");
             const cb = args[0]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_net_conn_thunk0" : "scr_net_conn_thunk_sock";
@@ -4063,10 +4086,10 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               E.moveTemp(cb);
               cbExpr = cb.name;
             } else {
-              if (cbT.kind !== "union") throw new InternalCompilerError("emitter bug: net.listenOptsCb callback shape");
+              if (cbT.kind !== "union") throw new Error("emitter bug: net.listenOptsCb callback shape");
               const def = E.unionsById.get(cbT.unionId);
               const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
-              if (funcTag < 0) throw new InternalCompilerError("emitter bug: net.listenOptsCb union lacks its func arm");
+              if (funcTag < 0) throw new Error("emitter bug: net.listenOptsCb union lacks its func arm");
               const u = args[4]!;
               const t = E.newTemp(
                 def!.arms[funcTag]!,
@@ -4083,7 +4106,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "net.serverAddress": {
             // The AddressInfo record from the three runtime reads (the
             // dgram.address materialization; none of these throw).
-            if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: net.serverAddress result is not a record");
+            if (e.type.kind !== "record") throw new Error("emitter bug: net.serverAddress result is not a record");
             const ip = E.newTemp(STRING, `scr_net_server_addr_ip(${arg(0)})`);
             const rec = E.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
             E.moveTemp(ip);
@@ -4104,7 +4127,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "net.serverCloseBind": {
             // The bound REAL close as a value: an emitted adapter behind
             // a fresh closure whose one env slot holds the +1 server.
-            if (e.type.kind !== "func") throw new InternalCompilerError("emitter bug: net.serverCloseBind result not a func");
+            if (e.type.kind !== "func") throw new Error("emitter bug: net.serverCloseBind result not a func");
             const fnSym = E.closeBindThunkFor(e.type.params[0]!, e.type.ret.kind === "netServer");
             const bound = E.newTemp(e.type, `scr_closure_new((void *)&${fnSym}, 1)`);
             E.line(`${bound.name}->caps[0] = scr_box_new_obj(&scr_net_server_retain_v, &scr_net_server_release_v, NULL);`);
@@ -4116,7 +4139,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // emitted zero-arg wrapper (the runtime can't build the
             // callback union — tags are program data).
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: close override not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: close override not a func");
             const wrapSym = E.closeOverrideWrapFor(cbT.params[0]!, cbT.ret.kind === "netServer");
             const cb = args[1]!;
             E.moveTemp(cb); // ownership moves into the wrapper's env box
@@ -4131,7 +4154,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "net.sockOnError": {
             // The child %Error adapters fit exactly (message → %Error).
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} callback not a func`);
+            if (cbT.kind !== "func") throw new Error(`emitter bug: ${e.fn} callback not a func`);
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
@@ -4148,7 +4171,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "net.serverOnConnection":
           case "net.serverOnSecureConnection": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} callback not a func`);
+            if (cbT.kind !== "func") throw new Error(`emitter bug: ${e.fn} callback not a func`);
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_net_conn_thunk0" : "scr_net_conn_thunk_sock";
@@ -4187,7 +4210,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             E.usesTimers = true;
             const lookupT = e.args[2]!.type;
             if (lookupT.kind !== "func" || lookupT.params[2]?.kind !== "func") {
-              throw new InternalCompilerError("emitter bug: net.connectLookup resolver shape (frontend must fence)");
+              throw new Error("emitter bug: net.connectLookup resolver shape (frontend must fence)");
             }
             const thunk = E.netLookupAnswerThunkFor(lookupT.params[2]);
             const lookup = args[2]!;
@@ -4242,7 +4265,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return { name: "", type: e.type };
           case "net.sockOnData": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: net.sockOnData callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: net.sockOnData callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -4305,7 +4328,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // address read is the fallible one — Node's "Not running"
             // throw for a never-bound socket; family/port never throw
             // once it passed.
-            if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: dgram.address result is not a record");
+            if (e.type.kind !== "record") throw new Error("emitter bug: dgram.address result is not a record");
             const ip = E.fallibleTemp(STRING, `scr_dgram_addr_ip(${arg(0)})`);
             const rec = E.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
             E.moveTemp(ip);
@@ -4329,7 +4352,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return { name: "", type: e.type };
           case "dgram.onMessage": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: dgram.onMessage callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: dgram.onMessage callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -4342,7 +4365,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "dgram.onError": {
             // The child %Error adapters fit exactly (message → %Error).
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: dgram.onError callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: dgram.onError callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
@@ -4369,6 +4392,54 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             E.moveTemp(cb);
             const adapter = E.dnsLookupThunkFor(cbT);
             E.line(`scr_dns_lookup(${arg(0)}, ${arg(1)}, ${cb.name}, &${adapter});${E.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
+          // node:midi (scr_midi.c + the loop's midi hook — linked only when
+          // these appear on the IR; moduleUsesMidi is the switch). Handles
+          // and byte payloads are BORROWED; the onMessage CALLBACK MOVES into
+          // the input's registry. An open input port holds the loop live
+          // (usesTimers) — a source of pending messages, like a bound socket.
+          case "midi.newInput":
+            return finish(`scr_midi_input_new()`);
+          case "midi.newOutput":
+            return finish(`scr_midi_output_new()`);
+          case "midi.portCount":
+            return finish(`scr_midi_port_count(${arg(0)}, ${arg(1)})`);
+          case "midi.portName":
+            return finish(`scr_midi_port_name(${arg(0)}, ${arg(1)})`);
+          case "midi.openPort":
+            // Opening an INPUT makes the loop live; an OUTPUT does not.
+            if (e.args[0]!.type.kind === "midiInput") E.usesTimers = true;
+            return finish(`scr_midi_open_port(${arg(0)}, ${arg(1)})`);
+          case "midi.openVirtual":
+            if (e.args[0]!.type.kind === "midiInput") E.usesTimers = true;
+            return finish(`scr_midi_open_virtual(${arg(0)}, ${arg(1)})`);
+          case "midi.closePort":
+            E.line(`scr_midi_close_port(${arg(0)});${E.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "midi.isOpen":
+            return finish(`scr_midi_is_open(${arg(0)})`);
+          case "midi.ignoreTypes":
+            E.line(`scr_midi_ignore_types(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)});${E.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "midi.sendArray":
+            return finish(`scr_midi_send_array(${arg(0)}, ${arg(1)})`);
+          case "midi.sendBytes":
+            return finish(`scr_midi_send_bytes(${arg(0)}, ${arg(1)})`);
+          case "midi.onMessage": {
+            // The message listener receives (deltaTime: f64, message:
+            // number[]); the runtime invokes the moved-in closure through
+            // the per-arity adapter picked by the declared param count.
+            E.usesTimers = true; // a listening input holds the loop open
+            const cbT = e.args[1]!.type;
+            if (cbT.kind !== "func") throw new Error("emitter bug: midi.onMessage callback not a func");
+            const cb = args[1]!;
+            E.moveTemp(cb);
+            const adapter =
+              cbT.params.length === 0 ? "scr_midi_msg_thunk0"
+              : cbT.params.length === 1 ? "scr_midi_msg_thunk1"
+              : "scr_midi_msg_thunk2";
+            E.line(`scr_midi_on_message(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           // node:test (scr_test.c — linked only when these appear on the
@@ -4427,7 +4498,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http.createServer": {
             E.usesTimers = true;
             const cbT = e.args[0]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.createServer handler not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: http.createServer handler not a func");
             const cb = args[0]!;
             E.moveTemp(cb);
             const adapter =
@@ -4453,12 +4524,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http.reqHeader": {
             // string|undefined, type-directed exactly like process.envGet:
             // the runtime answers +1 or NULL; NULL takes the undefined arm.
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqHeader result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: http.reqHeader result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const undefTag = E.undefinedArmTag(e.type);
             if (strTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: http.reqHeader union lacks its arms");
+              throw new Error("emitter bug: http.reqHeader union lacks its arms");
             }
             const s = E.newTemp(STRING, `scr_http_req_header(${arg(0)}, ${arg(1)})`);
             E.moveTemp(s); // moves into the box when present; NULL otherwise
@@ -4468,7 +4539,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           case "http.reqOnData": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.reqOnData callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: http.reqOnData callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -4521,12 +4592,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http.reqStatusCode": {
             // number | undefined, type-directed like process.columns: the
             // runtime answers a negative status for server requests.
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqStatusCode result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: http.reqStatusCode result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
             const undefTag = E.undefinedArmTag(e.type);
             if (f64Tag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: http.reqStatusCode union lacks its arms");
+              throw new Error("emitter bug: http.reqStatusCode union lacks its arms");
             }
             const w = E.newTemp(F64, `scr_http_req_status(${arg(0)})`);
             const present = `scr_union_new_f64(${f64Tag}, ${w.name})`;
@@ -4537,12 +4608,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // boolean | undefined: the true arm iff the socket carries a
             // TLS transport; plain sockets answer the undefined arm (Node
             // types `encrypted` on TLSSocket only).
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockEncrypted result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: net.sockEncrypted result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const boolTag = def ? def.arms.findIndex((a) => a.kind === "bool") : -1;
             const undefTag = E.undefinedArmTag(e.type);
             if (boolTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: net.sockEncrypted union lacks its arms");
+              throw new Error("emitter bug: net.sockEncrypted union lacks its arms");
             }
             const w = E.newTemp(BOOL, `scr_net_sock_encrypted(${arg(0)})`);
             const present = `scr_union_new_bool(${boolTag}, true)`;
@@ -4552,11 +4623,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http.reqSocket":
             return finish(`scr_http_req_socket(${arg(0)})`);
           case "http.reqH2Stream": {
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqH2Stream result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: http.reqH2Stream result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const streamTag = def ? def.arms.findIndex((a) => a.kind === "http2Stream") : -1;
             const undefTag = E.undefinedArmTag(e.type);
-            if (streamTag < 0 || undefTag < 0) throw new InternalCompilerError("emitter bug: http.reqH2Stream union lacks its arms");
+            if (streamTag < 0 || undefTag < 0) throw new Error("emitter bug: http.reqH2Stream union lacks its arms");
             const st = E.newTemp({ kind: "http2Stream" }, `scr_http_req_h2_stream(${arg(0)})`);
             E.moveTemp(st);
             const present = `scr_union_new_ref(${streamTag}, ${st.name}, &scr_http2_stream_retain_v, &scr_http2_stream_release_v, NULL)`;
@@ -4572,12 +4643,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // string | undefined: a reason phrase on client responses,
             // NULL (the undefined arm) on server requests — the
             // sockRemoteAddress shape.
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqStatusMessage result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: http.reqStatusMessage result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const undefTag = E.undefinedArmTag(e.type);
             if (strTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: http.reqStatusMessage union lacks its arms");
+              throw new Error("emitter bug: http.reqStatusMessage union lacks its arms");
             }
             const m = E.newTemp(STRING, `scr_http_req_status_message(${arg(0)})`);
             E.moveTemp(m);
@@ -4592,7 +4663,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http.serverOnUpgrade":
           case "http.clientOnUpgrade": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} listener not a func`);
+            if (cbT.kind !== "func") throw new Error(`emitter bug: ${e.fn} listener not a func`);
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -4612,7 +4683,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // listener) takes the emitted per-shape wrapper — the arm's
             // tag is program data.
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.serverOnConnect listener not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: http.serverOnConnect listener not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const p1 = cbT.params[1];
@@ -4650,7 +4721,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return { name: "", type: e.type };
           case "http.reqOnError": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.reqOnError callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: http.reqOnError callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
@@ -4709,12 +4780,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return { name: "", type: e.type };
           case "http.resGetHeader": {
             // string|undefined, exactly the http.reqHeader emission.
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.resGetHeader result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: http.resGetHeader result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const undefTag = E.undefinedArmTag(e.type);
             if (strTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: http.resGetHeader union lacks its arms");
+              throw new Error("emitter bug: http.resGetHeader union lacks its arms");
             }
             const s = E.newTemp(STRING, `scr_http_res_get_header(${arg(0)}, ${arg(1)})`);
             E.moveTemp(s); // moves into the box when present; NULL otherwise
@@ -4760,12 +4831,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "net.sockRead": {
             // Buffer | null, type-directed like http.reqHeader: NULL (not
             // enough buffered) takes the null arm.
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockRead result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: net.sockRead result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes" && a.elem === "u8") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (bytesTag < 0 || nullTag < 0) {
-              throw new InternalCompilerError("emitter bug: net.sockRead union lacks its arms");
+              throw new Error("emitter bug: net.sockRead union lacks its arms");
             }
             const b = E.newTemp(BYTES_U8, `scr_net_sock_read_bytes(${arg(0)}, ${arg(1)})`);
             E.moveTemp(b); // moves into the box when present; NULL otherwise
@@ -4782,12 +4853,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "net.sockRemoteAddress": {
             // string | undefined, type-directed like http.reqHeader: NULL
             // (closed socket) takes the undefined arm.
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockRemoteAddress result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: net.sockRemoteAddress result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const undefTag = E.undefinedArmTag(e.type);
             if (strTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: net.sockRemoteAddress union lacks its arms");
+              throw new Error("emitter bug: net.sockRemoteAddress union lacks its arms");
             }
             const s = E.newTemp(STRING, `scr_net_sock_remote_address(${arg(0)})`);
             E.moveTemp(s);
@@ -4803,7 +4874,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             let adapter = "NULL";
             if (e.fn === "http.requestCb") {
               const cbT = e.args[7]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.requestCb callback not a func");
+              if (cbT.kind !== "func") throw new Error("emitter bug: http.requestCb callback not a func");
               const cb = args[7]!;
               E.moveTemp(cb);
               cbExpr = cb.name;
@@ -4825,7 +4896,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             let adapter = "NULL";
             if (e.fn === "http.requestAgentCb") {
               const cbT = e.args[8]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.requestAgentCb callback not a func");
+              if (cbT.kind !== "func") throw new Error("emitter bug: http.requestAgentCb callback not a func");
               const cb = args[8]!;
               E.moveTemp(cb);
               cbExpr = cb.name;
@@ -4845,7 +4916,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             let adapter = "NULL";
             if (e.fn.endsWith("Cb")) {
               const cbT = e.args[3]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} callback not a func`);
+              if (cbT.kind !== "func") throw new Error(`emitter bug: ${e.fn} callback not a func`);
               const cb = args[3]!;
               E.moveTemp(cb);
               cbExpr = cb.name;
@@ -4863,7 +4934,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             let adapter = "NULL";
             if (e.fn === "http.requestConnCb") {
               const cbT = e.args[6]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.requestConnCb callback not a func");
+              if (cbT.kind !== "func") throw new Error("emitter bug: http.requestConnCb callback not a func");
               const cb = args[6]!;
               E.moveTemp(cb);
               cbExpr = cb.name;
@@ -4886,7 +4957,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             let adapter = "NULL";
             if (e.fn === "tls.createServerCb") {
               const cbT = e.args[2]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: tls.createServerCb handler not a func");
+              if (cbT.kind !== "func") throw new Error("emitter bug: tls.createServerCb handler not a func");
               const cb = args[2]!;
               E.moveTemp(cb);
               cbExpr = cb.name;
@@ -4899,7 +4970,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "https.createServer": {
             E.usesTimers = true;
             const cbT = e.args[2]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.createServer handler not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: https.createServer handler not a func");
             const cb = args[2]!;
             E.moveTemp(cb);
             const adapter =
@@ -4921,7 +4992,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             let adapter = "NULL";
             if (e.fn === "tls.createServerDynCb") {
               const cbT = e.args[1]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: tls.createServerDynCb handler not a func");
+              if (cbT.kind !== "func") throw new Error("emitter bug: tls.createServerDynCb handler not a func");
               const cb = args[1]!;
               E.moveTemp(cb);
               cbExpr = cb.name;
@@ -4935,7 +5006,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "https.createServerDynCb": {
             E.usesTimers = true;
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.createServerDynCb handler not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: https.createServerDynCb handler not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -4950,12 +5021,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "tls.sockAuthError": {
             // string | null: the verify-failure code string, or the null
             // arm when authorized / never verified (Node's value shape).
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: tls.sockAuthError result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: tls.sockAuthError result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (strTag < 0 || nullTag < 0) {
-              throw new InternalCompilerError("emitter bug: tls.sockAuthError union lacks its arms");
+              throw new Error("emitter bug: tls.sockAuthError union lacks its arms");
             }
             const s = E.newTemp(STRING, `scr_tls_sock_auth_error(${arg(0)})`);
             E.moveTemp(s);
@@ -4971,7 +5042,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           case "tls.sockOnSession": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: tls.sockOnSession callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: tls.sockOnSession callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -5016,7 +5087,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // (the createServerReq adapter family).
             E.usesTimers = true;
             const cbT = e.args[2]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} handler not a func`);
+            if (cbT.kind !== "func") throw new Error(`emitter bug: ${e.fn} handler not a func`);
             const cb = args[2]!;
             E.moveTemp(cb);
             const adapter =
@@ -5038,7 +5109,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http2.createSecureServerDynCb": {
             E.usesTimers = true;
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: createSecureServerDynCb handler not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: createSecureServerDynCb handler not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -5065,11 +5136,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               E.moveTemp(cb);
               cbExpr = cb.name;
             } else {
-              if (sniT.kind !== "union") throw new InternalCompilerError("emitter bug: createSecureServerSni callback shape");
+              if (sniT.kind !== "union") throw new Error("emitter bug: createSecureServerSni callback shape");
               const def = E.unionsById.get(sniT.unionId);
               const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
               const funcArm = def?.arms[funcTag];
-              if (funcTag < 0 || !funcArm) throw new InternalCompilerError("emitter bug: createSecureServerSni union lacks its func arm");
+              if (funcTag < 0 || !funcArm) throw new Error("emitter bug: createSecureServerSni union lacks its func arm");
               cbFuncT = funcArm;
               const u = args[2]!;
               const t = E.newTemp(
@@ -5080,7 +5151,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               cbExpr = t.name;
             }
             if (cbFuncT.kind !== "func" || cbFuncT.params[1]?.kind !== "func") {
-              throw new InternalCompilerError("emitter bug: createSecureServerSni callback shape (frontend must fence)");
+              throw new Error("emitter bug: createSecureServerSni callback shape (frontend must fence)");
             }
             const answer = E.sniAnswerThunkFor(cbFuncT.params[1]);
             return finish(
@@ -5114,7 +5185,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return finish(`scr_tls_ca_set_default(${arg(0)})`);
           case "http.serverOnRequest": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.serverOnRequest handler not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: http.serverOnRequest handler not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -5126,7 +5197,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           case "http2.serverOnSessionError": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: sessionError listener not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: sessionError listener not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 2
@@ -5159,7 +5230,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // 'request' listener, the http.createServer adapter family.
             E.usesTimers = true;
             const cbT = e.args[0]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http2.createServerReq handler not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: http2.createServerReq handler not a func");
             const cb = args[0]!;
             E.moveTemp(cb);
             const adapter =
@@ -5178,7 +5249,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           case "http2.serverOnSession": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: serverOnSession listener not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: serverOnSession listener not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_http2_session_thunk0" : "scr_http2_session_thunk";
@@ -5187,7 +5258,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           case "http2.sessionOnConnect": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: sessionOnConnect listener not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: sessionOnConnect listener not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -5205,7 +5276,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http2.connectCb": {
             E.usesTimers = true;
             const cbT = e.args[3]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http2.connectCb listener not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: http2.connectCb listener not a func");
             const cb = args[3]!;
             E.moveTemp(cb);
             const adapter =
@@ -5239,7 +5310,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http2.sessionOnError":
           case "http2.streamOnError": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} listener not a func`);
+            if (cbT.kind !== "func") throw new Error(`emitter bug: ${e.fn} listener not a func`);
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
@@ -5249,7 +5320,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           case "http2.sessionOnGoaway": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: sessionOnGoaway listener not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: sessionOnGoaway listener not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -5345,7 +5416,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return { name: "", type: e.type };
           case "http2.streamOnData": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: streamOnData callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: streamOnData callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -5413,7 +5484,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             let adapter = "NULL";
             if (e.fn === "https.requestCb") {
               const cbT = e.args[9]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestCb callback not a func");
+              if (cbT.kind !== "func") throw new Error("emitter bug: https.requestCb callback not a func");
               const cb = args[9]!;
               E.moveTemp(cb);
               cbExpr = cb.name;
@@ -5430,7 +5501,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             let adapter = "NULL";
             if (e.fn === "https.requestAgentCb") {
               const cbT = e.args[10]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestAgentCb callback not a func");
+              if (cbT.kind !== "func") throw new Error("emitter bug: https.requestAgentCb callback not a func");
               const cb = args[10]!;
               E.moveTemp(cb);
               cbExpr = cb.name;
@@ -5453,7 +5524,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             let adapter = "NULL";
             if (e.fn === "https.requestFnCb") {
               const cbT = e.args[10]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestFnCb callback not a func");
+              if (cbT.kind !== "func") throw new Error("emitter bug: https.requestFnCb callback not a func");
               const cb = args[10]!;
               E.moveTemp(cb);
               cbExpr = cb.name;
@@ -5491,7 +5562,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return finish(`scr_http_client_destroyed(${arg(0)})`);
           case "http.clientOnResponse": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.clientOnResponse callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: http.clientOnResponse callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_http_resp_thunk0" : "scr_http_resp_thunk_res";
@@ -5500,7 +5571,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           case "http.clientOnError": {
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.clientOnError callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: http.clientOnError callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
@@ -5519,7 +5590,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // Both error-listener shapes have runtime-provided adapters
             // (constructing the %Error instance needs no program types).
             const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: child.onError callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: child.onError callback not a func");
             const cb = args[1]!;
             E.moveTemp(cb);
             const adapter =
@@ -5584,7 +5655,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // (or dyn error/null for the JS lane) when the timer fires.
             E.usesTimers = true;
             const cbT = e.args[2]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: fs.rename callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: fs.rename callback not a func");
             const cb = args[2]!;
             E.moveTemp(cb);
             const adapter = E.fsRenameThunkFor(cbT);
@@ -5663,7 +5734,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // The shared error-first adapter materializes success `null`.
             E.usesTimers = true;
             const cbT = e.args[2]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: process write callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: process write callback not a func");
             const cb = args[2]!;
             E.moveTemp(cb);
             const adapter = E.fsRenameThunkFor(cbT);
@@ -5815,7 +5886,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "fileHandle.writeBytes":
           case "fileHandle.writeStr": {
             if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
-              throw new InternalCompilerError(`emitter bug: ${e.fn} result`);
+              throw new Error(`emitter bug: ${e.fn} result`);
             }
             const inner = e.type.inner;
             const countFn = e.fn === "fileHandle.read"
@@ -5849,13 +5920,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // string MOVES into the box), absent yields the interned
             // immortal undefined-arm instance (releases no-op on it).
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: process.envGet result is not a union");
+              throw new Error("emitter bug: process.envGet result is not a union");
             }
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const undefTag = E.undefinedArmTag(e.type);
             if (strTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: process.envGet union lacks its arms");
+              throw new Error("emitter bug: process.envGet union lacks its arms");
             }
             const s = E.newTemp(STRING, `scr_env_get(${arg(0)})`);
             E.moveTemp(s); // moves into the box when present; NULL otherwise
@@ -6032,7 +6103,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // Runtime adapters cover both shapes (the code is a plain
             // double); the registry owns the callback.
             const cbT = e.args[0]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: process.onExit callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: process.onExit callback not a func");
             const cb = args[0]!;
             E.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_exit_thunk0" : "scr_exit_thunk_code";
@@ -6046,7 +6117,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // stays alive until EOF, so main must run it.
             E.usesTimers = true;
             const cbT = e.args[0]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: stdin.onData callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: stdin.onData callback not a func");
             const cb = args[0]!;
             E.moveTemp(cb);
             const adapter =
@@ -6064,7 +6135,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // The child error adapters fit exactly (message → %Error).
             E.usesTimers = true;
             const cbT = e.args[0]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: stdin.onError callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: stdin.onError callback not a func");
             const cb = args[0]!;
             E.moveTemp(cb);
             const adapter =
@@ -6081,9 +6152,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // Which builtin the runtime constructs is named by the RESULT
             // type; the message is borrowed (the runtime retains its copy).
             // Never throws.
-            if (e.type.kind !== "object") throw new InternalCompilerError("emitter bug: error.new result is not a class");
+            if (e.type.kind !== "object") throw new Error("emitter bug: error.new result is not a class");
             const rec = RUNTIME_ERROR_CLASSES.get(e.type.className);
-            if (!rec) throw new InternalCompilerError(`emitter bug: error.new of ${e.type.className}`);
+            if (!rec) throw new Error(`emitter bug: error.new of ${e.type.className}`);
             return finish(`scr_error_new(${rec.kind}, ${arg(0)})`);
           }
           case "error.ctor": {
@@ -6091,9 +6162,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // the receiver (borrowed, like the message). The RECEIVER'S
             // static class names which builtin name to stamp.
             const recvT = e.args[0]!.type;
-            if (recvT.kind !== "object") throw new InternalCompilerError("emitter bug: error.ctor receiver is not a class");
+            if (recvT.kind !== "object") throw new Error("emitter bug: error.ctor receiver is not a class");
             const rec = RUNTIME_ERROR_CLASSES.get(recvT.className);
-            if (!rec) throw new InternalCompilerError(`emitter bug: error.ctor on ${recvT.className}`);
+            if (!rec) throw new Error(`emitter bug: error.ctor on ${recvT.className}`);
             return finish(`scr_error_init(${arg(0)}, ${rec.kind}, ${arg(1)})`);
           }
           case "error.toString":
@@ -6333,7 +6404,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const duplexShape = base !== "readable" && base !== "writable";
             const headLen = duplexShape ? 8 : 4;
             const flagsArg = e.args[off + headLen - 1]!;
-            if (flagsArg.kind !== "numLit") throw new InternalCompilerError(`emitter bug: ${fn} flags not a literal`);
+            if (flagsArg.kind !== "numLit") throw new Error(`emitter bug: ${fn} flags not a literal`);
             const flags = flagsArg.value;
             const canonical: { name: string; kind: "r" | "w" | "f" | "d" | "t" | "l" }[] =
               base === "readable"
@@ -6407,7 +6478,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // pipeline(count, s1..sn, cb): the destination answers +1.
             E.usesTimers = true;
             const countArg = e.args[0]!;
-            if (countArg.kind !== "numLit") throw new InternalCompilerError(`emitter bug: ${fn} count not a literal`);
+            if (countArg.kind !== "numLit") throw new Error(`emitter bug: ${fn} count not a literal`);
             const n = countArg.value;
             const list = Array.from({ length: n }, (_, i) => `(ScrStream *)${arg(1 + i)}`).join(", ");
             if (fn === "stream.pipelineDyn") {
@@ -6432,7 +6503,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // list rides the callback form's compound literal.
             E.usesTimers = true;
             const countArg = e.args[0]!;
-            if (countArg.kind !== "numLit") throw new InternalCompilerError(`emitter bug: ${fn} count not a literal`);
+            if (countArg.kind !== "numLit") throw new Error(`emitter bug: ${fn} count not a literal`);
             const n = countArg.value;
             const list = Array.from({ length: n }, (_, i) => `(ScrStream *)${arg(1 + i)}`).join(", ");
             return finish(`scr_sp_pipeline(${n}, (ScrStream *[]){ ${list} })`);
@@ -6473,7 +6544,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             E.usesTimers = true;
             const base = fn.slice(0, fn.indexOf("."));
             const flagsArg = e.args[2]!;
-            if (flagsArg.kind !== "numLit") throw new InternalCompilerError(`emitter bug: ${fn} flags not a literal`);
+            if (flagsArg.kind !== "numLit") throw new Error(`emitter bug: ${fn} flags not a literal`);
             const flags = flagsArg.value;
             const canonical: { name: string; kind: "r" | "w" | "f" | "d" | "t" | "l" }[] =
               base === "readable"
@@ -6521,9 +6592,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // arms — the frontend admitted exactly those).
             E.usesTimers = true;
             const t = e.args[1]!.type;
-            if (t.kind !== "union") throw new InternalCompilerError(`emitter bug: ${fn} chunk not a union`);
+            if (t.kind !== "union") throw new Error(`emitter bug: ${fn} chunk not a union`);
             const def = E.unionsById.get(t.unionId);
-            if (!def) throw new InternalCompilerError(`emitter bug: ${fn} union unknown`);
+            if (!def) throw new Error(`emitter bug: ${fn} union unknown`);
             const bytesTag = def.arms.findIndex((a) => a.kind === "bytes");
             const strTag = def.arms.findIndex((a) => a.kind === "string");
             const nullTag = def.arms.findIndex((a) => a.kind === "nullT");
@@ -6544,7 +6615,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               ...(strTag >= 0 ? [{ tag: strTag, expr: onStr }] : []),
               ...(bytesTag >= 0 ? [{ tag: bytesTag, expr: onBytes }] : []),
             ];
-            if (present.length === 0) throw new InternalCompilerError(`emitter bug: ${fn} union lacks its arms`);
+            if (present.length === 0) throw new Error(`emitter bug: ${fn} union lacks its arms`);
             const tail = present[present.length - 1]!.expr;
             const chain = present.slice(0, -1).map((a) => `${u}->tag == ${a.tag} ? ${a.expr}`);
             return finish(chain.length > 0 ? `(${chain.join(" : ")} : ${tail})` : tail);
@@ -6562,11 +6633,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // +1 Buffer or NULL → the `Buffer | null` union, constructed
             // type-directedly (the error.code pattern).
             E.usesTimers = true;
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: readable.read result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: readable.read result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-            if (bytesTag < 0 || nullTag < 0) throw new InternalCompilerError("emitter bug: readable.read union lacks its arms");
+            if (bytesTag < 0 || nullTag < 0) throw new Error("emitter bug: readable.read union lacks its arms");
             const b = E.newTemp(bytesOf("u8"), `scr_stream_read((ScrStream *)${arg(0)}, ${arg(1)})`);
             E.emitPendingCheck();
             E.moveTemp(b); // moves into the union arm when present
@@ -6605,11 +6676,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             );
           case "readable.flowing": {
             // -1 (null: never kicked) / 0 / 1 → the `boolean | null` union.
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: readable.flowing result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: readable.flowing result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const boolTag = def ? def.arms.findIndex((a) => a.kind === "bool") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-            if (boolTag < 0 || nullTag < 0) throw new InternalCompilerError("emitter bug: readable.flowing union lacks its arms");
+            if (boolTag < 0 || nullTag < 0) throw new Error("emitter bug: readable.flowing union lacks its arms");
             const f = E.newTemp({ kind: "f64" }, `scr_stream_flowing((ScrStream *)${arg(0)})`);
             return E.newTemp(
               e.type,
@@ -6635,7 +6706,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // chunk, 4 callback.
             E.usesTimers = true;
             const flagsArg = e.args[1]!;
-            if (flagsArg.kind !== "numLit") throw new InternalCompilerError("emitter bug: writable.end flags not a literal");
+            if (flagsArg.kind !== "numLit") throw new Error("emitter bug: writable.end flags not a literal");
             const flags = flagsArg.value;
             let at = 2;
             let chunkB = "NULL";
@@ -6673,18 +6744,18 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // The property NAME is a compile-time literal; args[1]'s
             // emitted temp is unused (released with the statement's frame).
             const nameArg = e.args[1]!;
-            if (nameArg.kind !== "strLit") throw new InternalCompilerError("emitter bug: stream.prop name not a literal");
+            if (nameArg.kind !== "strLit") throw new Error("emitter bug: stream.prop name not a literal");
             const c = `scr_stream_prop((ScrStream *)${arg(0)}, "${nameArg.value}")`;
             return finish(e.type.kind === "bool" ? `(${c} != 0)` : c);
           }
           case "stream.errored": {
             // +1 error or NULL → the `Error | null` union (error.code's
             // construction pattern).
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: stream.errored result is not a union");
+            if (e.type.kind !== "union") throw new Error("emitter bug: stream.errored result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const errTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-            if (errTag < 0 || nullTag < 0) throw new InternalCompilerError("emitter bug: stream.errored union lacks its arms");
+            if (errTag < 0 || nullTag < 0) throw new Error("emitter bug: stream.errored union lacks its arms");
             const er = E.newTemp({ kind: "object", className: "%Error" }, `scr_stream_errored((ScrStream *)${arg(0)})`);
             E.moveTemp(er);
             const present = `scr_union_new_ref(${errTag}, ${er.name}, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg())`;
@@ -6698,13 +6769,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // struct — the code slot sits in its ScrError prefix, so the
             // cast is the ordinary upcast reinterpret.
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: error.code result is not a union");
+              throw new Error("emitter bug: error.code result is not a union");
             }
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const undefTag = E.undefinedArmTag(e.type);
             if (strTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: error.code union lacks its arms");
+              throw new Error("emitter bug: error.code union lacks its arms");
             }
             const s = E.newTemp(STRING, `scr_error_code((ScrError *)${arg(0)})`);
             E.moveTemp(s); // moves into the box when present; NULL otherwise
@@ -6844,7 +6915,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "rl.question": {
             E.usesTimers = true;
             const cbT = e.args[2]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: rl.question callback not a func");
+            if (cbT.kind !== "func") throw new Error("emitter bug: rl.question callback not a func");
             const cb = args[2]!;
             E.moveTemp(cb);
             const adapter =
@@ -7001,13 +7072,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // missing `.columns`. Type-directed union construction, like
             // process.envGet.
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: process.columns result is not a union");
+              throw new Error("emitter bug: process.columns result is not a union");
             }
             const def = E.unionsById.get(e.type.unionId);
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
             const undefTag = E.undefinedArmTag(e.type);
             if (f64Tag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: process.columns union lacks its arms");
+              throw new Error("emitter bug: process.columns union lacks its arms");
             }
             const w = E.newTemp(F64, `scr_process_columns(${arg(0)})`);
             const present = `scr_union_new_f64(${f64Tag}, ${w.name})`;
@@ -7041,7 +7112,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           default: {
             const _exhaustive: never = fn;
             void _exhaustive;
-            throw new InternalCompilerError("unreachable");
+            throw new Error("unreachable");
           }
         }
       }
@@ -7104,8 +7175,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // .throw payload or the GENRET sentinel pending, hence the check.
         // The result is the .next(v) argument, moved out of the IN slot.
         const gen = E.currentGenerator;
-        if (!gen) throw new InternalCompilerError("emitter bug: yieldExpr outside a generator body");
-        if (e.value === null) throw new InternalCompilerError("emitter bug: yieldExpr with no operand (frontend fills undefined)");
+        if (!gen) throw new Error("emitter bug: yieldExpr outside a generator body");
+        if (e.value === null) throw new Error("emitter bug: yieldExpr with no operand (frontend fills undefined)");
         const v = E.emitExpr(e.value);
         const yt = e.value.type;
         if (yt.kind === "f64" || yt.kind === "date") {
@@ -7137,8 +7208,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // into the fiber, propagate a body exception (pending check), and
         // build the IteratorResult record through the interned helper.
         const genT = e.gen.type;
-        if (genT.kind !== "generator") throw new InternalCompilerError("emitter bug: genResume on a non-generator");
-        if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: genResume result is not a record");
+        if (genT.kind !== "generator") throw new Error("emitter bug: genResume on a non-generator");
+        if (e.type.kind !== "record") throw new Error("emitter bug: genResume result is not a record");
         const g = E.emitExpr(e.gen); // borrowed for the calls below
         const sendArg = (store: (a: Temp) => string): void => {
           const a = E.emitExpr(e.arg!);
@@ -7178,12 +7249,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // statement's exact kind dispatch), then resume — the runtime
           // moves it into the fiber, or leaves it pending (non-suspended
           // generators: the .throw call itself throws at the check below).
-          if (e.arg === null) throw new InternalCompilerError("emitter bug: genResume throw with no payload");
+          if (e.arg === null) throw new Error("emitter bug: genResume throw with no payload");
           const a = E.emitExpr(e.arg);
           const t = e.arg.type;
           if (isRefCounted(t)) E.moveTemp(a); // the cell takes ownership
           if (t.kind === "date") {
-            throw new InternalCompilerError("emitter bug: Date generator throw reached backend");
+            throw new Error("emitter bug: Date generator throw reached backend");
           } else if (t.kind === "f64") {
             E.line(`scr_throw_f64(${a.name});${E.srcComment(e.loc)}`);
           } else if (t.kind === "bool") {
@@ -7247,12 +7318,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // dummy (a union box holding the never-read NULL payload, or NULL)
         // harmlessly.
         if (e.value.type.kind !== "union") {
-          throw new InternalCompilerError("emitter bug: awaitUnion of a non-union");
+          throw new Error("emitter bug: awaitUnion of a non-union");
         }
         const def = E.unionsById.get(e.value.type.unionId);
         const promiseArm = def?.arms[e.promiseTag];
         if (!def || promiseArm?.kind !== "promise") {
-          throw new InternalCompilerError("emitter bug: awaitUnion arm is not a promise");
+          throw new Error("emitter bug: awaitUnion arm is not a promise");
         }
         const inner = promiseArm.inner;
         const u = E.emitExpr(e.value);
@@ -7265,13 +7336,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           return { name: "", type: e.type };
         }
         if (e.type.kind !== "union") {
-          throw new InternalCompilerError("emitter bug: awaitUnion result is neither void nor a union");
+          throw new Error("emitter bug: awaitUnion result is neither void nor a union");
         }
         const resDef = E.unionsById.get(e.type.unionId);
-        if (!resDef) throw new InternalCompilerError("emitter bug: awaitUnion result union unknown");
+        if (!resDef) throw new Error("emitter bug: awaitUnion result union unknown");
         const resTagOf = (arm: (typeof resDef.arms)[number]): number => {
           const tag = resDef.arms.findIndex((a) => typeEquals(a, arm));
-          if (tag < 0) throw new InternalCompilerError("emitter bug: awaitUnion result arm missing");
+          if (tag < 0) throw new Error("emitter bug: awaitUnion result arm missing");
           return tag;
         };
         const innerTag = resTagOf(inner);
@@ -7321,7 +7392,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // Pending promise + resolve closure, executor run synchronously
         // (its throw rejects — handled inside the runtime helper, so no
         // pending check here). Executor/resolve temps are frame-owned.
-        if (e.type.kind !== "promise") throw new InternalCompilerError("emitter bug: newPromise type");
+        if (e.type.kind !== "promise") throw new Error("emitter bug: newPromise type");
         const inner = e.type.inner;
         const p = E.newTemp(e.type, `scr_promise_new()`);
         // Zero-param executor: no resolve exists — a forever-pending
@@ -7387,13 +7458,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // its runtime resolve closure (typed per the inner kind), and
         // the reject closure, written into the fresh record. Closure +1s
         // move into the record's fields; never throws.
-        if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: promiseWithResolvers type");
+        if (e.type.kind !== "record") throw new Error("emitter bug: promiseWithResolvers type");
         const shape = E.recordsById.get(e.type.shapeId);
         const promT = shape?.fields.find((f) => f.name === "promise")?.type;
         const resolveT = shape?.fields.find((f) => f.name === "resolve")?.type;
         const rejectT = shape?.fields.find((f) => f.name === "reject")?.type;
         if (!shape || promT?.kind !== "promise" || !resolveT || !rejectT) {
-          throw new InternalCompilerError("emitter bug: promiseWithResolvers record shape");
+          throw new Error("emitter bug: promiseWithResolvers record shape");
         }
         const inner = promT.inner;
         const p = E.newTemp(promT, `scr_promise_new()`);
@@ -7438,6 +7509,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         const v = E.emitExpr(e.value);
         switch (e.value.type.kind) {
           case "f64":
+          case "date":
+            // Date crossing IN: passed as millisecond timestamp (a JS number).
             return E.newTemp(e.type, `scr_jsval_from_f64(${v.name})`);
           case "bool":
             return E.newTemp(e.type, `scr_jsval_from_bool(${v.name})`);
@@ -7461,7 +7534,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // callback return bridge). from_promise takes ownership of a
             // +1 — retain past the borrowed frame temp.
             const tag = islandPromisePayloadTag(e.value.type.inner);
-            if (!tag) throw new InternalCompilerError("emitter bug: jsMarshal of a promise outside the bridge payload domain");
+            if (!tag) throw new Error("emitter bug: jsMarshal of a promise outside the bridge payload domain");
             const tagC = {
               void: "SCR_ISLP_VOID", f64: "SCR_ISLP_F64", bool: "SCR_ISLP_BOOL",
               string: "SCR_ISLP_STR", jsval: "SCR_ISLP_JSVAL", jsvalArr: "SCR_ISLP_JSVAL_ARR",
@@ -7618,7 +7691,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           default: {
             const _exhaustive: never = e;
             void _exhaustive;
-            throw new InternalCompilerError("unreachable");
+            throw new Error("unreachable");
           }
         }
       }
@@ -7719,7 +7792,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
       default: {
         const _exhaustive: never = e;
         void _exhaustive;
-        throw new InternalCompilerError("unreachable");
+        throw new Error("unreachable");
       }
     }
   }

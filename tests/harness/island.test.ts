@@ -338,6 +338,16 @@ console.log(__island_eval("Promise.reject(new TypeError('island second')); 'arme
     expect(r.stderr).toBe("Unhandled promise rejection: RangeError: static first\n");
   });
 
+  test("links the dynamic promise adapter for typed promises crossing a dynamic callback", async () => {
+    await build(
+      "typed-promise-dynamic-boundary",
+      `async function typed(): Promise<number> { return 1; }
+function invoke(fn: () => unknown): unknown { return fn(); }
+console.log(invoke(typed));
+`,
+    );
+  });
+
   test("--dynamic does not change emitted C for island-free programs", async () => {
     const source = `function greet(who: string): string {
   return "hello " + who;

@@ -371,40 +371,14 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
         // null keeps the closure shape (function-shaped members, and the
         // conditional-spread arms where getters cannot combine).
         const islandMemberFence = (diagsBefore: number, err: unknown, valueNode: ts.Node, getterName: string | null = null): IrExpr | null => {
-          if (
-            !(err instanceof PoisonError) ||
-            !isJsSourceFile(expr.getSourceFile()) ||
-            L.diagSink !== null ||
-            L.diags.length <= diagsBefore ||
-            L.diags.slice(diagsBefore).some((d) => d.code === "SC9001")
-          ) {
-            throw err;
-          }
-          const captured = L.diags.splice(diagsBefore);
-          L.runtimeFences.push(...captured);
-          const first = captured[0]!;
-          const pos = ts.getLineAndCharacterOfPosition(
-            L.program.getSourceFile(first.loc.file) ?? expr.getSourceFile(),
-            first.loc.start,
-          );
-          const fnName = `%fn${L.lambdaCounter++}_islfence`;
-          L.liftedFns.push({
-            name: fnName,
-            params: [],
+          if (!(err instanceof PoisonError) || !isJsSourceFile(expr.getSourceFile())) throw err;
+          const fence = L.deferToRuntimeFence(diagsBefore, valueNode, {
+            kind: "closure",
+            name: () => `%fn${L.lambdaCounter++}_islfence`,
             returnType: VOID,
-            locals: [],
-            captures: [],
-            body: [
-              {
-                kind: "runtimeFence",
-                code: first.code,
-                message: `${first.message} [${first.code} at ${first.loc.file}:${pos.line + 1}]`,
-                loc: locOf(valueNode),
-              },
-            ],
-            loc: locOf(valueNode),
+            type: { kind: "func", params: [], ret: VOID },
           });
-          const fence: IrExpr = { kind: "closure", fnName, captures: [], type: funcOf([], VOID), loc: locOf(valueNode) };
+          if (!fence) throw err;
           if (getterName !== null) {
             getters.push({ name: getterName, fn: L.jsvalIn(fence, valueNode), loc: locOf(valueNode) });
             return null;
@@ -4269,40 +4243,15 @@ export function lowerOptionalChain(L: Lowerer, expr: ts.CallExpression | ts.Prop
         // the diagnostics defer to the runtime-fence ledger, the object
         // builds, and only USING the member stops the run.
         const pureMember = ts.isIdentifier(valueExpr);
-        if (
-          !(err instanceof PoisonError) ||
-          !pureMember ||
-          L.diagSink !== null ||
-          L.diags.length <= propDiagsBefore ||
-          L.diags.slice(propDiagsBefore).some((d) => d.code === "SC9001")
-        ) {
-          throw err;
-        }
-        const captured = L.diags.splice(propDiagsBefore);
-        L.runtimeFences.push(...captured);
-        const first = captured[0]!;
-        const pos = ts.getLineAndCharacterOfPosition(
-          L.program.getSourceFile(first.loc.file) ?? expr.getSourceFile(),
-          first.loc.start,
-        );
-        const fnName = `%fn${L.lambdaCounter++}_dynfence`;
-        L.liftedFns.push({
-          name: fnName,
-          params: [],
+        if (!(err instanceof PoisonError) || !pureMember) throw err;
+        const fence = L.deferToRuntimeFence(propDiagsBefore, prop, {
+          kind: "closure",
+          name: () => `%fn${L.lambdaCounter++}_dynfence`,
           returnType: VOID,
-          locals: [],
-          captures: [],
-          body: [
-            {
-              kind: "runtimeFence",
-              code: first.code,
-              message: `${first.message} [${first.code} at ${first.loc.file}:${pos.line + 1}]`,
-              loc: locOf(prop),
-            },
-          ],
-          loc: locOf(prop),
+          type: { kind: "func", params: [], ret: VOID },
         });
-        raw = { kind: "closure", fnName, captures: [], type: funcOf([], VOID), loc: locOf(prop) };
+        if (!fence) throw err;
+        raw = fence;
       }
       let v = boxValue
         ? boxValue(valueExpr as ts.Expression, raw)
@@ -4322,39 +4271,14 @@ export function lowerOptionalChain(L: Lowerer, expr: ts.CallExpression | ts.Prop
           // members): the same call-time fence deferral as an unlowerable
           // member — the slot takes a boxed fence closure; only USING it
           // stops the run. Probe mode and ICEs keep the poison.
-          if (
-            !(err instanceof PoisonError) ||
-            L.diagSink !== null ||
-            L.diags.length <= convDiagsBefore ||
-            L.diags.slice(convDiagsBefore).some((d) => d.code === "SC9001")
-          ) {
-            throw err;
-          }
-          const captured = L.diags.splice(convDiagsBefore);
-          L.runtimeFences.push(...captured);
-          const first = captured[0]!;
-          const pos = ts.getLineAndCharacterOfPosition(
-            L.program.getSourceFile(first.loc.file) ?? expr.getSourceFile(),
-            first.loc.start,
-          );
-          const fnName = `%fn${L.lambdaCounter++}_dynfence`;
-          L.liftedFns.push({
-            name: fnName,
-            params: [],
+          if (!(err instanceof PoisonError)) throw err;
+          const fence = L.deferToRuntimeFence(convDiagsBefore, prop, {
+            kind: "closure",
+            name: () => `%fn${L.lambdaCounter++}_dynfence`,
             returnType: VOID,
-            locals: [],
-            captures: [],
-            body: [
-              {
-                kind: "runtimeFence",
-                code: first.code,
-                message: `${first.message} [${first.code} at ${first.loc.file}:${pos.line + 1}]`,
-                loc: locOf(prop),
-              },
-            ],
-            loc: locOf(prop),
+            type: { kind: "func", params: [], ret: VOID },
           });
-          const fence: IrExpr = { kind: "closure", fnName, captures: [], type: funcOf([], VOID), loc: locOf(prop) };
+          if (!fence) throw err;
           v = L.coerceToExpected(fence, DYN);
         }
       }
@@ -4414,32 +4338,20 @@ function fenceClosureProbe(
     return attempt();
   } catch (e) {
     if (!(e instanceof PoisonError)) throw e;
-    const captured = L.diags.splice(diagsBefore);
-    if (captured.some((d) => d.code === "SC9001")) {
-      L.diags.push(...captured);
-      throw e;
-    }
-    L.runtimeFences.push(...captured);
-    const first = captured[0];
-    const loc = locOf(node);
     const params = fieldType.params.map((t, i) => ({ localId: `p.${i}`, name: `p${i}`, type: t }));
-    const name = `%fence.fn.${L.liftedFns.length}`;
-    L.liftedFns.push({
-      name,
+    const fence = L.deferToRuntimeFence(diagsBefore, node, {
+      kind: "closure",
+      name: () => `%fence.fn.${L.liftedFns.length}`,
       params,
       returnType: fieldType.ret,
-      locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: true })),
-      body: [
-        {
-          kind: "runtimeFence",
-          code: first?.code ?? "SC1090",
-          message: first?.message ?? "this function's body has no static lowering",
-          loc,
-        },
-      ],
-      loc,
+      paramsMutable: true,
+      type: fieldType,
+      fallback: { code: "SC1090", message: "this function's body has no static lowering" },
+      bareMessage: true,
+      allowDiagSink: true,
     });
-    return { kind: "closure", fnName: name, captures: [], type: fieldType, loc };
+    if (!fence) throw e;
+    return fence;
   }
 }
 

@@ -5873,21 +5873,7 @@ const inliningPredicates = new Set<ts.Symbol>();
       // position. ICEs (SC9001) stay compile errors, exactly like
       // lowerStmts; probe mode (diagSink) keeps the poison.
       if (!(e instanceof PoisonError)) throw e;
-      if (
-        !isJsSourceFile(node.getSourceFile()) ||
-        L.diagSink !== null ||
-        L.diags.length <= diagsBefore ||
-        L.diags.slice(diagsBefore).some((d) => d.code === "SC9001")
-      ) {
-        throw e;
-      }
-      const captured = L.diags.splice(diagsBefore);
-      L.runtimeFences.push(...captured);
-      const first = captured[0]!;
-      const pos = ts.getLineAndCharacterOfPosition(
-        L.program.getSourceFile(first.loc.file) ?? node.getSourceFile(),
-        first.loc.start,
-      );
+      if (!isJsSourceFile(node.getSourceFile())) throw e;
       const params: IrParam[] = funcType.params.map((t, i) => ({ localId: `%pf${i}`, name: `%pf${i}`, type: t }));
       // A REST-MARKED value type hides one synthetic trailing dyn-array
       // param in the lifted function (the boxed call thunk fills it) —
@@ -5898,26 +5884,17 @@ const inliningPredicates = new Set<ts.Symbol>();
       if (funcType.rest === true && funcType.restAbi !== "jsval") {
         params.push({ localId: "%pfrest", name: "%pfrest", type: DYN });
       }
-      const lifted: IrFunction = {
+      const fence = L.deferToRuntimeFence(diagsBefore, node, {
+        kind: "closure",
         name: fnName,
         params,
         returnType: bodyReturn,
-        locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
-        captures: [],
-        body: [
-          {
-            kind: "runtimeFence",
-            code: first.code,
-            message: `${first.message} [${first.code} at ${first.loc.file}:${pos.line + 1}]`,
-            loc,
-          },
-        ],
-        loc,
-      };
-      if (isAsync) lifted.async = true;
-      if (fnCtx.generator) lifted.generator = fnCtx.generator;
-      L.liftedFns.push(lifted);
-      return { kind: "closure", fnName, captures: [], type: funcType, loc };
+        type: funcType,
+        ...(isAsync ? { async: true as const } : {}),
+        ...(fnCtx.generator ? { generator: fnCtx.generator } : {}),
+      });
+      if (!fence) throw e;
+      return fence;
     } finally {
       L.fnStack.pop();
     }
@@ -7952,14 +7929,7 @@ export function lowerFunction(L: Lowerer, decl: ts.FunctionDeclaration): IrFunct
       // at the declaration's position — so a reachable-but-broken
       // signature stops the RUN at its own site instead of the build.
       // ICEs (SC9001) stay compile errors, exactly like lowerStmts.
-      if (
-        isJsSourceFile(decl.getSourceFile()) &&
-        L.diagSink === null &&
-        L.diags.length > diagsBefore &&
-        !L.diags.slice(diagsBefore).some((d) => d.code === "SC9001")
-      ) {
-        const captured = L.diags.splice(diagsBefore);
-        L.runtimeFences.push(...captured);
+      if (isJsSourceFile(decl.getSourceFile())) {
         // An ABI type naming a class that never REGISTERED (the sentence-
         // walker idiom's path type — the #private fence) is fine to emit:
         // callers CAN lower calls to this symbol (a same-typed param
@@ -7967,31 +7937,16 @@ export function lowerFunction(L: Lowerer, decl: ts.FunctionDeclaration): IrFunct
         // function must exist, and run()'s unregistered-class sweep
         // rewrites every such slot to the inert f64 placeholder before
         // emission — caller and fence stay ABI-consistent.
-        const first = captured[0]!;
-        const loc = locOf(decl);
-        const pos = ts.getLineAndCharacterOfPosition(
-          L.program.getSourceFile(first.loc.file) ?? decl.getSourceFile(),
-          first.loc.start,
-        );
         const params: IrParam[] = sig.params.map((p, i) => ({ localId: `%pf${i}`, name: `%pf${i}`, type: p.type }));
-        const fn: IrFunction = {
+        const fence = L.deferToRuntimeFence(diagsBefore, decl, {
+          kind: "function",
           name: sig.name,
           params,
           returnType: bodyReturn,
-          locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
-          body: [
-            {
-              kind: "runtimeFence",
-              code: first.code,
-              message: `${first.message} [${first.code} at ${first.loc.file}:${pos.line + 1}]`,
-              loc,
-            },
-          ],
-          loc,
-        };
-        if (sig.isAsync) fn.async = true;
-        if (sig.generator !== undefined) fn.generator = sig.generator;
-        return fn;
+          ...(sig.isAsync ? { async: true as const } : {}),
+          ...(sig.generator ? { generator: sig.generator } : {}),
+        });
+        if (fence) return fence;
       }
       return null;
     } finally {

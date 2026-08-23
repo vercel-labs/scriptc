@@ -56,45 +56,19 @@ import {
    * island stops the run. Null (caller rethrows) outside the JS deferral
    * gate: TypeScript sources, probe mode, ICEs. */
   export function islandFuncValueFence(L: Lowerer, err: unknown, diagsBefore: number, node: ts.Node): IrExpr | null {
-    if (
-      !(err instanceof PoisonError) ||
-      !isJsSourceFile(node.getSourceFile()) ||
-      L.diagSink !== null ||
-      L.diags.length <= diagsBefore ||
-      L.diags.slice(diagsBefore).some((d) => d.code === "SC9001")
-    ) {
-      return null;
-    }
-    const captured = L.diags.splice(diagsBefore);
-    L.runtimeFences.push(...captured);
-    const first = captured[0]!;
-    const pos = ts.getLineAndCharacterOfPosition(
-      L.program.getSourceFile(first.loc.file) ?? node.getSourceFile(),
-      first.loc.start,
-    );
-    const loc = locOf(node);
-    const fnName = `%fn${L.lambdaCounter++}_islfence`;
-    L.liftedFns.push({
-      name: fnName,
-      params: [],
+    if (!(err instanceof PoisonError) || !isJsSourceFile(node.getSourceFile())) return null;
+    const fence = L.deferToRuntimeFence(diagsBefore, node, {
+      kind: "closure",
+      name: () => `%fn${L.lambdaCounter++}_islfence`,
       returnType: VOID,
-      locals: [],
-      captures: [],
-      body: [
-        {
-          kind: "runtimeFence",
-          code: first.code,
-          message: `${first.message} [${first.code} at ${first.loc.file}:${pos.line + 1}]`,
-          loc,
-        },
-      ],
-      loc,
+      type: { kind: "func", params: [], ret: VOID },
     });
+    if (!fence) return null;
     return {
       kind: "jsMarshal",
-      value: { kind: "closure", fnName, captures: [], type: { kind: "func", params: [], ret: VOID }, loc },
+      value: fence,
       type: JSVAL,
-      loc,
+      loc: fence.loc,
     };
   }
 

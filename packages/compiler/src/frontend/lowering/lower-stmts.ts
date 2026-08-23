@@ -190,33 +190,11 @@ export function provenanceElidedConstDecl(L: Lowerer, decl: ts.VariableDeclarati
           // executed) or it reports exactly what the compile fence would
           // have said.
           if (deferFences && L.diagSink === null) {
-            const captured = L.diags.splice(diagsBefore);
-            if (captured.some((d) => d.code === "SC9001")) {
-              L.diags.push(...captured); // ICEs stay compile errors
-            } else {
-              const first = captured[0];
-              L.runtimeFences.push(...captured);
-              // The thrown message carries the fence's own position (the
-              // statement's line when the capture was empty) — a run-phase
-              // failure must name its blocker as precisely as a compile
-              // diagnostic would have.
-              const at = (d?: { loc: { file: string; start: number } }): string => {
-                const loc = d?.loc ?? { file: sf!.fileName, start: stmt.getStart(sf) };
-                const pos = ts.getLineAndCharacterOfPosition(
-                  d ? L.program.getSourceFile(loc.file) ?? sf! : sf!,
-                  loc.start,
-                );
-                return `${loc.file}:${pos.line + 1}`;
-              };
-              out.push({
-                kind: "runtimeFence",
-                code: first?.code ?? "SC1090",
-                message: first
-                  ? `${first.message} [${first.code} at ${at(first)}]`
-                  : `this statement uses a construct with no static lowering [SC1090 at ${at()}]`,
-                loc: locOf(stmt),
-              });
-            }
+            const fence = L.deferToRuntimeFence(diagsBefore, stmt, {
+              kind: "statement",
+              fallback: { code: "SC1090", message: "this statement uses a construct with no static lowering" },
+            });
+            if (fence) out.push(fence);
           }
         }
       }

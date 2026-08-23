@@ -377,6 +377,44 @@ export interface LowerOptions {
   externalTypeSpecifiersByFile?: ReadonlyMap<string, readonly string[]>;
 }
 
+interface RuntimeFenceFallback {
+  code: `SC${number}`;
+  message: string;
+}
+
+interface RuntimeFenceBase {
+  /** Used only by catches that can legitimately have no fresh diagnostic. */
+  fallback?: RuntimeFenceFallback;
+  /** Legacy function-body fences throw the diagnostic text without a site suffix. */
+  bareMessage?: boolean;
+  /** The closure-probe fallback historically applies inside diagnostic captures. */
+  allowDiagSink?: boolean;
+}
+
+interface RuntimeFenceStatementTarget extends RuntimeFenceBase {
+  kind: "statement";
+}
+
+interface RuntimeFenceFunctionTarget extends RuntimeFenceBase {
+  kind: "function";
+  name: string | (() => string);
+  params?: IrParam[];
+  returnType: IrType;
+  paramsMutable?: boolean;
+  async?: true;
+  generator?: { yieldT: IrType; nextT: IrType };
+}
+
+interface RuntimeFenceClosureTarget extends Omit<RuntimeFenceFunctionTarget, "kind"> {
+  kind: "closure";
+  type: IrType & { kind: "func" };
+}
+
+type RuntimeFenceTarget =
+  | RuntimeFenceStatementTarget
+  | RuntimeFenceFunctionTarget
+  | RuntimeFenceClosureTarget;
+
 /** The Lowerer's pass configuration (see lowerToIr). */
 export interface LowererMode {
   /** Names of bodies a prior reachability pass reached; null lowers everything. */
@@ -3006,6 +3044,88 @@ export class Lowerer {
   }
 
   /* ── diagnostics plumbing ─────────────────────────────────────────── */
+
+  /** Converts diagnostics recorded since `diagsBefore` into a runtime
+   * fence. ICEs stay on the compile-diagnostic path; every other captured
+   * diagnostic moves to the runtime-fence ledger. Function targets share
+   * the same capture-free trap-function construction, while statement
+   * targets return the fence inline. Null means the conversion was not
+   * eligible (probe mode, no diagnostic/fallback, or an ICE). */
+  deferToRuntimeFence(
+    diagsBefore: number,
+    node: ts.Node,
+    target: RuntimeFenceStatementTarget,
+  ): IrStmt | null;
+  deferToRuntimeFence(
+    diagsBefore: number,
+    node: ts.Node,
+    target: RuntimeFenceFunctionTarget,
+  ): IrFunction | null;
+  deferToRuntimeFence(
+    diagsBefore: number,
+    node: ts.Node,
+    target: RuntimeFenceClosureTarget,
+  ): IrExpr | null;
+  deferToRuntimeFence(
+    diagsBefore: number,
+    node: ts.Node,
+    target: RuntimeFenceTarget,
+  ): IrStmt | IrFunction | IrExpr | null {
+    if (
+      (this.diagSink !== null && target.allowDiagSink !== true) ||
+      (this.diags.length <= diagsBefore && target.fallback === undefined)
+    ) {
+      return null;
+    }
+    const captured = this.diags.splice(diagsBefore);
+    if (captured.some((d) => d.code === "SC9001")) {
+      this.diags.push(...captured);
+      return null;
+    }
+    this.runtimeFences.push(...captured);
+
+    const first = captured[0];
+    const loc = locOf(node);
+    const code = first?.code ?? target.fallback!.code;
+    const baseMessage = first?.message ?? target.fallback!.message;
+    const messageLoc = first?.loc ?? loc;
+    const source = first
+      ? this.program.getSourceFile(messageLoc.file) ?? node.getSourceFile()
+      : node.getSourceFile();
+    const pos = ts.getLineAndCharacterOfPosition(source, messageLoc.start);
+    const fence: IrStmt = {
+      kind: "runtimeFence",
+      code,
+      message: target.bareMessage
+        ? baseMessage
+        : `${baseMessage} [${code} at ${messageLoc.file}:${pos.line + 1}]`,
+      loc,
+    };
+    if (target.kind === "statement") return fence;
+
+    const params = target.params ?? [];
+    const name = typeof target.name === "function" ? target.name() : target.name;
+    const fn: IrFunction = {
+      name,
+      params,
+      returnType: target.returnType,
+      locals: params.map((p) => ({
+        id: p.localId,
+        name: p.name,
+        type: p.type,
+        mutable: target.paramsMutable ?? false,
+      })),
+      body: [fence],
+      loc,
+    };
+    if (target.async) fn.async = true;
+    if (target.generator) fn.generator = target.generator;
+    if (target.kind === "function") return fn;
+
+    fn.captures = [];
+    this.liftedFns.push(fn);
+    return { kind: "closure", fnName: fn.name, captures: [], type: target.type, loc };
+  }
 
   /** All diagnostics land here; while a generic instance body is lowering,
    * the instantiation context is appended so the user knows which concrete

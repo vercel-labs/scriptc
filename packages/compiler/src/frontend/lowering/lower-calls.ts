@@ -67,7 +67,7 @@ export interface FnSig {
  * calling itself) converges, but POLYMORPHIC recursion (`f<T>` calling
  * `f<T[]>`) would request new instances forever — the cap turns that into a
  * diagnostic instead of a hang. */
-export const MAX_GENERIC_INSTANCES = 100;
+export const MAX_GENERIC_INSTANCES = 1000;
 
 /** A generic function-like declaration, collected instead of an FnSig —
  * top-level generic function declarations, class GENERIC METHODS (own type

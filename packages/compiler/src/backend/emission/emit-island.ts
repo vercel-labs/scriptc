@@ -8,6 +8,7 @@ import { deflateRawSync } from "node:zlib";
 import type { CEmitter } from "./emitter.js";
 import { cDecl, cFnPtrCast, cStringLiteral, releaseCallC } from "./emit-types.js";
 import { IrType, islandCallbackRet, NPM_COMPRESS_MIN, typeKey } from "../../ir/nodes.js";
+import { undefinedArmTag } from "../../ir/analysis.js";
 
 /** Embedded npm modules (--dynamic): every reached module's SOURCE as a
  * static string plus the resolution edges — the island's module loader
@@ -195,7 +196,7 @@ export function emitNpmEmbedding(E: CEmitter, out: string[]): void {
           // Composite (record/array/union): the jsExit pipeline — engine
           // JSON.stringify, json.parse, the interned dynCheck builder.
           canFail = true;
-          const utag = E.undefinedArmTag(p);
+          const utag = undefinedArmTag(p, E.unionsById);
           decls.push(`  ${cDecl(p, a)} = NULL;`);
           const roundTrip = [
             `    ScrStr *sc_j = scr_jsval_to_json(argv[${i}]);`,

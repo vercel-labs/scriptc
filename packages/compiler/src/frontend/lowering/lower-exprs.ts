@@ -27,7 +27,7 @@ import { mixinFnOfCallee } from "./lower-mixins.js";
 import { isConstAssertionTypeNode, isGenericCallableMemberType, isParseArgsDynTypeName, underConstAssertion, unitOnlyUnion } from "../types.js";
 import { lowerYield } from "./lower-generators.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "./lower-stream.js";
-import { numLit, varRef } from "../../ir/build.js";
+import { countedFor, numLit, varRef } from "../../ir/build.js";
 
 /** An assignable `obj.field` target — a class field, a record field, or a
  * class ACCESSOR property (reads become getter calls, writes setter calls;
@@ -9458,19 +9458,10 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
       const ksT = arrayOf(STRING);
       body.push(
         { kind: "varDecl", localId: "ks.0", init: { kind: "recordOvfKeys", obj: r, shapeId: recvT.shapeId, type: ksT, loc }, loc },
-        {
-          kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-          cond: {
-            kind: "bin",
-            op: "<",
-            left: varRef("i.0", F64, loc),
-            right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc },
-            type: BOOL,
-            loc,
-          },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
-          body: [
+        countedFor(
+          loc,
+          { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc },
+          () => [
             {
               kind: "if",
               cond: { kind: "strEq", negated: false, left: k, right: { kind: "arrayGet", arr: varRef("ks.0", ksT, loc), index: varRef("i.0", F64, loc), type: STRING, loc }, type: BOOL, loc },
@@ -9479,8 +9470,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
               loc,
             },
           ],
-          loc,
-        },
+        ),
         ret({ kind: "boolLit", value: false, type: BOOL, loc }),
       );
       L.liftedFns.push({

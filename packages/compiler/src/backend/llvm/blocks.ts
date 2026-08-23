@@ -62,6 +62,39 @@ export class BlockBuilder {
     this.terminate(`br i1 ${v}, label %${t}, label %${f}`);
   }
 
+  /** Emit a double-indexed `for (i = 0; i < len; i++)` loop. `next` is
+   * exposed for bodies with internal branches that need to continue at the
+   * shared increment block. */
+  countedLoop(
+    len: string,
+    emitBody: (index: string, next: string) => void,
+    comparison: "olt" | "ole" = "olt",
+  ): void {
+    const indexSlot = this.slot();
+    this.entryAllocas.push(`${indexSlot} = alloca double`);
+    this.line(`store double 0x0000000000000000, ptr ${indexSlot}`);
+    const condition = this.newLabel("count.c");
+    const body = this.newLabel("count.b");
+    const next = this.newLabel("count.n");
+    const done = this.newLabel("count.e");
+    this.br(condition);
+    this.startBlock(condition);
+    const index = this.tmp();
+    const more = this.tmp();
+    this.line(`${index} = load double, ptr ${indexSlot}`);
+    this.line(`${more} = fcmp ${comparison} double ${index}, ${len}`);
+    this.condBr(more, body, done);
+    this.startBlock(body);
+    emitBody(index, next);
+    if (!this.isTerminated()) this.br(next);
+    this.startBlock(next);
+    const incremented = this.tmp();
+    this.line(`${incremented} = fadd double ${index}, 0x3FF0000000000000`);
+    this.line(`store double ${incremented}, ptr ${indexSlot}`);
+    this.br(condition);
+    this.startBlock(done);
+  }
+
   render(): string {
     return this.blocks
       .map((b, i) => {

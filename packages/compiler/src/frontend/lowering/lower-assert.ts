@@ -28,7 +28,7 @@ import { jsFuncNameOf, own } from "./lowerer.js";
 import { NARROW_FIRST } from "./surfaces.js";
 import { typeReachesItself } from "./lower-inspect.js";
 import { BOOL, CAUGHT, DYN, DYN_HANDLE_KINDS, F64, IrExpr, IrLibFn, IrStmt, IrType, REGEX, RUNTIME_ERROR_CLASSES, STRING, SrcLoc, VOID, isUnitType, typeEquals, typeKey } from "../../ir/nodes.js";
-import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
+import { boolLit, countedFor, numLit, strLit, varRef } from "../../ir/build.js";
 
 /** node:assert/strict binds the loose NAMES to the strict comparisons —
  * Node's own aliasing (`strict.equal === assert.strictEqual`). */
@@ -1337,14 +1337,7 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       locals.push({ id: "i.0", name: "i", type: F64, mutable: true });
       body = [
         bailIf(neq(len(a()), len(b()))),
-        {
-          kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-          cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: len(a()), type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
-          body: [bailIf(not(deq(t.elem, at(a(), varRef("i.0", F64, loc)), at(b(), varRef("i.0", F64, loc)))))],
-          loc,
-        },
+        countedFor(loc, len(a()), (i) => [bailIf(not(deq(t.elem, at(a(), i), at(b(), i))))]),
         ret(boolLit(true, loc)),
       ];
       break;
@@ -1412,12 +1405,7 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
             };
       body = [
         bailIf(neq(mi("size", a(), [], F64), mi("size", b(), [], F64))),
-        {
-          kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-          cond: { kind: "bin", op: "<", left: i(), right: mi("iterCount", a(), [], F64), type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: numLit(1, loc), type: F64, loc }, loc },
-          body: [
+        countedFor(loc, mi("iterCount", a(), [], F64), () => [
             { kind: "if", cond: not(mi("iterLive", a(), [i()], BOOL)), then: [{ kind: "continue", loc }], else_: null, loc },
             { kind: "varDecl", localId: "k.0", init: mi("iterKey", a(), [i()], t.key), loc },
             bailIf(not(mi("has", b(), [k()], BOOL))),
@@ -1425,8 +1413,7 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
             { kind: "varDecl", localId: "bv.0", init: mi("get", b(), [k()], getT), loc },
             bailIf(not(deq(valueT, varRef("av.0", valueT, loc), bValue))),
           ],
-          loc,
-        },
+        ),
         ret(boolLit(true, loc)),
       ];
       break;
@@ -1437,17 +1424,11 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       const i = (): IrExpr => varRef("i.0", F64, loc);
       body = [
         bailIf(neq(si("size", a(), [], F64), si("size", b(), [], F64))),
-        {
-          kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-          cond: { kind: "bin", op: "<", left: i(), right: si("iterCount", a(), [], F64), type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: numLit(1, loc), type: F64, loc }, loc },
-          body: [
+        countedFor(loc, si("iterCount", a(), [], F64), () => [
             { kind: "if", cond: not(si("iterLive", a(), [i()], BOOL)), then: [{ kind: "continue", loc }], else_: null, loc },
             bailIf(not(si("has", b(), [si("iterKey", a(), [i()], t.elem)], BOOL))),
           ],
-          loc,
-        },
+        ),
         ret(boolLit(true, loc)),
       ];
       break;

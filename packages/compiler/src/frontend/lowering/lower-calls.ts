@@ -27,7 +27,7 @@ import { ambientNsRootOf, ambientUndefReadType, ambientUndefVarRootOf, ambientUn
 import { declSymbolOf } from "./lower-modules.js";
 import { expandoMemberRead } from "./lower-expando.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
-import { numLit, varRef } from "../../ir/build.js";
+import { countedFor, varRef } from "../../ir/build.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
  * completes every call to the one full signature, so the IR and backends
@@ -6752,17 +6752,7 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
         init: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", arrT, loc), args: [], type: F64, loc },
         loc,
       },
-      {
-        kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
-        update: {
-          kind: "assign",
-          localId: "i.0",
-          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-          loc,
-        },
-        body: [
+      countedFor(loc, varRef("n.0", F64, loc), () => [
           {
             kind: "varDecl",
             localId: "v.0",
@@ -6790,8 +6780,7 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
             loc,
           },
         ],
-        loc,
-      },
+      ),
       { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
     L.liftedFns.push({ name, params, returnType: outT, locals, body, loc });

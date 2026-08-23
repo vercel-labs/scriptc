@@ -20,8 +20,9 @@ import { InternalCompilerError } from "../../errors.js";
  * Emitter- and stream-rooted classes stay out of the tier (their prefixes
  * embed runtime registry/state slots and their surfaces are async-shaped);
  * the emitter refuses them by name before anything here runs. */
-import type { IrClassDef, IrFunction, IrModule, IrType } from "../../ir/nodes.js";
+import type { IrClassDef, IrFunction, IrModule, IrType, IrUnionDef } from "../../ir/nodes.js";
 import { isRefCounted, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES } from "../../ir/nodes.js";
+import { streamRooted, undefinedArmTag } from "../../ir/analysis.js";
 import {
   mangleClassGcFree,
   mangleClassNew,
@@ -173,17 +174,6 @@ function emitterRooted(meta: LlClassMeta): boolean {
   return meta.root.def.name === RUNTIME_EMITTER_CLASS;
 }
 
-/** True when the class descends from a runtime STREAM class: its struct
- * embeds the FULL ScrStream prefix (registry, display name, state
- * pointer) and its RC/trace helpers delegate the state block to
- * scr_stream_st_* (emit-shapes.ts's streamRooted). */
-function streamRooted(meta: LlClassMeta): boolean {
-  for (let m = meta.base; m; m = m.base) {
-    if (RUNTIME_STREAM_CLASSES.has(m.def.name)) return true;
-  }
-  return false;
-}
-
 /** The GEP index where a class's own fields start: rc at 0, the vtable
  * word at 1 on hierarchy members, then the emitter prefix (registry +
  * display name) on emitter-rooted classes, then the stream-state slot on
@@ -207,8 +197,8 @@ export function classFieldIndex(meta: LlClassMeta, field: string): { index: numb
  * undefined-armed union start as JS's `undefined`, never NULL), and the
  * interned NUL-terminated constants (emitter subclass display names). */
 export interface ClassHost extends ShapeHost {
+  readonly unionsById: Map<string, IrUnionDef>;
   unitInstanceRef(unionId: string, tag: number): string;
-  undefinedArmTag(t: IrType): number;
   cstr(text: string): string;
 }
 
@@ -230,7 +220,7 @@ function undefFieldInits(host: ClassHost, meta: LlClassMeta): string[] {
       return;
     }
     if (f.type.kind !== "union") return;
-    const tag = host.undefinedArmTag(f.type);
+    const tag = undefinedArmTag(f.type, host.unionsById);
     if (tag < 0) return;
     out.push(
       `  %uf${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr %o, i64 0, i32 ${index}`,

@@ -25,6 +25,7 @@ import { InternalCompilerError } from "../../errors.js";
  *   ScrDynPath { parent, key, index } — the %ScrDynPath type. */
 import type { IrType } from "../../ir/nodes.js";
 import { DYN_HANDLE_KINDS, isRefCounted, typeKey } from "../../ir/nodes.js";
+import { dynDesc, undefinedArmTag } from "../../ir/analysis.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { arrNewCall, elemAccess, llFieldType, releaseSym, traceAdapter, traceArg, vAdapters } from "./shapes.js";
@@ -292,46 +293,6 @@ export class LlDyn {
     B.startBlock(lk);
   }
 
-  /* ── dynDesc (ported verbatim — pure strings) ──────────────────────── */
-
-  /** Short human description of a dynCheck target for error messages. */
-  dynDesc(t: IrType): string {
-    switch (t.kind) {
-      case "f64":
-        return "number";
-      case "string":
-        return "string";
-      case "bool":
-        return "boolean";
-      case "record":
-        return this.host.recordsById.get(t.shapeId)?.tuple ? "array" : "object";
-      case "array":
-        return "array";
-      case "nullT":
-        return "null";
-      case "undefinedT":
-        return "undefined";
-      case "dyn":
-        return "unknown";
-      case "bytes":
-        return "Uint8Array";
-      case "object":
-        return t.className.replace(/^%/, "");
-      case "union": {
-        const def = this.host.unionsById.get(t.unionId);
-        if (!def) throw new InternalCompilerError(`llvm emitter bug: dynDesc of unknown union ${t.unionId}`);
-        return def.arms.map((a) => this.dynDesc(a)).join(" | ");
-      }
-      case "func":
-        return "function";
-      default: {
-        const h = DYN_HANDLE_KINDS.get(t.kind);
-        if (h) return h.cls;
-        throw new InternalCompilerError(`llvm emitter bug: dynDesc of non-JSON type ${t.kind}`);
-      }
-    }
-  }
-
   /* ── dynMatchHelper (emit-walkers.ts, ported) ──────────────────────── */
 
   /** `sc_dm_<n>(ptr d) -> i1` — does this dyn fit T? Never throws. */
@@ -449,7 +410,7 @@ export class LlDyn {
           B.line(`${has} = icmp ne ptr ${m}, null`);
           const lTest = B.newLabel("dm.t");
           const lNext = B.newLabel("dm.n");
-          if (this.host.undefinedArmTag(f.type) >= 0) {
+          if (undefinedArmTag(f.type, this.host.unionsById) >= 0) {
             // Optional-flavored field: a MISSING key is the undefined arm
             // (a match); a PRESENT key must fit the union as usual.
             B.condBr(has, lTest, lNext);
@@ -572,7 +533,7 @@ export class LlDyn {
     const retTy = this.valTy(t);
     const dummy = retTy === "double" ? `double ${f64Lit(0)}` : retTy === "i1" ? "i1 false" : "ptr null";
     host.declare(`declare void @scr_dyn_check_fail(ptr, ptr, ptr)`);
-    const want = host.cstr(this.dynDesc(t));
+    const want = host.cstr(dynDesc(t, this.host.recordsById, this.host.unionsById));
     const B = new BlockBuilder();
     if (isRefCounted(t) && t.kind !== "dyn") {
       host.declare(`declare zeroext i1 @scr_dyn_typed_ref_is(ptr, ptr, ${host.sizeType})`);
@@ -864,8 +825,8 @@ export class LlDyn {
         requireKind(DK.OBJ, "dcr");
         B.line(`%r0 = call ptr @${mangleRecordNew(t.shapeId)}()`);
         for (const f of shape.fields) {
-          const fieldWant = host.cstr(this.dynDesc(f.type));
-          const utag = f.type.kind === "union" ? host.undefinedArmTag(f.type) : -1;
+          const fieldWant = host.cstr(dynDesc(f.type, this.host.recordsById, this.host.unionsById));
+          const utag = f.type.kind === "union" ? undefinedArmTag(f.type, host.unionsById) : -1;
           const m = this.objGetLit(B, "%d", f.name);
           if (f.type.kind === "dyn") {
             // An `unknown` field: a present key passes through, a missing
@@ -1366,68 +1327,51 @@ export class LlDyn {
           const len = B.tmp();
           B.line(`${ks} = call ptr @scr_map_keys_js_order(ptr ${ovf})`);
           B.line(`${len} = call double @scr_arr_len(ptr ${ks})`);
-          const iSlot = B.slot();
-          B.entryAllocas.push(`${iSlot} = alloca double`);
-          B.line(`store double ${f64Lit(0)}, ptr ${iSlot}`);
-          const lc = B.newLabel("tdo.c");
-          const lb = B.newLabel("tdo.b");
-          const le = B.newLabel("tdo.e");
-          B.br(lc);
-          B.startBlock(lc);
-          const i = B.tmp();
-          const cont = B.tmp();
-          B.line(`${i} = load double, ptr ${iSlot}`);
-          B.line(`${cont} = fcmp olt double ${i}, ${len}`);
-          B.condBr(cont, lb, le);
-          B.startBlock(lb);
-          const k = B.tmp();
-          B.line(`${k} = call ptr @scr_arr_get_ref(ptr ${ks}, double ${i}) ; key (+1)`);
-          const { len: klen, data: kdata } = this.strParts(B, k);
-          if (iv.kind === "f64" || iv.kind === "bool") {
-            const outTy = iv.kind === "f64" ? "double" : "i8";
-            const outSlot = B.slot();
-            B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
-            B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
-            host.declare(`declare zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr, ptr, ptr)`);
-            const found = B.tmp();
-            B.line(`${found} = call zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr ${ovf}, ptr ${k}, ptr ${outSlot})`);
-            const raw = B.tmp();
-            B.line(`${raw} = load ${outTy}, ptr ${outSlot}`);
-            let val = raw;
-            if (iv.kind === "bool") {
-              val = B.tmp();
-              B.line(`${val} = trunc i8 ${raw} to i1`);
-            }
-            const boxed = B.tmp();
-            if (iv.kind === "f64") {
-              host.declare(`declare ptr @scr_dyn_new_num(double)`);
-              B.line(`${boxed} = call ptr @scr_dyn_new_num(double ${val})`);
+          B.countedLoop(len, (i) => {
+            const k = B.tmp();
+            B.line(`${k} = call ptr @scr_arr_get_ref(ptr ${ks}, double ${i}) ; key (+1)`);
+            const { len: klen, data: kdata } = this.strParts(B, k);
+            if (iv.kind === "f64" || iv.kind === "bool") {
+              const outTy = iv.kind === "f64" ? "double" : "i8";
+              const outSlot = B.slot();
+              B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
+              B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
+              host.declare(`declare zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr, ptr, ptr)`);
+              const found = B.tmp();
+              B.line(`${found} = call zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr ${ovf}, ptr ${k}, ptr ${outSlot})`);
+              const raw = B.tmp();
+              B.line(`${raw} = load ${outTy}, ptr ${outSlot}`);
+              let val = raw;
+              if (iv.kind === "bool") {
+                val = B.tmp();
+                B.line(`${val} = trunc i8 ${raw} to i1`);
+              }
+              const boxed = B.tmp();
+              if (iv.kind === "f64") {
+                host.declare(`declare ptr @scr_dyn_new_num(double)`);
+                B.line(`${boxed} = call ptr @scr_dyn_new_num(double ${val})`);
+              } else {
+                host.declare(`declare ptr @scr_dyn_new_bool(i1 zeroext)`);
+                B.line(`${boxed} = call ptr @scr_dyn_new_bool(i1 ${val})`);
+              }
+              B.line(`call void @scr_dyn_obj_set(ptr ${d}, ptr ${kdata}, ${host.sizeType} ${klen}, ptr ${boxed})`);
+            } else if (iv.kind === "dyn") {
+              // get_str_ref returns +1 — exactly the ownership obj_set takes.
+              host.declare(`declare ptr @scr_map_get_str_ref(ptr, ptr)`);
+              const hit = B.tmp();
+              B.line(`${hit} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k})`);
+              B.line(`call void @scr_dyn_obj_set(ptr ${d}, ptr ${kdata}, ${host.sizeType} ${klen}, ptr ${hit})`);
             } else {
-              host.declare(`declare ptr @scr_dyn_new_bool(i1 zeroext)`);
-              B.line(`${boxed} = call ptr @scr_dyn_new_bool(i1 ${val})`);
+              host.declare(`declare ptr @scr_map_get_str_ref(ptr, ptr)`);
+              const hit = B.tmp();
+              B.line(`${hit} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k})`);
+              const conv = B.tmp();
+              B.line(`${conv} = call ptr @${this.toDynHelper(iv)}(ptr ${hit})`);
+              B.line(`call void @scr_dyn_obj_set(ptr ${d}, ptr ${kdata}, ${host.sizeType} ${klen}, ptr ${conv})`);
+              B.line(`call void ${releaseSym(host, iv)}(ptr ${hit})`);
             }
-            B.line(`call void @scr_dyn_obj_set(ptr ${d}, ptr ${kdata}, ${host.sizeType} ${klen}, ptr ${boxed})`);
-          } else if (iv.kind === "dyn") {
-            // get_str_ref returns +1 — exactly the ownership obj_set takes.
-            host.declare(`declare ptr @scr_map_get_str_ref(ptr, ptr)`);
-            const hit = B.tmp();
-            B.line(`${hit} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k})`);
-            B.line(`call void @scr_dyn_obj_set(ptr ${d}, ptr ${kdata}, ${host.sizeType} ${klen}, ptr ${hit})`);
-          } else {
-            host.declare(`declare ptr @scr_map_get_str_ref(ptr, ptr)`);
-            const hit = B.tmp();
-            B.line(`${hit} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k})`);
-            const conv = B.tmp();
-            B.line(`${conv} = call ptr @${this.toDynHelper(iv)}(ptr ${hit})`);
-            B.line(`call void @scr_dyn_obj_set(ptr ${d}, ptr ${kdata}, ${host.sizeType} ${klen}, ptr ${conv})`);
-            B.line(`call void ${releaseSym(host, iv)}(ptr ${hit})`);
-          }
-          B.line(`call void @scr_str_release(ptr ${k})`);
-          const i2 = B.tmp();
-          B.line(`${i2} = fadd double ${i}, ${f64Lit(1)}`);
-          B.line(`store double ${i2}, ptr ${iSlot}`);
-          B.br(lc);
-          B.startBlock(le);
+            B.line(`call void @scr_str_release(ptr ${k})`);
+          });
           B.line(`call void @scr_arr_release(ptr ${ks})`);
         }
         if (cyclicRec) B.line(`call void @scr_dyn_from_leave()`);
@@ -1450,49 +1394,32 @@ export class LlDyn {
         B.line(`${d} = call ptr @scr_dyn_new_arr()`);
         const len = B.tmp();
         B.line(`${len} = call double @scr_arr_len(ptr %v)`);
-        const iSlot = B.slot();
-        B.entryAllocas.push(`${iSlot} = alloca double`);
-        B.line(`store double ${f64Lit(0)}, ptr ${iSlot}`);
-        const lc = B.newLabel("tda.c");
-        const lb = B.newLabel("tda.b");
-        const le = B.newLabel("tda.e");
-        B.br(lc);
-        B.startBlock(lc);
-        const i = B.tmp();
-        const cont = B.tmp();
-        B.line(`${i} = load double, ptr ${iSlot}`);
-        B.line(`${cont} = fcmp olt double ${i}, ${len}`);
-        B.condBr(cont, lb, le);
-        B.startBlock(lb);
-        if (elem.kind === "f64" || elem.kind === "bool") {
-          const acc = elem.kind;
-          const accTy = elem.kind === "f64" ? "double" : "i1";
-          host.declare(`declare ${elem.kind === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`);
-          const e = B.tmp();
-          B.line(`${e} = call ${accTy} @scr_arr_get_${acc}(ptr %v, double ${i})`);
-          const boxed = B.tmp();
-          if (elem.kind === "f64") {
-            host.declare(`declare ptr @scr_dyn_new_num(double)`);
-            B.line(`${boxed} = call ptr @scr_dyn_new_num(double ${e})`);
+        B.countedLoop(len, (i) => {
+          if (elem.kind === "f64" || elem.kind === "bool") {
+            const acc = elem.kind;
+            const accTy = elem.kind === "f64" ? "double" : "i1";
+            host.declare(`declare ${elem.kind === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`);
+            const e = B.tmp();
+            B.line(`${e} = call ${accTy} @scr_arr_get_${acc}(ptr %v, double ${i})`);
+            const boxed = B.tmp();
+            if (elem.kind === "f64") {
+              host.declare(`declare ptr @scr_dyn_new_num(double)`);
+              B.line(`${boxed} = call ptr @scr_dyn_new_num(double ${e})`);
+            } else {
+              host.declare(`declare ptr @scr_dyn_new_bool(i1 zeroext)`);
+              B.line(`${boxed} = call ptr @scr_dyn_new_bool(i1 ${e})`);
+            }
+            B.line(`call void @scr_dyn_arr_push(ptr ${d}, ptr ${boxed})`);
           } else {
-            host.declare(`declare ptr @scr_dyn_new_bool(i1 zeroext)`);
-            B.line(`${boxed} = call ptr @scr_dyn_new_bool(i1 ${e})`);
+            host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
+            const e = B.tmp();
+            B.line(`${e} = call ptr @scr_arr_get_ref(ptr %v, double ${i}) ; +1`);
+            const conv = B.tmp();
+            B.line(`${conv} = call ptr @${this.toDynHelper(elem)}(ptr ${e})`);
+            B.line(`call void @scr_dyn_arr_push(ptr ${d}, ptr ${conv})`);
+            B.line(`call void ${releaseSym(host, elem)}(ptr ${e})`);
           }
-          B.line(`call void @scr_dyn_arr_push(ptr ${d}, ptr ${boxed})`);
-        } else {
-          host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
-          const e = B.tmp();
-          B.line(`${e} = call ptr @scr_arr_get_ref(ptr %v, double ${i}) ; +1`);
-          const conv = B.tmp();
-          B.line(`${conv} = call ptr @${this.toDynHelper(elem)}(ptr ${e})`);
-          B.line(`call void @scr_dyn_arr_push(ptr ${d}, ptr ${conv})`);
-          B.line(`call void ${releaseSym(host, elem)}(ptr ${e})`);
-        }
-        const i2 = B.tmp();
-        B.line(`${i2} = fadd double ${i}, ${f64Lit(1)}`);
-        B.line(`store double ${i2}, ptr ${iSlot}`);
-        B.br(lc);
-        B.startBlock(le);
+        });
         if (cyclicArr) B.line(`call void @scr_dyn_from_leave()`);
         B.terminate(`ret ptr ${d}`);
         break;

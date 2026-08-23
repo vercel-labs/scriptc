@@ -9,21 +9,11 @@ import type { IrFunction } from "../../ir/nodes.js";
 import { IrClassDef, IrType, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, isRefCounted, mapOf, STRING } from "../../ir/nodes.js";
 import { mangleClassGcFree, mangleClassNew, mangleClassRelease, mangleClassReleaseDirect, mangleClassRetain, mangleClassStruct, mangleClassTrace, mangleCtorThunk, mangleField, mangleFunction, mangleRecordClone, mangleRecordGcFree, mangleRecordNew, mangleRecordRelease, mangleRecordRetain, mangleRecordStruct, mangleRecordTrace, mangleVtAdapter, mangleVtInstance, mangleVtStruct } from "../mangle.js";
 import { boxKindC, cDecl, cType, elemKindC, mapValKindC, releaseCallC, retainCallC, vAdapters } from "./emit-types.js";
+import { streamRooted } from "../../ir/analysis.js";
 
 /** The overflow map's C member name on index-signature record structs.
  * User fields mangle to `sc_fld_*`, so no field can collide. */
 export const OVERFLOW_MEMBER = "sc_ovf";
-
-/** True when the class descends from a runtime stream class: its struct
- * embeds the FULL ScrStream prefix (registry, display name, state
- * pointer) and its RC/trace helpers delegate the state block to
- * scr_stream_st_*. */
-function streamRooted(meta: ClassMeta): boolean {
-  for (let m = meta.base; m; m = m.base) {
-    if (RUNTIME_STREAM_CLASSES.has(m.def.name)) return true;
-  }
-  return false;
-}
 
 /** One virtual method slot of a hierarchy: the ROOT-MOST declaring class
  * owns the slot; its declaration's IrFunction fixes the slot's C signature

@@ -10,6 +10,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
 import { dynDestrCheckHelper, dynIterNHelper, dynKeyGetHelper } from "./emit-walkers.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
 import { genResultThunkFor } from "./emit-async.js";
+import { isStableBytesOperand, newValueMayThrow, streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
 
 function streamTypedRefCommitAdapter(
   E: CEmitter,
@@ -110,10 +111,6 @@ interface StreamTypedRefContext {
   prefix: string;
   defs: string[];
   adapters: Map<string, StreamTypedRefAdapter>;
-}
-
-function streamTypedRefEligible(t: IrType): boolean {
-  return t.kind === "record" || t.kind === "array" || t.kind === "bytes";
 }
 
 /** Build the live dyn view of one typed stream value. Mutable reference
@@ -476,51 +473,6 @@ function dynPromiseAdapter(
 
 
 
-/** True when evaluating an index/value expression cannot overwrite the bytes
- * receiver binding. This deliberately small whitelist enables borrowed
- * receivers in typed-array hot loops while side-effecting/calling shapes
- * retain the full snapshot ownership required by JS evaluation order. */
-function isStableBytesOperand(e: IrExpr, receiverLocalId: string): boolean {
-  switch (e.kind) {
-    case "numLit":
-    case "boolLit":
-    case "varRef":
-    case "incDec":
-      return true;
-    case "assignExpr":
-      // An assignment nested under truthiness/ternary can still produce the
-      // numeric index/value while overwriting the bytes-typed receiver.
-      return e.localId !== receiverLocalId && isStableBytesOperand(e.value, receiverLocalId);
-    case "bin":
-      return (
-        isStableBytesOperand(e.left, receiverLocalId) &&
-        isStableBytesOperand(e.right, receiverLocalId)
-      );
-    case "unary":
-    case "toBool":
-      return isStableBytesOperand(e.operand, receiverLocalId);
-    case "logical":
-      return (
-        isStableBytesOperand(e.left, receiverLocalId) &&
-        isStableBytesOperand(e.right, receiverLocalId)
-      );
-    case "ternary":
-      return (
-        isStableBytesOperand(e.cond, receiverLocalId) &&
-        isStableBytesOperand(e.then, receiverLocalId) &&
-        isStableBytesOperand(e.else_, receiverLocalId)
-      );
-    case "bytesIntrinsic":
-      return (
-        (e.method === "get" || e.method === "length" || e.method === "byteLength") &&
-        e.receiver.kind === "varRef" &&
-        e.args.every((arg) => isStableBytesOperand(arg, receiverLocalId))
-      );
-    default:
-      return false;
-  }
-}
-
 /** Evaluate a bytes receiver as a borrow when it is a direct, unboxed
  * binding and all later operands are stable. The binding's scope/global
  * owner then keeps the value alive, avoiding retain/release traffic around
@@ -575,7 +527,7 @@ function emitMapLikeIntrinsic(
       const k = E.emitExpr(e.args[0]!);
       if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: map get result is not a union");
       const def = E.unionsById.get(e.type.unionId);
-      const undefTag = E.undefinedArmTag(e.type);
+      const undefTag = undefinedArmTag(e.type, E.unionsById);
       if (!def || undefTag < 0) throw new InternalCompilerError("emitter bug: map get union lacks its undefined arm");
       const absent = E.unitInstanceRef(e.type.unionId, undefTag);
       if (value.kind === "union") {
@@ -1066,7 +1018,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           return { name, type: e.type };
         }
         if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: optChain result is not a union");
-        const undefTag = E.undefinedArmTag(e.type);
+        const undefTag = undefinedArmTag(e.type, E.unionsById);
         if (undefTag < 0) throw new InternalCompilerError("emitter bug: optChain result lacks its undefined arm");
         const name = `sc_t${E.tempCounter++}`;
         E.line(`${cDecl(e.type, name)};`);
@@ -1646,7 +1598,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const elemT = e.receiver.type.elem;
             const def = E.unionsById.get(e.type.unionId);
             const tag = def ? def.arms.findIndex((a) => typeEquals(a, elemT)) : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (tag < 0 || undefTag < 0) throw new InternalCompilerError("emitter bug: shift union lacks its arms");
             const absent = E.unitInstanceRef(e.type.unionId, undefTag);
             const present =
@@ -2337,7 +2289,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         const cast = `(void *(*)(${paramTypes.join(", ") || "void"}))`;
         const call = `(${cast}${callee.name}->ctor)(${args.map((a) => a.name).join(", ")})`;
         const t = E.newTemp(e.type, `(${cType(e.type).trim()})${call}`);
-        if (E.newValueMayThrow(cls)) E.emitPendingCheck();
+        if (newValueMayThrow(cls, E.classMeta, E.mayThrow)) E.emitPendingCheck();
         return t;
       }
       case "instanceOfValue": {
@@ -3443,7 +3395,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               } else {
                 const st = shape.fields.find((f) => f.name === "scopeid")?.type;
                 if (st?.kind !== "union") throw new InternalCompilerError("emitter bug: networkInterfaces IPv4 scopeid type");
-                const undefTag = E.undefinedArmTag(st);
+                const undefTag = undefinedArmTag(st, E.unionsById);
                 E.line(`${r}->${mangleField("scopeid")} = scr_union_retain(${E.unitInstanceRef(st.unionId, undefTag)});`);
               }
               const rc = vAdapters(t);
@@ -3876,7 +3828,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             }
             const def = E.unionsById.get(e.type.unionId);
             const errTag = def ? def.arms.findIndex((a) => a.kind === "object" && a.className === "%Error") : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (errTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: spawnRes.error union lacks its arms");
             }
@@ -4438,7 +4390,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqHeader result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: http.reqHeader union lacks its arms");
             }
@@ -4506,7 +4458,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqStatusCode result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (f64Tag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: http.reqStatusCode union lacks its arms");
             }
@@ -4522,7 +4474,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockEncrypted result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const boolTag = def ? def.arms.findIndex((a) => a.kind === "bool") : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (boolTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: net.sockEncrypted union lacks its arms");
             }
@@ -4537,7 +4489,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqH2Stream result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const streamTag = def ? def.arms.findIndex((a) => a.kind === "http2Stream") : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (streamTag < 0 || undefTag < 0) throw new InternalCompilerError("emitter bug: http.reqH2Stream union lacks its arms");
             const st = E.newTemp({ kind: "http2Stream" }, `scr_http_req_h2_stream(${arg(0)})`);
             E.moveTemp(st);
@@ -4557,7 +4509,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqStatusMessage result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: http.reqStatusMessage union lacks its arms");
             }
@@ -4694,7 +4646,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.resGetHeader result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: http.resGetHeader union lacks its arms");
             }
@@ -4767,7 +4719,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockRemoteAddress result is not a union");
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: net.sockRemoteAddress union lacks its arms");
             }
@@ -5835,7 +5787,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             }
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: process.envGet union lacks its arms");
             }
@@ -6684,7 +6636,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             }
             const def = E.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: error.code union lacks its arms");
             }
@@ -6987,7 +6939,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             }
             const def = E.unionsById.get(e.type.unionId);
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
-            const undefTag = E.undefinedArmTag(e.type);
+            const undefTag = undefinedArmTag(e.type, E.unionsById);
             if (f64Tag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: process.columns union lacks its arms");
             }
@@ -7644,7 +7596,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // into the union's dynCheck like any composite (or, for the
             // `any[] | undefined` defaulted-parameter spelling, the
             // jsval-element array exit wrapped into the data arm).
-            const undefTag = e.type.kind === "union" ? E.undefinedArmTag(e.type) : -1;
+            const undefTag = e.type.kind === "union" ? undefinedArmTag(e.type, E.unionsById) : -1;
             if (e.type.kind === "union" && undefTag >= 0) {
               const name = `sc_t${E.tempCounter++}`;
               E.line(`${cDecl(e.type, name)};`);

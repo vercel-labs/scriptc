@@ -36,9 +36,10 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import ts from "typescript5";
-import { resolveExports } from "./npm.js";
-import { resolveRelativeModule } from "./resolve.js";
+import { resolveExports, resolveRelativeModule } from "./resolve.js";
 import type { ProvenancePackageSource, ProvenanceSources } from "./provenance-registry.js";
+
+const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default"]);
 
 const execFileAsync = promisify(execFile);
 
@@ -291,7 +292,7 @@ function locatePackageDir(tree: string, name: string): string | null {
  * condition, else module/main/types fields (root subpath only). */
 function publishedTargetOf(pkgJson: Record<string, unknown>, subpath: string): string | null {
   if (pkgJson["exports"] !== undefined) {
-    return resolveExports(pkgJson["exports"], subpath, "import");
+    return resolveExports(pkgJson["exports"], subpath, NODE_IMPORT_CONDITIONS);
   }
   if (subpath !== ".") return subpath;
   for (const field of ["module", "main", "types"]) {

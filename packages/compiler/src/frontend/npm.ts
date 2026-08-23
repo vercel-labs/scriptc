@@ -89,6 +89,14 @@ import { dirname, extname, join, resolve } from "node:path";
 import ts from "typescript5";
 import { cjsLexedExportsOf } from "./cjs-lexer.js";
 import { trackedDirectoryExists, trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import { resolveExports } from "./resolve.js";
+
+const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default"]);
+const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default"]);
+
+function nodeExportConditions(mode: "import" | "require"): ReadonlySet<string> {
+  return mode === "import" ? NODE_IMPORT_CONDITIONS : NODE_REQUIRE_CONDITIONS;
+}
 
 export type EmbeddedFormat = "esm" | "cjs" | "json";
 
@@ -764,77 +772,6 @@ export function packageNameOfPath(path: string): string | null {
   return rest === "" ? null : packageNameOf(rest);
 }
 
-/** package.json "exports" resolution, per Node: subpath map with exact
- * keys first, then '*' patterns (longest literal prefix wins, the matched
- * text substitutes into the target), condition objects matched in OBJECT
- * KEY order against the enabled set ("import" or "require", plus "node"
- * and "default"), string targets, arrays taking the first resolvable
- * entry. Returns a path relative to the package dir, or null. */
-export function resolveExports(
-  exports: unknown,
-  subpath: string,
-  mode: "import" | "require",
-): string | null {
-  const enabled = new Set([mode, "node", "default"]);
-  const resolveTarget = (target: unknown, wildcard: string | null): string | null => {
-    if (typeof target === "string") {
-      return wildcard === null ? target : target.split("*").join(wildcard);
-    }
-    if (Array.isArray(target)) {
-      for (const t of target) {
-        const r = resolveTarget(t, wildcard);
-        if (r) return r;
-      }
-      return null;
-    }
-    if (target && typeof target === "object") {
-      for (const [key, value] of Object.entries(target)) {
-        if (key.startsWith(".")) continue; // a subpath map, not conditions
-        if (enabled.has(key)) {
-          const r = resolveTarget(value, wildcard);
-          if (r) return r;
-        }
-      }
-    }
-    return null;
-  };
-  if (typeof exports === "string" || Array.isArray(exports)) {
-    return subpath === "." ? resolveTarget(exports, null) : null;
-  }
-  if (exports && typeof exports === "object") {
-    const map = exports as Record<string, unknown>;
-    const keys = Object.keys(map);
-    const isSubpathMap = keys.every((k) => k.startsWith("."));
-    if (!isSubpathMap) {
-      // A bare condition object applies to the root subpath only.
-      return subpath === "." ? resolveTarget(exports, null) : null;
-    }
-    if (Object.prototype.hasOwnProperty.call(map, subpath)) {
-      return resolveTarget(map[subpath], null);
-    }
-    // Pattern keys: "./v4/locales/*" etc. Longest literal prefix wins.
-    let best: { key: string; prefix: string; suffix: string } | null = null;
-    for (const key of keys) {
-      const star = key.indexOf("*");
-      if (star < 0) continue;
-      const prefix = key.slice(0, star);
-      const suffix = key.slice(star + 1);
-      if (
-        subpath.startsWith(prefix) &&
-        subpath.length >= prefix.length + suffix.length &&
-        subpath.endsWith(suffix) &&
-        (!best || prefix.length > best.prefix.length)
-      ) {
-        best = { key, prefix, suffix };
-      }
-    }
-    if (!best) return null;
-    const wildcard = subpath.slice(best.prefix.length, subpath.length - best.suffix.length);
-    return resolveTarget(map[best.key], wildcard);
-  }
-  return null;
-}
-
 /** A bare-specifier import edge Node's ESM resolution REFUSES, with Node's
  * exact error message and code — or null (resolvable, or a shape this
  * probe stays conservative about). The three refusal shapes it answers,
@@ -886,7 +823,7 @@ export function probeNodeImportRefusal(
   // Node's PACKAGE_EXPORTS_RESOLVE outcome for the subpath.
   const withinScope = (pkgDir: string, pkg: PkgJson): NodeImportRefusal | null => {
     if (pkg.exports === undefined) return null; // legacy resolution — conservative
-    const target = resolveExports(pkg.exports, subpath, "import");
+    const target = resolveExports(pkg.exports, subpath, NODE_IMPORT_CONDITIONS);
     if (target === null) {
       return {
         code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
@@ -1436,7 +1373,7 @@ export class NpmGraphBuilder {
       const selfPkg = this.pkgJsonOf(dir);
       if (selfPkg) {
         if (selfPkg.name === name && selfPkg.exports !== undefined) {
-          const fromExports = resolveExports(selfPkg.exports, subpath, mode);
+          const fromExports = resolveExports(selfPkg.exports, subpath, nodeExportConditions(mode));
           if (fromExports === null) {
             this.errors.push({
               message:
@@ -1470,7 +1407,7 @@ export class NpmGraphBuilder {
         let target: string;
         let forceEsm = false;
         if (pkg.exports !== undefined) {
-          const fromExports = resolveExports(pkg.exports, subpath, mode);
+          const fromExports = resolveExports(pkg.exports, subpath, nodeExportConditions(mode));
           if (fromExports === null) {
             this.errors.push({
               message:

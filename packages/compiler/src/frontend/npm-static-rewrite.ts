@@ -76,8 +76,10 @@
 import { dirname, join, resolve as resolvePath } from "node:path";
 import ts from "typescript5";
 import { cjsLexedExportsOf, cjsLexerVisibleNames } from "./cjs-lexer.js";
-import { resolveExports } from "./npm.js";
 import { trackedDirectoryExists, trackedFileExists, trackedReadFile } from "./input-tracker.js";
+import { resolveExports } from "./resolve.js";
+
+const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default"]);
 
 /** True when `e` is exactly the `exports` identifier. */
 function isExportsIdent(e: ts.Expression): boolean {
@@ -290,7 +292,7 @@ function resolveBareRequireCjs(fromFile: string, spec: string): string | null {
           return null;
         }
         if (exports !== undefined) {
-          const target = resolveExports(exports, subpath, "require");
+          const target = resolveExports(exports, subpath, NODE_REQUIRE_CONDITIONS);
           return target === null ? null : resolveCjsBase(join(pkgDir, target));
         }
         return resolveCjsBase(subpath === "." ? pkgDir : join(pkgDir, subpath));

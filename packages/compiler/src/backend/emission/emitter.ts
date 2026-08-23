@@ -41,6 +41,7 @@ import type {
   SrcLoc,
 } from "../../ir/nodes.js";
 import { ffiCallbackType, funcOf, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, mapOf, moduleEmbedsCompressedNpm, moduleUsesDgram, moduleUsesDynInvoke, moduleEmbedsBuiltin, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, POINTER_KINDS, type PointerKind, RUNTIME_EMITTER_CLASS, STRING, VOID } from "../../ir/nodes.js";
+import { undefinedArmTag } from "../../ir/analysis.js";
 import { allocateFfiCallbackAdapters, hasForeignFfiCallback, hasRetainedFfiCallback, type FfiCallbackAdapter } from "../ffi-callbacks.js";
 import {
   mangleAsyncSpawn,
@@ -57,7 +58,7 @@ import {
 } from "../mangle.js";
 import { cFnPtrCast, cType, releaseCallC, cStringLiteral, cDecl } from "./emit-types.js";
 import { computeMayThrow } from "./may-throw.js";
-import { dynDesc, unionTruthyHelper, unionEqHelper, unionToStrHelper, unionJoinHelper, jsonWriteHelper, jsonIndentHelper, dynMatchHelper, dynCheckHelper, dynFuncBoxHelper, dynToStrHelper, caughtToDynHelper, toDynHelper, recordKeyGetHelper, recordKeySetHelper } from "./emit-walkers.js";
+import { unionTruthyHelper, unionEqHelper, unionToStrHelper, unionJoinHelper, jsonWriteHelper, jsonIndentHelper, dynMatchHelper, dynCheckHelper, dynFuncBoxHelper, dynToStrHelper, caughtToDynHelper, toDynHelper, recordKeyGetHelper, recordKeySetHelper } from "./emit-walkers.js";
 import { VtSlot, ClassMeta, emitStructDefs, vtEntriesFor, vtSlotParams, emitVtableDecls, emitVtableInstances, emitVtAdapterDefs, emitHierarchyClassHelpers, emitClassObjs, emitCtorThunkDefs, errorVtStampLines, emitterVtStampLines, streamVtStampLines, traceAdapterC, traceArgC, boxNewC, arrNewC } from "./emit-shapes.js";
 import { emitAsyncScaffolding, childDataThunkFor, childExitThunkFor, childExitThunkFor2, closeBindThunkFor, connectResThunkFor, connectSockThunkFor, closeOverrideWrapFor, dgramMsgThunkFor, dnsLookupThunkFor, fsRenameThunkFor, netLookupAnswerThunkFor, emitterInvokeThunkFor, streamCbThunkFor, streamDataThunkFor, raceAdapterFor, resolveThunkFor, sniAnswerThunkFor } from "./emit-async.js";
 import { emitNpmEmbedding, islandAdapter, islandTypedAdapter } from "./emit-island.js";
@@ -1346,10 +1347,6 @@ export class CEmitter {
    * cell. Recursion terminates because recursive shapes/unions are rejected
    * by the frontend. */
 
-  dynDesc(t: IrType): string {
-    return dynDesc(this, t);
-  }
-
   islandAdapter(arity: number, retKind: "void" | "jsval" | "f64" | "bool" | "string"): string {
     return islandAdapter(this, arity, retKind);
   }
@@ -1619,15 +1616,6 @@ export class CEmitter {
     for (let i = this.scopes.length - 1; i >= scopeDepth; i--) this.releaseFrame(this.scopes[i]!);
   }
 
-  /** True when the last statement is a jump — its emission already released
-   * everything it had to, and the fall-through releases after it would be
-   * dead double-release code. `throw` counts: it unwinds (to a handler or
-   * out of the function) through the same release path. */
-  endsWithJump(stmts: IrStmt[]): boolean {
-    const last = stmts[stmts.length - 1]?.kind;
-    return last === "return" || last === "break" || last === "continue" || last === "throw" || last === "rethrow" || last === "runtimeFence";
-  }
-
   /** THE unwind path at a point where an exception is pending: release
    * everything between here and the innermost try handler — or the whole
    * function — via releaseForJump, then jump to the handler / return a
@@ -1701,28 +1689,6 @@ export class CEmitter {
     return sym;
   }
 
-  /** True when construction through a classval of `className` can throw:
-   * the runtime callee is the static class's constructor or any strict
-   * descendant's (classval flows never leave the subtree). */
-  newValueMayThrow(className: string): boolean {
-    const meta = this.classMeta.get(className);
-    if (!meta) throw new InternalCompilerError(`emitter bug: newValue on unknown class ${className}`);
-    const any = (m: ClassMeta): boolean =>
-      this.mayThrow.has(`%${m.def.name}.constructor`) || m.children.some(any);
-    return any(meta);
-  }
-
-  /** The undefined arm's tag of a union type, or -1 (not a union / no
-   * undefined arm). A record FIELD with such a type is optional-flavored:
-   * the JSON serializer DROPS it while it holds the undefined arm and the
-   * dynCheck builder produces the undefined arm for a MISSING key — both
-   * exactly Node's optional-field behavior. */
-  undefinedArmTag(t: IrType): number {
-    if (t.kind !== "union") return -1;
-    const def = this.unionsById.get(t.unionId);
-    return def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
-  }
-
   /** The interned immortal instance for a UNIT arm of a union — asserts the
    * arm really is payload-less (undefined/null). */
   internUnitInstance(unionId: string, tag: number): string {
@@ -1764,7 +1730,7 @@ export class CEmitter {
     if (t.kind === "jsval") {
       return [`  o->${mangleField(name)} = scr_jsval_undefined(); /* ${name} starts undefined */`];
     }
-    const tag = this.undefinedArmTag(t);
+    const tag = undefinedArmTag(t, this.unionsById);
     if (tag < 0 || t.kind !== "union") return [];
     return [`  o->${mangleField(name)} = ${this.unitInstanceRef(t.unionId, tag)}; /* ${name} starts undefined */`];
   }

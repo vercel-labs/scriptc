@@ -13,7 +13,7 @@ import { isJsSourceFile, locOf } from "../program.js";
 import { islandPrimitiveExit, lowerDynDispatchMethodCall } from "./lower-calls.js";
 import { typeKey } from "../types.js";
 import { dynUndefinedExpr, own, WidthLift } from "./lowerer.js";
-import { boolLit, numLit, varRef } from "../../ir/build.js";
+import { boolLit, countedFor, numLit, varRef } from "../../ir/build.js";
 
 /** Lower an expression whose checker type is statically `undefined`/`void`.
  * Optional builtin arguments use this before their ordinary expected-type
@@ -1018,19 +1018,8 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       init: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", arrT, loc), args: [], type: F64, loc },
       loc,
     };
-    const forLoop = (body: IrStmt[]): IrStmt => ({
-      kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-      cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
-      update: {
-        kind: "assign",
-        localId: "i.0",
-        value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-        loc,
-      },
-      body,
-      loc,
-    });
+    const forLoop = (body: IrStmt[]): IrStmt =>
+      countedFor(loc, varRef("n.0", F64, loc), () => body);
 
     let returnType: IrType;
     let body: IrStmt[];
@@ -1190,24 +1179,28 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       type: resultT,
       loc,
     };
+    const visit: IrStmt[] = [
+      { kind: "varDecl", localId: "v.0", init: getElemExpr(arrT, elem, loc), loc },
+      {
+        kind: "if",
+        cond: predToBool({
+          kind: "callValue",
+          callee: varRef("f.0", fnT, loc),
+          args: [v, varRef("i.0", F64, loc), varRef("a.0", arrT, loc)].slice(0, arity),
+          type: fnRet,
+          loc,
+        }),
+        then: [{ kind: "return", value: found, loc }],
+        else_: null,
+        loc,
+      },
+    ];
+    const loop = last
+      ? reverseCountedForLoop(loc, visit)
+      : countedFor(loc, varRef("n.0", F64, loc), () => visit);
     const body: IrStmt[] = [
       readLenStmt(arrT, loc),
-      (last ? reverseCountedForLoop : countedForLoop)(loc, [
-        { kind: "varDecl", localId: "v.0", init: getElemExpr(arrT, elem, loc), loc },
-        {
-          kind: "if",
-          cond: predToBool({
-            kind: "callValue",
-            callee: varRef("f.0", fnT, loc),
-            args: [v, varRef("i.0", F64, loc), varRef("a.0", arrT, loc)].slice(0, arity),
-            type: fnRet,
-            loc,
-          }),
-          then: [{ kind: "return", value: found, loc }],
-          else_: null,
-          loc,
-        },
-      ]),
+      loop,
       { kind: "return", value: miss, loc },
     ];
     L.liftedFns.push({
@@ -1245,23 +1238,25 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     const arrT = arrayOf(elem);
     const fnT = funcOf([elem, F64, arrT].slice(0, arity), fnRet);
 
+    const visit: IrStmt[] = [{
+      kind: "if",
+      cond: predToBool({
+        kind: "callValue",
+        callee: varRef("f.0", fnT, loc),
+        args: [getElemExpr(arrT, elem, loc), varRef("i.0", F64, loc), varRef("a.0", arrT, loc)].slice(0, arity),
+        type: fnRet,
+        loc,
+      }),
+      then: [{ kind: "return", value: varRef("i.0", F64, loc), loc }],
+      else_: null,
+      loc,
+    }];
+    const loop = last
+      ? reverseCountedForLoop(loc, visit)
+      : countedFor(loc, varRef("n.0", F64, loc), () => visit);
     const body: IrStmt[] = [
       readLenStmt(arrT, loc),
-      (last ? reverseCountedForLoop : countedForLoop)(loc, [
-        {
-          kind: "if",
-          cond: predToBool({
-            kind: "callValue",
-            callee: varRef("f.0", fnT, loc),
-            args: [getElemExpr(arrT, elem, loc), varRef("i.0", F64, loc), varRef("a.0", arrT, loc)].slice(0, arity),
-            type: fnRet,
-            loc,
-          }),
-          then: [{ kind: "return", value: varRef("i.0", F64, loc), loc }],
-          else_: null,
-          loc,
-        },
-      ]),
+      loop,
       { kind: "return", value: { kind: "numLit", value: -1, type: F64, loc }, loc },
     ];
     L.liftedFns.push({
@@ -1309,7 +1304,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     });
     const body: IrStmt[] = [
       readLenStmt(arrT, loc),
-      countedForLoop(loc, [
+      countedFor(loc, varRef("n.0", F64, loc), () => [
         {
           kind: "if",
           cond: method === "some" ? callF : { kind: "unary", op: "!", operand: callF, type: BOOL, loc },
@@ -1428,7 +1423,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     const body: IrStmt[] = [
       { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: fnRet, loc }, loc },
       readLenStmt(arrT, loc),
-      countedForLoop(loc, [
+      countedFor(loc, varRef("n.0", F64, loc), () => [
         {
           kind: "varDecl",
           localId: "r.0",
@@ -1880,24 +1875,27 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           }]
         : []),
       readLenStmt(arrT, loc),
-      {
-        kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: numLit(1, loc), loc },
-        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
-        update: {
-          kind: "assign",
-          localId: "i.0",
-          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-          loc,
-        },
-        body: [
-          { kind: "varDecl", localId: "v.0", init: getElemExpr(arrT, elem, loc), loc },
-          { kind: "varDecl", localId: "j.0", init: { kind: "bin", op: "-", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
+      countedFor(
+        loc,
+        { kind: "bin", op: "-", left: varRef("n.0", F64, loc), right: numLit(1, loc), type: F64, loc },
+        (index) => [
+          {
+            kind: "varDecl",
+            localId: "v.0",
+            init: {
+              kind: "arrayGet",
+              arr: varRef("a.0", arrT, loc),
+              index: { kind: "bin", op: "+", left: index, right: numLit(1, loc), type: F64, loc },
+              type: elem,
+              loc,
+            },
+            loc,
+          },
+          { kind: "varDecl", localId: "j.0", init: index, loc },
           shiftLoop,
           { kind: "arraySet", arr: varRef("a.0", arrT, loc), index: jPlus1, value: varRef("v.0", elem, loc), loc },
         ],
-        loc,
-      },
+      ),
       { kind: "return", value: varRef("a.0", arrT, loc), loc },
     ];
     return {
@@ -2240,33 +2238,8 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     };
   }
 
-/** `for (i = 0; i < n; i++) { ...body }` over the conventional locals. */
-  function countedForLoop(loc: SrcLoc, body: IrStmt[]): IrStmt {
-    const i: IrExpr = { kind: "varRef", localId: "i.0", type: F64, loc };
-    return {
-      kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: { kind: "numLit", value: 0, type: F64, loc }, loc },
-      cond: {
-        kind: "bin",
-        op: "<",
-        left: i,
-        right: { kind: "varRef", localId: "n.0", type: F64, loc },
-        type: BOOL,
-        loc,
-      },
-      update: {
-        kind: "assign",
-        localId: "i.0",
-        value: { kind: "bin", op: "+", left: i, right: { kind: "numLit", value: 1, type: F64, loc }, type: F64, loc },
-        loc,
-      },
-      body,
-      loc,
-    };
-  }
-
 /** `for (i = n - 1; i >= 0; i--) { ...body }` over the conventional locals
-   * — countedForLoop walked backwards (the findLast pair's descending
+   * — countedFor walked backwards (the findLast pair's descending
    * index walk). */
   function reverseCountedForLoop(loc: SrcLoc, body: IrStmt[]): IrStmt {
     const i: IrExpr = { kind: "varRef", localId: "i.0", type: F64, loc };
@@ -2610,24 +2583,10 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     };
     const body: IrStmt[] = [
       { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
-      {
-        kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-        cond: {
-          kind: "bin",
-          op: "<=",
-          left: varRef("i.0", F64, loc),
-          right: { kind: "bin", op: "-", left: varRef("n.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-          type: BOOL,
-          loc,
-        },
-        update: {
-          kind: "assign",
-          localId: "i.0",
-          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-          loc,
-        },
-        body: [
+      countedFor(
+        loc,
+        { kind: "libCall", fn: "math.floor", args: [varRef("n.0", F64, loc)], type: F64, loc },
+        () => [
           {
             kind: "exprStmt",
             expr: {
@@ -2649,8 +2608,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
             loc,
           },
         ],
-        loc,
-      },
+      ),
       { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
     return {
@@ -2833,17 +2791,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
             };
     const body: IrStmt[] = [
       { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
-      {
-        kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: iter("iterCount", [], F64), type: BOOL, loc },
-        update: {
-          kind: "assign",
-          localId: "i.0",
-          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-          loc,
-        },
-        body: [
+      countedFor(loc, iter("iterCount", [], F64), () => [
           {
             kind: "if",
             cond: iter("iterLive", [varRef("i.0", F64, loc)], BOOL),
@@ -2858,8 +2806,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
             loc,
           },
         ],
-        loc,
-      },
+      ),
       { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
     return {
@@ -2983,24 +2930,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
       expr: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: callArgs, type: fnRet, loc },
       loc,
     });
-    const loop: IrStmt = {
-      kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-      cond: {
-        kind: "bin",
-        op: "<",
-        left: varRef("i.0", F64, loc),
-        right: iter("iterCount", [], F64),
-        type: BOOL,
-        loc,
-      },
-      update: {
-        kind: "assign",
-        localId: "i.0",
-        value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-        loc,
-      },
-      body: [
+    const loop = countedFor(loc, iter("iterCount", [], F64), () => [
         {
           kind: "if",
           cond: iter("iterLive", [varRef("i.0", F64, loc)], BOOL),
@@ -3009,8 +2939,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
           loc,
         },
       ],
-      loc,
-    };
+    );
     const body: IrStmt[] = [
       { kind: "exprStmt", expr: iter("iterEnter", [], VOID), loc },
       {
@@ -3173,24 +3102,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
       expr: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: callArgs, type: fnRet, loc },
       loc,
     });
-    const loop: IrStmt = {
-      kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-      cond: {
-        kind: "bin",
-        op: "<",
-        left: varRef("i.0", F64, loc),
-        right: iter("iterCount", [], F64),
-        type: BOOL,
-        loc,
-      },
-      update: {
-        kind: "assign",
-        localId: "i.0",
-        value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-        loc,
-      },
-      body: [
+    const loop = countedFor(loc, iter("iterCount", [], F64), () => [
         {
           kind: "if",
           cond: iter("iterLive", [varRef("i.0", F64, loc)], BOOL),
@@ -3199,8 +3111,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
           loc,
         },
       ],
-      loc,
-    };
+    );
     const body: IrStmt[] = [
       { kind: "exprStmt", expr: iter("iterEnter", [], VOID), loc },
       {
@@ -3403,12 +3314,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
         loc,
       },
       { kind: "varDecl", localId: "n.0", init: { kind: "arrIntrinsic", method: "length", receiver: varRef("items.0", itemsT, loc), args: [], type: F64, loc }, loc },
-      {
-        kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
-        update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
-        body: [
+      countedFor(loc, varRef("n.0", F64, loc), () => [
           { kind: "varDecl", localId: "v.0", init: { kind: "arrayGet", arr: varRef("items.0", itemsT, loc), index: varRef("i.0", F64, loc), type: elem, loc }, loc },
           { kind: "varDecl", localId: "k.0", init: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: callArgs, type: keyT, loc }, loc },
           { kind: "varDecl", localId: "cur.0", init: groupRead(), loc },
@@ -3433,8 +3339,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
             loc,
           },
         ],
-        loc,
-      },
+      ),
       { kind: "return", value: gRef(), loc },
     ];
     return {
@@ -4838,24 +4743,10 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
     const e = varRef("e.0", tupleT, loc);
     const body: IrStmt[] = [
       { kind: "varDecl", localId: "m.0", init: { kind: "mapNew", type: mapT, loc }, loc },
-      {
-        kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-        cond: {
-          kind: "bin",
-          op: "<",
-          left: varRef("i.0", F64, loc),
-          right: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", arrT, loc), args: [], type: F64, loc },
-          type: BOOL,
-          loc,
-        },
-        update: {
-          kind: "assign",
-          localId: "i.0",
-          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-          loc,
-        },
-        body: [
+      countedFor(
+        loc,
+        { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", arrT, loc), args: [], type: F64, loc },
+        () => [
           { kind: "varDecl", localId: "e.0", init: getElemExpr(arrT, tupleT, loc), loc },
           {
             kind: "exprStmt",
@@ -4873,8 +4764,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
             loc,
           },
         ],
-        loc,
-      },
+      ),
       { kind: "return", value: varRef("m.0", mapT, loc), loc },
     ];
     return {
@@ -6416,29 +6306,11 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
               };
       body.push(
         { kind: "varDecl", localId: "ks.0", init: { kind: "recordOvfKeys", obj: rRef, shapeId: argIr.shapeId, type: ksT, loc }, loc },
-        {
-          kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-          cond: {
-            kind: "bin",
-            op: "<",
-            left: varRef("i.0", F64, loc),
-            right: { kind: "arrIntrinsic", method: "length", receiver: ksRef, args: [], type: F64, loc },
-            type: BOOL,
-            loc,
-          },
-          update: {
-            kind: "assign",
-            localId: "i.0",
-            value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-            loc,
-          },
-          body: [
+        countedFor(loc, { kind: "arrIntrinsic", method: "length", receiver: ksRef, args: [], type: F64, loc }, () => [
             { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: ksRef, index: varRef("i.0", F64, loc), type: STRING, loc }, loc },
             push(loopPushed),
           ],
-          loc,
-        },
+        ),
         { kind: "return", value: outRef, loc },
       );
       const suffix = body.slice(1 + fieldStmts.size);
@@ -6540,39 +6412,25 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
     if (!helper) {
       helper = `%obj.fromEntries.${L.arrHofHelpers.size}`;
 
-      const tRef = varRef("t.0", argIr.elem, loc);
+      const tupleT = argIr.elem as IrType & { kind: "record" };
+      const tRef = varRef("t.0", tupleT, loc);
       const body: IrStmt[] = [
         { kind: "varDecl", localId: "out.0", init: { kind: "recordLit", fields: [], type: resultT, loc }, loc },
-        {
-          kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-          cond: {
-            kind: "bin",
-            op: "<",
-            left: varRef("i.0", F64, loc),
-            right: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", argIr, loc), args: [], type: F64, loc },
-            type: BOOL,
-            loc,
-          },
-          update: {
-            kind: "assign",
-            localId: "i.0",
-            value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-            loc,
-          },
-          body: [
-            { kind: "varDecl", localId: "t.0", init: { kind: "arrayGet", arr: varRef("a.0", argIr, loc), index: varRef("i.0", F64, loc), type: argIr.elem, loc }, loc },
+        countedFor(
+          loc,
+          { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", argIr, loc), args: [], type: F64, loc },
+          () => [
+            { kind: "varDecl", localId: "t.0", init: { kind: "arrayGet", arr: varRef("a.0", argIr, loc), index: varRef("i.0", F64, loc), type: tupleT, loc }, loc },
             {
               kind: "recordKeySet",
               obj: varRef("out.0", resultT, loc),
               shapeId: resultT.shapeId,
-              key: { kind: "recordGet", obj: tRef, shapeId: argIr.elem.shapeId, field: "0", type: STRING, loc },
-              value: convert({ kind: "recordGet", obj: tRef, shapeId: argIr.elem.shapeId, field: "1", type: valT, loc })!,
+              key: { kind: "recordGet", obj: tRef, shapeId: tupleT.shapeId, field: "0", type: STRING, loc },
+              value: convert({ kind: "recordGet", obj: tRef, shapeId: tupleT.shapeId, field: "1", type: valT, loc })!,
               loc,
             },
           ],
-          loc,
-        },
+        ),
         { kind: "return", value: varRef("out.0", resultT, loc), loc },
       ];
       L.arrHofHelpers.set(key, helper);
@@ -6584,7 +6442,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
           { id: "a.0", name: "a", type: argIr, mutable: true },
           { id: "out.0", name: "out", type: resultT, mutable: false },
           { id: "i.0", name: "i", type: F64, mutable: true },
-          { id: "t.0", name: "t", type: argIr.elem, mutable: false },
+          { id: "t.0", name: "t", type: tupleT, mutable: false },
         ],
         body,
         loc,
@@ -6623,24 +6481,10 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
         ({ kind: "bin", op: ">=", left: rowLen, right: numLit(n, loc), type: BOOL, loc });
       const body: IrStmt[] = [
         { kind: "varDecl", localId: "out.0", init: { kind: "recordLit", fields: [], type: resultT, loc }, loc },
-        {
-          kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-          cond: {
-            kind: "bin",
-            op: "<",
-            left: varRef("i.0", F64, loc),
-            right: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", argIr, loc), args: [], type: F64, loc },
-            type: BOOL,
-            loc,
-          },
-          update: {
-            kind: "assign",
-            localId: "i.0",
-            value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-            loc,
-          },
-          body: [
+        countedFor(
+          loc,
+          { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", argIr, loc), args: [], type: F64, loc },
+          () => [
             { kind: "varDecl", localId: "t.0", init: { kind: "arrayGet", arr: varRef("a.0", argIr, loc), index: varRef("i.0", F64, loc), type: rowT, loc }, loc },
             {
               kind: "recordKeySet",
@@ -6672,8 +6516,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
               loc,
             },
           ],
-          loc,
-        },
+        ),
         { kind: "return", value: varRef("out.0", resultT, loc), loc },
       ];
       L.arrHofHelpers.set(key, helper);
@@ -6882,24 +6725,10 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
       const ovfLift = slotLift(fIv)!;
       body.push(
         { kind: "varDecl", localId: "ks.0", init: { kind: "recordOvfKeys", obj: sRef, shapeId: fromId, type: ksT, loc }, loc },
-        {
-          kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-          cond: {
-            kind: "bin",
-            op: "<",
-            left: varRef("i.0", F64, loc),
-            right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc },
-            type: BOOL,
-            loc,
-          },
-          update: {
-            kind: "assign",
-            localId: "i.0",
-            value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-            loc,
-          },
-          body: [
+        countedFor(
+          loc,
+          { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc },
+          () => [
             { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: varRef("ks.0", ksT, loc), index: varRef("i.0", F64, loc), type: STRING, loc }, loc },
             {
               kind: "recordKeySet",
@@ -6910,8 +6739,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
               loc,
             },
           ],
-          loc,
-        },
+        ),
       );
     }
     body.push({ kind: "return", value: outRef, loc });
@@ -7058,38 +6886,24 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
       const fromShape = L.shapes.get(plan.fromId)!;
       if (plan.ovfLift !== null && fromShape.indexValue) {
         const fIv = fromShape.indexValue;
+        const ovfLift = plan.ovfLift;
         body.push(
           { kind: "varDecl", localId: "ks.0", init: { kind: "recordOvfKeys", obj: sRef, shapeId: plan.fromId, type: ksT, loc }, loc },
-          {
-            kind: "for",
-            init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-            cond: {
-              kind: "bin",
-              op: "<",
-              left: varRef("i.0", F64, loc),
-              right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc },
-              type: BOOL,
-              loc,
-            },
-            update: {
-              kind: "assign",
-              localId: "i.0",
-              value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-              loc,
-            },
-            body: [
+          countedFor(
+            loc,
+            { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc },
+            () => [
               { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: varRef("ks.0", ksT, loc), index: varRef("i.0", F64, loc), type: STRING, loc }, loc },
               {
                 kind: "recordKeySet",
                 obj: tRef,
                 shapeId: targetIr.shapeId,
                 key: varRef("k.0", STRING, loc),
-                value: intoSlot({ kind: "recordKeyGet", obj: sRef, shapeId: plan.fromId, key: varRef("k.0", STRING, loc), overflowOnly: true, type: fIv, loc }, plan.ovfLift),
+                value: intoSlot({ kind: "recordKeyGet", obj: sRef, shapeId: plan.fromId, key: varRef("k.0", STRING, loc), overflowOnly: true, type: fIv, loc }, ovfLift),
                 loc,
               },
             ],
-            loc,
-          },
+          ),
         );
       }
       body.push({ kind: "return", value: tRef, loc });
@@ -7576,14 +7390,11 @@ export type IndexMergeContributor =
       innerBody.push(writeFor(varRef("k.0", STRING, loc), rawRef, iv));
       body.push(
         { kind: "varDecl", localId: "ks.0", init: { kind: "recordOvfKeys", obj: sRef, shapeId, type: ksT, loc }, loc },
-        {
-          kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-          cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc }, type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
-          body: innerBody,
+        countedFor(
           loc,
-        },
+          { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc },
+          () => innerBody,
+        ),
       );
     }
     body.push({ kind: "return", value: outRef, loc });
@@ -7875,12 +7686,7 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
         loc,
       },
       { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
-      {
-        kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
-        update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
-        body: [
+      countedFor(loc, varRef("n.0", F64, loc), () => [
           {
             kind: "varDecl",
             localId: "v.0",
@@ -7927,8 +7733,7 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
             loc,
           },
         ],
-        loc,
-      },
+      ),
       { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
     return {
@@ -8000,12 +7805,7 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
         loc,
       },
       { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
-      {
-        kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
-        update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
-        body: [
+      countedFor(loc, varRef("n.0", F64, loc), () => [
           {
             kind: "varDecl",
             localId: "v.0",
@@ -8039,8 +7839,7 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
             loc,
           },
         ],
-        loc,
-      },
+      ),
       { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
     return {

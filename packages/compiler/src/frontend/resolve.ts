@@ -339,14 +339,13 @@ const EXPORT_CONDITIONS = new Set(["types", "import", "default"]);
 const JS_ONLY_CONDITIONS = new Set(["import", "default"]);
 
 /** package.json "exports" lookup: exact subpath keys, then '*' patterns
- * (longest literal prefix wins), condition objects in object-key order,
- * arrays first-resolvable. Returns the target path relative to the package
- * directory, or null. Mirrors npm.ts's runtime resolver with the TYPES
- * condition set. */
-function resolveExportsTypes(
+ * (longest literal prefix wins), condition objects matched against the
+ * supplied set in object-key order, arrays first-resolvable. Returns the
+ * target path relative to the package directory, or null. */
+export function resolveExports(
   exports: unknown,
   subpath: string,
-  conditions: ReadonlySet<string> = EXPORT_CONDITIONS,
+  conditions: ReadonlySet<string>,
 ): string | null {
   const resolveTarget = (target: unknown, wildcard: string | null): string | null => {
     if (typeof target === "string") {
@@ -465,7 +464,7 @@ function resolveImportsField(imports: unknown, specifier: string): string | null
     if (!k.startsWith("#")) continue;
     rekeyed["." + k.slice(1)] = v;
   }
-  return resolveExportsTypes(rekeyed, "." + specifier.slice(1));
+  return resolveExports(rekeyed, "." + specifier.slice(1), EXPORT_CONDITIONS);
 }
 
 /** Absolute path of the nearest package.json at or above `fromFile`'s
@@ -538,7 +537,7 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
     const pkgName = parts.slice(0, nameLen).join("/");
     if (pkgName !== pkg.name || parts.length < nameLen) return null;
     const subpath = parts.length === nameLen ? "." : "./" + parts.slice(nameLen).join("/");
-    target = resolveExportsTypes(pkg.exports, subpath);
+    target = resolveExports(pkg.exports, subpath, EXPORT_CONDITIONS);
   }
   if (target === null) return null;
   const path = join(pkgDir, target);
@@ -746,7 +745,7 @@ export function resolveBareModule(
           })()
         : rawPkg;
     if (pkg?.exports !== undefined) {
-      const target = resolveExportsTypes(pkg.exports, subpath, conditions);
+      const target = resolveExports(pkg.exports, subpath, conditions);
       if (target !== null) {
         const file = loadTargetInPass(nmPkgDir, target, pass);
         if (file) return withWorkspace(packageAnswer(nmPkgDir, name, file));

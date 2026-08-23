@@ -62,6 +62,7 @@ import { InternalCompilerError } from "../../errors.js";
  * lazy-inflate representation as the C debugging backend.
  */
 import { deflateRawSync } from "node:zlib";
+import { endsWithJump, isStableBytesOperand, newValueMayThrow, streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
 import { emitLibraryIdentityLines } from "../library-identity.js";
 import type {
   IrBytesElem,
@@ -2952,14 +2953,6 @@ class LlEmitter {
     return `@${sym}`;
   }
 
-  /** The undefined arm's tag of a union type, or -1 (not a union / no
-   * undefined arm). */
-  undefinedArmTag(t: IrType): number {
-    if (t.kind !== "union") return -1;
-    const def = this.unionsById.get(t.unionId);
-    return def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
-  }
-
   declare(decl: string): void {
     this.decls.add(decl);
   }
@@ -3045,12 +3038,6 @@ class LlEmitter {
   private releaseForJump(frameDepth: number, scopeDepth: number): void {
     for (let i = this.frames.length - 1; i >= frameDepth; i--) this.releaseFrame(this.frames[i]!);
     for (let i = this.scopes.length - 1; i >= scopeDepth; i--) this.releaseScope(this.scopes[i]!);
-  }
-
-  private endsWithJump(stmts: IrStmt[]): boolean {
-    const last = stmts[stmts.length - 1]?.kind;
-    return last === "return" || last === "break" || last === "continue" ||
-      last === "throw" || last === "rethrow" || last === "runtimeFence";
   }
 
   /** THE unwind path at a point where an exception is pending: release
@@ -3380,15 +3367,6 @@ class LlEmitter {
     const meta = this.classMeta.get(className);
     if (!meta) throw new InternalCompilerError(`llvm emitter bug: unknown class ${className}`);
     return meta;
-  }
-
-  /** True when construction through a classval of `className` can throw:
-   * the runtime callee is the static class's constructor or any strict
-   * descendant's (classval flows never leave the subtree). */
-  private newValueMayThrow(className: string): boolean {
-    const any = (m: LlClassMeta): boolean =>
-      this.mayThrow.has(`%${m.def.name}.constructor`) || m.children.some(any);
-    return any(this.classMetaOf(className));
   }
 
   /** The field-slot pointer of a class member: rc at 0, the vtable word at
@@ -3890,7 +3868,7 @@ class LlEmitter {
     this.scopes.push(scope);
     setup?.(scope);
     this.emitStmts(stmts);
-    const ended = this.endsWithJump(stmts);
+    const ended = endsWithJump(stmts);
     this.scopes.pop();
     if (!ended) this.releaseScope(scope);
   }
@@ -4388,7 +4366,7 @@ class LlEmitter {
           if (isRefCounted(elem)) this.scopes[this.scopes.length - 1]!.push({ slot, type: elem });
         }
         this.emitStmts(s.body);
-        const endedWithJump = this.endsWithJump(s.body);
+        const endedWithJump = endsWithJump(s.body);
         const scope = this.scopes.pop()!;
         if (!endedWithJump) this.releaseScope(scope);
         this.jumpTargets.pop();
@@ -4753,7 +4731,7 @@ class LlEmitter {
     // Natural fall-off of the last body releases the shared scope; a jump
     // already released it before jumping.
     const lastBody = s.cases[s.cases.length - 1]?.body;
-    if (!lastBody || !this.endsWithJump(lastBody)) this.releaseScope(scope);
+    if (!lastBody || !endsWithJump(lastBody)) this.releaseScope(scope);
     B.br(end);
     B.startBlock(end);
   }
@@ -5133,31 +5111,12 @@ class LlEmitter {
         const acc = elemAccess(elem);
         let fill = acc === "f64" ? f64Lit(0) : acc === "bool" ? "false" : "null";
         if (elem.kind === "union") {
-          const tag = this.undefinedArmTag(elem);
+          const tag = undefinedArmTag(elem, this.unionsById);
           if (tag >= 0) fill = this.unitInstanceRef(elem.unionId, tag);
         }
-        const iSlot = B.slot();
-        B.entryAllocas.push(`${iSlot} = alloca double`);
-        B.line(`store double ${f64Lit(0)}, ptr ${iSlot}`);
-        const lc = B.newLabel("anl.c");
-        const lb = B.newLabel("anl.b");
-        const le = B.newLabel("anl.e");
         const bound = B.tmp();
         B.line(`${bound} = fsub double ${n.name}, ${f64Lit(1)}`);
-        B.br(lc);
-        B.startBlock(lc);
-        const i = B.tmp();
-        const cont = B.tmp();
-        B.line(`${i} = load double, ptr ${iSlot}`);
-        B.line(`${cont} = fcmp ole double ${i}, ${bound}`);
-        B.condBr(cont, lb, le);
-        B.startBlock(lb);
-        this.arrPush(arr, acc, fill);
-        const i2 = B.tmp();
-        B.line(`${i2} = fadd double ${i}, ${f64Lit(1)}`);
-        B.line(`store double ${i2}, ptr ${iSlot}`);
-        B.br(lc);
-        B.startBlock(le);
+        B.countedLoop(bound, () => this.arrPush(arr, acc, fill), "ole");
         return out;
       }
       case "arrayGet": {
@@ -5887,7 +5846,7 @@ class LlEmitter {
           return this.own({ name: t, type: e.type });
         }
         if (e.type.kind !== "union") throw new LlvmUnsupportedError(`optChainResult:${e.type.kind}`, e.loc);
-        const undefTag = this.undefinedArmTag(e.type);
+        const undefTag = undefinedArmTag(e.type, this.unionsById);
         if (undefTag < 0) throw new InternalCompilerError("llvm emitter bug: optChain result lacks its undefined arm");
         const ty = this.llType(e.type);
         const slot = B.slot();
@@ -6588,7 +6547,7 @@ class LlEmitter {
         const t = B.tmp();
         B.line(`${t} = call ptr ${thunk}(${argList})`);
         const out = this.own({ name: t, type: e.type });
-        if (this.newValueMayThrow(cls)) this.emitPendingCheck();
+        if (newValueMayThrow(cls, this.classMeta, this.mayThrow)) this.emitPendingCheck();
         return out;
       }
       case "seqExpr": {
@@ -7288,7 +7247,7 @@ class LlEmitter {
             B.line(`${boxed} = call ptr @${adapter}(ptr ${v.name})`);
             return this.own({ name: boxed, type: e.type });
           }
-          if (!this.streamTypedRefEligible(v.type)) {
+          if (!streamTypedRefEligible(v.type)) {
             throw new InternalCompilerError(`llvm emitter bug: live dyn ref of ${typeKey(v.type)}`);
           }
           const key = typeKey(v.type);
@@ -8205,7 +8164,7 @@ class LlEmitter {
           B.line(`${t} = call ${this.llType(e.type)} @${helper}(ptr ${dom}, ptr null)`);
           return t;
         };
-        const undefTag = e.type.kind === "union" ? this.undefinedArmTag(e.type) : -1;
+        const undefTag = e.type.kind === "union" ? undefinedArmTag(e.type, this.unionsById) : -1;
         if (e.type.kind === "union" && undefTag >= 0) {
           this.declare(`declare zeroext i1 @scr_jsval_is_undefined(ptr)`);
           const isU = B.tmp();
@@ -8438,7 +8397,7 @@ class LlEmitter {
           this.declare(`declare ptr @scr_json_parse(ptr)`);
           this.declare(`declare void @scr_str_release(ptr)`);
           this.declare(`declare void @scr_dyn_release(ptr)`);
-          const utag = p.kind === "union" ? this.undefinedArmTag(p) : -1;
+          const utag = p.kind === "union" ? undefinedArmTag(p, this.unionsById) : -1;
           const b = blk++;
           if (p.kind === "union" && utag >= 0) {
             this.declare(`declare zeroext i1 @scr_jsval_is_undefined(ptr)`);
@@ -9886,28 +9845,11 @@ class LlEmitter {
     this.declare(`declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`);
     const len = B.tmp();
     B.line(`${len} = call double @scr_arr_len(ptr ${src})`);
-    const iSlot = B.slot();
-    B.entryAllocas.push(`${iSlot} = alloca double`);
-    B.line(`store double ${f64Lit(0)}, ptr ${iSlot}`);
-    const lc = B.newLabel("cp.c");
-    const lb = B.newLabel("cp.b");
-    const le = B.newLabel("cp.e");
-    B.br(lc);
-    B.startBlock(lc);
-    const i = B.tmp();
-    const cont = B.tmp();
-    B.line(`${i} = load double, ptr ${iSlot}`);
-    B.line(`${cont} = fcmp olt double ${i}, ${len}`);
-    B.condBr(cont, lb, le);
-    B.startBlock(lb);
-    const v = B.tmp();
-    B.line(`${v} = call ${accTy} @scr_arr_get_${acc}(ptr ${src}, double ${i})`);
-    this.arrPush(dst, acc, v);
-    const i2 = B.tmp();
-    B.line(`${i2} = fadd double ${i}, ${f64Lit(1)}`);
-    B.line(`store double ${i2}, ptr ${iSlot}`);
-    B.br(lc);
-    B.startBlock(le);
+    B.countedLoop(len, (i) => {
+      const v = B.tmp();
+      B.line(`${v} = call ${accTy} @scr_arr_get_${acc}(ptr ${src}, double ${i})`);
+      this.arrPush(dst, acc, v);
+    });
   }
 
   private emitStrIntrinsic(e: IrExpr & { kind: "strIntrinsic" }): LlValue {
@@ -10215,7 +10157,7 @@ class LlEmitter {
         if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: shift result is not a union");
         const def = this.unionsById.get(e.type.unionId);
         const tag = def ? def.arms.findIndex((a) => typeEquals(a, elem)) : -1;
-        const undefTag = this.undefinedArmTag(e.type);
+        const undefTag = undefinedArmTag(e.type, this.unionsById);
         if (tag < 0 || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: shift union lacks its arms");
         this.declare(`declare double @scr_arr_len(ptr)`);
         const slot = B.slot();
@@ -10342,7 +10284,7 @@ class LlEmitter {
         const k = this.emitExpr(e.args[0]!);
         if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: map get result is not a union");
         const def = this.unionsById.get(e.type.unionId);
-        const undefTag = this.undefinedArmTag(e.type);
+        const undefTag = undefinedArmTag(e.type, this.unionsById);
         if (!def || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: map get union lacks its undefined arm");
         const absent = this.unitInstanceRef(e.type.unionId, undefTag);
         if (value.kind === "union") {
@@ -10520,59 +10462,12 @@ class LlEmitter {
     return out;
   }
 
-  /** Whether an index/value expression can overwrite the bytes receiver
-   * binding. Kept deliberately conservative; uncertain or calling shapes
-   * retain the ordinary owned-receiver snapshot. */
-  private isStableBytesOperand(e: IrExpr, receiverLocalId: string): boolean {
-    switch (e.kind) {
-      case "numLit":
-      case "boolLit":
-      case "varRef":
-      case "incDec":
-        return true;
-      case "assignExpr":
-        // A bytes assignment nested under truthiness/ternary can still
-        // produce the numeric index/value expected by the outer access.
-        return (
-          e.localId !== receiverLocalId &&
-          this.isStableBytesOperand(e.value, receiverLocalId)
-        );
-      case "bin":
-        return (
-          this.isStableBytesOperand(e.left, receiverLocalId) &&
-          this.isStableBytesOperand(e.right, receiverLocalId)
-        );
-      case "unary":
-      case "toBool":
-        return this.isStableBytesOperand(e.operand, receiverLocalId);
-      case "logical":
-        return (
-          this.isStableBytesOperand(e.left, receiverLocalId) &&
-          this.isStableBytesOperand(e.right, receiverLocalId)
-        );
-      case "ternary":
-        return (
-          this.isStableBytesOperand(e.cond, receiverLocalId) &&
-          this.isStableBytesOperand(e.then, receiverLocalId) &&
-          this.isStableBytesOperand(e.else_, receiverLocalId)
-        );
-      case "bytesIntrinsic":
-        return (
-          (e.method === "get" || e.method === "length" || e.method === "byteLength") &&
-          e.receiver.kind === "varRef" &&
-          e.args.every((arg) => this.isStableBytesOperand(arg, receiverLocalId))
-        );
-      default:
-        return false;
-    }
-  }
-
   /** Borrow a direct, unboxed bytes binding when later operands are stable.
    * Its scope/global owner keeps it alive through the access. */
   private emitBytesReceiver(receiver: IrExpr, following: IrExpr[]): LlValue {
     if (
       receiver.kind === "varRef" &&
-      following.every((operand) => this.isStableBytesOperand(operand, receiver.localId))
+      following.every((operand) => isStableBytesOperand(operand, receiver.localId))
     ) {
       const b = this.binding(receiver.localId);
       if (b.kind !== "boxed") {
@@ -11353,12 +11248,12 @@ class LlEmitter {
       B.br(join);
       return;
     }
-    if (resultType.kind !== "union" || this.undefinedArmTag(resultType) < 0) {
+    if (resultType.kind !== "union" || undefinedArmTag(resultType, this.unionsById) < 0) {
       this.keyedRecordReadDirectInto(slot, join, objName, keyName, shapeId, resultType, overflowOnly, loc);
       return;
     }
     const def = this.unionsById.get(resultType.unionId)!;
-    const undefTag = this.undefinedArmTag(resultType);
+    const undefTag = undefinedArmTag(resultType, this.unionsById);
     const ty = this.llType(resultType);
     // How a hit of type `vt` surfaces as the result union (the C helper's
     // `surface`): the same union passes through; anything else wraps into
@@ -11701,7 +11596,7 @@ class LlEmitter {
     }
     const mutableArms = union.arms
       .map((arm, tag) => ({ arm, tag }))
-      .filter(({ arm }) => this.streamTypedRefEligible(arm));
+      .filter(({ arm }) => streamTypedRefEligible(arm));
     if (mutableArms.length === 0) {
       throw new InternalCompilerError(`llvm emitter bug: live dyn ref of immutable union ${key}`);
     }
@@ -11766,10 +11661,6 @@ class LlEmitter {
     return sym;
   }
 
-  private streamTypedRefEligible(t: IrType): boolean {
-    return t.kind === "record" || t.kind === "array" || t.kind === "bytes";
-  }
-
   private streamTypedRefBoxValue(
     B: BlockBuilder,
     t: IrType,
@@ -11777,7 +11668,7 @@ class LlEmitter {
     ctx: LlStreamTypedRefContext,
   ): string {
     const boxed = B.tmp();
-    if (!this.streamTypedRefEligible(t)) {
+    if (!streamTypedRefEligible(t)) {
       const valueTy = t.kind === "f64"
         ? "double"
         : t.kind === "bool"
@@ -11905,43 +11796,26 @@ class LlEmitter {
       B.line(`${out} = call ptr @scr_dyn_new_arr()`);
       const len = B.tmp();
       B.line(`${len} = call double @scr_arr_len(ptr %p)`);
-      const iSlot = B.slot();
-      B.entryAllocas.push(`${iSlot} = alloca double`);
-      B.line(`store double ${f64Lit(0)}, ptr ${iSlot}`);
-      const condition = B.newLabel("strm.c");
-      const body = B.newLabel("strm.b");
-      const done = B.newLabel("strm.e");
-      B.br(condition);
-      B.startBlock(condition);
-      const index = B.tmp();
-      const more = B.tmp();
-      B.line(`${index} = load double, ptr ${iSlot}`);
-      B.line(`${more} = fcmp olt double ${index}, ${len}`);
-      B.condBr(more, body, done);
-      B.startBlock(body);
-      let value: string;
-      if (elem.kind === "f64" || elem.kind === "bool") {
-        const valueTy = elem.kind === "f64" ? "double" : "i1";
-        this.declare(
-          `declare ${elem.kind === "bool" ? "zeroext i1" : valueTy} @scr_arr_get_${elem.kind}(ptr, double)`,
-        );
-        value = B.tmp();
-        B.line(`${value} = call ${valueTy} @scr_arr_get_${elem.kind}(ptr %p, double ${index})`);
-      } else {
-        this.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
-        value = B.tmp();
-        B.line(`${value} = call ptr @scr_arr_get_ref(ptr %p, double ${index}) ; +1`);
-      }
-      const boxed = this.streamTypedRefBoxValue(B, elem, value, ctx);
-      B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${boxed})`);
-      if (isRefCounted(elem)) {
-        B.line(`call void ${releaseSym(this, elem)}(ptr ${value})`);
-      }
-      const next = B.tmp();
-      B.line(`${next} = fadd double ${index}, ${f64Lit(1)}`);
-      B.line(`store double ${next}, ptr ${iSlot}`);
-      B.br(condition);
-      B.startBlock(done);
+      B.countedLoop(len, (index) => {
+        let value: string;
+        if (elem.kind === "f64" || elem.kind === "bool") {
+          const valueTy = elem.kind === "f64" ? "double" : "i1";
+          this.declare(
+            `declare ${elem.kind === "bool" ? "zeroext i1" : valueTy} @scr_arr_get_${elem.kind}(ptr, double)`,
+          );
+          value = B.tmp();
+          B.line(`${value} = call ${valueTy} @scr_arr_get_${elem.kind}(ptr %p, double ${index})`);
+        } else {
+          this.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
+          value = B.tmp();
+          B.line(`${value} = call ptr @scr_arr_get_ref(ptr %p, double ${index}) ; +1`);
+        }
+        const boxed = this.streamTypedRefBoxValue(B, elem, value, ctx);
+        B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${boxed})`);
+        if (isRefCounted(elem)) {
+          B.line(`call void ${releaseSym(this, elem)}(ptr ${value})`);
+        }
+      });
       B.terminate(`ret ptr ${out}`);
     } else {
       const out = B.tmp();
@@ -12077,7 +11951,7 @@ class LlEmitter {
       const rc = vAdapters(this, elem);
       const keyPtr = this.cstr(key);
       let commit: string;
-      if (this.streamTypedRefEligible(elem)) {
+      if (streamTypedRefEligible(elem)) {
         commit = this.streamTypedRefMaterializeAdapter(
           elem,
           { prefix: snapshot, adapters: new Map() },
@@ -12659,7 +12533,7 @@ class LlEmitter {
       if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: spawnRes.error result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const errTag = def ? def.arms.findIndex((a) => a.kind === "object" && a.className === "%Error") : -1;
-      const undefTag = this.undefinedArmTag(e.type);
+      const undefTag = undefinedArmTag(e.type, this.unionsById);
       if (errTag < 0 || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: spawnRes.error union lacks its arms");
       const recv = this.emitExpr(e.args[0]!);
       this.declare(`declare ptr @scr_spawn_res_error(ptr)`);
@@ -12937,7 +12811,7 @@ class LlEmitter {
         } else {
           const st = shape.fields.find((f) => f.name === "scopeid")?.type;
           if (st?.kind !== "union") throw new InternalCompilerError("llvm emitter bug: networkInterfaces IPv4 scopeid type");
-          const undefTag = this.undefinedArmTag(st);
+          const undefTag = undefinedArmTag(st, this.unionsById);
           const su = B.tmp();
           B.line(`${su} = call ptr @scr_union_retain_v(ptr ${this.unitInstanceRef(st.unionId, undefTag)})`);
           B.line(`store ptr ${su}, ptr ${this.recordFieldPtr(r, t.shapeId, "scopeid").ptr}`);
@@ -13823,7 +13697,7 @@ class LlEmitter {
       if (e.type.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
       const def = this.unionsById.get(e.type.unionId);
       const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-      const undefTag = this.undefinedArmTag(e.type);
+      const undefTag = undefinedArmTag(e.type, this.unionsById);
       if (strTag < 0 || undefTag < 0) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
       const entry = {
         "net.sockRemoteAddress": "scr_net_sock_remote_address",
@@ -13843,7 +13717,7 @@ class LlEmitter {
       if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: net.sockEncrypted result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const boolTag = def ? def.arms.findIndex((a) => a.kind === "bool") : -1;
-      const undefTag = this.undefinedArmTag(e.type);
+      const undefTag = undefinedArmTag(e.type, this.unionsById);
       if (boolTag < 0 || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: net.sockEncrypted union lacks its arms");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare zeroext i1 @scr_net_sock_encrypted(ptr)`);
@@ -13875,7 +13749,7 @@ class LlEmitter {
       if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: http.reqStatusCode result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
-      const undefTag = this.undefinedArmTag(e.type);
+      const undefTag = undefinedArmTag(e.type, this.unionsById);
       if (f64Tag < 0 || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: http.reqStatusCode union lacks its arms");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare double @scr_http_req_status(ptr)`);
@@ -14100,7 +13974,7 @@ class LlEmitter {
       if (e.type.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
       const def = this.unionsById.get(e.type.unionId);
       const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-      const undefTag = this.undefinedArmTag(e.type);
+      const undefTag = undefinedArmTag(e.type, this.unionsById);
       if (strTag < 0 || undefTag < 0) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
       const v = this.emitExpr(e.args[0]!);
       const sym = e.fn === "sym.desc" ? "scr_sym_desc" : "scr_sym_key_for";
@@ -14142,7 +14016,7 @@ class LlEmitter {
       if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: error.code result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-      const undefTag = this.undefinedArmTag(e.type);
+      const undefTag = undefinedArmTag(e.type, this.unionsById);
       if (strTag < 0 || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: error.code union lacks its arms");
       const recv = this.emitExpr(e.args[0]!);
       this.declare(`declare ptr @scr_error_code(ptr)`);
@@ -14167,7 +14041,7 @@ class LlEmitter {
       // the interned immortal undefined-arm instance.
       if (e.type.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
       const def = this.unionsById.get(e.type.unionId);
-      const undefTag = this.undefinedArmTag(e.type);
+      const undefTag = undefinedArmTag(e.type, this.unionsById);
       const isEnv = e.fn === "process.envGet";
       const valTag = def ? def.arms.findIndex((a) => a.kind === (isEnv ? "string" : "f64")) : -1;
       if (valTag < 0 || undefTag < 0) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);

@@ -8,70 +8,10 @@ import { InternalCompilerError } from "../../errors.js";
  * CEmitter and these functions only consult them through it. */
 import type { CEmitter } from "./emitter.js";
 import { DYN_HANDLE_KINDS, IrType, isRefCounted, typeEquals, typeKey } from "../../ir/nodes.js";
+import { dynDesc, undefinedArmTag } from "../../ir/analysis.js";
 import { cDecl, cStringLiteral, cType, elemAccess, releaseCallC, retainCallC, vAdapters } from "./emit-types.js";
 import { mangleField, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { OVERFLOW_MEMBER } from "./emit-shapes.js";
-
-/** Short human description of a dynCheck target for error messages
-   * ("expected number | string at $.items[2]"). Records read as "object" —
-   * the path already says where; the full shape would bloat messages. */
-  export function dynDesc(E: CEmitter, t: IrType): string {
-    switch (t.kind) {
-      case "f64":
-        return "number";
-      case "string":
-        return "string";
-      case "bool":
-        return "boolean";
-      case "record":
-        // Tuples read as "array": that IS the JSON representation the
-        // caller must supply (arity failures carry their own message).
-        return E.recordsById.get(t.shapeId)?.tuple ? "array" : "object";
-      case "array":
-        return "array";
-      case "nullT":
-        return "null";
-      // Reachable through optional-flavored record fields ("expected
-      // string | undefined at $.a" — honest: the fix is a string value OR
-      // omitting the key).
-      case "undefinedT":
-        return "undefined";
-      // dyn fields accept any dyn value — only reachable in messages as a
-      // sibling of a failing field, never as the failure itself.
-      case "dyn":
-        return "unknown";
-      case "bytes":
-        return "Uint8Array";
-      // The %Error extraction (an instanceof-Error narrow / cast on an
-      // unknown value): the failure names the class, like caughtCheck's.
-      case "object":
-        return t.className.replace(/^%/, "");
-      case "union": {
-        const def = E.unionsById.get(t.unionId);
-        if (!def) throw new InternalCompilerError(`emitter bug: dynDesc of unknown union ${t.unionId}`);
-        return def.arms.map((a) => E.dynDesc(a)).join(" | ");
-      }
-      // Function targets (the checked-dynamic function boundary): the
-      // failure names the expected callability, not the full signature —
-      // the path already says where.
-      case "func":
-        return "function";
-      // Map/Set-valued index signatures (Record<string, Map<K, V>>): only
-      // reachable through the keyed-read miss trap's message — no dynCheck
-      // ever expects one.
-      case "map":
-        return "Map";
-      case "set":
-        return "Set";
-      default: {
-        // Runtime HANDLE targets name the class ("expected
-        // IncomingMessage at $, got string").
-        const h = DYN_HANDLE_KINDS.get(t.kind);
-        if (h) return h.cls;
-        throw new InternalCompilerError(`emitter bug: dynDesc of non-JSON type ${t.kind}`);
-      }
-    }
-  }
 
 /** The per-union ToBoolean helper (interned per unionId): switch on the
    * runtime tag — unit arms false, f64 arms 0/NaN-falsy, string arms
@@ -583,7 +523,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         // overflow portion forces the dynamic path too (entry count is
         // runtime state).
         const droppable =
-          emitFields.some((f) => E.undefinedArmTag(f.type) >= 0) || !!shape.indexValue;
+          emitFields.some((f) => undefinedArmTag(f.type, E.unionsById) >= 0) || !!shape.indexValue;
         d.push(`  scr_jb_putc(b, '{');`);
         if (!droppable) {
           emitFields.forEach((f, i) => {
@@ -598,7 +538,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           d.push(`  bool first = true;`);
           for (const f of emitFields) {
             const label = cStringLiteral(Buffer.from(`"${f.name}":`, "utf8"));
-            const utag = E.undefinedArmTag(f.type);
+            const utag = undefinedArmTag(f.type, E.unionsById);
             const pad = utag >= 0 ? "    " : "  ";
             if (utag >= 0) {
               d.push(`  if (v->${mangleField(f.name)}->tag != ${utag}) { /* undefined-valued field: dropped, like Node */`);
@@ -634,8 +574,8 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             const skipUndef =
               iv.kind === "dyn"
                 ? `e->kind == SCR_DYN_UNDEF`
-                : E.undefinedArmTag(iv) >= 0
-                  ? `e->tag == ${E.undefinedArmTag(iv)}`
+                : undefinedArmTag(iv, E.unionsById) >= 0
+                  ? `e->tag == ${undefinedArmTag(iv, E.unionsById)}`
                   : null;
             if (skipUndef) {
               d.push(`      if (${skipUndef}) { /* undefined-valued entry: dropped, like Node */`);
@@ -822,7 +762,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           const keyLit = cStringLiteral(Buffer.from(f.name, "utf8"));
           const keyLen = Buffer.byteLength(f.name, "utf8");
           d.push(`  m = scr_dyn_obj_get(d, ${keyLit}, ${keyLen});`);
-          if (E.undefinedArmTag(f.type) >= 0) {
+          if (undefinedArmTag(f.type, E.unionsById) >= 0) {
             // Optional-flavored field: a MISSING key is the undefined arm
             // (a match); a PRESENT key must fit the union as usual.
             d.push(`  if (m && !${E.dynMatchHelper(f.type)}(m)) return false;`);
@@ -1126,7 +1066,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
     E.dynBuilders.set(key, name);
     const sig = `static ${cType(t)}${cType(t).endsWith("*") ? "" : " "}${name}(const ScrDyn *d, const ScrDynPath *path)`;
     E.walkerProtos.push(`${sig}; /* check ${key} */`);
-    const want = cStringLiteral(Buffer.from(E.dynDesc(t), "utf8"));
+    const want = cStringLiteral(Buffer.from(dynDesc(t, E.recordsById, E.unionsById), "utf8"));
     const d: string[] = [`${sig} { /* check ${key} */`];
     if (isRefCounted(t) && t.kind !== "dyn") {
       const keyLit = cStringLiteral(Buffer.from(key, "utf8"));
@@ -1278,14 +1218,14 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         for (const f of shape.fields) {
           const keyLit = cStringLiteral(Buffer.from(f.name, "utf8"));
           const keyLen = Buffer.byteLength(f.name, "utf8");
-          const fieldWant = cStringLiteral(Buffer.from(E.dynDesc(f.type), "utf8"));
+          const fieldWant = cStringLiteral(Buffer.from(dynDesc(f.type, E.recordsById, E.unionsById), "utf8"));
           // Width tolerance: only declared fields are looked up — extra JSON
           // keys are simply never examined (check-and-extract, not shape
           // equality). A missing field fails as "got undefined" — except
           // optional-flavored fields (undefined-armed unions), where the
           // missing key IS the undefined arm: the interned immortal
           // instance, no retain owed (rc == SIZE_MAX).
-          const utag = f.type.kind === "union" ? E.undefinedArmTag(f.type) : -1;
+          const utag = f.type.kind === "union" ? undefinedArmTag(f.type, E.unionsById) : -1;
           d.push(`  {`);
           d.push(`    ScrDynPath p = { path, ${keyLit}, 0 };`);
           d.push(`    const ScrDyn *m = scr_dyn_obj_get(d, ${keyLit}, ${keyLen});`);
@@ -2018,13 +1958,13 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
     // The miss path.
     if (t.kind === "dyn") {
       d.push(`  return scr_dyn_retain(scr_dyn_undefined());`);
-    } else if (t.kind === "union" && E.undefinedArmTag(t) >= 0) {
-      d.push(`  return ${E.unitInstanceRef(t.unionId, E.undefinedArmTag(t))};`);
+    } else if (t.kind === "union" && undefinedArmTag(t, E.unionsById) >= 0) {
+      d.push(`  return ${E.unitInstanceRef(t.unionId, undefinedArmTag(t, E.unionsById))};`);
     } else {
       // JS would answer undefined; T has no way to say it (the checker
       // claimed T without noUncheckedIndexedAccess) — trap like an array
       // OOB read instead of corrupting a typed slot (SEMANTICS.md).
-      d.push(`  scr_trap_fmt("scriptc: TypeError: record has no key '%.*s' (typed '${E.dynDesc(t)}' — no undefined is representable)\\n", (int)k->len, k->data);`);
+      d.push(`  scr_trap_fmt("scriptc: TypeError: record has no key '%.*s' (typed '${dynDesc(t, E.recordsById, E.unionsById)}' — no undefined is representable)\\n", (int)k->len, k->data);`);
     }
     d.push(`}`, ``);
     E.walkerDefs.push(...d);

@@ -11,6 +11,7 @@ import { boxAccess, cDecl, cStringLiteral, elemAccess, vAdapters } from "./emit-
 import { OVERFLOW_MEMBER } from "./emit-shapes.js";
 import { emitBytesReceiver } from "./emit-exprs.js";
 import { matchIntegerBytesForLoop } from "../../ir/integer-loops.js";
+import { endsWithJump } from "../../ir/analysis.js";
 
 
 
@@ -150,7 +151,7 @@ export function emitFunction(E: CEmitter, fn: IrFunction): void {
     E.scopes.push(scope);
     setup?.(scope);
     E.emitStmts(stmts);
-    const endedWithJump = E.endsWithJump(stmts);
+    const endedWithJump = endsWithJump(stmts);
     E.scopes.pop();
     if (!endedWithJump) E.releaseFrame(scope);
     E.indent--;
@@ -502,7 +503,7 @@ export function emitStmt(E: CEmitter, s: IrStmt): void {
           if (isRefCounted(elem)) E.scopes[E.scopes.length - 1]!.push({ name: local, type: elem });
         }
         E.emitStmts(s.body);
-        const endedWithJump = E.endsWithJump(s.body);
+        const endedWithJump = endsWithJump(s.body);
         const scope = E.scopes.pop()!;
         if (!endedWithJump) E.releaseFrame(scope);
         E.jumpTargets.pop();
@@ -756,7 +757,7 @@ export function emitStmt(E: CEmitter, s: IrStmt): void {
     };
 
     if (hasCatch && handler.used) {
-      if (!E.endsWithJump(s.tryBody)) {
+      if (!endsWithJump(s.tryBody)) {
         E.line(`goto ${afterTryLabel};`);
         afterTryLabelUsed = true;
       }
@@ -941,7 +942,7 @@ export function emitStmt(E: CEmitter, s: IrStmt): void {
     // Natural fall-off of the last body releases the shared scope here; a
     // jump (break/return/continue/throw) already released it before jumping.
     const lastBody = s.cases[s.cases.length - 1]?.body;
-    if (!lastBody || !E.endsWithJump(lastBody)) E.releaseFrame(scope);
+    if (!lastBody || !endsWithJump(lastBody)) E.releaseFrame(scope);
     if (target.usedEnd) E.line(`${endLabel}:;`);
   }
 

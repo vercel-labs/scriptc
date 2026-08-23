@@ -19,6 +19,7 @@ import { mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { llFieldType, releaseSym, traceAdapter, type ShapeHost } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
+import { undefinedArmTag } from "../../ir/analysis.js";
 
 /** What the walkers need from the emitter beyond the shape tables: union
  * defs, the undefined-arm probe, interned ScrStr literals (unit-arm
@@ -26,7 +27,6 @@ import { LlvmUnsupportedError } from "./unsupported.js";
  * scr_error-style label texts). */
 export interface WalkerHost extends ShapeHost {
   readonly unionsById: Map<string, IrUnionDef>;
-  undefinedArmTag(t: IrType): number;
   /** `@`-ref of an interned immortal ScrStr literal. */
   internLiteral(text: string): string;
   /** `@`-ref of an interned NUL-terminated byte-array constant. */
@@ -265,7 +265,7 @@ export class LlWalkers {
     const byName = new Map(shape.fields.map((f) => [f.name, f]));
     const emitFields = order.map((n) => byName.get(n)).filter((f) => f !== undefined);
     const droppable =
-      emitFields.some((f) => this.host.undefinedArmTag(f.type) >= 0) || !!shape.indexValue;
+      emitFields.some((f) => undefinedArmTag(f.type, this.host.unionsById) >= 0) || !!shape.indexValue;
     this.putc(B, "%b", "123"); // '{'
     if (!droppable) {
       emitFields.forEach((f, i) => {
@@ -291,7 +291,7 @@ export class LlWalkers {
         B.line(`store i1 false, ptr ${first}`);
       };
       for (const f of emitFields) {
-        const utag = this.host.undefinedArmTag(f.type);
+        const utag = undefinedArmTag(f.type, this.host.unionsById);
         const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
         let skip: string | null = null;
         if (utag >= 0) {
@@ -337,105 +337,85 @@ export class LlWalkers {
     const len = B.tmp();
     B.line(`${ks} = call ptr @scr_map_keys_js_order(ptr ${ovf})`);
     B.line(`${len} = call double @scr_arr_len(ptr ${ks})`);
-    const iSlot = B.slot();
-    B.entryAllocas.push(`${iSlot} = alloca double`);
-    B.line(`store double ${f64Lit(0)}, ptr ${iSlot}`);
-    const lc = B.newLabel("ovf.c");
-    const lb = B.newLabel("ovf.b");
-    const ln = B.newLabel("ovf.n");
-    const le = B.newLabel("ovf.e");
-    B.br(lc);
-    B.startBlock(lc);
-    const i = B.tmp();
-    const cont = B.tmp();
-    B.line(`${i} = load double, ptr ${iSlot}`);
-    B.line(`${cont} = fcmp olt double ${i}, ${len}`);
-    B.condBr(cont, lb, le);
-    B.startBlock(lb);
-    const k = B.tmp();
-    B.line(`${k} = call ptr @scr_arr_get_ref(ptr ${ks}, double ${i}) ; key (+1)`);
-    // The entry value, type-directed off the overflow VALUE type.
-    let val: string;
-    if (iv.kind === "f64" || iv.kind === "bool") {
-      const outTy = iv.kind === "f64" ? "double" : "i8";
-      const outSlot = B.slot();
-      B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
-      B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
-      host.declare(`declare zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr, ptr, ptr)`);
-      const found = B.tmp();
-      B.line(`${found} = call zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr ${ovf}, ptr ${k}, ptr ${outSlot})`);
-      const raw = B.tmp();
-      B.line(`${raw} = load ${outTy}, ptr ${outSlot}`);
-      if (iv.kind === "bool") {
-        val = B.tmp();
-        B.line(`${val} = trunc i8 ${raw} to i1`);
+    B.countedLoop(len, (i, next) => {
+      const k = B.tmp();
+      B.line(`${k} = call ptr @scr_arr_get_ref(ptr ${ks}, double ${i}) ; key (+1)`);
+      // The entry value, type-directed off the overflow VALUE type.
+      let val: string;
+      if (iv.kind === "f64" || iv.kind === "bool") {
+        const outTy = iv.kind === "f64" ? "double" : "i8";
+        const outSlot = B.slot();
+        B.entryAllocas.push(`${outSlot} = alloca ${outTy}`);
+        B.line(`store ${outTy} ${iv.kind === "f64" ? f64Lit(0) : "0"}, ptr ${outSlot}`);
+        host.declare(`declare zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr, ptr, ptr)`);
+        const found = B.tmp();
+        B.line(`${found} = call zeroext i1 @scr_map_get_str_${iv.kind === "f64" ? "f64" : "bool"}(ptr ${ovf}, ptr ${k}, ptr ${outSlot})`);
+        const raw = B.tmp();
+        B.line(`${raw} = load ${outTy}, ptr ${outSlot}`);
+        if (iv.kind === "bool") {
+          val = B.tmp();
+          B.line(`${val} = trunc i8 ${raw} to i1`);
+        } else {
+          val = raw;
+        }
       } else {
-        val = raw;
+        host.declare(`declare ptr @scr_map_get_str_ref(ptr, ptr)`);
+        val = B.tmp();
+        B.line(`${val} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k}) ; value (+1)`);
       }
-    } else {
-      host.declare(`declare ptr @scr_map_get_str_ref(ptr, ptr)`);
-      val = B.tmp();
-      B.line(`${val} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k}) ; value (+1)`);
-    }
-    // Undefined-valued entries drop, exactly the optional-field rule: a
-    // dyn value whose dyn kind follows its size_t RC word (enum
-    // member 6 — scr_runtime.h's ScrDynKind), or a union holding its
-    // undefined arm.
-    let skipUndef: string | null = null;
-    if (iv.kind === "dyn") {
-      const kp = B.tmp();
-      const kd = B.tmp();
-      const isu = B.tmp();
-      B.line(`${kp} = getelementptr inbounds i8, ptr ${val}, i64 ${this.abiOffset(8, 4)} ; ->kind`);
-      B.line(`${kd} = load i32, ptr ${kp}`);
-      B.line(`${isu} = icmp eq i32 ${kd}, 6 ; SCR_DYN_UNDEF (NULL is 0 — null members DO serialize)`);
-      skipUndef = isu;
-    } else if (this.host.undefinedArmTag(iv) >= 0) {
-      const tag = this.unionTag(B, val);
-      const isu = B.tmp();
-      B.line(`${isu} = icmp eq i32 ${tag}, ${this.host.undefinedArmTag(iv)}`);
-      skipUndef = isu;
-    }
-    if (skipUndef !== null) {
-      const ld = B.newLabel("ovf.d");
-      const write = B.newLabel("ovf.w");
-      B.condBr(skipUndef, ld, write);
-      B.startBlock(ld);
-      if (isRefCounted(iv)) B.line(`call void ${releaseSym(host, iv)}(ptr ${val})`);
+      // Undefined-valued entries drop, exactly the optional-field rule: a
+      // dyn value whose dyn kind follows its size_t RC word (enum
+      // member 6 — scr_runtime.h's ScrDynKind), or a union holding its
+      // undefined arm.
+      let skipUndef: string | null = null;
+      if (iv.kind === "dyn") {
+        const kp = B.tmp();
+        const kd = B.tmp();
+        const isu = B.tmp();
+        B.line(`${kp} = getelementptr inbounds i8, ptr ${val}, i64 ${this.abiOffset(8, 4)} ; ->kind`);
+        B.line(`${kd} = load i32, ptr ${kp}`);
+        B.line(`${isu} = icmp eq i32 ${kd}, 6 ; SCR_DYN_UNDEF (NULL is 0 — null members DO serialize)`);
+        skipUndef = isu;
+      } else if (undefinedArmTag(iv, this.host.unionsById) >= 0) {
+        const tag = this.unionTag(B, val);
+        const isu = B.tmp();
+        B.line(`${isu} = icmp eq i32 ${tag}, ${undefinedArmTag(iv, this.host.unionsById)}`);
+        skipUndef = isu;
+      }
+      if (skipUndef !== null) {
+        const ld = B.newLabel("ovf.d");
+        const write = B.newLabel("ovf.w");
+        B.condBr(skipUndef, ld, write);
+        B.startBlock(ld);
+        if (isRefCounted(iv)) B.line(`call void ${releaseSym(host, iv)}(ptr ${val})`);
+        B.line(`call void @scr_str_release(ptr ${k})`);
+        B.br(next);
+        B.startBlock(write);
+      }
+      // The comma dance over the shared `first` flag.
+      {
+        const isf = B.tmp();
+        const lcm = B.newLabel("ovf.cm");
+        const lj = B.newLabel("ovf.cj");
+        B.line(`${isf} = load i1, ptr ${first}`);
+        B.condBr(isf, lj, lcm);
+        B.startBlock(lcm);
+        this.putc(B, "%b", "44"); // ','
+        B.br(lj);
+        B.startBlock(lj);
+        B.line(`store i1 false, ptr ${first}`);
+      }
+      host.declare(`declare void @scr_jb_put_json_str(ptr, ptr)`);
+      B.line(`call void @scr_jb_put_json_str(ptr %b, ptr ${k})`);
+      this.putc(B, "%b", "58"); // ':'
+      if (edgeKeys) {
+        this.host.declare(`declare void @scr_jb_edge_key(ptr, ptr)`);
+        B.line(`call void @scr_jb_edge_key(ptr %b, ptr ${k})`);
+      }
+      B.line(`call void @${this.jsonWriteHelper(iv)}(ptr %b, ${this.valTy(iv)} ${val})`);
       B.line(`call void @scr_str_release(ptr ${k})`);
-      B.br(ln);
-      B.startBlock(write);
-    }
-    // The comma dance over the shared `first` flag.
-    {
-      const isf = B.tmp();
-      const lcm = B.newLabel("ovf.cm");
-      const lj = B.newLabel("ovf.cj");
-      B.line(`${isf} = load i1, ptr ${first}`);
-      B.condBr(isf, lj, lcm);
-      B.startBlock(lcm);
-      this.putc(B, "%b", "44"); // ','
-      B.br(lj);
-      B.startBlock(lj);
-      B.line(`store i1 false, ptr ${first}`);
-    }
-    host.declare(`declare void @scr_jb_put_json_str(ptr, ptr)`);
-    B.line(`call void @scr_jb_put_json_str(ptr %b, ptr ${k})`);
-    this.putc(B, "%b", "58"); // ':'
-    if (edgeKeys) {
-      this.host.declare(`declare void @scr_jb_edge_key(ptr, ptr)`);
-      B.line(`call void @scr_jb_edge_key(ptr %b, ptr ${k})`);
-    }
-    B.line(`call void @${this.jsonWriteHelper(iv)}(ptr %b, ${this.valTy(iv)} ${val})`);
-    B.line(`call void @scr_str_release(ptr ${k})`);
-    if (isRefCounted(iv)) B.line(`call void ${releaseSym(host, iv)}(ptr ${val})`);
-    B.br(ln);
-    B.startBlock(ln);
-    const i2 = B.tmp();
-    B.line(`${i2} = fadd double ${i}, ${f64Lit(1)}`);
-    B.line(`store double ${i2}, ptr ${iSlot}`);
-    B.br(lc);
-    B.startBlock(le);
+      if (isRefCounted(iv)) B.line(`call void ${releaseSym(host, iv)}(ptr ${val})`);
+    });
     host.declare(`declare void @scr_arr_release(ptr)`);
     B.line(`call void @scr_arr_release(ptr ${ks})`);
   }
@@ -450,54 +430,37 @@ export class LlWalkers {
     this.putc(B, "%b", "91"); // '['
     const len = B.tmp();
     B.line(`${len} = call double @scr_arr_len(ptr %v)`);
-    const iSlot = B.slot();
-    B.entryAllocas.push(`${iSlot} = alloca double`);
-    B.line(`store double ${f64Lit(0)}, ptr ${iSlot}`);
-    const lc = B.newLabel("jwa.c");
-    const lb = B.newLabel("jwa.b");
-    const le = B.newLabel("jwa.e");
-    B.br(lc);
-    B.startBlock(lc);
-    const i = B.tmp();
-    const cont = B.tmp();
-    B.line(`${i} = load double, ptr ${iSlot}`);
-    B.line(`${cont} = fcmp olt double ${i}, ${len}`);
-    B.condBr(cont, lb, le);
-    B.startBlock(lb);
-    const nz = B.tmp();
-    const lcm = B.newLabel("jwa.cm");
-    const lj = B.newLabel("jwa.cj");
-    B.line(`${nz} = fcmp ogt double ${i}, ${f64Lit(0)}`);
-    B.condBr(nz, lcm, lj);
-    B.startBlock(lcm);
-    this.putc(B, "%b", "44"); // ','
-    B.br(lj);
-    B.startBlock(lj);
-    if (cyclic) {
-      const idx = B.tmp();
-      B.line(`${idx} = fptoui double ${i} to ${this.S}`);
-      this.jbEdgeIdx(B, idx);
-    }
-    if (elem.kind === "f64" || elem.kind === "bool") {
-      const acc = elem.kind;
-      const accTy = elem.kind === "f64" ? "double" : "i1";
-      host.declare(`declare ${elem.kind === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`);
-      const v = B.tmp();
-      B.line(`${v} = call ${accTy} @scr_arr_get_${acc}(ptr %v, double ${i})`);
-      B.line(`call void @${w}(ptr %b, ${accTy} ${v})`);
-    } else {
-      // _get_ref returns +1; release after writing.
-      host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
-      const v = B.tmp();
-      B.line(`${v} = call ptr @scr_arr_get_ref(ptr %v, double ${i})`);
-      B.line(`call void @${w}(ptr %b, ptr ${v})`);
-      B.line(`call void ${releaseSym(host, elem)}(ptr ${v})`);
-    }
-    const i2 = B.tmp();
-    B.line(`${i2} = fadd double ${i}, ${f64Lit(1)}`);
-    B.line(`store double ${i2}, ptr ${iSlot}`);
-    B.br(lc);
-    B.startBlock(le);
+    B.countedLoop(len, (i) => {
+      const nz = B.tmp();
+      const lcm = B.newLabel("jwa.cm");
+      const lj = B.newLabel("jwa.cj");
+      B.line(`${nz} = fcmp ogt double ${i}, ${f64Lit(0)}`);
+      B.condBr(nz, lcm, lj);
+      B.startBlock(lcm);
+      this.putc(B, "%b", "44"); // ','
+      B.br(lj);
+      B.startBlock(lj);
+      if (cyclic) {
+        const idx = B.tmp();
+        B.line(`${idx} = fptoui double ${i} to ${this.S}`);
+        this.jbEdgeIdx(B, idx);
+      }
+      if (elem.kind === "f64" || elem.kind === "bool") {
+        const acc = elem.kind;
+        const accTy = elem.kind === "f64" ? "double" : "i1";
+        host.declare(`declare ${elem.kind === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`);
+        const v = B.tmp();
+        B.line(`${v} = call ${accTy} @scr_arr_get_${acc}(ptr %v, double ${i})`);
+        B.line(`call void @${w}(ptr %b, ${accTy} ${v})`);
+      } else {
+        // _get_ref returns +1; release after writing.
+        host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
+        const v = B.tmp();
+        B.line(`${v} = call ptr @scr_arr_get_ref(ptr %v, double ${i})`);
+        B.line(`call void @${w}(ptr %b, ptr ${v})`);
+        B.line(`call void ${releaseSym(host, elem)}(ptr ${v})`);
+      }
+    });
     this.putc(B, "%b", "93"); // ']'
     if (cyclic) this.jbLeave(B);
   }
@@ -872,71 +835,52 @@ export class LlWalkers {
     host.declare(`declare void @scr_str_release(ptr)`);
     const B = new BlockBuilder();
     const buf = "%jb";
-    const iSlot = "%i";
-    B.entryAllocas.push(`${buf} = alloca %ScrJsonBuf`, `${iSlot} = alloca double`);
+    B.entryAllocas.push(`${buf} = alloca %ScrJsonBuf`);
     B.line(`call void @scr_jb_init(ptr ${buf})`);
-    B.line(`store double ${f64Lit(0)}, ptr ${iSlot}`);
     const len = B.tmp();
     B.line(`${len} = call double @scr_arr_len(ptr %a)`);
-    const lc = B.newLabel("uj.c");
-    const lb = B.newLabel("uj.b");
-    const ln = B.newLabel("uj.n");
-    const le = B.newLabel("uj.e");
-    B.br(lc);
-    B.startBlock(lc);
-    const i = B.tmp();
-    const cont = B.tmp();
-    B.line(`${i} = load double, ptr ${iSlot}`);
-    B.line(`${cont} = fcmp olt double ${i}, ${len}`);
-    B.condBr(cont, lb, le);
-    B.startBlock(lb);
-    // `if (i) put sep bytes` — separators between elements only.
-    const nz = B.tmp();
-    const lsep = B.newLabel("uj.s");
-    const lel = B.newLabel("uj.v");
-    B.line(`${nz} = fcmp ogt double ${i}, ${f64Lit(0)}`);
-    B.condBr(nz, lsep, lel);
-    B.startBlock(lsep);
-    this.putScrStr(B, buf, "%sep");
-    B.br(lel);
-    B.startBlock(lel);
-    const u = B.tmp();
-    B.line(`${u} = call ptr @scr_arr_get_ref(ptr %a, double ${i}) ; element (+1)`);
-    if (unitTags.length > 0) {
-      // Nullish arms print empty, exactly JS's join.
-      const tag = this.unionTag(B, u);
-      let acc = "";
-      for (const t of unitTags) {
-        const cnd = B.tmp();
-        B.line(`${cnd} = icmp eq i32 ${tag}, ${t}`);
-        if (acc === "") {
-          acc = cnd;
-        } else {
-          const o = B.tmp();
-          B.line(`${o} = or i1 ${acc}, ${cnd}`);
-          acc = o;
+    B.countedLoop(len, (i, next) => {
+      // `if (i) put sep bytes` — separators between elements only.
+      const nz = B.tmp();
+      const lsep = B.newLabel("uj.s");
+      const lel = B.newLabel("uj.v");
+      B.line(`${nz} = fcmp ogt double ${i}, ${f64Lit(0)}`);
+      B.condBr(nz, lsep, lel);
+      B.startBlock(lsep);
+      this.putScrStr(B, buf, "%sep");
+      B.br(lel);
+      B.startBlock(lel);
+      const u = B.tmp();
+      B.line(`${u} = call ptr @scr_arr_get_ref(ptr %a, double ${i}) ; element (+1)`);
+      if (unitTags.length > 0) {
+        // Nullish arms print empty, exactly JS's join.
+        const tag = this.unionTag(B, u);
+        let acc = "";
+        for (const t of unitTags) {
+          const cnd = B.tmp();
+          B.line(`${cnd} = icmp eq i32 ${tag}, ${t}`);
+          if (acc === "") {
+            acc = cnd;
+          } else {
+            const o = B.tmp();
+            B.line(`${o} = or i1 ${acc}, ${cnd}`);
+            acc = o;
+          }
         }
+        const lskip = B.newLabel("uj.k");
+        const lwrite = B.newLabel("uj.w");
+        B.condBr(acc, lskip, lwrite);
+        B.startBlock(lskip);
+        B.line(`call void @scr_union_release(ptr ${u})`);
+        B.br(next);
+        B.startBlock(lwrite);
       }
-      const lskip = B.newLabel("uj.k");
-      const lwrite = B.newLabel("uj.w");
-      B.condBr(acc, lskip, lwrite);
-      B.startBlock(lskip);
+      const s = B.tmp();
+      B.line(`${s} = call ptr @${toStr}(ptr ${u})`);
+      this.putScrStr(B, buf, s);
+      B.line(`call void @scr_str_release(ptr ${s})`);
       B.line(`call void @scr_union_release(ptr ${u})`);
-      B.br(ln);
-      B.startBlock(lwrite);
-    }
-    const s = B.tmp();
-    B.line(`${s} = call ptr @${toStr}(ptr ${u})`);
-    this.putScrStr(B, buf, s);
-    B.line(`call void @scr_str_release(ptr ${s})`);
-    B.line(`call void @scr_union_release(ptr ${u})`);
-    B.br(ln);
-    B.startBlock(ln);
-    const i2 = B.tmp();
-    B.line(`${i2} = fadd double ${i}, ${f64Lit(1)}`);
-    B.line(`store double ${i2}, ptr ${iSlot}`);
-    B.br(lc);
-    B.startBlock(le);
+    });
     const r = B.tmp();
     B.line(`${r} = call ptr @scr_jb_finish(ptr ${buf})`);
     B.terminate(`ret ptr ${r}`);

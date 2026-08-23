@@ -33,7 +33,7 @@ import { CRYPTO_CIPHERS, CRYPTO_CONSTANTS, CRYPTO_CURVES, CRYPTO_HASHES } from "
 import { timerStyleCallback } from "./lower-calls.js";
 import { registerHttpClientFnBinding, voidizedCallback } from "./lower-server.js";
 import { BOOL, BYTES_U8, CHILD_T, CHILDSTREAM_T, DYN, F64, FILEHANDLE_T, FSWATCHER_T, PROCSTREAM_T, IrExpr, IrFunction, IrLibFn, IrLocal, IrStmt, IrType, JSVAL, NULL_T, SEARCH_PARAMS_T, SPAWNRES_T, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, canBoxFuncIntoDyn, canConvertToDyn, funcOf, isUnitType, typeEquals, typeKey } from "../../ir/nodes.js";
-import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
+import { boolLit, countedFor, numLit, strLit, varRef } from "../../ir/build.js";
 
 /** Lower an optional builtin argument whose checker type is statically
  * undefined/void. The returned expression exists only to preserve effects;
@@ -4361,19 +4361,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       expr: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: callArgs, type: fnRet, loc },
       loc,
     });
-    const loop: IrStmt = {
-      kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-      cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: sp("sp.size", [], F64), type: BOOL, loc },
-      update: {
-        kind: "assign",
-        localId: "i.0",
-        value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
-        loc,
-      },
-      body,
-      loc,
-    };
+    const loop = countedFor(loc, sp("sp.size", [], F64), () => body);
     return {
       name,
       params: [

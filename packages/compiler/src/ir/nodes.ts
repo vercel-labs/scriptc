@@ -312,6 +312,68 @@ export type IrType =
   | { kind: "nullT" }
   | { kind: "void" }; // return position only
 
+/** Runtime RC symbol stem for each IR type kind. An empty stem means the
+ * kind is scalar/unit or uses an emitted per-shape helper (object/record).
+ * Keeping this exhaustive makes a new runtime handle kind a compile error
+ * until its one retain/release family is named here. */
+export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
+  f64: "",
+  date: "",
+  string: "scr_str",
+  bool: "",
+  array: "scr_arr",
+  map: "scr_map",
+  set: "scr_map",
+  regex: "scr_regex",
+  bytes: "scr_bytes",
+  url: "scr_url",
+  searchParams: "scr_sp",
+  symbol: "scr_sym",
+  stats: "scr_stats",
+  fileHandle: "scr_file_handle",
+  spawnRes: "scr_spawn_res",
+  child: "scr_child",
+  netServer: "scr_net_server",
+  netSocket: "scr_net_sock",
+  http2Session: "scr_http2_session",
+  http2Stream: "scr_http2_stream",
+  dgramSocket: "scr_dgram",
+  testCtx: "scr_testctx",
+  httpReq: "scr_http_req",
+  httpRes: "scr_http_res",
+  httpClientReq: "scr_http_client",
+  childStream: "scr_child_stream",
+  procStream: "",
+  fsWatcher: "scr_watcher",
+  secureCtx: "scr_secure_ctx",
+  func: "scr_closure",
+  object: "",
+  classval: "scr_classobj",
+  record: "",
+  union: "scr_union",
+  dyn: "scr_dyn",
+  jsval: "scr_jsval",
+  caught: "scr_caught",
+  promise: "scr_promise",
+  generator: "scr_gen",
+  undefinedT: "",
+  nullT: "",
+  void: "",
+};
+
+/** The runtime-provided RC family for a type, or null when the backend must
+ * use an emitted class/record helper (or the type is not refcounted). */
+export function runtimeRcStem(t: IrType): string | null {
+  if (t.kind === "object") {
+    if (RUNTIME_ERROR_CLASSES.has(t.className)) return "scr_error";
+    if (t.className === RUNTIME_EMITTER_CLASS) return "scr_emitter";
+    if (RUNTIME_STREAM_CLASSES.has(t.className)) return "scr_stream";
+    return null;
+  }
+  const stem = RUNTIME_RC_STEMS[t.kind];
+  return stem === "" ? null : stem;
+}
+
 /** The ref kinds whose values are JS OBJECTS for truthiness: always true
  * ([] and {} included) — toBool accepts them (the operand still evaluates;
  * the test is constant), and per-union truthiness helpers answer their
@@ -647,76 +709,7 @@ export function typeEquals(a: IrType, b: IrType): boolean {
  * this — adding a refcounted kind must not grow new per-kind checks outside
  * the type-directed helpers. */
 export function isRefCounted(t: IrType): boolean {
-  return (
-    t.kind === "string" ||
-    t.kind === "array" ||
-    t.kind === "map" ||
-    t.kind === "set" ||
-    // Every regex value is an immortal interned literal today, so its
-    // retains/releases are no-ops — riding the uniform machinery anyway
-    // means dynamic construction can arrive without a redesign.
-    t.kind === "regex" ||
-    // URL, Stats, and spawnSync-result instances are ordinary refcounted
-    // heap values (immutable, no cycles — strings/scalars inside only).
-    t.kind === "url" ||
-    // URLSearchParams lists are ordinary refcounted heap values (strings
-    // plus at most the owning-URL edge — no cycles).
-    t.kind === "searchParams" ||
-    // Symbols are the same story: immutable identity values holding at
-    // most two strings.
-    t.kind === "symbol" ||
-    t.kind === "stats" ||
-    t.kind === "fileHandle" ||
-    t.kind === "spawnRes" ||
-    t.kind === "child" ||
-    // net handles are refcounted like child (listeners drop at settle,
-    // so lean allocation — see the IrType comment).
-    t.kind === "netServer" ||
-    t.kind === "netSocket" ||
-    // h2 sessions/streams are refcounted like the net pair (listeners
-    // drop at settlement; the session→stream↔session cycle breaks there).
-    t.kind === "http2Session" ||
-    t.kind === "http2Stream" ||
-    t.kind === "dgramSocket" ||
-    // TestContext handles are refcounted like dgramSocket (the runner
-    // tree owns children; no cycles through the handle).
-    t.kind === "testCtx" ||
-    t.kind === "httpReq" ||
-    t.kind === "httpRes" ||
-    t.kind === "httpClientReq" ||
-    // SecureContext handles are refcounted like url/stats (immutable, no
-    // cycles — parsed cert/key material inside only).
-    t.kind === "secureCtx" ||
-    // FSWatcher handles are refcounted like child (listeners drop at
-    // close, so lean allocation — see the IrType comment).
-    t.kind === "fsWatcher" ||
-    // Child-output streams are refcounted like child (listeners drop at
-    // EOF — see the IrType comment).
-    t.kind === "childStream" ||
-    // Typed arrays / Buffers are ordinary refcounted heap values (mutable,
-    // no cycles — raw bytes inside only).
-    t.kind === "bytes" ||
-    t.kind === "func" ||
-    t.kind === "object" ||
-    // Every class object is an immortal emitted static, so its
-    // retains/releases are no-ops — riding the uniform machinery (the
-    // regex-literal stance) keeps every container and box path unchanged.
-    t.kind === "classval" ||
-    t.kind === "record" ||
-    // The union CONTAINER is heap/refcounted regardless of which arm it
-    // holds (uniform representation keeps the RC discipline simple).
-    t.kind === "union" ||
-    t.kind === "promise" ||
-    // A generator object is a refcounted handle over its paused fiber and
-    // typed channel slots (ScrGen — lean allocation, no cycle header).
-    t.kind === "generator" ||
-    // A dyn value is a refcounted JSON dyn tree (ScrDyn).
-    t.kind === "dyn" ||
-    // An island value is a refcounted cell owning one engine value.
-    t.kind === "jsval" ||
-    // A catch binding is a refcounted snapshot box (ScrCaught).
-    t.kind === "caught"
-  );
+  return RUNTIME_RC_STEMS[t.kind] !== "" || t.kind === "object" || t.kind === "record";
 }
 
 /* ── module ────────────────────────────────────────────────────────────── */

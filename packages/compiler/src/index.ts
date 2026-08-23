@@ -33,7 +33,7 @@ import { canonicalBuiltinModule, checkPreflight, isNodeTypesPath, loadProgram, l
 import { npmStaticIneligibleReason, npmStaticOffenders, npmStaticPackageOfPath } from "./frontend/npm-static.js";
 import { provenanceSources } from "./frontend/provenance-registry.js";
 import { clearResolveCaches, resolveBareModule } from "./frontend/resolve.js";
-import { isJsSourceFileName, isRelativeSpecifier } from "./frontend/shared.js";
+import { isJsSourceFileName, isRelativeSpecifier, packageNameOfSpecifier } from "./frontend/shared.js";
 import { lowerToIr, type LowerOptions, type LowerResult } from "./frontend/lowering/lowerer.js";
 import type { CoverageInput, NpmStaticStatus } from "./coverage/report.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/profile.js";
@@ -508,8 +508,7 @@ function packagesNamedByDiag(message: string, optedIn: ReadonlySet<string>): Set
   const hits = new Set<string>();
   for (const m of message.matchAll(/Module '"([^"]+)"'/g)) {
     const spec = m[1]!;
-    const parts = spec.split("/");
-    const prefix = spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
+    const prefix = packageNameOfSpecifier(spec);
     if (optedIn.has(prefix)) hits.add(prefix);
   }
   for (const m of message.matchAll(/import\("([^"]+)"\)/g)) {
@@ -517,14 +516,6 @@ function packagesNamedByDiag(message: string, optedIn: ReadonlySet<string>): Set
     if (pkg !== null && optedIn.has(pkg)) hits.add(pkg);
   }
   return hits;
-}
-
-/** The package-wide --npm-static name containing an exact bare specifier.
- * External mappings are exact (subpaths included), while npm-static owns a
- * whole package, so any mapped subpath conflicts with that package opt-in. */
-function packageNameOfBareSpecifier(specifier: string): string {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
 }
 
 /** The one frontend, three npm postures: `undefined`/explicit package
@@ -583,7 +574,7 @@ function runFrontend(
   if (requested.length > 0 && externalTypes !== undefined) {
     const externalSpecifiersByPackage = new Map<string, string[]>();
     for (const specifier of Object.keys(externalTypes)) {
-      const pkg = packageNameOfBareSpecifier(specifier);
+      const pkg = packageNameOfSpecifier(specifier);
       const specs = externalSpecifiersByPackage.get(pkg) ?? [];
       specs.push(specifier);
       externalSpecifiersByPackage.set(pkg, specs);

@@ -11,19 +11,38 @@ import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { ladderFenceExpr } from "./lowerer.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import { BOOL, canBoxFuncIntoDyn, DGRAMSOCK_T, DYN, F64, funcOf, IrExpr, IrLibFn, IrType, SrcLoc, STRING, UNDEFINED_T, VOID } from "../../ir/nodes.js";
+import { BOOL, canBoxFuncIntoDyn, DGRAMSOCK_T, DYN, F64, IrExpr, IrLibFn, IrType, SrcLoc, STRING, UNDEFINED_T, VOID } from "../../ir/nodes.js";
 import { DNS_LOOKUP_DOCUMENTED_OPTIONS, fenceOrDropOptionKey } from "./surfaces.js";
 import { boolLit } from "../../ir/build.js";
+import { resultIsDiscarded } from "./call-position.js";
+import { lowerCallbackArg as lowerCallbackArgShared } from "./callback-arg.js";
 
 const DGRAM_SURFACE_HINT =
   "bind, connect, send, address, close, unref/ref, and on/once of " +
   "message/listening/close/connect/error are the supported dgram.Socket members";
 
+/** Dgram's callback policy: validate every positional parameter and require
+ * callbacks to return void; raw dyn values adapt only to zero-arg slots. */
+function lowerCallbackArg(
+  L: Lowerer,
+  node: ts.Expression,
+  what: string,
+  maxParams: number,
+  paramOk: (param: IrType, index: number) => boolean,
+  paramHint: string,
+): { cb: IrExpr; nparams: number } {
+  return lowerCallbackArgShared(L, node, what, maxParams, paramOk, paramHint, {
+    dynZero: true,
+    checkAllParams: true,
+    rejectValueReturn: true,
+  });
+}
+
 /** VOID-result socket calls are usable as statements and as concise arrow
  * bodies; anything consuming the result (Node returns `this` where this
  * surface returns void) is fenced — the lower-server stance. */
 function requireStatementPosition(L: Lowerer, call: ts.CallExpression, what: string): void {
-  if (ts.isExpressionStatement(call.parent) || ts.isArrowFunction(call.parent)) return;
+  if (resultIsDiscarded(call)) return;
   L.unsupported(
     "SC1090",
     call,
@@ -35,42 +54,6 @@ function requireStatementPosition(L: Lowerer, call: ts.CallExpression, what: str
  * return, at most `maxParams` parameters, each parameter's IR kind
  * satisfying `paramOk` (indexed). The lower-server helper's shape,
  * re-stated here so the spoke stays self-contained. */
-function lowerCallbackArg(
-  L: Lowerer,
-  node: ts.Expression,
-  what: string,
-  maxParams: number,
-  paramOk: (p: IrType, i: number) => boolean,
-  paramHint: string,
-): { cb: IrExpr; nparams: number } {
-  let cb = L.lowerExpr(node);
-  // A checked-dynamic callback (test/common's mustCall wrapper — a dyn
-  // value): the zero-parameter slots adapt through the dynCheck function
-  // boundary, the lower-server listen-callback precedent.
-  if (cb.type.kind === "dyn" && maxParams === 0) {
-    cb = { kind: "dynCheck", value: cb, type: funcOf([], VOID), loc: locOf(node) };
-  }
-  if (cb.type.kind !== "func" || cb.type.params.length > maxParams) {
-    L.unsupported(
-      "SC1090",
-      node,
-      `${what} with more than ${maxParams} parameter${maxParams === 1 ? "" : "s"} (${paramHint})`,
-    );
-  }
-  if (cb.type.ret.kind !== "void") {
-    L.unsupported(
-      "SC1090",
-      node,
-      "listeners returning a value (make the callback body a block, or return nothing)",
-    );
-  }
-  for (let i = 0; i < cb.type.params.length; i++) {
-    if (!paramOk(cb.type.params[i]!, i)) {
-      L.unsupported("SC1090", node, `${what} whose parameter is not supported (${paramHint})`);
-    }
-  }
-  return { cb, nparams: cb.type.params.length };
-}
 /** True iff `t` is the `Error | null` union — dns.lookup's first callback
  * parameter (NodeJS.ErrnoException maps to %Error in types.ts). */
 function isErrorOrNullUnion(L: Lowerer, t: IrType): boolean {

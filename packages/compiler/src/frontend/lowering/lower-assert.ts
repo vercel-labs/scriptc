@@ -23,6 +23,7 @@ import { InternalCompilerError } from "../../errors.js";
  * signature records, dyn/unknown) fences at the call site instead of
  * miscomparing. */
 import * as ts from "../ts7/adapter.js";
+import { resultIsDiscarded } from "./call-position.js";
 import type { Lowerer } from "./lowerer.js";
 import { jsFuncNameOf, own } from "./lowerer.js";
 import { NARROW_FIRST } from "./surfaces.js";
@@ -49,7 +50,7 @@ function canonicalAssertMember(module: string, member: string): string {
 /** VOID/never results are usable as statements and concise arrow bodies
  * only (the lower-dgram stance): nothing downstream can consume them. */
 function requireStatementPosition(L: Lowerer, call: ts.CallExpression, what: string): void {
-  if (ts.isExpressionStatement(call.parent) || ts.isArrowFunction(call.parent)) return;
+  if (resultIsDiscarded(call)) return;
   L.noLowering(
     `using the result of ${what}`,
     call,

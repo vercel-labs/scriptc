@@ -336,37 +336,26 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
         `differential evidence: ${evidence.join(", ")}`,
     });
   }
-  for (const option of NODE24_FETCH_COMPAT_PROFILE.requestInit) {
-    const evidence = option.evidence.map((item) =>
-      item.generated !== undefined
-        ? `generated:${item.generated}`
-        : `fixture:${item.fixture!}`
-    );
-    add({
-      id: option.id,
-      kind: "stdlib",
-      name: option.name,
-      status: "static",
-      note:
-        `${fetchTarget}; conversion: ${option.conversion}; ` +
-        `differential evidence: ${evidence.join(", ")}`,
-    });
-  }
-  for (const option of NODE24_FETCH_COMPAT_PROFILE.responseInit) {
-    const evidence = option.evidence.map((item) =>
-      item.generated !== undefined
-        ? `generated:${item.generated}`
-        : `fixture:${item.fixture!}`
-    );
-    add({
-      id: option.id,
-      kind: "stdlib",
-      name: option.name,
-      status: "static",
-      note:
-        `${fetchTarget}; conversion: ${option.conversion}; ` +
-        `differential evidence: ${evidence.join(", ")}`,
-    });
+  for (const options of [
+    NODE24_FETCH_COMPAT_PROFILE.requestInit,
+    NODE24_FETCH_COMPAT_PROFILE.responseInit,
+  ]) {
+    for (const option of options) {
+      const evidence = option.evidence.map((item) =>
+        item.generated !== undefined
+          ? `generated:${item.generated}`
+          : `fixture:${item.fixture!}`
+      );
+      add({
+        id: option.id,
+        kind: "stdlib",
+        name: option.name,
+        status: "static",
+        note:
+          `${fetchTarget}; conversion: ${option.conversion}; ` +
+          `differential evidence: ${evidence.join(", ")}`,
+      });
+    }
   }
   for (const row of NODE24_FETCH_COMPAT_PROFILE.inventory.entries) {
     if (row.status !== "dynamic-only" && row.status !== "unsupported") continue;

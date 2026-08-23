@@ -37,7 +37,7 @@ import {
   mangleVtInstance,
   mangleVtStruct,
 } from "../mangle.js";
-import { FN_ATTRS, llFieldType, releaseSym, traceAdapter, type ShapeHost } from "./shapes.js";
+import { FN_ATTRS, llFieldType, releaseBody, releaseSym, retainBody, traceAdapter, type ShapeHost } from "./shapes.js";
 
 /** One virtual method slot of a hierarchy: the ROOT-MOST declaring class
  * owns the slot; its declaration's IrFunction fixes the slot's ABI (the
@@ -327,27 +327,7 @@ export function emitClassShapes(
 
     // retain: NULL-tolerant, immortal-skip, mark-live on traced shapes —
     // layout-generic (rc at 0), so hierarchy members need no dispatch.
-    defs.push(
-      `define internal ptr @${mangleClassRetain(cls.name)}(ptr %o) ${FN_ATTRS} { ; retain ${cls.name}`,
-      `entry:`,
-      `  %isnull = icmp eq ptr %o, null`,
-      `  br i1 %isnull, label %done, label %check`,
-      `check:`,
-      `  %rc = load ${host.sizeType}, ptr %o`,
-      `  %imm = icmp eq ${host.sizeType} %rc, -1`,
-      `  br i1 %imm, label %done, label %inc`,
-      `inc:`,
-      `  %n = add ${host.sizeType} %rc, 1`,
-      `  store ${host.sizeType} %n, ptr %o`,
-      ...(traced
-        ? [`  %colorp = getelementptr i8, ptr %o, ${host.sizeType} -${host.cycleColorOffset}`, `  store i32 0, ptr %colorp ; mark live`]
-        : []),
-      `  br label %done`,
-      `done:`,
-      `  ret ptr %o`,
-      `}`,
-      ``,
-    );
+    defs.push(...retainBody(host, mangleClassRetain(cls.name), traced, `retain ${cls.name}`), ``);
 
     // The field-releasing teardown body shared by both release shapes
     // (the public one on standalone classes, the DIRECT one on hierarchy
@@ -426,34 +406,12 @@ export function emitClassShapes(
       reld.push(`done:`, `  ret void`, `}`, ``);
       defs.push(...reld);
     } else {
-      const rel: string[] = [
-        `define internal void @${mangleClassRelease(cls.name)}(ptr %o) ${FN_ATTRS} { ; release ${cls.name}`,
-        `entry:`,
-        `  %isnull = icmp eq ptr %o, null`,
-        `  br i1 %isnull, label %done, label %check`,
-        `check:`,
-        `  %rc = load ${host.sizeType}, ptr %o`,
-        `  %imm = icmp eq ${host.sizeType} %rc, -1`,
-        `  br i1 %imm, label %done, label %dec`,
-        `dec:`,
-        `  %n = sub ${host.sizeType} %rc, 1`,
-        `  store ${host.sizeType} %n, ptr %o`,
-        `  %dead = icmp eq ${host.sizeType} %n, 0`,
-        `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
-        `free:`,
-      ];
-      teardown(rel);
-      rel.push(`  br label %done`);
-      if (traced) {
-        host.declare(`declare void @scr_cyc_on_release(ptr)`);
-        rel.push(
-          `root:`,
-          `  call void @scr_cyc_on_release(ptr %o) ; possible cycle root; may collect`,
-          `  br label %done`,
-        );
-      }
-      rel.push(`done:`, `  ret void`, `}`, ``);
-      defs.push(...rel);
+      const freeBody: string[] = [];
+      teardown(freeBody);
+      defs.push(
+        ...releaseBody(host, mangleClassRelease(cls.name), traced, freeBody, `release ${cls.name}`),
+        ``,
+      );
     }
 
     // new: zeroed allocation, rc = 1, the vtable word on hierarchy

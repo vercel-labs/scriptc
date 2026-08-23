@@ -27,6 +27,9 @@ import {
 } from "./surfaces.js";
 import { conditionalSpreadOf } from "./lower-exprs.js";
 import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
+import { resultIsDiscarded } from "./call-position.js";
+import { lowerCallbackArg as lowerCallbackArgShared } from "./callback-arg.js";
+import { pairsSnapshotHelper } from "./pairs-snapshot.js";
 
 const NARROW_DATA_HINT =
   'write/end take one string or one Uint8Array/Buffer value (narrow unions first)';
@@ -50,7 +53,7 @@ function httpServerTimeoutField(name: string): number | null {
  * portless is made of); anything that would CONSUME the result (Node
  * returns `this`/a boolean where this surface returns void) is fenced. */
 function requireStatementPosition(L: Lowerer, call: ts.CallExpression, what: string): void {
-  if (ts.isExpressionStatement(call.parent) || ts.isArrowFunction(call.parent)) return;
+  if (resultIsDiscarded(call)) return;
   L.unsupported(
     "SC1090",
     call,
@@ -193,48 +196,10 @@ function lowerCallbackArg(
   paramHint: string,
   dynTuple?: readonly IrType[],
 ): { cb: IrExpr; nparams: number } {
-  const cb = L.lowerExpr(node);
-  if (cb.type.kind === "dyn" && dynTuple !== undefined) {
-    const toT = funcOf([...dynTuple], VOID);
-    return {
-      cb: { kind: "dynCheck", value: cb, type: toT, loc: locOf(node) },
-      nparams: dynTuple.length,
-    };
-  }
-  if (
-    dynTuple !== undefined &&
-    cb.type.kind === "func" &&
-    (cb.type.rest === true ||
-      (cb.type.params.length > 0 && cb.type.params.some((p) => !paramOk(p)))) &&
-    cb.type.params.every((p) => p.kind === "dyn") &&
-    canBoxFuncIntoDyn(cb.type, (id) => L.shapes.get(id), (id) => L.unions.get(id))
-  ) {
-    // A plain-JS listener whose params carry no contextual type (a
-    // hoisted `function onConn(socket)` — dyn params), or an
-    // arguments-reading rest function: box it and adapt through the
-    // dynCheck function boundary like the dyn flavor above — the event
-    // payloads box into the checked-dynamic tree (handles by reference) and the body's
-    // member uses dispatch at runtime.
-    const boxed: IrExpr = { kind: "dynFrom", value: cb, type: DYN, loc: locOf(node) };
-    const toT = funcOf([...dynTuple], VOID);
-    return {
-      cb: { kind: "dynCheck", value: boxed, type: toT, loc: locOf(node) },
-      nparams: dynTuple.length,
-    };
-  }
-  if (cb.type.kind !== "func" || cb.type.params.length > maxParams) {
-    L.unsupported(
-      "SC1090",
-      node,
-      `${what} with more than ${maxParams} parameter${maxParams === 1 ? "" : "s"} (${paramHint})`,
-    );
-  }
-  const param = cb.type.params[0];
-  if (param !== undefined && !paramOk(param)) {
-    L.unsupported("SC1090", node, `${what} whose parameter is not supported (${paramHint})`);
-  }
-  const adapted = voidizedCallback(L, cb, locOf(node));
-  return { cb: adapted, nparams: cb.type.params.length };
+  return lowerCallbackArgShared(L, node, what, maxParams, paramOk, paramHint, {
+    ...(dynTuple !== undefined ? { dynTuple } : {}),
+    adapt: (cb) => voidizedCallback(L, cb, locOf(node)),
+  });
 }
 /** Lowers a handle-kind method receiver. The checker's control flow can
  * narrow an untyped binding to the handle class (`let server; server =
@@ -1671,88 +1636,12 @@ export function lowerServerMethodCall(L: Lowerer, call: ts.CallExpression,
  * when the shape is not a pure index-signature record with a string arm
  * (the caller fences). */
 function headersSnapshotHelper(L: Lowerer, shapeId: string, loc: SrcLoc): string | null {
-  const shape = L.shapes.get(shapeId);
-  if (!shape || shape.tuple || shape.fields.length > 0 || !shape.indexValue) return null;
-  const iv = shape.indexValue;
-  if (iv.kind !== "union") return null;
-  const strTag = L.armTag(iv.unionId, STRING);
-  if (strTag < 0) return null;
-  const key = `headers.snapshot:${shapeId}`;
-  const existing = L.widthHelpers.get(key);
-  if (existing) return existing;
-  const name = `%headers.snapshot.${L.widthHelpers.size}`;
-  L.widthHelpers.set(key, name);
-  const recT: IrType = { kind: "record", shapeId };
-  const pairsT = arrayOf(STRING);
-
-  const pairAt = (offset: number): IrExpr => ({
-    kind: "arrayGet",
-    arr: varRef("ps.0", pairsT, loc),
-    index:
-      offset === 0
-        ? varRef("i.0", F64, loc)
-        : { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(offset, loc), type: F64, loc },
-    type: STRING,
-    loc,
-  });
-  const body: IrStmt[] = [
-    {
-      kind: "varDecl",
-      localId: "ps.0",
-      init: { kind: "libCall", fn: "http.reqHeaderPairs", args: [varRef("r.0", HTTPREQ_T, loc)], type: pairsT, loc },
-      loc,
-    },
-    {
-      kind: "varDecl",
-      localId: "out.0",
-      init: { kind: "recordLit", fields: [], type: recT, loc },
-      loc,
-    },
-    {
-      kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-      cond: {
-        kind: "bin",
-        op: "<",
-        left: varRef("i.0", F64, loc),
-        right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ps.0", pairsT, loc), args: [], type: F64, loc },
-        type: BOOL,
-        loc,
-      },
-      update: {
-        kind: "assign",
-        localId: "i.0",
-        value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(2, loc), type: F64, loc },
-        loc,
-      },
-      body: [
-        {
-          kind: "recordKeySet",
-          obj: varRef("out.0", recT, loc),
-          shapeId,
-          key: pairAt(0),
-          value: { kind: "unionWrap", unionId: iv.unionId, tag: strTag, value: pairAt(1), type: iv, loc },
-          loc,
-        },
-      ],
-      loc,
-    },
-    { kind: "return", value: varRef("out.0", recT, loc), loc },
-  ];
-  L.liftedFns.push({
-    name,
+  return pairsSnapshotHelper(L, shapeId, loc, {
+    keyPrefix: "headers",
+    libCall: "http.reqHeaderPairs",
     params: [{ localId: "r.0", name: "r", type: HTTPREQ_T }],
-    returnType: recT,
-    locals: [
-      { id: "r.0", name: "r", type: HTTPREQ_T, mutable: false },
-      { id: "ps.0", name: "ps", type: pairsT, mutable: false },
-      { id: "out.0", name: "out", type: recT, mutable: false },
-      { id: "i.0", name: "i", type: F64, mutable: true },
-    ],
-    body,
-    loc,
+    callArgs: [varRef("r.0", HTTPREQ_T, loc)],
   });
-  return name;
 }
 
 /** The `endStream` boolean of an h2 options object literal, as a literal

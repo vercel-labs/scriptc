@@ -1191,39 +1191,16 @@ async function ensureLreObjects(
     (sanitize ? "asan" : "plain") +
     (driver.argv.length === 1 && driver.argv[0] === "clang" ? "" : "-zigcc") +
     `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
-  const vendor = vendorEngineDir();
-  const objects = lreObjectPaths(sanitize, driver, buildIdentity, cacheRoot);
-  if ((await Promise.all(objects.map(validVendorArtifact))).every(Boolean)) return objects;
-
-  await mkdir(cacheRoot, { recursive: true });
-  const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-lre-${flavor}-`));
-  try {
-    // One -c per invocation: zig's COFF driver rejects multiple -c inputs
-    // in a single command ("coff does not support linking multiple
-    // objects"); per-file compiles produce the identical objects on every
-    // target.
-    for (const f of LRE_SOURCES) {
-      await execFileAsync(
-        driver.argv[0] ?? "clang",
-        [
-          ...driver.argv.slice(1),
-          "-std=c11",
-          ...driver.targetArgs,
-          ...(sanitize ? ["-O1", "-fsanitize=address"] : ["-Os"]),
-          "-I", vendor,
-          "-c", join(vendor, f),
-          "-o", join(buildDir, f.replace(/\.c$/, ".o")),
-        ],
-        { cwd: buildDir },
-      );
-    }
-    await Promise.all(objects.map((destination) =>
-      publishVendorArtifact(join(buildDir, basename(destination)), destination)
-    ));
-  } finally {
-    await rm(buildDir, { recursive: true, force: true });
-  }
-  return objects;
+  return ensureVendorObjects({
+    sanitize,
+    driver,
+    cacheRoot,
+    flavor,
+    name: "lre",
+    vendor: vendorEngineDir(),
+    sources: LRE_SOURCES,
+    objects: lreObjectPaths(sanitize, driver, buildIdentity, cacheRoot),
+  });
 }
 
 function vendorZlibDir(): string {
@@ -1269,16 +1246,37 @@ async function ensureZlibObjects(
     (sanitize ? "asan" : "plain") +
     (driver.argv.length === 1 && driver.argv[0] === "clang" ? "" : "-zigcc") +
     `-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
-  const vendor = vendorZlibDir();
-  const objects = zlibObjectPaths(sanitize, driver, buildIdentity, cacheRoot);
+  return ensureVendorObjects({
+    sanitize,
+    driver,
+    cacheRoot,
+    flavor,
+    name: "zlib",
+    vendor: vendorZlibDir(),
+    sources: ZLIB_SOURCES,
+    objects: zlibObjectPaths(sanitize, driver, buildIdentity, cacheRoot),
+  });
+}
+
+/** Compile and atomically publish one cached set of vendored C objects. */
+async function ensureVendorObjects(options: {
+  sanitize: boolean;
+  driver: CcDriver;
+  cacheRoot: string;
+  flavor: string;
+  name: string;
+  vendor: string;
+  sources: readonly string[];
+  objects: string[];
+}): Promise<string[]> {
+  const { sanitize, driver, cacheRoot, flavor, name, vendor, sources, objects } = options;
   if ((await Promise.all(objects.map(validVendorArtifact))).every(Boolean)) return objects;
 
   await mkdir(cacheRoot, { recursive: true });
-  const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-zlib-${flavor}-`));
+  const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-${name}-${flavor}-`));
   try {
-    // One -c per invocation, the lre recipe (zig's COFF driver rejects
-    // multiple -c inputs in a single command).
-    for (const f of ZLIB_SOURCES) {
+    // Zig's COFF driver rejects multiple -c inputs in a single command.
+    for (const f of sources) {
       await execFileAsync(
         driver.argv[0] ?? "clang",
         [

@@ -22,6 +22,7 @@ import { uniqueSymbolKeyOf } from "./lower-exprs.js";
 import { lowerHttpAgentNew, lowerHttpServerNew } from "./lower-server.js";
 import { ambientNsRootOf, ambientUndefReadType, ambientUndefVarRootOf, ambientUndefinedFnSymbolOf, fenceEarlyAliasUse, fenceEarlyNsMemberRef, nsMemberIdentOf, nsUndefRead } from "./lower-namespaces.js";
 import { mixinResultBindingClassOf, type MixinInstanceInfo } from "./lower-mixins.js";
+import { rejectStaticThis } from "./static-this.js";
 
 export interface ClassInfo {
   def: IrClassDef;
@@ -1184,21 +1185,11 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
           // with arrow functions transparent (they inherit the block's
           // `this`) and this-binding function forms opaque (their `this` is
           // their own).
-          const checkThis = (n: ts.Node): void => {
-            if (
-              ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n) ||
-              ts.isMethodDeclaration(n) || ts.isConstructorDeclaration(n) ||
-              ts.isGetAccessor(n) || ts.isSetAccessor(n) ||
-              ts.isClassDeclaration(n) || ts.isClassExpression(n)
-            ) {
-              return;
-            }
-            if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword) {
-              L.unsupported("SC1090", n, "'this' in class static blocks (it names the class — reference the class by name instead)");
-            }
-            n.forEachChild(checkThis);
-          };
-          member.body.forEachChild(checkThis);
+          rejectStaticThis(
+            L,
+            member.body,
+            () => "'this' in class static blocks (it names the class — reference the class by name instead)",
+          );
           staticBlocks.push(member);
           continue;
         }
@@ -2539,21 +2530,12 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
         // static block's), with arrows transparent and this-binding
         // function forms opaque — the static-block rule verbatim, named
         // here so the generic outside-a-method fence never fires first.
-        const checkThis = (n: ts.Node): void => {
-          if (
-            ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n) ||
-            ts.isMethodDeclaration(n) || ts.isConstructorDeclaration(n) ||
-            ts.isGetAccessor(n) || ts.isSetAccessor(n) ||
-            ts.isClassDeclaration(n) || ts.isClassExpression(n)
-          ) {
-            return;
-          }
-          if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword) {
-            L.unsupported("SC1090", n, "'this' in static field initializers (it names the class — reference the class by name instead)");
-          }
-          n.forEachChild(checkThis);
-        };
-        checkThis(f.initializer);
+        rejectStaticThis(
+          L,
+          f.initializer,
+          () => "'this' in static field initializers (it names the class — reference the class by name instead)",
+          true,
+        );
         const value = L.lowerExprExpecting(f.initializer, f.type);
         out.push({ kind: "assign", localId: f.globalId, value, loc: locOf(f.initializer) });
       } catch (e) {
@@ -4152,24 +4134,6 @@ export function lowerClassMembers(L: Lowerer, info: ClassInfo): IrFunction[] {
   export function lowerStaticMethod(L: Lowerer, info: ClassInfo, name: string): IrFunction | null {
     const entry = info.staticMethods?.get(name);
     if (!entry?.member.body) return null;
-    const checkThis = (n: ts.Node): void => {
-      if (
-        ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n) ||
-        ts.isMethodDeclaration(n) || ts.isConstructorDeclaration(n) ||
-        ts.isGetAccessor(n) || ts.isSetAccessor(n) ||
-        ts.isClassDeclaration(n) || ts.isClassExpression(n)
-      ) {
-        return;
-      }
-      if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword) {
-        L.unsupported(
-          "SC1090",
-          n,
-          `'${n.kind === ts.SyntaxKind.ThisKeyword ? "this" : "super"}' in static methods (it names the RECEIVER class — a dynamic value; reference the class by name instead)`,
-        );
-      }
-      n.forEachChild(checkThis);
-    };
     // Async statics: an async IrFunction like any module function — the
     // body returns the promise's INNER type, calls enter through the
     // fiber spawn wrapper (callTargetC routes by fn.async).
@@ -4181,7 +4145,11 @@ export function lowerClassMembers(L: Lowerer, info: ClassInfo): IrFunction[] {
     fnCtx.isAsync = isAsync;
     L.fnStack.push(fnCtx);
     try {
-      entry.member.body.forEachChild(checkThis);
+      rejectStaticThis(
+        L,
+        entry.member.body,
+        (keyword) => `'${keyword}' in static methods (it names the RECEIVER class — a dynamic value; reference the class by name instead)`,
+      );
       const declared = L.declareParams(entry.member.parameters, entry.params);
       const body = [...declared.prologue, ...L.lowerStmts(entry.member.body.statements)];
       const fn: IrFunction = {

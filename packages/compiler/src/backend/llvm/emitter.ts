@@ -3122,156 +3122,95 @@ class LlEmitter {
    * for the always-truthy object kinds (JS: [] and {} are truthy). */
   private truthy(v: LlValue): string {
     const B = this.B;
-    switch (v.type.kind) {
+    if (v.type.kind === "union") {
+      // The ARM value's ToBoolean: an inline tag switch (the C emitter's
+      // per-union interned helper, emitted at the use site instead).
+      const def = this.unionsById.get(v.type.unionId);
+      if (!def) throw new InternalCompilerError(`llvm emitter bug: truthiness of unknown union ${v.type.unionId}`);
+      const slot = B.slot();
+      B.entryAllocas.push(`${slot} = alloca i1`);
+      const join = B.newLabel("ut.j");
+      this.unionTagSwitch(v.name, def, (arm) => {
+        let valueName = "false";
+        if (arm.kind === "f64") {
+          valueName = B.tmp();
+          this.declare(`declare double @scr_union_get_f64(ptr)`);
+          B.line(`${valueName} = call double @scr_union_get_f64(ptr ${v.name})`);
+        } else if (arm.kind === "bool") {
+          valueName = B.tmp();
+          this.declare(`declare zeroext i1 @scr_union_get_bool(ptr)`);
+          B.line(`${valueName} = call zeroext i1 @scr_union_get_bool(ptr ${v.name})`);
+        } else if (arm.kind === "string") {
+          valueName = this.unionPeek(v.name);
+        }
+        const truthy = this.truthyOf(arm.kind, valueName, true);
+        B.line(`store i1 ${truthy}, ptr ${slot}`);
+        B.br(join);
+      });
+      B.startBlock(join);
+      const t = B.tmp();
+      B.line(`${t} = load i1, ptr ${slot}`);
+      return t;
+    }
+    return this.truthyOf(v.type.kind, v.name, false);
+  }
+
+  /** Emit truthiness for one non-union kind. Union arms are known-present,
+   * so object kinds become the constant true instead of a pointer test. */
+  private truthyOf(kind: IrType["kind"], valueName: string, unionArm: boolean): string {
+    const B = this.B;
+    switch (kind) {
+      case "undefinedT":
+      case "nullT":
+        if (!unionArm) throw new LlvmUnsupportedError(`truthy:${kind}`);
+        return "false";
       case "bool":
-        return v.name;
-      case "f64": {
-        const t = B.tmp();
-        B.line(`${t} = fcmp one double ${v.name}, ${f64Lit(0)}`);
-        return t;
+        return valueName;
+      case "f64":
+      case "procStream": {
+        if (unionArm && kind === "procStream") throw new LlvmUnsupportedError(`truthy:union:${kind}`);
+        const truthy = B.tmp();
+        B.line(`${truthy} = fcmp one double ${valueName}, ${f64Lit(0)}`);
+        return truthy;
       }
       case "string": {
         const lenp = B.tmp();
         const len = B.tmp();
-        const t = B.tmp();
-        B.line(`${lenp} = getelementptr inbounds %ScrStr, ptr ${v.name}, i64 0, i32 1`);
+        const truthy = B.tmp();
+        B.line(`${lenp} = getelementptr inbounds %ScrStr, ptr ${valueName}, i64 0, i32 1`);
         B.line(`${len} = load ${this.sizeType}, ptr ${lenp}`);
-        B.line(`${t} = icmp ne ${this.sizeType} ${len}, 0`);
-        return t;
+        B.line(`${truthy} = icmp ne ${this.sizeType} ${len}, 0`);
+        return truthy;
       }
       case "date":
         return "true";
-      case "array":
-      case "record":
-      case "object":
-      case "classval":
-      case "func":
-      case "map":
-      case "set":
-      case "symbol":
-      case "regex":
-      case "promise":
-      case "bytes":
-      case "url":
-      case "searchParams":
-      case "stats":
-      case "fileHandle":
-      case "spawnRes":
-      case "child":
-      case "childStream":
-      case "generator":
-      case "fsWatcher": {
-        // JS objects are ALWAYS truthy; the honest constant reads as a
-        // pointer test, exactly the C emitter's `!= NULL`.
-        const t = B.tmp();
-        B.line(`${t} = icmp ne ptr ${v.name}, null`);
-        return t;
-      }
-      case "procStream": {
-        // A stream value is a JS object (always truthy); the scalar fd
-        // representation is 1 or 2, so the honest constant reads as its
-        // own non-zero test.
-        const t = B.tmp();
-        B.line(`${t} = fcmp one double ${v.name}, ${f64Lit(0)}`);
-        return t;
+      case "array": case "record": case "object": case "classval": case "func":
+      case "map": case "set": case "symbol": case "regex": case "promise": case "bytes":
+      case "url": case "searchParams": case "stats": case "fileHandle": case "spawnRes":
+      case "child": case "childStream": case "generator": case "fsWatcher": {
+        if (unionArm) return "true";
+        const truthy = B.tmp();
+        B.line(`${truthy} = icmp ne ptr ${valueName}, null`);
+        return truthy;
       }
       case "dyn": {
-        // ToBoolean over the dyn kind (scr_dyn_truthy — JS-exact for
-        // every kind; borrowed, never throws): `v || dflt` and condition
-        // descent on checked-dynamic values.
+        if (unionArm) throw new LlvmUnsupportedError(`truthy:union:${kind}`);
         this.declare(`declare zeroext i1 @scr_dyn_truthy(ptr)`);
-        const t = B.tmp();
-        B.line(`${t} = call zeroext i1 @scr_dyn_truthy(ptr ${v.name})`);
-        return t;
+        const truthy = B.tmp();
+        B.line(`${truthy} = call zeroext i1 @scr_dyn_truthy(ptr ${valueName})`);
+        return truthy;
       }
       case "jsval": {
-        // Island truthiness: the engine's ToBoolean (never throws, no
-        // ownership change) — jsval operands are legal in `logical`.
+        if (unionArm) throw new LlvmUnsupportedError(`truthy:union:${kind}`);
         this.declare(`declare i32 @scr_jsval_truthy(ptr)`);
-        const r = B.tmp();
-        const t = B.tmp();
-        B.line(`${r} = call i32 @scr_jsval_truthy(ptr ${v.name})`);
-        B.line(`${t} = icmp ne i32 ${r}, 0`);
-        return t;
-      }
-      case "union": {
-        // The ARM value's ToBoolean: an inline tag switch (the C emitter's
-        // per-union interned helper, emitted at the use site instead).
-        const def = this.unionsById.get(v.type.unionId);
-        if (!def) throw new InternalCompilerError(`llvm emitter bug: truthiness of unknown union ${v.type.unionId}`);
-        const slot = B.slot();
-        B.entryAllocas.push(`${slot} = alloca i1`);
-        const join = B.newLabel("ut.j");
-        this.unionTagSwitch(v.name, def, (arm) => {
-          switch (arm.kind) {
-            case "undefinedT":
-            case "nullT":
-              B.line(`store i1 false, ptr ${slot}`);
-              break;
-            case "f64": {
-              const x = B.tmp();
-              const t = B.tmp();
-              this.declare(`declare double @scr_union_get_f64(ptr)`);
-              B.line(`${x} = call double @scr_union_get_f64(ptr ${v.name})`);
-              B.line(`${t} = fcmp one double ${x}, ${f64Lit(0)}`);
-              B.line(`store i1 ${t}, ptr ${slot}`);
-              break;
-            }
-            case "bool": {
-              const b = B.tmp();
-              this.declare(`declare zeroext i1 @scr_union_get_bool(ptr)`);
-              B.line(`${b} = call zeroext i1 @scr_union_get_bool(ptr ${v.name})`);
-              B.line(`store i1 ${b}, ptr ${slot}`);
-              break;
-            }
-            case "string": {
-              const p = this.unionPeek(v.name);
-              const lenp = B.tmp();
-              const len = B.tmp();
-              const t = B.tmp();
-              B.line(`${lenp} = getelementptr inbounds %ScrStr, ptr ${p}, i64 0, i32 1`);
-              B.line(`${len} = load ${this.sizeType}, ptr ${lenp}`);
-              B.line(`${t} = icmp ne ${this.sizeType} ${len}, 0`);
-              B.line(`store i1 ${t}, ptr ${slot}`);
-              break;
-            }
-            case "date":
-              B.line(`store i1 true, ptr ${slot} ; Date objects are truthy`);
-              break;
-            case "array":
-            case "record":
-            case "object":
-            case "classval":
-            case "func":
-            case "map":
-            case "set":
-            case "symbol":
-            case "regex":
-            case "promise":
-            case "bytes":
-            case "url":
-            case "searchParams":
-            case "stats":
-            case "fileHandle":
-            case "spawnRes":
-            case "child":
-            case "childStream":
-            case "generator":
-            case "fsWatcher":
-              B.line(`store i1 true, ptr ${slot} ; ${arm.kind}: objects are truthy`);
-              break;
-            default:
-              throw new LlvmUnsupportedError(`truthy:union:${arm.kind}`);
-          }
-          B.br(join);
-        });
-        B.startBlock(join);
-        const t = B.tmp();
-        B.line(`${t} = load i1, ptr ${slot}`);
-        return t;
+        const raw = B.tmp();
+        const truthy = B.tmp();
+        B.line(`${raw} = call i32 @scr_jsval_truthy(ptr ${valueName})`);
+        B.line(`${truthy} = icmp ne i32 ${raw}, 0`);
+        return truthy;
       }
       default:
-        throw new LlvmUnsupportedError(`truthy:${v.type.kind}`);
+        throw new LlvmUnsupportedError(`truthy:${unionArm ? "union:" : ""}${kind}`);
     }
   }
 

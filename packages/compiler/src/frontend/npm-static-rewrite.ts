@@ -75,37 +75,12 @@
 
 import { dirname, join, resolve as resolvePath } from "node:path";
 import ts from "typescript5";
-import { cjsLexedExportsOf, cjsLexerVisibleNames } from "./cjs-lexer.js";
+import { bareRequireSpecOf, cjsLexedExportsOf, cjsLexerVisibleNames, isExportsIdent, isModuleExports } from "./cjs-lexer.js";
 import { trackedDirectoryExists, trackedFileExists, trackedReadFile } from "./input-tracker.js";
 import { resolveExports } from "./resolve.js";
+import { packageNameOfSpecifier } from "./shared.js";
 
 const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default"]);
-
-/** True when `e` is exactly the `exports` identifier. */
-function isExportsIdent(e: ts.Expression): boolean {
-  return ts.isIdentifier(e) && e.text === "exports";
-}
-
-/** True when `e` is exactly `module.exports`. */
-function isModuleExports(e: ts.Expression): boolean {
-  return (
-    ts.isPropertyAccessExpression(e) &&
-    e.questionDotToken === undefined &&
-    ts.isIdentifier(e.expression) &&
-    e.expression.text === "module" &&
-    ts.isIdentifier(e.name) &&
-    e.name.text === "exports"
-  );
-}
-
-/** The bare `require('spec')` call (identifier callee, one string arg). */
-function bareRequireSpecOf(e: ts.Expression): string | null {
-  if (!ts.isCallExpression(e) || e.questionDotToken !== undefined) return null;
-  if (!ts.isIdentifier(e.expression) || e.expression.text !== "require") return null;
-  if (e.arguments.length !== 1) return null;
-  const arg = e.arguments[0]!;
-  return ts.isStringLiteral(arg) ? arg.text : null;
-}
 
 /** The last NAME of a callee: bare identifier or any member chain's final
  * name (`tslib_1.__exportStar` → "__exportStar"). */
@@ -274,7 +249,7 @@ function resolveRelativeCjs(fromFile: string, spec: string): string | null {
 function resolveBareRequireCjs(fromFile: string, spec: string): string | null {
   if (spec.startsWith("#") || spec.startsWith("node:")) return null;
   const parts = spec.split("/");
-  const name = spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
+  const name = packageNameOfSpecifier(spec);
   const subparts = spec.startsWith("@") ? parts.slice(2) : parts.slice(1);
   const subpath = subparts.length > 0 ? `./${subparts.join("/")}` : ".";
   for (let dir = dirname(fromFile); ; ) {

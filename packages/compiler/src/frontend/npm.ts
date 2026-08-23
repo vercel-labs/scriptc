@@ -87,6 +87,7 @@
  */
 import { dirname, extname, join, resolve } from "node:path";
 import ts from "typescript5";
+import { packageNameOfSpecifier as packageNameOf } from "./shared.js";
 import { cjsLexedExportsOf } from "./cjs-lexer.js";
 import { trackedDirectoryExists, trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { resolveExports } from "./resolve.js";
@@ -753,12 +754,6 @@ interface PkgJson {
   module?: string;
   type?: string;
   exports?: unknown;
-}
-
-/** Package name from a specifier ("@scope/pkg/sub" → "@scope/pkg"). */
-function packageNameOf(specifier: string): string {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
 }
 
 /** Package name from a PATH into node_modules ("…/node_modules/@s/p/d/x.js"

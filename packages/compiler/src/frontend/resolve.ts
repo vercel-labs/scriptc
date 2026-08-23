@@ -18,6 +18,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { isNpmStaticPackage, npmStaticPackageOfPath, npmStaticTransformPkgJson } from "./npm-static.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import { trackedAccessibleEntries, trackedDirectoryExists, trackedExists, trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import { packageNameOfSpecifier } from "./shared.js";
 
 function isFile(path: string): boolean {
   return trackedFileExists(path);
@@ -665,13 +666,6 @@ export interface BareResolution {
   workspaceDir?: string;
 }
 
-/** Package name prefix of a bare specifier ("@scope/pkg/sub" → "@scope/pkg",
- * "pkg/sub" → "pkg"). */
-function packagePrefixOf(specifier: string): string {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
-}
-
 /** The DefinitelyTyped name mangling: "@scope/pkg" → "scope__pkg". */
 function mangleScopedName(name: string): string {
   return name.startsWith("@") ? name.slice(1).replace("/", "__") : name;
@@ -699,7 +693,7 @@ export function resolveBareModule(
    * --npm-static set (the auto-detection probe); default follows the set. */
   mode?: "js-only",
 ): BareResolution | null {
-  const pkgName = packagePrefixOf(specifier);
+  const pkgName = packageNameOfSpecifier(specifier);
   const rest = specifier.slice(pkgName.length).replace(/^\//, "");
   const subpath = rest === "" ? "." : `./${rest}`;
   // An opted-in --npm-static package resolves to its RUNTIME JS: the js

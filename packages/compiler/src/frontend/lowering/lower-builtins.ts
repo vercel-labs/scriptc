@@ -32,6 +32,7 @@ import { HTTP2_CONSTANTS } from "./http2-constants.js";
 import { CRYPTO_CIPHERS, CRYPTO_CONSTANTS, CRYPTO_CURVES, CRYPTO_HASHES } from "./crypto-tables.js";
 import { timerStyleCallback } from "./lower-calls.js";
 import { registerHttpClientFnBinding, voidizedCallback } from "./lower-server.js";
+import { pairsSnapshotHelper } from "./pairs-snapshot.js";
 import { BOOL, BYTES_U8, CHILD_T, CHILDSTREAM_T, DYN, F64, FILEHANDLE_T, FSWATCHER_T, PROCSTREAM_T, IrExpr, IrFunction, IrLibFn, IrLocal, IrStmt, IrType, JSVAL, NULL_T, SEARCH_PARAMS_T, SPAWNRES_T, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, canBoxFuncIntoDyn, canConvertToDyn, funcOf, isUnitType, typeEquals, typeKey } from "../../ir/nodes.js";
 import { boolLit, countedFor, numLit, strLit, varRef } from "../../ir/build.js";
 
@@ -7731,88 +7732,11 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * whose value slot is the `string | undefined` union (what ProcessEnv
    * maps to); anything else answers null and the caller keeps its fence. */
   export function envSnapshotHelper(L: Lowerer, shapeId: string, loc: SrcLoc): string | null {
-    const shape = L.shapes.get(shapeId);
-    if (!shape || shape.tuple || shape.fields.length > 0 || !shape.indexValue) return null;
-    const iv = shape.indexValue;
-    if (!typeEquals(iv, L.envValueType())) return null;
-    if (iv.kind !== "union") return null;
-    const strTag = L.armTag(iv.unionId, STRING);
-    if (strTag < 0) return null;
-    const key = `env.snapshot:${shapeId}`;
-    const existing = L.widthHelpers.get(key);
-    if (existing) return existing;
-    const name = `%env.snapshot.${L.widthHelpers.size}`;
-    L.widthHelpers.set(key, name);
-    const recT: IrType = { kind: "record", shapeId };
-    const pairsT = arrayOf(STRING);
-
-    const pairAt = (offset: number): IrExpr => ({
-      kind: "arrayGet",
-      arr: varRef("ps.0", pairsT, loc),
-      index:
-        offset === 0
-          ? varRef("i.0", F64, loc)
-          : { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(offset, loc), type: F64, loc },
-      type: STRING,
-      loc,
+    return pairsSnapshotHelper(L, shapeId, loc, {
+      keyPrefix: "env",
+      libCall: "process.envPairs",
+      indexValueOk: (indexValue) => typeEquals(indexValue, L.envValueType()),
     });
-    const body: IrStmt[] = [
-      {
-        kind: "varDecl",
-        localId: "ps.0",
-        init: { kind: "libCall", fn: "process.envPairs", args: [], type: pairsT, loc },
-        loc,
-      },
-      {
-        kind: "varDecl",
-        localId: "out.0",
-        init: { kind: "recordLit", fields: [], type: recT, loc },
-        loc,
-      },
-      {
-        kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-        cond: {
-          kind: "bin",
-          op: "<",
-          left: varRef("i.0", F64, loc),
-          right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ps.0", pairsT, loc), args: [], type: F64, loc },
-          type: BOOL,
-          loc,
-        },
-        update: {
-          kind: "assign",
-          localId: "i.0",
-          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(2, loc), type: F64, loc },
-          loc,
-        },
-        body: [
-          {
-            kind: "recordKeySet",
-            obj: varRef("out.0", recT, loc),
-            shapeId,
-            key: pairAt(0),
-            value: { kind: "unionWrap", unionId: iv.unionId, tag: strTag, value: pairAt(1), type: iv, loc },
-            loc,
-          },
-        ],
-        loc,
-      },
-      { kind: "return", value: varRef("out.0", recT, loc), loc },
-    ];
-    L.liftedFns.push({
-      name,
-      params: [],
-      returnType: recT,
-      locals: [
-        { id: "ps.0", name: "ps", type: pairsT, mutable: false },
-        { id: "out.0", name: "out", type: recT, mutable: false },
-        { id: "i.0", name: "i", type: F64, mutable: true },
-      ],
-      body,
-      loc,
-    });
-    return name;
   }
 
 export function isConsoleLog(L: Lowerer, call: ts.CallExpression): boolean {

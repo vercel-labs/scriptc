@@ -1951,6 +1951,35 @@ export function isParseArgsDynCheckerType(L: Lowerer, type: ts.Type): boolean {
     return null;
   }
 
+/** Decode one non-rest object-assignment property into its static source
+ * field, destination expression, and optional default initializer. */
+  function destructuringPropertyOf(
+    L: Lowerer,
+    prop: ts.ObjectLiteralElementLike,
+  ): { fieldName: string; bindTo: ts.Expression; defaultInit: ts.Expression | null } {
+    if (ts.isShorthandPropertyAssignment(prop)) {
+      return {
+        fieldName: (prop.name as ts.Identifier).text,
+        bindTo: prop.name as ts.Identifier,
+        defaultInit: prop.objectAssignmentInitializer ?? null,
+      };
+    }
+    if (!ts.isPropertyAssignment(prop)) {
+      L.unsupported("SC1031", prop, "destructuring assignment with getter/setter or method properties");
+    }
+    const folded = patternKeyNameOf(L, prop.name);
+    if (folded === null) {
+      L.unsupported("SC1031", prop, "destructuring assignment with computed keys that do not fold to one property name");
+    }
+    let bindTo = prop.initializer;
+    let defaultInit: ts.Expression | null = null;
+    if (ts.isBinaryExpression(bindTo) && bindTo.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      defaultInit = bindTo.right;
+      bindTo = bindTo.left;
+    }
+    return { fieldName: folded, bindTo, defaultInit };
+  }
+
 /** True when the CHECKER types this expression as a string in every arm
    * (unions of string-likes included). The IR carries builtin IDENTITY
    * TOKENS as strings too (`globalThis.crypto` taken as a value in a JS
@@ -5205,27 +5234,10 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
             out.push({ kind: "assign", localId: targetBinding.id, value: L.coerceInto(prop, packed, targetBinding.type), loc: propLoc });
             continue;
           }
-          let fieldName: string;
-          let bindTo: ts.Expression;
-          let dfltInit: ts.Expression | null = null;
-          if (ts.isShorthandPropertyAssignment(prop)) {
-            fieldName = (prop.name as ts.Identifier).text;
-            bindTo = prop.name as ts.Identifier;
-            dfltInit = prop.objectAssignmentInitializer ?? null;
-          } else if (ts.isPropertyAssignment(prop)) {
-            const folded = patternKeyNameOf(L, prop.name);
-            if (folded === null) {
-              L.unsupported("SC1031", prop, "destructuring assignment with computed keys that do not fold to one property name");
-            }
-            fieldName = folded;
-            bindTo = prop.initializer;
-            if (ts.isBinaryExpression(bindTo) && bindTo.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-              dfltInit = bindTo.right;
-              bindTo = bindTo.left;
-            }
-          } else {
-            L.unsupported("SC1031", prop, "destructuring assignment with getter/setter or method properties");
-          }
+          const decoded = destructuringPropertyOf(L, prop);
+          const { fieldName } = decoded;
+          let { bindTo } = decoded;
+          const dfltInit = decoded.defaultInit;
           const dflt = dfltInit;
           const readOf = (targetT: IrType | null): IrExpr => {
             const fieldType = info.fields.get(fieldName);
@@ -5306,26 +5318,9 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
             "rest bindings over string sources (JS packs the wrapper's per-code-unit indices — split with [...s] instead)",
           );
         }
-        let fieldName: string;
-        let bindTo: ts.Expression;
-        if (ts.isShorthandPropertyAssignment(prop)) {
-          fieldName = (prop.name as ts.Identifier).text;
-          bindTo = prop.name as ts.Identifier;
-        } else if (ts.isPropertyAssignment(prop)) {
-          const folded = patternKeyNameOf(L, prop.name);
-          if (folded === null) {
-            L.unsupported("SC1031", prop, "destructuring assignment with computed keys that do not fold to one property name");
-          }
-          fieldName = folded;
-          bindTo = prop.initializer;
-          // `({ length: n = 3 } = s)`: the default is dead (length always
-          // exists) — strip it, exactly the evaluation JS skips.
-          if (ts.isBinaryExpression(bindTo) && bindTo.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-            bindTo = bindTo.left;
-          }
-        } else {
-          L.unsupported("SC1031", prop, "destructuring assignment with getter/setter or method properties");
-        }
+        const decoded = destructuringPropertyOf(L, prop);
+        const { fieldName } = decoded;
+        let { bindTo } = decoded;
         if (fieldName !== "length") {
           L.unsupported(
             "SC1031",
@@ -5379,7 +5374,6 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
       // Shorthand `{ a }` assigns local a from field a; `{ a: x }` assigns
       // x from field a (a PropertyAssignment whose initializer is the
       // target — JS reuses the literal syntax with inverted roles).
-      let fieldName: string;
       let bindTo: ts.Expression;
       let dfltInit: ts.Expression | null = null;
       if (ts.isSpreadAssignment(prop)) {
@@ -5443,29 +5437,10 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
         });
         continue;
       }
-      if (ts.isShorthandPropertyAssignment(prop)) {
-        fieldName = (prop.name as ts.Identifier).text;
-        bindTo = prop.name as ts.Identifier;
-        dfltInit = prop.objectAssignmentInitializer ?? null;
-      } else if (ts.isPropertyAssignment(prop)) {
-        // Identifier keys spell themselves; literal and FOLDABLE computed
-        // keys (`{ [k]: v } = o` with a pure single-name k) resolve to the
-        // static field name tsc late-bound. Runtime-valued keys fence.
-        const folded = patternKeyNameOf(L, prop.name);
-        if (folded === null) {
-          L.unsupported("SC1031", prop, "destructuring assignment with computed keys that do not fold to one property name");
-        }
-        fieldName = folded;
-        bindTo = prop.initializer;
-        // `{ a: x = 1 }`: the renamed target with a default parses as the
-        // assignment `x = 1` in the initializer slot.
-        if (ts.isBinaryExpression(bindTo) && bindTo.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-          dfltInit = bindTo.right;
-          bindTo = bindTo.left;
-        }
-      } else {
-        L.unsupported("SC1031", prop, "destructuring assignment with getter/setter or method properties");
-      }
+      const decoded = destructuringPropertyOf(L, prop);
+      const fieldName = decoded.fieldName;
+      bindTo = decoded.bindTo;
+      dfltInit = decoded.defaultInit;
       while (ts.isParenthesizedExpression(bindTo)) bindTo = bindTo.expression;
       if (!ts.isIdentifier(bindTo)) {
         // Nested patterns and property/element targets: the element's

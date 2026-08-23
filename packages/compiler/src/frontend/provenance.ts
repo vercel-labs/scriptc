@@ -37,6 +37,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import ts from "typescript5";
 import { resolveExports, resolveRelativeModule } from "./resolve.js";
+import { packageNameOfSpecifier as packageNameOf } from "./shared.js";
 import type { ProvenancePackageSource, ProvenanceSources } from "./provenance-registry.js";
 
 const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default"]);
@@ -70,11 +71,6 @@ function readJson(path: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-function packageNameOf(specifier: string): string {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
 }
 
 /* ── the bare-import prescan ─────────────────────────────────────────────

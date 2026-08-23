@@ -203,6 +203,13 @@ export function isRelativeSpecifier(spec: string): boolean {
   return spec === "." || spec === ".." || spec.startsWith("./") || spec.startsWith("../");
 }
 
+/** Package-name prefix of a bare specifier: "@scope/pkg/sub" becomes
+ * "@scope/pkg", while "pkg/sub" becomes "pkg". */
+export function packageNameOfSpecifier(specifier: string): string {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
+}
+
 /** Package name from a path under node_modules — the LAST node_modules
  * segment (nested installs blame the innermost package), scoped-aware:
  * ".../node_modules/@scope/pkg/dist/x.d.ts" → "@scope/pkg". Paths with no

@@ -351,19 +351,22 @@ function requestInitConstBacked(
   );
 }
 
-/** Visit the source values of one property on a const-backed object. The
- * checker's property symbol can come from an annotation (a PropertySignature)
- * rather than the object literal that supplies the runtime value, so source
- * tracing has to follow the receiver initializer by key as well. */
-function visitRequestInitConstPropertyValues(
+type RequestInitValueSelector =
+  | { kind: "property"; key: string }
+  | { kind: "index"; index: number };
+
+/** Visit the values selected by one key or index on a const-backed object or
+ * array. Property symbols can come from annotations rather than the literal
+ * supplying the runtime value, so tracing follows receiver initializers. */
+function visitRequestInitConstSelectedValues(
   L: Lowerer,
   value: ts.Expression,
-  key: string,
+  selector: RequestInitValueSelector,
   seen: Set<ts.Symbol>,
   visit: (value: ts.Expression) => void,
 ): boolean {
   const expr = requestInitValueExpr(value);
-  if (ts.isObjectLiteralExpression(expr)) {
+  if (selector.kind === "property" && ts.isObjectLiteralExpression(expr)) {
     // Last contributor wins. A definite later property (including one from
     // a statically traced spread) hides earlier values exactly as it does at
     // runtime; a conditional/missing spread keeps the earlier contributor
@@ -371,17 +374,17 @@ function visitRequestInitConstPropertyValues(
     for (let i = expr.properties.length - 1; i >= 0; i--) {
       const property = expr.properties[i]!;
       if (ts.isSpreadAssignment(property)) {
-        const defines = visitRequestInitConstPropertyValues(
+        const defines = visitRequestInitConstSelectedValues(
           L,
           property.expression,
-          key,
+          selector,
           new Set(seen),
           visit,
         );
         if (defines) return true;
         continue;
       }
-      if (requestInitLiteralKey(L, property) !== key) continue;
+      if (requestInitLiteralKey(L, property) !== selector.key) continue;
       if (ts.isPropertyAssignment(property)) {
         visit(property.initializer);
       } else if (
@@ -394,93 +397,8 @@ function visitRequestInitConstPropertyValues(
     }
     return false;
   }
-  if (ts.isConditionalExpression(expr)) {
-    const selected = requestInitStaticBoolean(L, expr.condition);
-    if (selected !== null) {
-      return visitRequestInitConstPropertyValues(
-        L,
-        selected ? expr.whenTrue : expr.whenFalse,
-        key,
-        seen,
-        visit,
-      );
-    }
-    const whenTrue = visitRequestInitConstPropertyValues(
-      L,
-      expr.whenTrue,
-      key,
-      new Set(seen),
-      visit,
-    );
-    const whenFalse = visitRequestInitConstPropertyValues(
-      L,
-      expr.whenFalse,
-      key,
-      new Set(seen),
-      visit,
-    );
-    return whenTrue && whenFalse;
-  }
-  if (ts.isPropertyAccessExpression(expr) || ts.isElementAccessExpression(expr)) {
-    const member = ts.isPropertyAccessExpression(expr)
-      ? expr.name.text
-      : foldedStringKeyOf(L, expr.argumentExpression);
-    if (member === null) return false;
-    const nested: ts.Expression[] = [];
-    const receiverDefines = visitRequestInitConstPropertyValues(
-      L,
-      expr.expression,
-      member,
-      new Set(seen),
-      (value) => nested.push(value),
-    );
-    let nestedDefines = nested.length > 0;
-    for (const value of nested) {
-      if (!visitRequestInitConstPropertyValues(L, value, key, new Set(seen), visit)) {
-        nestedDefines = false;
-      }
-    }
-    return receiverDefines && nestedDefines;
-  }
-  if (!ts.isIdentifier(expr)) return false;
-  const symbol = L.resolveValueSymbol(expr);
-  if (!symbol || seen.has(symbol)) return false;
-  if (requestInitPropMutatedSymbols(L).has(symbol)) return false;
-  seen.add(symbol);
-  let sawDeclaration = false;
-  let defines = true;
-  for (const declaration of L.checker.declarationsOf(symbol)) {
-    if (
-      ts.isVariableDeclaration(declaration) &&
-      declaration.initializer !== undefined &&
-      ts.isVariableDeclarationList(declaration.parent) &&
-      (declaration.parent.flags & ts.NodeFlags.Const) !== 0
-    ) {
-      sawDeclaration = true;
-      if (!visitRequestInitConstPropertyValues(
-        L,
-        declaration.initializer,
-        key,
-        new Set(seen),
-        visit,
-      )) {
-        defines = false;
-      }
-    }
-  }
-  return sawDeclaration && defines;
-}
-
-function visitRequestInitConstIndexValues(
-  L: Lowerer,
-  value: ts.Expression,
-  index: number,
-  seen: Set<ts.Symbol>,
-  visit: (value: ts.Expression) => void,
-): boolean {
-  const expr = requestInitValueExpr(value);
-  if (ts.isArrayLiteralExpression(expr)) {
-    const element = expr.elements[index];
+  if (selector.kind === "index" && ts.isArrayLiteralExpression(expr)) {
+    const element = expr.elements[selector.index];
     if (
       element === undefined ||
       ts.isOmittedExpression(element) ||
@@ -494,25 +412,25 @@ function visitRequestInitConstIndexValues(
   if (ts.isConditionalExpression(expr)) {
     const selected = requestInitStaticBoolean(L, expr.condition);
     if (selected !== null) {
-      return visitRequestInitConstIndexValues(
+      return visitRequestInitConstSelectedValues(
         L,
         selected ? expr.whenTrue : expr.whenFalse,
-        index,
+        selector,
         seen,
         visit,
       );
     }
-    const whenTrue = visitRequestInitConstIndexValues(
+    const whenTrue = visitRequestInitConstSelectedValues(
       L,
       expr.whenTrue,
-      index,
+      selector,
       new Set(seen),
       visit,
     );
-    const whenFalse = visitRequestInitConstIndexValues(
+    const whenFalse = visitRequestInitConstSelectedValues(
       L,
       expr.whenFalse,
-      index,
+      selector,
       new Set(seen),
       visit,
     );
@@ -524,16 +442,16 @@ function visitRequestInitConstIndexValues(
       : foldedStringKeyOf(L, expr.argumentExpression);
     if (member === null) return false;
     const nested: ts.Expression[] = [];
-    const receiverDefines = visitRequestInitConstPropertyValues(
+    const receiverDefines = visitRequestInitConstSelectedValues(
       L,
       expr.expression,
-      member,
+      { kind: "property", key: member },
       new Set(seen),
       (value) => nested.push(value),
     );
     let nestedDefines = nested.length > 0;
     for (const value of nested) {
-      if (!visitRequestInitConstIndexValues(L, value, index, new Set(seen), visit)) {
+      if (!visitRequestInitConstSelectedValues(L, value, selector, new Set(seen), visit)) {
         nestedDefines = false;
       }
     }
@@ -554,10 +472,10 @@ function visitRequestInitConstIndexValues(
       (declaration.parent.flags & ts.NodeFlags.Const) !== 0
     ) {
       sawDeclaration = true;
-      if (!visitRequestInitConstIndexValues(
+      if (!visitRequestInitConstSelectedValues(
         L,
         declaration.initializer,
-        index,
+        selector,
         new Set(seen),
         visit,
       )) {
@@ -635,9 +553,7 @@ function visitRequestInitConstBindingValues(
       nestedDefines = false;
     }
   };
-  const defines = selector.kind === "property"
-    ? visitRequestInitConstPropertyValues(L, value, selector.key, seen, visitNested)
-    : visitRequestInitConstIndexValues(L, value, selector.index, seen, visitNested);
+  const defines = visitRequestInitConstSelectedValues(L, value, selector, seen, visitNested);
   return defines && nestedDefines;
 }
 
@@ -650,10 +566,10 @@ function fenceRequestInitProperty(
     ? access.name.text
     : foldedStringKeyOf(L, access.argumentExpression);
   if (key === null) return;
-  visitRequestInitConstPropertyValues(
+  visitRequestInitConstSelectedValues(
     L,
     access.expression,
-    key,
+    { kind: "property", key },
     new Set(),
     (value) => fenceRequestInitValueInner(L, value, seen),
   );
@@ -723,10 +639,10 @@ function fenceRequestInitObject(
     if (ts.isSpreadAssignment(prop)) {
       for (const row of rows) {
         if (shadowed.has(row.member)) continue;
-        const defines = visitRequestInitConstPropertyValues(
+        const defines = visitRequestInitConstSelectedValues(
           L,
           prop.expression,
-          row.member,
+          { kind: "property", key: row.member },
           new Set(seen),
           (value) => fence(row, value, value),
         );

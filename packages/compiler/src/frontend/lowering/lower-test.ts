@@ -13,6 +13,7 @@
  * options, non-literal skip/todo values. Never a generic rejection,
  * never silence. */
 import * as ts from "../ts7/adapter.js";
+import { resultIsDiscarded } from "./call-position.js";
 import type { Lowerer } from "./lowerer.js";
 import { locOf } from "../program.js";
 import { IrExpr, IrType, SrcLoc, STRING, VOID, isUnitType } from "../../ir/nodes.js";
@@ -27,7 +28,7 @@ const TESTCTX_SURFACE_HINT =
  * resolves through the runner — consuming it outside `await t.test(...)`
  * has no lowering, so top-level registrations stand as statements. */
 function requireStatementPosition(L: Lowerer, call: ts.CallExpression, what: string): void {
-  if (ts.isExpressionStatement(call.parent) || ts.isArrowFunction(call.parent)) return;
+  if (resultIsDiscarded(call)) return;
   L.noLowering(
     `using the result of ${what}`,
     call,

@@ -28,6 +28,7 @@ import { declSymbolOf } from "./lower-modules.js";
 import { expandoMemberRead } from "./lower-expando.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { countedFor, varRef } from "../../ir/build.js";
+import { rejectStaticThis } from "./static-this.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
  * completes every call to the one full signature, so the IR and backends
@@ -315,8 +316,35 @@ export interface GenericInstance {
     return ts.isIdentifier(param.name) && param.name.text === "this";
   }
 
-  export function paramShapes(L: Lowerer, params: readonly ts.ParameterDeclaration[]): ParamShape[] {
-    return params.filter((p) => !isThisParameter(p)).map((param) => L.paramShape(param));
+  export function paramShapes(
+    L: Lowerer,
+    params: readonly ts.ParameterDeclaration[],
+    signature?: ts.Signature,
+    blameOf?: (param: ts.ParameterDeclaration, index: number) => ts.Node,
+  ): ParamShape[] {
+    if (!signature) return params.filter((p) => !isThisParameter(p)).map((param) => L.paramShape(param));
+    return params.map((declParam, i) => {
+      const symbol = signature.getParameters()[i];
+      const tsType = symbol ? L.checker.getTypeOfSymbol(symbol) : L.typeOf(declParam.name);
+      const mapped = L.mapTypeOf(tsType);
+      if (!mapped || mapped.kind === "void") L.badType(blameOf?.(declParam, i) ?? declParam.name, tsType);
+      if (declParam.dotDotDotToken) {
+        if (mapped.kind !== "array") L.badType(blameOf?.(declParam, i) ?? declParam.name, tsType);
+        return { type: mapped, mode: "rest" };
+      }
+      if (declParam.initializer) {
+        if (mapped.kind === "dyn" || mapped.kind === "jsval") {
+          return { type: mapped, mode: "omittable", bodyType: mapped };
+        }
+        const bodyType = L.stripUndefinedArm(mapped);
+        L.checkDefaultParamBodyType(declParam, bodyType);
+        return { type: L.withUndefinedArm(bodyType), mode: "omittable", bodyType };
+      }
+      if (declParam.questionToken && !L.bareUndefinedArmedUnion(mapped)) {
+        L.unsupported("SC1090", declParam, `optional parameters of type '${L.fmt(mapped)}'`);
+      }
+      return { type: mapped, mode: declParam.questionToken ? "omittable" : "required" };
+    });
   }
 
 /** The fences on a defaulted parameter's body type: it becomes the value
@@ -1004,32 +1032,7 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
     // the declaration's modes: rest stays the resolved array, a default's
     // ABI union is synthesized over the resolved body type — exactly the
     // paramShape rules, applied to post-substitution types.
-    const params: ParamShape[] = [];
-    rsig.getParameters().forEach((p, i) => {
-      const declParam = info.decl.parameters[i]!;
-      const pt = L.checker.getTypeOfSymbol(p);
-      const mapped = L.mapTypeOf(pt);
-      if (!mapped || mapped.kind === "void") L.badType(expr.arguments[i] ?? expr, pt);
-      if (declParam.dotDotDotToken) {
-        if (mapped.kind !== "array") L.badType(expr.arguments[i] ?? expr, pt);
-        params.push({ type: mapped, mode: "rest" });
-      } else if (declParam.initializer) {
-        if (mapped.kind === "dyn" || mapped.kind === "jsval") {
-          // Dynamic-tier default: the slot holds its tier's undefined
-          // directly (paramShape's rule — declareParams tests at runtime).
-          params.push({ type: mapped, mode: "omittable", bodyType: mapped });
-        } else {
-          const bodyType = L.stripUndefinedArm(mapped);
-          L.checkDefaultParamBodyType(declParam, bodyType);
-          params.push({ type: L.withUndefinedArm(bodyType), mode: "omittable", bodyType });
-        }
-      } else {
-        if (declParam.questionToken && !L.bareUndefinedArmedUnion(mapped)) {
-          L.unsupported("SC1090", declParam, `optional parameters of type '${L.fmt(mapped)}'`);
-        }
-        params.push({ type: mapped, mode: declParam.questionToken ? "omittable" : "required" });
-      }
-    });
+    const params = paramShapes(L, info.decl.parameters, rsig, (_param, i) => expr.arguments[i] ?? expr);
     const retTs = L.checker.getReturnTypeOfSignature(rsig);
     const returnType = L.mapTypeOf(retTs);
     if (!returnType) {
@@ -1409,25 +1412,11 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
       // are transparent (they inherit the method's `this`); this-binding
       // function forms are opaque.
       if (info.member?.kind === "static" && decl.body) {
-        const checkThis = (n: ts.Node): void => {
-          if (
-            ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n) ||
-            ts.isMethodDeclaration(n) || ts.isConstructorDeclaration(n) ||
-            ts.isGetAccessor(n) || ts.isSetAccessor(n) ||
-            ts.isClassDeclaration(n) || ts.isClassExpression(n)
-          ) {
-            return;
-          }
-          if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword) {
-            L.unsupported(
-              "SC1090",
-              n,
-              `'${n.kind === ts.SyntaxKind.ThisKeyword ? "this" : "super"}' in static methods (it names the RECEIVER class — a dynamic value; reference the class by name instead)`,
-            );
-          }
-          n.forEachChild(checkThis);
-        };
-        decl.body.forEachChild(checkThis);
+        rejectStaticThis(
+          L,
+          decl.body,
+          (keyword) => `'${keyword}' in static methods (it names the RECEIVER class — a dynamic value; reference the class by name instead)`,
+        );
       }
       const params: IrParam[] = [];
       if (cls && info.member!.kind === "method") {
@@ -1692,32 +1681,7 @@ export function genericFnOf(L: Lowerer, ident: ts.Identifier): GenericFnInfo | n
     try {
       const declSig = L.checker.getSignatureFromDeclaration(info.decl);
       if (!declSig) L.unsupported("SC1090", ref, "this function form");
-      const params: ParamShape[] = [];
-      info.decl.parameters.forEach((declParam, i) => {
-        const p = declSig.getParameters()[i];
-        const pt = p ? L.checker.getTypeOfSymbol(p) : L.typeOf(declParam.name);
-        const mapped = L.mapTypeOf(pt);
-        if (!mapped || mapped.kind === "void") L.badType(declParam.name, pt);
-        if (declParam.dotDotDotToken) {
-          if (mapped.kind !== "array") L.badType(declParam.name, pt);
-          params.push({ type: mapped, mode: "rest" });
-        } else if (declParam.initializer) {
-          if (mapped.kind === "dyn" || mapped.kind === "jsval") {
-            // Dynamic-tier default: the slot holds its tier's undefined
-            // directly (paramShape's rule).
-            params.push({ type: mapped, mode: "omittable", bodyType: mapped });
-          } else {
-            const bodyType = L.stripUndefinedArm(mapped);
-            L.checkDefaultParamBodyType(declParam, bodyType);
-            params.push({ type: L.withUndefinedArm(bodyType), mode: "omittable", bodyType });
-          }
-        } else {
-          if (declParam.questionToken && !L.bareUndefinedArmedUnion(mapped)) {
-            L.unsupported("SC1090", declParam, `optional parameters of type '${L.fmt(mapped)}'`);
-          }
-          params.push({ type: mapped, mode: declParam.questionToken ? "omittable" : "required" });
-        }
-      });
+      const params = paramShapes(L, info.decl.parameters, declSig);
       const retTs = L.checker.getReturnTypeOfSignature(declSig);
       const returnType = L.mapTypeOf(retTs);
       if (!returnType) {

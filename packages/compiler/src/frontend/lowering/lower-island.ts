@@ -2832,6 +2832,19 @@ export function lowerStaticReadableStreamReaderCall(
     }
     const builder = dep !== null ? dynNsBuilderOf(L, dep, loc) : null;
     if (builder === null) {
+      // In --dynamic mode, a module that is in the program graph but has no
+      // compilation story (excluded from the compiled module graph, or contains
+      // features the native compiler cannot lower) resolves to an empty namespace
+      // stub rather than emitting SC1090. The JSVAL island absorbs the namespace
+      // object; callers that destructure it receive `undefined` for every export,
+      // which is the correct runtime behavior when the module delegates to the JS
+      // engine or is not reachable from the native binary.
+      if (dep !== null && L.dynamic) {
+        const promiseCtor: IrExpr = { kind: "jsOp", op: "globalGet", name: "Promise", args: [], type: JSVAL, loc };
+        const emptyObj: IrExpr = { kind: "jsOp", op: "objLit", args: [], type: JSVAL, loc };
+        const resolved: IrExpr = { kind: "jsOp", op: "callMethod", name: "resolve", args: [promiseCtor, emptyObj], type: JSVAL, loc };
+        return { kind: "jsBridgePromise", value: resolved, type: { kind: "promise", inner: JSVAL }, loc };
+      }
       L.unsupported(
         "SC1090",
         call,

@@ -7,6 +7,17 @@ import { compilerReleaseVersion } from "../library/sidecar.js";
 import { nativeArtifactDependenciesStillMatch, type NativeArtifactDependency } from "../backend/cc.js";
 import type { CompilerImplementationDependency } from "../library/implementation-identity.js";
 import { compilerImplementationDependenciesStillMatch, compilerImplementationRoot } from "../library/implementation-identity.js";
+import {
+  cacheKey as sharedCacheKey,
+  digest,
+  frontendOutputExclusions,
+  installBytes,
+  outputPaths,
+  readCachedFile,
+  stampIntegrity as sharedStampIntegrity,
+  stampPath as sharedStampPath,
+  validNativeFeatures as validSharedNativeFeatures,
+} from "../library/cache-primitives.js";
 
 interface CachedExecutableFile {
   name: string;
@@ -151,49 +162,40 @@ const BOOLEAN_NATIVE_KEYS = [
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
 
 function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {
-  if (value === null || typeof value !== "object") return false;
-  const native = value as Partial<EarlyExecutableNativeFeatures>;
-  return (native.backend === "c" || native.backend === "llvm") &&
-    (native.optimization === undefined || native.optimization === "dev") &&
-    (native.llvmRefusal === undefined || typeof native.llvmRefusal === "string") &&
-    BOOLEAN_NATIVE_KEYS.every((key) => typeof native[key] === "boolean");
-}
-
-function digest(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
+  return validSharedNativeFeatures<EarlyExecutableNativeFeatures>(
+    value,
+    BOOLEAN_NATIVE_KEYS,
+    (native) =>
+      (native.optimization === undefined || native.optimization === "dev") &&
+      (native.llvmRefusal === undefined || typeof native.llvmRefusal === "string"),
+  );
 }
 
 function cacheKey(options: EarlyExecutableCacheOptions): string {
-  const hash = createHash("sha256")
-    .update("early-executable-v1\0")
-    .update(compilerReleaseVersion()).update("\0")
-    .update(resolve(options.entryPath)).update("\0")
-    .update(resolve(options.outDir)).update("\0")
-    .update(resolve(options.outPath)).update("\0")
-    .update(options.emitIr ? "emit-ir" : "no-ir").update("\0")
-    .update(options.sanitize ? "sanitize" : "plain").update("\0")
-    .update(options.dynamic ? "dynamic" : "static").update("\0")
-    .update(options.backend).update("\0");
-  if (options.optimization === "dev") hash.update("optimization-dev\0");
-  hash
-    .update(options.npmStatic === null
+  const ffiParts: (string | Uint8Array)[] = options.ffiProfile === null
+    ? ["<ffi-off>"]
+    : [resolve(options.ffiProfile.path), options.ffiProfile.bytes];
+  return sharedCacheKey("early-executable-v1", [
+    resolve(options.entryPath),
+    resolve(options.outDir),
+    resolve(options.outPath),
+    options.emitIr ? "emit-ir" : "no-ir",
+    options.sanitize ? "sanitize" : "plain",
+    options.dynamic ? "dynamic" : "static",
+    options.backend,
+    ...(options.optimization === "dev" ? ["optimization-dev"] : []),
+    options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
         ? "<npm-static-auto>"
-        : JSON.stringify(options.npmStatic)).update("\0")
-    .update(options.target).update("\0")
-    .update(options.compiler.join("\x1f")).update("\0")
-    .update(options.nativeEnvironment).update("\0")
-    .update(options.nodeVersion).update("\0")
-    .update(options.implementation).update("\0");
-  if (options.ffiProfile === null) {
-    hash.update("<ffi-off>");
-  } else {
-    hash
-      .update(resolve(options.ffiProfile.path)).update("\0")
-      .update(options.ffiProfile.bytes);
-  }
-  return hash.digest("hex");
+        : JSON.stringify(options.npmStatic),
+    options.target,
+    options.compiler.join("\x1f"),
+    options.nativeEnvironment,
+    options.nodeVersion,
+    options.implementation,
+    ...ffiParts,
+  ]);
 }
 
 function routeKey(options: EarlyExecutableRouteOptions): string {
@@ -268,72 +270,18 @@ async function installCacheMetadata(source: string, destination: string): Promis
 }
 
 function stampPath(root: string, options: EarlyExecutableCacheOptions): string {
-  return join(root, "early-exe", cacheKey(options), "stamp.json");
+  return sharedStampPath(root, "early-exe", cacheKey(options));
 }
 
 function stampIntegrity(stamp: Omit<EarlyExecutableCacheStamp, "integrity">): string {
-  return createHash("sha256")
-    .update("early-executable-stamp-v1\0")
-    .update(JSON.stringify(stamp))
-    .digest("hex");
+  return sharedStampIntegrity("early-executable-stamp-v1", stamp);
 }
 
-function outputPaths(options: EarlyExecutableCacheOptions, backend: "c" | "llvm"): {
-  cPath: string;
-  staleCPath: string;
-  irPath: string;
-} {
-  const stem = basename(options.entryPath).replace(/\.(ts|js|mjs|cjs)$/, "");
-  return {
-    cPath: join(options.outDir, `${stem}.${backend === "llvm" ? "ll" : "c"}`),
-    staleCPath: join(options.outDir, `${stem}.${backend === "llvm" ? "c" : "ll"}`),
-    irPath: join(options.outDir, `${stem}.ir.json`),
-  };
-}
-
-function frontendOutputExclusions(
+function executableFrontendOutputExclusions(
   options: EarlyExecutableCacheOptions,
   backend: "c" | "llvm",
-): { outputPaths: string[]; outputDirectories: Set<string> } {
-  const paths = outputPaths(options, backend);
-  const outputArtifacts = [
-    paths.cPath,
-    paths.staleCPath,
-    ...(options.emitIr ? [paths.irPath] : []),
-    options.outPath,
-  ].map((path) => resolve(path));
-  const outputDirectories = new Set<string>();
-  for (const artifact of outputArtifacts) {
-    for (let directory = dirname(artifact); ; directory = dirname(directory)) {
-      outputDirectories.add(directory);
-      if (dirname(directory) === directory) break;
-    }
-  }
-  return { outputPaths: outputArtifacts, outputDirectories };
-}
-
-async function readCachedFile(path: string, expected: string): Promise<Buffer | null> {
-  try {
-    const bytes = await readFile(path);
-    return digest(bytes) === expected ? bytes : null;
-  } catch {
-    return null;
-  }
-}
-
-async function installBytes(bytes: Uint8Array, destination: string): Promise<void> {
-  await mkdir(dirname(destination), { recursive: true });
-  const tmp = join(
-    dirname(destination),
-    `.scriptc-exe-hit-${process.pid}-${Math.random().toString(36).slice(2)}`,
-  );
-  try {
-    await writeFile(tmp, bytes, { mode: 0o600 });
-    await chmod(tmp, 0o666 & ~process.umask());
-    await rename(tmp, destination);
-  } finally {
-    await rm(tmp, { force: true }).catch(() => undefined);
-  }
+): ReturnType<typeof frontendOutputExclusions> {
+  return frontendOutputExclusions(options, backend, "", [options.outPath]);
 }
 
 async function fileMatches(
@@ -395,7 +343,7 @@ export async function readEarlyExecutableCache(
       stampIntegrity(unsigned) !== integrity ||
       !frontendInputsStillMatch(
         stamp.frontend,
-        frontendOutputExclusions(options, stamp.native.backend),
+        executableFrontendOutputExclusions(options, stamp.native.backend),
       )
     ) return null;
 
@@ -598,7 +546,7 @@ export async function publishEarlyExecutableCache(
     ]);
     if (!frontendInputsStillMatch(
       result.frontend,
-      frontendOutputExclusions(options, result.native.backend),
+      executableFrontendOutputExclusions(options, result.native.backend),
     )) return;
     const unsigned: Omit<EarlyExecutableCacheStamp, "integrity"> = {
       version: 1,

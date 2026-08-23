@@ -1,15 +1,24 @@
-import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdir, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { deserialize as deserializeV8, serialize as serializeV8 } from "node:v8";
 import { gzip, gunzip } from "node:zlib";
-import { compilerReleaseVersion } from "./sidecar.js";
 import type { IrModule } from "../ir/nodes.js";
 import { IR_VERSION } from "../ir/serialize.js";
-import { frontendInputsSemanticallyMatch, frontendInputsStillMatch, validFrontendInputSnapshot, type FrontendInputExclusions, type FrontendInputSnapshot } from "../frontend/input-tracker.js";
+import { frontendInputsSemanticallyMatch, frontendInputsStillMatch, validFrontendInputSnapshot, type FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { rebaseSourceLocations, semanticallyEqualSource, sourceLineRebaseIsIdentity } from "./semantic-source.js";
 import { compilerImplementationIdentity } from "./implementation-identity.js";
+import {
+  cacheKey as sharedCacheKey,
+  digest,
+  frontendOutputExclusions as sharedFrontendOutputExclusions,
+  installBytes,
+  outputPaths as sharedOutputPaths,
+  readCachedFile,
+  stampIntegrity as sharedStampIntegrity,
+  stampPath as sharedStampPath,
+  validNativeFeatures as validSharedNativeFeatures,
+} from "./cache-primitives.js";
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
@@ -102,44 +111,40 @@ export interface SemanticLibraryCacheHit {
   changedSources: string[];
 }
 
-function validNativeFeatures(value: unknown): value is EarlyLibraryNativeFeatures {
-  if (value === null || typeof value !== "object") return false;
-  const native = value as Partial<EarlyLibraryNativeFeatures>;
-  return (native.backend === "c" || native.backend === "llvm") &&
-    [
-      native.regex,
-      native.assert,
-      native.inspect,
-      native.symbol,
-      native.searchParams,
-      native.emitter,
-      native.zlib,
-      native.copying,
-      native.textDecoderLegacy,
-    ].every((flag) => typeof flag === "boolean") &&
-    (native.buildId === undefined || /^[0-9a-f]{16}$/.test(native.buildId));
-}
+const BOOLEAN_NATIVE_KEYS = [
+  "regex",
+  "assert",
+  "inspect",
+  "symbol",
+  "searchParams",
+  "emitter",
+  "zlib",
+  "copying",
+  "textDecoderLegacy",
+] as const satisfies readonly (keyof EarlyLibraryNativeFeatures)[];
 
-function digest(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
+function validNativeFeatures(value: unknown): value is EarlyLibraryNativeFeatures {
+  return validSharedNativeFeatures<EarlyLibraryNativeFeatures>(
+    value,
+    BOOLEAN_NATIVE_KEYS,
+    (native) => native.buildId === undefined || /^[0-9a-f]{16}$/.test(native.buildId),
+  );
 }
 
 function cacheKey(options: EarlyLibraryCacheOptions): string {
-  return createHash("sha256")
-    .update("early-library-v2\0")
-    .update(compilerReleaseVersion()).update("\0")
-    .update(resolve(options.profilePath)).update("\0")
-    .update(options.profileBytes).update("\0")
-    .update(resolve(options.entryPath)).update("\0")
-    .update(resolve(options.outDir)).update("\0")
-    .update(options.outPath === undefined ? "<default>" : resolve(options.outPath)).update("\0")
-    .update(options.emitIr ? "emit-ir" : "no-ir").update("\0")
-    .update(options.sanitize ? "sanitize" : "plain").update("\0")
-    .update(options.target).update("\0")
-    .update(options.compiler.join("\x1f")).update("\0")
-    .update(options.nodeVersion).update("\0")
-    .update(options.implementation)
-    .digest("hex");
+  return sharedCacheKey("early-library-v2", [
+    resolve(options.profilePath),
+    options.profileBytes,
+    resolve(options.entryPath),
+    resolve(options.outDir),
+    options.outPath === undefined ? "<default>" : resolve(options.outPath),
+    options.emitIr ? "emit-ir" : "no-ir",
+    options.sanitize ? "sanitize" : "plain",
+    options.target,
+    options.compiler.join("\x1f"),
+    options.nodeVersion,
+    options.implementation,
+  ]);
 }
 
 /**
@@ -154,27 +159,15 @@ export async function libraryFrontendImplementationFingerprint(): Promise<string
 }
 
 function stampPath(root: string, options: EarlyLibraryCacheOptions): string {
-  return join(root, "early-lib", cacheKey(options), "stamp.json");
+  return sharedStampPath(root, "early-lib", cacheKey(options));
 }
 
 function stampIntegrity(stamp: Omit<EarlyLibraryCacheStamp, "integrity">): string {
-  return createHash("sha256")
-    .update("early-library-stamp-v2\0")
-    .update(JSON.stringify(stamp))
-    .digest("hex");
+  return sharedStampIntegrity("early-library-stamp-v2", stamp);
 }
 
-function outputPaths(options: EarlyLibraryCacheOptions, backend: "c" | "llvm"): {
-  cPath: string;
-  staleCPath: string;
-  irPath: string;
-} {
-  const stem = basename(options.entryPath).replace(/\.(ts|js|mjs|cjs)$/, "");
-  return {
-    cPath: join(options.outDir, `${stem}.lib.${backend === "llvm" ? "ll" : "c"}`),
-    staleCPath: join(options.outDir, `${stem}.lib.${backend === "llvm" ? "c" : "ll"}`),
-    irPath: join(options.outDir, `${stem}.lib.ir.json`),
-  };
+function outputPaths(options: EarlyLibraryCacheOptions, backend: "c" | "llvm") {
+  return sharedOutputPaths(options, backend, ".lib");
 }
 
 function sidecarOutputPath(options: EarlyLibraryCacheOptions, configured: string | null): string {
@@ -193,47 +186,11 @@ function frontendOutputExclusions(
   options: EarlyLibraryCacheOptions,
   backend: "c" | "llvm",
   sidecarPath: string | undefined,
-): FrontendInputExclusions {
-  const paths = outputPaths(options, backend);
-  const outputArtifacts = [
-    paths.cPath,
-    paths.staleCPath,
-    ...(options.emitIr ? [paths.irPath] : []),
+): ReturnType<typeof sharedFrontendOutputExclusions> {
+  return sharedFrontendOutputExclusions(options, backend, ".lib", [
     archiveOutputPath(options),
     ...(sidecarPath === undefined ? [] : [sidecarPath]),
-  ].map((path) => resolve(path));
-  const outputDirectories = new Set<string>();
-  for (const artifact of outputArtifacts) {
-    for (let directory = dirname(artifact); ; directory = dirname(directory)) {
-      outputDirectories.add(directory);
-      if (dirname(directory) === directory) break;
-    }
-  }
-  return {
-    outputPaths: outputArtifacts,
-    outputDirectories,
-  };
-}
-
-async function readCachedFile(path: string, expected: string): Promise<Buffer | null> {
-  try {
-    const bytes = await readFile(path);
-    return digest(bytes) === expected ? bytes : null;
-  } catch {
-    return null;
-  }
-}
-
-async function installBytes(bytes: Uint8Array, destination: string): Promise<void> {
-  await mkdir(dirname(destination), { recursive: true });
-  const tmp = join(dirname(destination), `.scriptc-early-hit-${process.pid}-${Math.random().toString(36).slice(2)}`);
-  try {
-    await writeFile(tmp, bytes, { mode: 0o600 });
-    await chmod(tmp, 0o666 & ~process.umask());
-    await rename(tmp, destination);
-  } finally {
-    await rm(tmp, { force: true }).catch(() => undefined);
-  }
+  ]);
 }
 
 export async function readEarlyLibraryCache(

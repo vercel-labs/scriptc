@@ -771,6 +771,11 @@ export function dynFallbackType(L: Lowerer, node: ts.Node, t: ts.Type): IrType |
   if (t.flags & ts.TypeFlags.Void) return null;
   if (!isJsSourceFile(node.getSourceFile())) {
     if (t.flags & ts.TypeFlags.Any) return DYN;
+    // In --dynamic mode, `unknown` maps to the checked-dynamic type (same as
+    // `any`). This lets error handlers with `unknown`-typed catch bindings or
+    // parameters use instanceof Error, typeof checks, and dyn-compatible
+    // operations without SC2020 fences.
+    if (L.dynamic && (t.flags & ts.TypeFlags.Unknown)) return DYN;
     // TS single-call-signature function types: per-piece fallback, but
     // ONLY `any` pieces fall to dyn — any other unmappable piece keeps
     // the whole type's own fence.
@@ -6118,8 +6123,10 @@ export class Lowerer {
     // Marshalable CLOSURES cross as host functions — a record carrying
     // methods (the service-registry entry: `{ label, load: () =>
     // Promise<any>, defaultFallback: (cfg) => any }`) lifts field by
-    // field like any other.
+    // field like any other. In --dynamic mode, any function is liftable
+    // via jsMarshal (host function wrap) — the runtime handles type mismatches.
     if (t.kind === "func") {
+      if (this.dynamic) return true;
       return canMarshalTypedFuncIntoIsland(t, (id) => this.shapes.get(id), (id) => this.unions.get(id));
     }
     if (t.kind === "record") {

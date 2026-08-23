@@ -541,6 +541,140 @@ export function emitBytesReceiver(E: CEmitter, receiver: IrExpr, following: IrEx
   return E.emitExpr(receiver);
 }
 
+function emitMapLikeIntrinsic(
+  E: CEmitter,
+  e: Extract<IrExpr, { kind: "mapIntrinsic" | "setIntrinsic" }>,
+): Temp {
+  const r = E.emitExpr(e.receiver);
+  const receiverType = e.receiver.type;
+  if (e.kind === "mapIntrinsic" && receiverType.kind !== "map") {
+    throw new InternalCompilerError("emitter bug: mapIntrinsic on non-map");
+  }
+  if (e.kind === "setIntrinsic" && receiverType.kind !== "set") {
+    throw new InternalCompilerError("emitter bug: setIntrinsic on non-set");
+  }
+  if (receiverType.kind !== "map" && receiverType.kind !== "set") {
+    throw new InternalCompilerError("unreachable");
+  }
+  const key = receiverType.kind === "map" ? receiverType.key : receiverType.elem;
+  const kAcc = mapKeyAccess(key);
+  const method = e.method;
+  switch (method) {
+    case "get": {
+      if (receiverType.kind !== "map") throw new InternalCompilerError("unreachable");
+      const value = receiverType.value;
+      const vAcc = elemAccess(value);
+      // The union construction is type-directed HERE, like
+      // process.envGet — the runtime knows no tags. Ref values come
+      // back +1 (ownership MOVES into the fresh union box on a hit);
+      // scalars ride an out-param behind a found flag; a miss is the
+      // interned immortal undefined-arm instance. When V is itself a
+      // union, the stored box IS the result: `undefined` sorts last
+      // in canonical arm order, so V's tags coincide with the result
+      // union's and no re-tag exists (validated).
+      const k = E.emitExpr(e.args[0]!);
+      if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: map get result is not a union");
+      const def = E.unionsById.get(e.type.unionId);
+      const undefTag = E.undefinedArmTag(e.type);
+      if (!def || undefTag < 0) throw new InternalCompilerError("emitter bug: map get union lacks its undefined arm");
+      const absent = E.unitInstanceRef(e.type.unionId, undefTag);
+      if (value.kind === "union") {
+        const t = E.newTemp(
+          e.type,
+          `(ScrUnion *)scr_map_get_${kAcc}_ref(${r.name}, ${k.name})`,
+        );
+        E.line(`if (!${t.name}) ${t.name} = ${absent};`);
+        return t;
+      }
+      const valueTag = def.arms.findIndex((a) => typeEquals(a, value));
+      if (valueTag < 0) throw new InternalCompilerError("emitter bug: map get union lacks its value arm");
+      if (value.kind === "f64" || value.kind === "bool") {
+        const out = `sc_t${E.tempCounter++}`;
+        const found = `sc_t${E.tempCounter++}`;
+        E.line(`${cDecl(value, out)} = 0;`);
+        E.line(`bool ${found} = scr_map_get_${kAcc}_${vAcc}(${r.name}, ${k.name}, &${out});`);
+        const make = `scr_union_new_${value.kind}(${valueTag}, ${out})`;
+        return E.newTemp(e.type, `${found} ? ${make} : ${absent}`);
+      }
+      const rc = vAdapters(value);
+      const v = E.newTemp(value, `(${cType(value).trim()})scr_map_get_${kAcc}_ref(${r.name}, ${k.name})`);
+      E.moveTemp(v); // moves into the box when present; NULL otherwise
+      const present = `scr_union_new_ref(${valueTag}, ${v.name}, &${rc.retain}, &${rc.release}, ${E.traceArgC(value)})`;
+      return E.newTemp(e.type, `${v.name} ? ${present} : ${absent}`);
+    }
+    case "set": {
+      if (receiverType.kind !== "map") throw new InternalCompilerError("unreachable");
+      // Key borrowed (the runtime retains stored string keys); the
+      // value MOVES in (replacement releases the old value inside).
+      const k = E.emitExpr(e.args[0]!);
+      const v = E.emitExpr(e.args[1]!);
+      const vAcc = elemAccess(receiverType.value);
+      if (vAcc === "ref") E.moveTemp(v);
+      E.line(`scr_map_set_${kAcc}_${vAcc}(${r.name}, ${k.name}, ${v.name});${E.srcComment(e.loc)}`);
+      return { name: "", type: e.type };
+    }
+    case "add": {
+      if (receiverType.kind !== "set") throw new InternalCompilerError("unreachable");
+      // Element borrowed (the runtime retains stored strings); the unit
+      // value is 0. Re-adding overwrites in place, preserving insertion.
+      const k = E.emitExpr(e.args[0]!);
+      E.line(`scr_map_set_${kAcc}_f64(${r.name}, ${k.name}, 0);${E.srcComment(e.loc)}`);
+      return { name: "", type: e.type };
+    }
+    case "has": {
+      const k = E.emitExpr(e.args[0]!);
+      return E.newTemp(e.type, `scr_map_has_${kAcc}(${r.name}, ${k.name})`);
+    }
+    case "delete": {
+      const k = E.emitExpr(e.args[0]!);
+      return E.newTemp(e.type, `scr_map_delete_${kAcc}(${r.name}, ${k.name})`);
+    }
+    case "size":
+      return E.newTemp(e.type, `scr_map_size(${r.name})`);
+    case "clear":
+      E.line(`scr_map_clear(${r.name});${E.srcComment(e.loc)}`);
+      return { name: "", type: e.type };
+    case "iterCount":
+      return E.newTemp(e.type, `scr_map_iter_count(${r.name})`);
+    case "iterLive": {
+      const i = E.emitExpr(e.args[0]!);
+      return E.newTemp(e.type, `scr_map_iter_live(${r.name}, ${i.name})`);
+    }
+    case "iterKey": {
+      // String/ref keys and elements come back +1.
+      const i = E.emitExpr(e.args[0]!);
+      return E.newTemp(e.type, `scr_map_iter_key_${kAcc}(${r.name}, ${i.name})`);
+    }
+    case "iterValue": {
+      if (receiverType.kind !== "map") throw new InternalCompilerError("unreachable");
+      const value = receiverType.value;
+      const vAcc = elemAccess(value);
+      const i = E.emitExpr(e.args[0]!);
+      const read =
+        vAcc === "ref"
+          ? `(${cType(value).trim()})scr_map_iter_val_ref(${r.name}, ${i.name})`
+          : `scr_map_iter_val_${vAcc}(${r.name}, ${i.name})`;
+      return E.newTemp(e.type, read);
+    }
+    case "iterEnter":
+      E.line(`scr_map_iter_enter(${r.name});${E.srcComment(e.loc)}`);
+      return { name: "", type: e.type };
+    case "iterExit":
+      E.line(`scr_map_iter_exit(${r.name});${E.srcComment(e.loc)}`);
+      return { name: "", type: e.type };
+    case "toArray": {
+      if (receiverType.kind !== "set") throw new InternalCompilerError("unreachable");
+      // Fresh +1 elem[] of the live entries in insertion order.
+      return E.newTemp(e.type, `scr_set_to_arr_${kAcc}(${r.name})`);
+    }
+    default: {
+      const _exhaustive: never = method;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
 export function emitExpr(E: CEmitter, e: IrExpr): Temp {
     switch (e.kind) {
       case "numLit":
@@ -1855,107 +1989,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         }
         return m;
       }
-      case "mapIntrinsic": {
-        const r = E.emitExpr(e.receiver);
-        if (e.receiver.type.kind !== "map") throw new InternalCompilerError("emitter bug: mapIntrinsic on non-map");
-        const { key, value } = e.receiver.type;
-        const kAcc = mapKeyAccess(key);
-        const vAcc = elemAccess(value);
-        const method = e.method;
-        switch (method) {
-          case "get": {
-            // The union construction is type-directed HERE, like
-            // process.envGet — the runtime knows no tags. Ref values come
-            // back +1 (ownership MOVES into the fresh union box on a hit);
-            // scalars ride an out-param behind a found flag; a miss is the
-            // interned immortal undefined-arm instance. When V is itself a
-            // union, the stored box IS the result: `undefined` sorts last
-            // in canonical arm order, so V's tags coincide with the result
-            // union's and no re-tag exists (validated).
-            const k = E.emitExpr(e.args[0]!);
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: map get result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
-            const undefTag = E.undefinedArmTag(e.type);
-            if (!def || undefTag < 0) throw new InternalCompilerError("emitter bug: map get union lacks its undefined arm");
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            if (value.kind === "union") {
-              const t = E.newTemp(
-                e.type,
-                `(ScrUnion *)scr_map_get_${kAcc}_ref(${r.name}, ${k.name})`,
-              );
-              E.line(`if (!${t.name}) ${t.name} = ${absent};`);
-              return t;
-            }
-            const valueTag = def.arms.findIndex((a) => typeEquals(a, value));
-            if (valueTag < 0) throw new InternalCompilerError("emitter bug: map get union lacks its value arm");
-            if (value.kind === "f64" || value.kind === "bool") {
-              const out = `sc_t${E.tempCounter++}`;
-              const found = `sc_t${E.tempCounter++}`;
-              E.line(`${cDecl(value, out)} = 0;`);
-              E.line(`bool ${found} = scr_map_get_${kAcc}_${vAcc}(${r.name}, ${k.name}, &${out});`);
-              const make = `scr_union_new_${value.kind}(${valueTag}, ${out})`;
-              return E.newTemp(e.type, `${found} ? ${make} : ${absent}`);
-            }
-            const rc = vAdapters(value);
-            const v = E.newTemp(value, `(${cType(value).trim()})scr_map_get_${kAcc}_ref(${r.name}, ${k.name})`);
-            E.moveTemp(v); // moves into the box when present; NULL otherwise
-            const present = `scr_union_new_ref(${valueTag}, ${v.name}, &${rc.retain}, &${rc.release}, ${E.traceArgC(value)})`;
-            return E.newTemp(e.type, `${v.name} ? ${present} : ${absent}`);
-          }
-          case "set": {
-            // Key borrowed (the runtime retains stored string keys); the
-            // value MOVES in (replacement releases the old value inside).
-            const k = E.emitExpr(e.args[0]!);
-            const v = E.emitExpr(e.args[1]!);
-            if (vAcc === "ref") E.moveTemp(v);
-            E.line(`scr_map_set_${kAcc}_${vAcc}(${r.name}, ${k.name}, ${v.name});${E.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          }
-          case "has": {
-            const k = E.emitExpr(e.args[0]!);
-            return E.newTemp(e.type, `scr_map_has_${kAcc}(${r.name}, ${k.name})`);
-          }
-          case "delete": {
-            const k = E.emitExpr(e.args[0]!);
-            return E.newTemp(e.type, `scr_map_delete_${kAcc}(${r.name}, ${k.name})`);
-          }
-          case "size":
-            return E.newTemp(e.type, `scr_map_size(${r.name})`);
-          case "clear":
-            E.line(`scr_map_clear(${r.name});${E.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "iterCount":
-            return E.newTemp(e.type, `scr_map_iter_count(${r.name})`);
-          case "iterLive": {
-            const i = E.emitExpr(e.args[0]!);
-            return E.newTemp(e.type, `scr_map_iter_live(${r.name}, ${i.name})`);
-          }
-          case "iterKey": {
-            // String keys come back +1 (newTemp registers the owned temp).
-            const i = E.emitExpr(e.args[0]!);
-            return E.newTemp(e.type, `scr_map_iter_key_${kAcc}(${r.name}, ${i.name})`);
-          }
-          case "iterValue": {
-            const i = E.emitExpr(e.args[0]!);
-            const read =
-              vAcc === "ref"
-                ? `(${cType(value).trim()})scr_map_iter_val_ref(${r.name}, ${i.name})`
-                : `scr_map_iter_val_${vAcc}(${r.name}, ${i.name})`;
-            return E.newTemp(e.type, read);
-          }
-          case "iterEnter":
-            E.line(`scr_map_iter_enter(${r.name});${E.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "iterExit":
-            E.line(`scr_map_iter_exit(${r.name});${E.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          default: {
-            const _exhaustive: never = method;
-            void _exhaustive;
-            throw new InternalCompilerError("unreachable");
-          }
-        }
-      }
+      case "mapIntrinsic":
+      case "setIntrinsic":
+        return emitMapLikeIntrinsic(E, e);
       case "setNew": {
         // Empty set: the map runtime with the element as the KEY and the
         // value slot pinned to the scalar kind (every stored value is 0.0,
@@ -1981,60 +2017,6 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           E.line(`scr_set_add_all(${s.name}, ${arr.name});${E.srcComment(e.loc)}`);
         }
         return s;
-      }
-      case "setIntrinsic": {
-        const r = E.emitExpr(e.receiver);
-        if (e.receiver.type.kind !== "set") throw new InternalCompilerError("emitter bug: setIntrinsic on non-set");
-        const kAcc = mapKeyAccess(e.receiver.type.elem);
-        const method = e.method;
-        switch (method) {
-          case "add": {
-            // Element borrowed (the runtime retains stored strings); the
-            // unit value is the constant 0. Re-adding overwrites the unit
-            // in place — insertion position preserved, like Map set.
-            const k = E.emitExpr(e.args[0]!);
-            E.line(`scr_map_set_${kAcc}_f64(${r.name}, ${k.name}, 0);${E.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          }
-          case "has": {
-            const k = E.emitExpr(e.args[0]!);
-            return E.newTemp(e.type, `scr_map_has_${kAcc}(${r.name}, ${k.name})`);
-          }
-          case "delete": {
-            const k = E.emitExpr(e.args[0]!);
-            return E.newTemp(e.type, `scr_map_delete_${kAcc}(${r.name}, ${k.name})`);
-          }
-          case "size":
-            return E.newTemp(e.type, `scr_map_size(${r.name})`);
-          case "clear":
-            E.line(`scr_map_clear(${r.name});${E.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "iterCount":
-            return E.newTemp(e.type, `scr_map_iter_count(${r.name})`);
-          case "iterLive": {
-            const i = E.emitExpr(e.args[0]!);
-            return E.newTemp(e.type, `scr_map_iter_live(${r.name}, ${i.name})`);
-          }
-          case "iterKey": {
-            // The ELEMENT read; string elements come back +1.
-            const i = E.emitExpr(e.args[0]!);
-            return E.newTemp(e.type, `scr_map_iter_key_${kAcc}(${r.name}, ${i.name})`);
-          }
-          case "iterEnter":
-            E.line(`scr_map_iter_enter(${r.name});${E.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "iterExit":
-            E.line(`scr_map_iter_exit(${r.name});${E.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "toArray":
-            // Fresh +1 elem[] of the live entries in insertion order.
-            return E.newTemp(e.type, `scr_set_to_arr_${kAcc}(${r.name})`);
-          default: {
-            const _exhaustive: never = method;
-            void _exhaustive;
-            throw new InternalCompilerError("unreachable");
-          }
-        }
       }
       case "call": {
         const args = e.args.map((a) => E.emitExpr(a));

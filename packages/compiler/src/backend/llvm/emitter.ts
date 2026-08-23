@@ -5182,11 +5182,10 @@ class LlEmitter {
       case "mapNew":
         return this.emitMapNew(e);
       case "mapIntrinsic":
-        return this.emitMapIntrinsic(e);
+      case "setIntrinsic":
+        return this.emitMapLikeIntrinsic(e);
       case "setNew":
         return this.emitSetNew(e);
-      case "setIntrinsic":
-        return this.emitSetIntrinsic(e);
       case "regexLit": {
         // One immortal static per (pattern, flags) pair; the +1 retain is
         // a no-op on immortals but keeps the owned-temps discipline
@@ -10315,17 +10314,29 @@ class LlEmitter {
     this.B.line(`call void @scr_map_set_${kAcc}_${vAcc}(ptr ${m}, ${kTy} ${key}, ${vTy} ${value})`);
   }
 
-  private emitMapIntrinsic(e: IrExpr & { kind: "mapIntrinsic" }): LlValue {
+  private emitMapLikeIntrinsic(
+    e: Extract<IrExpr, { kind: "mapIntrinsic" | "setIntrinsic" }>,
+  ): LlValue {
     const B = this.B;
     const r = this.emitExpr(e.receiver);
-    if (e.receiver.type.kind !== "map") throw new InternalCompilerError("llvm emitter bug: mapIntrinsic on non-map");
-    const { key, value } = e.receiver.type;
+    const receiverType = e.receiver.type;
+    if (e.kind === "mapIntrinsic" && receiverType.kind !== "map") {
+      throw new InternalCompilerError("llvm emitter bug: mapIntrinsic on non-map");
+    }
+    if (e.kind === "setIntrinsic" && receiverType.kind !== "set") {
+      throw new InternalCompilerError("llvm emitter bug: setIntrinsic on non-set");
+    }
+    if (receiverType.kind !== "map" && receiverType.kind !== "set") {
+      throw new InternalCompilerError("unreachable");
+    }
+    const key = receiverType.kind === "map" ? receiverType.key : receiverType.elem;
     const kAcc = mapKeyAccess(key);
     const kTy = kAcc === "f64" ? "double" : "ptr";
-    const vAcc = elemAccess(value);
     const method = e.method;
     switch (method) {
       case "get": {
+        if (receiverType.kind !== "map") throw new InternalCompilerError("unreachable");
+        const value = receiverType.value;
         // The union construction is type-directed HERE, like envGet — the
         // runtime knows no tags. Ref values come back +1 (ownership MOVES
         // into the fresh union box on a hit); scalars ride an out-param
@@ -10388,12 +10399,22 @@ class LlEmitter {
         return this.wrapNullable(raw, raw, value, valueTag, e.type, undefTag);
       }
       case "set": {
+        if (receiverType.kind !== "map") throw new InternalCompilerError("unreachable");
         // Key borrowed (the runtime retains stored string keys); the
         // value MOVES in (replacement releases the old value inside).
         const k = this.emitExpr(e.args[0]!);
         const v = this.emitExpr(e.args[1]!);
+        const vAcc = elemAccess(receiverType.value);
         if (vAcc === "ref") this.moveTemp(v);
         this.mapSet(r.name, kAcc, vAcc, k.name, v.name);
+        return { name: "", type: e.type };
+      }
+      case "add": {
+        if (receiverType.kind !== "set") throw new InternalCompilerError("unreachable");
+        // Element borrowed (the runtime retains stored strings); the unit
+        // value is 0. Re-adding overwrites in place, preserving insertion.
+        const k = this.emitExpr(e.args[0]!);
+        this.mapSet(r.name, kAcc, "f64", k.name, f64Lit(0));
         return { name: "", type: e.type };
       }
       case "has": {
@@ -10443,6 +10464,8 @@ class LlEmitter {
         return this.own({ name: t, type: e.type });
       }
       case "iterValue": {
+        if (receiverType.kind !== "map") throw new InternalCompilerError("unreachable");
+        const vAcc = elemAccess(receiverType.value);
         const i = this.emitExpr(e.args[0]!);
         const retTy = vAcc === "f64" ? "double" : vAcc === "bool" ? "i1" : "ptr";
         this.declare(`declare ${vAcc === "bool" ? "zeroext i1" : retTy} @scr_map_iter_val_${vAcc}(ptr, double)`);
@@ -10458,6 +10481,14 @@ class LlEmitter {
         this.declare(`declare void @scr_map_iter_exit(ptr)`);
         B.line(`call void @scr_map_iter_exit(ptr ${r.name})`);
         return { name: "", type: e.type };
+      case "toArray": {
+        if (receiverType.kind !== "set") throw new InternalCompilerError("unreachable");
+        // Fresh +1 elem[] of the live entries in insertion order.
+        this.declare(`declare ptr @scr_set_to_arr_${kAcc}(ptr)`);
+        const t = B.tmp();
+        B.line(`${t} = call ptr @scr_set_to_arr_${kAcc}(ptr ${r.name})`);
+        return this.own({ name: t, type: e.type });
+      }
       default: {
         const _exhaustive: never = method;
         void _exhaustive;
@@ -10491,90 +10522,6 @@ class LlEmitter {
       B.line(`call void @scr_set_add_all(ptr ${s}, ptr ${arr.name})`);
     }
     return out;
-  }
-
-  private emitSetIntrinsic(e: IrExpr & { kind: "setIntrinsic" }): LlValue {
-    const B = this.B;
-    const r = this.emitExpr(e.receiver);
-    if (e.receiver.type.kind !== "set") throw new InternalCompilerError("llvm emitter bug: setIntrinsic on non-set");
-    const kAcc = mapKeyAccess(e.receiver.type.elem);
-    const kTy = kAcc === "f64" ? "double" : "ptr";
-    const method = e.method;
-    switch (method) {
-      case "add": {
-        // Element borrowed (the runtime retains stored strings); the unit
-        // value is the constant 0 — re-adding overwrites in place.
-        const k = this.emitExpr(e.args[0]!);
-        this.mapSet(r.name, kAcc, "f64", k.name, f64Lit(0));
-        return { name: "", type: e.type };
-      }
-      case "has": {
-        const k = this.emitExpr(e.args[0]!);
-        this.declare(`declare zeroext i1 @scr_map_has_${kAcc}(ptr, ${kTy})`);
-        const t = B.tmp();
-        B.line(`${t} = call zeroext i1 @scr_map_has_${kAcc}(ptr ${r.name}, ${kTy} ${k.name})`);
-        return { name: t, type: e.type };
-      }
-      case "delete": {
-        const k = this.emitExpr(e.args[0]!);
-        this.declare(`declare zeroext i1 @scr_map_delete_${kAcc}(ptr, ${kTy})`);
-        const t = B.tmp();
-        B.line(`${t} = call zeroext i1 @scr_map_delete_${kAcc}(ptr ${r.name}, ${kTy} ${k.name})`);
-        return { name: t, type: e.type };
-      }
-      case "size": {
-        this.declare(`declare double @scr_map_size(ptr)`);
-        const t = B.tmp();
-        B.line(`${t} = call double @scr_map_size(ptr ${r.name})`);
-        return { name: t, type: e.type };
-      }
-      case "clear":
-        this.declare(`declare void @scr_map_clear(ptr)`);
-        B.line(`call void @scr_map_clear(ptr ${r.name})`);
-        return { name: "", type: e.type };
-      case "iterCount": {
-        this.declare(`declare double @scr_map_iter_count(ptr)`);
-        const t = B.tmp();
-        B.line(`${t} = call double @scr_map_iter_count(ptr ${r.name})`);
-        return { name: t, type: e.type };
-      }
-      case "iterLive": {
-        const i = this.emitExpr(e.args[0]!);
-        this.declare(`declare zeroext i1 @scr_map_iter_live(ptr, double)`);
-        const t = B.tmp();
-        B.line(`${t} = call zeroext i1 @scr_map_iter_live(ptr ${r.name}, double ${i.name})`);
-        return { name: t, type: e.type };
-      }
-      case "iterKey": {
-        // The ELEMENT read; string/ref elements come back +1.
-        const i = this.emitExpr(e.args[0]!);
-        const retTy = kAcc === "f64" ? "double" : "ptr";
-        this.declare(`declare ${retTy} @scr_map_iter_key_${kAcc}(ptr, double)`);
-        const t = B.tmp();
-        B.line(`${t} = call ${retTy} @scr_map_iter_key_${kAcc}(ptr ${r.name}, double ${i.name})`);
-        return this.own({ name: t, type: e.type });
-      }
-      case "iterEnter":
-        this.declare(`declare void @scr_map_iter_enter(ptr)`);
-        B.line(`call void @scr_map_iter_enter(ptr ${r.name})`);
-        return { name: "", type: e.type };
-      case "iterExit":
-        this.declare(`declare void @scr_map_iter_exit(ptr)`);
-        B.line(`call void @scr_map_iter_exit(ptr ${r.name})`);
-        return { name: "", type: e.type };
-      case "toArray": {
-        // Fresh +1 elem[] of the live entries in insertion order.
-        this.declare(`declare ptr @scr_set_to_arr_${kAcc}(ptr)`);
-        const t = B.tmp();
-        B.line(`${t} = call ptr @scr_set_to_arr_${kAcc}(ptr ${r.name})`);
-        return this.own({ name: t, type: e.type });
-      }
-      default: {
-        const _exhaustive: never = method;
-        void _exhaustive;
-        throw new InternalCompilerError("unreachable");
-      }
-    }
   }
 
   /** Whether an index/value expression can overwrite the bytes receiver

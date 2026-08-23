@@ -11,7 +11,7 @@
  * Anything outside the tier refuses loudly (LlvmUnsupportedError naming
  * the type kind) — the tables never guess. */
 import type { IrModule, IrRecordShape, IrType } from "../../ir/nodes.js";
-import { funcOf, isRefCounted, mapOf, runtimeRcStem, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, VOID } from "../../ir/nodes.js";
+import { funcOf, isRefCounted, mapOf, POINTER_KINDS, runtimeRcStem, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, VOID } from "../../ir/nodes.js";
 import {
   mangleClassRelease,
   mangleClassRetain,
@@ -363,45 +363,13 @@ export function boxAccess(t: IrType): "f64" | "bool" | "ref" {
 /** A record field's in-struct LLVM type. bool fields store as i8 (the C
  * _Bool layout); loads/stores convert at the access site. */
 export function llFieldType(t: IrType): "double" | "i8" | "ptr" {
+  if (POINTER_KINDS.has(t.kind) && t.kind !== "http2Session" && t.kind !== "http2Stream") return "ptr";
   switch (t.kind) {
     case "f64":
     case "date":
       return "double";
     case "bool":
       return "i8";
-    case "string":
-    case "array":
-    case "record":
-    case "object":
-    case "classval":
-    case "union":
-    case "func":
-    case "map":
-    case "set":
-    case "symbol":
-    case "regex":
-    case "promise":
-    case "bytes":
-    case "url":
-    case "searchParams":
-    case "stats":
-    case "fileHandle":
-    case "spawnRes":
-    case "child":
-    case "childStream":
-    case "generator":
-    case "dyn":
-    case "jsval":
-    case "fsWatcher":
-    case "netServer":
-    case "netSocket":
-    case "dgramSocket":
-    case "httpReq":
-    case "httpRes":
-    case "httpClientReq":
-    case "secureCtx":
-    case "testCtx":
-      return "ptr";
     default:
       throw new LlvmUnsupportedError(`type:${t.kind}`);
   }

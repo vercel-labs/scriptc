@@ -5,7 +5,7 @@ import { InternalCompilerError } from "../../errors.js";
  * functions of IrType/values — every emission module leans on these, so they
  * live in ONE place with no emitter state. */
 import type { IrType } from "../../ir/nodes.js";
-import { runtimeRcStem, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES } from "../../ir/nodes.js";
+import { POINTER_KINDS, type PointerKind, runtimeRcStem, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES } from "../../ir/nodes.js";
 import {
   mangleClassRelease,
   mangleClassRetain,
@@ -14,6 +14,13 @@ import {
   mangleRecordRetain,
   mangleRecordStruct,
 } from "../mangle.js";
+
+type BoxNewPointerType = Extract<IrType, {
+  kind: Exclude<PointerKind, "string" | "array" | "func" | "dyn" | "jsval" | "caught" | "promise" | "generator">
+}>;
+type RejectedArrayPointerType = Extract<IrType, {
+  kind: Exclude<PointerKind, "string" | "array" | "bytes" | "record" | "object" | "union" | "jsval" | "child" | "netServer" | "symbol" | "classval" | "func">
+}>;
 
 export function cType(t: IrType): string {
   switch (t.kind) {
@@ -157,6 +164,12 @@ export function releaseCallC(type: IrType, expr: string): string {
 
 /** The runtime's box-kind tag for a boxed (captured) variable's type. */
 export function boxKindC(t: IrType): string {
+  if (POINTER_KINDS.has(t.kind) &&
+      t.kind !== "string" && t.kind !== "array" && t.kind !== "func" &&
+      t.kind !== "dyn" && t.kind !== "jsval" && t.kind !== "caught" &&
+      t.kind !== "promise" && t.kind !== "generator") {
+    throw new InternalCompilerError(`emitter bug: ${t.kind} boxes go through boxNewC, not boxKindC`);
+  }
   switch (t.kind) {
     case "f64":
     case "date":
@@ -169,34 +182,6 @@ export function boxKindC(t: IrType): string {
       return "SCR_BOX_ARR";
     case "func":
       return "SCR_BOX_FUNC";
-    case "object":
-    case "classval":
-    case "record":
-    case "union":
-    case "map":
-    case "set":
-    case "regex":
-    case "url":
-    case "searchParams":
-    case "symbol":
-    case "stats":
-    case "fileHandle":
-    case "spawnRes":
-    case "child":
-    case "netServer":
-    case "netSocket":
-    case "http2Session":
-    case "http2Stream":
-    case "dgramSocket":
-    case "testCtx":
-    case "httpReq":
-    case "httpRes":
-    case "httpClientReq":
-    case "secureCtx":
-    case "fsWatcher":
-    case "childStream":
-    case "bytes":
-      throw new InternalCompilerError(`emitter bug: ${t.kind} boxes go through boxNewC, not boxKindC`);
     case "procStream":
       // Scalar (the fd double) — the f64 box carries it.
       return "SCR_BOX_F64";
@@ -221,7 +206,7 @@ export function boxKindC(t: IrType): string {
     case "void":
       throw new InternalCompilerError("emitter bug: box of void");
     default: {
-      const _exhaustive: never = t;
+      const _exhaustive: never = t as Exclude<typeof t, BoxNewPointerType>;
       void _exhaustive;
       throw new InternalCompilerError("unreachable");
     }
@@ -270,6 +255,13 @@ export function cFnPtrCast(ft: IrType & { kind: "func" }): string {
  * reach it — that answer needs emitter state, so construction goes through
  * CEmitter.arrNewC, which overrides this for traced-array elements. */
 export function elemKindC(elem: IrType): string {
+  if (POINTER_KINDS.has(elem.kind) &&
+      elem.kind !== "string" && elem.kind !== "array" && elem.kind !== "bytes" &&
+      elem.kind !== "record" && elem.kind !== "object" && elem.kind !== "union" &&
+      elem.kind !== "jsval" && elem.kind !== "child" && elem.kind !== "netServer" &&
+      elem.kind !== "symbol" && elem.kind !== "classval" && elem.kind !== "func") {
+    throw new InternalCompilerError(`emitter bug: array of ${elem.kind} (frontend rejects these)`);
+  }
   switch (elem.kind) {
     case "f64":
       return "SCR_ELEM_F64";
@@ -311,38 +303,15 @@ export function elemKindC(elem: IrType): string {
     // pointer identity — exactly JS function identity.
     case "func":
       return "SCR_ELEM_REF";
-    case "map":
-    case "set":
-    case "regex":
     case "date":
-    case "url":
-    case "searchParams":
-    case "stats":
-    case "fileHandle":
-    case "spawnRes":
-    case "netSocket":
-    case "http2Session":
-    case "http2Stream":
-    case "dgramSocket":
-    case "testCtx":
-    case "httpReq":
-    case "httpRes":
-    case "httpClientReq":
-    case "secureCtx":
-    case "fsWatcher":
-    case "childStream":
     case "procStream":
-    case "dyn":
-    case "caught":
-    case "promise":
-    case "generator":
     case "undefinedT":
     case "nullT":
       throw new InternalCompilerError(`emitter bug: array of ${elem.kind} (frontend rejects these)`);
     case "void":
       throw new InternalCompilerError("emitter bug: array of void");
     default: {
-      const _exhaustive: never = elem;
+      const _exhaustive: never = elem as Exclude<typeof elem, RejectedArrayPointerType>;
       void _exhaustive;
       throw new InternalCompilerError("unreachable");
     }

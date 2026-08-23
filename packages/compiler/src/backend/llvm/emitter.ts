@@ -81,7 +81,7 @@ import type {
   IrUnionDef,
   SrcLoc,
 } from "../../ir/nodes.js";
-import { canMarshalFuncIntoIsland, CAUGHT, DYN, F64, ffiCallbackType, islandCallbackRet, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesDynInvoke, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, NPM_COMPRESS_MIN, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, typeEquals, typeKey, VOID } from "../../ir/nodes.js";
+import { canMarshalFuncIntoIsland, CAUGHT, DYN, F64, ffiCallbackType, islandCallbackRet, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesDynInvoke, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, NPM_COMPRESS_MIN, POINTER_KINDS, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, typeEquals, typeKey, VOID } from "../../ir/nodes.js";
 import { matchIntegerBytesForLoop } from "../../ir/integer-loops.js";
 import { allocateFfiCallbackAdapters, collectFfiRetainedOps, hasForeignFfiCallback, hasRetainedFfiCallback, parseFfiCallbackKey, type FfiCallbackAdapter } from "../ffi-callbacks.js";
 import { computeMayThrow } from "../emission/may-throw.js";
@@ -1233,52 +1233,17 @@ class LlEmitter {
   // ── types ───────────────────────────────────────────────────────────────
 
   private llType(t: IrType): string {
+    if (POINTER_KINDS.has(t.kind) && t.kind !== "http2Session" && t.kind !== "http2Stream") return "ptr";
     switch (t.kind) {
       case "f64":
       case "date":
         return "double";
       case "bool":
         return "i1";
-      case "string":
-      case "array":
-      case "record":
-      case "union":
-      case "func":
-      case "map":
-      case "set":
-      case "symbol":
-      case "regex":
-      case "promise":
-      case "bytes":
-      case "url":
-      case "searchParams":
-      case "stats":
-      case "fileHandle":
-      case "spawnRes":
-      case "child":
-      case "childStream":
-      case "generator":
-      case "dyn":
-      case "jsval":
-      case "fsWatcher":
-      case "netServer":
-      case "netSocket":
-      case "dgramSocket":
-      case "httpReq":
-      case "httpRes":
-      case "httpClientReq":
-      case "secureCtx":
-      case "testCtx":
-        return "ptr";
       case "procStream":
         // A SCALAR kind: the stream value IS its fd (1 = stdout, 2 =
         // stderr) — no heap, no refcount.
         return "double";
-      case "object":
-        return "ptr";
-      case "classval":
-      case "caught": // catch bindings: ScrCaught snapshot boxes
-        return "ptr";
       case "void":
         return "void";
       default:

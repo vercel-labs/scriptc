@@ -312,6 +312,69 @@ export type IrType =
   | { kind: "nullT" }
   | { kind: "void" }; // return position only
 
+const POINTER_HANDLE_KINDS = [
+  "stats",
+  "fileHandle",
+  "spawnRes",
+  "child",
+  "netServer",
+  "netSocket",
+  "http2Session",
+  "http2Stream",
+  "dgramSocket",
+  "testCtx",
+  "httpReq",
+  "httpRes",
+  "httpClientReq",
+  "secureCtx",
+  "fsWatcher",
+  "childStream",
+] as const satisfies readonly IrType["kind"][];
+
+interface IrKindSet<K extends IrType["kind"]> extends ReadonlySet<IrType["kind"]> {
+  has(kind: IrType["kind"]): kind is K;
+}
+
+function irKindSet<const K extends readonly IrType["kind"][]>(kinds: K): IrKindSet<K[number]> {
+  return new Set<IrType["kind"]>(kinds) as unknown as IrKindSet<K[number]>;
+}
+
+/** The opaque runtime handle kinds. procStream is the one scalar handle;
+ * every other handle has pointer representation. */
+const HANDLE_KIND_LIST = [
+  ...POINTER_HANDLE_KINDS,
+  "procStream",
+] as const;
+export type HandleKind = typeof HANDLE_KIND_LIST[number];
+type HandleType = Extract<IrType, { kind: HandleKind }>;
+export const HANDLE_KINDS = irKindSet(HANDLE_KIND_LIST);
+
+/** The IR kinds represented as pointers in both native backends. */
+const POINTER_KIND_LIST = [
+  "string",
+  "array",
+  "map",
+  "set",
+  "regex",
+  "bytes",
+  "url",
+  "searchParams",
+  "symbol",
+  ...POINTER_HANDLE_KINDS,
+  "func",
+  "object",
+  "classval",
+  "record",
+  "union",
+  "dyn",
+  "jsval",
+  "caught",
+  "promise",
+  "generator",
+] as const;
+export type PointerKind = typeof POINTER_KIND_LIST[number];
+export const POINTER_KINDS = irKindSet(POINTER_KIND_LIST);
+
 /** Runtime RC symbol stem for each IR type kind. An empty stem means the
  * kind is scalar/unit or uses an emitted per-shape helper (object/record).
  * Keeping this exhaustive makes a new runtime handle kind a compile error
@@ -603,6 +666,7 @@ export function unionFuncSetArmsOk(arms: IrType[]): boolean {
  * canonical) shapeId/unionId, so keys stay finite and comparable. Lives in
  * the IR (not the frontend) because both ends need it. */
 export function typeKey(t: IrType): string {
+  if (HANDLE_KINDS.has(t.kind)) return t.kind;
   switch (t.kind) {
     case "f64":
     case "date":
@@ -612,23 +676,6 @@ export function typeKey(t: IrType): string {
     case "url":
     case "searchParams":
     case "symbol":
-    case "stats":
-    case "fileHandle":
-    case "spawnRes":
-    case "child":
-    case "netServer":
-    case "netSocket":
-    case "http2Session":
-    case "http2Stream":
-    case "dgramSocket":
-    case "testCtx":
-    case "httpReq":
-    case "httpRes":
-    case "httpClientReq":
-    case "secureCtx":
-    case "fsWatcher":
-    case "childStream":
-    case "procStream":
     case "dyn":
     case "jsval":
     case "caught":
@@ -661,7 +708,7 @@ export function typeKey(t: IrType): string {
     case "generator":
       return `generator<${typeKey(t.yieldT)},${typeKey(t.retT)},${typeKey(t.nextT)}>`;
     default: {
-      const _exhaustive: never = t;
+      const _exhaustive: never = t as Exclude<typeof t, HandleType>;
       void _exhaustive;
       throw new InternalCompilerError("unreachable");
     }
@@ -5327,6 +5374,7 @@ function isJsonSafeAt(
   inRecordField: boolean,
   visiting: Set<string>,
 ): boolean {
+  if (HANDLE_KINDS.has(t.kind)) return false;
   switch (t.kind) {
     case "f64":
     case "string":
@@ -5392,23 +5440,6 @@ function isJsonSafeAt(
     // Buffers as {type:"Buffer",data:[...]} in Node — neither shape is
     // representable type-directedly; rejected like Maps.
     case "bytes":
-    case "stats":
-    case "fileHandle":
-    case "spawnRes":
-    case "child":
-    case "netServer":
-    case "netSocket":
-    case "http2Session":
-    case "http2Stream":
-    case "dgramSocket":
-    case "testCtx":
-    case "httpReq":
-    case "httpRes":
-    case "httpClientReq":
-    case "secureCtx":
-    case "fsWatcher":
-    case "childStream":
-    case "procStream":
     case "dyn":
     case "jsval":
     case "caught":
@@ -5427,7 +5458,7 @@ function isJsonSafeAt(
     case "nullT":
       return true;
     default: {
-      const _exhaustive: never = t;
+      const _exhaustive: never = t as Exclude<typeof t, HandleType>;
       void _exhaustive;
       throw new InternalCompilerError("unreachable");
     }

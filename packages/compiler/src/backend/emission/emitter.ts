@@ -40,7 +40,7 @@ import type {
   IrUnionDef,
   SrcLoc,
 } from "../../ir/nodes.js";
-import { ffiCallbackType, funcOf, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, mapOf, moduleEmbedsCompressedNpm, moduleUsesDgram, moduleUsesDynInvoke, moduleEmbedsBuiltin, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, RUNTIME_EMITTER_CLASS, STRING, VOID } from "../../ir/nodes.js";
+import { ffiCallbackType, funcOf, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, mapOf, moduleEmbedsCompressedNpm, moduleUsesDgram, moduleUsesDynInvoke, moduleEmbedsBuiltin, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, POINTER_KINDS, type PointerKind, RUNTIME_EMITTER_CLASS, STRING, VOID } from "../../ir/nodes.js";
 import { allocateFfiCallbackAdapters, hasForeignFfiCallback, hasRetainedFfiCallback, type FfiCallbackAdapter } from "../ffi-callbacks.js";
 import {
   mangleAsyncSpawn,
@@ -89,6 +89,10 @@ export interface Temp {
   name: string;
   type: IrType;
 }
+
+type TruthyPointerType = Extract<IrType, {
+  kind: Exclude<PointerKind, "string" | "union" | "dyn" | "jsval" | "caught">
+}>;
 
 /** A scope entry: a refcounted local, either held directly or through a
  * capture box (boxed locals release their BOX; the box frees its contents). */
@@ -2031,6 +2035,15 @@ export class CEmitter {
    * `x == x` rejects NaN, `x != 0` rejects both zeros; strings only need
    * their length — no runtime call, no ownership change. */
   truthyC(t: Temp): string {
+    if (POINTER_KINDS.has(t.type.kind) &&
+        t.type.kind !== "string" && t.type.kind !== "union" &&
+        t.type.kind !== "dyn" && t.type.kind !== "jsval" &&
+        t.type.kind !== "caught") {
+      // JS objects are ALWAYS truthy ([] and {} included). These are
+      // non-NULL pointers, so the honest constant reads as a pointer
+      // test (no unused-value warnings, operand still evaluated).
+      return `${t.name} != NULL`;
+    }
     switch (t.type.kind) {
       case "bool":
         return t.name;
@@ -2051,40 +2064,6 @@ export class CEmitter {
         // helper (switch on tag: unit arms false, scalar/string arms by
         // value, ref arms true, jsval arms ask the engine).
         return `${this.unionTruthyHelper(t.type.unionId)}(${t.name})`;
-      case "array":
-      case "map":
-      case "set":
-      case "regex":
-      case "url":
-      case "searchParams":
-      case "symbol":
-      case "stats":
-      case "fileHandle":
-      case "spawnRes":
-      case "child":
-      case "netServer":
-      case "netSocket":
-      case "http2Session":
-      case "http2Stream":
-      case "dgramSocket":
-      case "testCtx":
-      case "httpReq":
-      case "httpRes":
-      case "httpClientReq":
-      case "secureCtx":
-      case "fsWatcher":
-      case "childStream":
-      case "bytes":
-      case "func":
-      case "object":
-      case "classval":
-      case "record":
-      case "promise":
-      case "generator":
-        // JS objects are ALWAYS truthy ([] and {} included). These are
-        // non-NULL pointers, so the honest constant reads as a pointer
-        // test (no unused-value warnings, operand still evaluated).
-        return `${t.name} != NULL`;
       case "procStream":
         // A stream value is a JS object (always truthy); the scalar fd
         // representation is 1 or 2, so the honest constant reads as its
@@ -2102,7 +2081,7 @@ export class CEmitter {
       case "void":
         throw new InternalCompilerError("emitter bug: truthiness of void");
       default: {
-        const _exhaustive: never = t.type;
+        const _exhaustive: never = t.type as Exclude<typeof t.type, TruthyPointerType>;
         void _exhaustive;
         throw new InternalCompilerError("unreachable");
       }

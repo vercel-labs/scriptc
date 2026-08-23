@@ -7147,15 +7147,12 @@ export function lowerTemplate(L: Lowerer, expr: ts.TemplateExpression): IrExpr {
       if (targetTs.flags & ts.TypeFlags.Any) return inner;
       const target = L.mapTypeOf(targetTs);
       if (!target) L.badType(expr.type, targetTs);
-      if (!L.boundarySafe(target)) {
-        L.unsupported(
-          "SC1090",
-          expr,
-          `a checked cast of 'any' to '${L.fmt(target)}' ` +
-            `(an 'any' value can only be validated against JSON-representable types: ` +
-            `number, string, boolean, records, arrays, and unions of those)`,
-        );
-      }
+      // A target type that ITSELF maps to jsval — same erasure as the Any fast-path above.
+      if (target.kind === "jsval") return inner;
+      // Non-boundary-safe targets (functions, callable records, class instances, etc.)
+      // cannot be JSON-validated. JSVAL is already an opaque engine handle — the `as T`
+      // assertion is TypeScript-only and should erase rather than attempt validation.
+      if (!L.boundarySafe(target)) return inner;
       return { kind: "jsExit", value: inner, type: target, loc: locOf(expr) };
     }
     const targetTs = L.checker.getTypeFromTypeNode(expr.type);

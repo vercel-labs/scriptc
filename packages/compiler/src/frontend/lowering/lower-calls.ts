@@ -6081,7 +6081,17 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
       // contextual type spelled (a module-namespace type has no mapping —
       // the handle is the value's only story, isIslandExpr's local rule).
       if (inner.kind === "jsval") markJsvalHandlerParams(L, call.arguments[0]!);
-      let cb = L.lowerExpr(call.arguments[0]!);
+      // When the settled value is JSVAL, the callback body should allow JSVAL
+      // to flow into any slot without shape checks — the actual runtime value
+      // is an opaque island handle, not the TypeScript type parameter.
+      const prevInJsvalThenHandler = L.inJsvalThenHandler;
+      if (inner.kind === "jsval") L.inJsvalThenHandler = true;
+      let cb: IrExpr;
+      try {
+        cb = L.lowerExpr(call.arguments[0]!);
+      } finally {
+        L.inJsvalThenHandler = prevInJsvalThenHandler;
+      }
       // A TYPED handler on a DYN-settling promise (the tracePromise
       // result's `.then((value) => ...)` — the checker's generic
       // instantiation typed the parameter, but the settled value is a
@@ -6183,20 +6193,34 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
         );
       }
       const param = cb.type.params[0];
-      if (param !== undefined && !typeEquals(param, inner)) {
+      // When the settled value is JSVAL, the handler's parameter type comes from
+      // the TypeScript checker's view of the promise type parameter — which may
+      // not match JSVAL. Skip the parameter type check in this case; the actual
+      // runtime value is an island handle regardless of the declared type.
+      if (inner.kind !== "jsval" && param !== undefined && !typeEquals(param, inner)) {
         L.unsupported(
           "SC1090",
           call.arguments[0]!,
           `then handlers whose parameter is not the settled value's type (expected '${L.fmt(inner)}', got '${L.fmt(param)}')`,
         );
       }
-      const resultT = L.mapTypeOf(L.typeOf(call));
-      if (resultT?.kind !== "promise") {
-        L.noLowering(
-          "then with this handler's result type",
-          call,
-          "the combined result must be a representable promise",
-        );
+      // When the settled value is JSVAL, the result promise type cannot be
+      // inferred from the TypeScript checker (the checker's type parameter
+      // reflects the declared module namespace, not the actual runtime {}).
+      // Force Promise<JSVAL> so the result type matches the actual value.
+      let resultT: IrType & { kind: "promise" };
+      if (inner.kind === "jsval") {
+        resultT = { kind: "promise", inner: JSVAL };
+      } else {
+        const mapped = L.mapTypeOf(L.typeOf(call));
+        if (mapped?.kind !== "promise") {
+          L.noLowering(
+            "then with this handler's result type",
+            call,
+            "the combined result must be a representable promise",
+          );
+        }
+        resultT = mapped;
       }
       const R = resultT.inner;
       const fnName = `%fn${L.lambdaCounter++}_then`;

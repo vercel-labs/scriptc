@@ -1699,18 +1699,19 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
   // search variables cannot affect it, but any mutable compilation input or
   // opaque compiler wrapper makes every persistent tier unsafe to reuse. An
   // opaque archiver narrows only the completed-archive tier below.
-  let root =
-    opts.cacheIdentity === undefined || !persistentDriverCache
+  const cacheIdentity = opts.cacheIdentity;
+  let persistentCache: { root: string; identity: string } | null =
+    cacheIdentity === undefined || configuredCacheRoot === null || !persistentDriverCache
       ? null
-      : configuredCacheRoot;
-  if (root !== null) {
+      : { root: configuredCacheRoot, identity: cacheIdentity };
+  if (persistentCache !== null) {
     try {
       await ensurePrivateCacheRoot(
-        root,
+        persistentCache.root,
         process.env["SCRIPTC_CACHE_DIR"] === undefined,
       );
     } catch {
-      root = null;
+      persistentCache = null;
     }
   }
   let implicitToolchain: string | null = null;
@@ -1725,10 +1726,10 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     } catch {
       // An identity probe is cache machinery, never a reason a valid native
       // compile should fail. Disable every persistent tier for this invocation.
-      root = null;
+      persistentCache = null;
     }
   }
-  if (root !== null) {
+  if (persistentCache !== null) {
     try {
       runtimeCompilerInvocation = await effectiveCompilerInvocationFingerprint(
         driver,
@@ -1746,7 +1747,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     } catch {
       // A wrapper that cannot expose its effective invocation can still build,
       // but its outputs cannot safely participate in a persistent cache.
-      root = null;
+      persistentCache = null;
     }
   }
   const vendorBuildIdentity = await currentVendorCacheBuildIdentity(
@@ -1760,7 +1761,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
   // consumes the same per-flavor objects).
   const cacheCompleteArchive =
     opts.localizeSymbols === undefined &&
-    root !== null && await archiverSupportsPersistentCache(arArgv, driver);
+    persistentCache !== null && await archiverSupportsPersistentCache(arArgv, driver);
   let cachedArchive: string | null = null;
   let compilerVersion = "";
   let archiverVersion = "";
@@ -1772,7 +1773,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
   const identityBytes = opts.identityCSource === undefined
     ? null
     : Buffer.from(opts.identityCSource, "utf8");
-  if (root !== null) {
+  if (persistentCache !== null) {
     try {
       const [cv, fingerprint, programBytes] = await Promise.all([
         ccVersionOnce(driver.argv, toolchainEnv, true),
@@ -1804,7 +1805,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           .update(runtimeCompilerInvocation!).update("\0")
           .update(programCompilerInvocation!).update("\0")
           .update(programDependencyHash).update("\0")
-          .update(opts.cacheIdentity!).update("\0")
+          .update(persistentCache.identity).update("\0")
           .update(driver.argv.join("\x1f")).update("\0")
           .update(cv).update("\0")
           .update(fingerprint).update("\0")
@@ -1829,7 +1830,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           .update(identityBytes === null ? "<none>" : "<generated>").update("\0")
           .update(identityBytes ?? Buffer.alloc(0))
           .digest("hex");
-        cachedArchive = join(root, "lib", keyHex);
+        cachedArchive = join(persistentCache.root, "lib", keyHex);
         const tmpOut = privateSiblingPath(opts.outPath, "lib-hit");
         try {
           await mkdir(dirname(opts.outPath), { recursive: true });
@@ -1853,13 +1854,13 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     }
   }
 
-  const transientVendorRoot = root !== null && implicitToolchain !== null
+  const transientVendorRoot = persistentCache !== null && implicitToolchain !== null
     ? null
     : join(
         tmpdir(),
         `scriptc-lib-vendor-${process.pid}-${Math.random().toString(36).slice(2)}`,
       );
-  const vendorCacheRoot = transientVendorRoot ?? vendorBuildCacheRoot(root ?? undefined);
+  const vendorCacheRoot = transientVendorRoot ?? vendorBuildCacheRoot(persistentCache?.root);
   try {
     const buildDir = await mkdtemp(join(tmpdir(), "scriptc-lib-"));
     try {
@@ -1916,7 +1917,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
       }
       let cachedProgramObject: string | null = null;
       if (
-        root !== null && cachedProgramBytes !== null && compilerVersion !== "" &&
+        persistentCache !== null && cachedProgramBytes !== null && compilerVersion !== "" &&
         implicitToolchain !== null && programCompilerInvocation !== null
       ) {
         const programKey = createHash("sha256")
@@ -1925,7 +1926,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           .update(toolchainEnv).update("\0")
           .update(implicitToolchain).update("\0")
           .update(programCompilerInvocation).update("\0")
-          .update(opts.cacheIdentity!).update("\0")
+          .update(persistentCache.identity).update("\0")
           .update(driver.argv.join("\x1f")).update("\0")
           .update(compilerVersion).update("\0")
           .update(runtimeHash).update("\0")
@@ -1941,7 +1942,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           programShardMergeIdentity ?? undefined,
         );
         const programKeyHex = programKey.digest("hex");
-        cachedProgramObject = join(root, "program-obj", programKeyHex);
+        cachedProgramObject = join(persistentCache.root, "program-obj", programKeyHex);
       }
       const stagedProgramObject = join(buildDir, `${stem}.program.o`);
       let programObject: string;
@@ -1958,8 +1959,8 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
             const staged = join(buildDir, `${stem}.program-${index.toString().padStart(3, "0")}.o`);
             let cachePath: string | null = null;
             if (
-              root !== null && compilerVersion !== "" && implicitCompileToolchain !== null &&
-              programCompilerInvocation !== null
+              persistentCache !== null && compilerVersion !== "" &&
+              implicitCompileToolchain !== null && programCompilerInvocation !== null
             ) {
               const key = createHash("sha256")
                 // v2 removes the broad implicit-toolchain fingerprint: it
@@ -1974,7 +1975,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
                 .update(toolchainEnv).update("\0")
                 .update(implicitCompileToolchain).update("\0")
                 .update(programCompilerInvocation).update("\0")
-                .update(opts.cacheIdentity!).update("\0")
+                .update(persistentCache.identity).update("\0")
                 .update(driver.argv.join("\x1f")).update("\0")
                 .update(compilerVersion).update("\0")
                 .update(runtimeHash).update("\0")
@@ -1985,7 +1986,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
                 .update(shard.name).update("\0")
                 .update(shard.source)
                 .digest("hex");
-              cachePath = join(root, "program-shard", key);
+              cachePath = join(persistentCache.root, "program-shard", key);
             }
             return { ...shard, sourcePath, staged, cachePath, missed: false };
           });
@@ -2143,11 +2144,11 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
         );
         return objectImplicitVerification;
       };
-      if (root !== null && compilerVersion !== "" && runtimeHash !== "") {
+      if (persistentCache !== null && compilerVersion !== "" && runtimeHash !== "") {
         try {
           const sourcePaths = sources.map((f) => join(rtDir, f));
           const cached = await ensureRuntimeObjects(
-            root,
+            persistentCache.root,
             driver.argv,
             cflags,
             sourcePaths,
@@ -2215,7 +2216,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
       let runtimeStillMatchesKey = false;
       if (
         cachedArchive !== null &&
-        root !== null &&
+        persistentCache !== null &&
         runtimeHash !== "" &&
         programDependencyHash !== "" &&
         compilerVersion !== "" &&
@@ -2259,7 +2260,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           currentArchiver === archiverVersion &&
           currentProgramShardMerge === programShardMergeIdentity;
       }
-      if (cachedArchive !== null && root !== null && runtimeStillMatchesKey) {
+      if (cachedArchive !== null && persistentCache !== null && runtimeStillMatchesKey) {
         try {
           await publishCachedFile(archiveOutput, cachedArchive);
         } catch {
@@ -2274,7 +2275,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
       await rm(transientVendorRoot, { recursive: true, force: true }).catch(() => undefined);
     }
   }
-  if (root !== null) await pruneCache(root).catch(() => undefined);
+  if (persistentCache !== null) {
+    await pruneCache(persistentCache.root).catch(() => undefined);
+  }
 }
 
 /* Multi-instance library mode's localization step: combine the program
@@ -4729,19 +4732,20 @@ async function compileCInternal(
   // inputs may include caller-owned headers whose contents are not otherwise
   // represented in this key, so they retain the fully uncached historical
   // path unless the caller supplies its own complete dependency identity.
-  let root =
-    opts.cacheIdentity === undefined || !persistentDriverCache
+  const cacheIdentity = opts.cacheIdentity;
+  let persistentCache: { root: string; identity: string } | null =
+    cacheIdentity === undefined || configuredCacheRoot === null || !persistentDriverCache
       ? null
-      : configuredCacheRoot;
-  if (cacheWarmOnly && root === null) {
+      : { root: configuredCacheRoot, identity: cacheIdentity };
+  if (cacheWarmOnly && persistentCache === null) {
     throw new Error(
       "native cache warming requires a persistently cacheable compiler environment",
     );
   }
-  if (root !== null) {
+  if (persistentCache !== null) {
     try {
       await ensurePrivateCacheRoot(
-        root,
+        persistentCache.root,
         process.env["SCRIPTC_CACHE_DIR"] === undefined,
       );
     } catch (error) {
@@ -4750,7 +4754,7 @@ async function compileCInternal(
           cause: error,
         });
       }
-      root = null;
+      persistentCache = null;
     }
   }
   let localArtifact: {
@@ -4767,9 +4771,9 @@ async function compileCInternal(
   // strict path because their dependency graphs are caller-owned.
   if (
     !cacheWarmOnly &&
-    root !== null &&
+    persistentCache !== null &&
     cachePolicy.completeArtifacts &&
-    opts.cacheIdentity === "scriptc-generated-v1" &&
+    persistentCache.identity === "scriptc-generated-v1" &&
     (opts.linkInputs?.length ?? 0) === 0 &&
     (opts.systemLibraries?.length ?? 0) === 0 &&
     process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] !== "1"
@@ -4793,7 +4797,7 @@ async function compileCInternal(
           programBytes,
           programShardMergeIdentity,
         );
-        const stampPath = localArtifactStampPath(root, opts.outPath);
+        const stampPath = localArtifactStampPath(persistentCache.root, opts.outPath);
         localArtifact = {
           stampPath,
           key,
@@ -4816,14 +4820,14 @@ async function compileCInternal(
   let implicitToolchain: string | null = null;
   let implicitCompileToolchain: string | null = null;
   let toolchainMetadataStamp: NativeMetadataStamp | null = null;
-  const metadataCompiler = root === null
+  const metadataCompiler = persistentCache === null
     ? null
     : await resolvedTool(driver.argv[0] ?? "clang");
   const metadataEffectiveCompiler = directCompilerSelections.get(
     compilerDriverProbeKey(driver, toolchainEnv),
   ) ?? metadataCompiler;
   const toolchainMetadataKey =
-    root === null ||
+    persistentCache === null ||
       metadataCompiler === null ||
       metadataEffectiveCompiler === null ||
       process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] === "1"
@@ -4840,9 +4844,9 @@ async function compileCInternal(
   if (persistentDriverCache) {
     try {
       toolchainMetadataStamp =
-        root === null || toolchainMetadataKey === null
+        persistentCache === null || toolchainMetadataKey === null
           ? null
-          : await readNativeMetadataStamp(root, toolchainMetadataKey);
+          : await readNativeMetadataStamp(persistentCache.root, toolchainMetadataKey);
       implicitToolchain = toolchainMetadataStamp?.values["implicitToolchain"] ?? null;
       implicitCompileToolchain =
         toolchainMetadataStamp?.values["implicitCompileToolchain"] ?? null;
@@ -4861,12 +4865,12 @@ async function compileCInternal(
       }
       if (
         toolchainMetadataStamp === null &&
-        root !== null &&
+        persistentCache !== null &&
         toolchainMetadataKey !== null
       ) {
         if (metadataCompiler !== null && metadataEffectiveCompiler !== null) {
           toolchainMetadataStamp = await publishNativeMetadataStamp(
-            root,
+            persistentCache.root,
             toolchainMetadataKey,
             {
               implicitToolchain,
@@ -4896,7 +4900,7 @@ async function compileCInternal(
           cause: error,
         });
       }
-      root = null;
+      persistentCache = null;
     }
   }
   const vendorBuildIdentity = await currentVendorCacheBuildIdentity(
@@ -4908,13 +4912,13 @@ async function compileCInternal(
   // must follow the same rule instead of silently surviving in the user cache.
   // A private root gives this invocation the usual vendor build recipe
   // without publishing or reusing those prerequisites.
-  const transientVendorRoot = root !== null && implicitToolchain !== null
+  const transientVendorRoot = persistentCache !== null && implicitToolchain !== null
     ? null
     : join(
         tmpdir(),
         `scriptc-vendor-${process.pid}-${Math.random().toString(36).slice(2)}`,
       );
-  const vendorCacheRoot = transientVendorRoot ?? vendorBuildCacheRoot(root ?? undefined);
+  const vendorCacheRoot = transientVendorRoot ?? vendorBuildCacheRoot(persistentCache?.root);
   // Every vendor output path is deterministic from pins, flags, driver, and
   // target. Build the command/key from those paths now, but do not materialize
   // them until a complete-binary lookup has missed.
@@ -5286,7 +5290,7 @@ async function compileCInternal(
   let payloadMetadata: Promise<[string, string, Buffer]> | null = null;
   let compileMetadataStamp: NativeMetadataStamp | null = null;
   const compileMetadataKey =
-    root === null || process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] === "1"
+    persistentCache === null || process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] === "1"
     ? null
     : nativeMetadataKey("compile", [
         cacheTargetIdentity(driver),
@@ -5297,7 +5301,7 @@ async function compileCInternal(
         programCompilerArgs,
         programSourceExtension,
       ]);
-  if (root !== null) {
+  if (persistentCache !== null) {
     try {
       // These probes inspect disjoint inputs. Start the payload reads here as
       // well so runtime hashing and clang's dry-run traces overlap instead of
@@ -5316,7 +5320,7 @@ async function compileCInternal(
       ]);
       compileMetadataStamp = compileMetadataKey === null
         ? null
-        : await readNativeMetadataStamp(root, compileMetadataKey);
+        : await readNativeMetadataStamp(persistentCache.root, compileMetadataKey);
       if (compileMetadataStamp !== null) {
         runtimeCompilerInvocation = compileMetadataStamp.values["runtimeInvocation"] ?? null;
         programCompilerInvocation = compileMetadataStamp.values["programInvocation"] ?? null;
@@ -5340,7 +5344,7 @@ async function compileCInternal(
         programCompilerInvocation = programInvocation ?? runtimeInvocation;
         if (compileMetadataKey !== null) {
           compileMetadataStamp = await publishNativeMetadataStamp(
-            root,
+            persistentCache.root,
             compileMetadataKey,
             {
               runtimeInvocation: runtimeCompilerInvocation,
@@ -5362,11 +5366,11 @@ async function compileCInternal(
           cause: error,
         });
       }
-      root = null;
+      persistentCache = null;
     }
   }
 
-  if (root === null) {
+  if (persistentCache === null) {
     // The exact historical command line, byte for byte.
     await runUncachedBuild();
     return;
@@ -5449,7 +5453,7 @@ async function compileCInternal(
   let localArtifactDependencyPaths: string[] | null = null;
   let linkMetadataStamp: NativeMetadataStamp | null = null;
   const linkMetadataKey =
-    root === null || process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] === "1"
+    process.env["SCRIPTC_TEST_TRUST_COMPILER_WRAPPER"] === "1"
     ? null
     : nativeMetadataKey("link", [
         cacheTargetIdentity(driver),
@@ -5470,7 +5474,7 @@ async function compileCInternal(
       // cache hits and ordinary edit/build misses without changing either key.
       linkMetadataStamp = linkMetadataKey === null
         ? null
-        : await readNativeMetadataStamp(root, linkMetadataKey);
+        : await readNativeMetadataStamp(persistentCache.root, linkMetadataKey);
       if (linkMetadataStamp !== null) {
         implicitLinker = linkMetadataStamp.values["implicitLinker"] ?? null;
         if (implicitLinker === null) linkMetadataStamp = null;
@@ -5495,7 +5499,7 @@ async function compileCInternal(
       ]);
       if (linkMetadataStamp === null && linkMetadataKey !== null) {
         linkMetadataStamp = await publishNativeMetadataStamp(
-          root,
+          persistentCache.root,
           linkMetadataKey,
           { implicitLinker },
           fingerprintDependencyPaths(implicitLinker),
@@ -5577,7 +5581,7 @@ async function compileCInternal(
       });
     }
   }
-  const binDir = join(root, "bin");
+  const binDir = join(persistentCache.root, "bin");
   let keyHex: string | null = null;
   let cachedBin: string | null = null;
   if (cacheCompleteArtifact) {
@@ -5601,7 +5605,7 @@ async function compileCInternal(
       .update(programCompilerInvocation!).update("\0")
       .update(implicitLinker!).update("\0")
       .update(programDependencies!).update("\0")
-      .update(opts.cacheIdentity!).update("\0")
+      .update(persistentCache.identity).update("\0")
       // Preserve both the spelling clang sees (__FILE__) and the location used
       // to resolve relative includes. The top-level bytes are not sufficient.
       .update(opts.cPath).update("\0")
@@ -5645,7 +5649,7 @@ async function compileCInternal(
           localArtifact.key,
           localArtifactDependencyPaths,
           [dirname(resolve(opts.cPath))],
-          [root],
+          [persistentCache.root],
         ).catch(() => null);
         if (stamp !== null) {
           await opts.onArtifactReady?.({ dependencies: stamp.dependencies }).catch(() => undefined);
@@ -5713,7 +5717,7 @@ async function compileCInternal(
     };
     try {
       const cached = await ensureRuntimeObjects(
-        root,
+        persistentCache.root,
         driver.argv,
         cflags,
         rtInputs,
@@ -5760,7 +5764,7 @@ async function compileCInternal(
             .update(toolchainEnv).update("\0")
             .update(implicitCompileToolchain).update("\0")
             .update(programCompilerInvocation).update("\0")
-            .update(opts.cacheIdentity!).update("\0")
+            .update(persistentCache.identity).update("\0")
             .update(driver.argv.join("\x1f")).update("\0")
             .update(cv).update("\0")
             .update(fingerprint).update("\0")
@@ -5775,7 +5779,7 @@ async function compileCInternal(
             ...shard,
             sourcePath,
             staged,
-            cachePath: join(root, "program-shard", key),
+            cachePath: join(persistentCache.root, "program-shard", key),
             missed: false,
           };
         });
@@ -5941,7 +5945,7 @@ async function compileCInternal(
         localArtifact.key,
         localArtifactDependencyPaths,
         [dirname(resolve(opts.cPath))],
-        [root],
+        [persistentCache.root],
       ).catch(() => null);
       if (stamp !== null) {
         await opts.onArtifactReady?.({ dependencies: stamp.dependencies }).catch(() => undefined);
@@ -5952,7 +5956,7 @@ async function compileCInternal(
   }
   // Runtime-object population is itself a cache write, including on builds
   // whose native link inputs disable complete-artifact publication.
-  await pruneCache(root, cacheWarmPaths).catch(() => undefined);
+  await pruneCache(persistentCache.root, cacheWarmPaths).catch(() => undefined);
 }
 
 export async function compileC(opts: CcOptions): Promise<void> {

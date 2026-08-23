@@ -13,6 +13,7 @@ import { isJsSourceFile, locOf } from "../program.js";
 import { islandPrimitiveExit, lowerDynDispatchMethodCall } from "./lower-calls.js";
 import { typeKey } from "../types.js";
 import { dynUndefinedExpr, own, WidthLift } from "./lowerer.js";
+import { boolLit, numLit, varRef } from "../../ir/build.js";
 
 /** Lower an expression whose checker type is statically `undefined`/`void`.
  * Optional builtin arguments use this before their ordinary expected-type
@@ -852,11 +853,10 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     if (!name) {
       name = `%arr.idxOr.${L.arrHofHelpers.size}`;
       L.arrHofHelpers.set(key, name);
-      const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-      const i = ref("i.0", F64);
-      const n = ref("n.0", F64);
-      const v = ref("v.0", elem);
+
+      const i = varRef("i.0", F64, loc);
+      const n = varRef("n.0", F64, loc);
+      const v = varRef("v.0", elem, loc);
       const lt = (l: IrExpr, r: IrExpr): IrExpr => ({ kind: "bin", op: "<", left: l, right: r, type: BOOL, loc });
       const miss: IrExpr = {
         kind: "unionWrap",
@@ -869,7 +869,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       const body: IrStmt[] = [
         readLenStmt(arrT, loc),
         { kind: "if", cond: { kind: "bin", op: "!==", left: i, right: i, type: BOOL, loc }, then: [{ kind: "return", value: miss, loc }], else_: null, loc },
-        { kind: "if", cond: lt(i, num(0)), then: [{ kind: "return", value: miss, loc }], else_: null, loc },
+        { kind: "if", cond: lt(i, numLit(0, loc)), then: [{ kind: "return", value: miss, loc }], else_: null, loc },
         { kind: "if", cond: { kind: "bin", op: ">=", left: i, right: n, type: BOOL, loc }, then: [{ kind: "return", value: miss, loc }], else_: null, loc },
         // A fractional index is a property miss too (floor(i) < i exactly
         // when i has a fraction; negatives already returned above).
@@ -880,7 +880,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           else_: null,
           loc,
         },
-        { kind: "varDecl", localId: "v.0", init: { kind: "arrayGet", arr: ref("a.0", arrT), index: i, type: elem, loc }, loc },
+        { kind: "varDecl", localId: "v.0", init: { kind: "arrayGet", arr: varRef("a.0", arrT, loc), index: i, type: elem, loc }, loc },
         {
           kind: "return",
           value: elem.kind === "union"
@@ -924,7 +924,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     const name = `%arr.concat.${L.arrHofHelpers.size}`;
     L.arrHofHelpers.set(key, name);
     const arrT = arrayOf(elem);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
+
     const locals: IrLocal[] = [
       { id: "a.0", name: "a", type: arrT, mutable: false },
       ...shape.map((s, i): IrLocal => ({ id: `x.${i}`, name: `x${i}`, type: s === "a" ? arrT : elem, mutable: false })),
@@ -939,7 +939,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       expr: {
         kind: "arrIntrinsic",
         method: s === "a" ? "pushSpread" : "push",
-        receiver: ref("out.0", arrT),
+        receiver: varRef("out.0", arrT, loc),
         args: [src],
         type: F64,
         loc,
@@ -948,9 +948,9 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     });
     const body: IrStmt[] = [
       { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: arrT, loc }, loc },
-      append("a", ref("a.0", arrT)),
-      ...shape.map((s, i) => append(s, ref(`x.${i}`, s === "a" ? arrT : elem))),
-      { kind: "return", value: ref("out.0", arrT), loc },
+      append("a", varRef("a.0", arrT, loc)),
+      ...shape.map((s, i) => append(s, varRef(`x.${i}`, s === "a" ? arrT : elem, loc))),
+      { kind: "return", value: varRef("out.0", arrT, loc), loc },
     ];
     L.liftedFns.push({ name, params, returnType: arrT, locals, body, loc });
     return name;
@@ -975,8 +975,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     loc: SrcLoc,): IrFunction {
     const arrT = arrayOf(elem);
     const fnT = funcOf([elem, F64, arrT].slice(0, arity), fnRet);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
     const locals: IrLocal[] = [
       { id: "a.0", name: "a", type: arrT, mutable: true },
       { id: "f.0", name: "f", type: fnT, mutable: true },
@@ -989,15 +988,15 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     ];
     const callF = (arg: IrExpr): IrExpr => ({
       kind: "callValue",
-      callee: ref("f.0", fnT),
-      args: [arg, ref("i.0", F64), ref("a.0", arrT)].slice(0, arity),
+      callee: varRef("f.0", fnT, loc),
+      args: [arg, varRef("i.0", F64, loc), varRef("a.0", arrT, loc)].slice(0, arity),
       type: fnRet,
       loc,
     });
     const getElem: IrExpr = {
       kind: "arrayGet",
-      arr: ref("a.0", arrT),
-      index: ref("i.0", F64),
+      arr: varRef("a.0", arrT, loc),
+      index: varRef("i.0", F64, loc),
       type: elem,
       loc,
     };
@@ -1006,7 +1005,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       expr: {
         kind: "arrIntrinsic",
         method: "push",
-        receiver: ref("out.0", outT),
+        receiver: varRef("out.0", outT, loc),
         args: [value],
         type: F64,
         loc,
@@ -1016,17 +1015,17 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     const readLen: IrStmt = {
       kind: "varDecl",
       localId: "n.0",
-      init: { kind: "arrIntrinsic", method: "length", receiver: ref("a.0", arrT), args: [], type: F64, loc },
+      init: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", arrT, loc), args: [], type: F64, loc },
       loc,
     };
     const forLoop = (body: IrStmt[]): IrStmt => ({
       kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-      cond: { kind: "bin", op: "<", left: ref("i.0", F64), right: ref("n.0", F64), type: BOOL, loc },
+      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+      cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
       update: {
         kind: "assign",
         localId: "i.0",
-        value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+        value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
         loc,
       },
       body,
@@ -1043,7 +1042,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
         readLen,
         forLoop([push(outT, callF(getElem))]),
-        { kind: "return", value: ref("out.0", outT), loc },
+        { kind: "return", value: varRef("out.0", outT, loc), loc },
       ];
     } else if (method === "filter") {
       locals.push(
@@ -1060,13 +1059,13 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
             kind: "if",
             // ToBoolean over the predicate's answer — inert when it already
             // returned bool, the per-union helper when it returned a union.
-            cond: filterCond(callF(ref("v.0", elem)), fnRet, loc),
-            then: [push(arrT, ref("v.0", elem))],
+            cond: filterCond(callF(varRef("v.0", elem, loc)), fnRet, loc),
+            then: [push(arrT, varRef("v.0", elem, loc))],
             else_: null,
             loc,
           },
         ]),
-        { kind: "return", value: ref("out.0", arrT), loc },
+        { kind: "return", value: varRef("out.0", arrT, loc), loc },
       ];
     } else {
       returnType = VOID;
@@ -1177,8 +1176,8 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     L.arrHofHelpers.set(key, name);
     const arrT = arrayOf(elem);
     const fnT = funcOf([elem, F64, arrT].slice(0, arity), fnRet);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const v = ref("v.0", elem);
+
+    const v = varRef("v.0", elem, loc);
     const found: IrExpr =
       foundTag === null
         ? v
@@ -1199,8 +1198,8 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           kind: "if",
           cond: predToBool({
             kind: "callValue",
-            callee: ref("f.0", fnT),
-            args: [v, ref("i.0", F64), ref("a.0", arrT)].slice(0, arity),
+            callee: varRef("f.0", fnT, loc),
+            args: [v, varRef("i.0", F64, loc), varRef("a.0", arrT, loc)].slice(0, arity),
             type: fnRet,
             loc,
           }),
@@ -1245,7 +1244,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     L.arrHofHelpers.set(key, name);
     const arrT = arrayOf(elem);
     const fnT = funcOf([elem, F64, arrT].slice(0, arity), fnRet);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
+
     const body: IrStmt[] = [
       readLenStmt(arrT, loc),
       (last ? reverseCountedForLoop : countedForLoop)(loc, [
@@ -1253,12 +1252,12 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           kind: "if",
           cond: predToBool({
             kind: "callValue",
-            callee: ref("f.0", fnT),
-            args: [getElemExpr(arrT, elem, loc), ref("i.0", F64), ref("a.0", arrT)].slice(0, arity),
+            callee: varRef("f.0", fnT, loc),
+            args: [getElemExpr(arrT, elem, loc), varRef("i.0", F64, loc), varRef("a.0", arrT, loc)].slice(0, arity),
             type: fnRet,
             loc,
           }),
-          then: [{ kind: "return", value: ref("i.0", F64), loc }],
+          then: [{ kind: "return", value: varRef("i.0", F64, loc), loc }],
           else_: null,
           loc,
         },
@@ -1301,12 +1300,10 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     L.arrHofHelpers.set(key, name);
     const arrT = arrayOf(elem);
     const fnT = funcOf([elem, F64, arrT].slice(0, arity), fnRet);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const bool = (value: boolean): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
     const callF: IrExpr = predToBool({
       kind: "callValue",
-      callee: ref("f.0", fnT),
-      args: [getElemExpr(arrT, elem, loc), ref("i.0", F64), ref("a.0", arrT)].slice(0, arity),
+      callee: varRef("f.0", fnT, loc),
+      args: [getElemExpr(arrT, elem, loc), varRef("i.0", F64, loc), varRef("a.0", arrT, loc)].slice(0, arity),
       type: fnRet,
       loc,
     });
@@ -1316,12 +1313,12 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         {
           kind: "if",
           cond: method === "some" ? callF : { kind: "unary", op: "!", operand: callF, type: BOOL, loc },
-          then: [{ kind: "return", value: bool(method === "some"), loc }],
+          then: [{ kind: "return", value: boolLit(method === "some", loc), loc }],
           else_: null,
           loc,
         },
       ]),
-      { kind: "return", value: bool(method !== "some"), loc },
+      { kind: "return", value: boolLit(method !== "some", loc), loc },
     ];
     L.liftedFns.push({
       name,
@@ -1401,16 +1398,15 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     const arrT = arrayOf(elem);
     const inner = fnRet.elem;
     const fnT = funcOf([elem, F64, arrT].slice(0, arity), fnRet);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
     const innerLoop: IrStmt = {
       kind: "for",
-      init: { kind: "varDecl", localId: "j.0", init: num(0), loc },
-      cond: { kind: "bin", op: "<", left: ref("j.0", F64), right: ref("m.0", F64), type: BOOL, loc },
+      init: { kind: "varDecl", localId: "j.0", init: numLit(0, loc), loc },
+      cond: { kind: "bin", op: "<", left: varRef("j.0", F64, loc), right: varRef("m.0", F64, loc), type: BOOL, loc },
       update: {
         kind: "assign",
         localId: "j.0",
-        value: { kind: "bin", op: "+", left: ref("j.0", F64), right: num(1), type: F64, loc },
+        value: { kind: "bin", op: "+", left: varRef("j.0", F64, loc), right: numLit(1, loc), type: F64, loc },
         loc,
       },
       body: [
@@ -1419,8 +1415,8 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           expr: {
             kind: "arrIntrinsic",
             method: "push",
-            receiver: ref("out.0", fnRet),
-            args: [{ kind: "arrayGet", arr: ref("r.0", fnRet), index: ref("j.0", F64), type: inner, loc }],
+            receiver: varRef("out.0", fnRet, loc),
+            args: [{ kind: "arrayGet", arr: varRef("r.0", fnRet, loc), index: varRef("j.0", F64, loc), type: inner, loc }],
             type: F64,
             loc,
           },
@@ -1438,8 +1434,8 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           localId: "r.0",
           init: {
             kind: "callValue",
-            callee: ref("f.0", fnT),
-            args: [getElemExpr(arrT, elem, loc), ref("i.0", F64), ref("a.0", arrT)].slice(0, arity),
+            callee: varRef("f.0", fnT, loc),
+            args: [getElemExpr(arrT, elem, loc), varRef("i.0", F64, loc), varRef("a.0", arrT, loc)].slice(0, arity),
             type: fnRet,
             loc,
           },
@@ -1448,12 +1444,12 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         {
           kind: "varDecl",
           localId: "m.0",
-          init: { kind: "arrIntrinsic", method: "length", receiver: ref("r.0", fnRet), args: [], type: F64, loc },
+          init: { kind: "arrIntrinsic", method: "length", receiver: varRef("r.0", fnRet, loc), args: [], type: F64, loc },
           loc,
         },
         innerLoop,
       ]),
-      { kind: "return", value: ref("out.0", fnRet), loc },
+      { kind: "return", value: varRef("out.0", fnRet, loc), loc },
     ];
     L.liftedFns.push({
       name,
@@ -1526,12 +1522,11 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     L.arrHofHelpers.set(key, name);
     const arrT = arrayOf(elem);
     const fnT = funcOf([accT, elem, F64, arrT].slice(0, arity), accT);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const n = ref("n.0", F64);
-    const i = ref("i.0", F64);
+
+    const n = varRef("n.0", F64, loc);
+    const i = varRef("i.0", F64, loc);
     const right = method === "reduceRight";
-    const at = (index: IrExpr): IrExpr => ({ kind: "arrayGet", arr: ref("a.0", arrT), index, type: elem, loc });
+    const at = (index: IrExpr): IrExpr => ({ kind: "arrayGet", arr: varRef("a.0", arrT, loc), index, type: elem, loc });
     const locals: IrLocal[] = [
       { id: "a.0", name: "a", type: arrT, mutable: true },
       { id: "f.0", name: "f", type: fnT, mutable: true },
@@ -1546,11 +1541,11 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       ...(hasInit ? [{ localId: "z.0", name: "z", type: accT }] : []),
     ];
     const seedStmts: IrStmt[] = hasInit
-      ? [{ kind: "varDecl", localId: "acc.0", init: ref("z.0", accT), loc }]
+      ? [{ kind: "varDecl", localId: "acc.0", init: varRef("z.0", accT, loc), loc }]
       : [
           {
             kind: "if",
-            cond: { kind: "bin", op: "===", left: n, right: num(0), type: BOOL, loc },
+            cond: { kind: "bin", op: "===", left: n, right: numLit(0, loc), type: BOOL, loc },
             then: [
               {
                 kind: "throw",
@@ -1577,25 +1572,25 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           {
             kind: "varDecl",
             localId: "acc.0",
-            init: at(right ? { kind: "bin", op: "-", left: n, right: num(1), type: F64, loc } : num(0)),
+            init: at(right ? { kind: "bin", op: "-", left: n, right: numLit(1, loc), type: F64, loc } : numLit(0, loc)),
             loc,
           },
         ];
     // Loop bounds: with init the walk covers every index; the seeded form
     // starts one past the seed. reduce ascends, reduceRight descends.
     const start: IrExpr = right
-      ? { kind: "bin", op: "-", left: n, right: num(hasInit ? 1 : 2), type: F64, loc }
-      : num(hasInit ? 0 : 1);
+      ? { kind: "bin", op: "-", left: n, right: numLit(hasInit ? 1 : 2, loc), type: F64, loc }
+      : numLit(hasInit ? 0 : 1, loc);
     const loop: IrStmt = {
       kind: "for",
       init: { kind: "varDecl", localId: "i.0", init: start, loc },
       cond: right
-        ? { kind: "bin", op: ">=", left: i, right: num(0), type: BOOL, loc }
+        ? { kind: "bin", op: ">=", left: i, right: numLit(0, loc), type: BOOL, loc }
         : { kind: "bin", op: "<", left: i, right: n, type: BOOL, loc },
       update: {
         kind: "assign",
         localId: "i.0",
-        value: { kind: "bin", op: right ? "-" : "+", left: i, right: num(1), type: F64, loc },
+        value: { kind: "bin", op: right ? "-" : "+", left: i, right: numLit(1, loc), type: F64, loc },
         loc,
       },
       body: [
@@ -1604,8 +1599,8 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           localId: "acc.0",
           value: {
             kind: "callValue",
-            callee: ref("f.0", fnT),
-            args: [ref("acc.0", accT), at(i), i, ref("a.0", arrT)].slice(0, arity),
+            callee: varRef("f.0", fnT, loc),
+            args: [varRef("acc.0", accT, loc), at(i), i, varRef("a.0", arrT, loc)].slice(0, arity),
             type: accT,
             loc,
           },
@@ -1618,7 +1613,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       readLenStmt(arrT, loc),
       ...seedStmts,
       loop,
-      { kind: "return", value: ref("acc.0", accT), loc },
+      { kind: "return", value: varRef("acc.0", accT, loc), loc },
     ];
     L.liftedFns.push({ name, params, returnType: accT, locals, body, loc });
     return name;
@@ -1720,10 +1715,9 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     if (existing) return existing;
     const name = `%arr.sortCmpStr`;
     L.arrHofHelpers.set(key, name);
-    const ref = (localId: string): IrExpr => ({ kind: "varRef", localId, type: STRING, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
     const cmp = (op: "<" | ">"): IrExpr => ({
-      kind: "strCmp", op, left: ref("a.0"), right: ref("b.0"), utf16: true, type: BOOL, loc,
+      kind: "strCmp", op, left: varRef("a.0", STRING, loc), right: varRef("b.0", STRING, loc), utf16: true, type: BOOL, loc,
     });
     const body: IrStmt[] = [
       {
@@ -1731,8 +1725,8 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         value: {
           kind: "ternary",
           cond: cmp("<"),
-          then: num(-1),
-          else_: { kind: "ternary", cond: cmp(">"), then: num(1), else_: num(0), type: F64, loc },
+          then: numLit(-1, loc),
+          else_: { kind: "ternary", cond: cmp(">"), then: numLit(1, loc), else_: numLit(0, loc), type: F64, loc },
           type: F64,
           loc,
         },
@@ -1780,11 +1774,10 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
   ): IrFunction {
     const arrT = arrayOf(elem);
     const fnT = funcOf([elem, elem].slice(0, arity), F64);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const j = ref("j.0", F64);
-    const at = (index: IrExpr): IrExpr => ({ kind: "arrayGet", arr: ref("a.0", arrT), index, type: elem, loc });
-    const jPlus1: IrExpr = { kind: "bin", op: "+", left: j, right: num(1), type: F64, loc };
+
+    const j = varRef("j.0", F64, loc);
+    const at = (index: IrExpr): IrExpr => ({ kind: "arrayGet", arr: varRef("a.0", arrT, loc), index, type: elem, loc });
+    const jPlus1: IrExpr = { kind: "bin", op: "+", left: j, right: numLit(1, loc), type: F64, loc };
     const isUndefined = (value: IrExpr): IrExpr | null => {
       if (elem.kind === "union" && undefinedTag !== null) {
         return {
@@ -1816,17 +1809,17 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       op: ">",
       left: {
         kind: "callValue",
-        callee: ref("f.0", fnT),
-        args: [at(j), ref("v.0", elem)].slice(0, arity),
+        callee: varRef("f.0", fnT, loc),
+        args: [at(j), varRef("v.0", elem, loc)].slice(0, arity),
         type: F64,
         loc,
       },
-      right: num(0),
+      right: numLit(0, loc),
       type: BOOL,
       loc,
     };
     const leftUndefined = isUndefined(at(j));
-    const valueUndefined = isUndefined(ref("v.0", elem));
+    const valueUndefined = isUndefined(varRef("v.0", elem, loc));
     // CompareArrayElements: undefined always sinks and never reaches the
     // user comparator. Ternaries preserve that callback suppression.
     const shouldShift: IrExpr =
@@ -1855,14 +1848,14 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         : compareGreater;
     const shiftLoop: IrStmt = {
       kind: "while",
-      cond: { kind: "bin", op: ">=", left: j, right: num(0), type: BOOL, loc },
+      cond: { kind: "bin", op: ">=", left: j, right: numLit(0, loc), type: BOOL, loc },
       body: [
         {
           kind: "if",
           cond: shouldShift,
           then: [
-            { kind: "arraySet", arr: ref("a.0", arrT), index: jPlus1, value: at(j), loc },
-            { kind: "assign", localId: "j.0", value: { kind: "bin", op: "-", left: j, right: num(1), type: F64, loc }, loc },
+            { kind: "arraySet", arr: varRef("a.0", arrT, loc), index: jPlus1, value: at(j), loc },
+            { kind: "assign", localId: "j.0", value: { kind: "bin", op: "-", left: j, right: numLit(1, loc), type: F64, loc }, loc },
           ],
           else_: [{ kind: "break", loc }],
           loc,
@@ -1878,7 +1871,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
             value: {
               kind: "arrIntrinsic" as const,
               method: "slice" as const,
-              receiver: ref("a.0", arrT),
+              receiver: varRef("a.0", arrT, loc),
               args: [],
               type: arrT,
               loc,
@@ -1889,23 +1882,23 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       readLenStmt(arrT, loc),
       {
         kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: num(1), loc },
-        cond: { kind: "bin", op: "<", left: ref("i.0", F64), right: ref("n.0", F64), type: BOOL, loc },
+        init: { kind: "varDecl", localId: "i.0", init: numLit(1, loc), loc },
+        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
         update: {
           kind: "assign",
           localId: "i.0",
-          value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
           loc,
         },
         body: [
           { kind: "varDecl", localId: "v.0", init: getElemExpr(arrT, elem, loc), loc },
-          { kind: "varDecl", localId: "j.0", init: { kind: "bin", op: "-", left: ref("i.0", F64), right: num(1), type: F64, loc }, loc },
+          { kind: "varDecl", localId: "j.0", init: { kind: "bin", op: "-", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
           shiftLoop,
-          { kind: "arraySet", arr: ref("a.0", arrT), index: jPlus1, value: ref("v.0", elem), loc },
+          { kind: "arraySet", arr: varRef("a.0", arrT, loc), index: jPlus1, value: varRef("v.0", elem, loc), loc },
         ],
         loc,
       },
-      { kind: "return", value: ref("a.0", arrT), loc },
+      { kind: "return", value: varRef("a.0", arrT, loc), loc },
     ];
     return {
       name,
@@ -2020,23 +2013,12 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
   ): IrFunction {
     const bytesT = BYTES_U8;
     const fnT = funcOf([F64, F64].slice(0, arity), F64);
-    const ref = (localId: string, type: IrType): IrExpr => ({
-      kind: "varRef",
-      localId,
-      type,
-      loc,
-    });
-    const num = (value: number): IrExpr => ({
-      kind: "numLit",
-      value,
-      type: F64,
-      loc,
-    });
-    const j = ref("j.0", F64);
+
+    const j = varRef("j.0", F64, loc);
     const at = (index: IrExpr): IrExpr => ({
       kind: "bytesIntrinsic",
       method: "get",
-      receiver: ref("a.0", bytesT),
+      receiver: varRef("a.0", bytesT, loc),
       args: [index],
       type: F64,
       loc,
@@ -2045,15 +2027,15 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       kind: "bin",
       op: "+",
       left: j,
-      right: num(1),
+      right: numLit(1, loc),
       type: F64,
       loc,
     };
     const compare: IrExpr = hasComparator
       ? {
           kind: "callValue",
-          callee: ref("f.0", fnT),
-          args: [at(j), ref("v.0", F64)].slice(0, arity),
+          callee: varRef("f.0", fnT, loc),
+          args: [at(j), varRef("v.0", F64, loc)].slice(0, arity),
           type: F64,
           loc,
         }
@@ -2061,7 +2043,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           kind: "bin",
           op: "-",
           left: at(j),
-          right: ref("v.0", F64),
+          right: varRef("v.0", F64, loc),
           type: F64,
           loc,
         };
@@ -2071,7 +2053,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         kind: "bin",
         op: ">=",
         left: j,
-        right: num(0),
+        right: numLit(0, loc),
         type: BOOL,
         loc,
       },
@@ -2082,14 +2064,14 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
             kind: "bin",
             op: ">",
             left: compare,
-            right: num(0),
+            right: numLit(0, loc),
             type: BOOL,
             loc,
           },
           then: [
             {
               kind: "bytesSet",
-              arr: ref("a.0", bytesT),
+              arr: varRef("a.0", bytesT, loc),
               index: jPlus1,
               value: at(j),
               loc,
@@ -2101,7 +2083,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
                 kind: "bin",
                 op: "-",
                 left: j,
-                right: num(1),
+                right: numLit(1, loc),
                 type: F64,
                 loc,
               },
@@ -2137,7 +2119,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         value: {
           kind: "bytesIntrinsic",
           method: "slice",
-          receiver: ref("a.0", bytesT),
+          receiver: varRef("a.0", bytesT, loc),
           args: [],
           type: bytesT,
           loc,
@@ -2150,7 +2132,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         init: {
           kind: "bytesIntrinsic",
           method: "length",
-          receiver: ref("a.0", bytesT),
+          receiver: varRef("a.0", bytesT, loc),
           args: [],
           type: F64,
           loc,
@@ -2162,14 +2144,14 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         init: {
           kind: "varDecl",
           localId: "i.0",
-          init: num(1),
+          init: numLit(1, loc),
           loc,
         },
         cond: {
           kind: "bin",
           op: "<",
-          left: ref("i.0", F64),
-          right: ref("n.0", F64),
+          left: varRef("i.0", F64, loc),
+          right: varRef("n.0", F64, loc),
           type: BOOL,
           loc,
         },
@@ -2179,8 +2161,8 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           value: {
             kind: "bin",
             op: "+",
-            left: ref("i.0", F64),
-            right: num(1),
+            left: varRef("i.0", F64, loc),
+            right: numLit(1, loc),
             type: F64,
             loc,
           },
@@ -2190,7 +2172,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           {
             kind: "varDecl",
             localId: "v.0",
-            init: at(ref("i.0", F64)),
+            init: at(varRef("i.0", F64, loc)),
             loc,
           },
           {
@@ -2199,8 +2181,8 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
             init: {
               kind: "bin",
               op: "-",
-              left: ref("i.0", F64),
-              right: num(1),
+              left: varRef("i.0", F64, loc),
+              right: numLit(1, loc),
               type: F64,
               loc,
             },
@@ -2209,15 +2191,15 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
           shiftLoop,
           {
             kind: "bytesSet",
-            arr: ref("a.0", bytesT),
+            arr: varRef("a.0", bytesT, loc),
             index: jPlus1,
-            value: ref("v.0", F64),
+            value: varRef("v.0", F64, loc),
             loc,
           },
         ],
         loc,
       },
-      { kind: "return", value: ref("a.0", bytesT), loc },
+      { kind: "return", value: varRef("a.0", bytesT, loc), loc },
     ];
     return {
       name,
@@ -2352,12 +2334,11 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       name = `%arr.at.${L.arrHofHelpers.size}`;
       L.arrHofHelpers.set(key, name);
       const arrT = arrayOf(elem);
-      const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-      const t = ref("t.0", F64);
-      const i = ref("i.0", F64);
-      const n = ref("n.0", F64);
-      const v = ref("v.0", elem);
+
+      const t = varRef("t.0", F64, loc);
+      const i = varRef("i.0", F64, loc);
+      const n = varRef("n.0", F64, loc);
+      const v = varRef("v.0", elem, loc);
       const found: IrExpr =
         foundTag === null
           ? v
@@ -2380,28 +2361,28 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         { kind: "varDecl", localId: "t.0", init: floorOf(i), loc },
         {
           kind: "if",
-          cond: lt(i, num(0)),
-          then: [{ kind: "assign", localId: "t.0", value: { kind: "bin", op: "-", left: num(0), right: floorOf({ kind: "bin", op: "-", left: num(0), right: i, type: F64, loc }), type: F64, loc }, loc }],
+          cond: lt(i, numLit(0, loc)),
+          then: [{ kind: "assign", localId: "t.0", value: { kind: "bin", op: "-", left: numLit(0, loc), right: floorOf({ kind: "bin", op: "-", left: numLit(0, loc), right: i, type: F64, loc }), type: F64, loc }, loc }],
           else_: null,
           loc,
         },
         {
           kind: "if",
           cond: { kind: "libCall", fn: "num.isNaN", args: [i], type: BOOL, loc },
-          then: [{ kind: "assign", localId: "t.0", value: num(0), loc }],
+          then: [{ kind: "assign", localId: "t.0", value: numLit(0, loc), loc }],
           else_: null,
           loc,
         },
         {
           kind: "if",
-          cond: lt(t, num(0)),
+          cond: lt(t, numLit(0, loc)),
           then: [{ kind: "assign", localId: "t.0", value: { kind: "bin", op: "+", left: t, right: n, type: F64, loc }, loc }],
           else_: null,
           loc,
         },
         {
           kind: "if",
-          cond: lt(t, num(0)),
+          cond: lt(t, numLit(0, loc)),
           then: [{ kind: "return", value: miss, loc }],
           else_: null,
           loc,
@@ -2416,7 +2397,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         {
           kind: "varDecl",
           localId: "v.0",
-          init: { kind: "arrayGet", arr: ref("a.0", arrT), index: t, type: elem, loc },
+          init: { kind: "arrayGet", arr: varRef("a.0", arrT, loc), index: t, type: elem, loc },
           loc,
         },
         { kind: "return", value: found, loc },
@@ -2565,22 +2546,22 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
    */
   function buildStrCharsFn(name: string, loc: SrcLoc): IrFunction {
     const outT = arrayOf(STRING);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
+
     const sLen = (recv: IrExpr): IrExpr => ({ kind: "strIntrinsic", method: "length", receiver: recv, args: [], type: F64, loc });
     const body: IrStmt[] = [
       { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
       { kind: "varDecl", localId: "i.0", init: { kind: "numLit", value: 0, type: F64, loc }, loc },
       {
         kind: "while",
-        cond: { kind: "bin", op: "<", left: ref("i.0", F64), right: sLen(ref("s.0", STRING)), type: BOOL, loc },
+        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: sLen(varRef("s.0", STRING, loc)), type: BOOL, loc },
         body: [
-          { kind: "varDecl", localId: "ch.0", init: { kind: "strIntrinsic", method: "cpAt", receiver: ref("s.0", STRING), args: [ref("i.0", F64)], type: STRING, loc }, loc },
-          { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: ref("i.0", F64), right: sLen(ref("ch.0", STRING)), type: F64, loc }, loc },
-          { kind: "exprStmt", expr: { kind: "arrIntrinsic", method: "push", receiver: ref("out.0", outT), args: [ref("ch.0", STRING)], type: F64, loc }, loc },
+          { kind: "varDecl", localId: "ch.0", init: { kind: "strIntrinsic", method: "cpAt", receiver: varRef("s.0", STRING, loc), args: [varRef("i.0", F64, loc)], type: STRING, loc }, loc },
+          { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: sLen(varRef("ch.0", STRING, loc)), type: F64, loc }, loc },
+          { kind: "exprStmt", expr: { kind: "arrIntrinsic", method: "push", receiver: varRef("out.0", outT, loc), args: [varRef("ch.0", STRING, loc)], type: F64, loc }, loc },
         ],
         loc,
       },
-      { kind: "return", value: ref("out.0", outT), loc },
+      { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
     return {
       name,
@@ -2620,8 +2601,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
   function buildArrayFromLenFn(name: string, fnRet: IrType, arity: number, loc: SrcLoc): IrFunction {
     const outT = arrayOf(fnRet);
     const fnT = funcOf([DYN, F64].slice(0, arity), fnRet);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
     const undef: IrExpr = {
       kind: "dynFrom",
       value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
@@ -2632,19 +2612,19 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
       { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
       {
         kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
         cond: {
           kind: "bin",
           op: "<=",
-          left: ref("i.0", F64),
-          right: { kind: "bin", op: "-", left: ref("n.0", F64), right: num(1), type: F64, loc },
+          left: varRef("i.0", F64, loc),
+          right: { kind: "bin", op: "-", left: varRef("n.0", F64, loc), right: numLit(1, loc), type: F64, loc },
           type: BOOL,
           loc,
         },
         update: {
           kind: "assign",
           localId: "i.0",
-          value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
           loc,
         },
         body: [
@@ -2653,12 +2633,12 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
             expr: {
               kind: "arrIntrinsic",
               method: "push",
-              receiver: ref("out.0", outT),
+              receiver: varRef("out.0", outT, loc),
               args: [
                 {
                   kind: "callValue",
-                  callee: ref("f.0", fnT),
-                  args: [undef, ref("i.0", F64)].slice(0, arity),
+                  callee: varRef("f.0", fnT, loc),
+                  args: [undef, varRef("i.0", F64, loc)].slice(0, arity),
                   type: fnRet,
                   loc,
                 },
@@ -2671,7 +2651,7 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
         ],
         loc,
       },
-      { kind: "return", value: ref("out.0", outT), loc },
+      { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
     return {
       name,
@@ -2829,15 +2809,14 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
     tupleT: (IrType & { kind: "record" }) | null,
     loc: SrcLoc,): IrFunction {
     const outT = arrayOf(elemT);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
     const iter = (
       m: "iterCount" | "iterLive" | "iterKey" | "iterValue",
       args: IrExpr[],
       type: IrType,
-    ): IrExpr => ({ kind: "mapIntrinsic", method: m, receiver: ref("m.0", mapT), args, type, loc });
-    const keyRead = iter("iterKey", [ref("i.0", F64)], mapT.key);
-    const valRead = iter("iterValue", [ref("i.0", F64)], mapT.value);
+    ): IrExpr => ({ kind: "mapIntrinsic", method: m, receiver: varRef("m.0", mapT, loc), args, type, loc });
+    const keyRead = iter("iterKey", [varRef("i.0", F64, loc)], mapT.key);
+    const valRead = iter("iterValue", [varRef("i.0", F64, loc)], mapT.value);
     const pushed: IrExpr =
       method === "keys"
         ? keyRead
@@ -2856,22 +2835,22 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
       { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
       {
         kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-        cond: { kind: "bin", op: "<", left: ref("i.0", F64), right: iter("iterCount", [], F64), type: BOOL, loc },
+        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: iter("iterCount", [], F64), type: BOOL, loc },
         update: {
           kind: "assign",
           localId: "i.0",
-          value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
           loc,
         },
         body: [
           {
             kind: "if",
-            cond: iter("iterLive", [ref("i.0", F64)], BOOL),
+            cond: iter("iterLive", [varRef("i.0", F64, loc)], BOOL),
             then: [
               {
                 kind: "exprStmt",
-                expr: { kind: "arrIntrinsic", method: "push", receiver: ref("out.0", outT), args: [pushed], type: F64, loc },
+                expr: { kind: "arrIntrinsic", method: "push", receiver: varRef("out.0", outT, loc), args: [pushed], type: F64, loc },
                 loc,
               },
             ],
@@ -2881,7 +2860,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
         ],
         loc,
       },
-      { kind: "return", value: ref("out.0", outT), loc },
+      { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
     return {
       name,
@@ -2959,8 +2938,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
       arity === 0 ? [] : arity === 1 ? [mapT.value] : [mapT.value, mapT.key],
       fnRet,
     );
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
     const iter = (
       method: "iterCount" | "iterLive" | "iterKey" | "iterValue" | "iterEnter" | "iterExit",
       args: IrExpr[],
@@ -2968,7 +2946,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
     ): IrExpr => ({
       kind: "mapIntrinsic",
       method,
-      receiver: ref("m.0", mapT),
+      receiver: varRef("m.0", mapT, loc),
       args,
       type,
       loc,
@@ -2985,33 +2963,33 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
       visitBody.push({
         kind: "varDecl",
         localId: "v.0",
-        init: iter("iterValue", [ref("i.0", F64)], mapT.value),
+        init: iter("iterValue", [varRef("i.0", F64, loc)], mapT.value),
         loc,
       });
-      callArgs.push(ref("v.0", mapT.value));
+      callArgs.push(varRef("v.0", mapT.value, loc));
     }
     if (arity === 2) {
       locals.push({ id: "k.0", name: "k", type: mapT.key, mutable: false });
       visitBody.push({
         kind: "varDecl",
         localId: "k.0",
-        init: iter("iterKey", [ref("i.0", F64)], mapT.key),
+        init: iter("iterKey", [varRef("i.0", F64, loc)], mapT.key),
         loc,
       });
-      callArgs.push(ref("k.0", mapT.key));
+      callArgs.push(varRef("k.0", mapT.key, loc));
     }
     visitBody.push({
       kind: "exprStmt",
-      expr: { kind: "callValue", callee: ref("f.0", fnT), args: callArgs, type: fnRet, loc },
+      expr: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: callArgs, type: fnRet, loc },
       loc,
     });
     const loop: IrStmt = {
       kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
       cond: {
         kind: "bin",
         op: "<",
-        left: ref("i.0", F64),
+        left: varRef("i.0", F64, loc),
         right: iter("iterCount", [], F64),
         type: BOOL,
         loc,
@@ -3019,13 +2997,13 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
       update: {
         kind: "assign",
         localId: "i.0",
-        value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+        value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
         loc,
       },
       body: [
         {
           kind: "if",
-          cond: iter("iterLive", [ref("i.0", F64)], BOOL),
+          cond: iter("iterLive", [varRef("i.0", F64, loc)], BOOL),
           then: visitBody,
           else_: null,
           loc,
@@ -3160,8 +3138,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
     loc: SrcLoc,): IrFunction {
     const elem = setT.elem;
     const fnT = funcOf(Array.from({ length: arity }, () => elem), fnRet);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
     const iter = (
       method: "iterCount" | "iterLive" | "iterKey" | "iterEnter" | "iterExit",
       args: IrExpr[],
@@ -3169,7 +3146,7 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
     ): IrExpr => ({
       kind: "setIntrinsic",
       method,
-      receiver: ref("m.0", setT),
+      receiver: varRef("m.0", setT, loc),
       args,
       type,
       loc,
@@ -3186,23 +3163,23 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
       visitBody.push({
         kind: "varDecl",
         localId: "v.0",
-        init: iter("iterKey", [ref("i.0", F64)], elem),
+        init: iter("iterKey", [varRef("i.0", F64, loc)], elem),
         loc,
       });
-      for (let i = 0; i < arity; i++) callArgs.push(ref("v.0", elem));
+      for (let i = 0; i < arity; i++) callArgs.push(varRef("v.0", elem, loc));
     }
     visitBody.push({
       kind: "exprStmt",
-      expr: { kind: "callValue", callee: ref("f.0", fnT), args: callArgs, type: fnRet, loc },
+      expr: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: callArgs, type: fnRet, loc },
       loc,
     });
     const loop: IrStmt = {
       kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
       cond: {
         kind: "bin",
         op: "<",
-        left: ref("i.0", F64),
+        left: varRef("i.0", F64, loc),
         right: iter("iterCount", [], F64),
         type: BOOL,
         loc,
@@ -3210,13 +3187,13 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
       update: {
         kind: "assign",
         localId: "i.0",
-        value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+        value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
         loc,
       },
       body: [
         {
           kind: "if",
-          cond: iter("iterLive", [ref("i.0", F64)], BOOL),
+          cond: iter("iterLive", [varRef("i.0", F64, loc)], BOOL),
           then: visitBody,
           else_: null,
           loc,
@@ -3386,10 +3363,9 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
       : (L.shapes.get(resultT.shapeId)!.indexValue as IrType & { kind: "union" });
     const arrTag = L.armTag(iv.unionId, itemsT);
     const undefTag = L.armTag(iv.unionId, UNDEFINED_T);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const gRef = (): IrExpr => ref("g.0", resultT);
-    const kRef = (): IrExpr => ref("k.0", keyT);
+
+    const gRef = (): IrExpr => varRef("g.0", resultT, loc);
+    const kRef = (): IrExpr => varRef("k.0", keyT, loc);
     // Record keys are property keys: an f64 key stringifies (JS's exact
     // number ToString); map keys stay typed.
     const storeKey = (): IrExpr =>
@@ -3399,14 +3375,14 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
         ? { kind: "mapIntrinsic", method: "get", receiver: gRef(), args: [storeKey()], type: iv, loc }
         : { kind: "recordKeyGet", obj: gRef(), shapeId: (resultT as IrType & { kind: "record" }).shapeId, key: storeKey(), overflowOnly: true, type: iv, loc };
     const freshGroup = (): IrExpr =>
-      ({ kind: "arrayLit", elems: [ref("v.0", elem)], type: itemsT, loc });
+      ({ kind: "arrayLit", elems: [varRef("v.0", elem, loc)], type: itemsT, loc });
     const groupWrite = (): IrStmt =>
       isMap
         ? { kind: "exprStmt", expr: { kind: "mapIntrinsic", method: "set", receiver: gRef(), args: [storeKey(), freshGroup()], type: VOID, loc }, loc }
         : { kind: "recordKeySet", obj: gRef(), shapeId: (resultT as IrType & { kind: "record" }).shapeId, key: storeKey(), value: { kind: "unionWrap", unionId: iv.unionId, tag: arrTag, value: freshGroup(), type: iv, loc }, loc };
     const callArgs: IrExpr[] = [];
-    if (arity >= 1) callArgs.push(ref("v.0", elem));
-    if (arity === 2) callArgs.push(ref("i.0", F64));
+    if (arity >= 1) callArgs.push(varRef("v.0", elem, loc));
+    if (arity === 2) callArgs.push(varRef("i.0", F64, loc));
     const locals: IrLocal[] = [
       { id: "items.0", name: "items", type: itemsT, mutable: true },
       { id: "f.0", name: "f", type: fnT, mutable: true },
@@ -3426,19 +3402,19 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
           : { kind: "recordLit", fields: [], type: resultT, loc },
         loc,
       },
-      { kind: "varDecl", localId: "n.0", init: { kind: "arrIntrinsic", method: "length", receiver: ref("items.0", itemsT), args: [], type: F64, loc }, loc },
+      { kind: "varDecl", localId: "n.0", init: { kind: "arrIntrinsic", method: "length", receiver: varRef("items.0", itemsT, loc), args: [], type: F64, loc }, loc },
       {
         kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-        cond: { kind: "bin", op: "<", left: ref("i.0", F64), right: ref("n.0", F64), type: BOOL, loc },
-        update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc }, loc },
+        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
+        update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
         body: [
-          { kind: "varDecl", localId: "v.0", init: { kind: "arrayGet", arr: ref("items.0", itemsT), index: ref("i.0", F64), type: elem, loc }, loc },
-          { kind: "varDecl", localId: "k.0", init: { kind: "callValue", callee: ref("f.0", fnT), args: callArgs, type: keyT, loc }, loc },
+          { kind: "varDecl", localId: "v.0", init: { kind: "arrayGet", arr: varRef("items.0", itemsT, loc), index: varRef("i.0", F64, loc), type: elem, loc }, loc },
+          { kind: "varDecl", localId: "k.0", init: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: callArgs, type: keyT, loc }, loc },
           { kind: "varDecl", localId: "cur.0", init: groupRead(), loc },
           {
             kind: "if",
-            cond: { kind: "unionIsTag", unionId: iv.unionId, tag: undefTag, negated: false, value: ref("cur.0", iv), type: BOOL, loc },
+            cond: { kind: "unionIsTag", unionId: iv.unionId, tag: undefTag, negated: false, value: varRef("cur.0", iv, loc), type: BOOL, loc },
             then: [groupWrite()],
             else_: [
               {
@@ -3446,8 +3422,8 @@ const MAP_ITER_METHODS = new Set(["keys", "values", "entries"]);
                 expr: {
                   kind: "arrIntrinsic",
                   method: "push",
-                  receiver: { kind: "unionNarrow", unionId: iv.unionId, tag: arrTag, value: ref("cur.0", iv), type: itemsT, loc },
-                  args: [ref("v.0", elem)],
+                  receiver: { kind: "unionNarrow", unionId: iv.unionId, tag: arrTag, value: varRef("cur.0", iv, loc), type: itemsT, loc },
+                  args: [varRef("v.0", elem, loc)],
                   type: F64,
                   loc,
                 },
@@ -3677,13 +3653,13 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
     name = "%iter.budget";
     L.arrHofHelpers.set(key, name);
     const v = (): IrExpr => ({ kind: "varRef", localId: "v.0", type: F64, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
     // trunc without an Infinity-poisoned fmod: values at or past 2^53 are
     // already integers (Infinity included), so only smaller ones truncate.
     const t = (): IrExpr => ({
       kind: "ternary",
-      cond: { kind: "bin", op: "<", left: v(), right: num(9007199254740992), type: BOOL, loc },
-      then: { kind: "bin", op: "-", left: v(), right: { kind: "bin", op: "%", left: v(), right: num(1), type: F64, loc }, type: F64, loc },
+      cond: { kind: "bin", op: "<", left: v(), right: numLit(9007199254740992, loc), type: BOOL, loc },
+      then: { kind: "bin", op: "-", left: v(), right: { kind: "bin", op: "%", left: v(), right: numLit(1, loc), type: F64, loc }, type: F64, loc },
       else_: v(),
       type: F64,
       loc,
@@ -3692,7 +3668,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       kind: "logical",
       op: "||",
       left: { kind: "bin", op: "!==", left: v(), right: v(), type: BOOL, loc },
-      right: { kind: "bin", op: "<", left: t(), right: num(0), type: BOOL, loc },
+      right: { kind: "bin", op: "<", left: t(), right: numLit(0, loc), type: BOOL, loc },
       type: BOOL,
       loc,
     };
@@ -3735,9 +3711,6 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
     termArgTs: IrType[],
     resultT: IrType,
     loc: SrcLoc,): IrFunction {
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const boolLit = (value: boolean): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
     const locals: IrLocal[] = [{ id: "items.0", name: "items", type: itemsT, mutable: true }];
     const params: IrParam[] = [{ localId: "items.0", name: "items", type: itemsT }];
     let n = 0;
@@ -3753,8 +3726,8 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       return id;
     };
     const doneId = addLocal("done", BOOL, true);
-    const done = (): IrExpr => ref(doneId, BOOL);
-    const setDone: IrStmt = { kind: "assign", localId: doneId, value: boolLit(true), loc };
+    const done = (): IrExpr => varRef(doneId, BOOL, loc);
+    const setDone: IrStmt = { kind: "assign", localId: doneId, value: boolLit(true, loc), loc };
     // Parameters in call order: per-stage budget/callback, then terminal's.
     interface StageSlot { kind: string; paramId: string; fnT?: (IrType & { kind: "func" }) | undefined; cntId?: string | undefined; elem: IrType }
     // The entries() seed builds each pass's [index, element] pair — the
@@ -3787,12 +3760,12 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
         ? addLocal("k", F64, true)
         : undefined;
     const bump = (id: string): IrStmt =>
-      ({ kind: "assign", localId: id, value: { kind: "bin", op: "+", left: ref(id, F64), right: num(1), type: F64, loc }, loc });
+      ({ kind: "assign", localId: id, value: { kind: "bin", op: "+", left: varRef(id, F64, loc), right: numLit(1, loc), type: F64, loc }, loc });
     const callWith = (fnT: IrType & { kind: "func" }, fnId: string, value: IrExpr, cntId: string | undefined): IrExpr => {
       const args: IrExpr[] = [];
       if (fnT.params.length >= 1) args.push(value);
-      if (cntId !== undefined && fnT.params.length >= 2) args.push(ref(cntId, F64));
-      return { kind: "callValue", callee: ref(fnId, fnT), args, type: fnT.ret, loc };
+      if (cntId !== undefined && fnT.params.length >= 2) args.push(varRef(cntId, F64, loc));
+      return { kind: "callValue", callee: varRef(fnId, fnT, loc), args, type: fnT.ret, loc };
     };
     // Terminal state.
     const preLoop: IrStmt[] = [];
@@ -3804,53 +3777,53 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
     if (terminal === "toArray") {
       outId = addLocal("out", resultT, false);
       preLoop.push({ kind: "varDecl", localId: outId, init: { kind: "arrayLit", elems: [], type: resultT, loc }, loc });
-      postLoop.push({ kind: "return", value: ref(outId, resultT), loc });
+      postLoop.push({ kind: "return", value: varRef(outId, resultT, loc), loc });
     } else if (terminal === "some" || terminal === "every") {
       resId = addLocal("res", BOOL, true);
-      preLoop.push({ kind: "varDecl", localId: resId, init: boolLit(terminal === "every"), loc });
-      postLoop.push({ kind: "return", value: ref(resId, BOOL), loc });
+      preLoop.push({ kind: "varDecl", localId: resId, init: boolLit(terminal === "every", loc), loc });
+      postLoop.push({ kind: "return", value: varRef(resId, BOOL, loc), loc });
     } else if (terminal === "find") {
       resId = addLocal("res", resultT, true);
       const undef = L.wrappedUndefined(resultT, loc);
       if (undef === null) throw new InternalCompilerError("lowerer bug: find result union lacks undefined");
       preLoop.push({ kind: "varDecl", localId: resId, init: undef, loc });
-      postLoop.push({ kind: "return", value: ref(resId, resultT), loc });
+      postLoop.push({ kind: "return", value: varRef(resId, resultT, loc), loc });
     } else if (terminal === "reduce") {
       accId = addLocal("acc", resultT, true);
       if (termIds.length === 2) {
-        preLoop.push({ kind: "varDecl", localId: accId, init: ref(termIds[1]!, resultT), loc });
+        preLoop.push({ kind: "varDecl", localId: accId, init: varRef(termIds[1]!, resultT, loc), loc });
       } else {
         hasAccId = addLocal("hasAcc", BOOL, true);
-        preLoop.push({ kind: "varDecl", localId: hasAccId, init: boolLit(false), loc });
+        preLoop.push({ kind: "varDecl", localId: hasAccId, init: boolLit(false, loc), loc });
         postLoop.push({
           kind: "if",
-          cond: { kind: "unary", op: "!", operand: ref(hasAccId, BOOL), type: BOOL, loc },
+          cond: { kind: "unary", op: "!", operand: varRef(hasAccId, BOOL, loc), type: BOOL, loc },
           then: [throwTypeError({ kind: "strLit", value: "Reduce of a done iterator with no initial value", type: STRING, loc }, loc)],
           else_: null,
           loc,
         });
       }
-      postLoop.push({ kind: "return", value: ref(accId, resultT), loc });
+      postLoop.push({ kind: "return", value: varRef(accId, resultT, loc), loc });
     } else {
       postLoop.push({ kind: "return", value: null, loc });
     }
-    if (termCntId !== undefined) preLoop.push({ kind: "varDecl", localId: termCntId, init: num(0), loc });
+    if (termCntId !== undefined) preLoop.push({ kind: "varDecl", localId: termCntId, init: numLit(0, loc), loc });
     // done starts true when any take budget is zero (nothing pulls).
-    let doneInit: IrExpr = boolLit(false);
+    let doneInit: IrExpr = boolLit(false, loc);
     for (const s of slots) {
       if (s.kind !== "take") continue;
-      const isZero: IrExpr = { kind: "bin", op: "===", left: ref(s.paramId, F64), right: num(0), type: BOOL, loc };
+      const isZero: IrExpr = { kind: "bin", op: "===", left: varRef(s.paramId, F64, loc), right: numLit(0, loc), type: BOOL, loc };
       doneInit = doneInit.kind === "boolLit" ? isZero : { kind: "logical", op: "||", left: doneInit, right: isZero, type: BOOL, loc };
     }
     preLoop.unshift({ kind: "varDecl", localId: doneId, init: doneInit, loc });
     for (const s of slots) {
-      if (s.cntId !== undefined) preLoop.push({ kind: "varDecl", localId: s.cntId, init: num(0), loc });
+      if (s.cntId !== undefined) preLoop.push({ kind: "varDecl", localId: s.cntId, init: numLit(0, loc), loc });
     }
     // The terminal's per-element statements over `value`.
     const terminalBody = (value: IrExpr): IrStmt[] => {
       const out: IrStmt[] = [];
       if (terminal === "toArray") {
-        out.push({ kind: "exprStmt", expr: { kind: "arrIntrinsic", method: "push", receiver: ref(outId, resultT), args: [value], type: F64, loc }, loc });
+        out.push({ kind: "exprStmt", expr: { kind: "arrIntrinsic", method: "push", receiver: varRef(outId, resultT, loc), args: [value], type: F64, loc }, loc });
       } else if (terminal === "forEach") {
         out.push({ kind: "exprStmt", expr: callWith(termFnT!, termIds[0]!, value, termCntId), loc });
       } else if (terminal === "some" || terminal === "every") {
@@ -3859,7 +3832,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
         out.push({
           kind: "if",
           cond,
-          then: [{ kind: "assign", localId: resId, value: boolLit(terminal === "some"), loc }, setDone],
+          then: [{ kind: "assign", localId: resId, value: boolLit(terminal === "some", loc), loc }, setDone],
           else_: null,
           loc,
         });
@@ -3880,17 +3853,17 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       } else {
         // reduce
         const reducer = (): IrExpr => {
-          const args: IrExpr[] = [ref(accId, resultT), value];
-          if (termFnT!.params.length === 3) args.push(ref(termCntId!, F64));
-          return { kind: "callValue", callee: ref(termIds[0]!, termFnT!), args, type: resultT, loc };
+          const args: IrExpr[] = [varRef(accId, resultT, loc), value];
+          if (termFnT!.params.length === 3) args.push(varRef(termCntId!, F64, loc));
+          return { kind: "callValue", callee: varRef(termIds[0]!, termFnT!, loc), args, type: resultT, loc };
         };
         if (hasAccId !== "") {
           out.push({
             kind: "if",
-            cond: { kind: "unary", op: "!", operand: ref(hasAccId, BOOL), type: BOOL, loc },
+            cond: { kind: "unary", op: "!", operand: varRef(hasAccId, BOOL, loc), type: BOOL, loc },
             then: [
               { kind: "assign", localId: accId, value, loc },
-              { kind: "assign", localId: hasAccId, value: boolLit(true), loc },
+              { kind: "assign", localId: hasAccId, value: boolLit(true, loc), loc },
             ],
             else_: [{ kind: "assign", localId: accId, value: reducer(), loc }],
             loc,
@@ -3913,7 +3886,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
           return [
             { kind: "varDecl", localId: vId, init: callWith(s.fnT!, s.paramId, value, s.cntId), loc },
             ...(s.cntId !== undefined ? [bump(s.cntId)] : []),
-            ...inner(ref(vId, s.fnT!.ret)),
+            ...inner(varRef(vId, s.fnT!.ret, loc)),
           ];
         };
       } else if (s.kind === "filter") {
@@ -3922,7 +3895,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
           return [
             { kind: "varDecl", localId: okId, init: callWith(s.fnT!, s.paramId, value, s.cntId), loc },
             ...(s.cntId !== undefined ? [bump(s.cntId)] : []),
-            { kind: "if", cond: { kind: "unary", op: "!", operand: ref(okId, BOOL), type: BOOL, loc }, then: [{ kind: "continue", loc }], else_: null, loc },
+            { kind: "if", cond: { kind: "unary", op: "!", operand: varRef(okId, BOOL, loc), type: BOOL, loc }, then: [{ kind: "continue", loc }], else_: null, loc },
             ...inner(value),
           ];
         };
@@ -3930,7 +3903,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
         emit = (value) => [
           {
             kind: "if",
-            cond: { kind: "bin", op: "<", left: ref(s.cntId!, F64), right: ref(s.paramId, F64), type: BOOL, loc },
+            cond: { kind: "bin", op: "<", left: varRef(s.cntId!, F64, loc), right: varRef(s.paramId, F64, loc), type: BOOL, loc },
             then: [bump(s.cntId!), { kind: "continue", loc }],
             else_: null,
             loc,
@@ -3946,7 +3919,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
           bump(s.cntId!),
           {
             kind: "if",
-            cond: { kind: "bin", op: ">=", left: ref(s.cntId!, F64), right: ref(s.paramId, F64), type: BOOL, loc },
+            cond: { kind: "bin", op: ">=", left: varRef(s.cntId!, F64, loc), right: varRef(s.paramId, F64, loc), type: BOOL, loc },
             then: [setDone],
             else_: null,
             loc,
@@ -3965,19 +3938,19 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
             ...(s.cntId !== undefined ? [bump(s.cntId)] : []),
             {
               kind: "for",
-              init: { kind: "varDecl", localId: jId, init: num(0), loc },
+              init: { kind: "varDecl", localId: jId, init: numLit(0, loc), loc },
               cond: {
                 kind: "logical",
                 op: "&&",
-                left: { kind: "bin", op: "<", left: ref(jId, F64), right: { kind: "arrIntrinsic", method: "length", receiver: ref(arrId, innerT), args: [], type: F64, loc }, type: BOOL, loc },
+                left: { kind: "bin", op: "<", left: varRef(jId, F64, loc), right: { kind: "arrIntrinsic", method: "length", receiver: varRef(arrId, innerT, loc), args: [], type: F64, loc }, type: BOOL, loc },
                 right: { kind: "unary", op: "!", operand: done(), type: BOOL, loc },
                 type: BOOL,
                 loc,
               },
-              update: { kind: "assign", localId: jId, value: { kind: "bin", op: "+", left: ref(jId, F64), right: num(1), type: F64, loc }, loc },
+              update: { kind: "assign", localId: jId, value: { kind: "bin", op: "+", left: varRef(jId, F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
               body: [
-                { kind: "varDecl", localId: wId, init: { kind: "arrayGet", arr: ref(arrId, innerT), index: ref(jId, F64), type: innerT.elem, loc }, loc },
-                ...inner(ref(wId, innerT.elem)),
+                { kind: "varDecl", localId: wId, init: { kind: "arrayGet", arr: varRef(arrId, innerT, loc), index: varRef(jId, F64, loc), type: innerT.elem, loc }, loc },
+                ...inner(varRef(wId, innerT.elem, loc)),
               ],
               loc,
             },
@@ -3987,12 +3960,12 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
     }
     const iId = addLocal("i", F64, true);
     const vId = addLocal("v", seedT, false);
-    const elemRead = (): IrExpr => ({ kind: "arrayGet", arr: ref("items.0", itemsT), index: ref(iId, F64), type: itemsT.elem, loc });
+    const elemRead = (): IrExpr => ({ kind: "arrayGet", arr: varRef("items.0", itemsT, loc), index: varRef(iId, F64, loc), type: itemsT.elem, loc });
     const seedInit: IrExpr = srcProj === "entries"
       ? {
           kind: "recordLit",
           fields: [
-            { name: "0", value: ref(iId, F64) },
+            { name: "0", value: varRef(iId, F64, loc) },
             { name: "1", value: elemRead() },
           ],
           type: seedT,
@@ -4001,19 +3974,19 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       : elemRead();
     const loop: IrStmt = {
       kind: "for",
-      init: { kind: "varDecl", localId: iId, init: num(0), loc },
+      init: { kind: "varDecl", localId: iId, init: numLit(0, loc), loc },
       cond: {
         kind: "logical",
         op: "&&",
-        left: { kind: "bin", op: "<", left: ref(iId, F64), right: { kind: "arrIntrinsic", method: "length", receiver: ref("items.0", itemsT), args: [], type: F64, loc }, type: BOOL, loc },
+        left: { kind: "bin", op: "<", left: varRef(iId, F64, loc), right: { kind: "arrIntrinsic", method: "length", receiver: varRef("items.0", itemsT, loc), args: [], type: F64, loc }, type: BOOL, loc },
         right: { kind: "unary", op: "!", operand: done(), type: BOOL, loc },
         type: BOOL,
         loc,
       },
-      update: { kind: "assign", localId: iId, value: { kind: "bin", op: "+", left: ref(iId, F64), right: num(1), type: F64, loc }, loc },
+      update: { kind: "assign", localId: iId, value: { kind: "bin", op: "+", left: varRef(iId, F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
       body: [
         { kind: "varDecl", localId: vId, init: seedInit, loc },
-        ...emit(ref(vId, seedT)),
+        ...emit(varRef(vId, seedT, loc)),
       ],
       loc,
     };
@@ -4097,11 +4070,9 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
     loc: SrcLoc,): IrFunction {
     const elem = setT.elem;
     const predicate = method === "isSubsetOf" || method === "isSupersetOf" || method === "isDisjointFrom";
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const boolLit = (value: boolean): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
+
     const setOp = (recv: string, m: IrSetIntrinsicMethod, args: IrExpr[], type: IrType): IrExpr =>
-      ({ kind: "setIntrinsic", method: m, receiver: ref(recv, setT), args, type, loc });
+      ({ kind: "setIntrinsic", method: m, receiver: varRef(recv, setT, loc), args, type, loc });
     const locals: IrLocal[] = [
       { id: "a.0", name: "a", type: setT, mutable: true },
       { id: "b.0", name: "b", type: setT, mutable: true },
@@ -4114,23 +4085,23 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       nextLocal += 1;
       locals.push({ id: iId, name: "i", type: F64, mutable: true });
       locals.push({ id: vId, name: "v", type: elem, mutable: false });
-      const v = ref(vId, elem);
+      const v = varRef(vId, elem, loc);
       return {
         kind: "for",
-        init: { kind: "varDecl", localId: iId, init: num(0), loc },
-        cond: { kind: "bin", op: "<", left: ref(iId, F64), right: setOp(src, "iterCount", [], F64), type: BOOL, loc },
+        init: { kind: "varDecl", localId: iId, init: numLit(0, loc), loc },
+        cond: { kind: "bin", op: "<", left: varRef(iId, F64, loc), right: setOp(src, "iterCount", [], F64), type: BOOL, loc },
         update: {
           kind: "assign",
           localId: iId,
-          value: { kind: "bin", op: "+", left: ref(iId, F64), right: num(1), type: F64, loc },
+          value: { kind: "bin", op: "+", left: varRef(iId, F64, loc), right: numLit(1, loc), type: F64, loc },
           loc,
         },
         body: [
           {
             kind: "if",
-            cond: setOp(src, "iterLive", [ref(iId, F64)], BOOL),
+            cond: setOp(src, "iterLive", [varRef(iId, F64, loc)], BOOL),
             then: [
-              { kind: "varDecl", localId: vId, init: setOp(src, "iterKey", [ref(iId, F64)], elem), loc },
+              { kind: "varDecl", localId: vId, init: setOp(src, "iterKey", [varRef(iId, F64, loc)], elem), loc },
               ...visit(v),
             ],
             else_: null,
@@ -4143,10 +4114,10 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
     const has = (src: string, v: IrExpr): IrExpr => setOp(src, "has", [v], BOOL);
     const not = (e: IrExpr): IrExpr => ({ kind: "unary", op: "!", operand: e, type: BOOL, loc });
     const addTo = (v: IrExpr): IrStmt =>
-      ({ kind: "exprStmt", expr: { kind: "setIntrinsic", method: "add", receiver: ref("r.0", setT), args: [v], type: VOID, loc }, loc });
+      ({ kind: "exprStmt", expr: { kind: "setIntrinsic", method: "add", receiver: varRef("r.0", setT, loc), args: [v], type: VOID, loc }, loc });
     const addIf = (cond: IrExpr, v: IrExpr): IrStmt[] => [{ kind: "if", cond, then: [addTo(v)], else_: null, loc }];
     const returnIf = (cond: IrExpr, value: boolean): IrStmt[] =>
-      [{ kind: "if", cond, then: [{ kind: "return", value: boolLit(value), loc }], else_: null, loc }];
+      [{ kind: "if", cond, then: [{ kind: "return", value: boolLit(value, loc), loc }], else_: null, loc }];
     const body: IrStmt[] = [];
     if (!predicate) {
       locals.push({ id: "r.0", name: "r", type: setT, mutable: false });
@@ -4185,7 +4156,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       default:
         throw new InternalCompilerError(`lowerer bug: unknown set combine method ${method}`);
     }
-    body.push({ kind: "return", value: predicate ? boolLit(true) : ref("r.0", setT), loc });
+    body.push({ kind: "return", value: predicate ? boolLit(true, loc) : varRef("r.0", setT, loc), loc });
     return {
       name,
       params: [
@@ -4260,12 +4231,11 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       const sp = L.declareHiddenLocal("%spof", SP);
       const i = L.declareHiddenLocal("%iterof", F64);
       i.mutable = true;
-      const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
       const read = (fn: "sp.size" | "sp.keyAt" | "sp.valAt", idx: boolean): IrExpr => ({
         kind: "libCall",
         fn,
-        args: idx ? [ref(sp.id, SP), ref(i.id, F64)] : [ref(sp.id, SP)],
+        args: idx ? [varRef(sp.id, SP, loc), varRef(i.id, F64, loc)] : [varRef(sp.id, SP, loc)],
         type: idx ? STRING : F64,
         loc,
       });
@@ -4353,12 +4323,12 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       const body = L.inCtl("loop", () => L.lowerScopedBlock(stmt.statement));
       const loop: IrStmt = {
         kind: "for",
-        init: { kind: "varDecl", localId: i.id, init: num(0), loc },
-        cond: { kind: "bin", op: "<", left: ref(i.id, F64), right: read("sp.size", false), type: BOOL, loc },
+        init: { kind: "varDecl", localId: i.id, init: numLit(0, loc), loc },
+        cond: { kind: "bin", op: "<", left: varRef(i.id, F64, loc), right: read("sp.size", false), type: BOOL, loc },
         update: {
           kind: "assign",
           localId: i.id,
-          value: { kind: "bin", op: "+", left: ref(i.id, F64), right: num(1), type: F64, loc },
+          value: { kind: "bin", op: "+", left: varRef(i.id, F64, loc), right: numLit(1, loc), type: F64, loc },
           loc,
         },
         body: [...binds, ...body],
@@ -4416,23 +4386,22 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       const arr = L.declareHiddenLocal("%arof", arrT);
       const i = L.declareHiddenLocal("%iterof", F64);
       i.mutable = true;
-      const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-      const keyRead = (): IrExpr => ref(i.id, F64);
+
+      const keyRead = (): IrExpr => varRef(i.id, F64, loc);
       const valRead = (): IrExpr =>
         arrT.kind === "array"
           ? {
               kind: "arrayGet",
-              arr: ref(arr.id, arrT),
-              index: ref(i.id, F64),
+              arr: varRef(arr.id, arrT, loc),
+              index: varRef(i.id, F64, loc),
               type: elemT,
               loc,
             }
           : {
               kind: "bytesIntrinsic",
               method: "get",
-              receiver: ref(arr.id, arrT),
-              args: [ref(i.id, F64)],
+              receiver: varRef(arr.id, arrT, loc),
+              args: [varRef(i.id, F64, loc)],
               type: F64,
               loc,
             };
@@ -4518,17 +4487,17 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       const body = L.inCtl("loop", () => L.lowerScopedBlock(stmt.statement));
       const loop: IrStmt = {
         kind: "for",
-        init: { kind: "varDecl", localId: i.id, init: num(0), loc },
+        init: { kind: "varDecl", localId: i.id, init: numLit(0, loc), loc },
         cond: {
           kind: "bin",
           op: "<",
-          left: ref(i.id, F64),
+          left: varRef(i.id, F64, loc),
           right:
             arrT.kind === "array"
               ? {
                   kind: "arrIntrinsic",
                   method: "length",
-                  receiver: ref(arr.id, arrT),
+                  receiver: varRef(arr.id, arrT, loc),
                   args: [],
                   type: F64,
                   loc,
@@ -4536,7 +4505,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
               : {
                   kind: "bytesIntrinsic",
                   method: "length",
-                  receiver: ref(arr.id, arrT),
+                  receiver: varRef(arr.id, arrT, loc),
                   args: [],
                   type: F64,
                   loc,
@@ -4547,7 +4516,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
         update: {
           kind: "assign",
           localId: i.id,
-          value: { kind: "bin", op: "+", left: ref(i.id, F64), right: num(1), type: F64, loc },
+          value: { kind: "bin", op: "+", left: varRef(i.id, F64, loc), right: numLit(1, loc), type: F64, loc },
           loc,
         },
         body: [...binds, ...body],
@@ -4612,16 +4581,15 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       const m = L.declareHiddenLocal(isMap ? "%mapof" : "%setof", contT);
       const i = L.declareHiddenLocal("%iterof", F64);
       i.mutable = true; // the loop counter reassigns (hidden locals default const)
-      const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
       const iter = (method: string, args: IrExpr[], type: IrType): IrExpr =>
         isMap
-          ? { kind: "mapIntrinsic", method: method as IrMapIntrinsicMethod, receiver: ref(m.id, contT), args, type, loc }
-          : { kind: "setIntrinsic", method: method as IrSetIntrinsicMethod, receiver: ref(m.id, contT), args, type, loc };
+          ? { kind: "mapIntrinsic", method: method as IrMapIntrinsicMethod, receiver: varRef(m.id, contT, loc), args, type, loc }
+          : { kind: "setIntrinsic", method: method as IrSetIntrinsicMethod, receiver: varRef(m.id, contT, loc), args, type, loc };
       const keyT = isMap ? (contT as IrType & { kind: "map" }).key : (contT as IrType & { kind: "set" }).elem;
-      const keyRead = (): IrExpr => iter("iterKey", [ref(i.id, F64)], keyT);
+      const keyRead = (): IrExpr => iter("iterKey", [varRef(i.id, F64, loc)], keyT);
       const valRead = (): IrExpr =>
-        iter("iterValue", [ref(i.id, F64)], (contT as IrType & { kind: "map" }).value);
+        iter("iterValue", [varRef(i.id, F64, loc)], (contT as IrType & { kind: "map" }).value);
       // The pair's second position (a Map's value; a Set entry repeats the
       // element — JS's [v, v]) and the single yield (a Map's `.values()`
       // reads the value; everything else reads the key/element).
@@ -4741,18 +4709,18 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       const exitStmt = (): IrStmt => ({ kind: "exprStmt", expr: iter("iterExit", [], VOID), loc });
       const loop: IrStmt = {
         kind: "for",
-        init: { kind: "varDecl", localId: i.id, init: num(0), loc },
-        cond: { kind: "bin", op: "<", left: ref(i.id, F64), right: iter("iterCount", [], F64), type: BOOL, loc },
+        init: { kind: "varDecl", localId: i.id, init: numLit(0, loc), loc },
+        cond: { kind: "bin", op: "<", left: varRef(i.id, F64, loc), right: iter("iterCount", [], F64), type: BOOL, loc },
         update: {
           kind: "assign",
           localId: i.id,
-          value: { kind: "bin", op: "+", left: ref(i.id, F64), right: num(1), type: F64, loc },
+          value: { kind: "bin", op: "+", left: varRef(i.id, F64, loc), right: numLit(1, loc), type: F64, loc },
           loc,
         },
         body: [
           {
             kind: "if",
-            cond: iter("iterLive", [ref(i.id, F64)], BOOL),
+            cond: iter("iterLive", [varRef(i.id, F64, loc)], BOOL),
             then: [...binds, ...exitBeforeReturns(body, exitStmt)],
             else_: null,
             loc,
@@ -4866,26 +4834,25 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
     kT: IrType,
     vT: IrType,
     loc: SrcLoc,): IrFunction {
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const e = ref("e.0", tupleT);
+
+    const e = varRef("e.0", tupleT, loc);
     const body: IrStmt[] = [
       { kind: "varDecl", localId: "m.0", init: { kind: "mapNew", type: mapT, loc }, loc },
       {
         kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
         cond: {
           kind: "bin",
           op: "<",
-          left: ref("i.0", F64),
-          right: { kind: "arrIntrinsic", method: "length", receiver: ref("a.0", arrT), args: [], type: F64, loc },
+          left: varRef("i.0", F64, loc),
+          right: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", arrT, loc), args: [], type: F64, loc },
           type: BOOL,
           loc,
         },
         update: {
           kind: "assign",
           localId: "i.0",
-          value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
           loc,
         },
         body: [
@@ -4895,7 +4862,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
             expr: {
               kind: "mapIntrinsic",
               method: "set",
-              receiver: ref("m.0", mapT),
+              receiver: varRef("m.0", mapT, loc),
               args: [
                 { kind: "recordGet", obj: e, shapeId: tupleT.shapeId, field: "0", type: kT, loc },
                 { kind: "recordGet", obj: e, shapeId: tupleT.shapeId, field: "1", type: vT, loc },
@@ -4908,7 +4875,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
         ],
         loc,
       },
-      { kind: "return", value: ref("m.0", mapT), loc },
+      { kind: "return", value: varRef("m.0", mapT, loc), loc },
     ];
     return {
       name,
@@ -5207,17 +5174,16 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
    * relational operators' exact machinery — one interned helper, no new IR
    * or runtime surface). */
   function buildLocaleCompareFn(name: string, loc: SrcLoc): IrFunction {
-    const ref = (localId: string): IrExpr => ({ kind: "varRef", localId, type: STRING, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const cmp = (op: "<" | ">"): IrExpr => ({ kind: "strCmp", op, left: ref("a.0"), right: ref("b.0"), type: BOOL, loc });
+
+    const cmp = (op: "<" | ">"): IrExpr => ({ kind: "strCmp", op, left: varRef("a.0", STRING, loc), right: varRef("b.0", STRING, loc), type: BOOL, loc });
     const body: IrStmt[] = [
       {
         kind: "return",
         value: {
           kind: "ternary",
           cond: cmp("<"),
-          then: num(-1),
-          else_: { kind: "ternary", cond: cmp(">"), then: num(1), else_: num(0), type: F64, loc },
+          then: numLit(-1, loc),
+          else_: { kind: "ternary", cond: cmp(">"), then: numLit(1, loc), else_: numLit(0, loc), type: F64, loc },
           type: F64,
           loc,
         },
@@ -6331,10 +6297,9 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
     let helper = L.arrHofHelpers.get(key);
     if (!helper) {
       helper = `%obj.${member}.${L.arrHofHelpers.size}`;
-      const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-      const outRef = ref("out.0", resultT);
-      const rRef = ref("r.0", argIr);
+
+      const outRef = varRef("out.0", resultT, loc);
+      const rRef = varRef("r.0", argIr, loc);
       const push = (value: IrExpr): IrStmt => ({
         kind: "exprStmt",
         expr: { kind: "arrIntrinsic", method: "push", receiver: outRef, args: [value], type: F64, loc },
@@ -6430,8 +6395,8 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
       // value read back through the overflow-only keyed read (declared
       // names never live in the overflow map).
       const ksT = arrayOf(STRING);
-      const ksRef = ref("ks.0", ksT);
-      const kRef = ref("k.0", STRING);
+      const ksRef = varRef("ks.0", ksT, loc);
+      const kRef = varRef("k.0", STRING, loc);
       const readValue: IrExpr | null = valueT
         ? { kind: "recordKeyGet", obj: rRef, shapeId: argIr.shapeId, key: kRef, overflowOnly: true, type: valueT, loc }
         : null;
@@ -6453,11 +6418,11 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
         { kind: "varDecl", localId: "ks.0", init: { kind: "recordOvfKeys", obj: rRef, shapeId: argIr.shapeId, type: ksT, loc }, loc },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: {
             kind: "bin",
             op: "<",
-            left: ref("i.0", F64),
+            left: varRef("i.0", F64, loc),
             right: { kind: "arrIntrinsic", method: "length", receiver: ksRef, args: [], type: F64, loc },
             type: BOOL,
             loc,
@@ -6465,11 +6430,11 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
           update: {
             kind: "assign",
             localId: "i.0",
-            value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+            value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
             loc,
           },
           body: [
-            { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: ksRef, index: ref("i.0", F64), type: STRING, loc }, loc },
+            { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: ksRef, index: varRef("i.0", F64, loc), type: STRING, loc }, loc },
             push(loopPushed),
           ],
           loc,
@@ -6574,33 +6539,32 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
     let helper = L.arrHofHelpers.get(key);
     if (!helper) {
       helper = `%obj.fromEntries.${L.arrHofHelpers.size}`;
-      const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-      const tRef = ref("t.0", argIr.elem);
+
+      const tRef = varRef("t.0", argIr.elem, loc);
       const body: IrStmt[] = [
         { kind: "varDecl", localId: "out.0", init: { kind: "recordLit", fields: [], type: resultT, loc }, loc },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: {
             kind: "bin",
             op: "<",
-            left: ref("i.0", F64),
-            right: { kind: "arrIntrinsic", method: "length", receiver: ref("a.0", argIr), args: [], type: F64, loc },
+            left: varRef("i.0", F64, loc),
+            right: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", argIr, loc), args: [], type: F64, loc },
             type: BOOL,
             loc,
           },
           update: {
             kind: "assign",
             localId: "i.0",
-            value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+            value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
             loc,
           },
           body: [
-            { kind: "varDecl", localId: "t.0", init: { kind: "arrayGet", arr: ref("a.0", argIr), index: ref("i.0", F64), type: argIr.elem, loc }, loc },
+            { kind: "varDecl", localId: "t.0", init: { kind: "arrayGet", arr: varRef("a.0", argIr, loc), index: varRef("i.0", F64, loc), type: argIr.elem, loc }, loc },
             {
               kind: "recordKeySet",
-              obj: ref("out.0", resultT),
+              obj: varRef("out.0", resultT, loc),
               shapeId: resultT.shapeId,
               key: { kind: "recordGet", obj: tRef, shapeId: argIr.elem.shapeId, field: "0", type: STRING, loc },
               value: convert({ kind: "recordGet", obj: tRef, shapeId: argIr.elem.shapeId, field: "1", type: valT, loc })!,
@@ -6609,7 +6573,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
           ],
           loc,
         },
-        { kind: "return", value: ref("out.0", resultT), loc },
+        { kind: "return", value: varRef("out.0", resultT, loc), loc },
       ];
       L.arrHofHelpers.set(key, helper);
       L.liftedFns.push({
@@ -6652,41 +6616,40 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
     let helper = L.arrHofHelpers.get(key);
     if (!helper) {
       helper = `%obj.fromEntries.${L.arrHofHelpers.size}`;
-      const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-      const tRef = ref("t.0", rowT);
+
+      const tRef = varRef("t.0", rowT, loc);
       const rowLen: IrExpr = { kind: "arrIntrinsic", method: "length", receiver: tRef, args: [], type: F64, loc };
       const lenAtLeast = (n: number): IrExpr =>
-        ({ kind: "bin", op: ">=", left: rowLen, right: num(n), type: BOOL, loc });
+        ({ kind: "bin", op: ">=", left: rowLen, right: numLit(n, loc), type: BOOL, loc });
       const body: IrStmt[] = [
         { kind: "varDecl", localId: "out.0", init: { kind: "recordLit", fields: [], type: resultT, loc }, loc },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: {
             kind: "bin",
             op: "<",
-            left: ref("i.0", F64),
-            right: { kind: "arrIntrinsic", method: "length", receiver: ref("a.0", argIr), args: [], type: F64, loc },
+            left: varRef("i.0", F64, loc),
+            right: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", argIr, loc), args: [], type: F64, loc },
             type: BOOL,
             loc,
           },
           update: {
             kind: "assign",
             localId: "i.0",
-            value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+            value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
             loc,
           },
           body: [
-            { kind: "varDecl", localId: "t.0", init: { kind: "arrayGet", arr: ref("a.0", argIr), index: ref("i.0", F64), type: rowT, loc }, loc },
+            { kind: "varDecl", localId: "t.0", init: { kind: "arrayGet", arr: varRef("a.0", argIr, loc), index: varRef("i.0", F64, loc), type: rowT, loc }, loc },
             {
               kind: "recordKeySet",
-              obj: ref("out.0", resultT),
+              obj: varRef("out.0", resultT, loc),
               shapeId: resultT.shapeId,
               key: {
                 kind: "ternary",
                 cond: lenAtLeast(1),
-                then: { kind: "arrayGet", arr: tRef, index: num(0), type: STRING, loc },
+                then: { kind: "arrayGet", arr: tRef, index: numLit(0, loc), type: STRING, loc },
                 else_: { kind: "strLit", value: "undefined", type: STRING, loc },
                 type: STRING,
                 loc,
@@ -6698,7 +6661,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
                   kind: "unionWrap",
                   unionId: valT.unionId,
                   tag: strTag,
-                  value: { kind: "arrayGet", arr: tRef, index: num(1), type: STRING, loc },
+                  value: { kind: "arrayGet", arr: tRef, index: numLit(1, loc), type: STRING, loc },
                   type: valT,
                   loc,
                 },
@@ -6711,7 +6674,7 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
           ],
           loc,
         },
-        { kind: "return", value: ref("out.0", resultT), loc },
+        { kind: "return", value: varRef("out.0", resultT, loc), loc },
       ];
       L.arrHofHelpers.set(key, helper);
       L.liftedFns.push({
@@ -6843,10 +6806,9 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
     L.widthHelpers.set(key, name);
     const fromT: IrType = { kind: "record", shapeId: fromId };
     const toT: IrType = { kind: "record", shapeId: toId };
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const sRef = ref("s.0", fromT);
-    const outRef = ref("out.0", toT);
+
+    const sRef = varRef("s.0", fromT, loc);
+    const outRef = varRef("out.0", toT, loc);
     const intoSlot = (v: IrExpr, lift: WidthLift | "dyn"): IrExpr =>
       lift === "dyn"
         ? { kind: "dynFrom", value: v, type: DYN, loc }
@@ -6922,29 +6884,29 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
         { kind: "varDecl", localId: "ks.0", init: { kind: "recordOvfKeys", obj: sRef, shapeId: fromId, type: ksT, loc }, loc },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: {
             kind: "bin",
             op: "<",
-            left: ref("i.0", F64),
-            right: { kind: "arrIntrinsic", method: "length", receiver: ref("ks.0", ksT), args: [], type: F64, loc },
+            left: varRef("i.0", F64, loc),
+            right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc },
             type: BOOL,
             loc,
           },
           update: {
             kind: "assign",
             localId: "i.0",
-            value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+            value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
             loc,
           },
           body: [
-            { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: ref("ks.0", ksT), index: ref("i.0", F64), type: STRING, loc }, loc },
+            { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: varRef("ks.0", ksT, loc), index: varRef("i.0", F64, loc), type: STRING, loc }, loc },
             {
               kind: "recordKeySet",
               obj: outRef,
               shapeId: toId,
-              key: ref("k.0", STRING),
-              value: intoSlot({ kind: "recordKeyGet", obj: sRef, shapeId: fromId, key: ref("k.0", STRING), overflowOnly: true, type: fIv, loc }, ovfLift),
+              key: varRef("k.0", STRING, loc),
+              value: intoSlot({ kind: "recordKeyGet", obj: sRef, shapeId: fromId, key: varRef("k.0", STRING, loc), overflowOnly: true, type: fIv, loc }, ovfLift),
               loc,
             },
           ],
@@ -7061,10 +7023,9 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
       L.widthHelpers.set(key, name);
       const toT: IrType = { kind: "record", shapeId: targetIr.shapeId };
       const fromT: IrType = { kind: "record", shapeId: plan.fromId };
-      const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-      const tRef = ref("t.0", toT);
-      const sRef = ref("s.0", fromT);
+
+      const tRef = varRef("t.0", toT, loc);
+      const sRef = varRef("s.0", fromT, loc);
       const intoSlot = (v: IrExpr, lift: WidthLift | "dyn"): IrExpr =>
         lift === "dyn" ? { kind: "dynFrom", value: v, type: DYN, loc } : L.applyWidthLift(lift, v, tIv, loc);
       const body: IrStmt[] = [];
@@ -7101,29 +7062,29 @@ const DV_SETTERS: Record<string, { method: IrBytesIntrinsicMethod; le: boolean }
           { kind: "varDecl", localId: "ks.0", init: { kind: "recordOvfKeys", obj: sRef, shapeId: plan.fromId, type: ksT, loc }, loc },
           {
             kind: "for",
-            init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+            init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
             cond: {
               kind: "bin",
               op: "<",
-              left: ref("i.0", F64),
-              right: { kind: "arrIntrinsic", method: "length", receiver: ref("ks.0", ksT), args: [], type: F64, loc },
+              left: varRef("i.0", F64, loc),
+              right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc },
               type: BOOL,
               loc,
             },
             update: {
               kind: "assign",
               localId: "i.0",
-              value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+              value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
               loc,
             },
             body: [
-              { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: ref("ks.0", ksT), index: ref("i.0", F64), type: STRING, loc }, loc },
+              { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: varRef("ks.0", ksT, loc), index: varRef("i.0", F64, loc), type: STRING, loc }, loc },
               {
                 kind: "recordKeySet",
                 obj: tRef,
                 shapeId: targetIr.shapeId,
-                key: ref("k.0", STRING),
-                value: intoSlot({ kind: "recordKeyGet", obj: sRef, shapeId: plan.fromId, key: ref("k.0", STRING), overflowOnly: true, type: fIv, loc }, plan.ovfLift),
+                key: varRef("k.0", STRING, loc),
+                value: intoSlot({ kind: "recordKeyGet", obj: sRef, shapeId: plan.fromId, key: varRef("k.0", STRING, loc), overflowOnly: true, type: fIv, loc }, plan.ovfLift),
                 loc,
               },
             ],
@@ -7276,9 +7237,8 @@ export type IndexMergeContributor =
     L.widthHelpers.set(key, name);
     const toT: IrType = { kind: "record", shapeId: toId };
     const ksT = arrayOf(STRING);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const outRef = ref("out.0", toT);
+
+    const outRef = varRef("out.0", toT, loc);
     const params: IrParam[] = [];
     const locals: IrLocal[] = [{ id: "out.0", name: "out", type: toT, mutable: false }];
     const body: IrStmt[] = [
@@ -7298,8 +7258,8 @@ export type IndexMergeContributor =
           kind: "recordKeySet",
           obj: outRef,
           shapeId: toId,
-          key: ref(kid, STRING),
-          value: ref(pid, tIv),
+          key: varRef(kid, STRING, loc),
+          value: varRef(pid, tIv, loc),
           overflowOnly: true,
           loc,
         });
@@ -7314,7 +7274,7 @@ export type IndexMergeContributor =
           obj: outRef,
           shapeId: toId,
           key: { kind: "strLit", value: c.name, type: STRING, loc },
-          value: ref(pid, tIv),
+          value: varRef(pid, tIv, loc),
           overflowOnly: true,
           loc,
         };
@@ -7326,7 +7286,7 @@ export type IndexMergeContributor =
           const undefTag = L.armTag(tIv.unionId, UNDEFINED_T);
           body.push({
             kind: "if",
-            cond: { kind: "unionIsTag", unionId: tIv.unionId, tag: undefTag, negated: true, value: ref(pid, tIv), type: BOOL, loc },
+            cond: { kind: "unionIsTag", unionId: tIv.unionId, tag: undefTag, negated: true, value: varRef(pid, tIv, loc), type: BOOL, loc },
             then: [write],
             else_: null,
             loc,
@@ -7343,7 +7303,7 @@ export type IndexMergeContributor =
       const sid = `s.${ci}`;
       params.push({ localId: sid, name: `s${ci}`, type: fromT });
       locals.push({ id: sid, name: `s${ci}`, type: fromT, mutable: false });
-      const sRef = ref(sid, fromT);
+      const sRef = varRef(sid, fromT, loc);
       // A FIXED-shape source: each declared field keyed-writes through its
       // own planned lift (absent optionals skip — the unset convention);
       // no overflow exists to walk.
@@ -7408,24 +7368,24 @@ export type IndexMergeContributor =
         { kind: "varDecl", localId: ks, init: { kind: "recordOvfKeys", obj: sRef, shapeId: plan.shapeId, type: ksT, loc }, loc },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: iv, init: num(0), loc },
+          init: { kind: "varDecl", localId: iv, init: numLit(0, loc), loc },
           cond: {
             kind: "bin",
             op: "<",
-            left: ref(iv, F64),
-            right: { kind: "arrIntrinsic", method: "length", receiver: ref(ks, ksT), args: [], type: F64, loc },
+            left: varRef(iv, F64, loc),
+            right: { kind: "arrIntrinsic", method: "length", receiver: varRef(ks, ksT, loc), args: [], type: F64, loc },
             type: BOOL,
             loc,
           },
-          update: { kind: "assign", localId: iv, value: { kind: "bin", op: "+", left: ref(iv, F64), right: num(1), type: F64, loc }, loc },
+          update: { kind: "assign", localId: iv, value: { kind: "bin", op: "+", left: varRef(iv, F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
           body: [
-            { kind: "varDecl", localId: kv, init: { kind: "arrayGet", arr: ref(ks, ksT), index: ref(iv, F64), type: STRING, loc }, loc },
+            { kind: "varDecl", localId: kv, init: { kind: "arrayGet", arr: varRef(ks, ksT, loc), index: varRef(iv, F64, loc), type: STRING, loc }, loc },
             {
               kind: "recordKeySet",
               obj: outRef,
               shapeId: toId,
-              key: ref(kv, STRING),
-              value: intoSlot({ kind: "recordKeyGet", obj: sRef, shapeId: plan.shapeId, key: ref(kv, STRING), overflowOnly: true, type: fIv, loc }),
+              key: varRef(kv, STRING, loc),
+              value: intoSlot({ kind: "recordKeyGet", obj: sRef, shapeId: plan.shapeId, key: varRef(kv, STRING, loc), overflowOnly: true, type: fIv, loc }),
               overflowOnly: true,
               loc,
             },
@@ -7499,10 +7459,9 @@ export type IndexMergeContributor =
     L.widthHelpers.set(key, name);
     const recT: IrType = { kind: "record", shapeId };
     const arrT = arrayOf(STRING);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const sRef = ref("s.0", recT);
-    const outRef = ref("out.0", arrT);
+
+    const sRef = varRef("s.0", recT, loc);
+    const outRef = varRef("out.0", arrT, loc);
     // The string value of a field/overflow read: unwrap the union arm, or
     // pass a plain string through.
     const asStr = (raw: IrExpr, t: IrType): IrExpr => {
@@ -7549,8 +7508,8 @@ export type IndexMergeContributor =
           { id: `a.${uid}`, name: `a${uid}`, type: aT, mutable: false },
           { id: `j.${uid}`, name: `j${uid}`, type: F64, mutable: true },
         );
-        const aRef = ref(`a.${uid}`, aT);
-        const jRef = ref(`j.${uid}`, F64);
+        const aRef = varRef(`a.${uid}`, aT, loc);
+        const jRef = varRef(`j.${uid}`, F64, loc);
         chain = [{
           kind: "if",
           cond: isTag(ha.arr),
@@ -7558,9 +7517,9 @@ export type IndexMergeContributor =
             { kind: "varDecl", localId: `a.${uid}`, init: narrowTo(ha.arr, aT), loc },
             {
               kind: "for",
-              init: { kind: "varDecl", localId: `j.${uid}`, init: num(0), loc },
+              init: { kind: "varDecl", localId: `j.${uid}`, init: numLit(0, loc), loc },
               cond: { kind: "bin", op: "<", left: jRef, right: { kind: "arrIntrinsic", method: "length", receiver: aRef, args: [], type: F64, loc }, type: BOOL, loc },
-              update: { kind: "assign", localId: `j.${uid}`, value: { kind: "bin", op: "+", left: jRef, right: num(1), type: F64, loc }, loc },
+              update: { kind: "assign", localId: `j.${uid}`, value: { kind: "bin", op: "+", left: jRef, right: numLit(1, loc), type: F64, loc }, loc },
               body: [push(k, { kind: "arrayGet", arr: aRef, index: jRef, type: STRING, loc })],
               loc,
             },
@@ -7606,22 +7565,22 @@ export type IndexMergeContributor =
         { id: "k.0", name: "k", type: STRING, mutable: false },
         { id: "raw.0", name: "raw", type: iv, mutable: false },
       );
-      const rawRead: IrExpr = { kind: "recordKeyGet", obj: sRef, shapeId, key: ref("k.0", STRING), overflowOnly: true, type: iv, loc };
+      const rawRead: IrExpr = { kind: "recordKeyGet", obj: sRef, shapeId, key: varRef("k.0", STRING, loc), overflowOnly: true, type: iv, loc };
       const utag = iv.kind === "union" ? L.armTag(iv.unionId, UNDEFINED_T) : -1;
       const innerBody: IrStmt[] = [
-        { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: ref("ks.0", ksT), index: ref("i.0", F64), type: STRING, loc }, loc },
+        { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: varRef("ks.0", ksT, loc), index: varRef("i.0", F64, loc), type: STRING, loc }, loc },
         { kind: "varDecl", localId: "raw.0", init: rawRead, loc },
       ];
-      const rawRef = ref("raw.0", iv);
+      const rawRef = varRef("raw.0", iv, loc);
       void utag;
-      innerBody.push(writeFor(ref("k.0", STRING), rawRef, iv));
+      innerBody.push(writeFor(varRef("k.0", STRING, loc), rawRef, iv));
       body.push(
         { kind: "varDecl", localId: "ks.0", init: { kind: "recordOvfKeys", obj: sRef, shapeId, type: ksT, loc }, loc },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-          cond: { kind: "bin", op: "<", left: ref("i.0", F64), right: { kind: "arrIntrinsic", method: "length", receiver: ref("ks.0", ksT), args: [], type: F64, loc }, type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc }, loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+          cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc }, type: BOOL, loc },
+          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
           body: innerBody,
           loc,
         },
@@ -7703,8 +7662,8 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
     if (existing) return existing;
     const name = "%dyn.recvstr";
     L.arrHofHelpers.set(key, name);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const d = ref("d.0", DYN);
+
+    const d = varRef("d.0", DYN, loc);
     const body: IrStmt[] = [
       {
         kind: "if",
@@ -7713,7 +7672,7 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
         else_: null,
         loc,
       },
-      ...dynRecvThrows(d, ref("m.0", STRING), ref("full.0", STRING), loc),
+      ...dynRecvThrows(d, varRef("m.0", STRING, loc), varRef("full.0", STRING, loc), loc),
     ];
     L.liftedFns.push({
       name,
@@ -7894,14 +7853,13 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
     const outT = arrayOf(elemT);
     const retT = arrayOf(elemT);
     const fnT = funcOf([DYN, F64, DYN].slice(0, arity), retT);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const d = ref("d.0", DYN);
+
+    const d = varRef("d.0", DYN, loc);
     const body: IrStmt[] = [
       {
         kind: "if",
         cond: { kind: "dynTest", test: "array", negated: true, value: d, type: BOOL, loc },
-        then: dynRecvThrows(d, ref("m.0", STRING), ref("full.0", STRING), loc),
+        then: dynRecvThrows(d, varRef("m.0", STRING, loc), varRef("full.0", STRING, loc), loc),
         else_: null,
         loc,
       },
@@ -7919,14 +7877,14 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
       { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
       {
         kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-        cond: { kind: "bin", op: "<", left: ref("i.0", F64), right: ref("n.0", F64), type: BOOL, loc },
-        update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc }, loc },
+        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
+        update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
         body: [
           {
             kind: "varDecl",
             localId: "v.0",
-            init: { kind: "dynKeyGet", key: { kind: "toString", operand: ref("i.0", F64), type: STRING, loc }, value: d, type: DYN, loc },
+            init: { kind: "dynKeyGet", key: { kind: "toString", operand: varRef("i.0", F64, loc), type: STRING, loc }, value: d, type: DYN, loc },
             loc,
           },
           {
@@ -7934,8 +7892,8 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
             localId: "r.0",
             init: {
               kind: "callValue",
-              callee: ref("f.0", fnT),
-              args: [ref("v.0", DYN), ref("i.0", F64), d].slice(0, arity),
+              callee: varRef("f.0", fnT, loc),
+              args: [varRef("v.0", DYN, loc), varRef("i.0", F64, loc), d].slice(0, arity),
               type: retT,
               loc,
             },
@@ -7944,22 +7902,22 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
           {
             kind: "varDecl",
             localId: "rn.0",
-            init: { kind: "arrIntrinsic", method: "length", receiver: ref("r.0", retT), args: [], type: F64, loc },
+            init: { kind: "arrIntrinsic", method: "length", receiver: varRef("r.0", retT, loc), args: [], type: F64, loc },
             loc,
           },
           {
             kind: "for",
-            init: { kind: "varDecl", localId: "j.0", init: num(0), loc },
-            cond: { kind: "bin", op: "<", left: ref("j.0", F64), right: ref("rn.0", F64), type: BOOL, loc },
-            update: { kind: "assign", localId: "j.0", value: { kind: "bin", op: "+", left: ref("j.0", F64), right: num(1), type: F64, loc }, loc },
+            init: { kind: "varDecl", localId: "j.0", init: numLit(0, loc), loc },
+            cond: { kind: "bin", op: "<", left: varRef("j.0", F64, loc), right: varRef("rn.0", F64, loc), type: BOOL, loc },
+            update: { kind: "assign", localId: "j.0", value: { kind: "bin", op: "+", left: varRef("j.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
             body: [
               {
                 kind: "exprStmt",
                 expr: {
                   kind: "arrIntrinsic",
                   method: "push",
-                  receiver: ref("out.0", outT),
-                  args: [{ kind: "arrayGet", arr: ref("r.0", retT), index: ref("j.0", F64), type: elemT, loc }],
+                  receiver: varRef("out.0", outT, loc),
+                  args: [{ kind: "arrayGet", arr: varRef("r.0", retT, loc), index: varRef("j.0", F64, loc), type: elemT, loc }],
                   type: F64,
                   loc,
                 },
@@ -7971,7 +7929,7 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
         ],
         loc,
       },
-      { kind: "return", value: ref("out.0", outT), loc },
+      { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
     return {
       name,
@@ -8020,14 +7978,13 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
   function buildDynFilterFn(name: string, elemT: IrType, arity: number, loc: SrcLoc): IrFunction {
     const outT = arrayOf(elemT);
     const fnT = funcOf([DYN, F64, DYN].slice(0, arity), BOOL);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-    const d = ref("d.0", DYN);
+
+    const d = varRef("d.0", DYN, loc);
     const body: IrStmt[] = [
       {
         kind: "if",
         cond: { kind: "dynTest", test: "array", negated: true, value: d, type: BOOL, loc },
-        then: dynRecvThrows(d, ref("m.0", STRING), ref("full.0", STRING), loc),
+        then: dynRecvThrows(d, varRef("m.0", STRING, loc), varRef("full.0", STRING, loc), loc),
         else_: null,
         loc,
       },
@@ -8045,22 +8002,22 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
       { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
       {
         kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-        cond: { kind: "bin", op: "<", left: ref("i.0", F64), right: ref("n.0", F64), type: BOOL, loc },
-        update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc }, loc },
+        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
+        update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
         body: [
           {
             kind: "varDecl",
             localId: "v.0",
-            init: { kind: "dynKeyGet", key: { kind: "toString", operand: ref("i.0", F64), type: STRING, loc }, value: d, type: DYN, loc },
+            init: { kind: "dynKeyGet", key: { kind: "toString", operand: varRef("i.0", F64, loc), type: STRING, loc }, value: d, type: DYN, loc },
             loc,
           },
           {
             kind: "if",
             cond: {
               kind: "callValue",
-              callee: ref("f.0", fnT),
-              args: [ref("v.0", DYN), ref("i.0", F64), d].slice(0, arity),
+              callee: varRef("f.0", fnT, loc),
+              args: [varRef("v.0", DYN, loc), varRef("i.0", F64, loc), d].slice(0, arity),
               type: BOOL,
               loc,
             },
@@ -8070,8 +8027,8 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
                 expr: {
                   kind: "arrIntrinsic",
                   method: "push",
-                  receiver: ref("out.0", outT),
-                  args: [{ kind: "dynCheck", value: ref("v.0", DYN), type: elemT, loc }],
+                  receiver: varRef("out.0", outT, loc),
+                  args: [{ kind: "dynCheck", value: varRef("v.0", DYN, loc), type: elemT, loc }],
                   type: F64,
                   loc,
                 },
@@ -8084,7 +8041,7 @@ function dynRecvThrows(dRef: IrExpr, mRef: IrExpr, fullRef: IrExpr, loc: SrcLoc)
         ],
         loc,
       },
-      { kind: "return", value: ref("out.0", outT), loc },
+      { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
     return {
       name,

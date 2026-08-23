@@ -27,6 +27,7 @@ import { ambientNsRootOf, ambientUndefReadType, ambientUndefVarRootOf, ambientUn
 import { declSymbolOf } from "./lower-modules.js";
 import { expandoMemberRead } from "./lower-expando.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
+import { numLit, varRef } from "../../ir/build.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
  * completes every call to the one full signature, so the IR and backends
@@ -6745,8 +6746,6 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
     const arrT = arrayOf(elem);
     const outT = arrayOf(outElem);
     const fnT = funcOf([elem], BOOL);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
     const locals: IrLocal[] = [
       { id: "a.0", name: "a", type: arrT, mutable: true },
       ...(test === "callback" ? [{ id: "f.0", name: "f", type: fnT, mutable: true } as IrLocal] : []),
@@ -6759,10 +6758,10 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
       { localId: "a.0", name: "a", type: arrT },
       ...(test === "callback" ? [{ localId: "f.0", name: "f", type: fnT }] : []),
     ];
-    const v = ref("v.0", elem);
+    const v = varRef("v.0", elem, loc);
     const cond: IrExpr =
       test === "callback"
-        ? { kind: "callValue", callee: ref("f.0", fnT), args: [v], type: BOOL, loc }
+        ? { kind: "callValue", callee: varRef("f.0", fnT, loc), args: [v], type: BOOL, loc }
         : { kind: "toBool", operand: v, type: BOOL, loc };
     const kept: IrExpr =
       tag !== null && elem.kind === "union"
@@ -6773,24 +6772,24 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
       {
         kind: "varDecl",
         localId: "n.0",
-        init: { kind: "arrIntrinsic", method: "length", receiver: ref("a.0", arrT), args: [], type: F64, loc },
+        init: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", arrT, loc), args: [], type: F64, loc },
         loc,
       },
       {
         kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-        cond: { kind: "bin", op: "<", left: ref("i.0", F64), right: ref("n.0", F64), type: BOOL, loc },
+        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+        cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: varRef("n.0", F64, loc), type: BOOL, loc },
         update: {
           kind: "assign",
           localId: "i.0",
-          value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
           loc,
         },
         body: [
           {
             kind: "varDecl",
             localId: "v.0",
-            init: { kind: "arrayGet", arr: ref("a.0", arrT), index: ref("i.0", F64), type: elem, loc },
+            init: { kind: "arrayGet", arr: varRef("a.0", arrT, loc), index: varRef("i.0", F64, loc), type: elem, loc },
             loc,
           },
           {
@@ -6802,7 +6801,7 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
                 expr: {
                   kind: "arrIntrinsic",
                   method: "push",
-                  receiver: ref("out.0", outT),
+                  receiver: varRef("out.0", outT, loc),
                   args: [kept],
                   type: F64,
                   loc,
@@ -6816,7 +6815,7 @@ export function lowerPromiseMethodCall(L: Lowerer, call: ts.CallExpression,
         ],
         loc,
       },
-      { kind: "return", value: ref("out.0", outT), loc },
+      { kind: "return", value: varRef("out.0", outT, loc), loc },
     ];
     L.liftedFns.push({ name, params, returnType: outT, locals, body, loc });
     return name;

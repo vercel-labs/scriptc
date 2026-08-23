@@ -111,6 +111,7 @@ import { FieldTarget, lowerDynObjectLiteral, lowerExpr, maybeNarrow, lowerUnitCo
 import type { ExpandoMember } from "./lower-expando.js";
 import { lowerRecordFieldCall, lowerObjectMethodCall } from "./lower-calls.js";
 import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
+import { numLit, varRef } from "../../ir/build.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
  * function can never collide with it (mangling is injective per prefix). */
@@ -4810,8 +4811,7 @@ export class Lowerer {
     this.widthHelpers.set(key, name);
     const arrT: IrType = { kind: "array", elem: fromElem };
     const outT: IrType = { kind: "array", elem: toElem };
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: { kind: "f64" }, loc });
+
     const f64: IrType = { kind: "f64" };
     this.liftedFns.push({
       name,
@@ -4828,17 +4828,17 @@ export class Lowerer {
         {
           kind: "varDecl",
           localId: "n.0",
-          init: { kind: "arrIntrinsic", method: "length", receiver: ref("a.0", arrT), args: [], type: f64, loc },
+          init: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", arrT, loc), args: [], type: f64, loc },
           loc,
         },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-          cond: { kind: "bin", op: "<", left: ref("i.0", f64), right: ref("n.0", f64), type: BOOL, loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+          cond: { kind: "bin", op: "<", left: varRef("i.0", f64, loc), right: varRef("n.0", f64, loc), type: BOOL, loc },
           update: {
             kind: "assign",
             localId: "i.0",
-            value: { kind: "bin", op: "+", left: ref("i.0", f64), right: num(1), type: f64, loc },
+            value: { kind: "bin", op: "+", left: varRef("i.0", f64, loc), right: numLit(1, loc), type: f64, loc },
             loc,
           },
           body: [
@@ -4847,11 +4847,11 @@ export class Lowerer {
               expr: {
                 kind: "arrIntrinsic",
                 method: "push",
-                receiver: ref("out.0", outT),
+                receiver: varRef("out.0", outT, loc),
                 args: [
                   this.applyWidthLift(
                     elemLift,
-                    { kind: "arrayGet", arr: ref("a.0", arrT), index: ref("i.0", f64), type: fromElem, loc },
+                    { kind: "arrayGet", arr: varRef("a.0", arrT, loc), index: varRef("i.0", f64, loc), type: fromElem, loc },
                     toElem,
                     loc,
                   ),
@@ -4864,7 +4864,7 @@ export class Lowerer {
           ],
           loc,
         },
-        { kind: "return", value: ref("out.0", outT), loc },
+        { kind: "return", value: varRef("out.0", outT, loc), loc },
       ],
       loc,
     });
@@ -6157,9 +6157,8 @@ export class Lowerer {
     const iv = shape.indexValue;
     const f64: IrType = { kind: "f64" };
     const ksT = arrayOf(STRING);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: f64, loc });
-    const kRef = ref("k.0", STRING);
+
+    const kRef = varRef("k.0", STRING, loc);
     this.liftedFns.push({
       name,
       params: [{ localId: "r.0", name: "r", type: recT }],
@@ -6176,25 +6175,25 @@ export class Lowerer {
         { kind: "varDecl", localId: "ks.0", init: { kind: "recordOvfKeys", obj: r, shapeId, type: ksT, loc }, loc },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: {
             kind: "bin",
             op: "<",
-            left: ref("i.0", f64),
-            right: { kind: "arrIntrinsic", method: "length", receiver: ref("ks.0", ksT), args: [], type: f64, loc },
+            left: varRef("i.0", f64, loc),
+            right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: f64, loc },
             type: BOOL,
             loc,
           },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: ref("i.0", f64), right: num(1), type: f64, loc }, loc },
+          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", f64, loc), right: numLit(1, loc), type: f64, loc }, loc },
           body: [
-            { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: ref("ks.0", ksT), index: ref("i.0", f64), type: STRING, loc }, loc },
+            { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: varRef("ks.0", ksT, loc), index: varRef("i.0", f64, loc), type: STRING, loc }, loc },
             {
               kind: "exprStmt",
               expr: {
                 kind: "jsOp",
                 op: "setIdx",
                 args: [
-                  ref("out.0", JSVAL),
+                  varRef("out.0", JSVAL, loc),
                   { kind: "jsMarshal", value: kRef, type: JSVAL, loc },
                   this.jsvalLiftExpr({ kind: "recordKeyGet", obj: r, shapeId, key: kRef, overflowOnly: true, type: iv, loc }, loc),
                 ],
@@ -6206,7 +6205,7 @@ export class Lowerer {
           ],
           loc,
         },
-        { kind: "return", value: ref("out.0", JSVAL), loc },
+        { kind: "return", value: varRef("out.0", JSVAL, loc), loc },
       ],
       loc,
     });
@@ -6225,8 +6224,7 @@ export class Lowerer {
     this.jsinHelpers.set(key, name);
     const arrT: IrType = { kind: "array", elem };
     const f64: IrType = { kind: "f64" };
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: f64, loc });
+
     this.liftedFns.push({
       name,
       params: [{ localId: "a.0", name: "a", type: arrT }],
@@ -6242,17 +6240,17 @@ export class Lowerer {
         {
           kind: "varDecl",
           localId: "n.0",
-          init: { kind: "arrIntrinsic", method: "length", receiver: ref("a.0", arrT), args: [], type: f64, loc },
+          init: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", arrT, loc), args: [], type: f64, loc },
           loc,
         },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-          cond: { kind: "bin", op: "<", left: ref("i.0", f64), right: ref("n.0", f64), type: BOOL, loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+          cond: { kind: "bin", op: "<", left: varRef("i.0", f64, loc), right: varRef("n.0", f64, loc), type: BOOL, loc },
           update: {
             kind: "assign",
             localId: "i.0",
-            value: { kind: "bin", op: "+", left: ref("i.0", f64), right: num(1), type: f64, loc },
+            value: { kind: "bin", op: "+", left: varRef("i.0", f64, loc), right: numLit(1, loc), type: f64, loc },
             loc,
           },
           body: [
@@ -6262,10 +6260,10 @@ export class Lowerer {
                 kind: "jsOp",
                 op: "setIdx",
                 args: [
-                  ref("out.0", JSVAL),
-                  { kind: "jsMarshal", value: ref("i.0", f64), type: JSVAL, loc },
+                  varRef("out.0", JSVAL, loc),
+                  { kind: "jsMarshal", value: varRef("i.0", f64, loc), type: JSVAL, loc },
                   this.jsvalLiftExpr(
-                    { kind: "arrayGet", arr: ref("a.0", arrT), index: ref("i.0", f64), type: elem, loc },
+                    { kind: "arrayGet", arr: varRef("a.0", arrT, loc), index: varRef("i.0", f64, loc), type: elem, loc },
                     loc,
                   ),
                 ],
@@ -6277,7 +6275,7 @@ export class Lowerer {
           ],
           loc,
         },
-        { kind: "return", value: ref("out.0", JSVAL), loc },
+        { kind: "return", value: varRef("out.0", JSVAL, loc), loc },
       ],
       loc,
     });
@@ -6298,8 +6296,7 @@ export class Lowerer {
     const arrT: IrType = { kind: "array", elem: fromElem };
     const outT: IrType = { kind: "array", elem: JSVAL };
     const f64: IrType = { kind: "f64" };
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: f64, loc });
+
     this.liftedFns.push({
       name,
       params: [{ localId: "a.0", name: "a", type: arrT }],
@@ -6315,17 +6312,17 @@ export class Lowerer {
         {
           kind: "varDecl",
           localId: "n.0",
-          init: { kind: "arrIntrinsic", method: "length", receiver: ref("a.0", arrT), args: [], type: f64, loc },
+          init: { kind: "arrIntrinsic", method: "length", receiver: varRef("a.0", arrT, loc), args: [], type: f64, loc },
           loc,
         },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-          cond: { kind: "bin", op: "<", left: ref("i.0", f64), right: ref("n.0", f64), type: BOOL, loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+          cond: { kind: "bin", op: "<", left: varRef("i.0", f64, loc), right: varRef("n.0", f64, loc), type: BOOL, loc },
           update: {
             kind: "assign",
             localId: "i.0",
-            value: { kind: "bin", op: "+", left: ref("i.0", f64), right: num(1), type: f64, loc },
+            value: { kind: "bin", op: "+", left: varRef("i.0", f64, loc), right: numLit(1, loc), type: f64, loc },
             loc,
           },
           body: [
@@ -6334,10 +6331,10 @@ export class Lowerer {
               expr: {
                 kind: "arrIntrinsic",
                 method: "push",
-                receiver: ref("out.0", outT),
+                receiver: varRef("out.0", outT, loc),
                 args: [
                   this.jsvalLiftExpr(
-                    { kind: "arrayGet", arr: ref("a.0", arrT), index: ref("i.0", f64), type: fromElem, loc },
+                    { kind: "arrayGet", arr: varRef("a.0", arrT, loc), index: varRef("i.0", f64, loc), type: fromElem, loc },
                     loc,
                   ),
                 ],
@@ -6349,7 +6346,7 @@ export class Lowerer {
           ],
           loc,
         },
-        { kind: "return", value: ref("out.0", outT), loc },
+        { kind: "return", value: varRef("out.0", outT, loc), loc },
       ],
       loc,
     });
@@ -6776,7 +6773,6 @@ export class Lowerer {
   genBodyReturnType(declared: IrType): IrType {
     return declared.kind === "generator" ? declared.retT : declared;
   }
-
 
   declaredReturnType(decl: ts.SignatureDeclaration, blame: ts.Node): IrType {
     return declaredReturnType(this, decl, blame);

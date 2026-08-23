@@ -37,6 +37,7 @@ import { appendImplicitUndefinedReturn } from "./lower-calls.js";
 import { bufEncoding, knownBufEncoding } from "./lower-containers.js";
 import { probeLower } from "./lower-exprs.js";
 import { BOOL, DYN, F64, IrExpr, IrFunction, IrLibFn, IrStmt, IrType, RUNTIME_STREAM_CLASSES, STRING, SrcLoc, VOID, arrayOf, bytesOf, canBoxFuncIntoDyn, funcOf, typeEquals, typeKey } from "../../ir/nodes.js";
+import { boolLit, numLit, strLit } from "../../ir/build.js";
 
 const BYTES = bytesOf("u8");
 
@@ -136,11 +137,6 @@ export function streamForcedTuple(L: Lowerer, info: ClassInfo | undefined | null
   }
   return null;
 }
-
-const strLit = (value: string, loc: SrcLoc): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
-const boolLit = (value: boolean, loc: SrcLoc): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
-const f64Lit = (value: number, loc: SrcLoc): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-
 /* ── option callbacks (the leading-`this` closures) ─────────────────── */
 
 /** Lowers one option callback (method shorthand, function expression, or
@@ -461,8 +457,8 @@ function parseStreamOptions(
   fallbackCb?: (name: string) => IrExpr | null,
 ): StreamOptions {
   const out: StreamOptions = {
-    hwmR: f64Lit(-1, loc),
-    hwmW: f64Lit(-1, loc),
+    hwmR: numLit(-1, loc),
+    hwmW: numLit(-1, loc),
     autoDestroy: boolLit(true, loc),
     emitClose: boolLit(true, loc),
     allowHalfOpen: boolLit(true, loc),
@@ -699,8 +695,8 @@ function streamCtorArgs(L: Lowerer, cls: string, arg: ts.Expression | undefined,
   const o = parseStreamOptions(L, cls.slice(1), arg, thisType, shape.accepted, loc, fallbackCb);
   const head = shape.duplexShape
     ? [o.hwmR, o.hwmW, o.autoDestroy, o.emitClose, o.allowHalfOpen,
-       boolLit(o.readableSide, loc), boolLit(o.writableSide, loc), f64Lit(o.flags, loc)]
-    : [cls === "%Writable" ? o.hwmW : o.hwmR, o.autoDestroy, o.emitClose, f64Lit(o.flags, loc)];
+       boolLit(o.readableSide, loc), boolLit(o.writableSide, loc), numLit(o.flags, loc)]
+    : [cls === "%Writable" ? o.hwmW : o.hwmR, o.autoDestroy, o.emitClose, numLit(o.flags, loc)];
   return { args: [...head, ...o.cbs], encoding: o.encoding, badEncoding: o.badEncoding, pushEncoding: o.pushEncoding };
 }
 
@@ -905,7 +901,7 @@ export function lowerStreamSuperCall(L: Lowerer, info: ClassInfo, base: ClassInf
         expr: {
           kind: "libCall",
           fn: `${shape.fn}.initDyn` as IrLibFn,
-          args: [thisRef(), dynOpts, f64Lit(flags, loc), ...cbs],
+          args: [thisRef(), dynOpts, numLit(flags, loc), ...cbs],
           type: VOID,
           loc,
         },
@@ -1306,7 +1302,7 @@ export function lowerStreamModuleCall(L: Lowerer, call: ts.CallExpression,
       return {
         kind: "libCall",
         fn: "sp.pipeline",
-        args: [f64Lit(streams.length, loc), ...streams],
+        args: [numLit(streams.length, loc), ...streams],
         type: { kind: "promise", inner: VOID },
         loc,
       };
@@ -1367,9 +1363,9 @@ export function lowerStreamModuleCall(L: Lowerer, call: ts.CallExpression,
     // (lib/internal/streams/state.js: win32 keeps 16 KiB), so the fold
     // follows the TARGET platform like the path-module binding.
     if (args.length === 1 && args[0]!.kind === ts.SyntaxKind.FalseKeyword) {
-      return f64Lit(L.targetPlatform === "win32" ? 16384 : 65536, loc);
+      return numLit(L.targetPlatform === "win32" ? 16384 : 65536, loc);
     }
-    if (args.length === 1 && args[0]!.kind === ts.SyntaxKind.TrueKeyword) return f64Lit(16, loc);
+    if (args.length === 1 && args[0]!.kind === ts.SyntaxKind.TrueKeyword) return numLit(16, loc);
     L.noLowering("getDefaultHighWaterMark with a non-literal argument", call, "the objectMode flag must be a compile-time boolean");
   }
 
@@ -1414,7 +1410,7 @@ export function lowerStreamModuleCall(L: Lowerer, call: ts.CallExpression,
     return {
       kind: "libCall",
       fn: dyn ? "stream.pipelineDyn" : "stream.pipeline",
-      args: [f64Lit(streams.length, loc), ...streams, cb],
+      args: [numLit(streams.length, loc), ...streams, cb],
       type: last.type,
       loc,
     };
@@ -1563,7 +1559,7 @@ export function lowerStreamMethodCall(L: Lowerer, call: ts.CallExpression,
     requireSide(readableSide, "read");
     if (args.length > 1) L.noLowering(`read with ${args.length} arguments`, call);
     const receiver = L.lowerExpr(access.expression);
-    const size = args[0] ? L.lowerExprExpecting(args[0], F64) : f64Lit(-1, loc);
+    const size = args[0] ? L.lowerExprExpecting(args[0], F64) : numLit(-1, loc);
     const type: IrType = unionOf(L, [BYTES, { kind: "nullT" }]);
     const read: IrExpr = { kind: "libCall", fn: "readable.read", args: [receiver, size], type, loc };
     return L.maybeNarrow(read, call);
@@ -1745,7 +1741,7 @@ export function lowerStreamMethodCall(L: Lowerer, call: ts.CallExpression,
       flags |= 4;
       tail.push(cb);
     }
-    return { kind: "libCall", fn: "writable.end", args: [receiver, f64Lit(flags, loc), ...tail], type: receiver.type, loc };
+    return { kind: "libCall", fn: "writable.end", args: [receiver, numLit(flags, loc), ...tail], type: receiver.type, loc };
   }
 
   if (member === "cork" || member === "uncork") {

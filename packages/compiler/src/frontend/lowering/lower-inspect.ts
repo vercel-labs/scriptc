@@ -40,15 +40,11 @@ import { isJsSourceFile } from "../program.js";
 import { BOOL, DYN, F64, IrExpr, IrStmt, IrType, RUNTIME_ERROR_CLASSES, STRING, SrcLoc, canConvertToDyn, canDynCheckTo, shapeHasAccessorSlots, typeKey } from "../../ir/nodes.js";
 import type { ClassInfo } from "./lower-classes.js";
 import { pureReemittable } from "./lower-exprs.js";
+import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
 
 /* ── IR construction shorthand ───────────────────────────────────────── */
-
-const str = (value: string, loc: SrcLoc): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
-const num = (value: number, loc: SrcLoc): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-const boolLit = (value: boolean, loc: SrcLoc): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
-
 function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
-  if (parts.length === 0) return str("", loc);
+  if (parts.length === 0) return strLit("", loc);
   let out = parts[0]!;
   for (let i = 1; i < parts.length; i++) {
     out = { kind: "strConcat", left: out, right: parts[i]!, type: STRING, loc };
@@ -265,9 +261,9 @@ function inspectExpr(
     case "bool":
       return { kind: "toString", operand: value, type: STRING, loc };
     case "undefinedT":
-      return str("undefined", loc);
+      return strLit("undefined", loc);
     case "nullT":
-      return str("null", loc);
+      return strLit("null", loc);
     case "regex":
       return { kind: "libCall", fn: "insp.regex", args: [value], type: STRING, loc };
     case "symbol":
@@ -357,11 +353,10 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
   const name = `%util.insp.${L.inspectHelpers.size}`;
   L.inspectHelpers.set(key, name);
 
-  const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-  const v = (): IrExpr => ref("v.0", t);
-  const r = (): IrExpr => ref("r.0", F64);
-  const d = (): IrExpr => ref("d.0", F64);
-  const rPlus1 = (): IrExpr => ({ kind: "bin", op: "+", left: r(), right: num(1, loc), type: F64, loc });
+  const v = (): IrExpr => varRef("v.0", t, loc);
+  const r = (): IrExpr => varRef("r.0", F64, loc);
+  const d = (): IrExpr => varRef("d.0", F64, loc);
+  const rPlus1 = (): IrExpr => ({ kind: "bin", op: "+", left: r(), right: numLit(1, loc), type: F64, loc });
   const ret = (value: IrExpr): IrStmt => ({ kind: "return", value, loc });
   const exprStmt = (expr: IrExpr): IrStmt => ({ kind: "exprStmt", expr, loc });
   // CYCLE-CAPABLE composites (typeReachesItself) run Node's circular
@@ -396,7 +391,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
   const depthGate = (placeholder: string): IrStmt => ({
     kind: "if",
     cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
-    then: [ret(str(placeholder, loc))],
+    then: [ret(strLit(placeholder, loc))],
     else_: null,
     loc,
   });
@@ -419,27 +414,27 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         { id: "s.0", name: "s", type: F64, mutable: false },
         { id: "i.0", name: "i", type: F64, mutable: true },
       );
-      const n = (): IrExpr => ref("n.0", F64);
-      const shown = (): IrExpr => ref("s.0", F64);
-      const i = (): IrExpr => ref("i.0", F64);
-      const hasMore = (): IrExpr => ({ kind: "bin", op: ">", left: n(), right: num(100, loc), type: BOOL, loc });
+      const n = (): IrExpr => varRef("n.0", F64, loc);
+      const shown = (): IrExpr => varRef("s.0", F64, loc);
+      const i = (): IrExpr => varRef("i.0", F64, loc);
+      const hasMore = (): IrExpr => ({ kind: "bin", op: ">", left: n(), right: numLit(100, loc), type: BOOL, loc });
       body = [
         { kind: "varDecl", localId: "n.0", init: len(), loc },
         {
           kind: "if",
-          cond: { kind: "bin", op: "===", left: n(), right: num(0, loc), type: BOOL, loc },
-          then: [ret(str("[]", loc))],
+          cond: { kind: "bin", op: "===", left: n(), right: numLit(0, loc), type: BOOL, loc },
+          then: [ret(strLit("[]", loc))],
           else_: null,
           loc,
         },
         depthGate("[Array]"),
-        { kind: "varDecl", localId: "s.0", init: { kind: "ternary", cond: hasMore(), then: num(100, loc), else_: n(), type: F64, loc }, loc },
+        { kind: "varDecl", localId: "s.0", init: { kind: "ternary", cond: hasMore(), then: numLit(100, loc), else_: n(), type: F64, loc }, loc },
         ...begin(),
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0, loc), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: { kind: "bin", op: "<", left: i(), right: shown(), type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: num(1, loc), type: F64, loc }, loc },
+          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: numLit(1, loc), type: F64, loc }, loc },
           body: [entry(child(t.elem, at(i())), isNumberFlag(L, t.elem, () => at(i()), loc))],
           loc,
         },
@@ -451,17 +446,17 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
               {
                 kind: "libCall",
                 fn: "insp.moreItems",
-                args: [{ kind: "bin", op: "-", left: n(), right: num(100, loc), type: F64, loc }],
+                args: [{ kind: "bin", op: "-", left: n(), right: numLit(100, loc), type: F64, loc }],
                 type: STRING,
                 loc,
               },
-              isNumberFlag(L, t.elem, () => at(num(100, loc)), loc),
+              isNumberFlag(L, t.elem, () => at(numLit(100, loc)), loc),
             ),
           ],
           else_: null,
           loc,
         },
-        ret(end(str("", loc), str("[", loc), str("]", loc), true, hasMore())),
+        ret(end(strLit("", loc), strLit("[", loc), strLit("]", loc), true, hasMore())),
       ];
       break;
     }
@@ -472,14 +467,14 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       if (shape.tuple) {
         // Tuples ARE arrays to Node: bracket form, array-extras grouping.
         if (shape.fields.length === 0) {
-          body = [ret(str("[]", loc))];
+          body = [ret(strLit("[]", loc))];
           break;
         }
         body = [depthGate("[Array]"), ...begin()];
         for (const f of shape.fields) {
           body.push(entry(child(f.type, get(f.name, f.type)), isNumberFlag(L, f.type, () => get(f.name, f.type), loc)));
         }
-        body.push(ret(end(str("", loc), str("[", loc), str("]", loc), true, boolLit(false, loc))));
+        body.push(ret(end(strLit("", loc), strLit("[", loc), strLit("]", loc), true, boolLit(false, loc))));
         break;
       }
       if (shape.indexValue && shape.fields.length === 0) {
@@ -497,10 +492,10 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
           { id: "i.0", name: "i", type: F64, mutable: true },
           { id: "k.0", name: "k", type: STRING, mutable: false },
         );
-        const ks = (): IrExpr => ref("ks.0", ksT);
-        const n = (): IrExpr => ref("n.0", F64);
-        const i = (): IrExpr => ref("i.0", F64);
-        const k = (): IrExpr => ref("k.0", STRING);
+        const ks = (): IrExpr => varRef("ks.0", ksT, loc);
+        const n = (): IrExpr => varRef("n.0", F64, loc);
+        const i = (): IrExpr => varRef("i.0", F64, loc);
+        const k = (): IrExpr => varRef("k.0", STRING, loc);
         const keyedRead = (): IrExpr =>
           ({ kind: "recordKeyGet", obj: v(), shapeId: t.shapeId, key: k(), overflowOnly: true, type: iv, loc });
         body = [
@@ -508,8 +503,8 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
           { kind: "varDecl", localId: "n.0", init: { kind: "arrIntrinsic", method: "length", receiver: ks(), args: [], type: F64, loc }, loc },
           {
             kind: "if",
-            cond: { kind: "bin", op: "===", left: n(), right: num(0, loc), type: BOOL, loc },
-            then: [ret(str("{}", loc))],
+            cond: { kind: "bin", op: "===", left: n(), right: numLit(0, loc), type: BOOL, loc },
+            then: [ret(strLit("{}", loc))],
             else_: null,
             loc,
           },
@@ -517,16 +512,16 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
           ...begin(),
           {
             kind: "for",
-            init: { kind: "varDecl", localId: "i.0", init: num(0, loc), loc },
+            init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
             cond: { kind: "bin", op: "<", left: i(), right: n(), type: BOOL, loc },
-            update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: num(1, loc), type: F64, loc }, loc },
+            update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: numLit(1, loc), type: F64, loc }, loc },
             body: [
               { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: ks(), index: i(), type: STRING, loc }, loc },
               entry(
                 concatAll(
                   [
                     { kind: "libCall", fn: "insp.key", args: [k()], type: STRING, loc },
-                    str(": ", loc),
+                    strLit(": ", loc),
                     child(iv, keyedRead()),
                   ],
                   loc,
@@ -536,12 +531,12 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
             ],
             loc,
           },
-          ret(end(str("", loc), str("{", loc), str("}", loc), false, boolLit(false, loc))),
+          ret(end(strLit("", loc), strLit("{", loc), strLit("}", loc), false, boolLit(false, loc))),
         ];
         break;
       }
       if (shape.fields.length === 0) {
-        body = [ret(str("{}", loc))];
+        body = [ret(strLit("{}", loc))];
         break;
       }
       // Object.keys' declared order (SEMANTICS.md 36's stance). Retained
@@ -557,12 +552,12 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
           if (!ft) continue;
           body.push(
             entry(
-              concatAll([str(`${inspectKey(fname)}: `, loc), child(ft, get(fname, ft))], loc),
+              concatAll([strLit(`${inspectKey(fname)}: `, loc), child(ft, get(fname, ft))], loc),
               boolLit(false, loc),
             ),
           );
         }
-        body.push(ret(end(str("", loc), str("{", loc), str("}", loc), false, boolLit(false, loc))));
+        body.push(ret(end(strLit("", loc), strLit("{", loc), strLit("}", loc), false, boolLit(false, loc))));
       };
       rebuildShapeOrderBody();
       break;
@@ -579,35 +574,35 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         { id: "i.0", name: "i", type: F64, mutable: true },
         { id: "c.0", name: "c", type: F64, mutable: true },
       );
-      const n = (): IrExpr => ref("n.0", F64);
-      const i = (): IrExpr => ref("i.0", F64);
-      const c = (): IrExpr => ref("c.0", F64);
+      const n = (): IrExpr => varRef("n.0", F64, loc);
+      const i = (): IrExpr => varRef("i.0", F64, loc);
+      const c = (): IrExpr => varRef("c.0", F64, loc);
       const label = isMap ? "Map" : "Set";
       const keyT = isMap ? (t as IrType & { kind: "map" }).key : (t as IrType & { kind: "set" }).elem;
-      const hasMore = (): IrExpr => ({ kind: "bin", op: ">", left: n(), right: num(100, loc), type: BOOL, loc });
+      const hasMore = (): IrExpr => ({ kind: "bin", op: ">", left: n(), right: numLit(100, loc), type: BOOL, loc });
       const entryValue = (): IrExpr => {
         const k = child(keyT, mi("iterKey", [i()], keyT));
         if (!isMap) return k;
         const valueT = (t as IrType & { kind: "map" }).value;
-        return concatAll([k, str(" => ", loc), child(valueT, mi("iterValue", [i()], valueT))], loc);
+        return concatAll([k, strLit(" => ", loc), child(valueT, mi("iterValue", [i()], valueT))], loc);
       };
       body = [
         { kind: "varDecl", localId: "n.0", init: mi("size", [], F64), loc },
         {
           kind: "if",
-          cond: { kind: "bin", op: "===", left: n(), right: num(0, loc), type: BOOL, loc },
-          then: [ret(str(`${label}(0) {}`, loc))],
+          cond: { kind: "bin", op: "===", left: n(), right: numLit(0, loc), type: BOOL, loc },
+          then: [ret(strLit(`${label}(0) {}`, loc))],
           else_: null,
           loc,
         },
         depthGate(`[${label}]`),
         ...begin(),
-        { kind: "varDecl", localId: "c.0", init: num(0, loc), loc },
+        { kind: "varDecl", localId: "c.0", init: numLit(0, loc), loc },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0, loc), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: { kind: "bin", op: "<", left: i(), right: mi("iterCount", [], F64), type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: num(1, loc), type: F64, loc }, loc },
+          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: numLit(1, loc), type: F64, loc }, loc },
           body: [
             {
               kind: "if",
@@ -618,13 +613,13 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
             },
             {
               kind: "if",
-              cond: { kind: "bin", op: "===", left: c(), right: num(100, loc), type: BOOL, loc },
+              cond: { kind: "bin", op: "===", left: c(), right: numLit(100, loc), type: BOOL, loc },
               then: [{ kind: "break", loc }],
               else_: null,
               loc,
             },
             entry(entryValue(), boolLit(false, loc)),
-            { kind: "assign", localId: "c.0", value: { kind: "bin", op: "+", left: c(), right: num(1, loc), type: F64, loc }, loc },
+            { kind: "assign", localId: "c.0", value: { kind: "bin", op: "+", left: c(), right: numLit(1, loc), type: F64, loc }, loc },
           ],
           loc,
         },
@@ -636,7 +631,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
               {
                 kind: "libCall",
                 fn: "insp.moreItems",
-                args: [{ kind: "bin", op: "-", left: n(), right: num(100, loc), type: F64, loc }],
+                args: [{ kind: "bin", op: "-", left: n(), right: numLit(100, loc), type: F64, loc }],
                 type: STRING,
                 loc,
               },
@@ -648,9 +643,9 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         },
         ret(
           end(
-            str("", loc),
-            concatAll([str(`${label}(`, loc), { kind: "toString", operand: n(), type: STRING, loc }, str(") {", loc)], loc),
-            str("}", loc),
+            strLit("", loc),
+            concatAll([strLit(`${label}(`, loc), { kind: "toString", operand: n(), type: STRING, loc }, strLit(") {", loc)], loc),
+            strLit("}", loc),
             false,
             hasMore(),
           ),
@@ -674,7 +669,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
           loc,
         });
       });
-      body.push(ret(str("", loc))); // unreachable: some arm always matches
+      body.push(ret(strLit("", loc))); // unreachable: some arm always matches
       break;
     }
     case "object": {
@@ -689,7 +684,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       // so a class whose only fields are private prints as `C {}`.
       const visible = info.def.fields.filter((f) => !f.name.startsWith("#"));
       if (visible.length === 0) {
-        body = [ret(str(`${display} {}`, loc))];
+        body = [ret(strLit(`${display} {}`, loc))];
         break;
       }
       const get = (field: string, type: IrType): IrExpr => ({ kind: "fieldGet", obj: v(), className: t.className, field, type, loc });
@@ -709,10 +704,10 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       for (const f of ordered) {
         const key = symNames.has(f.name) ? f.name : inspectKey(f.name);
         body.push(
-          entry(concatAll([str(`${key}: `, loc), child(f.type, get(f.name, f.type))], loc), boolLit(false, loc)),
+          entry(concatAll([strLit(`${key}: `, loc), child(f.type, get(f.name, f.type))], loc), boolLit(false, loc)),
         );
       }
-      body.push(ret(end(str("", loc), str(`${display} {`, loc), str("}", loc), false, boolLit(false, loc))));
+      body.push(ret(end(strLit("", loc), strLit(`${display} {`, loc), strLit("}", loc), false, boolLit(false, loc))));
       break;
     }
     default:
@@ -726,7 +721,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
     // [Circular *N] and descends no further — Node's formatValue order
     // (a circular target beyond the depth budget still says Circular).
     locals.push({ id: "cc.0", name: "cc", type: F64, mutable: false });
-    const cc = (): IrExpr => ref("cc.0", F64);
+    const cc = (): IrExpr => varRef("cc.0", F64, loc);
     prependCycleGuard = (): void => {
       body.unshift(
         {
@@ -737,7 +732,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         },
         {
           kind: "if",
-          cond: { kind: "bin", op: ">", left: cc(), right: num(0, loc), type: BOOL, loc },
+          cond: { kind: "bin", op: ">", left: cc(), right: numLit(0, loc), type: BOOL, loc },
           then: [ret({ kind: "libCall", fn: "insp.circular", args: [cc()], type: STRING, loc })],
           else_: null,
           loc,
@@ -788,17 +783,17 @@ function formatValueExpr(L: Lowerer, t: IrType, value: IrExpr, depth: number, lo
     case "bool":
       return { kind: "toString", operand: value, type: STRING, loc };
     case "undefinedT":
-      return str("undefined", loc);
+      return strLit("undefined", loc);
     case "nullT":
-      return str("null", loc);
+      return strLit("null", loc);
     case "symbol":
       return { kind: "libCall", fn: "sym.toString", args: [value], type: STRING, loc };
     case "dyn":
-      return { kind: "libCall", fn: "insp.dynS", args: [value, num(depth, loc)], type: STRING, loc };
+      return { kind: "libCall", fn: "insp.dynS", args: [value, numLit(depth, loc)], type: STRING, loc };
     case "union":
       return { kind: "call", callee: formatUnionHelper(L, t, depth, loc), args: [value], type: STRING, loc };
     default:
-      return inspectExpr(L, t, value, num(0, loc), num(depth, loc), loc);
+      return inspectExpr(L, t, value, numLit(0, loc), numLit(depth, loc), loc);
   }
 }
 
@@ -826,7 +821,7 @@ function formatUnionHelper(L: Lowerer, t: IrType & { kind: "union" }, depth: num
       loc,
     });
   });
-  body.push({ kind: "return", value: str("", loc), loc }); // unreachable: some arm always matches
+  body.push({ kind: "return", value: strLit("", loc), loc }); // unreachable: some arm always matches
   L.liftedFns.push({
     name,
     params: [{ localId: "v.0", name: "v", type: t }],
@@ -863,7 +858,7 @@ export function lowerConsoleInspectArg(
         `${surface} of an effectful '${L.fmt(t)}'-typed expression (evaluate it first: const v = ...; ${surface}(v))`,
       );
     }
-    return str(t.kind === "undefinedT" ? "undefined" : "null", loc);
+    return strLit(t.kind === "undefinedT" ? "undefined" : "null", loc);
   }
   if (t.kind === "bytes") {
     // One runtime representation serves Buffer AND Uint8Array; their
@@ -879,7 +874,7 @@ export function lowerConsoleInspectArg(
         `${surface} of '${tname}' values (Buffer's <Buffer ..> form is the lowered typed-array rendering; other typed arrays fence)`,
       );
     }
-    return inspectExpr(L, t, value, num(0, loc), num(2, loc), loc);
+    return inspectExpr(L, t, value, numLit(0, loc), numLit(2, loc), loc);
   }
   if (t.kind === "void") {
     // Node prints "undefined" for a void call's result; a void expression
@@ -977,15 +972,15 @@ function directCallableInspect(L: Lowerer, node: ts.Expression, loc: SrcLoc): Ir
   if (cls) {
     if (cls.builtinError) {
       // Node's Error constructors are native functions, not classes.
-      return str(`[Function: ${cls.def.name.replace(/^%/, "")}]`, loc);
+      return strLit(`[Function: ${cls.def.name.replace(/^%/, "")}]`, loc);
     }
     const base = cls.base ? ` extends ${cls.base.def.name.replace(/^%/, "")}` : "";
-    return str(`[class ${cls.def.name}${base}]`, loc);
+    return strLit(`[class ${cls.def.name}${base}]`, loc);
   }
   const decl = L.checker.declarationsOf(sym)[0];
   if (!decl) return null;
   if (ts.isFunctionDeclaration(decl) && decl.name) {
-    return str(`[Function: ${decl.name.text}]`, loc);
+    return strLit(`[Function: ${decl.name.text}]`, loc);
   }
   if (
     ts.isVariableDeclaration(decl) &&
@@ -996,7 +991,7 @@ function directCallableInspect(L: Lowerer, node: ts.Expression, loc: SrcLoc): Ir
     // JS name inference: the binding names the function value — unless
     // the function expression carries its OWN name, which wins.
     const own = ts.isFunctionExpression(decl.initializer) ? decl.initializer.name?.text : undefined;
-    return str(`[Function: ${own ?? decl.name.text}]`, loc);
+    return strLit(`[Function: ${own ?? decl.name.text}]`, loc);
   }
   return null;
 }
@@ -1020,7 +1015,7 @@ function lowerInspectCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrE
   }
   if (ts.isArrowFunction(valueNode) || ts.isFunctionExpression(valueNode)) {
     parseInspectOptions(L, expr.arguments[1], false);
-    return str(valueNode.kind === ts.SyntaxKind.FunctionExpression && (valueNode as ts.FunctionExpression).name ? `[Function: ${(valueNode as ts.FunctionExpression).name!.text}]` : "[Function (anonymous)]", loc);
+    return strLit(valueNode.kind === ts.SyntaxKind.FunctionExpression && (valueNode as ts.FunctionExpression).name ? `[Function: ${(valueNode as ts.FunctionExpression).name!.text}]` : "[Function (anonymous)]", loc);
   }
   const value = L.lowerExpr(valueNode);
   if (value.type.kind === "bytes") {
@@ -1040,7 +1035,7 @@ function lowerInspectCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrE
     }
     const bufDepth = parseInspectOptions(L, expr.arguments[1], false);
     void bufDepth; // Buffers render fully at any depth (custom inspect)
-    return inspectExpr(L, value.type, value, num(0, loc), num(2, loc), loc);
+    return inspectExpr(L, value.type, value, numLit(0, loc), numLit(2, loc), loc);
   }
   const walk = { recursive: false };
   const reason = inspectSupport(L, value.type, new Set(), walk);
@@ -1048,7 +1043,7 @@ function lowerInspectCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrE
     L.noLowering(`util.inspect of '${L.fmt(value.type)}' values`, valueNode, reason);
   }
   const depth = parseInspectOptions(L, expr.arguments[1], walk.recursive);
-  return inspectExpr(L, value.type, value, num(0, loc), num(depth, loc), loc);
+  return inspectExpr(L, value.type, value, numLit(0, loc), numLit(depth, loc), loc);
 }
 
 /* ── util.format / util.formatWithOptions ────────────────────────────── */
@@ -1062,13 +1057,13 @@ function formatSArg(L: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc)
   if (t.kind === "string") return value;
   if (t.kind === "f64") return { kind: "libCall", fn: "insp.f64", args: [value], type: STRING, loc };
   if (t.kind === "bool") return { kind: "toString", operand: value, type: STRING, loc };
-  if (t.kind === "undefinedT") return str("undefined", loc);
-  if (t.kind === "nullT") return str("null", loc);
+  if (t.kind === "undefinedT") return strLit("undefined", loc);
+  if (t.kind === "nullT") return strLit("null", loc);
   // %s of a symbol prints inspect's text ("Symbol(foo)") — String(sym)'s
   // answer too, one runtime call either way.
   if (t.kind === "symbol") return { kind: "libCall", fn: "sym.toString", args: [value], type: STRING, loc };
   if (t.kind === "dyn") {
-    return { kind: "libCall", fn: "insp.dynS", args: [value, num(depth, loc)], type: STRING, loc };
+    return { kind: "libCall", fn: "insp.dynS", args: [value, numLit(depth, loc)], type: STRING, loc };
   }
   // A UNION argument dispatches per arm at runtime: a string arm prints
   // VERBATIM (typeof arg === 'string' in Node's formatter — inspect's
@@ -1098,7 +1093,7 @@ function formatSArg(L: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc)
   const walk = { recursive: false };
   const reason = inspectSupport(L, t, new Set(), walk);
   if (reason !== null) L.noLowering(`util.format %s of '${L.fmt(t)}' values`, node, reason);
-  return inspectExpr(L, t, value, num(0, loc), num(depth, loc), loc);
+  return inspectExpr(L, t, value, numLit(0, loc), numLit(depth, loc), loc);
 }
 
 /** %O (depth 2) / %o (showHidden, depth 4) — inspect with the spec's
@@ -1119,7 +1114,7 @@ function formatOArg(L: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc)
       "%o renders with showHidden (arrays gain a hidden [length] entry) — use %O for the default rendering",
     );
   }
-  return inspectExpr(L, value.type, value, num(0, loc), num(depth, loc), loc);
+  return inspectExpr(L, value.type, value, numLit(0, loc), numLit(depth, loc), loc);
 }
 
 /** util.format(...) / util.formatWithOptions({}, ...): the compile-time
@@ -1139,7 +1134,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
       );
     }
   }
-  if (argNodes.length === 0) return str("", loc);
+  if (argNodes.length === 0) return strLit("", loc);
   const first = argNodes[0]!;
   const firstIsLiteral = ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first);
 
@@ -1159,7 +1154,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
     // No substitutions possible: every argument joins with spaces.
     const parts: IrExpr[] = [];
     for (let i = 0; i < argNodes.length; i++) {
-      if (i > 0) parts.push(str(" ", loc));
+      if (i > 0) parts.push(strLit(" ", loc));
       parts.push(restArg(argNodes[i]!));
     }
     return concatAll(parts, loc);
@@ -1168,7 +1163,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
   const fmt = (first as ts.StringLiteralLike).text;
   // Node's early return: a lone string first argument passes VERBATIM —
   // no substitution runs, "%%" stays "%%".
-  if (argNodes.length === 1) return str(fmt, loc);
+  if (argNodes.length === 1) return strLit(fmt, loc);
   const parts: IrExpr[] = [];
   let a = 0; // the arg cursor over argNodes (0 = the format string)
   let lastPos = 0;
@@ -1191,7 +1186,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
           return {
             kind: "libCall",
             fn: "insp.f64",
-            args: [{ kind: "ternary", cond: value, then: num(1, loc), else_: num(0, loc), type: F64, loc }],
+            args: [{ kind: "ternary", cond: value, then: numLit(1, loc), else_: numLit(0, loc), type: F64, loc }],
             type: STRING,
             loc,
           };
@@ -1218,7 +1213,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
         const value = L.lowerExpr(node);
         if (value.type.kind === "f64" || value.type.kind === "bool" || value.type.kind === "string") {
           const text: IrExpr = value.type.kind === "string" ? value : { kind: "toString", operand: value, type: STRING, loc };
-          const parsed: IrExpr = { kind: "libCall", fn: "num.parseInt", args: [text, num(0, loc)], type: F64, loc };
+          const parsed: IrExpr = { kind: "libCall", fn: "num.parseInt", args: [text, numLit(0, loc)], type: F64, loc };
           return { kind: "libCall", fn: "insp.f64", args: [parsed], type: STRING, loc };
         }
         L.noLowering(`util.format %i of '${L.fmt(value.type)}' values`, node);
@@ -1228,7 +1223,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
         // %j — JSON.stringify; undefined-valued args print "undefined"
         // (Node appends the non-string result of tryStringify).
         const value = L.lowerExpr(node);
-        if (value.type.kind === "undefinedT") return str("undefined", loc);
+        if (value.type.kind === "undefinedT") return strLit("undefined", loc);
         // JSON.stringify(sym) is undefined in Node — %j prints the
         // "undefined" text. Folding drops the operand, so only
         // side-effect-free reads compose (the typeof-fold stance).
@@ -1240,7 +1235,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
               "bind the symbol to a const first (the %j text is always \"undefined\")",
             );
           }
-          return str("undefined", loc);
+          return strLit("undefined", loc);
         }
         // A checked-dynamic argument (`console.error('headers: %j',
         // headers)` — the suite's http logging idiom): the runtime dyn
@@ -1274,7 +1269,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
           case 111: // o
           case 105: { // i
             const node = args[++a]!;
-            if (lastPos !== i - 1) parts.push(str(fmt.slice(lastPos, i - 1), loc));
+            if (lastPos !== i - 1) parts.push(strLit(fmt.slice(lastPos, i - 1), loc));
             parts.push(convert(nextChar, node));
             lastPos = i + 1;
             continue;
@@ -1284,33 +1279,33 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
             break;
           case 99: // c — consumes its argument, contributes nothing
             a += 1;
-            if (lastPos !== i - 1) parts.push(str(fmt.slice(lastPos, i - 1), loc));
+            if (lastPos !== i - 1) parts.push(strLit(fmt.slice(lastPos, i - 1), loc));
             lastPos = i + 1;
             continue;
           case 37: // %%
-            parts.push(str(fmt.slice(lastPos, i), loc));
+            parts.push(strLit(fmt.slice(lastPos, i), loc));
             lastPos = i + 1;
             continue;
           default:
             continue;
         }
       } else if (nextChar === 37) {
-        parts.push(str(fmt.slice(lastPos, i), loc));
+        parts.push(strLit(fmt.slice(lastPos, i), loc));
         lastPos = i + 1;
       }
     }
   }
   if (lastPos !== 0) {
     a++;
-    if (lastPos < fmt.length) parts.push(str(fmt.slice(lastPos), loc));
+    if (lastPos < fmt.length) parts.push(strLit(fmt.slice(lastPos), loc));
   } else {
     // No substitution touched the format string: it joins verbatim, and
     // the cursor advances past it.
-    parts.push(str(fmt, loc));
+    parts.push(strLit(fmt, loc));
     a++;
   }
   for (; a < args.length; a++) {
-    parts.push(str(" ", loc));
+    parts.push(strLit(" ", loc));
     parts.push(restArg(args[a]!));
   }
   return concatAll(parts, loc);

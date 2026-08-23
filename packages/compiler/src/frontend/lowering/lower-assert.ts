@@ -28,6 +28,7 @@ import { jsFuncNameOf, own } from "./lowerer.js";
 import { NARROW_FIRST } from "./surfaces.js";
 import { typeReachesItself } from "./lower-inspect.js";
 import { BOOL, CAUGHT, DYN, DYN_HANDLE_KINDS, F64, IrExpr, IrLibFn, IrStmt, IrType, REGEX, RUNTIME_ERROR_CLASSES, STRING, SrcLoc, VOID, isUnitType, typeEquals, typeKey } from "../../ir/nodes.js";
+import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
 
 /** node:assert/strict binds the loose NAMES to the strict comparisons —
  * Node's own aliasing (`strict.equal === assert.strictEqual`). */
@@ -66,9 +67,8 @@ function lowerMessageArg(
   node: ts.Expression | undefined,
   loc: SrcLoc,
 ): { msg: IrExpr; hasMsg: IrExpr } {
-  const flag = (value: boolean): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
   if (!node || (ts.isIdentifier(node) && node.text === "undefined")) {
-    return { msg: { kind: "strLit", value: "", type: STRING, loc }, hasMsg: flag(false) };
+    return { msg: { kind: "strLit", value: "", type: STRING, loc }, hasMsg: boolLit(false, loc) };
   }
   const msg = L.lowerExpr(node);
   if (msg.type.kind !== "string") {
@@ -78,7 +78,7 @@ function lowerMessageArg(
       "only string messages lower (Node also accepts an Error to throw — construct and throw it directly)",
     );
   }
-  return { msg, hasMsg: flag(true) };
+  return { msg, hasMsg: boolLit(true, loc) };
 }
 
 /** The module-function dispatch — the spoke's entry, called from both the
@@ -243,7 +243,7 @@ function lowerAssertEqual(
     b = emptyArrayLit(bNode) ? (adoptedEmpty(a.type) ?? L.lowerExpr(bNode)) : L.lowerExpr(bNode);
   }
   const { msg, hasMsg } = lowerMessageArg(L, expr.arguments[2], loc);
-  const flag = (value: boolean): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
+
   // CHECKED-DYNAMIC operands (dyn-vs-dyn, dyn-vs-static): both sides
   // cross into the checked-dynamic tree and one runtime entry answers the whole quartet —
   // SameValue for the strict pair (boxed-closure identity for
@@ -304,7 +304,7 @@ function lowerAssertEqual(
     return {
       kind: "libCall",
       fn: "assert.eqDyn",
-      args: [box(a, aNode), box(b, bNode), flag(negated), flag(deep), msg, hasMsg],
+      args: [box(a, aNode), box(b, bNode), boolLit(negated, loc), boolLit(deep, loc), msg, hasMsg],
       type: VOID,
       loc,
     };
@@ -328,7 +328,7 @@ function lowerAssertEqual(
     return {
       kind: "libCall",
       fn: scalarFn,
-      args: [a, b, flag(negated), flag(deep), msg, hasMsg],
+      args: [a, b, boolLit(negated, loc), boolLit(deep, loc), msg, hasMsg],
       type: VOID,
       loc,
     };
@@ -350,11 +350,11 @@ function lowerAssertEqual(
       // Brands shape only the failure HEADER (same-structure vs
       // reference-equal expectation); an unclassifiable side defers to the
       // content probe.
-      const brandsEq = flag(brandA === null || brandB === null || brandA === brandB);
+      const brandsEq = boolLit(brandA === null || brandB === null || brandA === brandB, loc);
       return {
         kind: "libCall",
         fn: "assert.refEqBytes",
-        args: [a, b, flag(negated), brandsEq, msg, hasMsg],
+        args: [a, b, boolLit(negated, loc), brandsEq, msg, hasMsg],
         type: VOID,
         loc,
       };
@@ -369,14 +369,14 @@ function lowerAssertEqual(
     const verdict: IrExpr = {
       kind: "libCall",
       fn: "assert.bytesDeepEq",
-      args: [a, b, flag(brandA === brandB)],
+      args: [a, b, boolLit(brandA === brandB, loc)],
       type: BOOL,
       loc,
     };
     return {
       kind: "libCall",
       fn: "assert.deepResult",
-      args: [verdict, flag(negated), msg, hasMsg],
+      args: [verdict, boolLit(negated, loc), msg, hasMsg],
       type: VOID,
       loc,
     };
@@ -391,7 +391,7 @@ function lowerAssertEqual(
     return {
       kind: "libCall",
       fn: "assert.refEqFn",
-      args: [a, b, flag(negated), msg, hasMsg],
+      args: [a, b, boolLit(negated, loc), msg, hasMsg],
       type: VOID,
       loc,
     };
@@ -418,7 +418,7 @@ function lowerAssertEqual(
     return {
       kind: "libCall",
       fn: "assert.deepResult",
-      args: [flag(true), flag(negated), msg, hasMsg],
+      args: [boolLit(true, loc), boolLit(negated, loc), msg, hasMsg],
       type: VOID,
       loc,
     };
@@ -432,7 +432,7 @@ function lowerAssertEqual(
   return {
     kind: "libCall",
     fn: "assert.deepResult",
-    args: [verdict, flag(negated), msg, hasMsg],
+    args: [verdict, boolLit(negated, loc), msg, hasMsg],
     type: VOID,
     loc,
   };
@@ -823,11 +823,7 @@ function assertThrowsHelper(
   const name = `%assert.${mode}.${L.assertHelpers.size}`;
   L.assertHelpers.set(key, name);
 
-  const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-  const flag = (value: boolean): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
-  const str = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
-  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-  const caughtRef = (): IrExpr => ref("e.0", CAUGHT);
+  const caughtRef = (): IrExpr => varRef("e.0", CAUGHT, loc);
   const errT: IrType = { kind: "object", className: "%Error" };
   const narrowed = (): IrExpr => ({ kind: "caughtNarrow", value: caughtRef(), type: errT, loc });
   const isInstance = (className: string): IrExpr => ({
@@ -838,8 +834,8 @@ function assertThrowsHelper(
     expr: { kind: "libCall", fn, args, type: VOID, loc },
     loc,
   });
-  const m = (): IrExpr => ref("m.0", STRING);
-  const hm = (): IrExpr => ref("hm.0", BOOL);
+  const m = (): IrExpr => varRef("m.0", STRING, loc);
+  const hm = (): IrExpr => varRef("hm.0", BOOL, loc);
   const doReturn: IrStmt = { kind: "return", value: null, loc };
   const rethrow: IrStmt = { kind: "rethrow", localId: "e.0", loc };
   const ifStmt = (cond: IrExpr, then: IrStmt[]): IrStmt => ({ kind: "if", cond, then, else_: null, loc });
@@ -872,8 +868,8 @@ function assertThrowsHelper(
     expected.keys.forEach((k, i) => {
       stmts.push(
         lib(k.kind === "str" ? "assert.shapeStr" : "assert.shapeRe", [
-          num(k.id),
-          ref(shapeParamIds[i]!, k.kind === "str" ? STRING : REGEX),
+          numLit(k.id, loc),
+          varRef(shapeParamIds[i]!, k.kind === "str" ? STRING : REGEX, loc),
         ]),
       );
     });
@@ -885,16 +881,16 @@ function assertThrowsHelper(
   // compile-time rendering of a regex-literal name); a non-literal regex
   // name drops the detail (a documented sliver).
   const ename = ((): { e: IrExpr; has: boolean } => {
-    if (expected.form === "class") return { e: str(expected.displayName), has: true };
+    if (expected.form === "class") return { e: strLit(expected.displayName, loc), has: true };
     if (expected.form === "shape") {
       const i = expected.keys.findIndex((k) => k.id === 2);
       if (i >= 0) {
         const k = expected.keys[i]!;
-        if (k.kind === "str") return { e: ref(shapeParamIds[i]!, STRING), has: true };
-        if (k.enameBake !== null) return { e: str(k.enameBake), has: true };
+        if (k.kind === "str") return { e: varRef(shapeParamIds[i]!, STRING, loc), has: true };
+        if (k.enameBake !== null) return { e: strLit(k.enameBake, loc), has: true };
       }
     }
-    return { e: str(""), has: false };
+    return { e: strLit("", loc), has: false };
   })();
 
   let catchBody: IrStmt[];
@@ -922,7 +918,7 @@ function assertThrowsHelper(
               {
                 kind: "libCall",
                 fn: "assert.regexErrTest",
-                args: [ref("re.0", REGEX), narrowed()],
+                args: [varRef("re.0", REGEX, loc), narrowed()],
                 type: BOOL,
                 loc,
               },
@@ -947,7 +943,7 @@ function assertThrowsHelper(
         catchBody = [
           ifStmt(isInstance(expected.className), [doReturn]),
           ifStmt(isInstance("%Error"), [
-            lib("assert.throwsMismatch", [str(expected.displayName), narrowed(), m(), hm()]),
+            lib("assert.throwsMismatch", [strLit(expected.displayName, loc), narrowed(), m(), hm()]),
           ]),
           // A non-Error thrown value: propagate (SEMANTICS.md 104; the
           // mismatch throw above never falls through — its pending
@@ -958,7 +954,7 @@ function assertThrowsHelper(
       case "regex":
         catchBody = [
           ifStmt(isInstance("%Error"), [
-            lib("assert.throwsRegex", [ref("re.0", REGEX), narrowed(), m(), hm()]),
+            lib("assert.throwsRegex", [varRef("re.0", REGEX, loc), narrowed(), m(), hm()]),
             doReturn,
           ]),
           rethrow,
@@ -982,7 +978,7 @@ function assertThrowsHelper(
         catchBody = [
           lib("assert.expectsErrDyn", [
             { kind: "caughtToDyn", value: caughtRef(), type: DYN, loc },
-            ref("ev.0", DYN),
+            varRef("ev.0", DYN, loc),
             m(),
             hm(),
           ]),
@@ -999,14 +995,14 @@ function assertThrowsHelper(
     tryBody = [
       {
         kind: "exprStmt",
-        expr: { kind: "callValue", callee: ref("f.0", fnT), args: [], type: fnT.ret, loc },
+        expr: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: [], type: fnT.ret, loc },
         loc,
       },
     ];
   } else {
     let awaited: IrExpr;
     if (recvIsPromise) {
-      awaited = ref("f.0", recvType);
+      awaited = varRef("f.0", recvType, loc);
     } else {
       const fnT = recvType as IrType & { kind: "func" };
       const promT = fnT.ret;
@@ -1014,10 +1010,10 @@ function assertThrowsHelper(
       body.push({
         kind: "varDecl",
         localId: "pr.0",
-        init: { kind: "callValue", callee: ref("f.0", fnT), args: [], type: promT, loc },
+        init: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: [], type: promT, loc },
         loc,
       });
-      awaited = ref("pr.0", promT);
+      awaited = varRef("pr.0", promT, loc);
     }
     const inner = (awaited.type as IrType & { kind: "promise" }).inner;
     tryBody = [
@@ -1026,7 +1022,7 @@ function assertThrowsHelper(
   }
   body.push({ kind: "tryCatch", tryBody, catchBody, catchLocalId: "e.0", finallyBody: null, loc });
   if (mode !== "dnr") {
-    body.push(lib("assert.throwsNone", [flag(mode === "rejects"), ename.e, flag(ename.has), m(), hm()]));
+    body.push(lib("assert.throwsNone", [boolLit(mode === "rejects", loc), ename.e, boolLit(ename.has, loc), m(), hm()]));
   }
   body.push(doReturn);
 
@@ -1299,13 +1295,10 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
   const name = `%assert.deq.${L.assertHelpers.size}`;
   L.assertHelpers.set(key, name);
 
-  const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-  const a = (): IrExpr => ref("a.0", t);
-  const b = (): IrExpr => ref("b.0", t);
-  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-  const boolLit = (value: boolean): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
+  const a = (): IrExpr => varRef("a.0", t, loc);
+  const b = (): IrExpr => varRef("b.0", t, loc);
   const ret = (value: IrExpr): IrStmt => ({ kind: "return", value, loc });
-  const retFalse: IrStmt = ret(boolLit(false));
+  const retFalse: IrStmt = ret(boolLit(false, loc));
   const not = (operand: IrExpr): IrExpr => ({ kind: "unary", op: "!", operand, type: BOOL, loc });
   const neq = (left: IrExpr, right: IrExpr): IrExpr => ({ kind: "bin", op: "!==", left, right, type: BOOL, loc });
   /** if (cond) return false; */
@@ -1313,7 +1306,7 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
   /** Deep-compare two same-typed exprs through the per-type helper. */
   const deq = (elemT: IrType, x: IrExpr, y: IrExpr): IrExpr =>
     isUnitType(elemT)
-      ? boolLit(true)
+      ? boolLit(true, loc)
       : { kind: "call", callee: deepEqHelper(L, elemT, loc), args: [x, y], type: BOOL, loc };
 
   let locals: { id: string; name: string; type: IrType; mutable: boolean }[] = [
@@ -1346,13 +1339,13 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         bailIf(neq(len(a()), len(b()))),
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-          cond: { kind: "bin", op: "<", left: ref("i.0", F64), right: len(a()), type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc }, loc },
-          body: [bailIf(not(deq(t.elem, at(a(), ref("i.0", F64)), at(b(), ref("i.0", F64)))))],
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+          cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: len(a()), type: BOOL, loc },
+          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
+          body: [bailIf(not(deq(t.elem, at(a(), varRef("i.0", F64, loc)), at(b(), varRef("i.0", F64, loc)))))],
           loc,
         },
-        ret(boolLit(true)),
+        ret(boolLit(true, loc)),
       ];
       break;
     }
@@ -1365,7 +1358,7 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         if (isUnitType(f.type)) continue; // a unit field is equal by type
         body.push(bailIf(not(deq(f.type, get(a(), f.name, f.type), get(b(), f.name, f.type)))));
       }
-      body.push(ret(boolLit(true)));
+      body.push(ret(boolLit(true, loc)));
       break;
     }
     case "union": {
@@ -1402,18 +1395,18 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         { id: "av.0", name: "av", type: valueT, mutable: false },
         { id: "bv.0", name: "bv", type: getT, mutable: false },
       );
-      const i = (): IrExpr => ref("i.0", F64);
-      const k = (): IrExpr => ref("k.0", t.key);
+      const i = (): IrExpr => varRef("i.0", F64, loc);
+      const k = (): IrExpr => varRef("k.0", t.key, loc);
       // The b-side value: get() answers `V | undefined`; has() already
       // proved presence, so a plain V narrows through the value arm.
       const bValue: IrExpr =
         getT === valueT
-          ? ref("bv.0", getT)
+          ? varRef("bv.0", getT, loc)
           : {
               kind: "unionNarrow",
               unionId: (getT as IrType & { kind: "union" }).unionId,
               tag: L.armTag((getT as IrType & { kind: "union" }).unionId, valueT),
-              value: ref("bv.0", getT),
+              value: varRef("bv.0", getT, loc),
               type: valueT,
               loc,
             };
@@ -1421,41 +1414,41 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         bailIf(neq(mi("size", a(), [], F64), mi("size", b(), [], F64))),
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: { kind: "bin", op: "<", left: i(), right: mi("iterCount", a(), [], F64), type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: num(1), type: F64, loc }, loc },
+          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: numLit(1, loc), type: F64, loc }, loc },
           body: [
             { kind: "if", cond: not(mi("iterLive", a(), [i()], BOOL)), then: [{ kind: "continue", loc }], else_: null, loc },
             { kind: "varDecl", localId: "k.0", init: mi("iterKey", a(), [i()], t.key), loc },
             bailIf(not(mi("has", b(), [k()], BOOL))),
             { kind: "varDecl", localId: "av.0", init: mi("iterValue", a(), [i()], valueT), loc },
             { kind: "varDecl", localId: "bv.0", init: mi("get", b(), [k()], getT), loc },
-            bailIf(not(deq(valueT, ref("av.0", valueT), bValue))),
+            bailIf(not(deq(valueT, varRef("av.0", valueT, loc), bValue))),
           ],
           loc,
         },
-        ret(boolLit(true)),
+        ret(boolLit(true, loc)),
       ];
       break;
     }
     case "set": {
       const si = (method: "size" | "iterCount" | "iterLive" | "iterKey" | "has", receiver: IrExpr, args: IrExpr[], type: IrType): IrExpr => ({ kind: "setIntrinsic", method, receiver, args, type, loc });
       locals.push({ id: "i.0", name: "i", type: F64, mutable: true });
-      const i = (): IrExpr => ref("i.0", F64);
+      const i = (): IrExpr => varRef("i.0", F64, loc);
       body = [
         bailIf(neq(si("size", a(), [], F64), si("size", b(), [], F64))),
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: { kind: "bin", op: "<", left: i(), right: si("iterCount", a(), [], F64), type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: num(1), type: F64, loc }, loc },
+          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: numLit(1, loc), type: F64, loc }, loc },
           body: [
             { kind: "if", cond: not(si("iterLive", a(), [i()], BOOL)), then: [{ kind: "continue", loc }], else_: null, loc },
             bailIf(not(si("has", b(), [si("iterKey", a(), [i()], t.elem)], BOOL))),
           ],
           loc,
         },
-        ret(boolLit(true)),
+        ret(boolLit(true, loc)),
       ];
       break;
     }
@@ -1489,17 +1482,17 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       { id: "eq.0", name: "eq", type: BOOL, mutable: false },
     ];
     body = [
-      { kind: "if", cond: { kind: "bin", op: "===", left: a(), right: b(), type: BOOL, loc }, then: [ret(boolLit(true))], else_: null, loc },
+      { kind: "if", cond: { kind: "bin", op: "===", left: a(), right: b(), type: BOOL, loc }, then: [ret(boolLit(true, loc))], else_: null, loc },
       {
         kind: "if",
         cond: { kind: "libCall", fn: "assert.deqEnter", args: [a(), b()], type: BOOL, loc },
-        then: [ret(boolLit(true))],
+        then: [ret(boolLit(true, loc))],
         else_: null,
         loc,
       },
       { kind: "varDecl", localId: "eq.0", init: { kind: "call", callee: walkName, args: [a(), b()], type: BOOL, loc }, loc },
       { kind: "exprStmt", expr: { kind: "libCall", fn: "assert.deqLeave", args: [], type: VOID, loc }, loc },
-      ret(ref("eq.0", BOOL)),
+      ret(varRef("eq.0", BOOL, loc)),
     ];
   }
 

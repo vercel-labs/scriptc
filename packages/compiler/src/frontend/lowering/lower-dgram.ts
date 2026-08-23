@@ -13,6 +13,7 @@ import { ladderFenceExpr } from "./lowerer.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { BOOL, canBoxFuncIntoDyn, DGRAMSOCK_T, DYN, F64, funcOf, IrExpr, IrLibFn, IrType, SrcLoc, STRING, UNDEFINED_T, VOID } from "../../ir/nodes.js";
 import { DNS_LOOKUP_DOCUMENTED_OPTIONS, fenceOrDropOptionKey } from "./surfaces.js";
+import { boolLit } from "../../ir/build.js";
 
 const DGRAM_SURFACE_HINT =
   "bind, connect, send, address, close, unref/ref, and on/once of " +
@@ -70,9 +71,6 @@ function lowerCallbackArg(
   }
   return { cb, nparams: cb.type.params.length };
 }
-
-const boolLit = (value: boolean, loc: SrcLoc): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
-
 /** True iff `t` is the `Error | null` union — dns.lookup's first callback
  * parameter (NodeJS.ErrnoException maps to %Error in types.ts). */
 function isErrorOrNullUnion(L: Lowerer, t: IrType): boolean {

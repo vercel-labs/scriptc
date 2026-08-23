@@ -27,6 +27,7 @@ import { mixinFnOfCallee } from "./lower-mixins.js";
 import { isConstAssertionTypeNode, isGenericCallableMemberType, isParseArgsDynTypeName, underConstAssertion, unitOnlyUnion } from "../types.js";
 import { lowerYield } from "./lower-generators.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "./lower-stream.js";
+import { numLit, varRef } from "../../ir/build.js";
 
 /** An assignable `obj.field` target — a class field, a record field, or a
  * class ACCESSOR property (reads become getter calls, writes setter calls;
@@ -55,7 +56,6 @@ export type FieldTarget =
       getType?: IrType & { kind: "func" };
       setType?: IrType & { kind: "func" };
     };
-
 
 /** A template piece's RAW text (String.raw's contract: escapes stay
  * characters). 7's client AST ships no rawText at runtime (the typing
@@ -1942,7 +1942,6 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
     L.unsupported("SC1090", expr, `syntax '${ts.SyntaxKind[expr.kind]}'`);
   }
 
-
 /** `c ? a : b` — see the inline comments. `expected` plays the contextual
    * array type's role when the caller knows the slot's array type and tsc's
    * API doesn't surface it (a ternary as a SPREAD source — lowerArrayLiteral
@@ -2317,7 +2316,6 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
     if (!def || def.arms.length !== 2) {
       L.unsupported("SC1090", expr, "a direct read from a runtime-optional capture with multiple value arms");
     }
-    const ref = (): IrExpr => ({ kind: "varRef", localId: local.id, type: local.type, loc });
     const message = property === null
       ? `${expr.text} is not a function`
       : `Cannot read properties of undefined (reading '${property}')`;
@@ -2328,7 +2326,7 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
         unionId: local.type.unionId,
         tag: undefTag,
         negated: false,
-        value: ref(),
+        value: varRef(local.id, local.type, loc),
         type: BOOL,
         loc,
       },
@@ -2343,7 +2341,7 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
         kind: "unionNarrow",
         unionId: local.type.unionId,
         tag: valueTag,
-        value: ref(),
+        value: varRef(local.id, local.type, loc),
         type: narrowed,
         loc,
       },
@@ -2758,9 +2756,9 @@ export function pureReemittable(e: IrExpr): boolean {
     const name = `%nullish.retag.${L.widthHelpers.size}`;
     L.widthHelpers.set(key, name);
     const def = L.unions.get(leftT.unionId)!;
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const l = ref("l.0", leftT);
-    const r = ref("r.0", resT);
+
+    const l = varRef("l.0", leftT, loc);
+    const r = varRef("r.0", resT, loc);
     const body: IrStmt[] = [];
     def.arms.forEach((arm, tag) => {
       if (isUnitType(arm)) return;
@@ -5819,9 +5817,8 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
     let helper = L.widthHelpers.get(key);
     if (!helper) {
       helper = `%rec.declmerge.${L.widthHelpers.size}`;
-      const ref = (localId: string, t: IrType): IrExpr => ({ kind: "varRef", localId, type: t, loc });
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-      const outRef = ref("out.0", type);
+
+      const outRef = varRef("out.0", type, loc);
       const ksT = arrayOf(STRING);
       const locals: IrLocal[] = [{ id: "out.0", name: "out", type, mutable: false }];
       const params = srcs.map((s, j) => {
@@ -5842,9 +5839,9 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
         },
       ];
       srcs.forEach((s, j) => {
-        const sRef = ref(`s${j}.0`, s.value.type);
-        const kRef = ref(`k${j}.0`, STRING);
-        const vRef = ref(`v${j}.0`, s.iv);
+        const sRef = varRef(`s${j}.0`, s.value.type, loc);
+        const kRef = varRef(`k${j}.0`, STRING, loc);
+        const vRef = varRef(`v${j}.0`, s.iv, loc);
         locals.push(
           { id: `ks${j}.0`, name: `ks${j}`, type: ksT, mutable: false },
           { id: `i${j}.0`, name: `i${j}`, type: F64, mutable: true },
@@ -5868,11 +5865,11 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
           { kind: "varDecl", localId: `ks${j}.0`, init: { kind: "recordOvfKeys", obj: sRef, shapeId: s.shapeId, type: ksT, loc }, loc },
           {
             kind: "for",
-            init: { kind: "varDecl", localId: `i${j}.0`, init: num(0), loc },
-            cond: { kind: "bin", op: "<", left: ref(`i${j}.0`, F64), right: { kind: "arrIntrinsic", method: "length", receiver: ref(`ks${j}.0`, ksT), args: [], type: F64, loc }, type: BOOL, loc },
-            update: { kind: "assign", localId: `i${j}.0`, value: { kind: "bin", op: "+", left: ref(`i${j}.0`, F64), right: num(1), type: F64, loc }, loc },
+            init: { kind: "varDecl", localId: `i${j}.0`, init: numLit(0, loc), loc },
+            cond: { kind: "bin", op: "<", left: varRef(`i${j}.0`, F64, loc), right: { kind: "arrIntrinsic", method: "length", receiver: varRef(`ks${j}.0`, ksT, loc), args: [], type: F64, loc }, type: BOOL, loc },
+            update: { kind: "assign", localId: `i${j}.0`, value: { kind: "bin", op: "+", left: varRef(`i${j}.0`, F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
             body: [
-              { kind: "varDecl", localId: `k${j}.0`, init: { kind: "arrayGet", arr: ref(`ks${j}.0`, ksT), index: ref(`i${j}.0`, F64), type: STRING, loc }, loc },
+              { kind: "varDecl", localId: `k${j}.0`, init: { kind: "arrayGet", arr: varRef(`ks${j}.0`, ksT, loc), index: varRef(`i${j}.0`, F64, loc), type: STRING, loc }, loc },
               { kind: "varDecl", localId: `v${j}.0`, init: { kind: "recordKeyGet", obj: sRef, shapeId: s.shapeId, key: kRef, overflowOnly: true, type: s.iv, loc }, loc },
               ...dispatch,
             ],
@@ -9521,10 +9518,9 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
       helper = `%rec.haskey.${L.widthHelpers.size}`;
       L.widthHelpers.set(hkey, helper);
       const recT: IrType = { kind: "record", shapeId: recvT.shapeId };
-      const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-      const k = ref("k.0", STRING);
-      const r = ref("r.0", recT);
+
+      const k = varRef("k.0", STRING, loc);
+      const r = varRef("r.0", recT, loc);
       const body: IrStmt[] = [];
       const ret = (value: IrExpr): IrStmt => ({ kind: "return", value, loc });
       for (const f of shape.fields) {
@@ -9552,20 +9548,20 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
         { kind: "varDecl", localId: "ks.0", init: { kind: "recordOvfKeys", obj: r, shapeId: recvT.shapeId, type: ksT, loc }, loc },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: {
             kind: "bin",
             op: "<",
-            left: ref("i.0", F64),
-            right: { kind: "arrIntrinsic", method: "length", receiver: ref("ks.0", ksT), args: [], type: F64, loc },
+            left: varRef("i.0", F64, loc),
+            right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ks.0", ksT, loc), args: [], type: F64, loc },
             type: BOOL,
             loc,
           },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc }, loc },
+          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc }, loc },
           body: [
             {
               kind: "if",
-              cond: { kind: "strEq", negated: false, left: k, right: { kind: "arrayGet", arr: ref("ks.0", ksT), index: ref("i.0", F64), type: STRING, loc }, type: BOOL, loc },
+              cond: { kind: "strEq", negated: false, left: k, right: { kind: "arrayGet", arr: varRef("ks.0", ksT, loc), index: varRef("i.0", F64, loc), type: STRING, loc }, type: BOOL, loc },
               then: [ret({ kind: "boolLit", value: true, type: BOOL, loc })],
               else_: null,
               loc,
@@ -9986,8 +9982,8 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
         body.push({ kind: "varDecl", localId: "arr.0", init: narrowed, loc });
         mRef = { kind: "varRef", localId: "arr.0", type: arrayOf(STRING), loc };
       }
-      const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-      const elem = (index: number): IrExpr => ({ kind: "arrayGet", arr: mRef, index: num(index), type: STRING, loc });
+
+      const elem = (index: number): IrExpr => ({ kind: "arrayGet", arr: mRef, index: numLit(index, loc), type: STRING, loc });
       const values = new Map<string, IrExpr>();
       order.forEach((name, i) => {
         const idxs = indicesByName.get(name)!;

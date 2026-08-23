@@ -15,7 +15,8 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { locOf } from "../program.js";
-import { F64, IrExpr, IrType, SrcLoc, STRING, VOID, isUnitType } from "../../ir/nodes.js";
+import { IrExpr, IrType, SrcLoc, STRING, VOID, isUnitType } from "../../ir/nodes.js";
+import { numLit, strLit } from "../../ir/build.js";
 
 const TEST_FN_HINT =
   "test bodies take () or (t: TestContext) and return void or Promise<void>";
@@ -33,10 +34,6 @@ function requireStatementPosition(L: Lowerer, call: ts.CallExpression, what: str
     "call it as its own statement (await t.test(...) is the supported awaited form)",
   );
 }
-
-const strLit = (value: string, loc: SrcLoc): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
-const numLit = (value: number, loc: SrcLoc): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-
 /** The "file:line:col" of a registration call — the failing-section
  * "test at" line (Node reads the stack; the frontend HAS the position).
  * V8 frames point at the callee's NAME for member calls (`t.test(...)`

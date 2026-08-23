@@ -43,6 +43,7 @@ import type { ClassInfo } from "./lower-classes.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { arrayOf, BOOL, canBoxFuncIntoDyn, canConvertToDyn, DYN, F64, IrExpr, IrFunction, IrLocal, IrParam, IrStmt, IrType, isUnitType, STRING, SrcLoc, typeEquals, typeKey, VOID } from "../../ir/nodes.js";
 import { streamForcedTuple, streamSidesOf } from "./lower-stream.js";
+import { boolLit, strLit, varRef } from "../../ir/build.js";
 
 /** True when the class descends from (or is) the runtime emitter. */
 export function emitterRooted(L: Lowerer, info: ClassInfo | undefined | null): boolean {
@@ -223,10 +224,6 @@ function eventNameOf(L: Lowerer, member: string, arg: ts.Expression): string {
     "event names must be compile-time string literals (each event's argument tuple is unified statically; symbol names have no lowering)",
   );
 }
-
-const strLit = (value: string, loc: SrcLoc): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
-const boolLit = (value: boolean, loc: SrcLoc): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
-
 /** The event's unified tuple, with conflicts reported at this site. */
 function tupleOf(L: Lowerer, table: Map<string, EventSig>, name: string, blame: ts.Node): IrType[] {
   const sig = table.get(name);
@@ -362,10 +359,9 @@ function lowerDynListenerCall(
   if (!helper) {
     helper = `%emitter.${registering ? "onDyn" : "offDyn"}.${L.arrHofHelpers.size}`;
     L.arrHofHelpers.set(key, helper);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
     const check: IrStmt = {
       kind: "exprStmt",
-      expr: { kind: "libCall", fn: "emitter.checkListener", args: [ref("cb.0", DYN)], type: VOID, loc },
+      expr: { kind: "libCall", fn: "emitter.checkListener", args: [varRef("cb.0", DYN, loc)], type: VOID, loc },
       loc,
     };
     const params = [
@@ -385,13 +381,13 @@ function lowerDynListenerCall(
       locals.push({ id: "a.0", name: "a", type: adapterT, mutable: false });
       body = [
         check,
-        { kind: "varDecl", localId: "a.0", init: { kind: "dynCheck", value: ref("cb.0", DYN), type: adapterT, loc }, loc },
+        { kind: "varDecl", localId: "a.0", init: { kind: "dynCheck", value: varRef("cb.0", DYN, loc), type: adapterT, loc }, loc },
         {
           kind: "return",
           value: {
             kind: "libCall",
             fn: onFn,
-            args: [ref("r.0", recvT), ref("n.0", STRING), ref("cb.0", DYN), ref("a.0", adapterT), ref("o.0", BOOL), ref("p.0", BOOL)],
+            args: [varRef("r.0", recvT, loc), varRef("n.0", STRING, loc), varRef("cb.0", DYN, loc), varRef("a.0", adapterT, loc), varRef("o.0", BOOL, loc), varRef("p.0", BOOL, loc)],
             type: recvT,
             loc,
           },
@@ -406,7 +402,7 @@ function lowerDynListenerCall(
           value: {
             kind: "libCall",
             fn: "emitter.offDyn",
-            args: [ref("r.0", recvT), ref("n.0", STRING), ref("cb.0", DYN)],
+            args: [varRef("r.0", recvT, loc), varRef("n.0", STRING, loc), varRef("cb.0", DYN, loc)],
             type: recvT,
             loc,
           },

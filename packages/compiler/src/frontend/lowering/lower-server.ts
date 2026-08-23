@@ -26,6 +26,7 @@ import {
   TLS_SERVER_DOCUMENTED_OPTIONS,
 } from "./surfaces.js";
 import { conditionalSpreadOf } from "./lower-exprs.js";
+import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
 
 const NARROW_DATA_HINT =
   'write/end take one string or one Uint8Array/Buffer value (narrow unions first)';
@@ -135,22 +136,33 @@ function receiverReturningCall(
   if (!existing) {
     L.arrHofHelpers.set(key, name);
     const params = callArgs.map((a, i) => ({ localId: `p${i}.0`, name: `p${i}`, type: a.type }));
-    const ref = (i: number): IrExpr => ({ kind: "varRef", localId: params[i]!.localId, type: params[i]!.type, loc });
     const body: IrStmt[] = [];
     if (opts?.prefix) {
       body.push({
         kind: "exprStmt",
-        expr: { kind: "libCall", fn: opts.prefix.fn, args: opts.prefix.argIndices.map(ref), type: VOID, loc },
+        expr: {
+          kind: "libCall",
+          fn: opts.prefix.fn,
+          args: opts.prefix.argIndices.map((i) => varRef(params[i]!.localId, params[i]!.type, loc)),
+          type: VOID,
+          loc,
+        },
         loc,
       });
     }
     const mainIdx = opts?.mainArgIndices ?? params.map((_, i) => i);
     body.push({
       kind: "exprStmt",
-      expr: { kind: "libCall", fn, args: mainIdx.map(ref), type: VOID, loc },
+      expr: {
+        kind: "libCall",
+        fn,
+        args: mainIdx.map((i) => varRef(params[i]!.localId, params[i]!.type, loc)),
+        type: VOID,
+        loc,
+      },
       loc,
     });
-    body.push({ kind: "return", value: ref(0), loc });
+    body.push({ kind: "return", value: varRef(params[0]!.localId, params[0]!.type, loc), loc });
     L.liftedFns.push({
       name,
       params,
@@ -224,9 +236,6 @@ function lowerCallbackArg(
   const adapted = voidizedCallback(L, cb, locOf(node));
   return { cb: adapted, nparams: cb.type.params.length };
 }
-
-const boolLit = (value: boolean, loc: SrcLoc): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
-
 /** Lowers a handle-kind method receiver. The checker's control flow can
  * narrow an untyped binding to the handle class (`let server; server =
  * createServer(...)` — the keep-alive shape) so the STATIC lowering
@@ -272,12 +281,11 @@ function h2HeaderRecordStmts(
   if (strTag < 0) return null;
   const recT: IrType = { kind: "record", shapeId };
   const pairsT = arrayOf(STRING);
-  const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
   const pairAt = (offset: number): IrExpr => ({
     kind: "arrayGet",
-    arr: ref(pairsLocal, pairsT),
-    index: offset === 0 ? ref("i.0", F64) : { kind: "bin", op: "+", left: ref("i.0", F64), right: num(offset), type: F64, loc },
+    arr: varRef(pairsLocal, pairsT, loc),
+    index: offset === 0 ? varRef("i.0", F64, loc) : { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(offset, loc), type: F64, loc },
     type: STRING,
     loc,
   });
@@ -285,15 +293,15 @@ function h2HeaderRecordStmts(
     { kind: "varDecl", localId: outLocal, init: { kind: "recordLit", fields: [], type: recT, loc }, loc },
     {
       kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
       cond: {
-        kind: "bin", op: "<", left: ref("i.0", F64),
-        right: { kind: "arrIntrinsic", method: "length", receiver: ref(pairsLocal, pairsT), args: [], type: F64, loc },
+        kind: "bin", op: "<", left: varRef("i.0", F64, loc),
+        right: { kind: "arrIntrinsic", method: "length", receiver: varRef(pairsLocal, pairsT, loc), args: [], type: F64, loc },
         type: BOOL, loc,
       },
-      update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(2), type: F64, loc }, loc },
+      update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(2, loc), type: F64, loc }, loc },
       body: [{
-        kind: "recordKeySet", obj: ref(outLocal, recT), shapeId, key: pairAt(0),
+        kind: "recordKeySet", obj: varRef(outLocal, recT, loc), shapeId, key: pairAt(0),
         value: { kind: "unionWrap", unionId: iv.unionId, tag: strTag, value: pairAt(1), type: iv, loc }, loc,
       }],
       loc,
@@ -303,9 +311,9 @@ function h2HeaderRecordStmts(
     const f64Tag = L.armTag(iv.unionId, F64);
     if (f64Tag < 0) return null;
     stmts.push({
-      kind: "recordKeySet", obj: ref(outLocal, recT), shapeId,
+      kind: "recordKeySet", obj: varRef(outLocal, recT, loc), shapeId,
       key: { kind: "strLit", value: ":status", type: STRING, loc },
-      value: { kind: "unionWrap", unionId: iv.unionId, tag: f64Tag, value: ref(statusLocal, F64), type: iv, loc }, loc,
+      value: { kind: "unionWrap", unionId: iv.unionId, tag: f64Tag, value: varRef(statusLocal, F64, loc), type: iv, loc }, loc,
     });
   }
   return stmts;
@@ -387,7 +395,6 @@ function h2HeadersCallbackAdapter(
   if (!existing) {
     L.arrHofHelpers.set(key, name);
     const impl = `${name}.impl`;
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
     const locals: import("../../ir/nodes.js").IrLocal[] = [
       { id: "f.0", name: "f", type: fromT, mutable: false, boxed: true },
       ...abiParams.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
@@ -400,17 +407,17 @@ function h2HeadersCallbackAdapter(
       const stmts = h2HeaderRecordStmts(L, shapeId, "ps.0", "out.0", withStatus ? "st.0" : null, loc);
       if (stmts === null) L.unsupported("SC1090", node, `${what} whose headers parameter is not a supported header record`);
       body.push(...stmts!);
-      recordRef = ref("out.0", { kind: "record", shapeId });
+      recordRef = varRef("out.0", { kind: "record", shapeId }, loc);
     }
     // Assemble the user-call arguments in the user's declared order.
     const callArgs: IrExpr[] = [];
     const push = (e: IrExpr) => { if (callArgs.length < fromT.params.length) callArgs.push(e); };
-    if (handleT) push(ref("h.0", handleT));
-    if (recordRef) push(recordRef); else if (fromT.params.length > headersIdx) push(ref("ps.0", arrayOf(STRING)));
-    push(ref("fl.0", F64));
+    if (handleT) push(varRef("h.0", handleT, loc));
+    if (recordRef) push(recordRef); else if (fromT.params.length > headersIdx) push(varRef("ps.0", arrayOf(STRING), loc));
+    push(varRef("fl.0", F64, loc));
     body.push({
       kind: "exprStmt",
-      expr: { kind: "callValue", callee: ref("f.0", fromT), args: callArgs.slice(0, fromT.params.length), type: fromT.ret, loc },
+      expr: { kind: "callValue", callee: varRef("f.0", fromT, loc), args: callArgs.slice(0, fromT.params.length), type: fromT.ret, loc },
       loc,
     });
     L.liftedFns.push({ name: impl, params: abiParams, returnType: VOID, captures: [{ localId: "f.0", name: "f", type: fromT }], locals, body, loc });
@@ -1677,15 +1684,14 @@ function headersSnapshotHelper(L: Lowerer, shapeId: string, loc: SrcLoc): string
   L.widthHelpers.set(key, name);
   const recT: IrType = { kind: "record", shapeId };
   const pairsT = arrayOf(STRING);
-  const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
   const pairAt = (offset: number): IrExpr => ({
     kind: "arrayGet",
-    arr: ref("ps.0", pairsT),
+    arr: varRef("ps.0", pairsT, loc),
     index:
       offset === 0
-        ? ref("i.0", F64)
-        : { kind: "bin", op: "+", left: ref("i.0", F64), right: num(offset), type: F64, loc },
+        ? varRef("i.0", F64, loc)
+        : { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(offset, loc), type: F64, loc },
     type: STRING,
     loc,
   });
@@ -1693,7 +1699,7 @@ function headersSnapshotHelper(L: Lowerer, shapeId: string, loc: SrcLoc): string
     {
       kind: "varDecl",
       localId: "ps.0",
-      init: { kind: "libCall", fn: "http.reqHeaderPairs", args: [ref("r.0", HTTPREQ_T)], type: pairsT, loc },
+      init: { kind: "libCall", fn: "http.reqHeaderPairs", args: [varRef("r.0", HTTPREQ_T, loc)], type: pairsT, loc },
       loc,
     },
     {
@@ -1704,25 +1710,25 @@ function headersSnapshotHelper(L: Lowerer, shapeId: string, loc: SrcLoc): string
     },
     {
       kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
       cond: {
         kind: "bin",
         op: "<",
-        left: ref("i.0", F64),
-        right: { kind: "arrIntrinsic", method: "length", receiver: ref("ps.0", pairsT), args: [], type: F64, loc },
+        left: varRef("i.0", F64, loc),
+        right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ps.0", pairsT, loc), args: [], type: F64, loc },
         type: BOOL,
         loc,
       },
       update: {
         kind: "assign",
         localId: "i.0",
-        value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(2), type: F64, loc },
+        value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(2, loc), type: F64, loc },
         loc,
       },
       body: [
         {
           kind: "recordKeySet",
-          obj: ref("out.0", recT),
+          obj: varRef("out.0", recT, loc),
           shapeId,
           key: pairAt(0),
           value: { kind: "unionWrap", unionId: iv.unionId, tag: strTag, value: pairAt(1), type: iv, loc },
@@ -1731,7 +1737,7 @@ function headersSnapshotHelper(L: Lowerer, shapeId: string, loc: SrcLoc): string
       ],
       loc,
     },
-    { kind: "return", value: ref("out.0", recT), loc },
+    { kind: "return", value: varRef("out.0", recT, loc), loc },
   ];
   L.liftedFns.push({
     name,
@@ -2534,14 +2540,13 @@ export function lowerHttpAgentNew(L: Lowerer, expr: ts.NewExpression): IrExpr | 
   if (!bi || bi.member !== "Agent" || (bi.module !== "http" && bi.module !== "https")) return null;
   const loc = locOf(expr);
   const api = `new ${bi.module}.Agent`;
-  const numLit = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-  const boolAt = (value: boolean): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
-  let keepAlive: IrExpr = boolAt(false);
-  let kaMsecs: IrExpr = numLit(-1);
-  let maxSockets: IrExpr = numLit(-1);
-  let maxFree: IrExpr = numLit(-1);
-  let timeout: IrExpr = numLit(-1);
-  let port: IrExpr = numLit(-1);
+
+  let keepAlive: IrExpr = boolLit(false, loc);
+  let kaMsecs: IrExpr = numLit(-1, loc);
+  let maxSockets: IrExpr = numLit(-1, loc);
+  let maxFree: IrExpr = numLit(-1, loc);
+  let timeout: IrExpr = numLit(-1, loc);
+  let port: IrExpr = numLit(-1, loc);
   const args = expr.arguments ?? [];
   if (args.length > 1) {
     L.noLowering(`${api} with ${args.length} arguments`, expr, "the supported form is new Agent(options?)");
@@ -2626,7 +2631,7 @@ export function lowerHttpAgentNew(L: Lowerer, expr: ts.NewExpression): IrExpr | 
   return {
     kind: "libCall",
     fn: "http.agentNew",
-    args: [boolAt(bi.module === "https"), keepAlive, kaMsecs, maxSockets, maxFree, timeout, port],
+    args: [boolLit(bi.module === "https", loc), keepAlive, kaMsecs, maxSockets, maxFree, timeout, port],
     type: DYN,
     loc,
   };
@@ -2846,8 +2851,8 @@ function lowerTlsConnectCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): 
     const t = L.typeOf(a);
     return (t.flags & ts.TypeFlags.Object) !== 0;
   };
-  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-  let port: IrExpr = num(-1); // -1: the runtime reads options.port
+
+  let port: IrExpr = numLit(-1, loc); // -1: the runtime reads options.port
   let host: IrExpr = { kind: "strLit", value: "", type: STRING, loc }; // "": options.host / localhost
   let optsNode: ts.Expression | null = null;
   let i = 0;
@@ -4000,15 +4005,15 @@ function lowerHttpClientCall(L: Lowerer, expr: ts.CallExpression, member: "reque
     // lowering. A user-set connection header wins, Node's rule; a
     // non-literal headers record cannot be checked for one, so the combo
     // fences instead of double-sending.
-    const strLitAt = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+
     if (headers === null) {
-      headers = { kind: "arrayLit", elems: [strLitAt("Connection"), strLitAt("close")], type: arrayOf(STRING), loc };
+      headers = { kind: "arrayLit", elems: [strLit("Connection", loc), strLit("close", loc)], type: arrayOf(STRING), loc };
     } else if (headers.kind === "arrayLit") {
       const hasConnection = headers.elems.some(
         (el, i) => i % 2 === 0 && el.kind === "strLit" && el.value.toLowerCase() === "connection",
       );
       if (!hasConnection) {
-        headers = { ...headers, elems: [...headers.elems, strLitAt("Connection"), strLitAt("close")] };
+        headers = { ...headers, elems: [...headers.elems, strLit("Connection", loc), strLit("close", loc)] };
       }
     } else {
       L.noLowering(
@@ -4019,8 +4024,7 @@ function lowerHttpClientCall(L: Lowerer, expr: ts.CallExpression, member: "reque
       );
     }
   }
-  const strLit = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
-  const numLit = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
   if (connCb !== null && (host !== null || port !== null)) {
     // Node would use host/port only for the Host header once a dialer
     // exists — a silent half-use; set headers.host instead.
@@ -4044,18 +4048,18 @@ function lowerHttpClientCall(L: Lowerer, expr: ts.CallExpression, member: "reque
       "call http.request/https.request directly when passing an Agent",
     );
   }
-  host ??= strLit("localhost");
+  host ??= strLit("localhost", loc);
   // The binding mode's default port follows the runtime dial: 443 on the
   // TLS arm, 80 on the plain one — exactly each client's own default.
   // With an AGENT the sentinel -1 says "no port option": the runtime
   // consults the agent's (settable) defaultPort first, Node's merge.
   port ??= binding !== null
-    ? { kind: "ternary", cond: secureExpr(), then: numLit(443), else_: numLit(80), type: F64, loc }
-    : agentVal !== null ? numLit(-1)
-    : numLit(secure === true ? 443 : 80);
-  path ??= strLit("/");
-  method ??= strLit("GET");
-  timeout ??= numLit(0);
+    ? { kind: "ternary", cond: secureExpr(), then: numLit(443, loc), else_: numLit(80, loc), type: F64, loc }
+    : agentVal !== null ? numLit(-1, loc)
+    : numLit(secure === true ? 443 : 80, loc);
+  path ??= strLit("/", loc);
+  method ??= strLit("GET", loc);
+  timeout ??= numLit(0, loc);
   headers ??= { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
   const autoEnd = boolLit(member === "get", loc);
   if (connCb !== null) {
@@ -4074,7 +4078,7 @@ function lowerHttpClientCall(L: Lowerer, expr: ts.CallExpression, member: "reque
   const base = [host, port, path, method, timeout, headers, autoEnd];
   if (secureish) {
     reject ??= boolLit(true, loc); /* Node's default: verify */
-    ca ??= strLit(""); /* none: /etc/ssl/cert.pem stands in for Node's roots */
+    ca ??= strLit("", loc); /* none: /etc/ssl/cert.pem stands in for Node's roots */
     base.push(reject, ca);
   }
   if (agentVal !== null) base.push(agentVal);
@@ -4641,7 +4645,6 @@ function lowerHttpResMethodCall(L: Lowerer, call: ts.CallExpression,
       if (!existing) {
         L.arrHofHelpers.set(key, helper);
         const params = all.map((a, i) => ({ localId: `p${i}.0`, name: `p${i}`, type: a.type }));
-        const ref = (i: number): IrExpr => ({ kind: "varRef", localId: params[i]!.localId, type: params[i]!.type, loc });
         L.liftedFns.push({
           name: helper,
           params,
@@ -4650,12 +4653,12 @@ function lowerHttpResMethodCall(L: Lowerer, call: ts.CallExpression,
           body: [
             {
               kind: "exprStmt",
-              expr: { kind: "libCall", fn: "http.resOnFinish", args: [ref(0), ref(all.length - 1)], type: VOID, loc },
+              expr: { kind: "libCall", fn: "http.resOnFinish", args: [varRef(params[0]!.localId, params[0]!.type, loc), varRef(params[all.length - 1]!.localId, params[all.length - 1]!.type, loc)], type: VOID, loc },
               loc,
             },
             {
               kind: "exprStmt",
-              expr: { kind: "libCall", fn, args: callArgs.map((_, i) => ref(i)), type: VOID, loc },
+              expr: { kind: "libCall", fn, args: callArgs.map((_, i) => varRef(params[i]!.localId, params[i]!.type, loc)), type: VOID, loc },
               loc,
             },
           ],

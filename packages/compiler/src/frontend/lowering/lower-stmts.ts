@@ -28,6 +28,7 @@ import { UNSUPPORTED, checkerPanicDiag, isCheckerPanic, requiresDynamicDiag } fr
 import { isParseArgsDynTypeName, isUnitOnlyTsType, unitOnlyUnion } from "../types.js";
 import { canonicalBuiltinModule, isRelativeSpecifier } from "../shared.js";
 import { probeNodeRequireRefusal } from "../npm.js";
+import { varRef } from "../../ir/build.js";
 
 /** `const X = /* @__PURE__ *\/ makeX()` at a module's top level: every
  * declarator initialized by a call (or `new`) carrying the bundler PURE
@@ -1482,7 +1483,6 @@ export function isParseArgsDynCheckerType(L: Lowerer, type: ts.Type): boolean {
             // its value converting into the checked-dynamic tree like any dyn-slot value.
             const rl = L.declareHiddenLocal("%delem", DYN);
             out.push({ kind: "varDecl", localId: rl.id, init: value, loc: elLoc });
-            const ref = (): IrExpr => ({ kind: "varRef", localId: rl.id, type: DYN, loc: elLoc });
             const dflt = L.coerceToExpected(L.lowerExpr(el.initializer), DYN);
             if (dflt.type.kind !== "dyn") {
               L.unsupported(
@@ -1493,9 +1493,9 @@ export function isParseArgsDynCheckerType(L: Lowerer, type: ts.Type): boolean {
             }
             value = {
               kind: "ternary",
-              cond: { kind: "dynTest", test: "undefined", value: ref(), type: BOOL, loc: elLoc },
+              cond: { kind: "dynTest", test: "undefined", value: varRef(rl.id, DYN, elLoc), type: BOOL, loc: elLoc },
               then: dflt,
-              else_: ref(),
+              else_: varRef(rl.id, DYN, elLoc),
               type: DYN,
               loc: elLoc,
             };
@@ -6449,10 +6449,10 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
     ) {
       throw new InternalCompilerError("internal: retained numeric iterator has a non-numeric source");
     }
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const indexRef = (): IrExpr => ref(state.indexLocalId, F64);
-    const doneRef = (): IrExpr => ref(state.doneLocalId, BOOL);
-    const sourceRef = (): IrExpr => ref(state.sourceLocalId, sourceT);
+
+    const indexRef = (): IrExpr => varRef(state.indexLocalId, F64, loc);
+    const doneRef = (): IrExpr => varRef(state.doneLocalId, BOOL, loc);
+    const sourceRef = (): IrExpr => varRef(state.sourceLocalId, sourceT, loc);
     const sourceLength = (): IrExpr => sourceT.kind === "array"
       ? {
           kind: "arrIntrinsic",
@@ -6488,7 +6488,7 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
       const value = varTarget
         ? L.declareHiddenLocal("%numiterValue", F64)
         : L.declareLocal(decl!.name as ts.Identifier, (decl!.name as ts.Identifier).text, F64, isLet);
-      const valueRef: IrExpr = ref(value.id, F64);
+      const valueRef: IrExpr = varRef(value.id, F64, loc);
       const blame: ts.Node = decl?.name ?? exprTargetNode ?? stmt.initializer;
       const head: IrStmt[] = [
         {

@@ -33,6 +33,7 @@ import { CRYPTO_CIPHERS, CRYPTO_CONSTANTS, CRYPTO_CURVES, CRYPTO_HASHES } from "
 import { timerStyleCallback } from "./lower-calls.js";
 import { registerHttpClientFnBinding, voidizedCallback } from "./lower-server.js";
 import { BOOL, BYTES_U8, CHILD_T, CHILDSTREAM_T, DYN, F64, FILEHANDLE_T, FSWATCHER_T, PROCSTREAM_T, IrExpr, IrFunction, IrLibFn, IrLocal, IrStmt, IrType, JSVAL, NULL_T, SEARCH_PARAMS_T, SPAWNRES_T, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, canBoxFuncIntoDyn, canConvertToDyn, funcOf, isUnitType, typeEquals, typeKey } from "../../ir/nodes.js";
+import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
 
 /** Lower an optional builtin argument whose checker type is statically
  * undefined/void. The returned expression exists only to preserve effects;
@@ -103,11 +104,6 @@ function lowerBuiltinOptionalDefault(
   }
   return L.coerceInto(node, value, expected);
 }
-
-
-
-
-
 
 /** Resolves an identifier to a supported builtin-module IMPORT BINDING:
    * a named import (through its alias, so `import { join as j }` matches)
@@ -1493,9 +1489,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         );
       }
       const path = L.lowerExprExpecting(expr.arguments[0]!, STRING);
-      const flag = (v: boolean): IrExpr => ({ kind: "boolLit", value: v, type: BOOL, loc });
-      const recursive = flag(opts.bools["recursive"] === true);
-      const force = flag(opts.bools["force"] === true);
+
+      const recursive = boolLit(opts.bools["recursive"] === true, loc);
+      const force = boolLit(opts.bools["force"] === true, loc);
       if (opts.exprs["maxRetries"] === undefined && opts.exprs["retryDelay"] === undefined) {
         return { kind: "libCall", fn: "fs.rmOptsSync", args: [path, recursive, force], type: VOID, loc };
       }
@@ -1564,7 +1560,6 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         const data = L.lowerExprExpecting(expr.arguments[1]!, STRING);
         const pathLocal = L.declareHiddenLocal("%writePath", STRING);
         const dataLocal = L.declareHiddenLocal("%writeData", STRING);
-        const ref = (local: IrLocal): IrExpr => ({ kind: "varRef", localId: local.id, type: local.type, loc });
         const stmts: IrStmt[] = [
           { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
           { kind: "varDecl", localId: dataLocal.id, init: data, loc: data.loc },
@@ -1577,12 +1572,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           }
           const modeLocal = L.declareHiddenLocal("%writeMode", F64);
           stmts.push({ kind: "varDecl", localId: modeLocal.id, init: option.value, loc: option.value.loc });
-          mode = ref(modeLocal);
+          mode = varRef(modeLocal.id, modeLocal.type, loc);
         }
         const result: IrExpr = {
           kind: "libCall",
           fn: mode ? modeFn : plainFn,
-          args: mode ? [ref(pathLocal), ref(dataLocal), mode] : [ref(pathLocal), ref(dataLocal)],
+          args: mode ? [varRef(pathLocal.id, pathLocal.type, loc), varRef(dataLocal.id, dataLocal.type, loc), mode] : [varRef(pathLocal.id, pathLocal.type, loc), varRef(dataLocal.id, dataLocal.type, loc)],
           type: resultType,
           loc,
         };
@@ -1861,8 +1856,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const argv = L.lowerChildArgsArg(expr.arguments[1], loc);
     const optsNode = expr.arguments[2];
 
-    const num = (v: number): IrExpr => ({ kind: "numLit", value: v, type: F64, loc });
-    let timeout: IrExpr = num(0);
+    let timeout: IrExpr = numLit(0, loc);
     let killSignal: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
     // stdio modes (scr_child.c's core): stdin 0 = /dev/null ("pipe" with
     // no input and "ignore" both read nothing), 2 = inherit; stdout/
@@ -2008,7 +2002,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     return {
       kind: "libCall",
       fn: "cp.spawnSyncOpts",
-      args: [cmd, argv, timeout, killSignal, num(inMode), num(outMode), num(errMode)],
+      args: [cmd, argv, timeout, killSignal, numLit(inMode, loc), numLit(outMode, loc), numLit(errMode, loc)],
       type: SPAWNRES_T,
       loc,
     };
@@ -2041,18 +2035,16 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const argsNode = expr.arguments.length === 3 ? expr.arguments[1] : undefined;
     const optsNode = expr.arguments[expr.arguments.length - 1];
 
-    const bool = (v: boolean): IrExpr => ({ kind: "boolLit", value: v, type: BOOL, loc });
-    const numLit = (v: number): IrExpr => ({ kind: "numLit", value: v, type: F64, loc });
     const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
     // Per-slot stdio modes (scr_child.c: 0 ignore, 1 inherit, 2 fd) and
     // the out/err fd expressions for mode 2 (the daemon-log idiom:
     // stdio: ["ignore", logFd, logFd]).
     let sawStdio = false;
     let inMode = 0, outMode = 0, errMode = 0;
-    let outFd: IrExpr = numLit(0);
-    let errFd: IrExpr = numLit(0);
-    let detached: IrExpr = bool(false);
-    let hasEnv: IrExpr = bool(false);
+    let outFd: IrExpr = numLit(0, loc);
+    let errFd: IrExpr = numLit(0, loc);
+    let detached: IrExpr = boolLit(false, loc);
+    let hasEnv: IrExpr = boolLit(false, loc);
     let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
     let cwd: IrExpr = emptyStr;
     let plain = true; // exactly { stdio: "ignore" }: the historical libCall
@@ -2083,8 +2075,8 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               detached = {
                 kind: "ternary",
                 cond,
-                then: bool(cs.whenTrue ? lit : false),
-                else_: bool(cs.whenTrue ? false : lit),
+                then: boolLit(cs.whenTrue ? lit : false, loc),
+                else_: boolLit(cs.whenTrue ? false : lit, loc),
                 type: BOOL,
                 loc,
               };
@@ -2173,10 +2165,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           }
           case "detached": {
             if (m.value.kind === ts.SyntaxKind.TrueKeyword) {
-              detached = bool(true);
+              detached = boolLit(true, loc);
               plain = false;
             } else if (m.value.kind === ts.SyntaxKind.FalseKeyword) {
-              detached = bool(false);
+              detached = boolLit(false, loc);
             } else {
               L.noLowering(
                 "spawn with a non-literal detached option",
@@ -2187,7 +2179,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             break;
           }
           case "env":
-            hasEnv = bool(true);
+            hasEnv = boolLit(true, loc);
             envPairs = L.recordToEnvPairs(m.value);
             plain = false;
             break;
@@ -2221,7 +2213,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     return {
       kind: "libCall",
       fn: "cp.spawnOpts",
-      args: [cmd, argv, numLit(inMode), numLit(outMode), numLit(errMode), outFd, errFd, detached, hasEnv, envPairs, cwd],
+      args: [cmd, argv, numLit(inMode, loc), numLit(outMode, loc), numLit(errMode, loc), outFd, errFd, detached, hasEnv, envPairs, cwd],
       type: CHILD_T,
       loc,
     };
@@ -2283,8 +2275,6 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // the argv[1] the display formatter reads.
     const cmdArg: IrExpr = shell ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : cmd;
 
-    const bool = (v: boolean): IrExpr => ({ kind: "boolLit", value: v, type: BOOL, loc });
-    const num = (v: number): IrExpr => ({ kind: "numLit", value: v, type: F64, loc });
     const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
     const emptyPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
 
@@ -2294,11 +2284,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // means the option is absent (no stdin pipe), distinct from "" (pipe
     // empty stdin — immediate EOF), Node's exact reading of the member.
     let input: IrExpr = emptyStr;
-    let hasInput: IrExpr = bool(false);
+    let hasInput: IrExpr = boolLit(false, loc);
     let cwd: IrExpr = emptyStr;
-    let hasEnv: IrExpr = bool(false);
+    let hasEnv: IrExpr = boolLit(false, loc);
     let envPairs: IrExpr = emptyPairs;
-    let timeout: IrExpr = num(0);
+    let timeout: IrExpr = numLit(0, loc);
     let stdoutMode = 1;
     let stderrMode = 0;
     let stdinInherit = false;
@@ -2322,7 +2312,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           return {
             kind: "libCall",
             fn: "cp.execSync",
-            args: [cmdArg, argvExpr, bool(shell), runtime.input, runtime.hasInput, runtime.cwd, bool(false), emptyPairs, runtime.timeout, runtime.stdoutMode, runtime.stderrMode],
+            args: [cmdArg, argvExpr, boolLit(shell, loc), runtime.input, runtime.hasInput, runtime.cwd, boolLit(false, loc), emptyPairs, runtime.timeout, runtime.stdoutMode, runtime.stderrMode],
             type: STRING,
             loc,
           };
@@ -2471,11 +2461,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               break;
             }
             input = L.lowerExprExpecting(m.value, STRING);
-            hasInput = bool(true);
+            hasInput = boolLit(true, loc);
             break;
           }
           case "env": {
-            hasEnv = bool(true);
+            hasEnv = boolLit(true, loc);
             envPairs = L.recordToEnvPairs(m.value);
             // A later inline env member overrides an earlier conditional
             // spread (JS object-literal order); an earlier member stays
@@ -2537,7 +2527,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const execCall = (hasE: IrExpr, pairs: IrExpr): IrExpr => ({
       kind: "libCall",
       fn: "cp.execSync",
-      args: [cmdArg, argvExpr, bool(shell), input, hasInput, cwd, hasE, pairs, timeout, num(stdoutMode + (stdinInherit ? 4 : 0)), num(stderrMode)],
+      args: [cmdArg, argvExpr, boolLit(shell, loc), input, hasInput, cwd, hasE, pairs, timeout, numLit(stdoutMode + (stdinInherit ? 4 : 0), loc), numLit(stderrMode, loc)],
       type: STRING,
       loc,
     });
@@ -2547,7 +2537,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // between the arms and only the taken arm evaluates, so each still
       // runs exactly once; the env pairs build only in their own arm
       // (where the condition's narrowing holds).
-      const withEnv = execCall(bool(true), condEnvSpread.pairs);
+      const withEnv = execCall(boolLit(true, loc), condEnvSpread.pairs);
       const without = execCall(hasEnv, envPairs);
       return {
         kind: "ternary",
@@ -2654,17 +2644,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const name = `%cp.stdioMode.${fd}.${L.arrHofHelpers.size}`;
     L.arrHofHelpers.set(key, name);
     const optsT: IrType = { kind: "record", shapeId };
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (v: number): IrExpr => ({ kind: "numLit", value: v, type: F64, loc });
-    const str = (v: string): IrExpr => ({ kind: "strLit", value: v, type: STRING, loc });
-    const strEq = (l: IrExpr, r: string): IrExpr => ({ kind: "strEq", negated: false, left: l, right: str(r), type: BOOL, loc });
+
+    const strEq = (l: IrExpr, r: string): IrExpr => ({ kind: "strEq", negated: false, left: l, right: strLit(r, loc), type: BOOL, loc });
     const throwType = (msg: IrExpr): IrStmt => ({
       kind: "throw",
       value: { kind: "libCall", fn: "error.new", args: [msg], type: { kind: "object", className: "%TypeError" }, loc },
       loc,
     });
     const concat = (l: IrExpr, r: IrExpr): IrExpr => ({ kind: "strConcat", left: l, right: r, type: STRING, loc });
-    const o = ref("o.0", optsT);
+    const o = varRef("o.0", optsT, loc);
     const locals = [
       { id: "o.0", name: "o", type: optsT, mutable: false },
       { id: "s.0", name: "s", type: STRING, mutable: false },
@@ -2676,15 +2664,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // fd 2: pipe=1 (capture, no echo), ignore=2; the no-stdio default is
     // 1 for stdout and 0 (capture+echo) for stderr.
     const modeStmts = (s: IrExpr): IrStmt[] => [
-      { kind: "if", cond: strEq(s, "pipe"), then: [{ kind: "return", value: num(1), loc }], else_: null, loc },
+      { kind: "if", cond: strEq(s, "pipe"), then: [{ kind: "return", value: numLit(1, loc), loc }], else_: null, loc },
       {
         kind: "if",
         cond: strEq(s, "ignore"),
-        then: [{ kind: "return", value: num(fd === 1 ? 0 : 2), loc }],
+        then: [{ kind: "return", value: numLit(fd === 1 ? 0 : 2, loc), loc }],
         else_: null,
         loc,
       },
-      throwType(concat(concat(str('execSync stdio "'), s), str('" has no static lowering ("pipe" and "ignore" are the supported modes)'))),
+      throwType(concat(concat(strLit('execSync stdio "', loc), s), strLit('" has no static lowering ("pipe" and "ignore" are the supported modes)', loc))),
     ];
     const body: IrStmt[] = [];
     if (fd === 1) {
@@ -2702,13 +2690,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         cond: {
           kind: "logical",
           op: "&&",
-          left: { kind: "strEq", negated: true, left: ref("e.0", STRING), right: str("utf8"), type: BOOL, loc },
-          right: { kind: "strEq", negated: true, left: ref("e.0", STRING), right: str("utf-8"), type: BOOL, loc },
+          left: { kind: "strEq", negated: true, left: varRef("e.0", STRING, loc), right: strLit("utf8", loc), type: BOOL, loc },
+          right: { kind: "strEq", negated: true, left: varRef("e.0", STRING, loc), right: strLit("utf-8", loc), type: BOOL, loc },
           type: BOOL,
           loc,
         },
         then: [
-          throwType(concat(concat(str('execSync output is captured as utf8 — encoding "'), ref("e.0", STRING)), str('" has no static lowering'))),
+          throwType(concat(concat(strLit('execSync output is captured as utf8 — encoding "', loc), varRef("e.0", STRING, loc)), strLit('" has no static lowering', loc))),
         ],
         else_: null,
         loc,
@@ -2722,7 +2710,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     body.push({
       kind: "if",
       cond: { kind: "unionIsTag", unionId: stdioT.unionId, tag: uTag, negated: false, value: sd, type: BOOL, loc },
-      then: [{ kind: "return", value: num(fd === 1 ? 1 : 0), loc }],
+      then: [{ kind: "return", value: numLit(fd === 1 ? 1 : 0, loc), loc }],
       else_: null,
       loc,
     });
@@ -2731,7 +2719,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       cond: { kind: "unionIsTag", unionId: stdioT.unionId, tag: sTag, negated: false, value: sd, type: BOOL, loc },
       then: [
         { kind: "varDecl", localId: "s.0", init: { kind: "unionNarrow", unionId: stdioT.unionId, tag: sTag, value: sd, type: STRING, loc }, loc },
-        ...modeStmts(ref("s.0", STRING)),
+        ...modeStmts(varRef("s.0", STRING, loc)),
       ],
       else_: null,
       loc,
@@ -2742,11 +2730,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       init: { kind: "unionNarrow", unionId: stdioT.unionId, tag: aTag, value: sd, type: arrayOf(STRING), loc },
       loc,
     });
-    const aRef = ref("a.0", arrayOf(STRING));
+    const aRef = varRef("a.0", arrayOf(STRING), loc);
     const lenGt: IrExpr = {
       kind: "bin",
       op: "<",
-      left: num(fd),
+      left: numLit(fd, loc),
       right: { kind: "arrIntrinsic", method: "length", receiver: aRef, args: [], type: F64, loc },
       type: BOOL,
       loc,
@@ -2754,11 +2742,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     body.push({
       kind: "if",
       cond: { kind: "unary", op: "!", operand: lenGt, type: BOOL, loc },
-      then: [{ kind: "return", value: num(1), loc }],
+      then: [{ kind: "return", value: numLit(1, loc), loc }],
       else_: null,
       loc,
     });
-    body.push(...modeStmts({ kind: "arrayGet", arr: aRef, index: num(fd), type: STRING, loc }));
+    body.push(...modeStmts({ kind: "arrayGet", arr: aRef, index: numLit(fd, loc), type: STRING, loc }));
     L.liftedFns.push({
       name,
       params: [{ localId: "o.0", name: "o", type: optsT }],
@@ -2836,15 +2824,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const argv = L.lowerChildArgsArg(expr.arguments[1], loc);
     const optsNode = expr.arguments[2];
 
-    const bool = (v: boolean): IrExpr => ({ kind: "boolLit", value: v, type: BOOL, loc });
-    const num = (v: number): IrExpr => ({ kind: "numLit", value: v, type: F64, loc });
     const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
     const helper = execFileAsyncHelper(L, loc);
     const envRecT: IrType = { kind: "record", shapeId: helper.envShapeId };
     const envRec = (has: boolean, pairs: IrExpr): IrExpr => ({
       kind: "recordLit",
       fields: [
-        { name: "has", value: bool(has) },
+        { name: "has", value: boolLit(has, loc) },
         { name: "pairs", value: pairs },
       ],
       type: envRecT,
@@ -2853,7 +2839,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const emptyPairs = (): IrExpr => ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc });
     let cwd: IrExpr = emptyStr;
     let env: IrExpr = envRec(false, emptyPairs());
-    let timeout: IrExpr = num(0);
+    let timeout: IrExpr = numLit(0, loc);
     if (optsNode) {
       if (!ts.isObjectLiteralExpression(optsNode)) {
         L.noLowering(
@@ -2982,7 +2968,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const recT: IrType = { kind: "record", shapeId };
     const envRecT: IrType = { kind: "record", shapeId: envShapeId };
     const strArrT = arrayOf(STRING);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
+
     const body: IrStmt[] = [
       {
         kind: "varDecl",
@@ -2991,12 +2977,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           kind: "libCall",
           fn: "cp.execCapture",
           args: [
-            ref("cmd.0", STRING),
-            ref("argv.0", strArrT),
-            ref("cwd.0", STRING),
-            { kind: "recordGet", obj: ref("env.0", envRecT), shapeId: envShapeId, field: "has", type: BOOL, loc },
-            { kind: "recordGet", obj: ref("env.0", envRecT), shapeId: envShapeId, field: "pairs", type: strArrT, loc },
-            ref("timeout.0", F64),
+            varRef("cmd.0", STRING, loc),
+            varRef("argv.0", strArrT, loc),
+            varRef("cwd.0", STRING, loc),
+            { kind: "recordGet", obj: varRef("env.0", envRecT, loc), shapeId: envShapeId, field: "has", type: BOOL, loc },
+            { kind: "recordGet", obj: varRef("env.0", envRecT, loc), shapeId: envShapeId, field: "pairs", type: strArrT, loc },
+            varRef("timeout.0", F64, loc),
           ],
           type: SPAWNRES_T,
           loc,
@@ -3008,8 +2994,8 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         value: {
           kind: "recordLit",
           fields: [
-            { name: "stderr", value: { kind: "libCall", fn: "spawnRes.stderr", args: [ref("r.0", SPAWNRES_T)], type: STRING, loc } },
-            { name: "stdout", value: { kind: "libCall", fn: "spawnRes.stdout", args: [ref("r.0", SPAWNRES_T)], type: STRING, loc } },
+            { name: "stderr", value: { kind: "libCall", fn: "spawnRes.stderr", args: [varRef("r.0", SPAWNRES_T, loc)], type: STRING, loc } },
+            { name: "stdout", value: { kind: "libCall", fn: "spawnRes.stdout", args: [varRef("r.0", SPAWNRES_T, loc)], type: STRING, loc } },
           ],
           type: recT,
           loc,
@@ -3621,10 +3607,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const name = `%strdec.${op}.${L.widthHelpers.size}`;
     L.widthHelpers.set(key, name);
     const recT: IrType = { kind: "record", shapeId };
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
+
     const pendingRead = (): IrExpr => ({
       kind: "recordGet",
-      obj: ref("d.0", recT),
+      obj: varRef("d.0", recT, loc),
       shapeId,
       field: "%pending",
       type: F64,
@@ -3632,7 +3618,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     });
     const encRead = (): IrExpr => ({
       kind: "recordGet",
-      obj: ref("d.0", recT),
+      obj: varRef("d.0", recT, loc),
       shapeId,
       field: "%enc",
       type: STRING,
@@ -3653,18 +3639,18 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         {
           kind: "varDecl",
           localId: "s.0",
-          init: { kind: "libCall", fn: "strdec.write", args: [encRead(), pendingRead(), ref("chunk.0", BYTES_U8)], type: STRING, loc },
+          init: { kind: "libCall", fn: "strdec.write", args: [encRead(), pendingRead(), varRef("chunk.0", BYTES_U8, loc)], type: STRING, loc },
           loc,
         },
         {
           kind: "recordSet",
-          obj: ref("d.0", recT),
+          obj: varRef("d.0", recT, loc),
           shapeId,
           field: "%pending",
-          value: { kind: "libCall", fn: "strdec.next", args: [encRead(), pendingRead(), ref("chunk.0", BYTES_U8)], type: F64, loc },
+          value: { kind: "libCall", fn: "strdec.next", args: [encRead(), pendingRead(), varRef("chunk.0", BYTES_U8, loc)], type: F64, loc },
           loc,
         },
-        { kind: "return", value: ref("s.0", STRING), loc },
+        { kind: "return", value: varRef("s.0", STRING, loc), loc },
       ];
     } else {
       body = [
@@ -3676,13 +3662,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         },
         {
           kind: "recordSet",
-          obj: ref("d.0", recT),
+          obj: varRef("d.0", recT, loc),
           shapeId,
           field: "%pending",
           value: { kind: "numLit", value: 0, type: F64, loc },
           loc,
         },
-        { kind: "return", value: ref("s.0", STRING), loc },
+        { kind: "return", value: varRef("s.0", STRING, loc), loc },
       ];
     }
     L.liftedFns.push({ name, params, returnType: STRING, locals, body, loc });
@@ -4345,12 +4331,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const paramTypes: IrType[] =
       arity === 0 ? [] : arity === 1 ? [STRING] : arity === 2 ? [STRING, STRING] : [STRING, STRING, SEARCH_PARAMS_T];
     const fnT = funcOf(paramTypes, fnRet);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
     const sp = (fn: "sp.size" | "sp.keyAt" | "sp.valAt", extra: IrExpr[], type: IrType): IrExpr => ({
       kind: "libCall",
       fn,
-      args: [ref("sp.0", SEARCH_PARAMS_T), ...extra],
+      args: [varRef("sp.0", SEARCH_PARAMS_T, loc), ...extra],
       type,
       loc,
     });
@@ -4363,28 +4347,28 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const body: IrStmt[] = [];
     if (arity >= 1) {
       locals.push({ id: "v.0", name: "v", type: STRING, mutable: false });
-      body.push({ kind: "varDecl", localId: "v.0", init: sp("sp.valAt", [ref("i.0", F64)], STRING), loc });
-      callArgs.push(ref("v.0", STRING));
+      body.push({ kind: "varDecl", localId: "v.0", init: sp("sp.valAt", [varRef("i.0", F64, loc)], STRING), loc });
+      callArgs.push(varRef("v.0", STRING, loc));
     }
     if (arity >= 2) {
       locals.push({ id: "k.0", name: "k", type: STRING, mutable: false });
-      body.push({ kind: "varDecl", localId: "k.0", init: sp("sp.keyAt", [ref("i.0", F64)], STRING), loc });
-      callArgs.push(ref("k.0", STRING));
+      body.push({ kind: "varDecl", localId: "k.0", init: sp("sp.keyAt", [varRef("i.0", F64, loc)], STRING), loc });
+      callArgs.push(varRef("k.0", STRING, loc));
     }
-    if (arity === 3) callArgs.push(ref("sp.0", SEARCH_PARAMS_T));
+    if (arity === 3) callArgs.push(varRef("sp.0", SEARCH_PARAMS_T, loc));
     body.push({
       kind: "exprStmt",
-      expr: { kind: "callValue", callee: ref("f.0", fnT), args: callArgs, type: fnRet, loc },
+      expr: { kind: "callValue", callee: varRef("f.0", fnT, loc), args: callArgs, type: fnRet, loc },
       loc,
     });
     const loop: IrStmt = {
       kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
-      cond: { kind: "bin", op: "<", left: ref("i.0", F64), right: sp("sp.size", [], F64), type: BOOL, loc },
+      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+      cond: { kind: "bin", op: "<", left: varRef("i.0", F64, loc), right: sp("sp.size", [], F64), type: BOOL, loc },
       update: {
         kind: "assign",
         localId: "i.0",
-        value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(1), type: F64, loc },
+        value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(1, loc), type: F64, loc },
         loc,
       },
       body,
@@ -4416,16 +4400,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const loc = locOf(call);
     const receiver = (): IrExpr => L.lowerExprExpecting(access.expression, FILEHANDLE_T);
     const promise = (inner: IrType): IrType => ({ kind: "promise", inner });
-    const bool = (value: boolean): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
     const num = (node: ts.Expression | undefined, dflt: number): { value: IrExpr; defaulted: IrExpr } => {
       const defaultValue = { kind: "numLit", value: dflt, type: F64, loc } satisfies IrExpr;
-      if (!node) return { value: defaultValue, defaulted: bool(true) };
+      if (!node) return { value: defaultValue, defaulted: boolLit(true, loc) };
       const undefinedArg = lowerStaticallyUndefinedBuiltinArg(L, node);
       if (undefinedArg) {
-        return { value: defaultAfterUndefined(undefinedArg, defaultValue), defaulted: bool(true) };
+        return { value: defaultAfterUndefined(undefinedArg, defaultValue), defaulted: boolLit(true, loc) };
       }
       if ((L.typeOf(node).flags & ts.TypeFlags.Null) !== 0) {
-        return { value: defaultAfterUndefined(L.lowerExpr(node), defaultValue), defaulted: bool(true) };
+        return { value: defaultAfterUndefined(L.lowerExpr(node), defaultValue), defaulted: boolLit(true, loc) };
       }
       const value = L.lowerExpr(node);
       if (value.type.kind === "union") {
@@ -4475,7 +4458,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           };
         }
       }
-      return { value: L.coerceInto(node, value, F64), defaulted: bool(false) };
+      return { value: L.coerceInto(node, value, F64), defaulted: boolLit(false, loc) };
     };
     const utf8 = (node: ts.Expression | undefined): IrExpr => {
       const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
@@ -7774,15 +7757,14 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     L.widthHelpers.set(key, name);
     const recT: IrType = { kind: "record", shapeId };
     const pairsT = arrayOf(STRING);
-    const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+
     const pairAt = (offset: number): IrExpr => ({
       kind: "arrayGet",
-      arr: ref("ps.0", pairsT),
+      arr: varRef("ps.0", pairsT, loc),
       index:
         offset === 0
-          ? ref("i.0", F64)
-          : { kind: "bin", op: "+", left: ref("i.0", F64), right: num(offset), type: F64, loc },
+          ? varRef("i.0", F64, loc)
+          : { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(offset, loc), type: F64, loc },
       type: STRING,
       loc,
     });
@@ -7801,25 +7783,25 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
       },
       {
         kind: "for",
-        init: { kind: "varDecl", localId: "i.0", init: num(0), loc },
+        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
         cond: {
           kind: "bin",
           op: "<",
-          left: ref("i.0", F64),
-          right: { kind: "arrIntrinsic", method: "length", receiver: ref("ps.0", pairsT), args: [], type: F64, loc },
+          left: varRef("i.0", F64, loc),
+          right: { kind: "arrIntrinsic", method: "length", receiver: varRef("ps.0", pairsT, loc), args: [], type: F64, loc },
           type: BOOL,
           loc,
         },
         update: {
           kind: "assign",
           localId: "i.0",
-          value: { kind: "bin", op: "+", left: ref("i.0", F64), right: num(2), type: F64, loc },
+          value: { kind: "bin", op: "+", left: varRef("i.0", F64, loc), right: numLit(2, loc), type: F64, loc },
           loc,
         },
         body: [
           {
             kind: "recordKeySet",
-            obj: ref("out.0", recT),
+            obj: varRef("out.0", recT, loc),
             shapeId,
             key: pairAt(0),
             value: { kind: "unionWrap", unionId: iv.unionId, tag: strTag, value: pairAt(1), type: iv, loc },
@@ -7828,7 +7810,7 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
         ],
         loc,
       },
-      { kind: "return", value: ref("out.0", recT), loc },
+      { kind: "return", value: varRef("out.0", recT, loc), loc },
     ];
     L.liftedFns.push({
       name,

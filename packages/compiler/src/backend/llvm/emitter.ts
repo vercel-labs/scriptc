@@ -109,6 +109,17 @@ interface LlStreamTypedRefContext {
   adapters: Map<string, LlStreamTypedRefAdapter>;
 }
 
+interface LlArgPackAndTrampolinePrologue {
+  definitions: string[];
+  pack: string;
+  lifted: boolean;
+  fieldTys: string[];
+  ret: IrType;
+  tr: string[];
+  spawnParams: string[];
+  argPackLines: string[];
+}
+
 function ffiNativeTypeLl(
   cls: IrFfiCallbackParamClass | IrFfiValueParamClass | IrFfiReturnClass,
 ): string {
@@ -2556,6 +2567,66 @@ class LlEmitter {
     return out;
   }
 
+  /** The argument-pack ABI and trampoline prefix shared by async functions
+   * and generators. Their promise/generator completion and spawn tails stay
+   * with the callers below. */
+  private emitArgPackAndTrampolinePrologue(fn: IrFunction): LlArgPackAndTrampolinePrologue {
+    const pack = mangleArgPack(fn.name);
+    const lifted = fn.captures !== undefined;
+    const fieldTys = [...(lifted ? ["ptr"] : []), ...fn.params.map((p) => this.llType(p.type))];
+    const definitions = [`%${pack} = type { ${fieldTys.join(", ") || "i8"} } ; ${fn.name} args`];
+    const sizeOf = `ptrtoint (ptr getelementptr (%${pack}, ptr null, i32 1) to ${this.sizeType})`;
+
+    this.declare(`declare void @free(ptr)`);
+    this.declare(`declare ptr @malloc(${this.sizeType})`);
+    this.declare(`declare zeroext i1 @scr_exc_pending()`);
+
+    const tr: string[] = [
+      `define internal void @${mangleTrampoline(fn.name)}(ptr %self, ptr %ap) ${FN_ATTRS} {`,
+      `entry:`,
+    ];
+    const loads: string[] = [];
+    fieldTys.forEach((ty, i) => {
+      tr.push(
+        `  %fp${i} = getelementptr inbounds %${pack}, ptr %ap, i64 0, i32 ${i}`,
+        `  %a${i} = load ${ty}, ptr %fp${i}`,
+      );
+      loads.push(`${ty} %a${i}`);
+    });
+    tr.push(`  call void @free(ptr %ap)`);
+    const ret = fn.returnType;
+    const retTy = this.llType(ret);
+    const bodyCall = `call ${retTy} @${mangleFunction(fn.name)}(${loads.join(", ")})`;
+    tr.push(retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`);
+    if (lifted && !this.wasi) {
+      tr.push(`  call void @scr_closure_release(ptr %a0)`);
+    }
+
+    const spawnParams = fieldTys.map((ty, i) => `${ty} %a${i}`);
+    const argPackLines = [
+      `  %ap = call ptr @malloc(${this.sizeType} ${sizeOf})`,
+      `  %isnull = icmp eq ptr %ap, null`,
+      `  br i1 %isnull, label %oom, label %ok`,
+      `oom:`,
+      `  call void @sc_oom()`,
+      `  unreachable`,
+      `ok:`,
+    ];
+    if (lifted) {
+      // scr_closure_retain is a header static inline — the `_v` twin is
+      // the exported symbol.
+      argPackLines.push(`  %env = call ptr @scr_closure_retain_v(ptr %a0)`);
+    }
+    fieldTys.forEach((ty, i) => {
+      const src = lifted && i === 0 ? "%env" : `%a${i}`;
+      argPackLines.push(
+        `  %sp${i} = getelementptr inbounds %${pack}, ptr %ap, i64 0, i32 ${i}`,
+        `  store ${ty} ${src}, ptr %sp${i}`,
+      );
+    });
+    return { definitions, pack, lifted, fieldTys, ret, tr, spawnParams, argPackLines };
+  }
+
   /** Per-async-function machinery — emit-async.ts's scaffolding, .ll
    * flavored: an argument-pack struct type, a fiber trampoline (unpacks,
    * frees the pack, runs the ordinary compiled body, settles the
@@ -2584,46 +2655,20 @@ class LlEmitter {
     }
     for (const fn of this.mod.functions) {
       if (fn.async !== true) continue;
-      const pack = mangleArgPack(fn.name);
-      const lifted = fn.captures !== undefined;
-      const fieldTys = [...(lifted ? ["ptr"] : []), ...fn.params.map((p) => this.llType(p.type))];
-      out.push(`%${pack} = type { ${fieldTys.join(", ") || "i8"} } ; ${fn.name} args`);
-      const sizeOf = `ptrtoint (ptr getelementptr (%${pack}, ptr null, i32 1) to ${this.sizeType})`;
-
-      this.declare(`declare void @free(ptr)`);
-      this.declare(`declare ptr @malloc(${this.sizeType})`);
-      this.declare(`declare zeroext i1 @scr_exc_pending()`);
+      const { definitions, ret, tr, spawnParams, argPackLines } =
+        this.emitArgPackAndTrampolinePrologue(fn);
+      out.push(...definitions);
       this.declare(`declare ptr @scr_fiber_promise(ptr)`);
       this.declare(`declare ptr @scr_async_spawn(ptr, ptr)`);
       this.needOom();
-
-      // Trampoline: unpack, free, run the body, settle.
-      const tr: string[] = [
-        `define internal void @${mangleTrampoline(fn.name)}(ptr %self, ptr %ap) ${FN_ATTRS} {`,
-        `entry:`,
-      ];
-      const loads: string[] = [];
-      fieldTys.forEach((ty, i) => {
-        tr.push(
-          `  %fp${i} = getelementptr inbounds %${pack}, ptr %ap, i64 0, i32 ${i}`,
-          `  %a${i} = load ${ty}, ptr %fp${i}`,
-        );
-        loads.push(`${ty} %a${i}`);
-      });
-      tr.push(`  call void @free(ptr %ap)`);
-      const ret = fn.returnType;
-      const retTy = this.llType(ret);
-      const bodyCall = `call ${retTy} @${mangleFunction(fn.name)}(${loads.join(", ")})`;
-      tr.push(retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`);
       if (this.wasi) {
         // The coroutine body settles its own promise and owns the retained
         // lifted environment until final suspension. Its initial call
         // returns here at the first suspend (or final suspend).
         tr.push(`  ret void`, `}`, ``);
       } else {
-        if (lifted) {
+        if (fn.captures !== undefined) {
           this.declare(`declare void @scr_closure_release(ptr)`);
-          tr.push(`  call void @scr_closure_release(ptr %a0)`);
         }
         tr.push(
           `  %pend = call zeroext i1 @scr_exc_pending()`,
@@ -2667,7 +2712,6 @@ class LlEmitter {
       out.push(...tr);
 
       // Spawn wrapper: pack the args (+1 moves in), spawn the fiber.
-      const params = fieldTys.map((ty, i) => `${ty} %a${i}`);
       const cache = fn.asyncCacheGlobal !== undefined ? mangleGlobal(fn.asyncCacheGlobal) : null;
       const cycleCache =
         fn.asyncCycleCacheGlobal !== undefined ? mangleGlobal(fn.asyncCycleCacheGlobal) : null;
@@ -2678,8 +2722,11 @@ class LlEmitter {
       if (cache !== null) {
         this.declare(`declare void @scr_promise_mark_handled(ptr)`);
       }
+      if (fn.captures !== undefined) {
+        this.declare(`declare ptr @scr_closure_retain_v(ptr)`);
+      }
       const sp: string[] = [
-        `define internal ptr @${mangleAsyncSpawn(fn.name)}(${params.join(", ")}) ${FN_ATTRS} { ; spawn ${fn.name}`,
+        `define internal ptr @${mangleAsyncSpawn(fn.name)}(${spawnParams.join(", ")}) ${FN_ATTRS} { ; spawn ${fn.name}`,
         `entry:`,
         ...(cache !== null
           ? [
@@ -2692,27 +2739,8 @@ class LlEmitter {
               `cache_miss:`,
             ]
           : []),
-        `  %ap = call ptr @malloc(${this.sizeType} ${sizeOf})`,
-        `  %isnull = icmp eq ptr %ap, null`,
-        `  br i1 %isnull, label %oom, label %ok`,
-        `oom:`,
-        `  call void @sc_oom()`,
-        `  unreachable`,
-        `ok:`,
+        ...argPackLines,
       ];
-      if (lifted) {
-        // scr_closure_retain is a header static inline — the `_v` twin is
-        // the exported symbol.
-        this.declare(`declare ptr @scr_closure_retain_v(ptr)`);
-        sp.push(`  %env = call ptr @scr_closure_retain_v(ptr %a0)`);
-      }
-      fieldTys.forEach((ty, i) => {
-        const src = lifted && i === 0 ? "%env" : `%a${i}`;
-        sp.push(
-          `  %sp${i} = getelementptr inbounds %${pack}, ptr %ap, i64 0, i32 ${i}`,
-          `  store ${ty} ${src}, ptr %sp${i}`,
-        );
-      });
       sp.push(
         `  %p = call ptr @scr_async_spawn(ptr @${mangleTrampoline(fn.name)}, ptr %ap)`,
         ...(cache !== null
@@ -2767,42 +2795,25 @@ class LlEmitter {
     const out: string[] = [];
     for (const fn of this.mod.functions) {
       if (fn.generator === undefined) continue;
-      const pack = mangleArgPack(fn.name);
-      const lifted = fn.captures !== undefined;
-      const fieldTys = [...(lifted ? ["ptr"] : []), ...fn.params.map((p) => this.llType(p.type))];
-      out.push(`%${pack} = type { ${fieldTys.join(", ") || "i8"} } ; ${fn.name} args`);
-      const sizeOf = `ptrtoint (ptr getelementptr (%${pack}, ptr null, i32 1) to ${this.sizeType})`;
-
-      this.declare(`declare void @free(ptr)`);
-      this.declare(`declare ptr @malloc(${this.sizeType})`);
-      this.declare(`declare zeroext i1 @scr_exc_pending()`);
+      const {
+        definitions,
+        pack,
+        lifted,
+        fieldTys,
+        ret,
+        tr,
+        spawnParams,
+        argPackLines,
+      } = this.emitArgPackAndTrampolinePrologue(fn);
+      out.push(...definitions);
       this.declare(`declare zeroext i1 @scr_exc_genret_pending()`);
       this.declare(`declare void @scr_exc_clear()`);
       this.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
       this.declare(`declare void @scr_gen_ret_to_out(ptr)`);
       this.declare(`declare ptr @scr_gen_new(ptr, ptr, ptr)`);
       this.needOom();
-
-      const tr: string[] = [
-        `define internal void @${mangleTrampoline(fn.name)}(ptr %self, ptr %ap) ${FN_ATTRS} {`,
-        `entry:`,
-      ];
-      const loads: string[] = [];
-      fieldTys.forEach((ty, i) => {
-        tr.push(
-          `  %fp${i} = getelementptr inbounds %${pack}, ptr %ap, i64 0, i32 ${i}`,
-          `  %a${i} = load ${ty}, ptr %fp${i}`,
-        );
-        loads.push(`${ty} %a${i}`);
-      });
-      tr.push(`  call void @free(ptr %ap)`);
-      const ret = fn.returnType;
-      const retTy = this.llType(ret);
-      const bodyCall = `call ${retTy} @${mangleFunction(fn.name)}(${loads.join(", ")})`;
-      tr.push(retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`);
       if (lifted && !this.wasi) {
         this.declare(`declare void @scr_closure_release(ptr)`);
-        tr.push(`  call void @scr_closure_release(ptr %a0)`);
       }
       // Normal completion stores the (typed) return value; void completes
       // with the NONE slot — JS's undefined done-value. A GENRET unwind
@@ -2878,29 +2889,14 @@ class LlEmitter {
 
       // Spawn wrapper: pack the args (+1 moves in), allocate the
       // SUSPENDED fiber — nothing runs until the first .next().
-      const params = fieldTys.map((ty, i) => `${ty} %a${i}`);
-      const sp: string[] = [
-        `define internal ptr @${mangleGenSpawn(fn.name)}(${params.join(", ")}) ${FN_ATTRS} { ; gen spawn ${fn.name}`,
-        `entry:`,
-        `  %ap = call ptr @malloc(${this.sizeType} ${sizeOf})`,
-        `  %isnull = icmp eq ptr %ap, null`,
-        `  br i1 %isnull, label %oom, label %ok`,
-        `oom:`,
-        `  call void @sc_oom()`,
-        `  unreachable`,
-        `ok:`,
-      ];
       if (lifted) {
         this.declare(`declare ptr @scr_closure_retain_v(ptr)`);
-        sp.push(`  %env = call ptr @scr_closure_retain_v(ptr %a0)`);
       }
-      fieldTys.forEach((ty, i) => {
-        const src = lifted && i === 0 ? "%env" : `%a${i}`;
-        sp.push(
-          `  %sp${i} = getelementptr inbounds %${pack}, ptr %ap, i64 0, i32 ${i}`,
-          `  store ${ty} ${src}, ptr %sp${i}`,
-        );
-      });
+      const sp: string[] = [
+        `define internal ptr @${mangleGenSpawn(fn.name)}(${spawnParams.join(", ")}) ${FN_ATTRS} { ; gen spawn ${fn.name}`,
+        `entry:`,
+        ...argPackLines,
+      ];
       sp.push(
         `  %gg = call ptr @scr_gen_new(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`,
         `  ret ptr %gg`,

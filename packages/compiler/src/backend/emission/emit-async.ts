@@ -5,7 +5,65 @@ import { InternalCompilerError } from "../../errors.js";
 import type { CEmitter } from "./emitter.js";
 import { mangleArgPack, mangleAsyncSpawn, mangleChildDataThunk, mangleChildExitThunk, mangleCloseBindThunk, mangleCloseOverrideWrap, mangleConnectResThunk, mangleConnectSockThunk, mangleDgramMsgThunk, mangleDnsLookupThunk, mangleField, mangleFsRenameThunk, mangleFunction, mangleGenDrop, mangleGenResThunk, mangleGenSpawn, mangleGlobal, mangleLocal, mangleRaceThunk, mangleRawParam, mangleNetLookupAnswerThunk, mangleEmitterInvokeThunk, mangleStreamCbThunk, mangleStreamDoneFn, mangleRecordNew, mangleRecordRelease, mangleRecordStruct, mangleResolveThunk, mangleSniAnswerThunk, mangleTrampoline } from "../mangle.js";
 import { cDecl, cType, releaseCallC, retainCallC, vAdapters } from "./emit-types.js";
-import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/nodes.js";
+import { IrFunction, IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/nodes.js";
+
+interface ArgPackAndTrampolinePrologue {
+  definitions: string[];
+  pack: string;
+  lifted: boolean;
+  pname: (p: IrFunction["params"][number]) => string;
+  ret: IrType;
+  lines: string[];
+  spawnParams: string[];
+  argPackLines: string[];
+}
+
+/** The argument-pack ABI and trampoline prefix shared by async functions
+ * and generators. Their promise/generator completion and spawn tails stay
+ * with the callers below. */
+function emitArgPackAndTrampolinePrologue(
+  fn: IrFunction,
+): ArgPackAndTrampolinePrologue {
+  const pack = mangleArgPack(fn.name);
+  const lifted = fn.captures !== undefined;
+  const fields: string[] = [];
+  if (lifted) fields.push("ScrClosure *sc_env;");
+  const boxedIds = new Set(fn.locals.filter((l) => l.boxed).map((l) => l.id));
+  const pname = (p: IrFunction["params"][number]) =>
+    boxedIds.has(p.localId) ? mangleRawParam(p.localId) : mangleLocal(p.localId);
+  for (const p of fn.params) fields.push(`${cDecl(p.type, pname(p))};`);
+  const definitions = [``, `typedef struct { ${fields.join(" ") || "char sc_unused;"} } ${pack};`];
+
+  const callArgs = [
+    ...(lifted ? ["sc_a.sc_env"] : []),
+    ...fn.params.map((p) => `sc_a.${pname(p)}`),
+  ].join(", ");
+  const ret = fn.returnType;
+  const bodyCall = `${mangleFunction(fn.name)}(${callArgs})`;
+  const lines: string[] = [
+    `static void ${mangleTrampoline(fn.name)}(ScrFiber *sc_self, void *sc_ap0) {`,
+    `  ${pack} sc_a = *(${pack} *)sc_ap0;`,
+    `  free(sc_ap0);`,
+  ];
+  if (ret.kind === "void") {
+    lines.push(`  ${bodyCall};`);
+  } else {
+    lines.push(`  ${cDecl(ret, "sc_r")} = ${bodyCall};`);
+  }
+  if (lifted) lines.push(`  scr_closure_release(sc_a.sc_env);`);
+
+  const spawnParams = [
+    ...(lifted ? ["ScrClosure *sc_env"] : []),
+    ...fn.params.map((p) => cDecl(p.type, pname(p))),
+  ];
+  const argPackLines = [
+    `  ${pack} *sc_ap = malloc(sizeof *sc_ap);`,
+    `  if (!sc_ap) { scr_trap("scriptc: out of memory\\n"); }`,
+    ...(lifted ? [`  sc_ap->sc_env = scr_closure_retain(sc_env);`] : []),
+    ...fn.params.map((p) => `  sc_ap->${pname(p)} = ${pname(p)};`),
+  ];
+  return { definitions, pack, lifted, pname, ret, lines, spawnParams, argPackLines };
+}
 
 /** Per-async-function machinery: an argument pack, a fiber trampoline
    * (unpacks, runs the ordinary compiled body, settles the promise), and a
@@ -14,33 +72,9 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
   export function emitAsyncScaffolding(E: CEmitter, out: string[]): void {
     for (const fn of E.mod.functions) {
       if (!fn.async) continue;
-      const pack = mangleArgPack(fn.name);
-      const lifted = fn.captures !== undefined;
-      const fields: string[] = [];
-      if (lifted) fields.push("ScrClosure *sc_env;");
-      const boxedIds = new Set(fn.locals.filter((l) => l.boxed).map((l) => l.id));
-      const pname = (p: { localId: string }) =>
-        boxedIds.has(p.localId) ? mangleRawParam(p.localId) : mangleLocal(p.localId);
-      for (const p of fn.params) fields.push(`${cDecl(p.type, pname(p))};`);
-      out.push(``, `typedef struct { ${fields.join(" ") || "char sc_unused;"} } ${pack};`);
-
-      const callArgs = [
-        ...(lifted ? ["sc_a.sc_env"] : []),
-        ...fn.params.map((p) => `sc_a.${pname(p)}`),
-      ].join(", ");
-      const ret = fn.returnType;
-      const bodyCall = `${mangleFunction(fn.name)}(${callArgs})`;
-      const lines: string[] = [
-        `static void ${mangleTrampoline(fn.name)}(ScrFiber *sc_self, void *sc_ap0) {`,
-        `  ${pack} sc_a = *(${pack} *)sc_ap0;`,
-        `  free(sc_ap0);`,
-      ];
-      if (ret.kind === "void") {
-        lines.push(`  ${bodyCall};`);
-      } else {
-        lines.push(`  ${cDecl(ret, "sc_r")} = ${bodyCall};`);
-      }
-      if (lifted) lines.push(`  scr_closure_release(sc_a.sc_env);`);
+      const { definitions, ret, lines, spawnParams, argPackLines } =
+        emitArgPackAndTrampolinePrologue(fn);
+      out.push(...definitions);
       lines.push(`  if (!scr_exc_pending()) {`);
       switch (ret.kind) {
         case "void":
@@ -71,10 +105,6 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
       lines.push(`}`);
       out.push(...lines);
 
-      const spawnParams = [
-        ...(lifted ? ["ScrClosure *sc_env"] : []),
-        ...fn.params.map((p) => cDecl(p.type, pname(p))),
-      ];
       const cache = fn.asyncCacheGlobal !== undefined ? mangleGlobal(fn.asyncCacheGlobal) : null;
       const cycleCache =
         fn.asyncCycleCacheGlobal !== undefined ? mangleGlobal(fn.asyncCycleCacheGlobal) : null;
@@ -83,10 +113,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
         ...(cache !== null
           ? [`  if (${cache}) return scr_promise_retain(${cache});`]
           : []),
-        `  ${pack} *sc_ap = malloc(sizeof *sc_ap);`,
-        `  if (!sc_ap) { scr_trap("scriptc: out of memory\\n"); }`,
-        ...(lifted ? [`  sc_ap->sc_env = scr_closure_retain(sc_env);`] : []),
-        ...fn.params.map((p) => `  sc_ap->${pname(p)} = ${pname(p)};`),
+        ...argPackLines,
         `  ScrPromise *sc_p = scr_async_spawn(&${mangleTrampoline(fn.name)}, sc_ap);`,
         ...(cache !== null
           ? [
@@ -136,33 +163,9 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
   function emitGenScaffolding(E: CEmitter, out: string[]): void {
     for (const fn of E.mod.functions) {
       if (!fn.generator) continue;
-      const pack = mangleArgPack(fn.name);
-      const lifted = fn.captures !== undefined;
-      const fields: string[] = [];
-      if (lifted) fields.push("ScrClosure *sc_env;");
-      const boxedIds = new Set(fn.locals.filter((l) => l.boxed).map((l) => l.id));
-      const pname = (p: { localId: string }) =>
-        boxedIds.has(p.localId) ? mangleRawParam(p.localId) : mangleLocal(p.localId);
-      for (const p of fn.params) fields.push(`${cDecl(p.type, pname(p))};`);
-      out.push(``, `typedef struct { ${fields.join(" ") || "char sc_unused;"} } ${pack};`);
-
-      const callArgs = [
-        ...(lifted ? ["sc_a.sc_env"] : []),
-        ...fn.params.map((p) => `sc_a.${pname(p)}`),
-      ].join(", ");
-      const ret = fn.returnType;
-      const bodyCall = `${mangleFunction(fn.name)}(${callArgs})`;
-      const lines: string[] = [
-        `static void ${mangleTrampoline(fn.name)}(ScrFiber *sc_self, void *sc_ap0) {`,
-        `  ${pack} sc_a = *(${pack} *)sc_ap0;`,
-        `  free(sc_ap0);`,
-      ];
-      if (ret.kind === "void") {
-        lines.push(`  ${bodyCall};`);
-      } else {
-        lines.push(`  ${cDecl(ret, "sc_r")} = ${bodyCall};`);
-      }
-      if (lifted) lines.push(`  scr_closure_release(sc_a.sc_env);`);
+      const { definitions, pack, lifted, pname, ret, lines, spawnParams, argPackLines } =
+        emitArgPackAndTrampolinePrologue(fn);
+      out.push(...definitions);
       lines.push(`  ScrGen *sc_g = scr_gen_of_fiber(sc_self);`);
       // Normal completion stores the (typed) return value; void completes
       // with the NONE slot — JS's undefined done-value. A GENRET unwind
@@ -196,10 +199,6 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
       );
       out.push(...lines);
 
-      const spawnParams = [
-        ...(lifted ? ["ScrClosure *sc_env"] : []),
-        ...fn.params.map((p) => cDecl(p.type, pname(p))),
-      ];
       out.push(
         `static void ${mangleGenDrop(fn.name)}(void *sc_ap0) {`,
         `  ${pack} sc_a = *(${pack} *)sc_ap0;`,
@@ -211,10 +210,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
         ...(!lifted && !fn.params.some((p) => isRefCounted(p.type)) ? [`  (void)sc_a;`] : []),
         `}`,
         `static ScrGen *${mangleGenSpawn(fn.name)}(${spawnParams.join(", ") || "void"}) {`,
-        `  ${pack} *sc_ap = malloc(sizeof *sc_ap);`,
-        `  if (!sc_ap) { scr_trap("scriptc: out of memory\\n"); }`,
-        ...(lifted ? [`  sc_ap->sc_env = scr_closure_retain(sc_env);`] : []),
-        ...fn.params.map((p) => `  sc_ap->${pname(p)} = ${pname(p)};`),
+        ...argPackLines,
         `  return scr_gen_new(&${mangleTrampoline(fn.name)}, sc_ap, &${mangleGenDrop(fn.name)});`,
         `}`,
       );

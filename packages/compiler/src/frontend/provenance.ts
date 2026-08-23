@@ -1,4 +1,3 @@
-import { InternalCompilerError } from "../errors.js";
 /* `--provenance-sources` — the provenance-assisted static compilation
  * pipeline (EXPERIMENTAL prototype; the registry doc in
  * provenance-registry.ts states the thesis).
@@ -191,8 +190,8 @@ interface Attested {
 async function fetchAttestation(name: string, version: string): Promise<Attested> {
   const url = `https://registry.npmjs.org/-/npm/v1/attestations/${encodeURIComponent(`${name}@${version}`).replace(/%40/g, "@").replace(/%2F/gi, "/")}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-  if (res.status === 404) throw new InternalCompilerError("no provenance attestation published");
-  if (!res.ok) throw new InternalCompilerError(`attestation fetch failed (HTTP ${res.status})`);
+  if (res.status === 404) throw new Error("no provenance attestation published");
+  if (!res.ok) throw new Error(`attestation fetch failed (HTTP ${res.status})`);
   const body = (await res.json()) as { attestations?: { predicateType?: string; bundle?: { dsseEnvelope?: { payload?: string } } }[] };
   for (const att of body.attestations ?? []) {
     if (!att.predicateType?.startsWith("https://slsa.dev/provenance")) continue;
@@ -208,7 +207,7 @@ async function fetchAttestation(name: string, version: string): Promise<Attested
       }
     }
   }
-  throw new InternalCompilerError("attestation set carries no SLSA provenance predicate");
+  throw new Error("attestation set carries no SLSA provenance predicate");
 }
 
 /* ── source fetch (content-addressed by the attested commit) ──────────── */
@@ -223,10 +222,10 @@ async function fetchSourceTree(repo: string, commit: string): Promise<string> {
   const dest = join(cacheRoot(), commit);
   if (isDirectory(dest)) return dest;
   const m = /github\.com\/([^/]+)\/([^/@#]+)/.exec(repo);
-  if (m === null) throw new InternalCompilerError(`source repository is not a github URL (${repo})`);
+  if (m === null) throw new Error(`source repository is not a github URL (${repo})`);
   const url = `https://codeload.github.com/${m[1]}/${m[2]}/tar.gz/${commit}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-  if (!res.ok) throw new InternalCompilerError(`source fetch failed (HTTP ${res.status} for ${url})`);
+  if (!res.ok) throw new Error(`source fetch failed (HTTP ${res.status} for ${url})`);
   const bytes = Buffer.from(await res.arrayBuffer());
   await mkdir(cacheRoot(), { recursive: true });
   const tmp = await mkdtemp(join(tmpdir(), "scriptc-provenance-"));
@@ -240,7 +239,7 @@ async function fetchSourceTree(repo: string, commit: string): Promise<string> {
       await rename(extractDir, dest);
     } catch {
       // A parallel compile won the rename — its tree is the same content.
-      if (!isDirectory(dest)) throw new InternalCompilerError("source cache rename failed");
+      if (!isDirectory(dest)) throw new Error("source cache rename failed");
     }
   } finally {
     await rm(tmp, { recursive: true, force: true });
@@ -414,7 +413,7 @@ export async function resolveProvenanceSources(entryPath: string): Promise<Prove
         dir = seeded.dir;
         repo = seeded.repo ?? "(manifest)";
         commit = seeded.commit ?? "(manifest)";
-        if (!isDirectory(dir)) throw new InternalCompilerError(`manifest dir does not exist (${dir})`);
+        if (!isDirectory(dir)) throw new Error(`manifest dir does not exist (${dir})`);
       } else {
         const attested = await fetchAttestation(installed.name, installed.version);
         repo = attested.repo;
@@ -422,7 +421,7 @@ export async function resolveProvenanceSources(entryPath: string): Promise<Prove
         const tree = await fetchSourceTree(repo, commit);
         const located = locatePackageDir(tree, installed.name);
         if (located === null) {
-          throw new InternalCompilerError(`package directory not found inside the attested source tree (${tree})`);
+          throw new Error(`package directory not found inside the attested source tree (${tree})`);
         }
         dir = located;
       }

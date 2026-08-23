@@ -1,4 +1,3 @@
-import { InternalCompilerError } from "../errors.js";
 import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdir, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -327,13 +326,13 @@ export async function readEarlyLibraryCache(
 
 function decodeSources(bytes: Uint8Array): Map<string, string> {
   const entries = JSON.parse(Buffer.from(bytes).toString("utf8")) as unknown;
-  if (!Array.isArray(entries)) throw new InternalCompilerError("semantic source payload is not an array");
+  if (!Array.isArray(entries)) throw new Error("semantic source payload is not an array");
   const sources = new Map<string, string>();
   for (const entry of entries) {
     if (
       !Array.isArray(entry) || entry.length !== 2 ||
       typeof entry[0] !== "string" || typeof entry[1] !== "string"
-    ) throw new InternalCompilerError("semantic source payload has an invalid entry");
+    ) throw new Error("semantic source payload has an invalid entry");
     sources.set(entry[0], entry[1]);
   }
   return sources;

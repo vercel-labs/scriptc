@@ -1,4 +1,3 @@
-import { InternalCompilerError } from "../errors.js";
 /* THE program lifecycle: load → preflight — tsconfig adoption, the tsc
  * gate with its project-world second chance, the import/export form
  * fences, CommonJS require discipline, and the module evaluation order —
@@ -349,7 +348,7 @@ function loadProgram7(
   const coreRoots = [entryPath, ambientDtsPath(), nodeTypes ?? fallbackDtsPath()];
   const program = ts.createProgram([...coreRoots, overridesDtsPath()], options, host);
   const entry = program.getSourceFile(entryPath);
-  if (!entry) throw new InternalCompilerError(`could not load ${entryPath}`);
+  if (!entry) throw new Error(`could not load ${entryPath}`);
   const externalTypeSpecifiersByFile = externalTypeFileClosure7(program, externalTypes);
   let projectWorld: ts.Program | null = null;
   return {

@@ -36,7 +36,7 @@ export function deserializeModule(json: string): IrModule {
     return value;
   }) as IrModule;
   if (mod.irVersion !== IR_VERSION) {
-    throw new InternalCompilerError(
+    throw new Error(
       `IR version mismatch: file has ${String(mod.irVersion)}, compiler expects ${IR_VERSION}`,
     );
   }

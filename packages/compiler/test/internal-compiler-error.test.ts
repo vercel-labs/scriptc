@@ -1,6 +1,18 @@
 import { expect, test } from "vitest";
 import { emitModule, InternalCompilerError } from "../src/index.js";
+import { resolveCc } from "../src/backend/cc.js";
+import { deserializeModule } from "../src/ir/serialize.js";
 import { fibModule } from "./fixtures/fib-ir.js";
+
+function captureError(run: () => unknown): Error {
+  try {
+    run();
+  } catch (error) {
+    if (error instanceof Error) return error;
+    throw error;
+  }
+  throw new Error("expected the operation to throw");
+}
 
 test("InternalCompilerError is a public, identifiable compiler failure", () => {
   const cause = new Error("filesystem failure");
@@ -35,4 +47,14 @@ test("emitter invariant failures preserve their message and public type", () => 
       name: "InternalCompilerError",
     }),
   );
+});
+
+test("caller configuration and input failures are not internal compiler errors", () => {
+  const configuration = captureError(() => resolveCc({ SCRIPTC_CC: "unsupported" }));
+  expect(configuration.message).toContain("unknown SCRIPTC_CC");
+  expect(configuration).not.toBeInstanceOf(InternalCompilerError);
+
+  const externalIr = captureError(() => deserializeModule('{"irVersion": 5}'));
+  expect(externalIr.message).toContain("IR version mismatch");
+  expect(externalIr).not.toBeInstanceOf(InternalCompilerError);
 });

@@ -6109,9 +6109,10 @@ export class Lowerer {
   jsvalLiftable(t: IrType, visiting: Set<string> = new Set()): boolean {
     if (t.kind === "jsval") return true;
     if (this.boundarySafe(t)) return true;
-    // Typed arrays and URLs marshal IN without joining the round-trip
-    // (JSON) set: an engine typed-array copy / an engine URL from href.
-    if (t.kind === "bytes" || t.kind === "url") return true;
+    // Typed arrays, URLs, and Dates marshal IN without joining the round-trip
+    // (JSON) set: an engine typed-array copy / an engine URL from href /
+    // a Date as its millisecond timestamp (scr_jsval_from_f64).
+    if (t.kind === "bytes" || t.kind === "url" || t.kind === "date") return true;
     // Checked-dynamic values deep-copy in (scr_jsval_from_dyn — data
     // kinds; a boxed function/handle/promise throws at runtime).
     if (t.kind === "dyn") return true;
@@ -6162,7 +6163,7 @@ export class Lowerer {
     if (this.boundarySafe(e.type)) {
       return { kind: "jsMarshal", value: e, type: JSVAL, loc };
     }
-    if (e.type.kind === "bytes" || e.type.kind === "url") {
+    if (e.type.kind === "bytes" || e.type.kind === "url" || e.type.kind === "date") {
       return { kind: "jsMarshal", value: e, type: JSVAL, loc };
     }
     if (e.type.kind === "record") {

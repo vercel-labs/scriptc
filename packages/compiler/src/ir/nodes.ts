@@ -518,6 +518,9 @@ export function isSupportedArrayElem(t: IrType): boolean {
     case "netServer":
     case "symbol":
     case "classval":
+    // Dates are scalar f64 (epoch-ms) at the C level — stored in SCR_ELEM_F64
+    // slots. Array element reads re-box the ms value into a date handle.
+    case "date":
       return true;
     default:
       return false;

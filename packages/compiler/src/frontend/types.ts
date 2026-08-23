@@ -1,9 +1,8 @@
-import { InternalCompilerError } from "../errors.js";
 import * as ts from "./ts7/adapter.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../ir/nodes.js";
 import { arrayOf, BOOL, bytesOf, canConvertToDyn, CHILD_T, DATE_T, DYN, F64, funcOf, isSupportedArrayElem, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, JSVAL, mapOf, NULL_T, PROCSTREAM_T, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, setOf, STRING, SYMBOL_T, typeEquals, typeKey, UNDEFINED_T, VOID } from "../ir/nodes.js";
 
-import { isJsSourceFile, isNodeTypesPath } from "./program.js";
+import { isJsSourceFile, isMidiTypesPath, isNodeTypesPath } from "./program.js";
 import { accessorSlotProp } from "../ir/nodes.js";
 // typeKey moved to ir/nodes.ts (the backend needs it too, for per-type
 // helper interning); re-exported here so frontend call sites keep their
@@ -27,6 +26,7 @@ export const ISLAND_AMBIENT_TYPES = [
   "AbortController",
   "AbortSignal",
   "Headers",
+  "HeadersInit",
   "ReadableStream",
   "ReadableStreamDefaultReader",
   "ReadableStreamDefaultController",
@@ -254,7 +254,7 @@ export class ShapeRegistry {
    * authoritative for its own checker type either way). */
   finalizeRecursive(t: ts.Type, fields: { name: string; type: IrType }[], indexValue?: IrType, declaredOrder?: string[]): string {
     const id = this.recIds.get(t);
-    if (id === undefined) throw new InternalCompilerError("shape registry bug: finalizeRecursive without a placeholder");
+    if (id === undefined) throw new Error("shape registry bug: finalizeRecursive without a placeholder");
     if (this.pendingRec.has(id)) {
       const shape = this.byId.get(id)!;
       shape.fields = fields;
@@ -366,7 +366,7 @@ export class UnionRegistry {
    * registers the structural key (first writer wins, like shapes). */
   finalizeRecursive(t: ts.Type, arms: IrType[]): string {
     const id = this.recIds.get(t);
-    if (id === undefined) throw new InternalCompilerError("union registry bug: finalizeRecursive without a placeholder");
+    if (id === undefined) throw new Error("union registry bug: finalizeRecursive without a placeholder");
     if (this.pendingRec.has(id)) {
       const def = this.byId.get(id)!;
       def.arms.push(...arms);
@@ -515,6 +515,10 @@ export function formatIrType(t: IrType, shapes: ShapeRegistry, unions: UnionRegi
       return "Http2Stream";
     case "dgramSocket":
       return "dgram.Socket";
+    case "midiInput":
+      return "midi.Input";
+    case "midiOutput":
+      return "midi.Output";
     case "testCtx":
       return "TestContext";
     case "httpReq":
@@ -538,7 +542,7 @@ export function formatIrType(t: IrType, shapes: ShapeRegistry, unions: UnionRegi
     default: {
       const _exhaustive: never = t;
       void _exhaustive;
-      throw new InternalCompilerError("unreachable");
+      throw new Error("unreachable");
     }
   }
 }
@@ -552,7 +556,7 @@ export function formatIrType(t: IrType, shapes: ShapeRegistry, unions: UnionRegi
  * first in ascending numeric order, everything else follows in the given
  * (insertion/declaration) order. This is JS's enumeration order for the
  * objects records model — Object.keys, JSON.stringify, spread, inspect. */
-function esOwnKeyOrder(names: string[]): string[] {
+export function esOwnKeyOrder(names: string[]): string[] {
   const isArrayIndex = (name: string): boolean => {
     const n = Number(name);
     return Number.isInteger(n) && n >= 0 && n < 4294967295 && String(n) === name;
@@ -1074,6 +1078,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return ctx.dynamic ? JSVAL : null;
   }
+  // TypeParameter that wasn't resolved by resolveTypeParam (either no binding
+  // exists or the binding returned null for this specific type): fall back to
+  // the CONSTRAINT type. If the constraint maps to JSVAL (e.g. `TSchema
+  // extends z.ZodTypeAny`) the parameter itself maps to JSVAL too — the
+  // actual value will always be an npm handle at runtime. This avoids spurious
+  // SC2008 on intersection types like `TConfig & { ... }` where TConfig
+  // carries a required field constrained to a Zod/npm type.
+  if ((flags & ts.TypeFlags.TypeParameter) !== 0) {
+    const constraint = checker.getBaseConstraintOfType(widened);
+    if (constraint && constraint !== widened) {
+      const constraintMapped = mapType(constraint, ctx);
+      if (constraintMapped !== null) return constraintMapped;
+    }
+    // No constraint or unmappable constraint — fall through (will return null
+    // from the record/object path, which is the expected result for a
+    // fully-abstract TypeParameter with no mappable bound).
+  }
   // NOTE on module NAMESPACE types (`typeof import("./x.mjs")` — what a
   // dynamic import resolves to): non-stdlib ones fall under the rule
   // above (their declarations are the .d.ts SourceFiles themselves).
@@ -1211,7 +1232,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // no class identity of its own.
   if (widened.isIntersectionType()) {
     const HANDLE_KINDS = new Set([
-      "netServer", "netSocket", "httpReq", "httpRes", "httpClientReq", "dgramSocket",
+      "netServer", "netSocket", "httpReq", "httpRes", "httpClientReq", "dgramSocket", "midiInput", "midiOutput",
       // process.stdout's own type IS the refined intersection
       // `WriteStream & { fd: 1 }` — the scalar stream kind rides the same
       // refinement rule.
@@ -1932,6 +1953,32 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "dgramSocket" };
   }
+  // midi.Input / midi.Output: the node-midi port classes, disambiguated by
+  // their fallback ambient module or by @julusian/midi's declaration path.
+  // The names are generic enough to collide with user classes, so this
+  // provenance guard is load-bearing.
+  if (
+    psym?.name === "Input" &&
+    checker.declarationsOf(psym).some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        (isDeclaredInAmbientModule(d, "midi") || isMidiTypesPath(d.getSourceFile().fileName)),
+    )
+  ) {
+    return { kind: "midiInput" };
+  }
+  if (
+    psym?.name === "Output" &&
+    checker.declarationsOf(psym).some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(d.getSourceFile()) &&
+        (isDeclaredInAmbientModule(d, "midi") || isMidiTypesPath(d.getSourceFile().fileName)),
+    )
+  ) {
+    return { kind: "midiOutput" };
+  }
   // node:test's TestContext — the test-body parameter (`test('x', (t) =>
   // ...)`). @types/node's `class TestContext` and the fallback
   // declarations' interface both live inside `declare module "node:test"`
@@ -2500,6 +2547,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         if (!armed) return null;
         pt = armed;
       }
+      // In dynamic mode, a param whose type can't be compiled statically
+      // (e.g. complex Zod schema types, React prop types) is treated as JSVAL.
+      // The function is still callable from static code; callers pass island
+      // values. This is correct for --dynamic: callers in npm code pass JSVAL.
+      if (!pt && ctx.dynamic) pt = JSVAL;
       if (!pt) return null;
       // `(value: void) => void` (Promise<void>'s resolve) is callable with
       // no arguments — a void param is dropped, not a mapping failure.
@@ -2511,8 +2563,33 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // `() => void` and its calls never produce a value — map the return
     // like declaredReturnType does for declarations.
     const ret = retT.flags & ts.TypeFlags.Never ? VOID : mapType(retT, ctx);
+    // In dynamic mode, a function whose return type can't be compiled statically
+    // (e.g. `(): JSX.Element` — ReactElement contains any-typed fields) is
+    // treated as returning JSVAL rather than failing. The function is still
+    // callable from static code; the return value rides the island. This is
+    // correct for --dynamic: such functions exist in npm packages and their
+    // return values are island handles by definition.
+    if (!ret && ctx.dynamic) return funcOf(params, JSVAL);
     if (!ret) return null;
     return funcOf(params, ret);
+  }
+  // Multi-signature function types (overloaded functions, intersections of two
+  // onEvent? callbacks from TEvents & WithPayloadCtx<...>): under --dynamic
+  // these cannot be statically compiled but are valid JSVAL callables. Return
+  // JSVAL so they don't poison the containing intersection or record shape.
+  // Carve-out: stdlib functions (e.g. node:child_process.spawnSync, node:fs.readFileSync)
+  // have multiple overload signatures in @types/node but have STATIC lowerings —
+  // they must NOT map to JSVAL. A function whose symbol's declarations all come
+  // from stdlib files (isNodeTypesPath / @types/node) keeps the null/unmapped result
+  // so the builtinImportOf call-site path fires instead of the island path.
+  if (callSigs.length > 1 && ctx.dynamic) {
+    const multSym = widened.getAliasSymbol() ?? widened.getSymbol();
+    const multDecls = multSym ? checker.declarationsOf(multSym) : undefined;
+    const allStdlib =
+      multDecls !== undefined &&
+      multDecls.length > 0 &&
+      multDecls.every((d) => ctx.isStdlibFile(d.getSourceFile()));
+    if (!allStdlib) return JSVAL;
   }
   // Records: object types whose members are all data properties (shorthand
   // methods in type position count — they're func-typed fields) with
@@ -3132,6 +3209,12 @@ function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): Ir
     if (p.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) return null;
     const pt = mapType(checker.getTypeOfSymbol(p), ctx);
     // No jsval absorb here: an island-entangled hybrid is not this shape.
+    // Exception: OPTIONAL jsval properties (e.g. `defaultProps?: any` on
+    // React.FunctionComponent from @types/react) are skipped instead of
+    // absorbing the whole hybrid — they carry no compilable data and their
+    // absence from the compiled shape is correct (npm-declared fields only
+    // matter in island code, not in the static hybrid callable).
+    if (pt?.kind === "jsval" && (p.flags & ts.SymbolFlags.Optional) !== 0) continue;
     if (!pt || pt.kind === "void" || pt.kind === "jsval") return null;
     fields.push({ name: p.name, type: pt });
     declaredOrder.push(p.name);
@@ -3168,18 +3251,58 @@ function recordProvenanceOk(t: ts.Type, ctx: TypeMapperCtx): boolean {
     return ts.constituentTypes(t).every(
       (part) => {
         const partSym = part.getSymbol();
-        return (part.flags & ts.TypeFlags.Object) !== 0 &&
-          !(partSym && partSym.flags & ts.SymbolFlags.Class) &&
-          checker.getCallSignatures(part).length === 0 &&
-          checker.getConstructSignatures(part).length === 0 &&
-          recordProvenanceOk(part, ctx);
+        // Allow TypeParameter parts (constrained to object shapes at call sites)
+        // and Conditional parts (project-declared utility types like ChannelConfigField).
+        // Only Object-flagged types were allowed before; intersecting TConfig or conditional
+        // types like ChannelConfigField<...> caused every field-helper return type to fail.
+        const isObjectLike =
+          (part.flags & ts.TypeFlags.Object) !== 0 ||
+          (part.flags & ts.TypeFlags.TypeParameter) !== 0 ||
+          (part.flags & ts.TypeFlags.Conditional) !== 0;
+        if (!isObjectLike) return false;
+        if (partSym && partSym.flags & ts.SymbolFlags.Class) return false;
+        if (checker.getCallSignatures(part).length > 0) return false;
+        if (checker.getConstructSignatures(part).length > 0) return false;
+        return recordProvenanceOk(part, ctx);
       },
     );
   }
   if (isMappedShape(t)) return true;
+  // Type parameters (e.g. `TConfig` in `TConfig & { schemaType: "widget" }`) are
+  // declared inside project source files — their provenance is always OK.
+  if ((t.flags & ts.TypeFlags.TypeParameter) !== 0) {
+    const tpSym = t.getSymbol();
+    if (!tpSym) return true; // anonymous type parameter — allow
+    const tpDecls = checker.declarationsOf(tpSym);
+    if (!tpDecls || tpDecls.length === 0) return true;
+    return !tpDecls.some((d) => {
+      const sf = d.getSourceFile();
+      return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf);
+    });
+  }
+  // Conditional types (e.g. `ChannelConfigField<...>` which is `HasClientDeliveredEventsOf<TEvents> extends true ? ... : ...`):
+  // no `getSymbol()` on the conditional itself, but the alias symbol names the declaration site.
+  if ((t.flags & ts.TypeFlags.Conditional) !== 0) {
+    const alias = t.getAliasSymbol();
+    if (!alias) return true; // anonymous conditional — allow optimistically (no lib declaration to fence)
+    const aliasDecls = checker.declarationsOf(alias);
+    if (!aliasDecls || aliasDecls.length === 0) return true;
+    return !aliasDecls.some((d) => {
+      const sf = d.getSourceFile();
+      return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf);
+    });
+  }
   const tSym = t.getSymbol();
   const decls = tSym ? checker.declarationsOf(tSym) : undefined;
-  if (!decls || decls.length === 0) return false;
+  // Anonymous object types (no symbol or no declarations) that appear as
+  // intersection parts — e.g. `{ scopedTranslation: T }` or type literal
+  // intersections synthesized inline in generic function signatures — are
+  // user-authored data shapes with no lib provenance. Allow them.
+  if (!decls || decls.length === 0) {
+    // Only allow anonymous Object types (not unknowns or other structural forms)
+    if ((t.flags & ts.TypeFlags.Object) !== 0) return true;
+    return false;
+  }
   return !decls.some((d) => {
     const sf = d.getSourceFile();
     return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf);
@@ -3383,7 +3506,9 @@ function mapRecordTypeInner(widened: ts.Type, ctx: TypeMapperCtx): IrType | Reco
     !widened.isIntersectionType() &&
     indexValue === undefined &&
     checker.getPropertiesOfType(widened).length === 0;
-  if (!recordProvenanceOk(widened, ctx) && !pureIndexShape && !anonymousEmpty) return null;
+  if (!recordProvenanceOk(widened, ctx) && !pureIndexShape && !anonymousEmpty) {
+    return null;
+  }
   // Checker-computed shapes (no user declaration) need two extra fences in
   // the member walk below; see the comments there.
   const computed = widened.isIntersectionType() || isMappedShape(widened);
@@ -3395,7 +3520,9 @@ function mapRecordTypeInner(widened: ts.Type, ctx: TypeMapperCtx): IrType | Reco
     // degenerate empties (`Partial<{}>`, `Omit<C, keyof C>`) go with it.
     // An INDEX-SIGNATURE shape is exempt: `Record<string, T>` legitimately
     // has zero declared members — the signature is the shape.
-    if (computed && props.length === 0 && !indexValue) return null;
+    if (computed && props.length === 0 && !indexValue) {
+      return null;
+    }
     // A DECLARED empty object type — `{}` (spelled or the checker's shared
     // intrinsic), `interface Empty {}` — is tsc's TOP type over non-nullish
     // values: every number, string, record, array, function, or class
@@ -3479,7 +3606,11 @@ function mapRecordTypeInner(widened: ts.Type, ctx: TypeMapperCtx): IrType | Reco
       // Computed shapes carry provenance per MEMBER: a utility type over a
       // lib interface (`Readonly<Date>`) is still the lib's type world, not
       // a data shape. Synthesized members (a literal-key Record's) have no
-      // declarations and pass.
+      // declarations and pass. Optional members from npm .d.ts files are
+      // dropped from the shape (same treatment as optional fields whose type
+      // cannot compile) — they come from library interfaces mixed in via
+      // intersection (e.g. UseFormProps.mode inside ApiFormOptions) and have
+      // no data presence in the compiled output.
       if (
         computed &&
         checker.declarationsOf(p).some((d) => {
@@ -3487,6 +3618,7 @@ function mapRecordTypeInner(widened: ts.Type, ctx: TypeMapperCtx): IrType | Reco
           return sf.isDeclarationFile && !ctx.isExternalTypeFile(sf);
         })
       ) {
+        if ((p.flags & ts.SymbolFlags.Optional) !== 0) continue;
         return null;
       }
       const fieldTs = checker.getTypeOfSymbol(p);
@@ -3516,7 +3648,15 @@ function mapRecordTypeInner(widened: ts.Type, ctx: TypeMapperCtx): IrType | Reco
       // overflow entry — same RC adapters, same dynFrom conversion on the
       // way in, same checked casts on the way out. (JSON.stringify of a
       // dyn-field-bearing shape keeps its fence: jsonSafe stays false.)
-      if (!pt || pt.kind === "void") return null;
+      // OPTIONAL FIELDS whose type does not compile (e.g. a function type
+      // with a non-compilable parameter like Date): the field is dropped
+      // from the shape entirely. The runtime value is never stored; the
+      // field is absent on all compiled records. Optional fields whose type
+      // cannot map do not block the rest of the record shape.
+      if (!pt || pt.kind === "void") {
+        if ((p.flags & ts.SymbolFlags.Optional) !== 0) continue;
+        return null;
+      }
       // A DATA property spelled like a reserved accessor slot (`{ "%get:x":
       // v }` — a string-literal key): mapping it would collide with the
       // accessor dispatch, so the shape stays unmapped.
@@ -3579,7 +3719,7 @@ const STDLIB_CONTAINERS: Record<string, { role: (i: number) => string }> = {
  * machinery), promises, regexes, generators, handles, nested unions —
  * would DEGRADE (identity, methods, dispatch) riding dyn, so those arms
  * keep their existing homes and fences. */
-function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
+export function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
   switch (arm.kind) {
     case "dyn":
     case "f64":
@@ -3801,6 +3941,9 @@ export function describeRecordMemberBlocker(widened: ts.Type, ctx: TypeMapperCtx
     let pt = mapType(fieldTs, ctx);
     if (pt?.kind === "void" && isUnitOnlyTsType(fieldTs)) pt = unitOnlyUnion(ctx.unions);
     if (!pt || pt.kind === "void") {
+      // Optional fields whose type does not compile are silently dropped from
+      // the shape (same rule as mapRecordTypeInner) — they do not block.
+      if ((p.flags & ts.SymbolFlags.Optional) !== 0) continue;
       return `the record shape is supported, but its member '${p.name}' has type '${checker.typeToString(fieldTs)}', which does not compile`;
     }
   }

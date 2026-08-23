@@ -4437,6 +4437,90 @@ function literalUnionArmOf(
   return recordArms.find((a) => a.shapeId === only) ?? null;
 }
 
+/** Extract a literal property key as a string (identifier, string literal,
+ * numeric literal, or pure const-folded computed key). Returns null for
+ * runtime-computed / symbol keys. Mirrors lower-island's requestInitLiteralKey. */
+function jsvalObjectLiteralKey(L: Lowerer, prop: ts.ObjectLiteralElementLike): string | null {
+  if (
+    !ts.isPropertyAssignment(prop) &&
+    !ts.isShorthandPropertyAssignment(prop) &&
+    !ts.isMethodDeclaration(prop)
+  ) return null;
+  const name = prop.name;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return String(Number(name.text));
+  if (ts.isComputedPropertyName(name)) return foldedStringKeyOf(L, name.expression);
+  return null;
+}
+
+/** Lower a TS-source object literal whose contextual type is JSVAL (e.g. an
+ * object literal inside a lambda passed to a JSVAL .then()). Builds a JSVAL
+ * island object literal — same strategy as lower-island's
+ * lowerIslandObjectLiteral but inlined here to avoid a circular import. */
+function lowerJsvalObjectLiteralFromTsSource(L: Lowerer, expr: ts.ObjectLiteralExpression): IrExpr {
+  const loc = locOf(expr);
+  let args: IrExpr[] = [];
+  let acc: IrExpr | null = null;
+  const flushFields = (): void => {
+    if (args.length === 0) return;
+    const chunk: IrExpr = { kind: "jsOp", op: "objLit", args, type: JSVAL, loc };
+    acc = acc === null
+      ? chunk
+      : { kind: "jsOp", op: "objSpread", args: [acc, chunk], type: JSVAL, loc };
+    args = [];
+  };
+  for (const prop of expr.properties) {
+    if (ts.isSpreadAssignment(prop)) {
+      flushFields();
+      const spread = ts.isObjectLiteralExpression(prop.expression)
+        ? lowerJsvalObjectLiteralFromTsSource(L, prop.expression)
+        : L.jsvalIn(L.lowerExpr(prop.expression), prop.expression);
+      acc ??= { kind: "jsOp", op: "objLit", args: [], type: JSVAL, loc };
+      acc = { kind: "jsOp", op: "objSpread", args: [acc, spread], type: JSVAL, loc: locOf(prop) };
+      continue;
+    }
+    if (
+      !ts.isPropertyAssignment(prop) &&
+      !ts.isShorthandPropertyAssignment(prop) &&
+      !ts.isMethodDeclaration(prop)
+    ) {
+      L.unsupported("SC1090", prop, "this property form in a JSVAL-typed object literal (use a spelled key with a value or method)");
+    }
+    const propertyName = jsvalObjectLiteralKey(L, prop);
+    if (propertyName === null) {
+      L.unsupported("SC1090", prop, "this property key in a JSVAL-typed object literal (use a spelled or pure const-folded key)");
+    }
+    const nameLoc = locOf(prop.name);
+    args.push({
+      kind: "jsMarshal",
+      value: { kind: "strLit", value: propertyName, type: STRING, loc: nameLoc },
+      type: JSVAL, loc: nameLoc,
+    });
+    const valueNode: ts.Expression | ts.MethodDeclaration =
+      ts.isPropertyAssignment(prop)
+        ? prop.initializer
+        : ts.isShorthandPropertyAssignment(prop)
+          ? prop.name as ts.Identifier
+          : prop;
+    if (ts.isObjectLiteralExpression(valueNode)) {
+      args.push(lowerJsvalObjectLiteralFromTsSource(L, valueNode));
+    } else if (
+      ts.isArrayLiteralExpression(valueNode) &&
+      !valueNode.elements.some(ts.isSpreadElement)
+    ) {
+      const elems = valueNode.elements.map((el) => L.jsvalIn(L.lowerExpr(el), el));
+      args.push({ kind: "jsOp", op: "arrLit", args: elems, type: JSVAL, loc: locOf(valueNode) });
+    } else {
+      const value = ts.isMethodDeclaration(valueNode)
+        ? (L.rejectThisInObjectMethod(valueNode.body ?? valueNode), L.lowerLambda(valueNode))
+        : L.lowerExpr(valueNode);
+      args.push(L.jsvalIn(value, valueNode));
+    }
+  }
+  flushFields();
+  return acc ?? { kind: "jsOp", op: "objLit", args: [], type: JSVAL, loc };
+}
+
 export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression): IrExpr {
     const loc = locOf(expr);
     // The RUNTIME-KEYED literal (JS): a computed key that doesn't fold to a
@@ -4607,6 +4691,17 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
     // the slot's width coercion constructs through the trivial
     // parameter-property constructor (recordToClassPlan), or fences with
     // the record-shape story.
+    // A TS-source object literal with a JSVAL contextual type (e.g. `{ default:
+    // m.Widget }` inside a lambda whose parameter `m` comes from a JSVAL-bearing
+    // promise like `import("foo.tsx").then((m) => ...)`) — build as an island
+    // JSVAL object NOW, before the own-type fallback below can override `mapped`
+    // to a record. If we let the own-type fallback run, the record's field types
+    // drive property coercion; but the actual lowered values (e.g. `m.Widget`)
+    // are JSVAL IR expressions (island property access), causing SC2001 at the
+    // field assignment check. Bail out early with the island path instead.
+    if (mapped?.kind === "jsval" && !isJsSourceFile(expr.getSourceFile())) {
+      return lowerJsvalObjectLiteralFromTsSource(L, expr);
+    }
     // A jsval-mapped context reaches here only when lowerExpr's island
     // gate DECLINED it (a project-declared typedef that absorbed to the
     // island through checker-`any` field residue): the literal builds at
@@ -4702,6 +4797,13 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
     // consumers ride the keyed-dyn paths. TypeScript keeps the fence.
     if ((!mapped || mapped.kind === "dyn") && isJsSourceFile(expr.getSourceFile())) {
       return lowerDynObjectLiteral(L, expr);
+    }
+    // A TS-source object literal with a JSVAL contextual type (e.g. `{ default:
+    // m.Widget }` inside a lambda passed to a JSVAL .then()) — build it as an
+    // island JSVAL object literal so values are jsvalIn-wrapped rather than
+    // failing with SC2001 (the contextual type can't be statically shaped).
+    if (mapped?.kind === "jsval") {
+      return lowerJsvalObjectLiteralFromTsSource(L, expr);
     }
     if (!mapped || mapped.kind !== "record") L.badType(expr, tsType);
     let type = mapped;
@@ -5526,7 +5628,11 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
         continue;
       }
       value = L.coerceInto(valueNode, value, fieldType); // union-typed fields wrap arm values
-      if (!typeEquals(value.type, fieldType)) L.badType(valueNode, L.typeOf(valueNode));
+      // In a .then() callback on a JSVAL-bearing promise (e.g. import("./foo.tsx")),
+      // island values (JSVAL) are allowed in any field — the module resolves to {} at
+      // runtime and field values are JSVAL engine handles. coerceInto already passed
+      // with inJsvalThenHandler; don't re-check with badType.
+      if (!typeEquals(value.type, fieldType) && !L.inJsvalThenHandler) L.badType(valueNode, L.typeOf(valueNode));
       // An explicit property overrides a spread-copied field: JS
       // last-write-wins. The entry moves to the END so explicit property
       // values keep their source-order evaluation among themselves. A

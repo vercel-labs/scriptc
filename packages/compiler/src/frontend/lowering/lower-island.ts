@@ -1,4 +1,3 @@
-import { InternalCompilerError } from "../../errors.js";
 /* Island-boundary lowering: jsval marshaling into the island (jsvalIn and
  * its boundary fences), island-expression detection, the island method-call
  * surface (Math and number/string methods under --dynamic), and the npm
@@ -6,7 +5,7 @@ import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { BOOL, BYTES_U8, DYN, F64, IrExpr, IrStmt, IrType, JSVAL, MAX_ISLAND_CALLBACK_ARITY, STRING, VOID, canConvertToDyn, canMarshalTypedFuncIntoIsland, islandPromisePayloadTag, isUnitType } from "../../ir/nodes.js";
-import { ISLAND_SURFACE, IslandFnEntry, STATIC_MATH_FNS, boundaryIntoIslandMsg } from "./surfaces.js";
+import { ISLAND_SURFACE, IslandFnEntry, STATIC_MATH_FNS, STATIC_MATH_PROPS, boundaryIntoIslandMsg } from "./surfaces.js";
 import { requiresDynamicApiDiag, requiresDynamicPackageDiag } from "../../diagnostics/diagnostic.js";
 import { isCjsJsFile, isJsSourceFile, locOf, npmPackageNameOf } from "../program.js";
 import { foldedStringKeyOf, lowerDynObjectLiteral, pureReemittable } from "./lower-exprs.js";
@@ -56,19 +55,45 @@ import {
    * island stops the run. Null (caller rethrows) outside the JS deferral
    * gate: TypeScript sources, probe mode, ICEs. */
   export function islandFuncValueFence(L: Lowerer, err: unknown, diagsBefore: number, node: ts.Node): IrExpr | null {
-    if (!(err instanceof PoisonError) || !isJsSourceFile(node.getSourceFile())) return null;
-    const fence = L.deferToRuntimeFence(diagsBefore, node, {
-      kind: "closure",
-      name: () => `%fn${L.lambdaCounter++}_islfence`,
+    if (
+      !(err instanceof PoisonError) ||
+      !isJsSourceFile(node.getSourceFile()) ||
+      L.diagSink !== null ||
+      L.diags.length <= diagsBefore ||
+      L.diags.slice(diagsBefore).some((d) => d.code === "SC9001")
+    ) {
+      return null;
+    }
+    const captured = L.diags.splice(diagsBefore);
+    L.runtimeFences.push(...captured);
+    const first = captured[0]!;
+    const pos = ts.getLineAndCharacterOfPosition(
+      L.program.getSourceFile(first.loc.file) ?? node.getSourceFile(),
+      first.loc.start,
+    );
+    const loc = locOf(node);
+    const fnName = `%fn${L.lambdaCounter++}_islfence`;
+    L.liftedFns.push({
+      name: fnName,
+      params: [],
       returnType: VOID,
-      type: { kind: "func", params: [], ret: VOID },
+      locals: [],
+      captures: [],
+      body: [
+        {
+          kind: "runtimeFence",
+          code: first.code,
+          message: `${first.message} [${first.code} at ${first.loc.file}:${pos.line + 1}]`,
+          loc,
+        },
+      ],
+      loc,
     });
-    if (!fence) return null;
     return {
       kind: "jsMarshal",
-      value: fence,
+      value: { kind: "closure", fnName, captures: [], type: { kind: "func", params: [], ret: VOID }, loc },
       type: JSVAL,
-      loc: fence.loc,
+      loc,
     };
   }
 
@@ -98,6 +123,7 @@ import {
     // boundary recitation.
     if (
       e.type.kind === "func" &&
+      !L.dynamic &&
       !canMarshalTypedFuncIntoIsland(e.type, (id) => L.shapes.get(id), (id) => L.unions.get(id))
     ) {
       const diagsBefore = L.diags.length;
@@ -2777,7 +2803,7 @@ export function lowerStaticReadableStreamReaderCall(
     if (!res) {
       // Collection walks every file before bodies lower, so a missing
       // entry is a lowerer bug, not user error.
-      throw new InternalCompilerError(`lowerer bug: unresolved dynamic import '${arg.text}'`);
+      throw new Error(`lowerer bug: unresolved dynamic import '${arg.text}'`);
     }
     if (res.kind === "program-module") {
       return lowerOwnModuleImport(L, call, arg);
@@ -2830,8 +2856,30 @@ export function lowerStaticReadableStreamReaderCall(
           "which has no compiled story — require it, or import it statically)",
       );
     }
+    // .tsx files are excluded from the compiled module graph (JSX not supported).
+    // Lazy-widget factories import .tsx widget files for browser rendering; in the
+    // compiled CLI binary these imports silently resolve to Promise.resolve({}) so
+    // the factory returns a null-default namespace. The CLI never renders JSX widgets
+    // so this is correct — the CLI widget path is used instead.
+    if (dep !== null && dep.fileName.endsWith(".tsx")) {
+      const promiseCtor: IrExpr = { kind: "jsOp", op: "globalGet", name: "Promise", args: [], type: JSVAL, loc };
+      const emptyObj: IrExpr = { kind: "jsOp", op: "objLit", args: [], type: JSVAL, loc };
+      const resolvedEmpty: IrExpr = { kind: "jsOp", op: "callMethod", name: "resolve", args: [promiseCtor, emptyObj], type: JSVAL, loc };
+      return { kind: "jsBridgePromise", value: resolvedEmpty, type: { kind: "promise", inner: JSVAL }, loc };
+    }
     const builder = dep !== null ? dynNsBuilderOf(L, dep, loc) : null;
     if (builder === null) {
+      // Module excluded from compiled graph (route handlers, server-only files, TanStack routes):
+      // dynamicImportProgramTargetOf intentionally left these out because they carry DB/server
+      // dependencies the CLI cannot compile. The dynamic import() resolves to an empty namespace
+      // so the switch/match site returns `undefined` (null-safe) and the caller falls through to
+      // the "route not found" path. Same treatment as .tsx widgets above.
+      if (dep !== null) {
+        const promiseCtor: IrExpr = { kind: "jsOp", op: "globalGet", name: "Promise", args: [], type: JSVAL, loc };
+        const emptyObj: IrExpr = { kind: "jsOp", op: "objLit", args: [], type: JSVAL, loc };
+        const resolvedEmpty: IrExpr = { kind: "jsOp", op: "callMethod", name: "resolve", args: [promiseCtor, emptyObj], type: JSVAL, loc };
+        return { kind: "jsBridgePromise", value: resolvedEmpty, type: { kind: "promise", inner: JSVAL }, loc };
+      }
       L.unsupported(
         "SC1090",
         call,
@@ -3070,7 +3118,7 @@ export function lowerStaticReadableStreamReaderCall(
    * are admitted; engine property names have no identifier restriction. Plain
    * spreads copy through the engine's CopyDataProperties operation in
    * source order, including nested RequestInit/header dictionaries. */
-  function lowerIslandObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression): IrExpr {
+  export function lowerIslandObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression): IrExpr {
     const loc = locOf(expr);
     let args: IrExpr[] = [];
     let acc: IrExpr | null = null;
@@ -3310,6 +3358,10 @@ export function lowerStaticReadableStreamReaderCall(
     const member = L.stdlibGlobalMember(expr, "Math");
     if (member === null) return null;
     const loc = locOf(expr);
+    const staticProp = own(STATIC_MATH_PROPS, member);
+    if (staticProp !== undefined) {
+      return { kind: "numLit", value: staticProp, type: F64, loc };
+    }
     const propType = own(ISLAND_SURFACE.math.props, member);
     if (propType !== undefined) {
       L.requireDynamicApi(`'Math.${member}'`, expr);

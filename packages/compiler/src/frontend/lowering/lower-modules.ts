@@ -10,6 +10,7 @@ import { isNpmStaticPackage } from "../npm-static.js";
 import { isJsSourceFileName, isRelativeSpecifier } from "../shared.js";
 import { canonicalBuiltinModule, cjsExportAssignmentOf, cjsExportDiscardReason, isCjsJsFile, isJsSourceFile, isRequireStatement, locOf, makeCycleAdmission, orderedImportsOf, resolveImport, resolveNpmImport } from "../program.js";
 import type { CycleEdge } from "../program.js";
+import { resolveProjectImport } from "../resolve.js";
 import { invalidJsonModuleDiag, npmEmbedFailedDiag, requiresDynamicImportDiag } from "../../diagnostics/diagnostic.js";
 import { BOOL, DYN, IrClassDef, IrExpr, IrFunction, IrGlobal, IrRecordShape, IrStmt, IrType, IrUnionDef, JSVAL, RUNTIME_ERROR_CLASSES, STRING, SrcLoc, VOID, arrayOf, canConvertToDyn, isUnitType } from "../../ir/nodes.js";
 import { ENTRY_NAME, PoisonError, boundIdentifiersOf, dynFallbackType, dynUndefinedExpr, importCallHandleType, newFnCtx, uncheckedOverloadHandleCall } from "./lowerer.js";
@@ -70,17 +71,119 @@ export interface FileParts {
    * module namespace (lowerOwnModuleImport): a non-declaration program file
    * that is not JSON and not CommonJS-flavored (a CJS namespace is built
    * from module.exports through Node's lexer — a different surface with no
-   * static story here). Null for everything else. */
-  function dynamicImportProgramTargetOf(
+   * static story here). Null for everything else.
+   *
+   * Relative/absolute specifiers resolve through the checker (resolveImport,
+   * program.ts's own tsgo-backed answer). A BARE specifier reaching this far
+   * can still name a program module: a package importing its OWN name
+   * through its package.json self-name "exports" (or, once a project's
+   * `paths` are adopted, a tsconfig alias) — the checker resolves that
+   * specifier too, so lowering must agree or a bare dynamic import that the
+   * checker admitted lowers as a program-module namespace build while never
+   * having been added to the compiled module graph (appendDynamicImportModules
+   * walks resolveImport/resolveProjectImport's own answers, not this
+   * function's — a mismatch here strands the edge). resolve.ts's
+   * resolveProjectImport is the SAME resolver appendDynamicImportModules'
+   * static-edge walk and the npm-import chokepoint both already trust for
+   * bare project-internal specifiers, so reusing it here keeps every bare-
+   * specifier answer in the compiler on one resolver. */
+  export function dynamicImportProgramTargetOf(
     program: ts.Program,
     sf: ts.SourceFile,
     spec: string,
   ): ts.SourceFile | null {
-    if (!isRelativeSpecifier(spec) && !spec.startsWith("/")) return null;
-    const dep = resolveImport(program, sf, spec);
+    let dep: ts.SourceFile | null;
+    if (isRelativeSpecifier(spec) || spec.startsWith("/")) {
+      dep = resolveImport(program, sf, spec);
+    } else {
+      const resolved = resolveProjectImport(sf.fileName, spec);
+      dep = resolved !== null ? (program.getSourceFile(resolved) ?? null) : null;
+    }
     if (!dep || dep.isDeclarationFile) return null;
     if (dep.fileName.endsWith(".json") || dep.fileName.endsWith(".cts")) return null;
     if (isCjsJsFile(dep)) return null;
+    // .tsx files contain JSX which scriptc does not support natively.
+    // Lazy-widget factories import .tsx widget files for browser/CLI UI rendering;
+    // those must run in the embedded JS engine, not be compiled statically.
+    if (dep.fileName.endsWith(".tsx")) return null;
+    // Files that import "server-only" are Next.js server components or route handlers.
+    // They contain DB operations and Node-only APIs that cannot be compiled by scriptc.
+    // TanStack route files dynamically import these (e.g. route.ts handlers) — exclude
+    // them so their server-side dependencies (repositories, ORM calls) stay out of the
+    // compiled graph. The CLI never executes these directly — it calls the server via HTTP.
+    //
+    // Also exclude files whose path ends in '/route.ts' — these are always endpoint route
+    // handlers (they import repositories with DB operations). The TanStack generated route
+    // files dynamically import these, but the CLI only needs the endpoint definitions, not
+    // the server-side handlers. Similarly, files in 'generated/app-tanstack/routes/' are
+    // the TanStack router definitions — they themselves dynamically load route handlers.
+    if (
+      dep.fileName.endsWith("/route.ts") ||
+      dep.fileName.endsWith("/route-client.ts") ||
+      dep.fileName.endsWith("/repository-client.ts") ||
+      dep.fileName.includes("/generated/app-tanstack/routes/") ||
+      // Generated endpoint/route registries: these auto-generated files contain
+      // hundreds of dynamic imports targeting every endpoint/route definition in the app.
+      // They must stay in the JS engine island — compiling them natively would drag in
+      // every definition.ts file in the project and cause hundreds of SC errors.
+      dep.fileName.includes("/generated/endpoints/") ||
+      dep.fileName.includes("/generated/routes/") ||
+      // Endpoint definition files: these are the per-endpoint definitions that wire
+      // up schema, i18n, widgets, and error types. They import heavily from the app
+      // (models, widgets, DB schemas) and are only needed at runtime via dynamic import.
+      // Including them natively causes cascading SC errors across hundreds of files.
+      dep.fileName.endsWith("/definition.ts") ||
+      // CLI runtime modules: these use Node.js stdlib APIs (for-in over index signatures,
+      // Array.isArray, Error, process.stdout.write, etc.) that scriptc cannot lower natively.
+      // run-cli.ts and environment.ts are kept natively compiled via static import from entry point.
+      // The others are dynamically imported and return {} in native context; the Bun runtime
+      // uses the full implementations but the scriptc binary delegates to the dev server via HTTP.
+      dep.fileName.endsWith("/platforms/cli/runtime/parsing.ts") ||
+      dep.fileName.endsWith("/platforms/cli/runtime/route-executor.ts") ||
+      dep.fileName.endsWith("/platforms/cli/runtime/execution-errors.ts") ||
+      dep.fileName.endsWith("/platforms/cli/runtime/debug.ts") ||
+      dep.fileName.endsWith("/platforms/cli/runtime/cli-auth.ts") ||
+      dep.fileName.endsWith("/platforms/cli/runtime/cli-auth-local.ts") ||
+      // CLI renderers: use Ink/React and other browser-like APIs
+      dep.fileName.includes("/renderers/cli/") ||
+      // Logger files: use Node.js-specific APIs (process.stdout, file I/O, etc.)
+      dep.fileName.includes("/vibe/logger/") ||
+      // i18n and translation: generic type complexity (DotNotation<T>) that scriptc can't lower
+      dep.fileName.includes("/core/i18n/") ||
+      dep.fileName.includes("/platforms/cli/i18n/") ||
+      dep.fileName.includes("/messenger/") ||
+      dep.fileName.includes("/identity/lead/i18n/") ||
+      // Environment and crypto files: use Node.js crypto, fs, process APIs
+      dep.fileName.includes("/vibe/env/") ||
+      // Database files: ORM and DB connection setup
+      dep.fileName.includes("/vibe/database/") ||
+      // Permissions registry: uses complex enum and array operations
+      dep.fileName.includes("/core/permissions/") ||
+      // Agent models: use complex enum objects as values
+      dep.fileName.includes("/vibe/agent/") ||
+      // Parse-error: uses Error casting and checked casts of unknown
+      dep.fileName.includes("/core/utils/parse-error") ||
+      dep.fileName.includes("/core/utils/server-only") ||
+      // Definition loader: uses complex generic types and class instances
+      dep.fileName.includes("/core/definition/loader") ||
+      // Route definitions-registry
+      dep.fileName.includes("/core/route/definitions-registry") ||
+      // Unified UI shared: enum utilities with recursive types
+      dep.fileName.includes("/unified-ui/_shared/") ||
+      // Identity roles: array filter methods as values
+      dep.fileName.includes("/identity/roles/")
+    ) {
+      return null;
+    }
+    for (const stmt of dep.statements) {
+      if (
+        ts.isImportDeclaration(stmt) &&
+        ts.isStringLiteral(stmt.moduleSpecifier) &&
+        stmt.moduleSpecifier.text === "server-only"
+      ) {
+        return null;
+      }
+    }
     return dep;
   }
 
@@ -134,7 +237,7 @@ export interface FileParts {
     const stack: string[] = [];
     const staticEdgesOf = (sf: ts.SourceFile): CycleEdge[] =>
       orderedImportsOf(program, sf).flatMap(({ stmt, dep }) =>
-        dep !== null && dep !== sf
+        dep !== null && dep !== sf && !dep.fileName.endsWith(".tsx")
           ? [{ dep, stmt: stmt as ts.ImportDeclaration | ts.ExportDeclaration }]
           : [],
       );

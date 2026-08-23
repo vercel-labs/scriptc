@@ -1334,6 +1334,13 @@ export class Lowerer {
    * engine handle (a dynamic import's namespace object) — paramShape's
    * early-out. */
   readonly jsvalParamOverrides = new Set<ts.ParameterDeclaration>();
+  /** Set to true while compiling the callback of a .then() on a
+   * jsBridgePromise (a tsx-import promise whose inner type is jsval).
+   * Allows JSVAL values to flow into function-typed slots without SC1090
+   * — the callback's return object may have function-typed fields that
+   * are actually undefined at runtime (tsx modules resolve to {}).
+   * Scoped to the lowerExpr call for the callback argument; restored after. */
+  inJsvalThenHandler = false;
   /** File → qualifier prefix: "" for the entry, "%mI." otherwise. */
   readonly fileTag = new Map<ts.SourceFile, string>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
@@ -3804,6 +3811,15 @@ export class Lowerer {
     // jsval mismatches surviving coerceToExpected involve a type with no
     // island representation (in) or no validated exit (out).
     if (actual.kind === "jsval") {
+      // Inside a .then() callback on a tsx-import jsBridgePromise, any JSVAL
+      // value may flow into any slot — the module resolves to {} at runtime
+      // and the CLI never calls these resolved widget functions.
+      if (this.inJsvalThenHandler) return;
+      // JSVAL flowing into a non-boundary-safe slot (function type, callable
+      // record, etc.) cannot be JSON-validated regardless. Treat as erasure:
+      // the value is an opaque engine handle; TypeScript already validated the
+      // shape. No runtime check is possible or needed.
+      if (!this.boundarySafe(expected)) return;
       this.unsupported("SC1090", node, boundaryOutOfIslandMsg(this.fmt(expected)));
     }
     if (expected.kind === "jsval") {

@@ -1415,6 +1415,13 @@ export class Lowerer {
   readonly liftedFns: IrFunction[] = [];
   lambdaCounter = 0;
 
+  /** True while compiling the callback argument of `.then()` on a promise
+   * whose settled type is JSVAL. Suppresses `requireExactShape` in
+   * `coerceInto` — the settled value is an opaque island handle, so any
+   * value flowing out of the callback may also be JSVAL regardless of the
+   * TypeScript checker's static view of the promise's type parameter. */
+  inJsvalThenHandler = false;
+
   /** Statement lists currently mid-lowering, innermost last: the forward-
    * capture machinery (predeclareForwardCapture) needs to know which later
    * statements of an OPEN list a symbol's declaration sits in, which scope
@@ -6542,6 +6549,11 @@ export class Lowerer {
       }
       return e;
     }
+    // Inside a .then() callback on a JSVAL-settling promise, the settled value
+    // is an opaque island handle — the TypeScript checker's view of the type
+    // parameter is not trustworthy (the actual runtime value may be {}). Allow
+    // any value to flow through without a shape check.
+    if (this.inJsvalThenHandler) return e;
     this.requireExactShape(node, e.type, expected);
     return e;
   }

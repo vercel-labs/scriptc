@@ -4281,6 +4281,18 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
     // Value-position `void` keeps the syntax fence (a standalone undefined
     // VALUE needs a union slot to live in).
     if (ts.isVoidExpression(expr)) return lowerExprStatement(L, expr.expression);
+    // Statement-position conditionals evaluate the condition, then exactly
+    // one arm for effect and drop that arm's value. Lower them as `if`
+    // statements so void-valued arms do not form invalid value ternaries.
+    if (ts.isConditionalExpression(expr)) {
+      return {
+        kind: "if",
+        cond: L.lowerCondition(expr.condition),
+        then: [lowerExprStatement(L, expr.whenTrue)],
+        else_: [lowerExprStatement(L, expr.whenFalse)],
+        loc: locOf(expr),
+      };
+    }
     if (ts.isBinaryExpression(expr)) {
       const opKind = expr.operatorToken.kind;
       // Statement-position comma (`({} = a, [] = a);`, `i++, j++` in a

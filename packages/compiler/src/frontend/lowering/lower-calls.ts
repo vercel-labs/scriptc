@@ -5810,14 +5810,8 @@ const inliningPredicates = new Set<ts.Symbol>();
           // A `void e` body rides the statement lowering (the value is
           // discarded here, so the operand evaluates for effect alone —
           // `(name) => void doThing(name)`, the fire-and-forget arrow).
-          let stripped: ts.Expression = bodyExpr;
-          while (ts.isParenthesizedExpression(stripped)) stripped = stripped.expression;
-          if (ts.isVoidExpression(stripped)) {
-            body = [L.lowerExprStatement(stripped)];
-          } else {
-            const value = L.lowerExpr(bodyExpr);
-            body = value.kind === "unitLit" ? [] : [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }];
-          }
+          const stmt = L.lowerExprStatement(bodyExpr);
+          body = stmt.kind === "block" && stmt.body.length === 0 ? [] : [stmt];
         } else {
           let value = L.lowerExpr(bodyExpr);
           // An async concise body whose value is itself a promise

@@ -10039,7 +10039,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
    * and `switch (r.kind)` work without dedicated test nodes. Anything else
    * on a union receiver is rejected specifically (narrow first). */
   export function lowerUnionProperty(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
-    if (expr.questionDotToken) return null;
+    if (L.chainBlocked(expr)) return null;
     const receiverIr = L.mapTypeOf(L.typeOf(expr.expression));
     if (receiverIr?.kind !== "union") return null;
     // Lower the receiver FIRST and read its actual IR union: a partially
@@ -10050,8 +10050,10 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
     // A checker-union receiver whose VALUE lowered to a plain RECORD (the
     // merged-signature fiction — `runner(cmd, args)` where runner joined
     // a structural runner type with spawnSync's, and the local adopted
-    // the record arm): read the record field directly, the dyn-receiver
-    // fallback's discipline.
+    // the record arm), or to a concrete CLASS object behind an erasing
+    // widening assertion (`concrete as A | B`): read the actual value's
+    // field directly. Assertions change the checker type, not the runtime
+    // representation; manufacturing a tagged union here would be wrong.
     // A checker-union receiver whose VALUE lowered checked-dynamic (a
     // never-tainted JS chain — `cmd[1].length` on `const cmd = ['pwd',
     // []]`, where the element read stayed a dyn node): read through the
@@ -10070,6 +10072,20 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
           shapeId: value.type.shapeId,
           field: f.name,
           type: f.type,
+          loc: locOf(expr),
+        };
+      }
+      return null;
+    }
+    if (value.type.kind === "object") {
+      const fieldType = L.classes.get(value.type.className)?.fields.get(expr.name.text);
+      if (fieldType) {
+        return {
+          kind: "fieldGet",
+          obj: value,
+          className: value.type.className,
+          field: expr.name.text,
+          type: fieldType,
           loc: locOf(expr),
         };
       }

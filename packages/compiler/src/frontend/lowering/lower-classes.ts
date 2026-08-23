@@ -1233,9 +1233,6 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
           ) {
             const type = L.irTypeOf(member.name);
             if (type.kind === "void") L.badType(member.name, L.typeOf(member.name));
-            if (type.kind === "dyn") {
-              L.unsupported("SC1090", member.name, "'unknown'-typed static fields");
-            }
             staticFields.push({
               name: member.name.text,
               type,
@@ -1477,11 +1474,9 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
           // the ordinary undefined-armed union machinery.
           const type = L.irTypeOf(member.name);
           if (type.kind === "void") L.badType(member.name, L.typeOf(member.name));
-          // dyn stays out of class fields (KEEP NARROW; record
-          // fields and array elements are unmappable via mapType already).
-          if (type.kind === "dyn") {
-            L.unsupported("SC1090", member.name, "'unknown'-typed class fields");
-          }
+          // `unknown` fields use the same checked-dynamic dyn kind as
+          // unknown locals/params. Allocation initializes them to the dyn
+          // undefined singleton before field initializers run.
           if (fields.has(member.name.text)) {
             // REDECLARING an inherited field: Node [[Define]]s the OWN
             // property again when THIS class's field initializers run
@@ -1592,10 +1587,8 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
             const shape = L.paramShape(p);
             const type = shape.bodyType ?? shape.type;
             if (type.kind === "void") L.badType(p.name, L.typeOf(p.name));
-            // The class-field dyn rule verbatim (KEEP NARROW).
-            if (type.kind === "dyn") {
-              L.unsupported("SC1090", p.name, "'unknown'-typed class fields");
-            }
+            // Unknown parameter properties use the ordinary dyn parameter
+            // ABI and assign into the dyn class slot after super().
             // `override x` (and any same-named inherited member) would
             // redeclare a base slot — the declared-field rule verbatim.
             if (fields.has(name)) {

@@ -35,7 +35,7 @@ function localCapture(): () => number {
   return () => local as number;
 }
 class Holder {
-  data: unknown = JSON.parse("{}");
+  data: unknown = JSON.parse("{}"); // unknown class fields compile as dyn storage now — no fence
 }
 const anything: any = 5; // checker-`any` bindings ride the checked-dynamic tree now — no fence
 const dynArray: unknown[] = []; // unknown[] IS the dyn array now — no fence (corpus 2585)
@@ -49,7 +49,6 @@ function mkMaybe(): string | undefined {
   return undefined;
 }
 const stringifyUndef = JSON.stringify(mkMaybe());
-
 // Reached: unreached bodies never lower, so their rejections only exist
 // when something on the entry path uses them.
 localCapture();

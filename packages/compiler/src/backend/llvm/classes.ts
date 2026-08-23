@@ -214,16 +214,18 @@ export interface ClassHost extends ShapeHost {
 
 /** The newFn initialization stores for fields whose type ADMITS undefined
  * (undefFieldInitLineC's LLVM twin): undefined-armed union fields start
- * at the interned unit instance; jsval fields (an `any` class field under
- * --dynamic) start at the engine's undefined cell. */
+ * at the interned unit instance; jsval (`any`) fields start at the engine's
+ * undefined cell, while dyn (`unknown`) fields start at the checked-dynamic
+ * immortal undefined singleton. */
 function undefFieldInits(host: ClassHost, meta: LlClassMeta): string[] {
   const out: string[] = [];
   meta.def.fields.forEach((f, i) => {
     const { index } = classFieldIndex(meta, f.name);
-    if (f.type.kind === "jsval") {
-      host.declare(`declare ptr @scr_jsval_undefined()`);
+    if (f.type.kind === "jsval" || f.type.kind === "dyn") {
+      const fn = f.type.kind === "jsval" ? "scr_jsval_undefined" : "scr_dyn_undefined";
+      host.declare(`declare ptr @${fn}()`);
       out.push(
-        `  %ufv${i} = call ptr @scr_jsval_undefined()`,
+        `  %ufv${i} = call ptr @${fn}()`,
         `  %uf${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr %o, i64 0, i32 ${index}`,
         `  store ptr %ufv${i}, ptr %uf${i} ; ${f.name} starts undefined`,
       );

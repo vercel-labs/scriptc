@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../errors.js";
 /* scriptc IR — the only interface between frontend and backends.
  *
  * Design rules (see docs/ir.md for node-by-node semantics):
@@ -600,7 +601,7 @@ export function typeKey(t: IrType): string {
     default: {
       const _exhaustive: never = t;
       void _exhaustive;
-      throw new Error("unreachable");
+      throw new InternalCompilerError("unreachable");
     }
   }
 }
@@ -5277,7 +5278,7 @@ export function jsOpResultKind(op: IrJsOp): "jsval" | "bool" | "string" | "void"
     default: {
       const _exhaustive: never = op;
       void _exhaustive;
-      throw new Error("unreachable");
+      throw new InternalCompilerError("unreachable");
     }
   }
 }
@@ -5435,7 +5436,7 @@ function isJsonSafeAt(
     default: {
       const _exhaustive: never = t;
       void _exhaustive;
-      throw new Error("unreachable");
+      throw new InternalCompilerError("unreachable");
     }
   }
 }

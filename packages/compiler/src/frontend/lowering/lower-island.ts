@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Island-boundary lowering: jsval marshaling into the island (jsvalIn and
  * its boundary fences), island-expression detection, the island method-call
  * surface (Math and number/string methods under --dynamic), and the npm
@@ -2802,7 +2803,7 @@ export function lowerStaticReadableStreamReaderCall(
     if (!res) {
       // Collection walks every file before bodies lower, so a missing
       // entry is a lowerer bug, not user error.
-      throw new Error(`lowerer bug: unresolved dynamic import '${arg.text}'`);
+      throw new InternalCompilerError(`lowerer bug: unresolved dynamic import '${arg.text}'`);
     }
     if (res.kind === "program-module") {
       return lowerOwnModuleImport(L, call, arg);

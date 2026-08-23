@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Expression lowering: the expression dispatch (lowerExpr), literals
  * (array/object/regex/template), operators (binary incl. compound targets,
  * unary, instanceof, caught-typeof tests), union narrowing and unit
@@ -2304,14 +2305,14 @@ function lowerExprInner(L: Lowerer, expr: ts.Expression): IrExpr {
     property: string | null,
     loc: SrcLoc,
   ): IrExpr {
-    if (local.type.kind !== "union") throw new Error("runtime-optional local is not union-typed");
+    if (local.type.kind !== "union") throw new InternalCompilerError("runtime-optional local is not union-typed");
     const narrowed = L.mapTypeOf(L.typeOf(expr));
     if (!narrowed || narrowed.kind === "union" || isUnitType(narrowed)) {
       L.unsupported("SC1090", expr, "a runtime-optional capture whose narrowed value type is not representable");
     }
     const valueTag = L.armTag(local.type.unionId, narrowed);
     const undefTag = L.armTag(local.type.unionId, UNDEFINED_T);
-    if (valueTag < 0 || undefTag < 0) throw new Error("runtime-optional local is missing its value or undefined arm");
+    if (valueTag < 0 || undefTag < 0) throw new InternalCompilerError("runtime-optional local is missing its value or undefined arm");
     const def = L.unions.get(local.type.unionId);
     if (!def || def.arms.length !== 2) {
       L.unsupported("SC1090", expr, "a direct read from a runtime-optional capture with multiple value arms");
@@ -4158,7 +4159,7 @@ export function lowerOptionalChain(L: Lowerer, expr: ts.CallExpression | ts.Prop
   function propNameText(L: Lowerer, name: ts.PropertyName): string {
     if (ts.isComputedPropertyName(name)) {
       const k = literalComputedKey(L, name);
-      if (k === null) throw new Error("lowerer bug: unfoldable computed key past the fence");
+      if (k === null) throw new InternalCompilerError("lowerer bug: unfoldable computed key past the fence");
       return k;
     }
     // Numeric literals name their canonical string key (JS's ToPropertyKey
@@ -5214,7 +5215,7 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
             );
           }
           const srcShape = L.shapes.get(recArm.shapeId);
-          if (!srcShape) throw new Error(`lowerer bug: spread of unknown shape ${recArm.shapeId}`);
+          if (!srcShape) throw new InternalCompilerError(`lowerer bug: spread of unknown shape ${recArm.shapeId}`);
           fenceAccessorSpreadSource(L, prop, srcShape);
           if (srcShape.indexValue || shape.indexValue) {
             L.unsupported(
@@ -5343,7 +5344,7 @@ export function lowerObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression)
           );
         }
         const srcShape = L.shapes.get(srcType.shapeId);
-        if (!srcShape) throw new Error(`lowerer bug: spread of unknown shape ${srcType.shapeId}`);
+        if (!srcShape) throw new InternalCompilerError(`lowerer bug: spread of unknown shape ${srcType.shapeId}`);
         fenceAccessorSpreadSource(L, prop, srcShape);
         // Index-signature shapes carry runtime-keyed overflow entries the
         // field-by-field desugar cannot enumerate — fenced on either side.
@@ -8274,7 +8275,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
       if (!ts.isStringLiteral(b)) continue;
       if (b.text !== "string" && b.text !== "undefined") continue;
       const codeType = L.envValueType();
-      if (codeType.kind !== "union") throw new Error("lowerer bug: error code type is not a union");
+      if (codeType.kind !== "union") throw new InternalCompilerError("lowerer bug: error code type is not a union");
       const undefTag = L.armTag(codeType.unionId, UNDEFINED_T);
       const read: IrExpr = { kind: "libCall", fn: "error.code", args: [receiver], type: codeType, loc };
       // typeof === "string" ⇔ the code slot is present (NOT the undefined
@@ -8965,7 +8966,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
           );
         }
         const lhsInfo = L.classes.get(left.type.className);
-        if (!lhsInfo) throw new Error(`lowerer bug: unknown class ${left.type.className}`);
+        if (!lhsInfo) throw new InternalCompilerError(`lowerer bug: unknown class ${left.type.className}`);
         if (L.inHierarchy(targetInfo) && L.inHierarchy(lhsInfo)) {
           const classValue = L.lowerExpr(expr.right);
           if (classValue.type.kind !== "classval") L.badType(expr.right, L.typeOf(expr.right));
@@ -9059,7 +9060,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
       );
     }
     const lhsInfo = L.classes.get(left.type.className);
-    if (!lhsInfo) throw new Error(`lowerer bug: unknown class ${left.type.className}`);
+    if (!lhsInfo) throw new InternalCompilerError(`lowerer bug: unknown class ${left.type.className}`);
     if (L.inHierarchy(lhsInfo) && L.inHierarchy(target)) {
       return { kind: "instanceOf", value: left, className: target.def.name, type: BOOL, loc };
     }
@@ -9221,7 +9222,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
     }
     const lhsName = recv.type.className;
     const lhsInfo = L.classes.get(lhsName);
-    if (!lhsInfo) throw new Error(`lowerer bug: unknown class ${lhsName}`);
+    if (!lhsInfo) throw new InternalCompilerError(`lowerer bug: unknown class ${lhsName}`);
     if (L.isSubclassOf(declName, lhsName)) {
       // The narrowing direction: the declarer strictly below the
       // receiver's static class — a strict subclass relation puts both in
@@ -9324,7 +9325,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
       // `"NO_COLOR" in process.env`: presence via the one envGet intrinsic —
       // getenv(3) returning non-NULL is Node's `in` on process.env exactly.
       const envType = L.envValueType();
-      if (envType.kind !== "union") throw new Error("lowerer bug: env value type is not a union");
+      if (envType.kind !== "union") throw new InternalCompilerError("lowerer bug: env value type is not a union");
       const undefTag = L.armTag(envType.unionId, UNDEFINED_T);
       const read: IrExpr = {
         kind: "libCall",
@@ -9361,7 +9362,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
       if (info?.def.name === "%Error") {
         if (key === "code") {
           const codeType = L.envValueType();
-          if (codeType.kind !== "union") throw new Error("lowerer bug: error code type is not a union");
+          if (codeType.kind !== "union") throw new InternalCompilerError("lowerer bug: error code type is not a union");
           const undefTag = L.armTag(codeType.unionId, UNDEFINED_T);
           const read: IrExpr = { kind: "libCall", fn: "error.code", args: [recv], type: codeType, loc };
           return { kind: "unionIsTag", unionId: codeType.unionId, tag: undefTag, negated: true, value: read, type: BOOL, loc };
@@ -9465,7 +9466,7 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
       );
     }
     const shape = L.shapes.get(recv.type.shapeId);
-    if (!shape) throw new Error(`lowerer bug: unknown shape ${recv.type.shapeId}`);
+    if (!shape) throw new InternalCompilerError(`lowerer bug: unknown shape ${recv.type.shapeId}`);
     const field = shape.fields.find((f) => f.name === key);
     if (field) {
       if (field.type.kind === "union" && L.armTag(field.type.unionId, UNDEFINED_T) >= 0) {
@@ -10167,10 +10168,10 @@ export function lowerBinary(L: Lowerer, expr: ts.BinaryExpression): IrExpr {
       return null;
     }
     if (value.type.kind !== "union") {
-      throw new Error("lowerer bug: union-typed receiver lowered to a non-union");
+      throw new InternalCompilerError("lowerer bug: union-typed receiver lowered to a non-union");
     }
     const def = L.unions.get(value.type.unionId);
-    if (!def) throw new Error(`lowerer bug: unknown union ${value.type.unionId}`);
+    if (!def) throw new InternalCompilerError(`lowerer bug: unknown union ${value.type.unionId}`);
     const field = expr.name.text;
     let common: IrType | null = null;
     for (const arm of def.arms) {

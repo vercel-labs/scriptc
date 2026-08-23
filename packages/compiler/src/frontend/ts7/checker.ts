@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* The checker facade: 5.9.3-shaped TypeChecker methods over 7.0.2's sync
  * client, built around the survey's feasibility verdict. Naive per-call use
  * of the 7.0.2 client costs 0.1-0.3 ms of IPC per query; the census counted
@@ -258,7 +259,7 @@ export class CheckerFacade {
 
   private requireProject(): Project {
     const project = this.options.project;
-    if (!project) throw new Error("CheckerFacade built without a project cannot resolve declarations");
+    if (!project) throw new InternalCompilerError("CheckerFacade built without a project cannot resolve declarations");
     return project;
   }
 

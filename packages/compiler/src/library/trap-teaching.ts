@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../errors.js";
 /* The structured trap-teaching encoding (ratified 2026-07-23). A library-mode
  * sink message that carries a diagnostic code and/or the trapping symbol is
  * assembled as
@@ -46,7 +47,7 @@ export function assembleTrapTeaching(
   if (remediation !== undefined) fields.push(["remediation", remediation]);
   for (const [name, value] of fields) {
     if (value.includes(TRAP_TEACHING_MARKER) || value.includes(TRAP_TEACHING_SEP)) {
-      throw new Error(`trap-teaching assembler: ${name} contains a reserved byte (0x01/0x1F)`);
+      throw new InternalCompilerError(`trap-teaching assembler: ${name} contains a reserved byte (0x01/0x1F)`);
     }
   }
   return (

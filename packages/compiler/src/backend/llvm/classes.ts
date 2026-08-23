@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* The LLVM backend's class machinery — the .ll mirror of the C emitter's
  * class slice (emit-shapes.ts): the class graph (base/children links, the
  * whole-program preorder numbering behind O(1) instanceof, hierarchy
@@ -83,7 +84,7 @@ export function buildClassGraph(mod: IrModule, fnByName: Map<string, IrFunction>
   for (const meta of metaMap.values()) {
     if (meta.def.base === undefined) continue;
     const base = metaMap.get(meta.def.base);
-    if (!base) throw new Error(`llvm emitter bug: undeclared base class ${meta.def.base}`);
+    if (!base) throw new InternalCompilerError(`llvm emitter bug: undeclared base class ${meta.def.base}`);
     meta.base = base;
     base.children.push(meta);
   }
@@ -124,7 +125,7 @@ export function buildClassGraph(mod: IrModule, fnByName: Map<string, IrFunction>
           fn = findImpl(m);
           if (!fn) continue;
         }
-        if (!fn) throw new Error(`llvm emitter bug: missing method function %${m.def.name}.${method}`);
+        if (!fn) throw new InternalCompilerError(`llvm emitter bug: missing method function %${m.def.name}.${method}`);
         root.slots.push({ method, declarer: m, fn });
       }
     }
@@ -150,7 +151,7 @@ function vtEntriesFor(meta: LlClassMeta): { slot: LlVtSlot; impl: LlClassMeta | 
       }
     }
     if (meta.def.abstract === true) return { slot, impl: null };
-    throw new Error(`llvm emitter bug: no implementation of ${slot.method} for ${meta.def.name}`);
+    throw new InternalCompilerError(`llvm emitter bug: no implementation of ${slot.method} for ${meta.def.name}`);
   });
 }
 
@@ -197,7 +198,7 @@ function fieldBase(meta: LlClassMeta): number {
  * at 1 on hierarchy members, then the flattened field list. */
 export function classFieldIndex(meta: LlClassMeta, field: string): { index: number; type: IrType } {
   const idx = meta.def.fields.findIndex((f) => f.name === field);
-  if (idx < 0) throw new Error(`llvm emitter bug: unknown field ${field} on class ${meta.def.name}`);
+  if (idx < 0) throw new InternalCompilerError(`llvm emitter bug: unknown field ${field} on class ${meta.def.name}`);
   return { index: fieldBase(meta) + idx, type: meta.def.fields[idx]!.type };
 }
 
@@ -576,16 +577,16 @@ export function emitClassObjDefs(
   const out: string[] = [];
   for (const [className, { nameSym }] of classObjs) {
     const meta = metaMap.get(className);
-    if (!meta) throw new Error(`llvm emitter bug: class object for unknown class ${className}`);
+    if (!meta) throw new InternalCompilerError(`llvm emitter bug: class object for unknown class ${className}`);
     // A generic instantiation's class object carries its FAMILY's interval
     // (JS has ONE `Box` at runtime); construction still dispatches the
     // instantiation's own thunk.
     const intervalMeta = meta.def.genericOf !== undefined ? metaMap.get(meta.def.genericOf) : meta;
     if (!intervalMeta) {
-      throw new Error(`llvm emitter bug: class object for ${className} names unknown family ${meta.def.genericOf ?? ""}`);
+      throw new InternalCompilerError(`llvm emitter bug: class object for ${className} names unknown family ${meta.def.genericOf ?? ""}`);
     }
     const ctor = fnByName.get(`%${className}.constructor`);
-    if (!ctor) throw new Error(`llvm emitter bug: class object for ${className} without a constructor`);
+    if (!ctor) throw new InternalCompilerError(`llvm emitter bug: class object for ${className} without a constructor`);
     const params = ctor.params.slice(1);
     const paramDecls = params.map((p, i) => `${llType(p.type)} %a${i}`).join(", ");
     const ctorArgs = params.map((p, i) => `${llType(p.type)} %a${i}`);

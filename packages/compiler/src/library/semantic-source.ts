@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../errors.js";
 import { createHash } from "node:crypto";
 import { extname } from "node:path";
 import ts from "typescript5";
@@ -48,7 +49,7 @@ function semanticTokens(path: string, source: string): SemanticToken[] | null {
   TOKEN_PATTERN.lastIndex = 0;
   while (TOKEN_PATTERN.lastIndex < source.length) {
     const match = TOKEN_PATTERN.exec(source);
-    if (match === null) throw new Error(`semantic scanner stopped at ${TOKEN_PATTERN.lastIndex}`);
+    if (match === null) throw new InternalCompilerError(`semantic scanner stopped at ${TOKEN_PATTERN.lastIndex}`);
     let text = match[0]!;
     const start = match.index;
     let end = start + text.length;

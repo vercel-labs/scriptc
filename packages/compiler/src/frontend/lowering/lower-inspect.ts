@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* The node:util inspect/format lowering (a spoke module like
  * lower-assert.ts): STATIC util.inspect — one synthesized traversal
  * helper per argument type (the deepStrictEqual precedent, interned per
@@ -466,7 +467,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
     }
     case "record": {
       const shape = L.shapes.get(t.shapeId);
-      if (!shape) throw new Error(`inspect of unknown shape ${t.shapeId}`);
+      if (!shape) throw new InternalCompilerError(`inspect of unknown shape ${t.shapeId}`);
       const get = (field: string, type: IrType): IrExpr => ({ kind: "recordGet", obj: v(), shapeId: t.shapeId, field, type, loc });
       if (shape.tuple) {
         // Tuples ARE arrays to Node: bracket form, array-extras grouping.
@@ -659,7 +660,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
     }
     case "union": {
       const def = L.unions.get(t.unionId);
-      if (!def) throw new Error(`inspect of unknown union ${t.unionId}`);
+      if (!def) throw new InternalCompilerError(`inspect of unknown union ${t.unionId}`);
       body = [];
       def.arms.forEach((arm, tag) => {
         // The union wrapper is not a nesting level: arms render at the
@@ -678,7 +679,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
     }
     case "object": {
       const info = L.classes.get(t.className);
-      if (!info) throw new Error(`inspect of unknown class ${t.className}`);
+      if (!info) throw new InternalCompilerError(`inspect of unknown class ${t.className}`);
       // Node prints the class's OWN name — the declaration's, never the
       // IR name's module qualifier (`m0.Timer` is the frontend's spelling
       // for a class declared in a non-entry module).
@@ -715,7 +716,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       break;
     }
     default:
-      throw new Error(`inspect helper over unexpected type ${typeKey(t)}`);
+      throw new InternalCompilerError(`inspect helper over unexpected type ${typeKey(t)}`);
   }
 
   let prependCycleGuard: (() => void) | null = null;
@@ -812,7 +813,7 @@ function formatUnionHelper(L: Lowerer, t: IrType & { kind: "union" }, depth: num
   const name = `%util.fmtv.${L.inspectHelpers.size}`;
   L.inspectHelpers.set(key, name);
   const def = L.unions.get(t.unionId);
-  if (!def) throw new Error(`format value over unknown union ${t.unionId}`);
+  if (!def) throw new InternalCompilerError(`format value over unknown union ${t.unionId}`);
   const v = (): IrExpr => ({ kind: "varRef", localId: "v.0", type: t, loc });
   const body: IrStmt[] = [];
   def.arms.forEach((arm, tag) => {
@@ -1258,7 +1259,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
       case 111: // %o — showHidden semantics; depth 4
         return formatOArg(L, node, 4, loc);
     }
-    throw new Error("unreachable format spec");
+    throw new InternalCompilerError("unreachable format spec");
   };
 
   for (let i = 0; i < fmt.length - 1; i++) {

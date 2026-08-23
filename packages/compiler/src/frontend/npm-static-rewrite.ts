@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../errors.js";
 /* --npm-static's bundler-emitted-CJS export surface: the getter-table
  * shapes. A bundler-emitted CJS dist exports through runtime plumbing the
  * checker cannot model — the `__export(target, { name: () => value, ... })`
@@ -363,7 +364,7 @@ function starTargetNames(file: string): Set<string> {
       file,
       (f) => {
         const source = trackedReadFile(f);
-        if (source === null) throw new Error(`cannot read ${f}`);
+        if (source === null) throw new InternalCompilerError(`cannot read ${f}`);
         return source;
       },
       (from, spec) => resolveRelativeCjs(from, spec),

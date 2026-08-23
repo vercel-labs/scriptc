@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "./errors.js";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/cc.js";
@@ -45,6 +46,7 @@ import { compilerImplementationIdentity } from "./library/implementation-identit
 
 export const VERSION = "0.0.1";
 
+export { InternalCompilerError } from "./errors.js";
 export {
   compileC,
   runtimeSrcDir,
@@ -1738,10 +1740,10 @@ async function compileLibraryNative(
     programSource = publicSource;
   }
   if (profile.sidecar !== null) {
-    if (features.buildId === undefined) throw new Error("library identity TU has no build id");
+    if (features.buildId === undefined) throw new InternalCompilerError("library identity TU has no build id");
     const withoutIdentity = stripLibraryIdentity(programSource!, profile.emission);
     if (withoutIdentity === programSource) {
-      throw new Error("generated public library TU has no identity region");
+      throw new InternalCompilerError("generated public library TU has no identity region");
     }
     programSource = withoutIdentity;
     identityCSource = [
@@ -1801,7 +1803,7 @@ async function emitSemanticLibraryHit(
   let sidecarJson = hit.sidecarJson;
   if (profile.sidecar !== null) {
     if (mod.lib?.identity === undefined || sidecarJson === null) {
-      throw new Error("semantic library cache lost sidecar identity metadata");
+      throw new InternalCompilerError("semantic library cache lost sidecar identity metadata");
     }
     const modules = canonicalModuleGraph(rootDir, hit.sourceTexts);
     const { buildId, sourceHash } = libraryIdentityHashes(
@@ -1834,7 +1836,7 @@ async function emitSemanticLibraryHit(
     const previous = hit.previousSources.get(mod.sourceFile);
     const current = hit.sourceTexts.get(mod.sourceFile);
     if (previous === undefined || current === undefined) {
-      throw new Error("semantic library cache lost the entry source text");
+      throw new InternalCompilerError("semantic library cache lost the entry source text");
     }
     translationUnit = rebaseLibrarySourceComments(
       translationUnit,

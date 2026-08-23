@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../errors.js";
 import { execFile, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, existsSync, readdirSync } from "node:fs";
@@ -634,7 +635,7 @@ function appleSdkRoot(sdk: "iphoneos" | "iphonesimulator", env: NodeJS.ProcessEn
   });
   const path = probe.status === 0 ? (probe.stdout ?? "").trim() : "";
   if (path === "" || !existsSync(join(path, "usr", "include"))) {
-    throw new Error(
+    throw new InternalCompilerError(
       `the ${sdk} SDK was not found (xcrun --sdk ${sdk} --show-sdk-path failed) — ` +
         `iOS targets need Xcode with the ${sdk === "iphoneos" ? "iPhoneOS" : "iPhoneSimulator"} SDK installed`,
     );
@@ -709,7 +710,7 @@ function androidNdkSysroot(env: NodeJS.ProcessEnv): string {
       }
     }
   }
-  throw new Error(
+  throw new InternalCompilerError(
     "no Android NDK sysroot was found — install an NDK (sdkmanager 'ndk;<version>') and/or set " +
       "ANDROID_NDK_ROOT to it (ANDROID_HOME with an ndk/ directory also works). " +
       "aarch64-linux-android compiles against the NDK's bionic headers.",
@@ -733,21 +734,21 @@ export function resolveCc(
   const hostArgs = nativePlatformArgs(hostPlatform);
   if (cc === "" || cc === "clang") {
     if (target !== "") {
-      throw new Error(
+      throw new InternalCompilerError(
         `SCRIPTC_TARGET=${target} requires SCRIPTC_CC=zigcc — the default clang path has no cross-target sysroots.`,
       );
     }
     return { argv: ["clang"], target: null, zigTarget: null, ...hostArgs };
   }
   if (cc !== "zigcc") {
-    throw new Error(`unknown SCRIPTC_CC '${cc}' (supported: clang, zigcc)`);
+    throw new InternalCompilerError(`unknown SCRIPTC_CC '${cc}' (supported: clang, zigcc)`);
   }
   if (target === "") return { argv: ["zig", "cc"], target: null, zigTarget: null, ...hostArgs };
   if (target.includes("wasi") && target !== "wasm32-wasi") {
-    throw new Error(`unsupported WASI target '${target}' (supported: wasm32-wasi)`);
+    throw new InternalCompilerError(`unsupported WASI target '${target}' (supported: wasm32-wasi)`);
   }
   const mobileRefusal = mobileTargetRefusal(target, hostPlatform);
-  if (mobileRefusal !== null) throw new Error(mobileRefusal);
+  if (mobileRefusal !== null) throw new InternalCompilerError(mobileRefusal);
   if (isIosTarget(target)) {
     // Library-mode-only target (compile()/compileC own the executable-lane
     // refusal). Zig bundles no Apple libc: the compile rides the selected
@@ -1020,7 +1021,7 @@ async function publishVendorArtifact(source: string, destination: string): Promi
     // of the pair between this publisher's two atomic renames.
     if (await validCachedFile(destination)) return;
   }
-  throw new Error(`vendor cache publication failed integrity validation: ${destination}`);
+  throw new InternalCompilerError(`vendor cache publication failed integrity validation: ${destination}`);
 }
 
 /** Pin cache-backed vendor inputs under an invocation-private directory before
@@ -1835,7 +1836,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
         try {
           await mkdir(dirname(opts.outPath), { recursive: true });
           if (!(await copyValidCachedFile(cachedArchive, tmpOut))) {
-            throw new Error("invalid cached library archive");
+            throw new InternalCompilerError("invalid cached library archive");
           }
           // Match a fresh `ar` output under the caller's current umask. Cache
           // entries may have been populated by a less restrictive shell.
@@ -1900,7 +1901,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           await execFileAsync(driver.argv[0] ?? "clang", args);
         } catch (err) {
           const stderr = subprocessFailureDetail(err);
-          throw new Error(
+          throw new InternalCompilerError(
             `${driver.argv.join(" ")} failed compiling ${src} for the library archive.\n` +
               `This is a scriptc bug (generated/runtime C should always compile) unless the compiler itself is missing/broken.\n\n${stderr}`,
           );
@@ -2352,7 +2353,7 @@ async function localizeLibraryObjects(
       await execFileAsync(argv[0]!, [...argv.slice(1)]);
     } catch (err) {
       const stderr = subprocessFailureDetail(err);
-      throw new Error(
+      throw new InternalCompilerError(
         `${argv[0]} failed while localizing the library archive's runtime symbols (abi.localize_runtime).\n` +
           `Runtime symbol localization needs the ${platform === "darwin" ? "host toolchain's ld" : driver.target === null ? "host toolchain's ld and objcopy" : "cross driver's relocatable link"} beside the C compiler.\n\n${stderr}`,
       );
@@ -2374,7 +2375,7 @@ async function localizeLibraryObjects(
         }),
       );
     } catch (err) {
-      throw new Error(
+      throw new InternalCompilerError(
         `COFF symbol localization failed while localizing the library archive's runtime symbols (abi.localize_runtime).\n\n${(err as Error).message}`,
       );
     }
@@ -2409,12 +2410,12 @@ async function localizeLibraryObjects(
     try {
       await writeFile(combined, localizeElfObject(await readFile(combined), new Set(keepSymbols)));
     } catch (err) {
-      throw new Error(
+      throw new InternalCompilerError(
         `ELF symbol localization failed while localizing the library archive's runtime symbols (abi.localize_runtime).\n\n${(err as Error).message}`,
       );
     }
   } else {
-    throw new Error(
+    throw new InternalCompilerError(
       `runtime symbol localization (abi.localize_runtime) has no ${platform} arm; compileLibrary admits darwin, linux, and win32 builds only`,
     );
   }
@@ -2573,7 +2574,7 @@ async function ensurePrivateCacheRoot(
     },
   );
   if (existing !== null && !existing.isDirectory()) {
-    throw new Error("native cache root is not a directory");
+    throw new InternalCompilerError("native cache root is not a directory");
   }
   if (
     process.platform !== "win32" &&
@@ -2581,7 +2582,7 @@ async function ensurePrivateCacheRoot(
     !hardenExisting &&
     (existing.mode & 0o077) !== 0
   ) {
-    throw new Error("existing native cache override is not private");
+    throw new InternalCompilerError("existing native cache override is not private");
   }
   await mkdir(root, { recursive: true, mode: 0o700 });
   if (process.platform !== "win32" && (existing === null || hardenExisting)) {
@@ -2971,7 +2972,7 @@ function fingerprintDependencyPaths(fingerprint: string): string[] {
 function parseMakeDependencies(output: string, cwd: string = process.cwd()): string[] {
   const flattened = output.replace(/\\\r?\n/g, " ");
   const separator = flattened.indexOf(": ");
-  if (separator < 0) throw new Error("compiler dependency probe returned no make rule");
+  if (separator < 0) throw new InternalCompilerError("compiler dependency probe returned no make rule");
   const input = flattened.slice(separator + 2);
   const paths: string[] = [];
   let current = "";
@@ -3032,7 +3033,7 @@ async function effectiveCompilerInvocationFingerprintFresh(
   const compiler = driver.argv[0] ?? "clang";
   const compilerIdentity = await resolvedToolIdentity(compiler);
   if (compilerIdentity === null) {
-    throw new Error("compiler unavailable before effective invocation identity was established");
+    throw new InternalCompilerError("compiler unavailable before effective invocation identity was established");
   }
   let probe: EffectiveCompilerInvocationProbe;
   {
@@ -3266,7 +3267,7 @@ async function translationUnitDependencyFingerprintFresh(
   const compiler = driver.argv[0] ?? "clang";
   const compilerIdentity = await resolvedToolIdentity(compiler);
   if (compilerIdentity === null) {
-    throw new Error("compiler unavailable before translation-unit dependencies were established");
+    throw new InternalCompilerError("compiler unavailable before translation-unit dependencies were established");
   }
   let probe: TranslationUnitDependencyProbe;
   {
@@ -3372,7 +3373,7 @@ async function implicitToolchainFingerprintsFresh(
   const compiler = driver.argv[0] ?? "clang";
   const compilerIdentity = await resolvedToolIdentity(compiler);
   if (compilerIdentity === null) {
-    throw new Error("compiler unavailable before implicit toolchain identity was established");
+    throw new InternalCompilerError("compiler unavailable before implicit toolchain identity was established");
   }
   {
     const probeDir = await mkdtemp(join(tmpdir(), "scriptc-toolchain-probe-"));
@@ -3676,7 +3677,7 @@ async function implicitLinkerFingerprintFresh(
   const compiler = driver.argv[0] ?? "clang";
   const compilerIdentity = await resolvedToolIdentity(compiler);
   if (compilerIdentity === null) {
-    throw new Error("compiler unavailable before implicit linker identity was established");
+    throw new InternalCompilerError("compiler unavailable before implicit linker identity was established");
   }
   let probe: ImplicitLinkerProbe;
   {
@@ -3740,7 +3741,7 @@ async function implicitLinkerFingerprintFresh(
       }
       const dependencies = [...new Set([...driverDependencies, ...tracedDependencies])].sort();
       if (dependencies.length === 0) {
-        throw new Error("linker trace reported no resolved input files");
+        throw new InternalCompilerError("linker trace reported no resolved input files");
       }
       const linkerSpelling = linker.stdout.trim();
       probe = {
@@ -4097,7 +4098,7 @@ async function snapshotLocalArtifactDependency(
 ): Promise<NativeArtifactDependency> {
   const info = await lstat(path);
   const kind = localDependencyKind(info);
-  if (kind === null) throw new Error(`unsupported local artifact dependency: ${path}`);
+  if (kind === null) throw new InternalCompilerError(`unsupported local artifact dependency: ${path}`);
   const dependency: NativeArtifactDependency = {
     path,
     kind,
@@ -4115,7 +4116,7 @@ async function snapshotLocalArtifactDependency(
     const targetPath = await realpath(path);
     const target = await stat(path);
     const targetKind = target.isFile() ? "file" : target.isDirectory() ? "directory" : null;
-    if (targetKind === null) throw new Error(`unsupported symlink target dependency: ${path}`);
+    if (targetKind === null) throw new InternalCompilerError(`unsupported symlink target dependency: ${path}`);
     dependency.targetPath = targetPath;
     dependency.targetKind = targetKind;
     dependency.targetDev = target.dev;
@@ -4517,7 +4518,7 @@ async function ensureRuntimeObjects(
   if (!(await verifyInputs())) throw new CacheInputsChangedError();
   const objects = new Map(sources.map((s) => [s, objOf(s)]));
   if (!(await Promise.all([...objects.values()].map(validCachedFile))).every(Boolean)) {
-    throw new Error("native object cache integrity check failed");
+    throw new InternalCompilerError("native object cache integrity check failed");
   }
   return objects;
 }
@@ -4672,7 +4673,7 @@ async function compileCInternal(
   // not verified on those device classes. compile() reports the SC3002
   // diagnostic first; this is the backstop for direct compileC callers.
   if (isMobileTarget(driver.target)) {
-    throw new Error(
+    throw new InternalCompilerError(
       `SCRIPTC_TARGET=${driver.target} builds library-mode static archives only — ` +
         `compile with a library profile (SCRIPTC_CC=zigcc scriptc build --lib --profile <profile.json>) and link the archive from the app project.`,
     );
@@ -4715,7 +4716,7 @@ async function compileCInternal(
       .filter(([, on]) => on)
       .map(([name]) => name);
     if (unsupported.length > 0) {
-      throw new Error(
+      throw new InternalCompilerError(
         `SCRIPTC_TARGET=${driver.target}: ${unsupported.join(", ")} not supported under a cross target yet ` +
           `(host-built vendor archives / system libs — see docs/linux-port.md).`,
       );
@@ -4738,7 +4739,7 @@ async function compileCInternal(
       ? null
       : { root: configuredCacheRoot, identity: cacheIdentity };
   if (cacheWarmOnly && persistentCache === null) {
-    throw new Error(
+    throw new InternalCompilerError(
       "native cache warming requires a persistently cacheable compiler environment",
     );
   }
@@ -4750,7 +4751,7 @@ async function compileCInternal(
       );
     } catch (error) {
       if (cacheWarmOnly) {
-        throw new Error("native cache warming could not prepare the persistent cache root", {
+        throw new InternalCompilerError("native cache warming could not prepare the persistent cache root", {
           cause: error,
         });
       }
@@ -4896,7 +4897,7 @@ async function compileCInternal(
       // Cache discovery is best-effort. In particular, a compiler wrapper can
       // compile successfully without implementing the metadata probes.
       if (cacheWarmOnly) {
-        throw new Error("native cache warming could not validate the compiler toolchain", {
+        throw new InternalCompilerError("native cache warming could not validate the compiler toolchain", {
           cause: error,
         });
       }
@@ -5362,7 +5363,7 @@ async function compileCInternal(
       // Preserve the uncached build for wrappers that compile successfully but
       // cannot provide a dry-run trace for the real build flavor.
       if (cacheWarmOnly) {
-        throw new Error("native cache warming could not validate the compiler invocation", {
+        throw new InternalCompilerError("native cache warming could not validate the compiler invocation", {
           cause: error,
         });
       }
@@ -5390,7 +5391,7 @@ async function compileCInternal(
     // itself can still compile, preserve the pre-cache behavior instead of
     // surfacing a metadata command's failure as the build result.
     if (cacheWarmOnly) {
-      throw new Error("native cache warming could not validate cache inputs", {
+      throw new InternalCompilerError("native cache warming could not validate cache inputs", {
         cause: error,
       });
     }
@@ -5576,7 +5577,7 @@ async function compileCInternal(
       programDependencies = dependencies;
       if (runtimeCompilerInvocation === null) runtimeCompilerInvocation = invocation;
     } catch (error) {
-      throw new Error("native cache warming could not validate runtime-object inputs", {
+      throw new InternalCompilerError("native cache warming could not validate runtime-object inputs", {
         cause: error,
       });
     }
@@ -5636,7 +5637,7 @@ async function compileCInternal(
       // on macOS and the next exec dies with SIGKILL. Copy to a fresh inode
       // and rename it into place instead.
       if (!(await copyValidCachedFile(cachedBin, tmpOut))) {
-        throw new Error("invalid cached executable");
+        throw new InternalCompilerError("invalid cached executable");
       }
       // Match a fresh linker output under the caller's current umask. Reusing a
       // cache entry populated by a less restrictive shell must not widen access.
@@ -5730,7 +5731,7 @@ async function compileCInternal(
     } catch (err) {
       if (err instanceof CacheInputsChangedError) cacheInputsStable = false;
       if (cacheWarmOnly) {
-        throw new Error("native cache warming could not persist runtime objects", {
+        throw new InternalCompilerError("native cache warming could not persist runtime objects", {
           cause: err,
         });
       }
@@ -5998,7 +5999,7 @@ export async function warmNativeCaches(
   clearCcCaches();
   const cacheRoot = cacheRootDir();
   if (cacheRoot === null) {
-    throw new Error(
+    throw new InternalCompilerError(
       "the native build cache is disabled (unset SCRIPTC_NO_CACHE and use a non-empty SCRIPTC_CACHE_DIR)",
     );
   }
@@ -6008,26 +6009,26 @@ export async function warmNativeCaches(
   );
   const known = new Set<NativeCacheWarmProfile>(["runtime", "tls", "dynamic"]);
   for (const profile of options.profiles ?? []) {
-    if (!known.has(profile)) throw new Error(`unknown native cache warm profile '${profile}'`);
+    if (!known.has(profile)) throw new InternalCompilerError(`unknown native cache warm profile '${profile}'`);
   }
   if (options.profiles?.length === 0) return { cacheRoot, profiles: [] };
   const mobileTarget = mobileLibraryTarget();
   if (mobileTarget !== null) {
-    throw new Error(
+    throw new InternalCompilerError(
       `native cache warming targets executable builds and is unsupported for SCRIPTC_TARGET=${mobileTarget}`,
     );
   }
   const driver = resolveCc();
   const supported = supportedNativeCacheWarmProfiles(driver);
   if (supported.length === 0) {
-    throw new Error(
+    throw new InternalCompilerError(
       `native cache warming targets persistently cached native executables and is unsupported for SCRIPTC_TARGET=${driver.target}`,
     );
   }
   const profiles = [...new Set(options.profiles ?? supported)];
   for (const profile of profiles) {
     if (!supported.includes(profile)) {
-      throw new Error(
+      throw new InternalCompilerError(
         `native cache warm profile '${profile}' is unsupported for SCRIPTC_TARGET=${driver.target}`,
       );
     }
@@ -6056,7 +6057,7 @@ export async function warmNativeCaches(
     }));
     await pruneCache(cacheRoot).catch(() => undefined);
     if (!(await Promise.all([...protectedPaths].map(fileExists))).every(Boolean)) {
-      throw new Error(
+      throw new InternalCompilerError(
         `SCRIPTC_CACHE_MAX_MB is too small to retain the requested native cache warm profiles (${profiles.join(", ")})`,
       );
     }

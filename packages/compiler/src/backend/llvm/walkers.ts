@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Structure-walking helper EMITTERS for the LLVM backend — the .ll mirror
  * of emit-walkers.ts's phase-3 slice: type-directed JSON serializers over
  * the external scr_jb_* string builder (one emitted function per typeKey,
@@ -230,7 +231,7 @@ export class LlWalkers {
 
   private emitRecordWriter(B: BlockBuilder, shapeId: string): void {
     const shape = this.host.recordsById.get(shapeId);
-    if (!shape) throw new Error(`llvm emitter bug: jsonStringify of unknown shape ${shapeId}`);
+    if (!shape) throw new InternalCompilerError(`llvm emitter bug: jsonStringify of unknown shape ${shapeId}`);
     const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
@@ -259,7 +260,7 @@ export class LlWalkers {
     const order = shape.declaredOrder ?? shape.fields.map((f) => f.name);
     const inOrder = new Set(order);
     if (shape.fields.some((f) => !inOrder.has(f.name) && !f.name.startsWith("%"))) {
-      throw new Error(`llvm emitter bug: declaredOrder of shape ${shapeId} omits a non-internal field`);
+      throw new InternalCompilerError(`llvm emitter bug: declaredOrder of shape ${shapeId} omits a non-internal field`);
     }
     const byName = new Map(shape.fields.map((f) => [f.name, f]));
     const emitFields = order.map((n) => byName.get(n)).filter((f) => f !== undefined);
@@ -503,7 +504,7 @@ export class LlWalkers {
 
   private emitUnionWriter(B: BlockBuilder, unionId: string): void {
     const def = this.host.unionsById.get(unionId);
-    if (!def) throw new Error(`llvm emitter bug: jsonStringify of unknown union ${unionId}`);
+    if (!def) throw new InternalCompilerError(`llvm emitter bug: jsonStringify of unknown union ${unionId}`);
     const tag = this.unionTag(B, "%v");
     const bad = B.newLabel("jwu.bad");
     const done = B.newLabel("jwu.d");
@@ -782,7 +783,7 @@ export class LlWalkers {
     const existing = this.unionToStrFns.get(unionId);
     if (existing) return existing;
     const def = this.host.unionsById.get(unionId);
-    if (!def) throw new Error(`llvm emitter bug: ToString of unknown union ${unionId}`);
+    if (!def) throw new InternalCompilerError(`llvm emitter bug: ToString of unknown union ${unionId}`);
     const name = `sc_us_${this.unionToStrFns.size}`;
     this.unionToStrFns.set(unionId, name);
     const host = this.host;
@@ -857,7 +858,7 @@ export class LlWalkers {
     const existing = this.unionJoinFns.get(unionId);
     if (existing) return existing;
     const def = this.host.unionsById.get(unionId);
-    if (!def) throw new Error(`llvm emitter bug: join of unknown union ${unionId}`);
+    if (!def) throw new InternalCompilerError(`llvm emitter bug: join of unknown union ${unionId}`);
     const name = `sc_uj_${this.unionJoinFns.size}`;
     this.unionJoinFns.set(unionId, name);
     const toStr = this.unionToStrHelper(unionId);

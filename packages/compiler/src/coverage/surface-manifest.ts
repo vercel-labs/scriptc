@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../errors.js";
 /* The machine-readable surface manifest: what the static tier compiles at
  * this compiler version, projected MECHANICALLY from the tables that
  * already decide support — the diagnostics registry (diagnostic.ts), the
@@ -370,7 +371,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
   for (const row of NODE24_FETCH_COMPAT_PROFILE.inventory.entries) {
     if (row.status !== "dynamic-only" && row.status !== "unsupported") continue;
     if (row.code === undefined || row.reason === undefined) {
-      throw new Error(`non-static fetch inventory row '${row.id}' is incomplete`);
+      throw new InternalCompilerError(`non-static fetch inventory row '${row.id}' is incomplete`);
     }
     const name =
       row.placement === "constructor"
@@ -416,7 +417,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
     });
   }
   for (const [code, entry] of Object.entries(FENCE_CODES)) {
-    if (code in UNSUPPORTED) throw new Error(`diagnostic code ${code} is in both UNSUPPORTED and FENCE_CODES`);
+    if (code in UNSUPPORTED) throw new InternalCompilerError(`diagnostic code ${code} is in both UNSUPPORTED and FENCE_CODES`);
     add({
       id: `diagnostic.${code.toLowerCase()}`,
       kind: "diagnostic-fence",
@@ -429,13 +430,13 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
   // ── invariants, then the stable order ──────────────────────────────────
   const seen = new Set<string>();
   for (const e of entries) {
-    if (seen.has(e.id)) throw new Error(`duplicate manifest id: ${e.id}`);
+    if (seen.has(e.id)) throw new InternalCompilerError(`duplicate manifest id: ${e.id}`);
     seen.add(e.id);
     if (e.status !== "static" && e.code === undefined) {
-      throw new Error(`manifest entry ${e.id} has status ${e.status} but no diagnostic code`);
+      throw new InternalCompilerError(`manifest entry ${e.id} has status ${e.status} but no diagnostic code`);
     }
     if (e.code !== undefined && !/^SC\d{4}$/.test(e.code)) {
-      throw new Error(`manifest entry ${e.id} has a malformed code: ${e.code}`);
+      throw new InternalCompilerError(`manifest entry ${e.id} has a malformed code: ${e.code}`);
     }
   }
   entries.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));

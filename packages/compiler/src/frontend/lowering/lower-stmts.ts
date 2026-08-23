@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Statement lowering: the statement dispatch (lowerStmt), variable
  * declarations including destructuring patterns, scoped blocks, control
  * flow (if/while/for/for-of/do, switch, try/catch, jumps with the
@@ -449,7 +450,7 @@ export function provenanceElidedConstDecl(L: Lowerer, decl: ts.VariableDeclarati
     const type = varBindingType(L, nameNode);
     if (!type) L.badType(nameNode, L.typeOf(nameNode));
     const root = L.activeStmtLists.find((e) => e.ctx === L.ctx);
-    if (!root) throw new Error("lowerer bug: var hoisting with no open statement list");
+    if (!root) throw new InternalCompilerError("lowerer bug: var hoisting with no open statement list");
     const name = nameNode.text;
     const count = L.ctx.localCounters.get(name) ?? 0;
     L.ctx.localCounters.set(name, count + 1);
@@ -1825,7 +1826,7 @@ export function isParseArgsDynCheckerType(L: Lowerer, type: ts.Type): boolean {
       );
     }
     const shape = L.shapes.get(srcType.shapeId);
-    if (!shape) throw new Error(`lowerer bug: destructuring unknown shape ${srcType.shapeId}`);
+    if (!shape) throw new InternalCompilerError(`lowerer bug: destructuring unknown shape ${srcType.shapeId}`);
     for (const el of pattern.elements) {
       if (el.name === undefined) continue; // 7 spells elisions as nameless elements
       // `{ a, ...rest }`: the rest binds a FRESH record of the unconsumed
@@ -2422,7 +2423,7 @@ export function isParseArgsDynCheckerType(L: Lowerer, type: ts.Type): boolean {
       );
     }
     const restShape = L.shapes.get(restT.shapeId);
-    if (!restShape) throw new Error(`lowerer bug: rest binding over unknown shape ${restT.shapeId}`);
+    if (!restShape) throw new InternalCompilerError(`lowerer bug: rest binding over unknown shape ${restT.shapeId}`);
     if (restShape.indexValue || shape.indexValue) {
       L.unsupported("SC1031", el, "rest bindings over index-signature shapes (the undeclared entries would need overflow packing)");
     }
@@ -2479,7 +2480,7 @@ export function isParseArgsDynCheckerType(L: Lowerer, type: ts.Type): boolean {
       );
     }
     const restShape = L.shapes.get(restT.shapeId);
-    if (!restShape) throw new Error(`lowerer bug: rest binding over unknown shape ${restT.shapeId}`);
+    if (!restShape) throw new InternalCompilerError(`lowerer bug: rest binding over unknown shape ${restT.shapeId}`);
     if (restShape.indexValue || restShape.tuple) {
       L.unsupported("SC1031", blame, "rest bindings over index-signature shapes (the undeclared entries would need overflow packing)");
     }
@@ -2972,7 +2973,7 @@ export function isParseArgsDynCheckerType(L: Lowerer, type: ts.Type): boolean {
       );
     }
     const lowered = L.lowerVarDecl(decl, isLet);
-    if (!lowered) throw new Error("lowerer bug: for-init declarator resolved to a global");
+    if (!lowered) throw new InternalCompilerError("lowerer bug: for-init declarator resolved to a global");
     return lowered;
   }
 
@@ -3585,7 +3586,7 @@ export function lowerVarDecl(L: Lowerer, decl: ts.VariableDeclaration, isLet: bo
    * Case bodies share ONE lexical scope, exactly like the real switch. */
   function lowerUnionSwitch(L: Lowerer, stmt: ts.SwitchStatement, disc: IrExpr): IrStmt {
     const loc = locOf(stmt);
-    if (disc.type.kind !== "union") throw new Error("lowerer bug: non-union disc");
+    if (disc.type.kind !== "union") throw new InternalCompilerError("lowerer bug: non-union disc");
     const unionType = disc.type;
     if (!pureReemittable(disc) || !L.eqComparableUnion(unionType.unionId)) {
       L.unsupported(
@@ -5395,7 +5396,7 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
     }
     const srcType = init.type;
     const shape = L.shapes.get(srcType.shapeId);
-    if (!shape) throw new Error(`lowerer bug: destructuring unknown shape ${srcType.shapeId}`);
+    if (!shape) throw new InternalCompilerError(`lowerer bug: destructuring unknown shape ${srcType.shapeId}`);
     for (const prop of target.properties) {
       // Shorthand `{ a }` assigns local a from field a; `{ a: x }` assigns
       // x from field a (a PropertyAssignment whose initializer is the
@@ -6446,7 +6447,7 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
         sourceT.kind === "bytes"
       )
     ) {
-      throw new Error("internal: retained numeric iterator has a non-numeric source");
+      throw new InternalCompilerError("internal: retained numeric iterator has a non-numeric source");
     }
     const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
     const indexRef = (): IrExpr => ref(state.indexLocalId, F64);
@@ -7227,7 +7228,7 @@ function isEsModuleStamp(expr: ts.Expression): boolean {
         const receiver = L.lowerExpr(stmt.expression);
         if (receiver.type.kind !== "record") L.badType(stmt.expression, L.typeOf(stmt.expression));
         const rShape = L.shapes.get(receiver.type.shapeId);
-        if (!rShape) throw new Error(`lowerer bug: unknown shape ${receiver.type.shapeId}`);
+        if (!rShape) throw new InternalCompilerError(`lowerer bug: unknown shape ${receiver.type.shapeId}`);
         // Accessor-carrying shapes: Node's for-in visits the accessor
         // NAMES (own enumerable properties) — the static key walk omits
         // them (accessor slots live outside declaredOrder), so the loop

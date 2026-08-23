@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* The node:assert lowering (a spoke module like lower-dgram.ts): the
  * callable module form (`assert(x)` through a default import or a CJS
  * require binding), ok, the strict/deep equality quartet, fail, throws,
@@ -934,7 +935,7 @@ function assertThrowsHelper(
       default:
         // Node itself rejects shape expectations here (ERR_INVALID_ARG_TYPE)
         // — the call site fences before reaching this helper.
-        throw new Error("assert helper: doesNotReject shape forms fence at the call site");
+        throw new InternalCompilerError("assert helper: doesNotReject shape forms fence at the call site");
     }
   } else {
     switch (expected.form) {
@@ -1153,13 +1154,13 @@ function ifErrorHelper(L: Lowerer, t: IrType & { kind: "union" }, loc: SrcLoc): 
   const name = `%assert.iferr.${L.assertHelpers.size}`;
   L.assertHelpers.set(key, name);
   const def = L.unions.get(t.unionId);
-  if (!def) throw new Error(`assert.ifError over unknown union ${t.unionId}`);
+  if (!def) throw new InternalCompilerError(`assert.ifError over unknown union ${t.unionId}`);
   const v = (): IrExpr => ({ kind: "varRef", localId: "v.0", type: t, loc });
   const doReturn: IrStmt = { kind: "return", value: null, loc };
   const body: IrStmt[] = [];
   def.arms.forEach((arm, tag) => {
     const fn = ifErrorLibFn(L, arm);
-    if (fn === null) throw new Error("assert.ifError helper over an unfenced arm");
+    if (fn === null) throw new InternalCompilerError("assert.ifError helper over an unfenced arm");
     const then: IrStmt[] =
       fn === "unit"
         ? [doReturn]
@@ -1357,7 +1358,7 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
     }
     case "record": {
       const shape = L.shapes.get(t.shapeId);
-      if (!shape) throw new Error(`assert deep-equal of unknown shape ${t.shapeId}`);
+      if (!shape) throw new InternalCompilerError(`assert deep-equal of unknown shape ${t.shapeId}`);
       const get = (obj: IrExpr, field: string, type: IrType): IrExpr => ({ kind: "recordGet", obj, shapeId: t.shapeId, field, type, loc });
       body = [];
       for (const f of shape.fields) {
@@ -1369,7 +1370,7 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
     }
     case "union": {
       const def = L.unions.get(t.unionId);
-      if (!def) throw new Error(`assert deep-equal of unknown union ${t.unionId}`);
+      if (!def) throw new InternalCompilerError(`assert deep-equal of unknown union ${t.unionId}`);
       const isTag = (v: IrExpr, tag: number, negated: boolean): IrExpr => ({ kind: "unionIsTag", unionId: t.unionId, tag, negated, value: v, type: BOOL, loc });
       const narrow = (v: IrExpr, tag: number, armT: IrType): IrExpr => ({ kind: "unionNarrow", unionId: t.unionId, tag, value: v, type: armT, loc });
       body = [];
@@ -1459,7 +1460,7 @@ function deepEqHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       break;
     }
     default:
-      throw new Error(`assert deep-equal helper over unexpected type ${typeKey(t)}`);
+      throw new InternalCompilerError(`assert deep-equal helper over unexpected type ${typeKey(t)}`);
   }
 
   // CYCLE-CAPABLE containers (recursive record types and their arrays/

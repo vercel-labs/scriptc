@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../errors.js";
 /* The ask-2 contract sidecar emitter: projects the entry module's typed
  * contract into the profile-supplied schema (format 1) — a single JSON
  * document beside the archive carrying the version/identity spine, the
@@ -500,7 +501,7 @@ class Projector {
     const canonical = [...unique.entries()]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([, arm]) => arm);
-    if (canonical.length === 0) throw new Error("sidecar pattern bug: empty union");
+    if (canonical.length === 0) throw new InternalCompilerError("sidecar pattern bug: empty union");
     return canonical.length === 1 ? canonical[0]! : { kind: "union", arms: canonical };
   }
 
@@ -831,7 +832,7 @@ class Projector {
     const selectedOptional =
       intifiedRef.kind === "optional" && intifiedRef.inner.kind === "i64";
     if (intifiedRef.kind !== "i64" && !selectedOptional) {
-      throw new Error(`sidecar pattern bug: synthesized integer field '${path}' has ref '${intifiedRef.kind}'`);
+      throw new InternalCompilerError(`sidecar pattern bug: synthesized integer field '${path}' has ref '${intifiedRef.kind}'`);
     }
     for (const variant of context.variants()) {
       if (variant.fields === null) {
@@ -889,7 +890,7 @@ class Projector {
     const selectedOptional =
       intifiedRef.kind === "optional" && intifiedRef.inner.kind === "i64";
     if (intifiedRef.kind !== "i64" && !selectedOptional) {
-      throw new Error(`sidecar pattern bug: integer arm '${path}' has ref '${intifiedRef.kind}'`);
+      throw new InternalCompilerError(`sidecar pattern bug: integer arm '${path}' has ref '${intifiedRef.kind}'`);
     }
     for (const arm of this.allUnionArms(unionName, loc)) {
       if (arm.name !== armName) continue;

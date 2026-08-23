@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../errors.js";
 export type LibraryEmission = "c" | "llvm";
 
 const C_LIBRARY_IDENTITY_BEGIN = "/* scriptc-library-identity: begin */";
@@ -24,7 +25,7 @@ export function emitLibraryIdentityLines(
   llvmFunctionAttrs = "#0",
 ): string[] {
   if (!/^[0-9a-f]{16}$/.test(identity.buildId)) {
-    throw new Error("library build id must be exactly 16 lowercase hex digits");
+    throw new InternalCompilerError("library build id must be exactly 16 lowercase hex digits");
   }
   if (emission === "c") {
     return [
@@ -65,10 +66,10 @@ function identityOffsets(
   const start = source.indexOf(`${begin}\n`);
   if (start < 0) return null;
   if (source.indexOf(begin, start + begin.length) >= 0) {
-    throw new Error("generated library TU contains multiple identity regions");
+    throw new InternalCompilerError("generated library TU contains multiple identity regions");
   }
   const endStart = source.indexOf(end, start + begin.length);
-  if (endStart < 0) throw new Error("generated library TU has an unterminated identity region");
+  if (endStart < 0) throw new InternalCompilerError("generated library TU has an unterminated identity region");
   return { start, end: endStart + end.length };
 }
 
@@ -79,7 +80,7 @@ export function replaceLibraryIdentity(
   identity: LibraryIdentityValues,
 ): string {
   const offsets = identityOffsets(source, emission);
-  if (offsets === null) throw new Error("generated public library TU has no identity region");
+  if (offsets === null) throw new InternalCompilerError("generated public library TU has no identity region");
   const replacement = emitLibraryIdentityLines(emission, identity).join("\n");
   return source.slice(0, offsets.start) + replacement + source.slice(offsets.end);
 }

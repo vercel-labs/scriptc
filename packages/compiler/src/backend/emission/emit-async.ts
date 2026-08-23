@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Async C emission: the per-async-function argpack/trampoline/spawn-wrapper
  * scaffolding, plus the interned resolve/child-exit thunks that adapt typed
  * payloads onto the runtime's promise and child-process machinery. */
@@ -228,7 +229,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
    * instances are immortal; their release is a no-op). The one-param
    * shape ignores the signal. */
   export function childExitThunkFor(E: CEmitter, param: IrType): string {
-    if (param.kind !== "union") throw new Error("emitter bug: exit listener param not a union");
+    if (param.kind !== "union") throw new InternalCompilerError("emitter bug: exit listener param not a union");
     const key = param.unionId;
     let sym = E.childExitThunks.get(key);
     if (!sym) {
@@ -238,7 +239,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
       const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
       if (f64Tag < 0 || nullTag < 0) {
-        throw new Error("emitter bug: exit listener union lacks its arms");
+        throw new InternalCompilerError("emitter bug: exit listener union lacks its arms");
       }
       E.walkerProtos.push(
         `static void ${sym}(ScrClosure *sc_cb, bool sc_has, double sc_code, const char *sc_sig);`,
@@ -261,7 +262,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
    * signal killed the child, the null arm otherwise). */
   export function childExitThunkFor2(E: CEmitter, codeParam: IrType, sigParam: IrType): string {
     if (codeParam.kind !== "union" || sigParam.kind !== "union") {
-      throw new Error("emitter bug: exit listener params not unions");
+      throw new InternalCompilerError("emitter bug: exit listener params not unions");
     }
     const key = `${codeParam.unionId}+${sigParam.unionId}`;
     let sym = E.childExitThunks.get(key);
@@ -275,7 +276,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
       const strTag = sigDef ? sigDef.arms.findIndex((a) => a.kind === "string") : -1;
       const sigNullTag = sigDef ? sigDef.arms.findIndex((a) => a.kind === "nullT") : -1;
       if (f64Tag < 0 || codeNullTag < 0 || strTag < 0 || sigNullTag < 0) {
-        throw new Error("emitter bug: exit listener unions lack their arms");
+        throw new InternalCompilerError("emitter bug: exit listener unions lack their arms");
       }
       E.walkerProtos.push(
         `static void ${sym}(ScrClosure *sc_cb, bool sc_has, double sc_code, const char *sc_sig);`,
@@ -301,7 +302,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
    * fire from a pipe) and calls the listener, which owns the union param
    * per the universal convention. */
   export function childDataThunkFor(E: CEmitter, param: IrType): string {
-    if (param.kind !== "union") throw new Error("emitter bug: stream data listener param not a union");
+    if (param.kind !== "union") throw new InternalCompilerError("emitter bug: stream data listener param not a union");
     const key = param.unionId;
     let sym = E.childDataThunks.get(key);
     if (!sym) {
@@ -310,7 +311,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
       const def = E.unionsById.get(param.unionId);
       const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes" && a.elem === "u8") : -1;
       if (bytesTag < 0) {
-        throw new Error("emitter bug: stream data listener union lacks its Buffer arm");
+        throw new InternalCompilerError("emitter bug: stream data listener union lacks its Buffer arm");
       }
       E.walkerProtos.push(
         `static void ${sym}(ScrClosure *sc_cb, ScrBytes *sc_chunk);`,
@@ -334,7 +335,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
    * fires it with the undefined arm (a clean close carries no error) —
    * and answers the +1 server (Node's chaining return). */
   export function closeBindThunkFor(E: CEmitter, cbUnion: IrType, retServer: boolean): string {
-    if (cbUnion.kind !== "union") throw new Error("emitter bug: bound-close callback param not a union");
+    if (cbUnion.kind !== "union") throw new InternalCompilerError("emitter bug: bound-close callback param not a union");
     const key = `${cbUnion.unionId}:${retServer ? "srv" : "void"}`;
     let sym = E.closeBindThunks.get(key);
     if (sym) return sym;
@@ -343,17 +344,17 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
     const def = E.unionsById.get(cbUnion.unionId);
     const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
     const funcArm = funcTag >= 0 ? (def!.arms[funcTag] as IrType & { kind: "func" }) : null;
-    if (!funcArm) throw new Error("emitter bug: bound-close callback union lacks its func arm");
+    if (!funcArm) throw new InternalCompilerError("emitter bug: bound-close callback union lacks its func arm");
     const oneParam = funcArm.params.length === 1;
     let trampoline: string | null = null;
     if (oneParam) {
       const errParam = funcArm.params[0]!;
       if (errParam.kind !== "union") {
-        throw new Error("emitter bug: bound-close callback's err param is not a union");
+        throw new InternalCompilerError("emitter bug: bound-close callback's err param is not a union");
       }
       const errDef = E.unionsById.get(errParam.unionId);
       const undefTag = errDef ? errDef.arms.findIndex((a) => a.kind === "undefinedT") : -1;
-      if (undefTag < 0) throw new Error("emitter bug: bound-close err union lacks its undefined arm");
+      if (undefTag < 0) throw new InternalCompilerError("emitter bug: bound-close err union lacks its undefined arm");
       trampoline = `${sym}_cb`;
       E.walkerProtos.push(`static void ${trampoline}(ScrClosure *sc_self);`);
       E.walkerDefs.push(
@@ -395,7 +396,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
    * the undefined-arm callback argument (tags are program data),
    * releasing the chaining-return server when the signature answers one. */
   export function closeOverrideWrapFor(E: CEmitter, cbUnion: IrType, retServer: boolean): string {
-    if (cbUnion.kind !== "union") throw new Error("emitter bug: close-override callback param not a union");
+    if (cbUnion.kind !== "union") throw new InternalCompilerError("emitter bug: close-override callback param not a union");
     const key = `${cbUnion.unionId}:${retServer ? "srv" : "void"}`;
     let sym = E.closeOverrideWraps.get(key);
     if (sym) return sym;
@@ -403,7 +404,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
     E.closeOverrideWraps.set(key, sym);
     const def = E.unionsById.get(cbUnion.unionId);
     const undefTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
-    if (undefTag < 0) throw new Error("emitter bug: close-override callback union lacks its undefined arm");
+    if (undefTag < 0) throw new InternalCompilerError("emitter bug: close-override callback union lacks its undefined arm");
     E.walkerProtos.push(`static void ${sym}(ScrClosure *sc_self);`);
     E.walkerDefs.push(
       `static void ${sym}(ScrClosure *sc_self) { /* close override wrapper */`,
@@ -430,7 +431,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
    * the net data thunk). Zero/one-param listeners take the runtime's own
    * scr_dgram_msg_thunk0/1. */
   export function dgramMsgThunkFor(E: CEmitter, param: IrType): string {
-    if (param.kind !== "record") throw new Error("emitter bug: message listener rinfo not a record");
+    if (param.kind !== "record") throw new InternalCompilerError("emitter bug: message listener rinfo not a record");
     const key = param.shapeId;
     let sym = E.dgramMsgThunks.get(key);
     if (!sym) {
@@ -461,11 +462,11 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
    * calls the listener with as many arguments as it declared, each owned
    * per the universal convention. */
   export function dnsLookupThunkFor(E: CEmitter, cbT: IrType): string {
-    if (cbT.kind !== "func") throw new Error("emitter bug: dns.lookup callback not a func");
+    if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: dns.lookup callback not a func");
     const nparams = cbT.params.length;
     if (nparams === 0) return "scr_dns_thunk0";
     const errT = cbT.params[0]!;
-    if (errT.kind !== "union") throw new Error("emitter bug: dns.lookup err param not a union");
+    if (errT.kind !== "union") throw new InternalCompilerError("emitter bug: dns.lookup err param not a union");
     const key = `${errT.unionId}/${nparams}`;
     let sym = E.dnsLookupThunks.get(key);
     if (!sym) {
@@ -475,7 +476,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
       const errTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
       if (errTag < 0 || nullTag < 0) {
-        throw new Error("emitter bug: dns.lookup err union lacks its arms");
+        throw new InternalCompilerError("emitter bug: dns.lookup err union lacks its arms");
       }
       const callSig = ["ScrClosure *", "ScrUnion *", ...(nparams >= 2 ? ["ScrStr *"] : []), ...(nparams >= 3 ? ["double"] : [])].join(", ");
       const callArgs = ["sc_cb", "sc_u", ...(nparams >= 2 ? ["scr_str_retain(sc_addr)"] : []), ...(nparams >= 3 ? ["sc_family"] : [])].join(", ");
@@ -499,7 +500,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
  * ScrError (or NULL); the adapter builds the callback's program-specific
  * Error | null union, or a dyn error/null for checkJs callbacks. */
   export function fsRenameThunkFor(E: CEmitter, cbT: IrType): string {
-    if (cbT.kind !== "func") throw new Error("emitter bug: fs.rename callback not a func");
+    if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: fs.rename callback not a func");
     if (cbT.params.length === 0) return "scr_fs_rename_thunk0";
     const param = cbT.params[0]!;
     const key = typeKey(cbT);
@@ -517,11 +518,11 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
       );
       return sym;
     }
-    if (param.kind !== "union") throw new Error("emitter bug: fs.rename error param not a union");
+    if (param.kind !== "union") throw new InternalCompilerError("emitter bug: fs.rename error param not a union");
     const def = E.unionsById.get(param.unionId);
     const errTag = def ? def.arms.findIndex((a) => a.kind === "object" && a.className === "%Error") : -1;
     const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-    if (errTag < 0 || nullTag < 0) throw new Error("emitter bug: fs.rename error union lacks its arms");
+    if (errTag < 0 || nullTag < 0) throw new InternalCompilerError("emitter bug: fs.rename error union lacks its arms");
     E.walkerDefs.push(
       `static void ${sym}(ScrClosure *sc_cb, ScrError *sc_err) {`,
       `  ScrUnion *sc_u = sc_err`,
@@ -541,7 +542,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
    * All three runtime args arrive +1; the union takes the socket's. */
   export function connectSockThunkFor(E: CEmitter, cbT: IrType): string {
     if (cbT.kind !== "func" || cbT.params[1]?.kind !== "union") {
-      throw new Error("emitter bug: connect listener union shape (frontend must fence)");
+      throw new InternalCompilerError("emitter bug: connect listener union shape (frontend must fence)");
     }
     const key = typeKey(cbT);
     let sym = E.connectSockThunks.get(key);
@@ -551,7 +552,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
     const sockT = cbT.params[1];
     const def = E.unionsById.get(sockT.unionId);
     const tag = def ? def.arms.findIndex((a) => a.kind === "netSocket") : -1;
-    if (tag < 0) throw new Error("emitter bug: connect listener union lacks its socket arm");
+    if (tag < 0) throw new InternalCompilerError("emitter bug: connect listener union lacks its socket arm");
     const three = cbT.params.length === 3;
     E.walkerProtos.push(
       `static void ${sym}(ScrClosure *sc_cb, ScrHttpReq *sc_req, ScrNetSocket *sc_sock, ScrBytes *sc_head);`,
@@ -569,7 +570,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
   }
 
   export function connectResThunkFor(E: CEmitter, cbT: IrType): string {
-    if (cbT.kind !== "func") throw new Error("emitter bug: connect listener shape");
+    if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: connect listener shape");
     const key = `res:${typeKey(cbT)}`;
     let sym = E.connectSockThunks.get(key);
     if (sym) return sym;
@@ -578,7 +579,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
     const p1 = cbT.params[1];
     const def = p1?.kind === "union" ? E.unionsById.get(p1.unionId) : undefined;
     const tag = def ? def.arms.findIndex((a) => a.kind === "httpRes") : -1;
-    if (p1?.kind === "union" && tag < 0) throw new Error("emitter bug: connect listener union lacks its response arm");
+    if (p1?.kind === "union" && tag < 0) throw new InternalCompilerError("emitter bug: connect listener union lacks its response arm");
     E.walkerProtos.push(`static void ${sym}(ScrClosure *sc_cb, ScrHttpReq *sc_req, ScrHttpRes *sc_res);`);
     const second = p1?.kind === "union"
       ? `ScrUnion *sc_u = scr_union_new_ref(${tag}, sc_res, &scr_http_res_retain_v, &scr_http_res_release_v, NULL);`
@@ -607,7 +608,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
    * here; the extracted message/ips hand over +1. */
   export function netLookupAnswerThunkFor(E: CEmitter, cbT: IrType): string {
     if (cbT.kind !== "func" || cbT.params.length !== 2) {
-      throw new Error("emitter bug: lookup answer cb shape (frontend must fence)");
+      throw new InternalCompilerError("emitter bug: lookup answer cb shape (frontend must fence)");
     }
     const key = typeKey(cbT);
     let sym = E.netLookupAnswerThunks.get(key);
@@ -615,13 +616,13 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
     sym = mangleNetLookupAnswerThunk(E.netLookupAnswerThunks.size);
     E.netLookupAnswerThunks.set(key, sym);
     const errT = cbT.params[0]!;
-    if (errT.kind !== "union") throw new Error("emitter bug: lookup answer err param not a union");
+    if (errT.kind !== "union") throw new InternalCompilerError("emitter bug: lookup answer err param not a union");
     const errDef = E.unionsById.get(errT.unionId);
     const nullTag = errDef ? errDef.arms.findIndex((a) => a.kind === "nullT") : -1;
-    if (nullTag < 0) throw new Error("emitter bug: lookup answer err union lacks its null arm");
+    if (nullTag < 0) throw new InternalCompilerError("emitter bug: lookup answer err union lacks its null arm");
     const addrsT = cbT.params[1]!;
     if (addrsT.kind !== "array" || addrsT.elem.kind !== "record") {
-      throw new Error("emitter bug: lookup answer addresses param not a record array");
+      throw new InternalCompilerError("emitter bug: lookup answer addresses param not a record array");
     }
     const recStruct = mangleRecordStruct(addrsT.elem.shapeId);
     const recRelease = mangleRecordRelease(addrsT.elem.shapeId);
@@ -661,7 +662,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
    * union params per the universal convention (the ctx payload retains
    * +1 before its union releases; ownership moves to the runtime). */
   export function sniAnswerThunkFor(E: CEmitter, cbT: IrType): string {
-    if (cbT.kind !== "func") throw new Error("emitter bug: SNI answer cb not a func");
+    if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: SNI answer cb not a func");
     const key = typeKey(cbT);
     let sym = E.sniAnswerThunks.get(key);
     if (sym) return sym;
@@ -673,20 +674,20 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
     let hasErr = "false";
     if (nparams >= 1) {
       const errT = cbT.params[0]!;
-      if (errT.kind !== "union") throw new Error("emitter bug: SNI answer err param not a union");
+      if (errT.kind !== "union") throw new InternalCompilerError("emitter bug: SNI answer err param not a union");
       const def = E.unionsById.get(errT.unionId);
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-      if (nullTag < 0) throw new Error("emitter bug: SNI answer err union lacks its null arm");
+      if (nullTag < 0) throw new InternalCompilerError("emitter bug: SNI answer err union lacks its null arm");
       params.push("ScrUnion *sc_err");
       hasErr = `sc_err->tag != ${nullTag}`;
     }
     let ctx = "NULL";
     if (nparams >= 2) {
       const ctxT = cbT.params[1]!;
-      if (ctxT.kind !== "union") throw new Error("emitter bug: SNI answer ctx param not a union");
+      if (ctxT.kind !== "union") throw new InternalCompilerError("emitter bug: SNI answer ctx param not a union");
       const def = E.unionsById.get(ctxT.unionId);
       const ctxTag = def ? def.arms.findIndex((a) => a.kind === "secureCtx") : -1;
-      if (ctxTag < 0) throw new Error("emitter bug: SNI answer ctx union lacks its SecureContext arm");
+      if (ctxTag < 0) throw new InternalCompilerError("emitter bug: SNI answer ctx union lacks its SecureContext arm");
       params.push("ScrUnion *sc_ctx");
       body.push(
         `  ScrSecureCtx *sc_c = sc_ctx->tag == ${ctxTag} ? scr_secure_ctx_retain((ScrSecureCtx *)scr_union_peek(sc_ctx)) : NULL;`,
@@ -717,12 +718,12 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
     if (sym) return sym;
     sym = mangleRaceThunk(E.raceThunks.size);
     E.raceThunks.set(key, sym);
-    if (to.kind !== "union") throw new Error("emitter bug: race adapter to a non-union");
+    if (to.kind !== "union") throw new InternalCompilerError("emitter bug: race adapter to a non-union");
     const toDef = E.unionsById.get(to.unionId);
-    if (!toDef) throw new Error("emitter bug: race adapter to an unknown union");
+    if (!toDef) throw new InternalCompilerError("emitter bug: race adapter to an unknown union");
     const tagOf = (t: IrType): number => {
       const tag = toDef.arms.findIndex((a) => typeEquals(a, t));
-      if (tag < 0) throw new Error("emitter bug: race adapter arm missing (frontend must fence)");
+      if (tag < 0) throw new InternalCompilerError("emitter bug: race adapter arm missing (frontend must fence)");
       return tag;
     };
     const rv = vAdapters(to);
@@ -758,7 +759,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
     // Sub-union re-tag: switch over the entry's arms, rebuild under the
     // result's tags (payloads retained through each arm's own adapters).
     const fromDef = E.unionsById.get(from.unionId);
-    if (!fromDef) throw new Error("emitter bug: race adapter from an unknown union");
+    if (!fromDef) throw new InternalCompilerError("emitter bug: race adapter from an unknown union");
     const cases = fromDef.arms.map((arm, i) => {
       const tag = tagOf(arm);
       let build: string;
@@ -811,7 +812,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
     const struct = mangleRecordStruct(recT.shapeId);
     const shape = E.mod.records?.find((r) => r.id === recT.shapeId);
     const valueT = shape?.fields.find((f) => f.name === "value")?.type;
-    if (!valueT) throw new Error("emitter bug: genResume record lacks its value field");
+    if (!valueT) throw new InternalCompilerError("emitter bug: genResume record lacks its value field");
     const lines: string[] = [
       `static ${struct} *${sym}(ScrGen *sc_g) {`,
       `  ${struct} *sc_r = ${mangleRecordNew(recT.shapeId)}();`,
@@ -827,17 +828,17 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
       );
     } else {
       if (valueT.kind !== "union") {
-        throw new Error("emitter bug: genResume value slot is neither dyn nor a union");
+        throw new InternalCompilerError("emitter bug: genResume value slot is neither dyn nor a union");
       }
       const def = E.unionsById.get(valueT.unionId);
-      if (!def) throw new Error("emitter bug: genResume value union unknown");
+      if (!def) throw new InternalCompilerError("emitter bug: genResume value union unknown");
       const tagOf = (t: IrType): number => {
         const tag = def.arms.findIndex((a) => typeEquals(a, t));
-        if (tag < 0) throw new Error("emitter bug: genResume value union lacks an arm");
+        if (tag < 0) throw new InternalCompilerError("emitter bug: genResume value union lacks an arm");
         return tag;
       };
       const undefTag = def.arms.findIndex((a) => a.kind === "undefinedT");
-      if (undefTag < 0) throw new Error("emitter bug: genResume value union lacks undefined");
+      if (undefTag < 0) throw new InternalCompilerError("emitter bug: genResume value union lacks undefined");
       // Lines that leave the wrapped value in `sc_v`, taking OUT's payload.
       const wrapFrom = (srcT: IrType): string[] => {
         if (srcT.kind === "f64") {
@@ -859,7 +860,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
           return [`    sc_v = (ScrUnion *)scr_gen_take_out_ref(sc_g);`];
         }
         const srcDef = E.unionsById.get(srcT.unionId);
-        if (!srcDef) throw new Error("emitter bug: genResume channel union unknown");
+        if (!srcDef) throw new InternalCompilerError("emitter bug: genResume channel union unknown");
         const cases = srcDef.arms.map((arm, i) => {
           const tag = tagOf(arm);
           let build: string;
@@ -930,7 +931,7 @@ import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/
  * calls cb->fn behind its exact C signature. Interned per func-type key. */
 export function emitterInvokeThunkFor(E: CEmitter, cbT: IrType): string {
   if (cbT.kind !== "func") {
-    throw new Error("emitter bug: emitter.on listener not a func (frontend must fence)");
+    throw new InternalCompilerError("emitter bug: emitter.on listener not a func (frontend must fence)");
   }
   const key = typeKey(cbT);
   let sym = E.emitterInvokeThunks.get(key);
@@ -984,7 +985,7 @@ export function emitterInvokeThunkFor(E: CEmitter, cbT: IrType): string {
  * callee-owned (+1) per the universal convention and are released here. */
 function streamDoneFnFor(E: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: IrType): string {
   if (doneT.kind !== "func") {
-    throw new Error("emitter bug: stream done callback not a func (frontend must fence)");
+    throw new InternalCompilerError("emitter bug: stream done callback not a func (frontend must fence)");
   }
   const key = `${kind}:${typeKey(doneT)}`;
   let sym = E.streamDoneFns.get(key);
@@ -998,10 +999,10 @@ function streamDoneFnFor(E: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: 
   ];
   const errT = doneT.params[0];
   if (errT !== undefined) {
-    if (errT.kind !== "union") throw new Error("emitter bug: stream done err param not a union");
+    if (errT.kind !== "union") throw new InternalCompilerError("emitter bug: stream done err param not a union");
     const def = E.unionsById.get(errT.unionId);
     const errTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
-    if (errTag < 0) throw new Error("emitter bug: stream done err union lacks its Error arm");
+    if (errTag < 0) throw new InternalCompilerError("emitter bug: stream done err union lacks its Error arm");
     params.push("ScrUnion *sc_e");
     body.push(
       `  if (sc_e && sc_e->tag == ${errTag}) sc_err = scr_error_retain((ScrError *)scr_union_peek(sc_e));`,
@@ -1012,7 +1013,7 @@ function streamDoneFnFor(E: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: 
   if (kind === "t" || kind === "l") {
     body.push(...dataLines);
     if (dataT !== undefined) {
-      if (dataT.kind !== "union") throw new Error("emitter bug: stream done data param not a union");
+      if (dataT.kind !== "union") throw new InternalCompilerError("emitter bug: stream done data param not a union");
       const def = E.unionsById.get(dataT.unionId);
       const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes") : -1;
       const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
@@ -1061,7 +1062,7 @@ function streamDoneFnFor(E: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: 
  * emitter.onDataDyn) box by tag, which is always right. */
 export function streamDataThunkFor(E: CEmitter, cbT: IrType): string {
   if (cbT.kind !== "func") {
-    throw new Error("emitter bug: stream data listener not a func (frontend must fence)");
+    throw new InternalCompilerError("emitter bug: stream data listener not a func (frontend must fence)");
   }
   const key = `data:${typeKey(cbT)}`;
   let sym = E.emitterInvokeThunks.get(key);
@@ -1070,7 +1071,7 @@ export function streamDataThunkFor(E: CEmitter, cbT: IrType): string {
   E.emitterInvokeThunks.set(key, sym);
   const p = cbT.params[0];
   if (cbT.params.length > 1 || (p && p.kind !== "bytes" && p.kind !== "string" && p.kind !== "dyn")) {
-    throw new Error("emitter bug: stream data listener param shape (frontend must fence)");
+    throw new InternalCompilerError("emitter bug: stream data listener param shape (frontend must fence)");
   }
   const body: string[] = [
     `  ScrBytes *sc_b = va_arg(sc_ap, ScrBytes *);`,
@@ -1133,7 +1134,7 @@ export function streamDataThunkFor(E: CEmitter, cbT: IrType): string {
  * enc, cb), "l" flush(cb). */
 export function streamCbThunkFor(E: CEmitter, kind: "r" | "w" | "f" | "d" | "t" | "l" | "e", cbT: IrType): string {
   if (cbT.kind !== "func") {
-    throw new Error("emitter bug: stream option callback not a func (frontend must fence)");
+    throw new InternalCompilerError("emitter bug: stream option callback not a func (frontend must fence)");
   }
   const key = `${kind}:${typeKey(cbT)}`;
   let sym = E.streamCbThunks.get(key);
@@ -1154,7 +1155,7 @@ export function streamCbThunkFor(E: CEmitter, kind: "r" | "w" | "f" | "d" | "t" 
   const declared = cbT.params;
   const hasThis = declared[0] !== undefined && declared[0].kind === "object";
   if (declared.length === 0) {
-    throw new Error("emitter bug: stream option callback with no params (frontend must fence)");
+    throw new InternalCompilerError("emitter bug: stream option callback with no params (frontend must fence)");
   }
   const passed: string[] = hasThis
     ? ["sc_cb", `(${cType(declared[0]!).trim()})scr_stream_retain(sc_s)`]
@@ -1164,7 +1165,7 @@ export function streamCbThunkFor(E: CEmitter, kind: "r" | "w" | "f" | "d" | "t" 
   const full = (kind === "r" ? 1 : kind === "w" || kind === "t" ? 3 : kind === "d" ? 2 : 1) + off;
   // "e" (the finished/pipeline callback): ONE Node position — the error.
   if (declared.length > full) {
-    throw new Error(`emitter bug: stream '${kind}' callback declares ${declared.length} params (frontend must fence)`);
+    throw new InternalCompilerError(`emitter bug: stream '${kind}' callback declares ${declared.length} params (frontend must fence)`);
   }
   for (let i = off; i < declared.length; i++) {
     const p = declared[i]!;
@@ -1212,7 +1213,7 @@ export function streamCbThunkFor(E: CEmitter, kind: "r" | "w" | "f" | "d" | "t" 
         );
         passed.push(`sc_done`);
       } else {
-        throw new Error(`emitter bug: stream '${kind}' dyn callback param ${i} has no adapter`);
+        throw new InternalCompilerError(`emitter bug: stream '${kind}' dyn callback param ${i} has no adapter`);
       }
       continue;
     }
@@ -1227,14 +1228,14 @@ export function streamCbThunkFor(E: CEmitter, kind: "r" | "w" | "f" | "d" | "t" 
       // The finished/pipeline callback ("e") may declare `Error | null |
       // undefined` (the @types signature); success prefers the undefined
       // arm there (Node calls the eos callback with NO arguments).
-      if (p.kind !== "union") throw new Error("emitter bug: stream destroy err param not a union");
+      if (p.kind !== "union") throw new InternalCompilerError("emitter bug: stream destroy err param not a union");
       const def = E.unionsById.get(p.unionId);
       const errTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
       const undefTag = kind === "e" && def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
       const nullTag = def
         ? (undefTag >= 0 ? undefTag : def.arms.findIndex((a) => a.kind === "nullT"))
         : -1;
-      if (errTag < 0 || nullTag < 0) throw new Error("emitter bug: stream destroy err union lacks its arms");
+      if (errTag < 0 || nullTag < 0) throw new InternalCompilerError("emitter bug: stream destroy err union lacks its arms");
       body.push(
         `  ScrUnion *sc_eu = sc_err ? scr_union_new_ref(${errTag}, scr_error_retain(sc_err), &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg()) : scr_union_retain(${E.unitInstanceRef(p.unionId, nullTag)});`,
       );
@@ -1249,7 +1250,7 @@ export function streamCbThunkFor(E: CEmitter, kind: "r" | "w" | "f" | "d" | "t" 
       );
       passed.push(`sc_done`);
     } else {
-      throw new Error(`emitter bug: stream '${kind}' callback param ${i} has no adapter`);
+      throw new InternalCompilerError(`emitter bug: stream '${kind}' callback param ${i} has no adapter`);
     }
   }
   const sigParams = ["ScrClosure *", ...declared.map((p) => cType(p).trim())].join(", ");

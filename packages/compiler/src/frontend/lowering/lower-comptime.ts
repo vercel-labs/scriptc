@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* comptime(fn) lowering: run the closed callback under node:vm at compile
  * time (with a timeout), then bake the produced VALUE into the IR as
  * literals — records/arrays/unions included, subject to comptimeBakeable. */
@@ -268,6 +269,6 @@ function describeComptimeValue(v: unknown): string {
       }
       default:
         // comptimeBakeable already fenced these off.
-        throw new Error(`lowerer bug: unbakeable comptime target '${expected.kind}'`);
+        throw new InternalCompilerError(`lowerer bug: unbakeable comptime target '${expected.kind}'`);
     }
   }

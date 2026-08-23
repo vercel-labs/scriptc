@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* The census's enum surface over typescript@7.0.2 (the plain "typescript"
  * dependency — 5.9.3 lives under the "typescript5" alias, islands only; see
  * adapter.ts for the two-world rules). Everything here re-exports
@@ -52,7 +53,7 @@ function loadHiddenEnum<T>(basename: string, key: string): T {
   const packageRoot = dirname(require.resolve("typescript/package.json"));
   const mod = require(join(packageRoot, "dist", "enums", `${basename}.js`)) as Record<string, T>;
   const value = mod[key];
-  if (value === undefined) throw new Error(`typescript enum module ${basename} has no export ${key}`);
+  if (value === undefined) throw new InternalCompilerError(`typescript enum module ${basename} has no export ${key}`);
   return value;
 }
 

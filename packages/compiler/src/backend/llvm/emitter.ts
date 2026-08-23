@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* IR → LLVM IR text (.ll). The LLVM backend consumes the SAME in-memory
  * IrModule the C backend does (never the JSON dump — see the -0 lesson in
  * the survey) and produces a textual module that rides compileC's
@@ -124,7 +125,7 @@ function ffiNativeTypeLl(
       return "ptr";
     case "string":
     case "bytes":
-      throw new Error(`llvm emitter bug: span class '${cls}' has no scalar LLVM type`);
+      throw new InternalCompilerError(`llvm emitter bug: span class '${cls}' has no scalar LLVM type`);
     case "void":
       return "void";
   }
@@ -1289,7 +1290,7 @@ class LlEmitter {
 
   private ffiCallbackAdapter(binding: string, id: string): FfiCallbackAdapter {
     const adapter = this.ffiCallbackAdapters.get(`${binding}:${id}`);
-    if (!adapter) throw new Error(`llvm emitter bug: no callback adapter for ${binding}:${id}`);
+    if (!adapter) throw new InternalCompilerError(`llvm emitter bug: no callback adapter for ${binding}:${id}`);
     return adapter;
   }
 
@@ -1322,7 +1323,7 @@ class LlEmitter {
       const ret = ffiNativeTypeLl(cb.returns);
       if (cb.invoke === "foreign") {
         if (adapter.table === null || !cb.params.some(isFfiContextParam) || cb.returns !== "void") {
-          throw new Error("llvm emitter bug: invalid foreign FFI callback descriptor");
+          throw new InternalCompilerError("llvm emitter bug: invalid foreign FFI callback descriptor");
         }
         const dispatch = `${adapter.symbol}_dispatch`;
         const scriptArgs: string[] = [];
@@ -2979,7 +2980,7 @@ class LlEmitter {
   unitInstanceRef(unionId: string, tag: number): string {
     const arm = this.unionsById.get(unionId)?.arms[tag];
     if (!arm || !isUnitType(arm)) {
-      throw new Error(`llvm emitter bug: unit instance for non-unit arm ${tag} of ${unionId}`);
+      throw new InternalCompilerError(`llvm emitter bug: unit instance for non-unit arm ${tag} of ${unionId}`);
     }
     const key = `${unionId}:${tag}`;
     let sym = this.unitInstances.get(key);
@@ -3008,7 +3009,7 @@ class LlEmitter {
 
   private currentFrame(): LlValue[] {
     const frame = this.frames[this.frames.length - 1];
-    if (!frame) throw new Error("llvm emitter bug: no active statement frame");
+    if (!frame) throw new InternalCompilerError("llvm emitter bug: no active statement frame");
     return frame;
   }
 
@@ -3034,7 +3035,7 @@ class LlEmitter {
         return;
       }
     }
-    throw new Error(`llvm emitter bug: moved temp ${v.name} not found in any frame`);
+    throw new InternalCompilerError(`llvm emitter bug: moved temp ${v.name} not found in any frame`);
   }
 
   /** The retained (+1) read of a refcounted value — type-directed through
@@ -3143,7 +3144,7 @@ class LlEmitter {
     const B = this.B;
     const t = v.type;
     if (t.kind === "date") {
-      throw new Error("LLVM emitter bug: Date throw reached backend");
+      throw new InternalCompilerError("LLVM emitter bug: Date throw reached backend");
     } else if (t.kind === "f64") {
       this.declare(`declare void @scr_throw_f64(double)`);
       B.line(`call void @scr_throw_f64(double ${v.name})`);
@@ -3249,7 +3250,7 @@ class LlEmitter {
         // The ARM value's ToBoolean: an inline tag switch (the C emitter's
         // per-union interned helper, emitted at the use site instead).
         const def = this.unionsById.get(v.type.unionId);
-        if (!def) throw new Error(`llvm emitter bug: truthiness of unknown union ${v.type.unionId}`);
+        if (!def) throw new InternalCompilerError(`llvm emitter bug: truthiness of unknown union ${v.type.unionId}`);
         const slot = B.slot();
         B.entryAllocas.push(`${slot} = alloca i1`);
         const join = B.newLabel("ut.j");
@@ -3416,7 +3417,7 @@ class LlEmitter {
 
   private classMetaOf(className: string): LlClassMeta {
     const meta = this.classMeta.get(className);
-    if (!meta) throw new Error(`llvm emitter bug: unknown class ${className}`);
+    if (!meta) throw new InternalCompilerError(`llvm emitter bug: unknown class ${className}`);
     return meta;
   }
 
@@ -3473,7 +3474,7 @@ class LlEmitter {
 
   private recordShape(shapeId: string): IrRecordShape {
     const shape = this.recordsById.get(shapeId);
-    if (!shape) throw new Error(`llvm emitter bug: unknown record shape ${shapeId}`);
+    if (!shape) throw new InternalCompilerError(`llvm emitter bug: unknown record shape ${shapeId}`);
     return shape;
   }
 
@@ -3481,7 +3482,7 @@ class LlEmitter {
   private recordFieldPtr(objName: string, shapeId: string, field: string): { ptr: string; type: IrType } {
     const shape = this.recordShape(shapeId);
     const idx = shape.fields.findIndex((f) => f.name === field);
-    if (idx < 0) throw new Error(`llvm emitter bug: unknown field ${field} on shape ${shapeId}`);
+    if (idx < 0) throw new InternalCompilerError(`llvm emitter bug: unknown field ${field} on shape ${shapeId}`);
     const p = this.B.tmp();
     this.B.line(
       `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + 1}`,
@@ -3492,7 +3493,7 @@ class LlEmitter {
   /** The overflow map's slot pointer on an index-signature shape. */
   private recordOvfPtr(objName: string, shapeId: string): string {
     const shape = this.recordShape(shapeId);
-    if (!shape.indexValue) throw new Error(`llvm emitter bug: shape ${shapeId} has no overflow map`);
+    if (!shape.indexValue) throw new InternalCompilerError(`llvm emitter bug: shape ${shapeId} has no overflow map`);
     const p = this.B.tmp();
     const v = this.B.tmp();
     this.B.line(
@@ -3542,7 +3543,7 @@ class LlEmitter {
       };
     }
     const g = this.globalTypes.get(id);
-    if (!g) throw new Error(`llvm emitter bug: unknown binding ${id}`);
+    if (!g) throw new InternalCompilerError(`llvm emitter bug: unknown binding ${id}`);
     return { kind: "global", slot: `@${mangleGlobal(id)}`, type: g };
   }
 
@@ -3662,7 +3663,7 @@ class LlEmitter {
    * LLVM keeps all live locals in the coroutine frame. */
   private emitWasiSuspend(promise: string | null): void {
     const coro = this.currentWasiCoro;
-    if (coro === null) throw new Error("llvm emitter bug: wasm suspension outside async body");
+    if (coro === null) throw new InternalCompilerError("llvm emitter bug: wasm suspension outside async body");
     if (promise === null) {
       this.declare(`declare void @scr_wasi_await_hop_prepare(ptr)`);
       this.B.line(`call void @scr_wasi_await_hop_prepare(ptr ${coro.self})`);
@@ -3677,7 +3678,7 @@ class LlEmitter {
    * continuation (used by module awaits, which skip the hop when settled). */
   private emitWasiSuspendPrepared(): void {
     const coro = this.currentWasiCoro;
-    if (coro === null) throw new Error("llvm emitter bug: wasm suspension outside async body");
+    if (coro === null) throw new InternalCompilerError("llvm emitter bug: wasm suspension outside async body");
     const save = this.B.tmp();
     const state = this.B.tmp();
     const resume = this.B.newLabel("coro.resume");
@@ -3692,7 +3693,7 @@ class LlEmitter {
   /** Move a clean async return value into the current fiber's promise. */
   private emitWasiFulfill(v: LlValue | null): void {
     const coro = this.currentWasiCoro;
-    if (coro === null) throw new Error("llvm emitter bug: wasm fulfillment outside async body");
+    if (coro === null) throw new InternalCompilerError("llvm emitter bug: wasm fulfillment outside async body");
     const ret = this.currentReturnType;
     if (coro.kind === "generator") {
       this.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
@@ -4016,7 +4017,7 @@ class LlEmitter {
         const arr = this.emitExpr(s.arr);
         const idx = this.emitExpr(s.index);
         const v = this.emitExpr(s.value);
-        if (s.arr.type.kind !== "array") throw new Error("llvm emitter bug: arraySet on non-array");
+        if (s.arr.type.kind !== "array") throw new InternalCompilerError("llvm emitter bug: arraySet on non-array");
         const acc = elemAccess(s.arr.type.elem);
         if (acc === "ref") this.moveTemp(v);
         const argTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
@@ -4034,7 +4035,7 @@ class LlEmitter {
         const integerIndex = this.emitIntegerLoopIndex(s.index);
         const idx = integerIndex ?? this.emitExpr(s.index).name;
         const v = this.emitExpr(s.value);
-        if (s.arr.type.kind !== "bytes") throw new Error("llvm emitter bug: bytesSet on non-bytes");
+        if (s.arr.type.kind !== "bytes") throw new InternalCompilerError("llvm emitter bug: bytesSet on non-bytes");
         this.emitBytesSet(s.arr.type.elem, arr.name, idx, v.name, integerIndex !== null);
         break;
       }
@@ -4089,7 +4090,7 @@ class LlEmitter {
         // the property, which a monomorphic struct cannot); overflow
         // shapes keep the map insert tail.
         const iv = shape.indexValue ?? shape.fields[0]?.type;
-        if (!iv) throw new Error(`llvm emitter bug: keyed write on field-free non-overflow shape ${s.shapeId}`);
+        if (!iv) throw new InternalCompilerError(`llvm emitter bug: keyed write on field-free non-overflow shape ${s.shapeId}`);
         const vAcc = iv.kind === "f64" ? "f64" : iv.kind === "bool" ? "bool" : "ref";
         if (s.overflowOnly === true) {
           // A LITERAL key naming no declared field: a plain overflow
@@ -4455,7 +4456,7 @@ class LlEmitter {
             break;
           }
         }
-        if (!target) throw new Error("llvm emitter bug: break target not found");
+        if (!target) throw new InternalCompilerError("llvm emitter bug: break target not found");
         this.releaseForJump(target.frameDepth, target.scopeDepth);
         B.terminate(`br label %${target.brkLabel}`);
         break;
@@ -4471,7 +4472,7 @@ class LlEmitter {
             break;
           }
         }
-        if (!target || target.contLabel === null) throw new Error("llvm emitter bug: continue target not found");
+        if (!target || target.contLabel === null) throw new InternalCompilerError("llvm emitter bug: continue target not found");
         this.releaseForJump(target.frameDepth, target.scopeDepth);
         B.terminate(`br label %${target.contLabel}`);
         break;
@@ -4836,7 +4837,7 @@ class LlEmitter {
       case "unitLit":
         // unitLits are consumed inline by the unionWrap case (a unit arm is
         // tag-only); one reaching the generic dispatch escaped its wrap.
-        throw new Error(`llvm emitter bug: bare unitLit '${e.unit}'`);
+        throw new InternalCompilerError(`llvm emitter bug: bare unitLit '${e.unit}'`);
       case "varRef": {
         const integerSlot = this.integerLoopBindings.get(e.localId);
         if (integerSlot !== undefined) {
@@ -5040,7 +5041,7 @@ class LlEmitter {
           // arms format — the C per-union helper at the use site). Ref
           // arms never arrive (the frontend fences those).
           const def = this.unionsById.get(v.type.unionId);
-          if (!def) throw new Error(`llvm emitter bug: ToString of unknown union ${v.type.unionId}`);
+          if (!def) throw new InternalCompilerError(`llvm emitter bug: ToString of unknown union ${v.type.unionId}`);
           const slot = B.slot();
           B.entryAllocas.push(`${slot} = alloca ptr`);
           const join = B.newLabel("us.j");
@@ -5138,7 +5139,7 @@ class LlEmitter {
         // same-typed source array (borrowed): its elements copy in —
         // _get_ref returns +1 and _push_ref takes ownership, RC-balanced;
         // the length is snapshotted before the loop.
-        if (e.type.kind !== "array") throw new Error("llvm emitter bug: arrayLit of non-array type");
+        if (e.type.kind !== "array") throw new InternalCompilerError("llvm emitter bug: arrayLit of non-array type");
         const elem = e.type.elem;
         const arr = B.tmp();
         B.line(`${arr} = ${arrNewCall(this, elem, String(e.elems.length))}`);
@@ -5162,7 +5163,7 @@ class LlEmitter {
         // one (immortal: pushing owes no retain), NULL for every other ref
         // element kind. The `i <= n - 1` bound is ToLength for the lengths
         // that terminate: fractions truncate, negative/NaN → empty.
-        if (e.type.kind !== "array") throw new Error("llvm emitter bug: arrayNewLen of non-array type");
+        if (e.type.kind !== "array") throw new InternalCompilerError("llvm emitter bug: arrayNewLen of non-array type");
         const elem = e.type.elem;
         const n = this.emitExpr(e.length);
         const arr = B.tmp();
@@ -5201,7 +5202,7 @@ class LlEmitter {
       case "arrayGet": {
         const arr = this.emitExpr(e.arr);
         const idx = this.emitExpr(e.index);
-        if (e.arr.type.kind !== "array") throw new Error("llvm emitter bug: arrayGet on non-array");
+        if (e.arr.type.kind !== "array") throw new InternalCompilerError("llvm emitter bug: arrayGet on non-array");
         // Ref-element reads return +1 (the runtime retains); own registers
         // the owned temp in the frame like any other.
         const acc = elemAccess(e.arr.type.elem);
@@ -5262,7 +5263,7 @@ class LlEmitter {
         // refcounted values moves in; the struct is fresh, so there is
         // never an old value to release. OVERFLOW entries insert into the
         // shape's overflow map in the same interleaved order.
-        if (e.type.kind !== "record") throw new Error("llvm emitter bug: recordLit of non-record type");
+        if (e.type.kind !== "record") throw new InternalCompilerError("llvm emitter bug: recordLit of non-record type");
         const shapeId = e.type.shapeId;
         const rec = B.tmp();
         B.line(`${rec} = call ptr @${mangleRecordNew(shapeId)}()`);
@@ -5295,7 +5296,7 @@ class LlEmitter {
         return out;
       }
       case "recordClone": {
-        if (e.type.kind !== "record") throw new Error("llvm emitter bug: recordClone of non-record type");
+        if (e.type.kind !== "record") throw new InternalCompilerError("llvm emitter bug: recordClone of non-record type");
         this.recordCloneShapes.add(e.type.shapeId);
         const source = this.emitExpr(e.source);
         const rec = B.tmp();
@@ -5360,7 +5361,7 @@ class LlEmitter {
         // statement's frame as usual.
         const u = this.emitExpr(e.value);
         const arm = e.type;
-        if (isUnitType(arm)) throw new Error(`llvm emitter bug: unionNarrow to unit arm ${arm.kind}`);
+        if (isUnitType(arm)) throw new InternalCompilerError(`llvm emitter bug: unionNarrow to unit arm ${arm.kind}`);
         const v = this.unionExtract(u.name, arm);
         return this.own({ name: v, type: arm });
       }
@@ -5370,7 +5371,7 @@ class LlEmitter {
         // Ref-counted results come out retained (+1), owned by this frame.
         const u = this.emitExpr(e.value);
         const def = this.unionsById.get(e.unionId);
-        if (!def) throw new Error(`llvm emitter bug: unionDisc of unknown union ${e.unionId}`);
+        if (!def) throw new InternalCompilerError(`llvm emitter bug: unionDisc of unknown union ${e.unionId}`);
         const ty = this.llType(e.type);
         const slot = B.slot();
         B.entryAllocas.push(`${slot} = alloca ${ty}`);
@@ -5412,7 +5413,7 @@ class LlEmitter {
         const u = this.emitExpr(e.value);
         const k = this.emitExpr(e.key);
         const def = this.unionsById.get(e.unionId);
-        if (!def) throw new Error(`llvm emitter bug: unionKeyGet of unknown union ${e.unionId}`);
+        if (!def) throw new InternalCompilerError(`llvm emitter bug: unionKeyGet of unknown union ${e.unionId}`);
         const resultDef = e.type.kind === "union" ? this.unionsById.get(e.type.unionId) : undefined;
         const literal = e.key.kind === "strLit" ? e.key.value : null;
         const ty = this.llType(e.type);
@@ -5436,7 +5437,7 @@ class LlEmitter {
             }
             const tag = resultDef?.arms.findIndex((a) => a.kind === "undefinedT") ?? -1;
             if (tag < 0 || e.type.kind !== "union") {
-              throw new Error("llvm emitter bug: unionKeyGet unit arm without an undefined result arm");
+              throw new InternalCompilerError("llvm emitter bug: unionKeyGet unit arm without an undefined result arm");
             }
             B.line(`store ptr ${this.unitInstanceRef(e.type.unionId, tag)}, ptr ${slot}`);
             B.br(join);
@@ -5460,7 +5461,7 @@ class LlEmitter {
             }
             const tag = resultDef?.arms.findIndex((a) => typeEquals(a, arm.elem)) ?? -1;
             if (tag < 0 || e.type.kind !== "union" || isUnitType(arm.elem)) {
-              throw new Error(`llvm emitter bug: unionKeyGet element ${arm.elem.kind} outside the join`);
+              throw new InternalCompilerError(`llvm emitter bug: unionKeyGet element ${arm.elem.kind} outside the join`);
             }
             // The element read is already owned (+1) — ownership MOVES
             // into the union box, no extra retain.
@@ -5482,7 +5483,7 @@ class LlEmitter {
             }
             const tag = resultDef?.arms.findIndex((a) => typeEquals(a, ft)) ?? -1;
             if (tag < 0 || e.type.kind !== "union" || isUnitType(ft)) {
-              throw new Error(`llvm emitter bug: unionKeyGet arm answer ${ft.kind} outside the join`);
+              throw new InternalCompilerError(`llvm emitter bug: unionKeyGet arm answer ${ft.kind} outside the join`);
             }
             const wrapped =
               ft.kind === "f64" || ft.kind === "bool"
@@ -5517,7 +5518,7 @@ class LlEmitter {
         const l = this.emitExpr(e.left);
         const r = this.emitExpr(e.right);
         const def = this.unionsById.get(e.unionId);
-        if (!def) throw new Error(`llvm emitter bug: equality of unknown union ${e.unionId}`);
+        if (!def) throw new InternalCompilerError(`llvm emitter bug: equality of unknown union ${e.unionId}`);
         const slot = B.slot();
         B.entryAllocas.push(`${slot} = alloca i1`);
         const join = B.newLabel("ue.j");
@@ -5597,7 +5598,7 @@ class LlEmitter {
         // `u || d` narrowed to the single non-unit arm: nullish's dance
         // with the union TRUTHY switch as the test — truthy extracts the
         // arm (+1 for ref kinds), falsy releases and runs the default.
-        if (e.left.type.kind !== "union") throw new Error("llvm emitter bug: orDefault left is not a union");
+        if (e.left.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: orDefault left is not a union");
         const l = this.emitExpr(e.left);
         this.moveTemp(l);
         const ty = this.llType(e.type);
@@ -5705,11 +5706,11 @@ class LlEmitter {
           B.line(`${t} = load ptr, ptr ${slot}`);
           return this.own({ name: t, type: e.type });
         }
-        if (e.left.type.kind !== "union") throw new Error("llvm emitter bug: nullish left is not a union");
+        if (e.left.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: nullish left is not a union");
         const def = this.unionsById.get(e.left.type.unionId);
-        if (!def) throw new Error(`llvm emitter bug: nullish of unknown union ${e.left.type.unionId}`);
+        if (!def) throw new InternalCompilerError(`llvm emitter bug: nullish of unknown union ${e.left.type.unionId}`);
         const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
-        if (unitTags.length === 0) throw new Error("llvm emitter bug: nullish union lacks unit arms");
+        if (unitTags.length === 0) throw new InternalCompilerError("llvm emitter bug: nullish union lacks unit arms");
         const l = this.emitExpr(e.left);
         this.moveTemp(l);
         const ty = this.llType(e.type);
@@ -5780,7 +5781,7 @@ class LlEmitter {
             B.startBlock(lj);
             return { name: "", type: e.type };
           }
-          if (e.type.kind !== "dyn") throw new Error("llvm emitter bug: dyn optChain result kind");
+          if (e.type.kind !== "dyn") throw new InternalCompilerError("llvm emitter bug: dyn optChain result kind");
           const slot = B.slot();
           B.entryAllocas.push(`${slot} = alloca ptr`);
           const lu = B.newLabel("ocd.u");
@@ -5838,7 +5839,7 @@ class LlEmitter {
             B.startBlock(lj);
             return { name: "", type: e.type };
           }
-          if (e.type.kind !== "jsval") throw new Error("llvm emitter bug: jsval optChain result kind");
+          if (e.type.kind !== "jsval") throw new InternalCompilerError("llvm emitter bug: jsval optChain result kind");
           const slot = B.slot();
           B.entryAllocas.push(`${slot} = alloca ptr`);
           const lu = B.newLabel("ocj.u");
@@ -5866,10 +5867,10 @@ class LlEmitter {
         }
         if (e.receiver.type.kind !== "union") throw new LlvmUnsupportedError(`optChain:${e.receiver.type.kind}`, e.loc);
         const def = this.unionsById.get(e.receiver.type.unionId);
-        if (!def) throw new Error(`llvm emitter bug: optChain of unknown union ${e.receiver.type.unionId}`);
+        if (!def) throw new InternalCompilerError(`llvm emitter bug: optChain of unknown union ${e.receiver.type.unionId}`);
         const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
         const narrowIdx = def.arms.findIndex((a) => !isUnitType(a));
-        if (unitTags.length === 0 || narrowIdx < 0) throw new Error("llvm emitter bug: optChain union arms");
+        if (unitTags.length === 0 || narrowIdx < 0) throw new InternalCompilerError("llvm emitter bug: optChain union arms");
         const narrowed = def.arms[narrowIdx]!;
         const r = this.emitExpr(e.receiver);
         const bind = B.slot();
@@ -5927,7 +5928,7 @@ class LlEmitter {
         }
         if (e.type.kind !== "union") throw new LlvmUnsupportedError(`optChainResult:${e.type.kind}`, e.loc);
         const undefTag = this.undefinedArmTag(e.type);
-        if (undefTag < 0) throw new Error("llvm emitter bug: optChain result lacks its undefined arm");
+        if (undefTag < 0) throw new InternalCompilerError("llvm emitter bug: optChain result lacks its undefined arm");
         const ty = this.llType(e.type);
         const slot = B.slot();
         B.entryAllocas.push(`${slot} = alloca ${ty}`);
@@ -5951,7 +5952,7 @@ class LlEmitter {
       }
       case "chainRecv": {
         const bound = this.chainSlots.get(e.id);
-        if (!bound) throw new Error(`llvm emitter bug: chainRecv "${e.id}" outside its chain`);
+        if (!bound) throw new InternalCompilerError(`llvm emitter bug: chainRecv "${e.id}" outside its chain`);
         const v = B.tmp();
         B.line(`${v} = load ${this.llType(bound.type)}, ptr ${bound.name}`);
         if (!isRefCounted(e.type)) return { name: v, type: e.type };
@@ -5959,7 +5960,7 @@ class LlEmitter {
       }
       case "closure": {
         const target = this.fnByName.get(e.fnName);
-        if (!target) throw new Error(`llvm emitter bug: closure over unknown function ${e.fnName}`);
+        if (!target) throw new InternalCompilerError(`llvm emitter bug: closure over unknown function ${e.fnName}`);
         if (target.captures === undefined) {
           // Declared function as a value: the interned immortal closure —
           // every mention yields the same pointer, so `f === f` is true.
@@ -5990,7 +5991,7 @@ class LlEmitter {
         // Calling through a closure value: load the fn pointer, pass the
         // closure itself first (the callValue ABI), then the declared
         // params — callees own their refcounted params.
-        if (e.callee.type.kind !== "func") throw new Error("llvm emitter bug: callValue on non-func");
+        if (e.callee.type.kind !== "func") throw new InternalCompilerError("llvm emitter bug: callValue on non-func");
         const ft = e.callee.type;
         if (e.args.length !== ft.params.length) throw new LlvmUnsupportedError("callValue:arity", e.loc);
         const callee = this.emitExpr(e.callee);
@@ -6022,8 +6023,8 @@ class LlEmitter {
         return this.own({ name: this.retainValue("%sc_env", e.type), type: e.type });
       case "call": {
         const callee = this.fnByName.get(e.callee);
-        if (!callee) throw new Error(`llvm emitter bug: unknown callee ${e.callee}`);
-        if (callee.captures !== undefined) throw new Error(`llvm emitter bug: direct call to lifted function ${e.callee}`);
+        if (!callee) throw new InternalCompilerError(`llvm emitter bug: unknown callee ${e.callee}`);
+        if (callee.captures !== undefined) throw new InternalCompilerError(`llvm emitter bug: direct call to lifted function ${e.callee}`);
         const args = e.args.map((a) => this.emitExpr(a));
         for (const a of args) this.moveTemp(a); // callees own their params
         const argList = args
@@ -6153,7 +6154,7 @@ class LlEmitter {
           return { name: value, type: e.type };
         }
         const entry = this.ffiByName.get(e.import);
-        if (!entry) throw new Error(`llvm emitter bug: unknown FFI import ${e.import}`);
+        if (!entry) throw new InternalCompilerError(`llvm emitter bug: unknown FFI import ${e.import}`);
         const args = e.args.map((arg) => this.emitExpr(arg));
         const sourceArgs = new Map<number, LlValue>();
         const callbackArgs = new Map<string, LlValue>();
@@ -6234,7 +6235,7 @@ class LlEmitter {
           }
           if (isFfiContextParam(param)) {
             const callback = callbackArgs.get(param.context);
-            if (!callback) throw new Error(`llvm emitter bug: FFI context '${param.context}' has no callback arg`);
+            if (!callback) throw new InternalCompilerError(`llvm emitter bug: FFI context '${param.context}' has no callback arg`);
             nativeParamTypes.push("ptr");
             nativeArgs.push(`ptr ${callback.name}`);
             return;
@@ -6374,7 +6375,7 @@ class LlEmitter {
         // A throwing constructor unwinds like any call; the half-built
         // object is in this frame and releases with it.
         const ctor = this.fnByName.get(`%${e.className}.constructor`);
-        if (!ctor) throw new Error(`llvm emitter bug: new ${e.className} without a constructor`);
+        if (!ctor) throw new InternalCompilerError(`llvm emitter bug: new ${e.className} without a constructor`);
         const o = B.tmp();
         B.line(`${o} = call ptr @${mangleClassNew(e.className)}()`);
         const out = this.own({ name: o, type: e.type });
@@ -6440,7 +6441,7 @@ class LlEmitter {
         const slotIdx = meta.root.slots.findIndex(
           (sl) => sl.method === e.method && sl.declarer.pre <= meta.pre && meta.pre <= sl.declarer.post,
         );
-        if (slotIdx < 0) throw new Error(`llvm emitter bug: no vtable slot for ${e.className}.${e.method}`);
+        if (slotIdx < 0) throw new InternalCompilerError(`llvm emitter bug: no vtable slot for ${e.className}.${e.method}`);
         const slot = meta.root.slots[slotIdx]!;
         const args = e.args.map((a) => this.emitExpr(a));
         for (const a of args) this.moveTemp(a); // callees own their params
@@ -6470,7 +6471,7 @@ class LlEmitter {
       case "instanceOf": {
         // O(1) preorder-interval test against the vtable the object
         // carries; the target's interval is a compile-time constant.
-        if (e.value.type.kind !== "object") throw new Error("llvm emitter bug: instanceOf on a non-object");
+        if (e.value.type.kind !== "object") throw new InternalCompilerError("llvm emitter bug: instanceOf on a non-object");
         const v = this.emitExpr(e.value);
         const target = this.classMetaOf(e.className);
         const pre = this.loadVtPre(v.name, e.value.type.className);
@@ -6486,7 +6487,7 @@ class LlEmitter {
         // The interval check with the target loaded from the class object
         // (same numbering the vtables carry). Frontend guarantees both
         // sides are hierarchy members, so the operand has a vt word.
-        if (e.value.type.kind !== "object") throw new Error("llvm emitter bug: instanceOfValue on a non-object");
+        if (e.value.type.kind !== "object") throw new InternalCompilerError("llvm emitter bug: instanceOfValue on a non-object");
         const v = this.emitExpr(e.value);
         const target = this.emitExpr(e.classValue);
         const pre = this.loadVtPre(v.name, e.value.type.className);
@@ -6610,10 +6611,10 @@ class LlEmitter {
         // Construction through a class VALUE: call the class object's
         // construct thunk. Every value legally in the slot shares the
         // static class's constructor ABI (the frontend's flow rule).
-        if (e.callee.type.kind !== "classval") throw new Error("llvm emitter bug: newValue on non-classval callee");
+        if (e.callee.type.kind !== "classval") throw new InternalCompilerError("llvm emitter bug: newValue on non-classval callee");
         const cls = e.callee.type.className;
         const ctor = this.fnByName.get(`%${cls}.constructor`);
-        if (!ctor) throw new Error(`llvm emitter bug: newValue on ${cls} without a constructor`);
+        if (!ctor) throw new InternalCompilerError(`llvm emitter bug: newValue on ${cls} without a constructor`);
         const callee = this.emitExpr(e.callee);
         const args = e.args.map((a) => this.emitExpr(a));
         for (const a of args) this.moveTemp(a); // the constructor owns its params
@@ -6697,7 +6698,7 @@ class LlEmitter {
         // back +1. Only the f64 (length) form can throw (Node's "Invalid
         // typed array length" RangeError) — pending check after the temp
         // joins its frame.
-        if (e.type.kind !== "bytes") throw new Error("llvm emitter bug: bytesNew of non-bytes type");
+        if (e.type.kind !== "bytes") throw new InternalCompilerError("llvm emitter bug: bytesNew of non-bytes type");
         const kind = BYTES_ELEM_NUM[e.type.elem];
         if (!e.source) {
           this.declare(`declare ptr @scr_bytes_new(i32, double)`);
@@ -6724,7 +6725,7 @@ class LlEmitter {
           B.line(`${t} = call ptr @scr_bytes_from_arr(i32 ${kind}, ptr ${src.name})`);
           return this.own({ name: t, type: e.type });
         }
-        throw new Error(`llvm emitter bug: bytesNew source of kind ${e.source.type.kind}`);
+        throw new InternalCompilerError(`llvm emitter bug: bytesNew source of kind ${e.source.type.kind}`);
       }
       case "bytesIntrinsic":
         return this.emitBytesIntrinsic(e);
@@ -6735,8 +6736,8 @@ class LlEmitter {
         // .throw payload or the GENRET sentinel pending, hence the check.
         // The result is the .next(v) argument, moved out of the IN slot.
         const gen = this.currentGenerator;
-        if (!gen) throw new Error("llvm emitter bug: yieldExpr outside a generator body");
-        if (e.value === null) throw new Error("llvm emitter bug: yieldExpr with no operand (frontend fills undefined)");
+        if (!gen) throw new InternalCompilerError("llvm emitter bug: yieldExpr outside a generator body");
+        if (e.value === null) throw new InternalCompilerError("llvm emitter bug: yieldExpr with no operand (frontend fills undefined)");
         const v = this.emitExpr(e.value);
         const yt = e.value.type;
         if (yt.kind === "f64" || yt.kind === "date") {
@@ -6805,8 +6806,8 @@ class LlEmitter {
         // into the fiber, propagate a body exception (pending check), and
         // build the IteratorResult record through the interned helper.
         const genT = e.gen.type;
-        if (genT.kind !== "generator") throw new Error("llvm emitter bug: genResume on a non-generator");
-        if (e.type.kind !== "record") throw new Error("llvm emitter bug: genResume result is not a record");
+        if (genT.kind !== "generator") throw new InternalCompilerError("llvm emitter bug: genResume on a non-generator");
+        if (e.type.kind !== "record") throw new InternalCompilerError("llvm emitter bug: genResume result is not a record");
         const g = this.emitExpr(e.gen); // borrowed for the calls below
         const sendArg = (store: (aName: string, t: IrType) => void): void => {
           const a = this.emitExpr(e.arg!);
@@ -6873,7 +6874,7 @@ class LlEmitter {
           // statement's exact kind dispatch), then resume — the runtime
           // moves it into the fiber, or leaves it pending (non-suspended
           // generators: the .throw call itself throws at the check below).
-          if (e.arg === null) throw new Error("llvm emitter bug: genResume throw with no payload");
+          if (e.arg === null) throw new InternalCompilerError("llvm emitter bug: genResume throw with no payload");
           const a = this.emitExpr(e.arg);
           if (isRefCounted(e.arg.type)) this.moveTemp(a); // the cell takes ownership
           this.emitThrowValue({ name: a.name, type: e.arg.type });
@@ -6927,11 +6928,11 @@ class LlEmitter {
         // yields itself. The union temp is borrowed; the value-carrying
         // result parks in a slot, joins the frame at the load, and the
         // pending check runs after the join (emit-exprs.ts's shape).
-        if (e.value.type.kind !== "union") throw new Error("llvm emitter bug: awaitUnion of a non-union");
+        if (e.value.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: awaitUnion of a non-union");
         const def = this.unionsById.get(e.value.type.unionId);
         const promiseArm = def?.arms[e.promiseTag];
         if (!def || promiseArm?.kind !== "promise") {
-          throw new Error("llvm emitter bug: awaitUnion arm is not a promise");
+          throw new InternalCompilerError("llvm emitter bug: awaitUnion arm is not a promise");
         }
         const inner = promiseArm.inner;
         const u = this.emitExpr(e.value);
@@ -6961,14 +6962,14 @@ class LlEmitter {
           return { name: "", type: e.type };
         }
         if (e.type.kind !== "union") {
-          throw new Error("llvm emitter bug: awaitUnion result is neither void nor a union");
+          throw new InternalCompilerError("llvm emitter bug: awaitUnion result is neither void nor a union");
         }
         const resUnionId = e.type.unionId;
         const resDef = this.unionsById.get(resUnionId);
-        if (!resDef) throw new Error("llvm emitter bug: awaitUnion result union unknown");
+        if (!resDef) throw new InternalCompilerError("llvm emitter bug: awaitUnion result union unknown");
         const resTagOf = (arm: IrType): number => {
           const t = resDef.arms.findIndex((a) => typeEquals(a, arm));
-          if (t < 0) throw new Error("llvm emitter bug: awaitUnion result arm missing");
+          if (t < 0) throw new InternalCompilerError("llvm emitter bug: awaitUnion result arm missing");
           return t;
         };
         const innerTag = resTagOf(inner);
@@ -7043,7 +7044,7 @@ class LlEmitter {
         // (its throw rejects — handled inside the runtime helper, so no
         // pending check here). Executor/resolve temps are frame-owned;
         // the run call takes ownership of the resolve/reject closures.
-        if (e.type.kind !== "promise") throw new Error("llvm emitter bug: newPromise type");
+        if (e.type.kind !== "promise") throw new InternalCompilerError("llvm emitter bug: newPromise type");
         const inner = e.type.inner;
         this.declare(`declare ptr @scr_promise_new()`);
         const p = B.tmp();
@@ -7091,11 +7092,11 @@ class LlEmitter {
         // its runtime resolve closure (typed per the inner kind), and the
         // reject closure, written into the fresh record. Closure +1s move
         // into the record's fields; never throws.
-        if (e.type.kind !== "record") throw new Error("llvm emitter bug: promiseWithResolvers type");
+        if (e.type.kind !== "record") throw new InternalCompilerError("llvm emitter bug: promiseWithResolvers type");
         const shape = this.recordsById.get(e.type.shapeId);
         const promT = shape?.fields.find((f) => f.name === "promise")?.type;
         if (!shape || promT?.kind !== "promise") {
-          throw new Error("llvm emitter bug: promiseWithResolvers record shape");
+          throw new InternalCompilerError("llvm emitter bug: promiseWithResolvers record shape");
         }
         const inner = promT.inner;
         this.declare(`declare ptr @scr_promise_new()`);
@@ -7133,7 +7134,7 @@ class LlEmitter {
           const p = this.emitExpr(e.args[0]!);
           if (this.wasi) {
             const coro = this.currentWasiCoro;
-            if (coro === null) throw new Error("llvm emitter bug: module await outside wasm coroutine");
+            if (coro === null) throw new InternalCompilerError("llvm emitter bug: module await outside wasm coroutine");
             this.declare(`declare zeroext i1 @scr_wasi_module_await_prepare(ptr, ptr)`);
             const needsSuspend = B.tmp();
             const suspend = B.newLabel("ma.suspend");
@@ -7158,10 +7159,10 @@ class LlEmitter {
           // values array filled per INPUT index as entries fulfill, plus
           // one subscription per entry. Entry and values arrays both stay
           // frame-owned; the combinator BORROWS them.
-          if (e.type.kind !== "promise") throw new Error("llvm emitter bug: promise.all type");
+          if (e.type.kind !== "promise") throw new InternalCompilerError("llvm emitter bug: promise.all type");
           const entries = e.args[0]!;
           if (entries.type.kind !== "array" || entries.type.elem.kind !== "promise") {
-            throw new Error("llvm emitter bug: promise.all argument");
+            throw new InternalCompilerError("llvm emitter bug: promise.all argument");
           }
           const ps = this.emitExpr(entries);
           this.declare(`declare ptr @scr_promise_all(ptr, ptr, ptr)`);
@@ -7170,7 +7171,7 @@ class LlEmitter {
             B.line(`${t} = call ptr @scr_promise_all(ptr ${ps.name}, ptr null, ptr null)`);
             return this.own({ name: t, type: e.type });
           }
-          if (e.type.inner.kind !== "array") throw new Error("llvm emitter bug: promise.all result");
+          if (e.type.inner.kind !== "array") throw new InternalCompilerError("llvm emitter bug: promise.all result");
           const elem = e.type.inner.elem;
           const store =
             elem.kind === "f64" ? "scr_promise_all_store_f64"
@@ -7198,10 +7199,10 @@ class LlEmitter {
           // emitThrowValue's dyn arm), and reject_pending moves the cell
           // into the promise (consumed immediately — no pending check runs
           // in between).
-          if (e.type.kind !== "promise") throw new Error("llvm emitter bug: promise.reject type");
+          if (e.type.kind !== "promise") throw new InternalCompilerError("llvm emitter bug: promise.reject type");
           const reasonT = e.args[0]!.type;
           if (reasonT.kind !== "object" && reasonT.kind !== "dyn") {
-            throw new Error("llvm emitter bug: promise.reject reason");
+            throw new InternalCompilerError("llvm emitter bug: promise.reject reason");
           }
           this.declare(`declare ptr @scr_promise_new()`);
           this.declare(`declare void @scr_promise_reject_pending(ptr)`);
@@ -7218,7 +7219,7 @@ class LlEmitter {
           // A fresh promise fulfilled immediately: void/f64/bool by
           // value, strings and refs MOVE in — the async-return
           // trampoline's fulfill exactly. No waiters exist yet.
-          if (e.type.kind !== "promise") throw new Error("llvm emitter bug: promise.resolve type");
+          if (e.type.kind !== "promise") throw new InternalCompilerError("llvm emitter bug: promise.resolve type");
           this.declare(`declare ptr @scr_promise_new()`);
           const p = B.tmp();
           B.line(`${p} = call ptr @scr_promise_new()`);
@@ -7255,14 +7256,14 @@ class LlEmitter {
           // entries settle it immediately (first add wins), pending ones
           // park a callback waiter. Entry temps stay frame-owned
           // (race_add retains what it keeps).
-          if (e.type.kind !== "promise") throw new Error("llvm emitter bug: promise.race type");
+          if (e.type.kind !== "promise") throw new InternalCompilerError("llvm emitter bug: promise.race type");
           this.declare(`declare ptr @scr_promise_new()`);
           this.declare(`declare void @scr_promise_race_add(ptr, ptr, ptr)`);
           const result = B.tmp();
           B.line(`${result} = call ptr @scr_promise_new()`);
           const out = this.own({ name: result, type: e.type });
           for (const entry of e.args) {
-            if (entry.type.kind !== "promise") throw new Error("llvm emitter bug: promise.race entry");
+            if (entry.type.kind !== "promise") throw new InternalCompilerError("llvm emitter bug: promise.race entry");
             const p = this.emitExpr(entry);
             const adapter = this.raceAdapterFor(entry.type.inner, e.type.inner);
             B.line(`call void @scr_promise_race_add(ptr ${result}, ptr ${p.name}, ptr @${adapter})`);
@@ -7328,7 +7329,7 @@ class LlEmitter {
             return this.own({ name: boxed, type: e.type });
           }
           if (!this.streamTypedRefEligible(v.type)) {
-            throw new Error(`llvm emitter bug: live dyn ref of ${typeKey(v.type)}`);
+            throw new InternalCompilerError(`llvm emitter bug: live dyn ref of ${typeKey(v.type)}`);
           }
           const key = typeKey(v.type);
           let adapter = this.liveDynRefAdapters.get(key);
@@ -7822,7 +7823,7 @@ class LlEmitter {
         // Exhaustive: phase 6 claimed the last IR expression kinds.
         const _exhaustive: never = e;
         void _exhaustive;
-        throw new Error("unreachable");
+        throw new InternalCompilerError("unreachable");
       }
     }
   }
@@ -7870,7 +7871,7 @@ class LlEmitter {
         // bridge). from_promise takes ownership of a +1 — retain past
         // the borrowed frame temp. The C emitter's rule, mirrored.
         const tag = islandPromisePayloadTag(e.value.type.inner);
-        if (!tag) throw new Error("llvm emitter bug: jsMarshal of a promise outside the bridge payload domain");
+        if (!tag) throw new InternalCompilerError("llvm emitter bug: jsMarshal of a promise outside the bridge payload domain");
         const tagN = { void: 0, f64: 1, bool: 2, string: 3, jsval: 4, jsvalArr: 5 }[tag];
         this.declare(`declare ptr @scr_promise_retain(ptr)`);
         this.declare(`declare ptr @scr_jsval_from_promise(ptr, i32)`);
@@ -8163,7 +8164,7 @@ class LlEmitter {
         return this.own({ name: t, type: e.type });
       }
       default:
-        throw new Error(`llvm emitter bug: jsOp ${e.op satisfies never}`);
+        throw new InternalCompilerError(`llvm emitter bug: jsOp ${e.op satisfies never}`);
     }
   }
 
@@ -8388,7 +8389,7 @@ class LlEmitter {
    * reverse-bridges it. Converted params are CONSUMED by the closure ABI. */
   private islandTypedAdapter(fn: IrType & { kind: "func" }): string {
     const ret = islandCallbackRet(fn.ret, (id) => this.recordsById.get(id), (id) => this.unionsById.get(id));
-    if (!ret) throw new Error("llvm emitter bug: typed island adapter with unsupported return");
+    if (!ret) throw new InternalCompilerError("llvm emitter bug: typed island adapter with unsupported return");
     const key = `ita:${fn.params.map((p) => typeKey(p)).join(",")}=>${ret.async ? "P:" : ""}${ret.tag}`;
     let sym = this.resolveThunks.get(key);
     if (sym) return sym;
@@ -8676,12 +8677,12 @@ class LlEmitter {
     if (sym) return sym;
     sym = `sc_race_${this.resolveThunks.size}`;
     this.resolveThunks.set(key, sym);
-    if (to.kind !== "union") throw new Error("llvm emitter bug: race adapter to a non-union");
+    if (to.kind !== "union") throw new InternalCompilerError("llvm emitter bug: race adapter to a non-union");
     const toDef = this.unionsById.get(to.unionId);
-    if (!toDef) throw new Error("llvm emitter bug: race adapter to an unknown union");
+    if (!toDef) throw new InternalCompilerError("llvm emitter bug: race adapter to an unknown union");
     const tagOf = (t: IrType): number => {
       const tag = toDef.arms.findIndex((a) => typeEquals(a, t));
-      if (tag < 0) throw new Error("llvm emitter bug: race adapter arm missing (frontend must fence)");
+      if (tag < 0) throw new InternalCompilerError("llvm emitter bug: race adapter arm missing (frontend must fence)");
       return tag;
     };
     const rv = vAdapters(this, to);
@@ -8728,7 +8729,7 @@ class LlEmitter {
     // Sub-union re-tag: switch over the entry's arms, rebuild under the
     // result's tags (payloads retained through each arm's own adapters).
     const fromDef = this.unionsById.get(from.unionId);
-    if (!fromDef) throw new Error("llvm emitter bug: race adapter from an unknown union");
+    if (!fromDef) throw new InternalCompilerError("llvm emitter bug: race adapter from an unknown union");
     this.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
     this.declare(`declare void @scr_union_release(ptr)`);
     d.push(
@@ -8804,12 +8805,12 @@ class LlEmitter {
     this.resolveThunks.set(key, sym);
     const shape = this.recordsById.get(recT.shapeId);
     const valueT = shape?.fields.find((f) => f.name === "value")?.type;
-    if (!shape || !valueT) throw new Error("llvm emitter bug: genResume record lacks its value field");
+    if (!shape || !valueT) throw new InternalCompilerError("llvm emitter bug: genResume record lacks its value field");
     if (valueT.kind === "dyn") {
       // The any/unknown channel: OUT holds a dyn (or nothing — undefined).
       const doneIdxD = shape.fields.findIndex((f) => f.name === "done");
       const valueIdxD = shape.fields.findIndex((f) => f.name === "value");
-      if (doneIdxD < 0 || valueIdxD < 0) throw new Error("llvm emitter bug: genResume record shape");
+      if (doneIdxD < 0 || valueIdxD < 0) throw new InternalCompilerError("llvm emitter bug: genResume record shape");
       this.declare(`declare zeroext i1 @scr_gen_done(ptr)`);
       this.declare(`declare zeroext i1 @scr_gen_out_has(ptr)`);
       this.declare(`declare ptr @scr_gen_take_out_ref(ptr)`);
@@ -8844,17 +8845,17 @@ class LlEmitter {
     }
     if (valueT.kind !== "union") throw new LlvmUnsupportedError(`genResume:${valueT.kind}`);
     const def = this.unionsById.get(valueT.unionId);
-    if (!def) throw new Error("llvm emitter bug: genResume value union unknown");
+    if (!def) throw new InternalCompilerError("llvm emitter bug: genResume value union unknown");
     const tagOf = (t: IrType): number => {
       const tag = def.arms.findIndex((a) => typeEquals(a, t));
-      if (tag < 0) throw new Error("llvm emitter bug: genResume value union lacks an arm");
+      if (tag < 0) throw new InternalCompilerError("llvm emitter bug: genResume value union lacks an arm");
       return tag;
     };
     const undefTag = def.arms.findIndex((a) => a.kind === "undefinedT");
-    if (undefTag < 0) throw new Error("llvm emitter bug: genResume value union lacks undefined");
+    if (undefTag < 0) throw new InternalCompilerError("llvm emitter bug: genResume value union lacks undefined");
     const doneIdx = shape.fields.findIndex((f) => f.name === "done");
     const valueIdx = shape.fields.findIndex((f) => f.name === "value");
-    if (doneIdx < 0 || valueIdx < 0) throw new Error("llvm emitter bug: genResume record shape");
+    if (doneIdx < 0 || valueIdx < 0) throw new InternalCompilerError("llvm emitter bug: genResume record shape");
     this.declare(`declare zeroext i1 @scr_gen_done(ptr)`);
     this.declare(`declare zeroext i1 @scr_gen_out_has(ptr)`);
     const d: string[] = [
@@ -8918,7 +8919,7 @@ class LlEmitter {
         ];
       }
       const srcDef = this.unionsById.get(srcT.unionId);
-      if (!srcDef) throw new Error("llvm emitter bug: genResume channel union unknown");
+      if (!srcDef) throw new InternalCompilerError("llvm emitter bug: genResume channel union unknown");
       this.declare(`declare void @scr_union_release(ptr)`);
       const lines: string[] = [
         `  %${px}u0 = call ptr @scr_gen_take_out_ref(ptr %g)`,
@@ -9001,7 +9002,7 @@ class LlEmitter {
    * (tags are program data) and calls the listener, which owns the union
    * param per the universal convention. */
   private childExitThunkFor(param: IrType): string {
-    if (param.kind !== "union") throw new Error("llvm emitter bug: exit listener param not a union");
+    if (param.kind !== "union") throw new InternalCompilerError("llvm emitter bug: exit listener param not a union");
     const key = `cx:${param.unionId}`;
     let sym = this.resolveThunks.get(key);
     if (sym) return sym;
@@ -9010,7 +9011,7 @@ class LlEmitter {
     const def = this.unionsById.get(param.unionId);
     const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
     const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-    if (f64Tag < 0 || nullTag < 0) throw new Error("llvm emitter bug: exit listener union lacks its arms");
+    if (f64Tag < 0 || nullTag < 0) throw new InternalCompilerError("llvm emitter bug: exit listener union lacks its arms");
     this.declare(`declare ptr @scr_union_new_f64(i32, double)`);
     this.resolveThunkDefs.push(
       `define internal void @${sym}(ptr %cb, i1 zeroext %has, double %code, ptr %sig) ${FN_ATTRS} { ; child exit → ${param.unionId}`,
@@ -9042,7 +9043,7 @@ class LlEmitter {
    * signal killed the child, the null arm otherwise). */
   private childExitThunkFor2(codeParam: IrType, sigParam: IrType): string {
     if (codeParam.kind !== "union" || sigParam.kind !== "union") {
-      throw new Error("llvm emitter bug: exit listener params not unions");
+      throw new InternalCompilerError("llvm emitter bug: exit listener params not unions");
     }
     const key = `cx2:${codeParam.unionId}+${sigParam.unionId}`;
     let sym = this.resolveThunks.get(key);
@@ -9056,7 +9057,7 @@ class LlEmitter {
     const strTag = sigDef ? sigDef.arms.findIndex((a) => a.kind === "string") : -1;
     const sigNullTag = sigDef ? sigDef.arms.findIndex((a) => a.kind === "nullT") : -1;
     if (f64Tag < 0 || codeNullTag < 0 || strTag < 0 || sigNullTag < 0) {
-      throw new Error("llvm emitter bug: exit listener unions lack their arms");
+      throw new InternalCompilerError("llvm emitter bug: exit listener unions lack their arms");
     }
     this.declare(`declare ptr @scr_union_new_f64(i32, double)`);
     this.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
@@ -9106,7 +9107,7 @@ class LlEmitter {
    * childDataThunkFor: wraps a retained chunk at the union's Buffer arm
    * and calls the listener, which owns the union param. */
   private childDataThunkFor(param: IrType): string {
-    if (param.kind !== "union") throw new Error("llvm emitter bug: stream data listener param not a union");
+    if (param.kind !== "union") throw new InternalCompilerError("llvm emitter bug: stream data listener param not a union");
     const key = `cd:${param.unionId}`;
     let sym = this.resolveThunks.get(key);
     if (sym) return sym;
@@ -9114,7 +9115,7 @@ class LlEmitter {
     this.resolveThunks.set(key, sym);
     const def = this.unionsById.get(param.unionId);
     const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes" && a.elem === "u8") : -1;
-    if (bytesTag < 0) throw new Error("llvm emitter bug: stream data listener union lacks its Buffer arm");
+    if (bytesTag < 0) throw new InternalCompilerError("llvm emitter bug: stream data listener union lacks its Buffer arm");
     this.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
     this.declare(`declare ptr @scr_bytes_retain_v(ptr)`);
     this.declare(`declare void @scr_bytes_release_v(ptr)`);
@@ -9260,7 +9261,7 @@ class LlEmitter {
    * one-param callback (declaring the `Error | undefined` slot) rides a
    * trampoline firing it with the undefined arm. */
   private closeBindThunkFor(cbUnion: IrType, retServer: boolean): string {
-    if (cbUnion.kind !== "union") throw new Error("llvm emitter bug: bound-close callback param not a union");
+    if (cbUnion.kind !== "union") throw new InternalCompilerError("llvm emitter bug: bound-close callback param not a union");
     const key = `ncb:${cbUnion.unionId}:${retServer ? "srv" : "void"}`;
     let sym = this.resolveThunks.get(key);
     if (sym) return sym;
@@ -9269,7 +9270,7 @@ class LlEmitter {
     const def = this.unionsById.get(cbUnion.unionId);
     const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
     const funcArm = funcTag >= 0 ? (def!.arms[funcTag] as IrType & { kind: "func" }) : null;
-    if (!funcArm) throw new Error("llvm emitter bug: bound-close callback union lacks its func arm");
+    if (!funcArm) throw new InternalCompilerError("llvm emitter bug: bound-close callback union lacks its func arm");
     const oneParam = funcArm.params.length === 1;
     this.declare(`declare ptr @scr_box_get_ref(ptr)`);
     this.declare(`declare void @scr_closure_release(ptr)`);
@@ -9279,10 +9280,10 @@ class LlEmitter {
     let trampoline: string | null = null;
     if (oneParam) {
       const errParam = funcArm.params[0]!;
-      if (errParam.kind !== "union") throw new Error("llvm emitter bug: bound-close callback's err param is not a union");
+      if (errParam.kind !== "union") throw new InternalCompilerError("llvm emitter bug: bound-close callback's err param is not a union");
       const errDef = this.unionsById.get(errParam.unionId);
       const undefTag = errDef ? errDef.arms.findIndex((a) => a.kind === "undefinedT") : -1;
-      if (undefTag < 0) throw new Error("llvm emitter bug: bound-close err union lacks its undefined arm");
+      if (undefTag < 0) throw new InternalCompilerError("llvm emitter bug: bound-close err union lacks its undefined arm");
       trampoline = `${sym}_cb`;
       this.resolveThunkDefs.push(
         `define internal void @${trampoline}(ptr %self) ${FN_ATTRS} { ; close cb: fire with no error`,
@@ -9357,7 +9358,7 @@ class LlEmitter {
    * and fires it with the undefined-arm callback argument, releasing the
    * chaining-return server when the signature answers one. */
   private closeOverrideWrapFor(cbUnion: IrType, retServer: boolean): string {
-    if (cbUnion.kind !== "union") throw new Error("llvm emitter bug: close-override callback param not a union");
+    if (cbUnion.kind !== "union") throw new InternalCompilerError("llvm emitter bug: close-override callback param not a union");
     const key = `ncw:${cbUnion.unionId}:${retServer ? "srv" : "void"}`;
     let sym = this.resolveThunks.get(key);
     if (sym) return sym;
@@ -9365,7 +9366,7 @@ class LlEmitter {
     this.resolveThunks.set(key, sym);
     const def = this.unionsById.get(cbUnion.unionId);
     const undefTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
-    if (undefTag < 0) throw new Error("llvm emitter bug: close-override callback union lacks its undefined arm");
+    if (undefTag < 0) throw new InternalCompilerError("llvm emitter bug: close-override callback union lacks its undefined arm");
     this.declare(`declare ptr @scr_box_get_ref(ptr)`);
     this.declare(`declare void @scr_closure_release(ptr)`);
     if (retServer) this.declare(`declare void @scr_net_server_release_v(ptr)`);
@@ -9406,7 +9407,7 @@ class LlEmitter {
     this.resolveThunks.set(key, sym);
     const p = cbT.params[0];
     if (cbT.params.length > 1 || (p && p.kind !== "bytes" && p.kind !== "string" && p.kind !== "dyn")) {
-      throw new Error("llvm emitter bug: stream data listener param shape (frontend must fence)");
+      throw new InternalCompilerError("llvm emitter bug: stream data listener param shape (frontend must fence)");
     }
     this.declare(`declare ptr @scr_box_get_ref(ptr)`);
     this.declare(`declare void @scr_closure_release(ptr)`);
@@ -9496,16 +9497,16 @@ class LlEmitter {
     const errT = doneT.params[0];
     let errTag = -1;
     if (errT !== undefined) {
-      if (errT.kind !== "union") throw new Error("llvm emitter bug: stream done err param not a union");
+      if (errT.kind !== "union") throw new InternalCompilerError("llvm emitter bug: stream done err param not a union");
       const def = this.unionsById.get(errT.unionId);
       errTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
-      if (errTag < 0) throw new Error("llvm emitter bug: stream done err union lacks its Error arm");
+      if (errTag < 0) throw new InternalCompilerError("llvm emitter bug: stream done err union lacks its Error arm");
     }
     const dataT = kind === "t" || kind === "l" ? doneT.params[1] : undefined;
     let bytesTag = -1;
     let strTag = -1;
     if (dataT !== undefined) {
-      if (dataT.kind !== "union") throw new Error("llvm emitter bug: stream done data param not a union");
+      if (dataT.kind !== "union") throw new InternalCompilerError("llvm emitter bug: stream done data param not a union");
       const def = this.unionsById.get(dataT.unionId);
       bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes") : -1;
       strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
@@ -9619,11 +9620,11 @@ class LlEmitter {
         `  store ptr %dn, ptr %slot`,
       );
     } else {
-      if (param.kind !== "union") throw new Error("llvm emitter bug: fs.rename error param not a union");
+      if (param.kind !== "union") throw new InternalCompilerError("llvm emitter bug: fs.rename error param not a union");
       const def = this.unionsById.get(param.unionId);
       const errTag = def ? def.arms.findIndex((a) => a.kind === "object" && a.className === "%Error") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-      if (errTag < 0 || nullTag < 0) throw new Error("llvm emitter bug: fs.rename error union lacks its arms");
+      if (errTag < 0 || nullTag < 0) throw new InternalCompilerError("llvm emitter bug: fs.rename error union lacks its arms");
       this.declare(`declare ptr @scr_error_retain(ptr)`);
       this.declare(`declare ptr @scr_error_retain_v(ptr)`);
       this.declare(`declare void @scr_error_release_v(ptr)`);
@@ -9661,7 +9662,7 @@ class LlEmitter {
    * (retaining each ref per the callee-owns convention) and materializes
    * the completion-callback closure only when declared. */
   private streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e", cbT: IrType): string {
-    if (cbT.kind !== "func") throw new Error("llvm emitter bug: stream option callback not a func");
+    if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: stream option callback not a func");
     const key = `scb:${kind}:${typeKey(cbT)}`;
     let sym = this.resolveThunks.get(key);
     if (sym) return sym;
@@ -9675,12 +9676,12 @@ class LlEmitter {
     const declared = cbT.params;
     const hasThis = declared[0] !== undefined && declared[0].kind === "object";
     if (declared.length === 0) {
-      throw new Error("llvm emitter bug: stream option callback with no params (frontend must fence)");
+      throw new InternalCompilerError("llvm emitter bug: stream option callback with no params (frontend must fence)");
     }
     const off = hasThis ? 1 : 0;
     const full = (kind === "r" ? 1 : kind === "w" || kind === "t" ? 3 : kind === "d" ? 2 : 1) + off;
     if (declared.length > full) {
-      throw new Error(`llvm emitter bug: stream '${kind}' callback declares ${declared.length} params (frontend must fence)`);
+      throw new InternalCompilerError(`llvm emitter bug: stream '${kind}' callback declares ${declared.length} params (frontend must fence)`);
     }
     const d: string[] = [
       `define internal void @${sym}(ptr %cb, ${runtimeParams.join(", ")}) ${FN_ATTRS} { ; stream '${kind}' option callback ${typeKey(cbT)}`,
@@ -9792,7 +9793,7 @@ class LlEmitter {
           );
           passed.push(`ptr %ddn${i}`);
         } else {
-          throw new Error(`llvm emitter bug: stream '${kind}' dyn callback param ${i} has no adapter`);
+          throw new InternalCompilerError(`llvm emitter bug: stream '${kind}' dyn callback param ${i} has no adapter`);
         }
         continue;
       }
@@ -9809,14 +9810,14 @@ class LlEmitter {
         // destroy's error argument: `Error | null` — wrap type-directedly.
         // The finished/pipeline callback ("e") may declare `Error | null |
         // undefined`; success prefers the undefined arm there.
-        if (p.kind !== "union") throw new Error("llvm emitter bug: stream destroy err param not a union");
+        if (p.kind !== "union") throw new InternalCompilerError("llvm emitter bug: stream destroy err param not a union");
         const def = this.unionsById.get(p.unionId);
         const errTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
         const undefTag = kind === "e" && def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
         const nullTag = def
           ? (undefTag >= 0 ? undefTag : def.arms.findIndex((a) => a.kind === "nullT"))
           : -1;
-        if (errTag < 0 || nullTag < 0) throw new Error("llvm emitter bug: stream destroy err union lacks its arms");
+        if (errTag < 0 || nullTag < 0) throw new InternalCompilerError("llvm emitter bug: stream destroy err union lacks its arms");
         this.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
         this.declare(`declare ptr @scr_error_retain_v(ptr)`);
         this.declare(`declare void @scr_error_release_v(ptr)`);
@@ -9838,12 +9839,12 @@ class LlEmitter {
         passed.push(`ptr %euv${i}`);
       } else if (isDonePos) {
         const doneKind = kind as "w" | "f" | "d" | "t" | "l"; // "e" has no done position
-        if (p.kind !== "func") throw new Error("llvm emitter bug: stream done callback not a func");
+        if (p.kind !== "func") throw new InternalCompilerError("llvm emitter bug: stream done callback not a func");
         const doneFn = this.streamDoneFnFor(doneKind, p);
         const clo = doneClosure(`@${doneFn}`, `dn${i}`);
         passed.push(`ptr ${clo}`);
       } else {
-        throw new Error(`llvm emitter bug: stream '${kind}' callback param ${i} has no adapter`);
+        throw new InternalCompilerError(`llvm emitter bug: stream '${kind}' callback param ${i} has no adapter`);
       }
     }
     d.push(
@@ -9960,7 +9961,7 @@ class LlEmitter {
     const call = (sym: string, sig: string, argText: string, retTy: string, owned: boolean): LlValue => {
       // sig reads "<ret> (<params>)" — respelled to LLVM's declare form.
       const m = /^(.+?) \((.*)\)$/.exec(sig);
-      if (!m) throw new Error(`llvm emitter bug: bad strIntrinsic sig ${sig}`);
+      if (!m) throw new InternalCompilerError(`llvm emitter bug: bad strIntrinsic sig ${sig}`);
       this.declare(`declare ${m[1]} @${sym}(${m[2]})`);
       const t = B.tmp();
       B.line(`${t} = call ${retTy} @${sym}(${argText})`);
@@ -10067,7 +10068,7 @@ class LlEmitter {
       default: {
         const _exhaustive: never = method;
         void _exhaustive;
-        throw new Error("unreachable");
+        throw new InternalCompilerError("unreachable");
       }
     }
   }
@@ -10075,7 +10076,7 @@ class LlEmitter {
   private emitArrIntrinsic(e: IrExpr & { kind: "arrIntrinsic" }): LlValue {
     const B = this.B;
     const r = this.emitExpr(e.receiver);
-    if (e.receiver.type.kind !== "array") throw new Error("llvm emitter bug: arrIntrinsic on non-array");
+    if (e.receiver.type.kind !== "array") throw new InternalCompilerError("llvm emitter bug: arrIntrinsic on non-array");
     const elem = e.receiver.type.elem;
     const acc = elemAccess(elem);
     const accTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
@@ -10251,11 +10252,11 @@ class LlEmitter {
         // JS shift: undefined on an empty array, else the first element
         // out (ref ownership moves into the union box) with the tail
         // sliding down. Union construction is type-directed here.
-        if (e.type.kind !== "union") throw new Error("llvm emitter bug: shift result is not a union");
+        if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: shift result is not a union");
         const def = this.unionsById.get(e.type.unionId);
         const tag = def ? def.arms.findIndex((a) => typeEquals(a, elem)) : -1;
         const undefTag = this.undefinedArmTag(e.type);
-        if (tag < 0 || undefTag < 0) throw new Error("llvm emitter bug: shift union lacks its arms");
+        if (tag < 0 || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: shift union lacks its arms");
         this.declare(`declare double @scr_arr_len(ptr)`);
         const slot = B.slot();
         B.entryAllocas.push(`${slot} = alloca ptr`);
@@ -10284,7 +10285,7 @@ class LlEmitter {
       default: {
         const _exhaustive: never = method;
         void _exhaustive;
-        throw new Error("unreachable");
+        throw new InternalCompilerError("unreachable");
       }
     }
   }
@@ -10319,7 +10320,7 @@ class LlEmitter {
     // Empty map: the runtime stores the value kind's RC entry points as
     // function pointers (scalar values pass nulls); the trace argument
     // doubles as the cycle-capability flag — exactly the C mapNew.
-    if (e.type.kind !== "map") throw new Error("llvm emitter bug: mapNew of non-map type");
+    if (e.type.kind !== "map") throw new InternalCompilerError("llvm emitter bug: mapNew of non-map type");
     const B = this.B;
     const value = e.type.value;
     const rc = isRefCounted(value) ? vAdapters(this, value) : { retain: "null", release: "null" };
@@ -10352,7 +10353,7 @@ class LlEmitter {
   private emitMapIntrinsic(e: IrExpr & { kind: "mapIntrinsic" }): LlValue {
     const B = this.B;
     const r = this.emitExpr(e.receiver);
-    if (e.receiver.type.kind !== "map") throw new Error("llvm emitter bug: mapIntrinsic on non-map");
+    if (e.receiver.type.kind !== "map") throw new InternalCompilerError("llvm emitter bug: mapIntrinsic on non-map");
     const { key, value } = e.receiver.type;
     const kAcc = mapKeyAccess(key);
     const kTy = kAcc === "f64" ? "double" : "ptr";
@@ -10367,10 +10368,10 @@ class LlEmitter {
         // instance. When V is itself a union, the stored box IS the
         // result (`undefined` sorts last in canonical arm order).
         const k = this.emitExpr(e.args[0]!);
-        if (e.type.kind !== "union") throw new Error("llvm emitter bug: map get result is not a union");
+        if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: map get result is not a union");
         const def = this.unionsById.get(e.type.unionId);
         const undefTag = this.undefinedArmTag(e.type);
-        if (!def || undefTag < 0) throw new Error("llvm emitter bug: map get union lacks its undefined arm");
+        if (!def || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: map get union lacks its undefined arm");
         const absent = this.unitInstanceRef(e.type.unionId, undefTag);
         if (value.kind === "union") {
           this.declare(`declare ptr @scr_map_get_${kAcc}_ref(ptr, ${kTy})`);
@@ -10383,7 +10384,7 @@ class LlEmitter {
           return this.own({ name: t, type: e.type });
         }
         const valueTag = def.arms.findIndex((a) => typeEquals(a, value));
-        if (valueTag < 0) throw new Error("llvm emitter bug: map get union lacks its value arm");
+        if (valueTag < 0) throw new InternalCompilerError("llvm emitter bug: map get union lacks its value arm");
         if (value.kind === "f64" || value.kind === "bool") {
           const outTy = value.kind === "f64" ? "double" : "i8";
           const outSlot = B.slot();
@@ -10495,7 +10496,7 @@ class LlEmitter {
       default: {
         const _exhaustive: never = method;
         void _exhaustive;
-        throw new Error("unreachable");
+        throw new InternalCompilerError("unreachable");
       }
     }
   }
@@ -10504,7 +10505,7 @@ class LlEmitter {
     // Empty set: the map runtime with the element as the KEY and the
     // value slot pinned to the scalar kind. Handle-kind elements (symbol
     // identity hashing) carry their RC adapters at construction.
-    if (e.type.kind !== "set") throw new Error("llvm emitter bug: setNew of non-set type");
+    if (e.type.kind !== "set") throw new InternalCompilerError("llvm emitter bug: setNew of non-set type");
     const B = this.B;
     const kAcc = mapKeyAccess(e.type.elem);
     const s = B.tmp();
@@ -10530,7 +10531,7 @@ class LlEmitter {
   private emitSetIntrinsic(e: IrExpr & { kind: "setIntrinsic" }): LlValue {
     const B = this.B;
     const r = this.emitExpr(e.receiver);
-    if (e.receiver.type.kind !== "set") throw new Error("llvm emitter bug: setIntrinsic on non-set");
+    if (e.receiver.type.kind !== "set") throw new InternalCompilerError("llvm emitter bug: setIntrinsic on non-set");
     const kAcc = mapKeyAccess(e.receiver.type.elem);
     const kTy = kAcc === "f64" ? "double" : "ptr";
     const method = e.method;
@@ -10606,7 +10607,7 @@ class LlEmitter {
       default: {
         const _exhaustive: never = method;
         void _exhaustive;
-        throw new Error("unreachable");
+        throw new InternalCompilerError("unreachable");
       }
     }
   }
@@ -10903,7 +10904,7 @@ class LlEmitter {
     const B = this.B;
     const call = (sym: string, sig: string, argText: string, owned: boolean, fallible: boolean): LlValue => {
       const m = /^(.+?) \((.*)\)$/.exec(sig);
-      if (!m) throw new Error(`llvm emitter bug: bad bytesIntrinsic sig ${sig}`);
+      if (!m) throw new InternalCompilerError(`llvm emitter bug: bad bytesIntrinsic sig ${sig}`);
       this.declare(`declare ${m[1]} @${sym}(${m[2]})`);
       const retTy = m[1] === "zeroext i1" ? "i1" : m[1]!;
       if (retTy === "void") {
@@ -10919,12 +10920,12 @@ class LlEmitter {
     };
     if (e.method === "readNum" || e.method === "writeNum" || e.method === "readNumVar" || e.method === "writeNumVar") {
       const tok = e.args[0]!;
-      if (tok.kind !== "strLit") throw new Error(`llvm emitter bug: bytesIntrinsic ${e.method} kind must be a strLit`);
+      if (tok.kind !== "strLit") throw new InternalCompilerError(`llvm emitter bug: bytesIntrinsic ${e.method} kind must be a strLit`);
       const r0 = this.emitExpr(e.receiver);
       const rest = e.args.slice(1).map((a) => this.emitExpr(a));
       if (e.method === "readNum" || e.method === "writeNum") {
         const spec = BYTES_NUM_KIND[tok.value];
-        if (!spec) throw new Error(`llvm emitter bug: bytes numeric kind '${tok.value}'`);
+        if (!spec) throw new InternalCompilerError(`llvm emitter bug: bytes numeric kind '${tok.value}'`);
         return e.method === "readNum"
           ? call("scr_bytes_read_num", "double (ptr, double, i32, i1 zeroext)",
               `ptr ${r0.name}, double ${rest[0]!.name}, i32 ${spec.kind}, i1 ${spec.le}`, false, true)
@@ -10932,7 +10933,7 @@ class LlEmitter {
               `ptr ${r0.name}, double ${rest[0]!.name}, double ${rest[1]!.name}, i32 ${spec.kind}, i1 ${spec.le}`, false, true);
       }
       const spec = BYTES_NUM_VAR[tok.value];
-      if (!spec) throw new Error(`llvm emitter bug: bytes variable-width kind '${tok.value}'`);
+      if (!spec) throw new InternalCompilerError(`llvm emitter bug: bytes variable-width kind '${tok.value}'`);
       return e.method === "readNumVar"
         ? call("scr_bytes_read_var", "double (ptr, double, double, i1 zeroext, i1 zeroext)",
             `ptr ${r0.name}, double ${rest[0]!.name}, double ${rest[1]!.name}, i1 ${spec.sign}, i1 ${spec.le}`, false, true)
@@ -10950,18 +10951,18 @@ class LlEmitter {
     switch (method) {
       case "length":
         if (e.receiver.type.kind !== "bytes") {
-          throw new Error("llvm emitter bug: bytesIntrinsic length on non-bytes");
+          throw new InternalCompilerError("llvm emitter bug: bytesIntrinsic length on non-bytes");
         }
         return this.emitBytesLength(e.receiver.type.elem, r.name, false);
       case "byteLength":
         if (e.receiver.type.kind !== "bytes") {
-          throw new Error("llvm emitter bug: bytesIntrinsic byteLength on non-bytes");
+          throw new InternalCompilerError("llvm emitter bug: bytesIntrinsic byteLength on non-bytes");
         }
         return this.emitBytesLength(e.receiver.type.elem, r.name, true);
       case "get":
         // Any invalid index traps (the array runtime's discipline).
         if (e.receiver.type.kind !== "bytes") {
-          throw new Error("llvm emitter bug: bytesIntrinsic get on non-bytes");
+          throw new InternalCompilerError("llvm emitter bug: bytesIntrinsic get on non-bytes");
         }
         return this.emitBytesGet(
           e.receiver.type.elem,
@@ -11220,7 +11221,7 @@ class LlEmitter {
       default: {
         const _exhaustive: never = method;
         void _exhaustive;
-        throw new Error("unreachable");
+        throw new InternalCompilerError("unreachable");
       }
     }
   }
@@ -11273,11 +11274,11 @@ class LlEmitter {
       case "match": {
         // +1 string[] or NULL from the runtime; the `string[] | null`
         // union wraps type-directedly, the envGet convention.
-        if (e.type.kind !== "union") throw new Error("llvm emitter bug: match result not a union");
+        if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: match result not a union");
         const def = this.unionsById.get(e.type.unionId);
         const arrTag = def ? def.arms.findIndex((a) => a.kind === "array") : -1;
         const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-        if (arrTag < 0 || nullTag < 0 || !def) throw new Error("llvm emitter bug: match union lacks its arms");
+        if (arrTag < 0 || nullTag < 0 || !def) throw new InternalCompilerError("llvm emitter bug: match union lacks its arms");
         this.declare(`declare ptr @scr_regex_match(ptr, ptr)`);
         const raw = B.tmp();
         B.line(`${raw} = call ptr @scr_regex_match(ptr ${r.name}, ptr ${args[0]!.name})`);
@@ -11310,7 +11311,7 @@ class LlEmitter {
       default: {
         const _exhaustive: never = method;
         void _exhaustive;
-        throw new Error("unreachable");
+        throw new InternalCompilerError("unreachable");
       }
     }
   }
@@ -11459,7 +11460,7 @@ class LlEmitter {
         return owned ? expr : this.retainValue(expr, vt);
       }
       const tag = def.arms.findIndex((a) => typeEquals(a, vt));
-      if (tag < 0) throw new Error(`llvm emitter bug: keyed read arm for ${vt.kind} missing`);
+      if (tag < 0) throw new InternalCompilerError(`llvm emitter bug: keyed read arm for ${vt.kind} missing`);
       if (vt.kind === "f64" || vt.kind === "bool") {
         return this.unionNewOwned(tag, { name: expr, type: vt });
       }
@@ -11608,7 +11609,7 @@ class LlEmitter {
 
   private dynPromiseAdapter(inner: IrType): string {
     if (!isRefCounted(inner) || inner.kind === "dyn") {
-      throw new Error(
+      throw new InternalCompilerError(
         `dynamic promise adapter requires a concrete reference type, got ${typeKey(inner)}`,
       );
     }
@@ -11725,7 +11726,7 @@ class LlEmitter {
     if (t.kind !== "record") return "null";
     const shape = this.recordsById.get(t.shapeId);
     if (!shape) {
-      throw new Error(
+      throw new InternalCompilerError(
         `llvm emitter bug: stream typed-ref commit of unknown shape ${t.shapeId}`,
       );
     }
@@ -11786,7 +11787,7 @@ class LlEmitter {
     if (existing) return existing;
     const union = this.unionsById.get(t.unionId);
     if (!union) {
-      throw new Error(
+      throw new InternalCompilerError(
         `llvm emitter bug: live dyn ref of unknown union ${t.unionId}`,
       );
     }
@@ -11794,7 +11795,7 @@ class LlEmitter {
       .map((arm, tag) => ({ arm, tag }))
       .filter(({ arm }) => this.streamTypedRefEligible(arm));
     if (mutableArms.length === 0) {
-      throw new Error(`llvm emitter bug: live dyn ref of immutable union ${key}`);
+      throw new InternalCompilerError(`llvm emitter bug: live dyn ref of immutable union ${key}`);
     }
 
     const sym = `sc_ldu_${this.liveDynUnionRefAdapters.size}`;
@@ -11912,7 +11913,7 @@ class LlEmitter {
     if (t.kind === "record") {
       const shape = this.recordsById.get(t.shapeId);
       if (!shape) {
-        throw new Error(
+        throw new InternalCompilerError(
           `llvm emitter bug: stream typed-ref materialize of unknown shape ${t.shapeId}`,
         );
       }
@@ -12063,7 +12064,7 @@ class LlEmitter {
       ? this.unionsById.get(elem.unionId)
       : undefined;
     if (elem.kind === "union" && !unionDef) {
-      throw new Error(`llvm emitter bug: streamFrom of unknown union ${elem.unionId}`);
+      throw new InternalCompilerError(`llvm emitter bug: streamFrom of unknown union ${elem.unionId}`);
     }
     const unionRefArms = unionDef?.arms
       .map((arm, tag) => ({ arm, tag }))
@@ -12228,7 +12229,7 @@ class LlEmitter {
       this.usesTimers = true;
       const args = e.args.map((a) => this.emitExpr(a));
       const cbT = e.args[2]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: process write callback not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: process write callback not a func");
       this.moveTemp(args[2]!);
       const adapter = this.fsRenameThunkFor(cbT);
       const write = e.fn === "process.stdoutWriteBytesCb"
@@ -12248,7 +12249,7 @@ class LlEmitter {
       this.usesTimers = true;
       const args = e.args.map((a) => this.emitExpr(a));
       const cbT = e.args[2]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: fs.rename callback not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: fs.rename callback not a func");
       this.moveTemp(args[2]!);
       const adapter = this.fsRenameThunkFor(cbT);
       this.declare(`declare void @scr_fs_rename_async(ptr, ptr, ptr, ptr)`);
@@ -12257,7 +12258,7 @@ class LlEmitter {
     }
     if (e.fn === "fileHandle.read" || e.fn === "fileHandle.writeBytes" || e.fn === "fileHandle.writeStr") {
       if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
-        throw new Error(`llvm emitter bug: ${e.fn} result`);
+        throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result`);
       }
       const args = e.args.map((a) => this.emitExpr(a));
       const sym = e.fn === "fileHandle.read"
@@ -12290,7 +12291,7 @@ class LlEmitter {
     }
     if (e.fn === "fetch.responseText" || e.fn === "fetch.responseBytes") {
       if (e.type.kind !== "promise") {
-        throw new Error(`llvm emitter bug: ${e.fn} result`);
+        throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result`);
       }
       const response = this.emitExpr(e.args[0]!);
       const runtimeFn =
@@ -12316,7 +12317,7 @@ class LlEmitter {
     }
     if (e.fn === "fetch.readerRead") {
       if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
-        throw new Error("llvm emitter bug: fetch.readerRead result");
+        throw new InternalCompilerError("llvm emitter bug: fetch.readerRead result");
       }
       const reader = this.emitExpr(e.args[0]!);
       this.declare(`declare ptr @scr_fetch_reader_read(ptr)`);
@@ -12532,7 +12533,7 @@ class LlEmitter {
       // the `number | null` union's tags are program data (a zero-param
       // listener gets the runtime's ignoring thunk).
       const cbT = e.args[1]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: child.onExit callback not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: child.onExit callback not a func");
       const child = this.emitExpr(e.args[0]!);
       const cb = this.emitExpr(e.args[1]!);
       this.moveTemp(cb);
@@ -12553,7 +12554,7 @@ class LlEmitter {
       // Both error-listener shapes have runtime-provided adapters
       // (constructing the %Error instance needs no program types).
       const cbT = e.args[1]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: child.onError callback not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: child.onError callback not a func");
       const child = this.emitExpr(e.args[0]!);
       const cb = this.emitExpr(e.args[1]!);
       this.moveTemp(cb);
@@ -12570,7 +12571,7 @@ class LlEmitter {
       // `Buffer | string` chunk (the chunk wraps at its Buffer arm).
       this.usesTimers = true; // a flowing stream holds the loop
       const cbT = e.args[1]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: stream.onData callback not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: stream.onData callback not a func");
       const s0 = this.emitExpr(e.args[0]!);
       const cb = this.emitExpr(e.args[1]!);
       const once = this.emitExpr(e.args[2]!);
@@ -12618,7 +12619,7 @@ class LlEmitter {
       // string). May throw (ENOENT) — the standard pending check.
       this.usesTimers = true;
       const cbT = e.args[1]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: fs.watchCb callback not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: fs.watchCb callback not a func");
       const path = this.emitExpr(e.args[0]!);
       const cb = this.emitExpr(e.args[1]!);
       this.moveTemp(cb);
@@ -12645,7 +12646,7 @@ class LlEmitter {
       // Node's use-after-close error (the may-throw seed).
       this.usesTimers = true;
       const cbT = e.args[2]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: rl.question callback not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: rl.question callback not a func");
       const args = e.args.map((a) => this.emitExpr(a));
       this.moveTemp(args[2]!);
       const adapter = cbT.params.length === 0 ? "scr_rl_answer_thunk0" : "scr_rl_answer_thunk_str";
@@ -12681,12 +12682,12 @@ class LlEmitter {
     if (e.fn === "spawnRes.status" || e.fn === "child.pid" || e.fn === "child.exitCode") {
       // `number | null` / `number | undefined`, constructed type-
       // directedly over the runtime's has/get pairs (emit-exprs.ts).
-      if (e.type.kind !== "union") throw new Error(`llvm emitter bug: ${e.fn} result is not a union`);
+      if (e.type.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
       const def = this.unionsById.get(e.type.unionId);
       const wantUnit = e.fn === "child.pid" ? "undefinedT" : "nullT";
       const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
       const unitTag = def ? def.arms.findIndex((a) => a.kind === wantUnit) : -1;
-      if (f64Tag < 0 || unitTag < 0) throw new Error(`llvm emitter bug: ${e.fn} union lacks its arms`);
+      if (f64Tag < 0 || unitTag < 0) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
       const has = e.fn === "spawnRes.status" ? "scr_spawn_res_has_status" : e.fn === "child.pid" ? "scr_child_has_pid" : "scr_child_has_exit_code";
       const get = e.fn === "spawnRes.status" ? "scr_spawn_res_status" : e.fn === "child.pid" ? "scr_child_pid" : "scr_child_exit_code";
       const recv = this.emitExpr(e.args[0]!);
@@ -12717,11 +12718,11 @@ class LlEmitter {
       // The `string | null` union (the termination signal's name, null
       // for a normal exit or spawn failure) — the has/get pair wrapped
       // type-directedly.
-      if (e.type.kind !== "union") throw new Error("llvm emitter bug: spawnRes.signal result is not a union");
+      if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: spawnRes.signal result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-      if (strTag < 0 || nullTag < 0) throw new Error("llvm emitter bug: spawnRes.signal union lacks its arms");
+      if (strTag < 0 || nullTag < 0) throw new InternalCompilerError("llvm emitter bug: spawnRes.signal union lacks its arms");
       const recv = this.emitExpr(e.args[0]!);
       this.declare(`declare zeroext i1 @scr_spawn_res_has_signal(ptr)`);
       this.declare(`declare ptr @scr_spawn_res_signal(ptr)`);
@@ -12747,11 +12748,11 @@ class LlEmitter {
       // The `Error | undefined` union, the envGet convention: a spawn
       // failure hands back a fresh +1 %Error (ownership moves into the
       // union box); otherwise the interned undefined arm.
-      if (e.type.kind !== "union") throw new Error("llvm emitter bug: spawnRes.error result is not a union");
+      if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: spawnRes.error result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const errTag = def ? def.arms.findIndex((a) => a.kind === "object" && a.className === "%Error") : -1;
       const undefTag = this.undefinedArmTag(e.type);
-      if (errTag < 0 || undefTag < 0) throw new Error("llvm emitter bug: spawnRes.error union lacks its arms");
+      if (errTag < 0 || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: spawnRes.error union lacks its arms");
       const recv = this.emitExpr(e.args[0]!);
       this.declare(`declare ptr @scr_spawn_res_error(ptr)`);
       const raw = B.tmp();
@@ -12761,11 +12762,11 @@ class LlEmitter {
     if (e.fn === "child.stdout" || e.fn === "child.stderr") {
       // `Readable | null` — the child.pid pattern with a REF arm: the
       // runtime answers a +1 stream handle or NULL (not piped).
-      if (e.type.kind !== "union") throw new Error(`llvm emitter bug: ${e.fn} result is not a union`);
+      if (e.type.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
       const def = this.unionsById.get(e.type.unionId);
       const streamTag = def ? def.arms.findIndex((a) => a.kind === "childStream") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-      if (streamTag < 0 || nullTag < 0) throw new Error(`llvm emitter bug: ${e.fn} union lacks its arms`);
+      if (streamTag < 0 || nullTag < 0) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
       const get = e.fn === "child.stdout" ? "scr_child_stdout" : "scr_child_stderr";
       const recv = this.emitExpr(e.args[0]!);
       this.declare(`declare ptr @${get}(ptr)`);
@@ -12787,7 +12788,7 @@ class LlEmitter {
       // alive until EOF, so main must run it. The callback MOVES in.
       this.usesTimers = true;
       const cbT = e.args[0]!.type;
-      if (cbT.kind !== "func") throw new Error(`llvm emitter bug: ${e.fn} callback not a func`);
+      if (cbT.kind !== "func") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
       const cb = this.emitExpr(e.args[0]!);
       const once = this.emitExpr(e.args[1]!);
       this.moveTemp(cb);
@@ -12822,7 +12823,7 @@ class LlEmitter {
       // Runtime adapters cover both shapes (the code is a plain double);
       // the registry owns the callback.
       const cbT = e.args[0]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: process.onExit callback not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: process.onExit callback not a func");
       const cb = this.emitExpr(e.args[0]!);
       const once = this.emitExpr(e.args[1]!);
       this.moveTemp(cb);
@@ -12850,11 +12851,11 @@ class LlEmitter {
     if (e.fn === "sp.get") {
       // `string | null` — the sym.desc pattern with a null arm: the
       // runtime answers a +1 string or NULL.
-      if (e.type.kind !== "union") throw new Error("llvm emitter bug: sp.get result is not a union");
+      if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: sp.get result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-      if (strTag < 0 || nullTag < 0) throw new Error("llvm emitter bug: sp.get union lacks its arms");
+      if (strTag < 0 || nullTag < 0) throw new InternalCompilerError("llvm emitter bug: sp.get union lacks its arms");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare ptr @scr_sp_get(ptr, ptr)`);
       const raw = B.tmp();
@@ -12879,14 +12880,14 @@ class LlEmitter {
       // (scr_qs_parse_into groups repeats into string[] buckets) — the
       // C emitter's shape exactly. The frontend verified the structure;
       // lookups here only guard emitter bugs. Args: qs, sep, eq, maxKeys.
-      if (e.type.kind !== "record") throw new Error("llvm emitter bug: qs.parse result is not a record");
+      if (e.type.kind !== "record") throw new InternalCompilerError("llvm emitter bug: qs.parse result is not a record");
       const dictShape = this.recordsById.get(e.type.shapeId);
       const iv = dictShape?.indexValue;
-      if (!dictShape || iv?.kind !== "union") throw new Error("llvm emitter bug: qs.parse dict shape");
+      if (!dictShape || iv?.kind !== "union") throw new InternalCompilerError("llvm emitter bug: qs.parse dict shape");
       const ivDef = this.unionsById.get(iv.unionId);
       const strTag = ivDef?.arms.findIndex((a) => a.kind === "string") ?? -1;
       const arrTag = ivDef?.arms.findIndex((a) => a.kind === "array") ?? -1;
-      if (strTag < 0 || arrTag < 0) throw new Error("llvm emitter bug: qs.parse index union lacks its arms");
+      if (strTag < 0 || arrTag < 0) throw new InternalCompilerError("llvm emitter bug: qs.parse index union lacks its arms");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare void @scr_qs_parse_into(ptr, ptr, ptr, ptr, double, i32, i32)`);
       const dict = B.tmp();
@@ -12906,17 +12907,17 @@ class LlEmitter {
       // emitter bugs. Rows append to their interface's bucket in snapshot
       // order; a first row makes the bucket (a fresh Info[] wrapped into
       // the `Info[] | undefined` union arm the overflow map stores).
-      if (e.type.kind !== "record") throw new Error("llvm emitter bug: networkInterfaces result is not a record");
+      if (e.type.kind !== "record") throw new InternalCompilerError("llvm emitter bug: networkInterfaces result is not a record");
       const dictShape = this.recordsById.get(e.type.shapeId);
       const iv = dictShape?.indexValue;
-      if (!dictShape || iv?.kind !== "union") throw new Error("llvm emitter bug: networkInterfaces dict shape");
+      if (!dictShape || iv?.kind !== "union") throw new InternalCompilerError("llvm emitter bug: networkInterfaces dict shape");
       const ivDef = this.unionsById.get(iv.unionId);
       const arrTag = ivDef?.arms.findIndex((a) => a.kind === "array") ?? -1;
       const arrT = ivDef?.arms[arrTag];
-      if (arrT?.kind !== "array" || arrT.elem.kind !== "union") throw new Error("llvm emitter bug: networkInterfaces bucket type");
+      if (arrT?.kind !== "array" || arrT.elem.kind !== "union") throw new InternalCompilerError("llvm emitter bug: networkInterfaces bucket type");
       const infoT = arrT.elem;
       const infoDef = this.unionsById.get(infoT.unionId);
-      if (!infoDef || infoDef.arms.length !== 2) throw new Error("llvm emitter bug: networkInterfaces Info union");
+      if (!infoDef || infoDef.arms.length !== 2) throw new InternalCompilerError("llvm emitter bug: networkInterfaces Info union");
       const tag6 = infoDef.arms.findIndex(
         (a) => a.kind === "record" && this.recordsById.get(a.shapeId)?.fields.find((f) => f.name === "scopeid")?.type.kind === "f64",
       );
@@ -12974,12 +12975,12 @@ class LlEmitter {
       B.condBr(isV6, l6, l4);
       const emitRow = (tag: number, v6: boolean): void => {
         const t = infoDef.arms[tag];
-        if (t?.kind !== "record") throw new Error("llvm emitter bug: networkInterfaces Info arm");
+        if (t?.kind !== "record") throw new InternalCompilerError("llvm emitter bug: networkInterfaces Info arm");
         const shape = this.recordsById.get(t.shapeId);
-        if (!shape) throw new Error("llvm emitter bug: networkInterfaces Info shape");
+        if (!shape) throw new InternalCompilerError("llvm emitter bug: networkInterfaces Info shape");
         const cidrT = shape.fields.find((f) => f.name === "cidr")?.type;
         const cidrDef = cidrT?.kind === "union" ? this.unionsById.get(cidrT.unionId) : undefined;
-        if (cidrT?.kind !== "union" || !cidrDef) throw new Error("llvm emitter bug: networkInterfaces cidr type");
+        if (cidrT?.kind !== "union" || !cidrDef) throw new InternalCompilerError("llvm emitter bug: networkInterfaces cidr type");
         const cidrStrTag = cidrDef.arms.findIndex((a) => a.kind === "string");
         const cidrNullTag = cidrDef.arms.findIndex((a) => a.kind === "nullT");
         const r = B.tmp();
@@ -13027,7 +13028,7 @@ class LlEmitter {
           this.storeField(this.recordFieldPtr(r, t.shapeId, "scopeid").ptr, F64, sc);
         } else {
           const st = shape.fields.find((f) => f.name === "scopeid")?.type;
-          if (st?.kind !== "union") throw new Error("llvm emitter bug: networkInterfaces IPv4 scopeid type");
+          if (st?.kind !== "union") throw new InternalCompilerError("llvm emitter bug: networkInterfaces IPv4 scopeid type");
           const undefTag = this.undefinedArmTag(st);
           const su = B.tmp();
           B.line(`${su} = call ptr @scr_union_retain_v(ptr ${this.unitInstanceRef(st.unionId, undefTag)})`);
@@ -13096,7 +13097,7 @@ class LlEmitter {
       // error and answers NULL then, so the pending check runs before
       // any allocation.
       if (e.type.kind !== "array" || e.type.elem.kind !== "record") {
-        throw new Error("llvm emitter bug: readdirTypesSync result is not a record array");
+        throw new InternalCompilerError("llvm emitter bug: readdirTypesSync result is not a record array");
       }
       const recT = e.type.elem;
       const path = this.emitExpr(e.args[0]!);
@@ -13167,7 +13168,7 @@ class LlEmitter {
       // split across the C/LLVM boundary. May-throw ('newListener' meta
       // listeners run inside).
       const cbT = e.args[2]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: emitter.on listener not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: emitter.on listener not a func");
       const args = e.args.map((a) => this.emitExpr(a));
       const { fn: adapterFn, shim } = this.emitterFixedAdapter(cbT);
       // The wrapper's capture box owns its OWN +1 of the listener; the
@@ -13194,7 +13195,7 @@ class LlEmitter {
       // rides behind the same fixed-arity wrapper; the runtime keeps the
       // dyn box's underlying closure as the entry's identity.
       const adT = e.args[3]!.type;
-      if (adT.kind !== "func") throw new Error("llvm emitter bug: emitter.onDyn adapter not a func");
+      if (adT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: emitter.onDyn adapter not a func");
       const args = e.args.map((a) => this.emitExpr(a));
       const { fn: adapterFn, shim } = this.emitterFixedAdapter(adT);
       this.moveTemp(args[3]!); // the frame's +1 moves into the wrapper's box
@@ -13262,7 +13263,7 @@ class LlEmitter {
       // — scr_stream_emit_data) behind the arity-2 fixed shim.
       const isDyn = e.fn === "emitter.onDataDyn";
       const cbT = e.args[isDyn ? 3 : 2]!.type;
-      if (cbT.kind !== "func") throw new Error(`llvm emitter bug: ${e.fn} listener not a func`);
+      if (cbT.kind !== "func") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} listener not a func`);
       const args = e.args.map((a) => this.emitExpr(a));
       const adapterFn = this.streamDataAdapter(cbT);
       this.declare(`declare void @scr_ee_inv_fixed2(ptr, ptr)`);
@@ -13302,7 +13303,7 @@ class LlEmitter {
       const duplexShape = base !== "readable" && base !== "writable";
       const headLen = duplexShape ? 8 : 4;
       const flagsArg = e.args[off + headLen - 1]!;
-      if (flagsArg.kind !== "numLit") throw new Error(`llvm emitter bug: ${e.fn} flags not a literal`);
+      if (flagsArg.kind !== "numLit") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} flags not a literal`);
       const flags = flagsArg.value;
       const args = e.args.map((a) => this.emitExpr(a));
       const canonical = STREAM_CANONICAL_CBS[base]!;
@@ -13366,7 +13367,7 @@ class LlEmitter {
       // flags literal names which; wrappers MOVE). MAY THROW.
       const base = e.fn.slice(0, e.fn.indexOf("."));
       const flagsArg = e.args[2]!;
-      if (flagsArg.kind !== "numLit") throw new Error(`llvm emitter bug: ${e.fn} flags not a literal`);
+      if (flagsArg.kind !== "numLit") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} flags not a literal`);
       const flags = flagsArg.value;
       const args = e.args.map((a) => this.emitExpr(a));
       const canonical = STREAM_CANONICAL_CBS[base]!;
@@ -13394,9 +13395,9 @@ class LlEmitter {
       // the frontend admitted exactly those). May throw (write_null's
       // ERR_STREAM_NULL_VALUES; listeners run inside).
       const t = e.args[1]!.type;
-      if (t.kind !== "union") throw new Error(`llvm emitter bug: ${e.fn} chunk not a union`);
+      if (t.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} chunk not a union`);
       const def = this.unionsById.get(t.unionId);
-      if (!def) throw new Error(`llvm emitter bug: ${e.fn} union unknown`);
+      if (!def) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union unknown`);
       const args = e.args.map((a) => this.emitExpr(a));
       const pushing = e.fn === "readable.pushU";
       const entries: Record<string, string> = pushing
@@ -13405,7 +13406,7 @@ class LlEmitter {
       const present = (["nullT", "string", "bytes"] as const)
         .map((kind) => ({ kind, tag: def.arms.findIndex((a) => a.kind === kind) }))
         .filter((a) => a.tag >= 0);
-      if (present.length === 0) throw new Error(`llvm emitter bug: ${e.fn} union lacks its arms`);
+      if (present.length === 0) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
       const tagP = B.tmp();
       const tag = B.tmp();
       B.line(`${tagP} = getelementptr inbounds %ScrUnion, ptr ${args[1]!.name}, i64 0, i32 1`);
@@ -13466,11 +13467,11 @@ class LlEmitter {
       // +1 Buffer or NULL → the `Buffer | null` union, constructed
       // type-directedly (the C error.code pattern); the pending check
       // runs between the call and the wrap (encoded streams throw).
-      if (e.type.kind !== "union") throw new Error("llvm emitter bug: readable.read result is not a union");
+      if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: readable.read result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-      if (bytesTag < 0 || nullTag < 0) throw new Error("llvm emitter bug: readable.read union lacks its arms");
+      if (bytesTag < 0 || nullTag < 0) throw new InternalCompilerError("llvm emitter bug: readable.read union lacks its arms");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare ptr @scr_stream_read(ptr, double)`);
       const raw = B.tmp();
@@ -13482,11 +13483,11 @@ class LlEmitter {
     }
     if (e.fn === "readable.flowing") {
       // -1 (null: never kicked) / 0 / 1 → the `boolean | null` union.
-      if (e.type.kind !== "union") throw new Error("llvm emitter bug: readable.flowing result is not a union");
+      if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: readable.flowing result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const boolTag = def ? def.arms.findIndex((a) => a.kind === "bool") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-      if (boolTag < 0 || nullTag < 0) throw new Error("llvm emitter bug: readable.flowing union lacks its arms");
+      if (boolTag < 0 || nullTag < 0) throw new InternalCompilerError("llvm emitter bug: readable.flowing union lacks its arms");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare double @scr_stream_flowing(ptr)`);
       this.declare(`declare ptr @scr_union_new_bool(i32, i1 zeroext)`);
@@ -13547,7 +13548,7 @@ class LlEmitter {
       // chunk, 8 dyn chunk (write first, Node's end(chunk) decomposition),
       // 4 callback.
       const flagsArg = e.args[1]!;
-      if (flagsArg.kind !== "numLit") throw new Error("llvm emitter bug: writable.end flags not a literal");
+      if (flagsArg.kind !== "numLit") throw new InternalCompilerError("llvm emitter bug: writable.end flags not a literal");
       const flags = flagsArg.value;
       const args = e.args.map((a) => this.emitExpr(a));
       let at = 2;
@@ -13586,7 +13587,7 @@ class LlEmitter {
       // The property NAME is a compile-time literal; args[1]'s emitted
       // temp is unused (released with the statement's frame).
       const nameArg = e.args[1]!;
-      if (nameArg.kind !== "strLit") throw new Error("llvm emitter bug: stream.prop name not a literal");
+      if (nameArg.kind !== "strLit") throw new InternalCompilerError("llvm emitter bug: stream.prop name not a literal");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare double @scr_stream_prop(ptr, ptr)`);
       const t = B.tmp();
@@ -13600,11 +13601,11 @@ class LlEmitter {
     }
     if (e.fn === "stream.errored") {
       // +1 error or NULL → the `Error | null` union.
-      if (e.type.kind !== "union") throw new Error("llvm emitter bug: stream.errored result is not a union");
+      if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: stream.errored result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const errTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-      if (errTag < 0 || nullTag < 0) throw new Error("llvm emitter bug: stream.errored union lacks its arms");
+      if (errTag < 0 || nullTag < 0) throw new InternalCompilerError("llvm emitter bug: stream.errored union lacks its arms");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare ptr @scr_stream_errored(ptr)`);
       const raw = B.tmp();
@@ -13621,7 +13622,7 @@ class LlEmitter {
         B.line(`${t} = call ptr @scr_stream_finished_dyn(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
       } else {
         const cbT = e.args[1]!.type;
-        if (cbT.kind !== "func") throw new Error("llvm emitter bug: stream.finished callback not a func");
+        if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: stream.finished callback not a func");
         this.moveTemp(args[1]!); // the watcher closure MOVES into the stream
         const thunk = this.streamCbThunkFor("e", cbT);
         this.declare(`declare ptr @scr_stream_finished(ptr, ptr, ptr)`);
@@ -13635,7 +13636,7 @@ class LlEmitter {
       // pipeline(count, s1..sn) settling a void promise: the stream list
       // rides the callback form's stack array, no callback slot.
       const countArg = e.args[0]!;
-      if (countArg.kind !== "numLit") throw new Error(`llvm emitter bug: ${e.fn} count not a literal`);
+      if (countArg.kind !== "numLit") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} count not a literal`);
       const n = countArg.value;
       const args = e.args.map((a) => this.emitExpr(a));
       const arr = B.slot();
@@ -13656,7 +13657,7 @@ class LlEmitter {
       // pipeline(count, s1..sn, cb): the destination answers +1. The
       // stream list rides a stack array (the C compound literal).
       const countArg = e.args[0]!;
-      if (countArg.kind !== "numLit") throw new Error(`llvm emitter bug: ${e.fn} count not a literal`);
+      if (countArg.kind !== "numLit") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} count not a literal`);
       const n = countArg.value;
       const args = e.args.map((a) => this.emitExpr(a));
       const arr = B.slot();
@@ -13672,7 +13673,7 @@ class LlEmitter {
         B.line(`${t} = call ptr @scr_stream_pipeline_dyn(double ${f64Lit(n)}, ptr ${arr}, ptr ${args[1 + n]!.name})`);
       } else {
         const cbT = e.args[1 + n]!.type;
-        if (cbT.kind !== "func") throw new Error("llvm emitter bug: stream.pipeline callback not a func");
+        if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: stream.pipeline callback not a func");
         this.moveTemp(args[1 + n]!);
         const thunk = this.streamCbThunkFor("e", cbT);
         this.declare(`declare ptr @scr_stream_pipeline(double, ptr, ptr, ptr)`);
@@ -13691,7 +13692,7 @@ class LlEmitter {
       let adapter = "null";
       if (e.fn === "net.createServerCb") {
         const cbT = e.args[0]!.type;
-        if (cbT.kind !== "func") throw new Error("llvm emitter bug: net.createServerCb handler not a func");
+        if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: net.createServerCb handler not a func");
         this.moveTemp(args[0]!);
         cb = args[0]!.name;
         adapter = cbT.params.length === 0 ? "@scr_net_conn_thunk0" : "@scr_net_conn_thunk_sock";
@@ -13724,10 +13725,10 @@ class LlEmitter {
           this.moveTemp(args[4]!);
           cb = args[4]!.name;
         } else {
-          if (cbT.kind !== "union") throw new Error("llvm emitter bug: net.listenOptsCb callback shape");
+          if (cbT.kind !== "union") throw new InternalCompilerError("llvm emitter bug: net.listenOptsCb callback shape");
           const def = this.unionsById.get(cbT.unionId);
           const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
-          if (funcTag < 0) throw new Error("llvm emitter bug: net.listenOptsCb union lacks its func arm");
+          if (funcTag < 0) throw new InternalCompilerError("llvm emitter bug: net.listenOptsCb union lacks its func arm");
           cb = this.unwrapNullableClosure(args[4]!.name, funcTag);
         }
       }
@@ -13740,10 +13741,10 @@ class LlEmitter {
     }
     if (e.fn === "net.serverAddress") {
       // The AddressInfo record from the three runtime reads.
-      if (e.type.kind !== "record") throw new Error("llvm emitter bug: net.serverAddress result is not a record");
+      if (e.type.kind !== "record") throw new InternalCompilerError("llvm emitter bug: net.serverAddress result is not a record");
       const recT = e.type;
       const shape = this.recordsById.get(recT.shapeId);
-      if (!shape) throw new Error("llvm emitter bug: net.serverAddress record unknown");
+      if (!shape) throw new InternalCompilerError("llvm emitter bug: net.serverAddress record unknown");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare ptr @scr_net_server_addr_ip(ptr)`);
       this.declare(`declare ptr @scr_net_server_addr_family(ptr)`);
@@ -13754,7 +13755,7 @@ class LlEmitter {
       B.line(`${rec} = call ptr @${mangleRecordNew(recT.shapeId)}()`);
       const fieldIdx = (name: string): number => {
         const i = shape.fields.findIndex((f) => f.name === name);
-        if (i < 0) throw new Error(`llvm emitter bug: net.serverAddress record lacks ${name}`);
+        if (i < 0) throw new InternalCompilerError(`llvm emitter bug: net.serverAddress record lacks ${name}`);
         return i + 1;
       };
       const store = (name: string, ty: string, v: string): void => {
@@ -13785,7 +13786,7 @@ class LlEmitter {
     if (e.fn === "net.serverCloseBind") {
       // The bound REAL close as a value: an emitted adapter behind a
       // fresh closure whose one env slot holds the +1 server.
-      if (e.type.kind !== "func") throw new Error("llvm emitter bug: net.serverCloseBind result not a func");
+      if (e.type.kind !== "func") throw new InternalCompilerError("llvm emitter bug: net.serverCloseBind result not a func");
       const args = e.args.map((a) => this.emitExpr(a));
       const fnSym = this.closeBindThunkFor(e.type.params[0]!, e.type.ret.kind === "netServer");
       this.declare(`declare ptr @scr_closure_new(ptr, ${this.sizeType})`);
@@ -13809,7 +13810,7 @@ class LlEmitter {
       // The override MOVES into the server's slot behind the emitted
       // zero-arg wrapper (the runtime can't build the callback union).
       const cbT = e.args[1]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: close override not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: close override not a func");
       const args = e.args.map((a) => this.emitExpr(a));
       const wrapSym = this.closeOverrideWrapFor(cbT.params[0]!, cbT.ret.kind === "netServer");
       this.moveTemp(args[1]!); // ownership moves into the wrapper's env box
@@ -13820,7 +13821,7 @@ class LlEmitter {
     }
     if (e.fn === "net.serverOnError" || e.fn === "net.sockOnError") {
       const cbT = e.args[1]!.type;
-      if (cbT.kind !== "func") throw new Error(`llvm emitter bug: ${e.fn} callback not a func`);
+      if (cbT.kind !== "func") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
       const args = e.args.map((a) => this.emitExpr(a));
       this.moveTemp(args[1]!);
       const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
@@ -13860,7 +13861,7 @@ class LlEmitter {
     }
     if (e.fn === "net.serverOnConnection") {
       const cbT = e.args[1]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: net.serverOnConnection callback not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: net.serverOnConnection callback not a func");
       const args = e.args.map((a) => this.emitExpr(a));
       this.moveTemp(args[1]!);
       const adapter = cbT.params.length === 0 ? "scr_net_conn_thunk0" : "scr_net_conn_thunk_sock";
@@ -13883,7 +13884,7 @@ class LlEmitter {
     }
     if (e.fn === "net.sockOnData" || e.fn === "http.reqOnData") {
       const cbT = e.args[1]!.type;
-      if (cbT.kind !== "func") throw new Error(`llvm emitter bug: ${e.fn} callback not a func`);
+      if (cbT.kind !== "func") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
       const args = e.args.map((a) => this.emitExpr(a));
       this.moveTemp(args[1]!);
       const adapter =
@@ -13898,11 +13899,11 @@ class LlEmitter {
     }
     if (e.fn === "net.sockRead") {
       // Buffer | null: NULL (not enough buffered) takes the null arm.
-      if (e.type.kind !== "union") throw new Error("llvm emitter bug: net.sockRead result is not a union");
+      if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: net.sockRead result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes" && a.elem === "u8") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-      if (bytesTag < 0 || nullTag < 0) throw new Error("llvm emitter bug: net.sockRead union lacks its arms");
+      if (bytesTag < 0 || nullTag < 0) throw new InternalCompilerError("llvm emitter bug: net.sockRead union lacks its arms");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare ptr @scr_net_sock_read_bytes(ptr, double)`);
       const raw = B.tmp();
@@ -13911,11 +13912,11 @@ class LlEmitter {
     }
     if (e.fn === "net.sockRemoteAddress" || e.fn === "http.reqHeader" || e.fn === "http.resGetHeader" || e.fn === "http.reqStatusMessage") {
       // string | undefined: +1 or NULL, NULL takes the undefined arm.
-      if (e.type.kind !== "union") throw new Error(`llvm emitter bug: ${e.fn} result is not a union`);
+      if (e.type.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
       const def = this.unionsById.get(e.type.unionId);
       const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
       const undefTag = this.undefinedArmTag(e.type);
-      if (strTag < 0 || undefTag < 0) throw new Error(`llvm emitter bug: ${e.fn} union lacks its arms`);
+      if (strTag < 0 || undefTag < 0) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
       const entry = {
         "net.sockRemoteAddress": "scr_net_sock_remote_address",
         "http.reqHeader": "scr_http_req_header",
@@ -13931,11 +13932,11 @@ class LlEmitter {
     }
     if (e.fn === "net.sockEncrypted") {
       // boolean | undefined: the true arm iff a TLS transport.
-      if (e.type.kind !== "union") throw new Error("llvm emitter bug: net.sockEncrypted result is not a union");
+      if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: net.sockEncrypted result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const boolTag = def ? def.arms.findIndex((a) => a.kind === "bool") : -1;
       const undefTag = this.undefinedArmTag(e.type);
-      if (boolTag < 0 || undefTag < 0) throw new Error("llvm emitter bug: net.sockEncrypted union lacks its arms");
+      if (boolTag < 0 || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: net.sockEncrypted union lacks its arms");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare zeroext i1 @scr_net_sock_encrypted(ptr)`);
       this.declare(`declare ptr @scr_union_new_bool(i32, i1 zeroext)`);
@@ -13963,11 +13964,11 @@ class LlEmitter {
     if (e.fn === "http.reqStatusCode") {
       // number | undefined: the runtime answers a negative status for
       // server requests (the process.columns shape).
-      if (e.type.kind !== "union") throw new Error("llvm emitter bug: http.reqStatusCode result is not a union");
+      if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: http.reqStatusCode result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
       const undefTag = this.undefinedArmTag(e.type);
-      if (f64Tag < 0 || undefTag < 0) throw new Error("llvm emitter bug: http.reqStatusCode union lacks its arms");
+      if (f64Tag < 0 || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: http.reqStatusCode union lacks its arms");
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare double @scr_http_req_status(ptr)`);
       this.declare(`declare ptr @scr_union_new_f64(i32, double)`);
@@ -14000,7 +14001,7 @@ class LlEmitter {
       let adapter = "null";
       if (e.fn === "http.createServer") {
         const cbT = e.args[0]!.type;
-        if (cbT.kind !== "func") throw new Error("llvm emitter bug: http.createServer handler not a func");
+        if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: http.createServer handler not a func");
         this.moveTemp(args[0]!);
         cb = args[0]!.name;
         const sym =
@@ -14017,7 +14018,7 @@ class LlEmitter {
     }
     if (e.fn === "http.serverOnRequest") {
       const cbT = e.args[1]!.type;
-      if (cbT.kind !== "func") throw new Error("llvm emitter bug: http.serverOnRequest handler not a func");
+      if (cbT.kind !== "func") throw new InternalCompilerError("llvm emitter bug: http.serverOnRequest handler not a func");
       const args = e.args.map((a) => this.emitExpr(a));
       this.moveTemp(args[1]!);
       const adapter =
@@ -14031,7 +14032,7 @@ class LlEmitter {
     }
     if (e.fn === "http.serverOnUpgrade" || e.fn === "http.clientOnUpgrade") {
       const cbT = e.args[1]!.type;
-      if (cbT.kind !== "func") throw new Error(`llvm emitter bug: ${e.fn} listener not a func`);
+      if (cbT.kind !== "func") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} listener not a func`);
       const args = e.args.map((a) => this.emitExpr(a));
       this.moveTemp(args[1]!);
       const adapter =
@@ -14064,7 +14065,7 @@ class LlEmitter {
       let adapter = "null";
       if (hasCb) {
         const cbT = e.args[cbIdx]!.type;
-        if (cbT.kind !== "func") throw new Error(`llvm emitter bug: ${e.fn} callback not a func`);
+        if (cbT.kind !== "func") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
         this.moveTemp(args[cbIdx]!);
         cb = args[cbIdx]!.name;
         const sym = cbT.params.length === 0 ? "scr_http_resp_thunk0" : "scr_http_resp_thunk_res";
@@ -14095,7 +14096,7 @@ class LlEmitter {
           B.line(`${caDataPtr} = getelementptr inbounds i8, ptr ${ca.name}, i64 ${this.abiOffset(24, 12)}`);
           B.line(`${caData} = load ptr, ptr ${caDataPtr}`);
         } else {
-          throw new Error(`llvm emitter bug: ${e.fn} CA is not a string or Buffer`);
+          throw new InternalCompilerError(`llvm emitter bug: ${e.fn} CA is not a string or Buffer`);
         }
         callArgs = [...callArgs.slice(0, 8), `ptr ${caData}`, `${this.sizeType} ${caLen}`];
         this.declare(`declare ptr @scr_https_request(ptr, double, ptr, ptr, double, ptr, i1 zeroext, i1 zeroext, ptr, ${this.sizeType}, ptr, ptr)`);
@@ -14113,7 +14114,7 @@ class LlEmitter {
     }
     if (e.fn === "http.clientOnResponse" || e.fn === "http.clientOnError" || e.fn === "http.reqOnError") {
       const cbT = e.args[1]!.type;
-      if (cbT.kind !== "func") throw new Error(`llvm emitter bug: ${e.fn} callback not a func`);
+      if (cbT.kind !== "func") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
       const args = e.args.map((a) => this.emitExpr(a));
       this.moveTemp(args[1]!);
       const adapter = e.fn === "http.clientOnResponse"
@@ -14188,11 +14189,11 @@ class LlEmitter {
     if (e.fn === "sym.desc" || e.fn === "sym.keyFor") {
       // `string | undefined` — the runtime answers a +1 string or NULL;
       // the union construction is type-directed here (envGet convention).
-      if (e.type.kind !== "union") throw new Error(`llvm emitter bug: ${e.fn} result is not a union`);
+      if (e.type.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
       const def = this.unionsById.get(e.type.unionId);
       const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
       const undefTag = this.undefinedArmTag(e.type);
-      if (strTag < 0 || undefTag < 0) throw new Error(`llvm emitter bug: ${e.fn} union lacks its arms`);
+      if (strTag < 0 || undefTag < 0) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
       const v = this.emitExpr(e.args[0]!);
       const sym = e.fn === "sym.desc" ? "scr_sym_desc" : "scr_sym_key_for";
       this.declare(`declare ptr @${sym}(ptr)`);
@@ -14204,9 +14205,9 @@ class LlEmitter {
       // Which builtin the runtime constructs is named by the RESULT type;
       // the message is borrowed (the runtime retains its copy). Never
       // throws.
-      if (e.type.kind !== "object") throw new Error("llvm emitter bug: error.new result is not a class");
+      if (e.type.kind !== "object") throw new InternalCompilerError("llvm emitter bug: error.new result is not a class");
       const rec = RUNTIME_ERROR_CLASSES.get(e.type.className);
-      if (!rec) throw new Error(`llvm emitter bug: error.new of ${e.type.className}`);
+      if (!rec) throw new InternalCompilerError(`llvm emitter bug: error.new of ${e.type.className}`);
       const msg = this.emitExpr(e.args[0]!);
       this.declare(`declare ptr @scr_error_new(i32, ptr)`);
       const t = B.tmp();
@@ -14218,9 +14219,9 @@ class LlEmitter {
       // receiver (borrowed, like the message). The RECEIVER'S static class
       // names which builtin name to stamp.
       const recvT = e.args[0]!.type;
-      if (recvT.kind !== "object") throw new Error("llvm emitter bug: error.ctor receiver is not a class");
+      if (recvT.kind !== "object") throw new InternalCompilerError("llvm emitter bug: error.ctor receiver is not a class");
       const rec = RUNTIME_ERROR_CLASSES.get(recvT.className);
-      if (!rec) throw new Error(`llvm emitter bug: error.ctor on ${recvT.className}`);
+      if (!rec) throw new InternalCompilerError(`llvm emitter bug: error.ctor on ${recvT.className}`);
       const args = e.args.map((a) => this.emitExpr(a));
       this.declare(`declare void @scr_error_init(ptr, i32, ptr)`);
       B.line(`call void @scr_error_init(ptr ${args[0]!.name}, i32 ${rec.kind}, ptr ${args[1]!.name})`);
@@ -14230,11 +14231,11 @@ class LlEmitter {
       // `string | undefined`, constructed type-directedly like
       // process.envGet: the runtime answers +1 or NULL (the receiver may
       // be a user subclass — the code slot sits in its ScrError prefix).
-      if (e.type.kind !== "union") throw new Error("llvm emitter bug: error.code result is not a union");
+      if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: error.code result is not a union");
       const def = this.unionsById.get(e.type.unionId);
       const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
       const undefTag = this.undefinedArmTag(e.type);
-      if (strTag < 0 || undefTag < 0) throw new Error("llvm emitter bug: error.code union lacks its arms");
+      if (strTag < 0 || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: error.code union lacks its arms");
       const recv = this.emitExpr(e.args[0]!);
       this.declare(`declare ptr @scr_error_code(ptr)`);
       const raw = B.tmp();
@@ -14256,12 +14257,12 @@ class LlEmitter {
       // NULL (a width or a negative sentinel); the union construction is
       // type-directed HERE — present wraps the value arm, absent yields
       // the interned immortal undefined-arm instance.
-      if (e.type.kind !== "union") throw new Error(`llvm emitter bug: ${e.fn} result is not a union`);
+      if (e.type.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
       const def = this.unionsById.get(e.type.unionId);
       const undefTag = this.undefinedArmTag(e.type);
       const isEnv = e.fn === "process.envGet";
       const valTag = def ? def.arms.findIndex((a) => a.kind === (isEnv ? "string" : "f64")) : -1;
-      if (valTag < 0 || undefTag < 0) throw new Error(`llvm emitter bug: ${e.fn} union lacks its arms`);
+      if (valTag < 0 || undefTag < 0) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
       const args = e.args.map((a) => this.emitExpr(a));
       const slot = B.slot();
       B.entryAllocas.push(`${slot} = alloca ptr`);

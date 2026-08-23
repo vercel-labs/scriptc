@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* The node:stream lowering (the spoke-module pattern, like
  * lower-emitter.ts): construction of the five runtime stream classes
  * (`new Readable({ read() {} })` et al — the OPTIONS-OBJECT form), user
@@ -97,7 +98,7 @@ export function streamCtorShape(cls: string): { fn: string; accepted: readonly s
     case "%PassThrough":
       return { fn: "passthrough", accepted: ["transform", "flush", "destroy"], duplexShape: true };
     default:
-      throw new Error(`lowerer bug: streamCtorShape of ${cls}`);
+      throw new InternalCompilerError(`lowerer bug: streamCtorShape of ${cls}`);
   }
 }
 

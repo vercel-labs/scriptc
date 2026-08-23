@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Structure-walking helper EMITTERS: interned per-type C helper functions
  * for JSON serialization, dyn matching/validation (dynCheck), dyn value
  * descriptions, and whole-union truthiness/equality. Each helper is emitted
@@ -47,7 +48,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
         return t.className.replace(/^%/, "");
       case "union": {
         const def = E.unionsById.get(t.unionId);
-        if (!def) throw new Error(`emitter bug: dynDesc of unknown union ${t.unionId}`);
+        if (!def) throw new InternalCompilerError(`emitter bug: dynDesc of unknown union ${t.unionId}`);
         return def.arms.map((a) => E.dynDesc(a)).join(" | ");
       }
       // Function targets (the checked-dynamic function boundary): the
@@ -67,7 +68,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
         // IncomingMessage at $, got string").
         const h = DYN_HANDLE_KINDS.get(t.kind);
         if (h) return h.cls;
-        throw new Error(`emitter bug: dynDesc of non-JSON type ${t.kind}`);
+        throw new InternalCompilerError(`emitter bug: dynDesc of non-JSON type ${t.kind}`);
       }
     }
   }
@@ -80,7 +81,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
     const existing = E.unionTruthyFns.get(unionId);
     if (existing) return existing;
     const def = E.unionsById.get(unionId);
-    if (!def) throw new Error(`emitter bug: truthiness of unknown union ${unionId}`);
+    if (!def) throw new InternalCompilerError(`emitter bug: truthiness of unknown union ${unionId}`);
     const name = `sc_ut_${E.unionTruthyFns.size}`;
     E.unionTruthyFns.set(unionId, name);
     const sig = `static bool ${name}(ScrUnion *v)`;
@@ -132,7 +133,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
     const existing = E.unionEqFns.get(key);
     if (existing) return existing;
     const def = E.unionsById.get(unionId);
-    if (!def) throw new Error(`emitter bug: equality of unknown union ${unionId}`);
+    if (!def) throw new InternalCompilerError(`emitter bug: equality of unknown union ${unionId}`);
     const name = `sc_ue_${E.unionEqFns.size}`;
     E.unionEqFns.set(key, name);
     const what = sameValue ? "SameValue" : "strict equality";
@@ -189,7 +190,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
     const existing = E.unionToStrFns.get(unionId);
     if (existing) return existing;
     const def = E.unionsById.get(unionId);
-    if (!def) throw new Error(`emitter bug: ToString of unknown union ${unionId}`);
+    if (!def) throw new InternalCompilerError(`emitter bug: ToString of unknown union ${unionId}`);
     const name = `sc_us_${E.unionToStrFns.size}`;
     E.unionToStrFns.set(unionId, name);
     const sig = `static ScrStr *${name}(ScrUnion *v)`;
@@ -220,7 +221,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
           break;
         }
         default:
-          throw new Error(`emitter bug: ToString of union with a ${arm.kind} arm (frontend fences these)`);
+          throw new InternalCompilerError(`emitter bug: ToString of union with a ${arm.kind} arm (frontend fences these)`);
       }
     });
     d.push(
@@ -244,7 +245,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
     const existing = E.unionJoinFns.get(unionId);
     if (existing) return existing;
     const def = E.unionsById.get(unionId);
-    if (!def) throw new Error(`emitter bug: join of unknown union ${unionId}`);
+    if (!def) throw new InternalCompilerError(`emitter bug: join of unknown union ${unionId}`);
     const name = `sc_uj_${E.unionJoinFns.size}`;
     E.unionJoinFns.set(unionId, name);
     const toStr = unionToStrHelper(E, unionId);
@@ -534,7 +535,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         break;
       case "record": {
         const shape = E.recordsById.get(t.shapeId);
-        if (!shape) throw new Error(`emitter bug: jsonStringify of unknown shape ${t.shapeId}`);
+        if (!shape) throw new InternalCompilerError(`emitter bug: jsonStringify of unknown shape ${t.shapeId}`);
         // CYCLE-CAPABLE shapes (recursive record types — the collector-
         // fixpoint set) bracket the walk with the circular-detection
         // stack: a value already being serialized above throws V8's exact
@@ -571,7 +572,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         const order = shape.declaredOrder ?? shape.fields.map((f) => f.name);
         const inOrder = new Set(order);
         if (shape.fields.some((f) => !inOrder.has(f.name) && !f.name.startsWith("%"))) {
-          throw new Error(`emitter bug: declaredOrder of shape ${t.shapeId} omits a non-internal field`);
+          throw new InternalCompilerError(`emitter bug: declaredOrder of shape ${t.shapeId} omits a non-internal field`);
         }
         const byName = new Map(shape.fields.map((f) => [f.name, f]));
         const emitFields = order.map((n) => byName.get(n)).filter((f) => f !== undefined);
@@ -696,7 +697,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       }
       case "union": {
         const def = E.unionsById.get(t.unionId);
-        if (!def) throw new Error(`emitter bug: jsonStringify of unknown union ${t.unionId}`);
+        if (!def) throw new InternalCompilerError(`emitter bug: jsonStringify of unknown union ${t.unionId}`);
         d.push(`  switch (v->tag) {`);
         def.arms.forEach((arm, i) => {
           if (arm.kind === "nullT") {
@@ -729,7 +730,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         break;
       }
       default:
-        throw new Error(`emitter bug: jsonStringify of non-JSON type ${t.kind}`);
+        throw new InternalCompilerError(`emitter bug: jsonStringify of non-JSON type ${t.kind}`);
     }
     d.push(`}`, ``);
     E.walkerDefs.push(...d);
@@ -794,12 +795,12 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         break;
       case "bytes":
         // A Uint8Array target (the checked-dynamic tree carries u8 payloads only).
-        if (t.elem !== "u8") throw new Error(`emitter bug: dynMatch of bytes<${t.elem}>`);
+        if (t.elem !== "u8") throw new InternalCompilerError(`emitter bug: dynMatch of bytes<${t.elem}>`);
         d.push(`  return d->kind == SCR_DYN_BYTES;`);
         break;
       case "record": {
         const shape = E.recordsById.get(t.shapeId);
-        if (!shape) throw new Error(`emitter bug: dynCheck of unknown shape ${t.shapeId}`);
+        if (!shape) throw new InternalCompilerError(`emitter bug: dynCheck of unknown shape ${t.shapeId}`);
         // A tuple matches a JSON ARRAY of EXACTLY its arity whose elements
         // match positionally (arity is part of the type — width tolerance
         // is an object-key concept and does not apply).
@@ -861,7 +862,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       }
       case "union": {
         const def = E.unionsById.get(t.unionId);
-        if (!def) throw new Error(`emitter bug: dynCheck of unknown union ${t.unionId}`);
+        if (!def) throw new InternalCompilerError(`emitter bug: dynCheck of unknown union ${t.unionId}`);
         // The undefined arm participates: parsed JSON never contains
         // undefined (a MISSING record key was the arm's only source), but
         // the checked-dynamic tree can hold the undefined value now — overflow entries
@@ -872,7 +873,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         break;
       }
       default:
-        throw new Error(`emitter bug: dynMatch of non-JSON type ${t.kind}`);
+        throw new InternalCompilerError(`emitter bug: dynMatch of non-JSON type ${t.kind}`);
     }
     d.push(`}`, ``);
     E.walkerDefs.push(...d);
@@ -1152,7 +1153,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         if (t.kind === "record") {
           const shape = E.recordsById.get(t.shapeId);
           if (!shape) {
-            throw new Error(
+            throw new InternalCompilerError(
               `emitter bug: cached typed-ref cast of unknown shape ${t.shapeId}`,
             );
           }
@@ -1230,7 +1231,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       case "bytes":
         // `u as Uint8Array`: kind check, then a fresh COPY out (the
         // boundary's aliasing stance in both directions).
-        if (t.elem !== "u8") throw new Error(`emitter bug: dynCheck of bytes<${t.elem}>`);
+        if (t.elem !== "u8") throw new InternalCompilerError(`emitter bug: dynCheck of bytes<${t.elem}>`);
         d.push(`  if (d->kind != SCR_DYN_BYTES) { scr_dyn_check_fail(path, ${want}, d); return NULL; }`);
         d.push(`  return scr_dyn_bytes_copy_out(d);`);
         break;
@@ -1243,14 +1244,14 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         // compare reference-equal (the tracing suite's shape); alien
         // %error objects rebuild once and cache the pair.
         if (t.className !== "%Error") {
-          throw new Error(`emitter bug: dynCheck of class ${t.className} (only %Error extracts from the checked-dynamic tree)`);
+          throw new InternalCompilerError(`emitter bug: dynCheck of class ${t.className} (only %Error extracts from the checked-dynamic tree)`);
         }
         d.push(`  if (d->kind != SCR_DYN_OBJ || !scr_dyn_obj_get(d, "%error", 6)) { scr_dyn_check_fail(path, ${want}, d); return NULL; }`);
         d.push(`  return scr_error_from_dyn(d);`);
         break;
       case "record": {
         const shape = E.recordsById.get(t.shapeId);
-        if (!shape) throw new Error(`emitter bug: dynCheck of unknown shape ${t.shapeId}`);
+        if (!shape) throw new InternalCompilerError(`emitter bug: dynCheck of unknown shape ${t.shapeId}`);
         const rel = (v: string) => releaseCallC(t, v);
         // Tuple targets: a JSON ARRAY of exactly the arity, validated and
         // extracted positionally with index paths ("$.pairs[3][1]").
@@ -1360,7 +1361,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       }
       case "union": {
         const def = E.unionsById.get(t.unionId);
-        if (!def) throw new Error(`emitter bug: dynCheck of unknown union ${t.unionId}`);
+        if (!def) throw new InternalCompilerError(`emitter bug: dynCheck of unknown union ${t.unionId}`);
         // Arms in CANONICAL order, first FULL match wins (discriminated
         // unions disambiguate naturally: the arm whose declared fields all
         // fit). The matched arm's builder can no longer fail.
@@ -1464,7 +1465,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           d.push(`  return (${cType(t).trim()})scr_dyn_handle_unbox(d, ${h.tag}, path, ${want});`);
           break;
         }
-        throw new Error(`emitter bug: dynCheck of non-JSON type ${t.kind}`);
+        throw new InternalCompilerError(`emitter bug: dynCheck of non-JSON type ${t.kind}`);
       }
     }
     d.push(`}`, ``);
@@ -1510,7 +1511,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       case "object":
         // %Error only (canConvertToDyn's gate): the checked-dynamic tree's error encoding.
         if (t.className !== "%Error") {
-          throw new Error(`emitter bug: to-dyn of class ${t.className}`);
+          throw new InternalCompilerError(`emitter bug: to-dyn of class ${t.className}`);
         }
         d.push(`  return scr_dyn_from_error(v);`);
         break;
@@ -1529,12 +1530,12 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       case "bytes":
         // bytes<u8> → the checked-dynamic tree's bytes kind, payload COPIED (the boundary
         // stance; stdin chunks into unknown-typed helpers).
-        if (t.elem !== "u8") throw new Error(`emitter bug: to-dyn of bytes<${t.elem}>`);
+        if (t.elem !== "u8") throw new InternalCompilerError(`emitter bug: to-dyn of bytes<${t.elem}>`);
         d.push(`  return scr_dyn_new_bytes_copy(v);`);
         break;
       case "record": {
         const shape = E.recordsById.get(t.shapeId);
-        if (!shape) throw new Error(`emitter bug: to-dyn of unknown shape ${t.shapeId}`);
+        if (!shape) throw new InternalCompilerError(`emitter bug: to-dyn of unknown shape ${t.shapeId}`);
         // CYCLE-CAPABLE shapes guard the deep copy: a cyclic value has no
         // finite dyn copy, so enter TRAPS on re-entry (SEMANTICS.md — Node
         // shares the reference instead of copying).
@@ -1642,7 +1643,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       }
       case "union": {
         const def = E.unionsById.get(t.unionId);
-        if (!def) throw new Error(`emitter bug: to-dyn of unknown union ${t.unionId}`);
+        if (!def) throw new InternalCompilerError(`emitter bug: to-dyn of unknown union ${t.unionId}`);
         d.push(`  switch (v->tag) {`);
         def.arms.forEach((arm, i) => {
           if (arm.kind === "undefinedT") {
@@ -1687,7 +1688,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           d.push(`  return scr_dyn_new_handle(v, ${h.tag});`);
           break;
         }
-        throw new Error(`emitter bug: to-dyn of unsupported type ${t.kind}`);
+        throw new InternalCompilerError(`emitter bug: to-dyn of unsupported type ${t.kind}`);
       }
     }
     d.push(`}`, ``);
@@ -1956,7 +1957,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
     const existing = E.recordKeyGetFns.get(key);
     if (existing) return existing;
     const shape = E.recordsById.get(shapeId);
-    if (!shape) throw new Error(`emitter bug: keyed read of unknown shape ${shapeId}`);
+    if (!shape) throw new InternalCompilerError(`emitter bug: keyed read of unknown shape ${shapeId}`);
     const name = `sc_rkg_${E.recordKeyGetFns.size}`;
     E.recordKeyGetFns.set(key, name);
     const struct = mangleRecordStruct(shapeId);
@@ -1975,14 +1976,14 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       if (t.kind === "union") {
         const def = E.unionsById.get(t.unionId);
         const tag = def?.arms.findIndex((a) => typeEquals(a, vt)) ?? -1;
-        if (tag < 0) throw new Error(`emitter bug: keyed read arm for ${typeKey(vt)} in ${typeKey(t)}`);
+        if (tag < 0) throw new InternalCompilerError(`emitter bug: keyed read arm for ${typeKey(vt)} in ${typeKey(t)}`);
         if (vt.kind === "f64") return `scr_union_new_f64(${tag}, ${expr})`;
         if (vt.kind === "bool") return `scr_union_new_bool(${tag}, ${expr})`;
         const rc = vAdapters(vt);
         const payload = owned ? expr : retainCallC(vt, expr);
         return `scr_union_new_ref(${tag}, ${payload}, &${rc.retain}, &${rc.release}, ${E.traceArgC(vt)})`;
       }
-      throw new Error(`emitter bug: keyed read cannot surface ${typeKey(vt)} as ${typeKey(t)}`);
+      throw new InternalCompilerError(`emitter bug: keyed read cannot surface ${typeKey(vt)} as ${typeKey(t)}`);
     };
     // overflowOnly (a literal key naming no declared field): the declared
     // switch can never hit — only the overflow answers.
@@ -2009,7 +2010,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         } else if (t.kind === "union") {
           d.push(`    return ${surface(iv, "hit", true)};`);
         } else {
-          throw new Error(`emitter bug: keyed read overflow ${typeKey(iv)} as ${typeKey(t)}`);
+          throw new InternalCompilerError(`emitter bug: keyed read overflow ${typeKey(iv)} as ${typeKey(t)}`);
         }
         d.push(`  }`);
       }
@@ -2047,7 +2048,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
     // property, which a monomorphic struct cannot); overflow shapes keep
     // the map insert tail.
     const iv = shape?.indexValue ?? shape?.fields[0]?.type;
-    if (!shape || !iv) throw new Error(`emitter bug: keyed write on field-free non-overflow shape ${shapeId}`);
+    if (!shape || !iv) throw new InternalCompilerError(`emitter bug: keyed write on field-free non-overflow shape ${shapeId}`);
     const name = `sc_rks_${E.recordKeySetFns.size}`;
     E.recordKeySetFns.set(shapeId, name);
     const struct = mangleRecordStruct(shapeId);

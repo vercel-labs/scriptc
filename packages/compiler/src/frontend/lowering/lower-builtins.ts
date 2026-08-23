@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Builtin-surface lowering: node builtin-module calls (fs, path, os, url,
  * crypto, child_process spawn/spawnSync and child/stats/spawn-result
  * methods), JSON.parse/stringify, process properties/methods and
@@ -2713,7 +2714,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         loc,
       });
     }
-    if (stdioT.kind !== "union") throw new Error("emitter bug: exec-options stdio is not a union");
+    if (stdioT.kind !== "union") throw new InternalCompilerError("emitter bug: exec-options stdio is not a union");
     const uTag = L.armTag(stdioT.unionId, UNDEFINED_T);
     const sTag = L.armTag(stdioT.unionId, STRING);
     const aTag = L.armTag(stdioT.unionId, arrayOf(STRING));
@@ -3834,7 +3835,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       return space.text.slice(0, 10); // first 10 code units, like Node
     }
     fence();
-    throw new Error("unreachable"); // fence() never returns
+    throw new InternalCompilerError("unreachable"); // fence() never returns
   }
 
 /** The module specifier when `ident` is an import binding (named,

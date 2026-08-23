@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Per-shape C emission: class/record struct definitions and their RC/trace
  * helper families, the hierarchy vtable machinery (slot structs, per-class
  * instances, exact-signature adapter thunks), and the capture-box
@@ -384,7 +385,7 @@ function emitRecordCloneC(
         }
       }
       if (meta.def.abstract === true) return { slot, impl: null };
-      throw new Error(`emitter bug: no implementation of ${slot.method} for ${meta.def.name}`);
+      throw new InternalCompilerError(`emitter bug: no implementation of ${slot.method} for ${meta.def.name}`);
     });
   }
 
@@ -605,7 +606,7 @@ function emitRecordCloneC(
     out.push("");
     for (const [className, sym] of E.classObjs) {
       const meta = E.classMeta.get(className);
-      if (!meta) throw new Error(`emitter bug: class object for unknown class ${className}`);
+      if (!meta) throw new InternalCompilerError(`emitter bug: class object for unknown class ${className}`);
       // A generic-class INSTANTIATION's class object carries its FAMILY's
       // interval: at runtime JS has ONE `Box`, so instanceof through the
       // value must answer for the whole family (every instantiation and
@@ -614,7 +615,7 @@ function emitRecordCloneC(
       const intervalMeta = meta.def.genericOf !== undefined
         ? E.classMeta.get(meta.def.genericOf)
         : meta;
-      if (!intervalMeta) throw new Error(`emitter bug: class object for ${className} names unknown family ${meta.def.genericOf ?? ""}`);
+      if (!intervalMeta) throw new InternalCompilerError(`emitter bug: class object for ${className} names unknown family ${meta.def.genericOf ?? ""}`);
       const nameSym = E.internLiteral(meta.def.jsName ?? "");
       out.push(
         `static void *${mangleCtorThunk(className)}(${ctorThunkParams(E, className).decls || "void"});`,
@@ -628,7 +629,7 @@ function emitRecordCloneC(
    * minus the `this` the thunk allocates itself. */
   function ctorThunkParams(E: CEmitter, className: string): { decls: string; names: string[] } {
     const ctor = E.fnByName.get(`%${className}.constructor`);
-    if (!ctor) throw new Error(`emitter bug: class object for ${className} without a constructor`);
+    if (!ctor) throw new InternalCompilerError(`emitter bug: class object for ${className} without a constructor`);
     const params = ctor.params.slice(1);
     return {
       decls: params.map((p, i) => cDecl(p.type, `sc_a${i}`)).join(", "),

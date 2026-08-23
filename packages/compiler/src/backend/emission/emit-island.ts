@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Island-boundary C emission owned pieces: the embedded npm module/edge
  * tables (--dynamic builds embed every reached npm source; the island's
  * module loader and require shim read them — binaries never touch
@@ -156,7 +157,7 @@ export function emitNpmEmbedding(E: CEmitter, out: string[]): void {
    * promise settles (scr_jsval_from_promise). */
   export function islandTypedAdapter(E: CEmitter, fn: IrType & { kind: "func" }): string {
     const ret = islandCallbackRet(fn.ret, (id) => E.recordsById.get(id), (id) => E.unionsById.get(id));
-    if (!ret) throw new Error("emitter bug: typed island adapter with unsupported return");
+    if (!ret) throw new InternalCompilerError("emitter bug: typed island adapter with unsupported return");
     const key = `${fn.params.map((p) => typeKey(p)).join(",")}=>${ret.async ? "P:" : ""}${ret.tag}`;
     const existing = E.islandTypedAdapters.get(key);
     if (existing) return existing;

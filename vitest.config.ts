@@ -53,7 +53,7 @@ export default defineConfig({
       SCRIPTC_CACHE_DIR: cacheDir,
       // The differential lanes run against one immutable checkout/toolchain
       // per worker. Reuse expensive compiler/linker metadata probes inside
-      // that session; cc-cache.test.ts removes this flag to keep exercising
+      // that session; cc.test.ts removes this flag to keep exercising
       // production's fresh-probe invalidation guarantees.
       SCRIPTC_TEST_STABLE_TOOLCHAIN:
         process.env["SCRIPTC_TEST_STABLE_TOOLCHAIN"] ?? "1",

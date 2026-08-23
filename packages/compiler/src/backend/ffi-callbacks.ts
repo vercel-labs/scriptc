@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../errors.js";
 import type { IrFfiCallbackParam, IrFfiImport } from "../ir/nodes.js";
 import { isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam } from "../ir/nodes.js";
 
@@ -120,7 +121,7 @@ export function collectFfiRetainedOps<V>(
   for (const param of entry.params) {
     if (isFfiCallbackParam(param) && param.callback.lifetime === "retained") {
       const adapter = adapterFor(entry.name, param.callback.id);
-      if (adapter.table === null) throw new Error("emitter bug: retained callback has no table");
+      if (adapter.table === null) throw new InternalCompilerError("emitter bug: retained callback has no table");
       registrations.push({
         table: adapter.table,
         global: adapter.global,
@@ -130,7 +131,7 @@ export function collectFfiRetainedOps<V>(
     } else if (isFfiReleaseParam(param)) {
       const { binding, id } = parseFfiCallbackKey(param.callback.release);
       const adapter = adapterFor(binding, id);
-      if (adapter.table === null) throw new Error("emitter bug: retained release has no table");
+      if (adapter.table === null) throw new InternalCompilerError("emitter bug: retained release has no table");
       releases.push({
         table: adapter.table,
         global: adapter.global,

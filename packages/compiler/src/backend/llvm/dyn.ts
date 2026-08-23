@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* The dyn (ScrDyn dyn) helper EMITTERS for the LLVM backend — the .ll
  * mirror of emit-walkers.ts's dyn slice: per-type match predicates
  * (dynMatchHelper), checked builders (dynCheckHelper), static→dyn
@@ -318,7 +319,7 @@ export class LlDyn {
         return t.className.replace(/^%/, "");
       case "union": {
         const def = this.host.unionsById.get(t.unionId);
-        if (!def) throw new Error(`llvm emitter bug: dynDesc of unknown union ${t.unionId}`);
+        if (!def) throw new InternalCompilerError(`llvm emitter bug: dynDesc of unknown union ${t.unionId}`);
         return def.arms.map((a) => this.dynDesc(a)).join(" | ");
       }
       case "func":
@@ -326,7 +327,7 @@ export class LlDyn {
       default: {
         const h = DYN_HANDLE_KINDS.get(t.kind);
         if (h) return h.cls;
-        throw new Error(`llvm emitter bug: dynDesc of non-JSON type ${t.kind}`);
+        throw new InternalCompilerError(`llvm emitter bug: dynDesc of non-JSON type ${t.kind}`);
       }
     }
   }
@@ -399,12 +400,12 @@ export class LlDyn {
         B.terminate(`ret i1 true`);
         break;
       case "bytes":
-        if (t.elem !== "u8") throw new Error(`llvm emitter bug: dynMatch of bytes<${t.elem}>`);
+        if (t.elem !== "u8") throw new InternalCompilerError(`llvm emitter bug: dynMatch of bytes<${t.elem}>`);
         kindIs(DK.BYTES);
         break;
       case "record": {
         const shape = this.host.recordsById.get(t.shapeId);
-        if (!shape) throw new Error(`llvm emitter bug: dynCheck of unknown shape ${t.shapeId}`);
+        if (!shape) throw new InternalCompilerError(`llvm emitter bug: dynCheck of unknown shape ${t.shapeId}`);
         const fail = B.newLabel("dm.f");
         const kd = this.kindOf(B, "%d");
         // A tuple matches a JSON ARRAY of EXACTLY its arity, positionally.
@@ -529,7 +530,7 @@ export class LlDyn {
       }
       case "union": {
         const def = this.host.unionsById.get(t.unionId);
-        if (!def) throw new Error(`llvm emitter bug: dynCheck of unknown union ${t.unionId}`);
+        if (!def) throw new InternalCompilerError(`llvm emitter bug: dynCheck of unknown union ${t.unionId}`);
         // Arms in canonical order; any full match answers true.
         const yes = B.newLabel("dm.y");
         for (const arm of def.arms) {
@@ -625,7 +626,7 @@ export class LlDyn {
             ? host.recordsById.get(t.shapeId)
             : undefined;
           if (t.kind === "record" && !shape) {
-            throw new Error(
+            throw new InternalCompilerError(
               `llvm emitter bug: cached typed-ref cast of unknown shape ${t.shapeId}`,
             );
           }
@@ -744,7 +745,7 @@ export class LlDyn {
       }
       case "bytes": {
         // `u as Uint8Array`: kind check, then a fresh COPY out.
-        if (t.elem !== "u8") throw new Error(`llvm emitter bug: dynCheck of bytes<${t.elem}>`);
+        if (t.elem !== "u8") throw new InternalCompilerError(`llvm emitter bug: dynCheck of bytes<${t.elem}>`);
         requireKind(DK.BYTES, "dc");
         host.declare(`declare ptr @scr_dyn_bytes_copy_out(ptr)`);
         const r = B.tmp();
@@ -762,7 +763,7 @@ export class LlDyn {
         // %error objects rebuild once and cache the pair. The C walker's
         // arm exactly.
         if (t.className !== "%Error") {
-          throw new Error(`llvm emitter bug: dynCheck of class ${t.className} (only %Error extracts from the checked-dynamic tree)`);
+          throw new InternalCompilerError(`llvm emitter bug: dynCheck of class ${t.className} (only %Error extracts from the checked-dynamic tree)`);
         }
         const kd = this.kindOf(B, "%d");
         const isObj = B.tmp();
@@ -788,7 +789,7 @@ export class LlDyn {
       }
       case "record": {
         const shape = host.recordsById.get(t.shapeId);
-        if (!shape) throw new Error(`llvm emitter bug: dynCheck of unknown shape ${t.shapeId}`);
+        if (!shape) throw new InternalCompilerError(`llvm emitter bug: dynCheck of unknown shape ${t.shapeId}`);
         const struct = mangleRecordStruct(t.shapeId);
         const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
         const releaseR = (): void => {
@@ -1020,7 +1021,7 @@ export class LlDyn {
       }
       case "union": {
         const def = host.unionsById.get(t.unionId);
-        if (!def) throw new Error(`llvm emitter bug: dynCheck of unknown union ${t.unionId}`);
+        if (!def) throw new InternalCompilerError(`llvm emitter bug: dynCheck of unknown union ${t.unionId}`);
         // Arms in CANONICAL order, first FULL match wins. The matched
         // arm's builder can no longer fail.
         def.arms.forEach((arm, i) => {
@@ -1245,7 +1246,7 @@ export class LlDyn {
       case "object": {
         // %Error only (canConvertToDyn's gate): the checked-dynamic tree's error encoding.
         if (t.className !== "%Error") {
-          throw new Error(`llvm emitter bug: to-dyn of class ${t.className}`);
+          throw new InternalCompilerError(`llvm emitter bug: to-dyn of class ${t.className}`);
         }
         host.declare(`declare ptr @scr_dyn_from_error(ptr)`);
         const r = B.tmp();
@@ -1267,7 +1268,7 @@ export class LlDyn {
         break;
       }
       case "bytes": {
-        if (t.elem !== "u8") throw new Error(`llvm emitter bug: to-dyn of bytes<${t.elem}>`);
+        if (t.elem !== "u8") throw new InternalCompilerError(`llvm emitter bug: to-dyn of bytes<${t.elem}>`);
         host.declare(`declare ptr @scr_dyn_new_bytes_copy(ptr)`);
         const r = B.tmp();
         B.line(`${r} = call ptr @scr_dyn_new_bytes_copy(ptr %v)`);
@@ -1276,7 +1277,7 @@ export class LlDyn {
       }
       case "record": {
         const shape = host.recordsById.get(t.shapeId);
-        if (!shape) throw new Error(`llvm emitter bug: to-dyn of unknown shape ${t.shapeId}`);
+        if (!shape) throw new InternalCompilerError(`llvm emitter bug: to-dyn of unknown shape ${t.shapeId}`);
         const struct = mangleRecordStruct(t.shapeId);
         const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
         const loadFieldOf = (fname: string, ft: IrType): string => {
@@ -1498,7 +1499,7 @@ export class LlDyn {
       }
       case "union": {
         const def = host.unionsById.get(t.unionId);
-        if (!def) throw new Error(`llvm emitter bug: to-dyn of unknown union ${t.unionId}`);
+        if (!def) throw new InternalCompilerError(`llvm emitter bug: to-dyn of unknown union ${t.unionId}`);
         const tagp = B.tmp();
         const tag = B.tmp();
         B.line(`${tagp} = getelementptr inbounds %ScrUnion, ptr %v, i64 0, i32 1`);

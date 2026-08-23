@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Statement-level C emission: function bodies, blocks/scopes, the statement
  * dispatch (emitStmt), try/catch lowering, and switch — plus the small
  * branch/condition helpers they share with expression emission. All frame,
@@ -221,7 +222,7 @@ export function emitStmt(E: CEmitter, s: IrStmt): void {
           // Module global: plain static storage, never boxed. Old-value
           // release is NULL-tolerant (statics start NULL).
           const g = E.globalsById.get(s.localId);
-          if (!g) throw new Error(`emitter bug: assign to unknown binding ${s.localId}`);
+          if (!g) throw new InternalCompilerError(`emitter bug: assign to unknown binding ${s.localId}`);
           const target = mangleGlobal(g.id);
           const v = E.emitExpr(s.value);
           E.moveTemp(v);
@@ -375,7 +376,7 @@ export function emitStmt(E: CEmitter, s: IrStmt): void {
         const arr = E.emitExpr(s.arr);
         const idx = E.emitExpr(s.index);
         const v = E.emitExpr(s.value);
-        if (s.arr.type.kind !== "array") throw new Error("emitter bug: arraySet on non-array");
+        if (s.arr.type.kind !== "array") throw new InternalCompilerError("emitter bug: arraySet on non-array");
         const acc = elemAccess(s.arr.type.elem);
         if (acc === "ref") E.moveTemp(v);
         E.line(`scr_arr_set_${acc}(${arr.name}, ${idx.name}, ${v.name});${E.srcComment(s.loc)}`);
@@ -391,7 +392,7 @@ export function emitStmt(E: CEmitter, s: IrStmt): void {
         const integerIndex = E.integerLoopIndex(s.index);
         const idx = integerIndex === null ? E.emitExpr(s.index).name : integerIndex;
         const v = E.emitExpr(s.value);
-        if (s.arr.type.kind !== "bytes") throw new Error("emitter bug: bytesSet on non-bytes");
+        if (s.arr.type.kind !== "bytes") throw new InternalCompilerError("emitter bug: bytesSet on non-bytes");
         E.line(
           `${E.bytesElementHelper("set", s.arr.type.elem, integerIndex !== null)}(${arr.name}, ${idx}, ${v.name});${E.srcComment(s.loc)}`,
         );
@@ -468,7 +469,7 @@ export function emitStmt(E: CEmitter, s: IrStmt): void {
         // iterable temp lives in this statement's frame, so it is released
         // when the whole loop ends (and by `return`'s frame sweep). A real
         // C for-loop makes plain `continue` correct: the update still runs.
-        if (s.iterable.type.kind !== "array") throw new Error("emitter bug: forOf over non-array");
+        if (s.iterable.type.kind !== "array") throw new InternalCompilerError("emitter bug: forOf over non-array");
         const elem = s.iterable.type.elem;
         const arr = E.emitExpr(s.iterable);
         const idx = `sc_t${E.tempCounter++}`;
@@ -550,7 +551,7 @@ export function emitStmt(E: CEmitter, s: IrStmt): void {
             break;
           }
         }
-        if (!target) throw new Error("emitter bug: break target not found");
+        if (!target) throw new InternalCompilerError("emitter bug: break target not found");
         E.releaseForJump(target.frameDepth, target.scopeDepth);
         if (target.kind !== "loop" || s.label !== undefined) {
           // Switches are emitted as goto chains and blocks aren't C loops
@@ -577,7 +578,7 @@ export function emitStmt(E: CEmitter, s: IrStmt): void {
             break;
           }
         }
-        if (!loop) throw new Error("emitter bug: continue target not found");
+        if (!loop) throw new InternalCompilerError("emitter bug: continue target not found");
         E.releaseForJump(loop.frameDepth, loop.scopeDepth);
         if (loop.continueLabel) {
           // Labeled loops always allocate one (a labeled continue may
@@ -629,7 +630,7 @@ export function emitStmt(E: CEmitter, s: IrStmt): void {
         const t = s.value.type;
         if (isRefCounted(t)) E.moveTemp(v); // the cell takes ownership
         if (t.kind === "date") {
-          throw new Error("emitter bug: Date throw reached backend");
+          throw new InternalCompilerError("emitter bug: Date throw reached backend");
         } else if (t.kind === "f64") {
           E.line(`scr_throw_f64(${v.name});${E.srcComment(s.loc)}`);
         } else if (t.kind === "bool") {
@@ -873,7 +874,7 @@ export function emitStmt(E: CEmitter, s: IrStmt): void {
    * scope-exit releases rely on the runtime's NULL-tolerant release calls. */
   export function emitSwitch(E: CEmitter, s: IrStmt & { kind: "switch" }): void {
     if (s.disc.type.kind !== "f64" && s.disc.type.kind !== "string" && s.disc.type.kind !== "bool") {
-      throw new Error(`emitter bug: switch on ${s.disc.type.kind}`);
+      throw new InternalCompilerError(`emitter bug: switch on ${s.disc.type.kind}`);
     }
     const id = E.labelCounter++;
     const endLabel = `sc_swend_${id}`;

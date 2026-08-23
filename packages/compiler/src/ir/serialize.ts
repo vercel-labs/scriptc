@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../errors.js";
 /* IR ↔ JSON. The IR is plain JSON-safe data by construction; the value of
  * this module is the version fence and the finiteness assertion (numLit
  * holds a JS number — NaN/Infinity literals cannot appear in source, but
@@ -13,7 +14,7 @@ export function serializeModule(mod: IrModule): string {
       // ±Infinity numLits are real (the global `Infinity`); JSON cannot
       // spell them, so they ride a sentinel object no other IR value can
       // be (numbers never serialize as objects). NaN stays a bug.
-      if (Number.isNaN(value)) throw new Error("IR contains NaN; refusing to serialize");
+      if (Number.isNaN(value)) throw new InternalCompilerError("IR contains NaN; refusing to serialize");
       return { $nonfinite: value > 0 ? "inf" : "-inf" };
     }
     // JSON.stringify(-0) prints "0", silently losing the sign a numLit's
@@ -35,7 +36,7 @@ export function deserializeModule(json: string): IrModule {
     return value;
   }) as IrModule;
   if (mod.irVersion !== IR_VERSION) {
-    throw new Error(
+    throw new InternalCompilerError(
       `IR version mismatch: file has ${String(mod.irVersion)}, compiler expects ${IR_VERSION}`,
     );
   }

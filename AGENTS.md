@@ -31,6 +31,16 @@ lane.
 
 Corpus programs are differential tests against Node: every program runs under Node and as a compiled native binary, and stdout, stderr, and exit codes must match byte-for-byte. A new feature lands with corpus programs that pin its behavior both ways.
 
+Test location follows scope:
+
+- Co-locate white-box unit tests with implementation files under
+  `packages/*/src`; name them after the source file (`cc.ts` → `cc.test.ts`).
+- Put package-level API and integration tests in `packages/*/test`.
+- Put cross-package differential, harness, and end-to-end tests in the root `tests/` tree.
+
+Keep existing tests in place unless a change already touches their organization;
+new tests should follow this convention.
+
 ## Where things live
 
 - `packages/compiler` — the frontend (tsc API to IR), the typed IR with validator and serializer, and the LLVM and C backends.

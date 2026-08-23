@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Class lowering: shape collection over the single-inheritance graph
  * (fields, methods, accessors, overrides), constructor/member lowering with
  * synthesized derived ctors and field initializers, super calls and super
@@ -5689,9 +5690,9 @@ export function lowerNew(L: Lowerer, expr: ts.NewExpression): IrExpr {
     ret: IrType,
     loc: SrcLoc,): IrExpr {
     const info = L.classes.get(className);
-    if (!info) throw new Error(`lowerer bug: accessor call on unknown class ${className}`);
+    if (!info) throw new InternalCompilerError(`lowerer bug: accessor call on unknown class ${className}`);
     const found = L.findMethodOn(info, member);
-    if (!found) throw new Error(`lowerer bug: no ${member} on ${className}`);
+    if (!found) throw new InternalCompilerError(`lowerer bug: no ${member} on ${className}`);
     // The abstract direct-call fence, accessor form (see
     // lowerObjectMethodCall): an abstract accessor with no concrete
     // override below has no implementation for a direct call to target.

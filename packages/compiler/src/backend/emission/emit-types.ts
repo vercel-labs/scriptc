@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Type-directed dispatch tables of the C emitter: the C spelling of every IR
  * type and the per-type runtime entry points (retain/release, box kinds,
  * array element kinds, map key/value kinds), plus C literal spelling. Pure
@@ -117,11 +118,11 @@ export function cType(t: IrType): string {
       // Unit kinds have no C value form: they exist only as union arms
       // (the box carries the tag and nothing else) — a unit type asked to
       // declare a C value is an emitter bug.
-      throw new Error(`emitter bug: ${t.kind} has no C value form`);
+      throw new InternalCompilerError(`emitter bug: ${t.kind} has no C value form`);
     default: {
       const _exhaustive: never = t;
       void _exhaustive;
-      throw new Error("unreachable");
+      throw new InternalCompilerError("unreachable");
     }
   }
 }
@@ -203,7 +204,7 @@ export function retainCallC(type: IrType, expr: string): string {
     case "caught":
       return `scr_caught_retain(${expr})`;
     default:
-      throw new Error(`emitter bug: retain of non-refcounted type ${type.kind}`);
+      throw new InternalCompilerError(`emitter bug: retain of non-refcounted type ${type.kind}`);
   }
 }
 
@@ -283,7 +284,7 @@ export function releaseCallC(type: IrType, expr: string): string {
     case "caught":
       return `scr_caught_release(${expr})`;
     default:
-      throw new Error(`emitter bug: release of non-refcounted type ${type.kind}`);
+      throw new InternalCompilerError(`emitter bug: release of non-refcounted type ${type.kind}`);
   }
 }
 
@@ -328,34 +329,34 @@ export function boxKindC(t: IrType): string {
     case "fsWatcher":
     case "childStream":
     case "bytes":
-      throw new Error(`emitter bug: ${t.kind} boxes go through boxNewC, not boxKindC`);
+      throw new InternalCompilerError(`emitter bug: ${t.kind} boxes go through boxNewC, not boxKindC`);
     case "procStream":
       // Scalar (the fd double) — the f64 box carries it.
       return "SCR_BOX_F64";
     case "dyn":
       // dyn never rides capture boxes (frontend rejects dyn captures).
-      throw new Error("emitter bug: box of dyn");
+      throw new InternalCompilerError("emitter bug: box of dyn");
     case "jsval":
-      throw new Error("emitter bug: jsval boxes go through boxNewC, not boxKindC");
+      throw new InternalCompilerError("emitter bug: jsval boxes go through boxNewC, not boxKindC");
     case "promise":
       // promises ride obj-boxes (boxNewC), never plain kind boxes
-      throw new Error("emitter bug: promise boxes go through boxNewC");
+      throw new InternalCompilerError("emitter bug: promise boxes go through boxNewC");
     case "generator":
       // generators ride obj-boxes too (boxNewC — vAdapters carries the
       // ScrGen RC entry points; no trace, like child).
-      throw new Error("emitter bug: generator boxes go through boxNewC");
+      throw new InternalCompilerError("emitter bug: generator boxes go through boxNewC");
     case "undefinedT":
     case "nullT":
     case "caught":
       // unit kinds never stand alone (and catch bindings never box), so
       // nothing to box
-      throw new Error(`emitter bug: box of ${t.kind}`);
+      throw new InternalCompilerError(`emitter bug: box of ${t.kind}`);
     case "void":
-      throw new Error("emitter bug: box of void");
+      throw new InternalCompilerError("emitter bug: box of void");
     default: {
       const _exhaustive: never = t;
       void _exhaustive;
-      throw new Error("unreachable");
+      throw new InternalCompilerError("unreachable");
     }
   }
 }
@@ -447,7 +448,7 @@ export function vAdapters(t: IrType): { retain: string; release: string } {
     case "jsval":
       return { retain: "scr_jsval_retain_v", release: "scr_jsval_release_v" };
     default:
-      throw new Error(`emitter bug: no RC adapters for ${t.kind}`);
+      throw new InternalCompilerError(`emitter bug: no RC adapters for ${t.kind}`);
   }
 }
 
@@ -540,13 +541,13 @@ export function elemKindC(elem: IrType): string {
     case "generator":
     case "undefinedT":
     case "nullT":
-      throw new Error(`emitter bug: array of ${elem.kind} (frontend rejects these)`);
+      throw new InternalCompilerError(`emitter bug: array of ${elem.kind} (frontend rejects these)`);
     case "void":
-      throw new Error("emitter bug: array of void");
+      throw new InternalCompilerError("emitter bug: array of void");
     default: {
       const _exhaustive: never = elem;
       void _exhaustive;
-      throw new Error("unreachable");
+      throw new InternalCompilerError("unreachable");
     }
   }
 }
@@ -625,7 +626,7 @@ export function mapKeyAccess(key: IrType): "f64" | "str" | "ref" {
   // Handle-kind SET elements (identity hashing — isSupportedSetElem);
   // Map keys proper stay f64/string.
   if (key.kind === "netServer" || key.kind === "symbol") return "ref";
-  throw new Error(`emitter bug: map key of ${key.kind} (frontend rejects these)`);
+  throw new InternalCompilerError(`emitter bug: map key of ${key.kind} (frontend rejects these)`);
 }
 
 /** The runtime's key-kind/value-kind tags for scr_map_new. */

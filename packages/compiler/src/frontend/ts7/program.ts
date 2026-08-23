@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Program lifecycle over typescript@7.0.2's unstable sync API — the
  * ts.createProgram-shaped entry the survey's probe7b proved out.
  *
@@ -73,7 +74,7 @@ function serializeOptions(options: Ts7CompilerOptions): Record<string, unknown> 
         break;
       default: {
         if (typeof value === "number" && key !== "maxNodeModuleJsDepth") {
-          throw new Error(`ts7 createProgram: unhandled enum-valued compiler option '${key}'`);
+          throw new InternalCompilerError(`ts7 createProgram: unhandled enum-valued compiler option '${key}'`);
         }
         out[key] = value;
       }
@@ -156,10 +157,10 @@ export class Ts7Host {
     /** Internal: true when the program owns this host and dispose() closes it. */
     programOwnsHost = false,
   ): Ts7Program {
-    if (this.closed) throw new Error("Ts7Host is closed");
+    if (this.closed) throw new InternalCompilerError("Ts7Host is closed");
     const roots = rootNames.map((r) => resolve(r));
     const first = roots[0];
-    if (first === undefined) throw new Error("ts7 createProgram: no root files");
+    if (first === undefined) throw new InternalCompilerError("ts7 createProgram: no root files");
     const configPath = join(dirname(first), `__scriptc-ts7-${nextConfigId++}.tsconfig.json`);
     this.addVirtualFile(
       configPath,
@@ -169,7 +170,7 @@ export class Ts7Host {
     const project = snapshot.getProject(configPath);
     if (!project) {
       snapshot.dispose();
-      throw new Error(`ts7 createProgram: project failed to open for ${first}`);
+      throw new InternalCompilerError(`ts7 createProgram: project failed to open for ${first}`);
     }
     return new Ts7Program(project, snapshot, this, !programOwnsHost);
   }

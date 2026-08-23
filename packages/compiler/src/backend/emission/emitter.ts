@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* IR → C. Three-address style: every IR expression lands in a fresh C temp.
  * Verbose (clang -O2 erases it) but buys three things: short-circuit
  * emission is trivially correct, reference counting has one mechanical
@@ -112,7 +113,7 @@ function ffiNativeTypeC(
       return "const char *";
     case "string":
     case "bytes":
-      throw new Error(`emitter bug: span class '${cls}' has no scalar C type`);
+      throw new InternalCompilerError(`emitter bug: span class '${cls}' has no scalar C type`);
     case "void":
       return "void";
   }
@@ -465,7 +466,7 @@ export class CEmitter {
     for (const meta of this.classMeta.values()) {
       if (meta.def.base === undefined) continue;
       const base = this.classMeta.get(meta.def.base);
-      if (!base) throw new Error(`emitter bug: undeclared base class ${meta.def.base}`);
+      if (!base) throw new InternalCompilerError(`emitter bug: undeclared base class ${meta.def.base}`);
       meta.base = base;
       base.children.push(meta);
     }
@@ -513,7 +514,7 @@ export class CEmitter {
             fn = findImpl(m);
             if (!fn) continue;
           }
-          if (!fn) throw new Error(`emitter bug: missing method function %${m.def.name}.${method}`);
+          if (!fn) throw new InternalCompilerError(`emitter bug: missing method function %${m.def.name}.${method}`);
           // Sibling branches can each own a slot for the same method name
           // (each root-most in its own subtree — mixin layers make this
           // routine): the member name disambiguates by occurrence.
@@ -1573,7 +1574,7 @@ export class CEmitter {
 
   currentFrame(): Temp[] {
     const frame = this.frames[this.frames.length - 1];
-    if (!frame) throw new Error("emitter bug: no active statement frame");
+    if (!frame) throw new InternalCompilerError("emitter bug: no active statement frame");
     return frame;
   }
 
@@ -1587,7 +1588,7 @@ export class CEmitter {
         return;
       }
     }
-    throw new Error(`emitter bug: moved temp ${t.name} not found in any frame`);
+    throw new InternalCompilerError(`emitter bug: moved temp ${t.name} not found in any frame`);
   }
 
   /** The release call for one owned refcounted value. */
@@ -1688,7 +1689,7 @@ export class CEmitter {
     let sym = this.classObjs.get(className);
     if (!sym) {
       const meta = this.classMeta.get(className);
-      if (!meta) throw new Error(`emitter bug: classRef to unknown class ${className}`);
+      if (!meta) throw new InternalCompilerError(`emitter bug: classRef to unknown class ${className}`);
       this.internLiteral(meta.def.jsName ?? "");
       sym = mangleClassObj(className);
       this.classObjs.set(className, sym);
@@ -1701,7 +1702,7 @@ export class CEmitter {
    * descendant's (classval flows never leave the subtree). */
   newValueMayThrow(className: string): boolean {
     const meta = this.classMeta.get(className);
-    if (!meta) throw new Error(`emitter bug: newValue on unknown class ${className}`);
+    if (!meta) throw new InternalCompilerError(`emitter bug: newValue on unknown class ${className}`);
     const any = (m: ClassMeta): boolean =>
       this.mayThrow.has(`%${m.def.name}.constructor`) || m.children.some(any);
     return any(meta);
@@ -1723,7 +1724,7 @@ export class CEmitter {
   internUnitInstance(unionId: string, tag: number): string {
     const arm = this.unionsById.get(unionId)?.arms[tag];
     if (!arm || !isUnitType(arm)) {
-      throw new Error(`emitter bug: unit instance for non-unit arm ${tag} of ${unionId}`);
+      throw new InternalCompilerError(`emitter bug: unit instance for non-unit arm ${tag} of ${unionId}`);
     }
     const key = `${unionId}:${tag}`;
     let sym = this.unitInstances.get(key);
@@ -1768,7 +1769,7 @@ export class CEmitter {
 
   ffiCallbackAdapter(binding: string, id: string): FfiCallbackAdapter {
     const adapter = this.ffiCallbackAdapters.get(`${binding}:${id}`);
-    if (!adapter) throw new Error(`emitter bug: no callback adapter for ${binding}:${id}`);
+    if (!adapter) throw new InternalCompilerError(`emitter bug: no callback adapter for ${binding}:${id}`);
     return adapter;
   }
 
@@ -1796,7 +1797,7 @@ export class CEmitter {
       const contextParam = cb.params.findIndex(isFfiContextParam);
       if (cb.invoke === "foreign") {
         if (adapter.table === null || contextParam < 0 || cb.returns !== "void") {
-          throw new Error("emitter bug: invalid foreign FFI callback descriptor");
+          throw new InternalCompilerError("emitter bug: invalid foreign FFI callback descriptor");
         }
         const dispatch = `${adapter.symbol}_dispatch`;
         const ft = ffiCallbackType(cb);
@@ -2097,13 +2098,13 @@ export class CEmitter {
       case "undefinedT":
       case "nullT":
       case "caught":
-        throw new Error(`emitter bug: truthiness of ${t.type.kind}`);
+        throw new InternalCompilerError(`emitter bug: truthiness of ${t.type.kind}`);
       case "void":
-        throw new Error("emitter bug: truthiness of void");
+        throw new InternalCompilerError("emitter bug: truthiness of void");
       default: {
         const _exhaustive: never = t.type;
         void _exhaustive;
-        throw new Error("unreachable");
+        throw new InternalCompilerError("unreachable");
       }
     }
   }

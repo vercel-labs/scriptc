@@ -56,7 +56,7 @@ jobs:
           --exclude=tests/harness/server.test.ts
           --exclude=tests/harness/coverage.test.ts
           --exclude=tests/harness/vercel-e2e.test.ts
-          --exclude=packages/compiler/src/backend/cc-cache.test.ts
+          --exclude=packages/compiler/src/backend/cc.test.ts
       # Cache invalidation tests mutate compiler inputs process-wide and must
       # stay serial within a worker. They do not consume SCRIPTC_SAN, so divide
       # them across the three plain jobs instead of running the 6+ minute file
@@ -66,7 +66,7 @@ jobs:
         env:
           SCRIPTC_CACHE_TEST_SHARD: ${{ matrix.shard }}/3
           SCRIPTC_TEST_STABLE_TOOLCHAIN: "0"
-        run: pnpm test packages/compiler/src/backend/cc-cache.test.ts
+        run: pnpm test packages/compiler/src/backend/cc.test.ts
       - name: Tests (case-sharded, slice ${{ matrix.shard }}/3)
         run: >-
           pnpm test

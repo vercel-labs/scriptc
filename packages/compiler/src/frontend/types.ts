@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../errors.js";
 import * as ts from "./ts7/adapter.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../ir/nodes.js";
 import { arrayOf, BOOL, bytesOf, canConvertToDyn, CHILD_T, DATE_T, DYN, F64, funcOf, isSupportedArrayElem, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, JSVAL, mapOf, NULL_T, PROCSTREAM_T, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, setOf, STRING, SYMBOL_T, typeEquals, typeKey, UNDEFINED_T, VOID } from "../ir/nodes.js";
@@ -253,7 +254,7 @@ export class ShapeRegistry {
    * authoritative for its own checker type either way). */
   finalizeRecursive(t: ts.Type, fields: { name: string; type: IrType }[], indexValue?: IrType, declaredOrder?: string[]): string {
     const id = this.recIds.get(t);
-    if (id === undefined) throw new Error("shape registry bug: finalizeRecursive without a placeholder");
+    if (id === undefined) throw new InternalCompilerError("shape registry bug: finalizeRecursive without a placeholder");
     if (this.pendingRec.has(id)) {
       const shape = this.byId.get(id)!;
       shape.fields = fields;
@@ -365,7 +366,7 @@ export class UnionRegistry {
    * registers the structural key (first writer wins, like shapes). */
   finalizeRecursive(t: ts.Type, arms: IrType[]): string {
     const id = this.recIds.get(t);
-    if (id === undefined) throw new Error("union registry bug: finalizeRecursive without a placeholder");
+    if (id === undefined) throw new InternalCompilerError("union registry bug: finalizeRecursive without a placeholder");
     if (this.pendingRec.has(id)) {
       const def = this.byId.get(id)!;
       def.arms.push(...arms);
@@ -537,7 +538,7 @@ export function formatIrType(t: IrType, shapes: ShapeRegistry, unions: UnionRegi
     default: {
       const _exhaustive: never = t;
       void _exhaustive;
-      throw new Error("unreachable");
+      throw new InternalCompilerError("unreachable");
     }
   }
 }

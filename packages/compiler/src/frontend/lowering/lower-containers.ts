@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Container-surface call lowering: array methods (including the HOF family
  * map/filter/forEach with their synthesized helper functions), Map/Set
  * methods with Node-exact forEach desugaring, and the string and regex
@@ -3811,7 +3812,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
     } else if (terminal === "find") {
       resId = addLocal("res", resultT, true);
       const undef = L.wrappedUndefined(resultT, loc);
-      if (undef === null) throw new Error("lowerer bug: find result union lacks undefined");
+      if (undef === null) throw new InternalCompilerError("lowerer bug: find result union lacks undefined");
       preLoop.push({ kind: "varDecl", localId: resId, init: undef, loc });
       postLoop.push({ kind: "return", value: ref(resId, resultT), loc });
     } else if (terminal === "reduce") {
@@ -3865,7 +3866,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
       } else if (terminal === "find") {
         const undefTag = resultT.kind === "union" ? L.armTag(resultT.unionId, UNDEFINED_T) : -1;
         const valueTag = resultT.kind === "union" ? (undefTag === 0 ? 1 : 0) : -1;
-        if (resultT.kind !== "union" || valueTag < 0) throw new Error("lowerer bug: find result is not the undefined-armed union");
+        if (resultT.kind !== "union" || valueTag < 0) throw new InternalCompilerError("lowerer bug: find result is not the undefined-armed union");
         out.push({
           kind: "if",
           cond: callWith(termFnT!, termIds[0]!, value, termCntId),
@@ -4182,7 +4183,7 @@ const ITER_TERMINALS = new Set(["toArray", "forEach", "reduce", "some", "every",
         body.push(loopOver("a.0", (v) => returnIf(has("b.0", v), false)));
         break;
       default:
-        throw new Error(`lowerer bug: unknown set combine method ${method}`);
+        throw new InternalCompilerError(`lowerer bug: unknown set combine method ${method}`);
     }
     body.push({ kind: "return", value: predicate ? boolLit(true) : ref("r.0", setT), loc });
     return {
@@ -7534,7 +7535,7 @@ export type IndexMergeContributor =
           ? { kind: "if", cond: { kind: "unionIsTag", unionId: t.unionId, tag: utag, negated: true, value: raw, type: BOOL, loc }, then: [write], else_: null, loc }
           : write;
       }
-      if (t.kind !== "union") throw new Error("lowerer bug: header slot outside the pairs matrix");
+      if (t.kind !== "union") throw new InternalCompilerError("lowerer bug: header slot outside the pairs matrix");
       const ha = headerArms(t)!;
       const isTag = (tag: number): IrExpr =>
         ({ kind: "unionIsTag", unionId: t.unionId, tag, negated: false, value: raw, type: BOOL, loc });

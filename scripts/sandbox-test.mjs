@@ -41,7 +41,7 @@ const invariantCaseShardedFiles = ["tests/harness/coverage.test.ts"];
 // They are sanitizer-invariant and use their own shard variable so the
 // independent cases can spread across the once lane's Sandboxes without
 // colliding with corpus case selection.
-const cacheCaseShardedFiles = ["packages/compiler/src/backend/cc-cache.test.ts"];
+const cacheCaseShardedFiles = ["packages/compiler/src/backend/cc.test.ts"];
 const caseShardedFiles = [
   ...laneCaseShardedFiles,
   ...invariantCaseShardedFiles,

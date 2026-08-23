@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Generator lowering: yield / yield* expressions, the consumer surface
  * (.next/.return/.throw → genResume), and the for-of-over-generator
  * desugar. The design: a generator body is an ordinary
@@ -19,7 +20,7 @@ type GenType = IrType & { kind: "generator" };
  * a MAPPED generator — mapType required it to intern). */
 function resultRecordOf(L: Lowerer, genT: GenType): IrType & { kind: "record" } {
   const rec = genResultRecord(genT.yieldT, genT.retT, L.shapes, L.unions);
-  if (!rec) throw new Error("lowerer bug: mapped generator without a result record");
+  if (!rec) throw new InternalCompilerError("lowerer bug: mapped generator without a result record");
   return rec;
 }
 

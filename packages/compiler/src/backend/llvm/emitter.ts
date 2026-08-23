@@ -7811,6 +7811,8 @@ class LlEmitter {
     };
     switch (e.value.type.kind) {
       case "f64":
+      case "date":
+        // Date crossing IN: passed as millisecond timestamp (a JS number).
         return simple("scr_jsval_from_f64", "double", false);
       case "bool":
         return simple("scr_jsval_from_bool", "i1", false);

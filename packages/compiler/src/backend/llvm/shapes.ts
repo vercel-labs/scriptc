@@ -265,13 +265,15 @@ export function traceArg(host: ShapeHost, t: IrType): string {
 /** Runtime accessor suffix for an element type (matches emit-types.ts:
  * f64 and bool unboxed, everything refcounted through the `_ref` family). */
 export function elemAccess(elem: IrType): "f64" | "bool" | "ref" {
-  return elem.kind === "f64" ? "f64" : elem.kind === "bool" ? "bool" : "ref";
+  return (elem.kind === "f64" || elem.kind === "date") ? "f64" : elem.kind === "bool" ? "bool" : "ref";
 }
 
 /** The ScrElemKind constant for the plain (non-REF) construction path. */
 function elemKindNum(elem: IrType): number {
   switch (elem.kind) {
     case "f64":
+    // Dates are epoch-ms f64 scalars at the C level — same slot kind.
+    case "date":
       return 0; // SCR_ELEM_F64
     case "bool":
       return 1; // SCR_ELEM_BOOL

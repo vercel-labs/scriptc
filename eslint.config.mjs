@@ -43,6 +43,11 @@ const backendFence = {
 export default tseslint.config(
   ...tseslint.configs.recommended,
   {
+    rules: {
+      "@typescript-eslint/no-non-null-assertion": "warn",
+    },
+  },
+  {
     // The IR is the only interface between frontend and backend.
     files: ["packages/compiler/src/backend/**"],
     rules: {

@@ -1,4 +1,3 @@
-import { InternalCompilerError } from "../../errors.js";
 /* Class lowering: shape collection over the single-inheritance graph
  * (fields, methods, accessors, overrides), constructor/member lowering with
  * synthesized derived ctors and field initializers, super calls and super
@@ -595,7 +594,7 @@ export const EMITTER_API_MEMBERS: ReadonlySet<string> = new Set([
    * `@dec(...)` evaluates the CALLEE before any argument — and property
    * chains throw at their ROOT (`@instance.decorate` reads `instance`
    * first). */
-  function ambientDecoratorThrowNameOf(L: Lowerer, dExpr: ts.Expression): string | null {
+  export function ambientDecoratorThrowNameOf(L: Lowerer, dExpr: ts.Expression): string | null {
     let e: ts.Expression = dExpr;
     while (ts.isParenthesizedExpression(e)) e = e.expression;
     const target = ts.isCallExpression(e) ? e.expression : e;
@@ -1233,9 +1232,6 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
           ) {
             const type = L.irTypeOf(member.name);
             if (type.kind === "void") L.badType(member.name, L.typeOf(member.name));
-            if (type.kind === "dyn") {
-              L.unsupported("SC1090", member.name, "'unknown'-typed static fields");
-            }
             staticFields.push({
               name: member.name.text,
               type,
@@ -1477,11 +1473,9 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
           // the ordinary undefined-armed union machinery.
           const type = L.irTypeOf(member.name);
           if (type.kind === "void") L.badType(member.name, L.typeOf(member.name));
-          // dyn stays out of class fields (KEEP NARROW; record
-          // fields and array elements are unmappable via mapType already).
-          if (type.kind === "dyn") {
-            L.unsupported("SC1090", member.name, "'unknown'-typed class fields");
-          }
+          // `unknown` fields use the same checked-dynamic dyn kind as
+          // unknown locals/params. Allocation initializes them to the dyn
+          // undefined singleton before field initializers run.
           if (fields.has(member.name.text)) {
             // REDECLARING an inherited field: Node [[Define]]s the OWN
             // property again when THIS class's field initializers run
@@ -1592,10 +1586,8 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
             const shape = L.paramShape(p);
             const type = shape.bodyType ?? shape.type;
             if (type.kind === "void") L.badType(p.name, L.typeOf(p.name));
-            // The class-field dyn rule verbatim (KEEP NARROW).
-            if (type.kind === "dyn") {
-              L.unsupported("SC1090", p.name, "'unknown'-typed class fields");
-            }
+            // Unknown parameter properties use the ordinary dyn parameter
+            // ABI and assign into the dyn class slot after super().
             // `override x` (and any same-named inherited member) would
             // redeclare a base slot — the declared-field rule verbatim.
             if (fields.has(name)) {
@@ -2457,7 +2449,7 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
    * Coverage counts a generic class's statements once: only the FIRST
    * instantiation contributes (the lowerGenericInstance rule). A no-op
    * for ordinary classes. */
-  function withInstanceBindings<T>(L: Lowerer, info: ClassInfo, fn: () => T): T {
+  export function withInstanceBindings<T>(L: Lowerer, info: ClassInfo, fn: () => T): T {
     const gi = info.genericInstance;
     if (!gi) {
       // MIXIN instantiations ride the same mechanism: T (the base
@@ -2736,7 +2728,7 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
    * object, each replacing decorator's non-undefined result feeding the
    * next application; the final value binds the class name (the mutable
    * classval global) when any decorator can replace. */
-  function lowerClassDecoration(L: Lowerer, info: ClassInfo): IrStmt[] {
+  export function lowerClassDecoration(L: Lowerer, info: ClassInfo): IrStmt[] {
     const cd = info.classDecorators;
     if (!cd || cd.poisoned || cd.shapes === undefined || info.decl === null) return [];
     const loc = locOf(info.decl);
@@ -3543,7 +3535,7 @@ export function collectClassShapeInner(L: Lowerer, decl: ts.ClassLikeDeclaration
    * method `name` — overrideBelow's twin: generic methods have no vtable
    * slot, so a call that could reach an override compiles only when the
    * receiver's runtime class is statically exact. */
-  function genericOverrideBelow(L: Lowerer, info: ClassInfo, name: string): boolean {
+  export function genericOverrideBelow(L: Lowerer, info: ClassInfo, name: string): boolean {
     return info.subclasses.some(
       (s) => s.genericMethods?.has(name) === true || genericOverrideBelow(L, s, name),
     );
@@ -4255,7 +4247,7 @@ export function lowerClassMembers(L: Lowerer, info: ClassInfo): IrFunction[] {
    * null when the generic class extends nothing, exactly the source's
    * story (tsc forbids super() there). Ordinary classes answer their base
    * unchanged. */
-  function superBaseOf(info: ClassInfo): ClassInfo | null {
+  export function superBaseOf(info: ClassInfo): ClassInfo | null {
     const b = info.base;
     return b?.generic ? b.base : b;
   }
@@ -4267,6 +4259,20 @@ export function lowerClassMembers(L: Lowerer, info: ClassInfo): IrFunction[] {
     const out: IrStmt[] = [];
     const thisType: IrType = { kind: "object", className: info.def.name };
     for (const f of info.fieldOrder) {
+      // A dyn-typed field with no initializer is zero/NULL in C, which
+      // segfaults on the first read — emit an explicit undefined assignment.
+      if (!f.initializer && f.type.kind === "dyn") {
+        const loc: SrcLoc = { file: L.entry.fileName, start: 0, end: 0 };
+        out.push({
+          kind: "fieldSet",
+          obj: { kind: "varRef", localId: thisLocal.id, type: thisType, loc },
+          className: info.def.name,
+          field: f.name,
+          value: dynUndefinedExpr(loc),
+          loc,
+        });
+        continue;
+      }
       if (!f.initializer) continue;
       L.stats.statementsTotal++;
       L.bumpFileStat(locOf(f.initializer).file, "total");
@@ -4298,7 +4304,7 @@ export function lowerClassMembers(L: Lowerer, info: ClassInfo): IrFunction[] {
    * Each assignment reads the parameter's BODY local (defaults already
    * applied by the declareParams prologue), whose type the collection made
    * the field's type — slot-exact by construction. */
-  function paramPropInitStmts(L: Lowerer, info: ClassInfo, thisLocal: IrLocal): IrStmt[] {
+  export function paramPropInitStmts(L: Lowerer, info: ClassInfo, thisLocal: IrLocal): IrStmt[] {
     const out: IrStmt[] = [];
     const thisType: IrType = { kind: "object", className: info.def.name };
     for (const pp of info.paramProps ?? []) {
@@ -4647,7 +4653,7 @@ export function lowerClassMembers(L: Lowerer, info: ClassInfo): IrFunction[] {
    * super() with default options; passing options through an inherited
    * constructor would need the literal at the new-site to plumb, so it
    * asks for a declared constructor instead). */
-  function inheritsBuiltinStreamCtor(L: Lowerer, info: ClassInfo): boolean {
+  export function inheritsBuiltinStreamCtor(L: Lowerer, info: ClassInfo): boolean {
     for (let c: ClassInfo | null = info; c; c = c.base) {
       if (c.builtinStream) return true;
       if (c.ctor) return false;
@@ -4670,6 +4676,15 @@ export function lowerClassMembers(L: Lowerer, info: ClassInfo): IrFunction[] {
     if (value.type.kind === "string") return value;
     if (value.kind === "unitLit" && value.unit === "undefined") {
       return { kind: "strLit", value: "", type: STRING, loc };
+    }
+    // In --dynamic mode, a dyn/jsval message value (e.g. from an `unknown`
+    // parameter narrowed via typeof) converts to string via the dyn-toStringCoerce
+    // path — mirrors what Node does for non-string Error messages.
+    if (L.dynamic && (value.type.kind === "dyn" || value.type.kind === "jsval")) {
+      const dv: IrExpr = value.type.kind === "jsval"
+        ? { kind: "dynFromJsval", value, type: DYN, loc }
+        : value;
+      return { kind: "libCall", fn: "dyn.toStringCoerce", args: [dv], type: STRING, loc };
     }
     L.unsupported(
       "SC1090",
@@ -4700,7 +4715,7 @@ function genericNewTarget(L: Lowerer, expr: ts.NewExpression, info: ClassInfo): 
  * the binding never initializes (the %init ReferenceError unwinds first),
  * so `new`, the class as a value, and `extends` all fence — reaching one
  * in compiled code would require executing past the throw. */
-function fenceDecorationThrows(L: Lowerer, info: ClassInfo, blame: ts.Node): void {
+export function fenceDecorationThrows(L: Lowerer, info: ClassInfo, blame: ts.Node): void {
   if (info.decorationThrows === undefined) return;
   L.unsupported(
     "SC1090",
@@ -4981,8 +4996,11 @@ export function lowerNew(L: Lowerer, expr: ts.NewExpression): IrExpr {
       // `new URL(input)`: the WHATWG URL class (stdlib/@types provenance —
       // a user's own `class URL` resolves through classBySymbol below).
       // One string argument; invalid input throws a catchable TypeError
-      // ("Invalid URL"), like Node. The lib's base-argument form
-      // typechecks and is fenced here.
+      // ("Invalid URL"), like Node. The two-argument `new URL(url, base)`
+      // form is resolved at COMPILE TIME when both arguments are string
+      // literals (Node's own URL class does the resolving); any other
+      // shape — a non-literal url or base, or a base that fails to
+      // resolve — is fenced.
       // `new RegExp(pattern, flags?)`: runtime construction over the same
       // libregexp engine the literals ride. The pattern compiles EAGERLY,
       // so bad input throws Node's catchable SyntaxError at construction.
@@ -5011,11 +5029,28 @@ export function lowerNew(L: Lowerer, expr: ts.NewExpression): IrExpr {
       }
       if (symbol && symbol.name === "URL" && L.isStdlibSymbol(symbol)) {
         const args = expr.arguments ?? [];
+        if (args.length === 2) {
+          const urlExpr = L.lowerExpr(args[0]!);
+          const baseExpr = L.lowerExpr(args[1]!);
+          if (urlExpr.kind === "strLit" && baseExpr.kind === "strLit") {
+            try {
+              const resolved = new URL(urlExpr.value, baseExpr.value).href;
+              return { kind: "libCall", fn: "url.new", args: [{ kind: "strLit", value: resolved, type: STRING, loc }], type: URL_T, loc };
+            } catch {
+              L.noLowering("new URL with an unresolvable base URL", expr, "the base argument must be a valid absolute URL");
+            }
+          }
+          L.noLowering(
+            "new URL with a non-literal argument",
+            expr,
+            "compile-time string literals for both url and base are required; resolve relative inputs against a base yourself, or use --dynamic for runtime URL resolution",
+          );
+        }
         if (args.length !== 1) {
           L.noLowering(
             `new URL with ${args.length} argument${args.length === 1 ? "" : "s"}`,
             expr,
-            "one absolute-URL string is the supported form (resolve relative inputs against a base yourself)",
+            "one absolute-URL string or two string literals (url + base) are the supported forms",
             symbol,
           );
         }
@@ -5053,6 +5088,13 @@ export function lowerNew(L: Lowerer, expr: ts.NewExpression): IrExpr {
         }
         if (arg.type.kind === "date") {
           return arg;
+        }
+        // In --dynamic mode, a dyn/jsval arg (e.g. from `any`/`unknown`-typed DB
+        // columns) is treated as milliseconds via dynCheck — matches Node's
+        // `new Date(number)` behavior when the value is a timestamp.
+        if (L.dynamic && (arg.type.kind === "dyn" || arg.type.kind === "jsval")) {
+          const ms: IrExpr = { kind: "dynCheck", value: arg.type.kind === "dyn" ? arg : { kind: "dynFromJsval", value: arg, type: DYN, loc }, type: F64, loc };
+          return { kind: "libCall", fn: "date.newMs", args: [ms], type: DATE_T, loc };
         }
         L.noLowering(
           `new Date of '${L.fmt(arg.type)}' values`,
@@ -5690,9 +5732,9 @@ export function lowerNew(L: Lowerer, expr: ts.NewExpression): IrExpr {
     ret: IrType,
     loc: SrcLoc,): IrExpr {
     const info = L.classes.get(className);
-    if (!info) throw new InternalCompilerError(`lowerer bug: accessor call on unknown class ${className}`);
+    if (!info) throw new Error(`lowerer bug: accessor call on unknown class ${className}`);
     const found = L.findMethodOn(info, member);
-    if (!found) throw new InternalCompilerError(`lowerer bug: no ${member} on ${className}`);
+    if (!found) throw new Error(`lowerer bug: no ${member} on ${className}`);
     // The abstract direct-call fence, accessor form (see
     // lowerObjectMethodCall): an abstract accessor with no concrete
     // override below has no implementation for a direct call to target.
@@ -5731,7 +5773,7 @@ export function lowerNew(L: Lowerer, expr: ts.NewExpression): IrExpr {
  * `time = async <T>(...) => {...}` or `= function g<T>(...) {...}`
  * (parens stripped): bindingGenericFnNodeOf's shape rule, member form.
  * Null when the field isn't that shape. */
-function genericFieldFnNodeOf(member: ts.PropertyDeclaration): ts.FunctionExpression | ts.ArrowFunction | null {
+export function genericFieldFnNodeOf(member: ts.PropertyDeclaration): ts.FunctionExpression | ts.ArrowFunction | null {
   if (member.initializer === undefined) return null;
   let init: ts.Expression = member.initializer;
   while (ts.isParenthesizedExpression(init)) init = init.expression;

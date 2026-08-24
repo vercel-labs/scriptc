@@ -25,7 +25,7 @@ const COVERAGE_DEMO = `$ scriptc coverage cli.ts
 const tiers = [
   {
     title: "Compiled statically",
-    body: "The default. Ordinary TypeScript — classes, closures, async/await, the stdlib, Node's fs/path/process/http surface — becomes native code with no engine in the binary. What compiles behaves byte-for-byte like Node.",
+    body: "The default. Ordinary TypeScript — classes, closures, async/await, the stdlib, Node's fs/path/process/http surface — becomes native code with no engine in the binary.",
   },
   {
     title: "Runs dynamically",
@@ -87,7 +87,7 @@ export default function Home() {
           </h1>
           <p className="mx-auto mt-4 max-w-2xl copy-16 text-gray-900 sm:copy-18">
             Ordinary TypeScript becomes a small, fast native binary — no Node, no V8, no
-            JavaScript engine required. What compiles behaves byte-for-byte like Node.
+            JavaScript engine required.
           </p>
           <div className="mt-8 flex items-center justify-center gap-3">
             <Link

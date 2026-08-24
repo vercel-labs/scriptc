@@ -1,6 +1,6 @@
 # scriptc
 
-Compile ordinary TypeScript and JavaScript to small, fast native executables or WASI WebAssembly modules — no Node, no V8, no JavaScript engine in the artifact. What compiles behaves byte-for-byte like Node.
+Compile ordinary TypeScript and JavaScript to small, fast native executables or WASI WebAssembly modules — no Node, no V8, no JavaScript engine in the artifact.
 
 ```console
 $ cat fib.ts

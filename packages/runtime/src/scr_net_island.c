@@ -1,6 +1,6 @@
 /* The island's node:http/node:https CLIENT ↔ the socket units — the one
  * translation unit referencing BOTH scr_http/scr_tls and the engine (the
- * scr_zlib_island.c precedent): cc.ts compiles it exactly when a
+ * scr_zlib_island.c precedent): native-toolchain.ts compiles it exactly when a
  * --dynamic build links the socket units, and the emitted main calls
  * scr_net_island_install before any island entry. Builds without it keep
  * the island's "does not provide the 'node:http' builtin" refusal.

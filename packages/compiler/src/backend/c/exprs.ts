@@ -2,31 +2,31 @@ import { InternalCompilerError } from "../../errors.js";
 /* Expression C emission: the whole IrExpr dispatch (emitExpr) — every IR
  * expression lands in a fresh C temp, with RC ownership tracked on the
  * emitter's frames (see the discipline comment in emitter core). */
-import type { CEmitter, Temp } from "./emitter.js";
-import { arrayOf, BOOL, BYTES_U8, bytesOf, canMarshalFuncIntoIsland, CHILDSTREAM_T, DYN, F64, IrExpr, IrRecordShape, IrType, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, RUNTIME_ERROR_CLASSES, STRING, typeEquals, typeKey } from "../../ir/nodes.js";
-import { boxAccess, BYTES_NUM_KIND_C, BYTES_NUM_VAR_C, bytesElemKindC, cDecl, cFnPtrCast, cNumberLiteral, cStringLiteral, cType, DV_GET_KIND_C, DV_SET_KIND_C, elemAccess, mapKeyAccess, mapKeyKindC, mapValKindC, releaseCallC, retainCallC, vAdapters } from "./emit-types.js";
+import type { CEmitter, Temp } from "./c-emitter.js";
+import { arrayOf, BOOL, BYTES_U8, bytesOf, canMarshalFuncIntoIsland, CHILDSTREAM_T, DYN, F64, IrExpr, IrRecordShape, IrType, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, RUNTIME_ERROR_CLASSES, STRING, typeEquals, typeKey } from "../../ir/ir.js";
+import { boxAccess, BYTES_NUM_KIND_C, BYTES_NUM_VAR_C, bytesElemKindC, cDecl, cFnPtrCast, cNumberLiteral, cStringLiteral, cType, DV_GET_KIND_C, DV_SET_KIND_C, elemAccess, mapKeyAccess, mapKeyKindC, mapValKindC, releaseCallC, retainCallC, vAdapters } from "./types.js";
 import { mangleClassNew, mangleClassRetain, mangleClassStruct, mangleField, mangleFnClosure, mangleFunction, mangleGlobal, mangleLocal, mangleRecordClone, mangleRecordNew, mangleRecordStruct, mangleVtStruct } from "../mangle.js";
-import { OVERFLOW_MEMBER } from "./emit-shapes.js";
-import { dynDestrCheckHelper, dynIterNHelper, dynKeyGetHelper } from "./emit-walkers.js";
+import { OVERFLOW_MEMBER } from "./shapes.js";
+import { dynDestrCheckHelper, dynIterNHelper, dynKeyGetHelper } from "./walkers.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
-import { genResultThunkFor } from "./emit-async.js";
+import { genResultThunkFor } from "./async.js";
 import { isStableBytesOperand, newValueMayThrow, streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
 
 function streamTypedRefCommitAdapter(
-  E: CEmitter,
+  emitter: CEmitter,
   t: IrType,
   snapshot: string,
   defs: string[],
 ): string {
   if (t.kind === "bytes") {
     const commit = `${snapshot}_commit`;
-    E.walkerProtos.push(
+    emitter.walkerProtos.push(
       `static void ${commit}(void *sc_p, const ScrDyn *sc_d); /* commit live stream element ${typeKey(t)} */`,
     );
     defs.push(
       `static void ${commit}(void *sc_p, const ScrDyn *sc_d) {`,
       `  ScrBytes *sc_target = (ScrBytes *)sc_p;`,
-      `  ScrBytes *sc_next = ${E.dynCheckHelper(t)}(sc_d, NULL);`,
+      `  ScrBytes *sc_next = ${emitter.dynCheckHelper(t)}(sc_d, NULL);`,
       `  if (!sc_next) return;`,
       `  scr_bytes_copy_contents(sc_target, sc_next);`,
       `  scr_bytes_release(sc_next);`,
@@ -37,13 +37,13 @@ function streamTypedRefCommitAdapter(
   }
   if (t.kind === "array") {
     const commit = `${snapshot}_commit`;
-    E.walkerProtos.push(
+    emitter.walkerProtos.push(
       `static void ${commit}(void *sc_p, const ScrDyn *sc_d); /* commit live stream element ${typeKey(t)} */`,
     );
     defs.push(
       `static void ${commit}(void *sc_p, const ScrDyn *sc_d) {`,
       `  ScrArr *sc_target = (ScrArr *)sc_p;`,
-      `  ScrArr *sc_next = ${E.dynCheckHelper(t)}(sc_d, NULL);`,
+      `  ScrArr *sc_next = ${emitter.dynCheckHelper(t)}(sc_d, NULL);`,
       `  if (!sc_next) return;`,
       `  size_t sc_target_len = sc_target->len;`,
       `  size_t sc_target_cap = sc_target->cap;`,
@@ -61,18 +61,18 @@ function streamTypedRefCommitAdapter(
     return `&${commit}`;
   }
   if (t.kind !== "record") return "NULL";
-  const shape = E.recordsById.get(t.shapeId);
+  const shape = emitter.recordsById.get(t.shapeId);
   if (!shape) {
     throw new InternalCompilerError(`emitter bug: stream typed-ref commit of unknown shape ${t.shapeId}`);
   }
   const commit = `${snapshot}_commit`;
-  E.walkerProtos.push(
+  emitter.walkerProtos.push(
     `static void ${commit}(void *sc_p, const ScrDyn *sc_d); /* commit live stream element ${typeKey(t)} */`,
   );
   defs.push(
     `static void ${commit}(void *sc_p, const ScrDyn *sc_d) {`,
     `  ${cDecl(t, "sc_target")} = (${cType(t).trim()})sc_p;`,
-    `  ${cDecl(t, "sc_next")} = ${E.dynCheckHelper(t)}(sc_d, NULL);`,
+    `  ${cDecl(t, "sc_next")} = ${emitter.dynCheckHelper(t)}(sc_d, NULL);`,
     `  if (!sc_next) return;`,
   );
   for (const field of shape.fields) {
@@ -118,7 +118,7 @@ interface StreamTypedRefContext {
  * `v.items[0]` commits directly to that child's static source instead of
  * disappearing into the parent's detached snapshot. */
 function streamTypedRefAdapter(
-  E: CEmitter,
+  emitter: CEmitter,
   t: IrType,
   ctx: StreamTypedRefContext,
   preferredSnapshot?: string,
@@ -132,16 +132,16 @@ function streamTypedRefAdapter(
   /* Register before walking children: recursive record/array types refer
    * back to this prototype without recursively generating helpers. */
   ctx.adapters.set(key, adapter);
-  E.walkerProtos.push(
+  emitter.walkerProtos.push(
     `static ScrDyn *${snapshot}(void *sc_p); /* materialize live stream value ${key} */`,
   );
-  adapter.commit = streamTypedRefCommitAdapter(E, t, snapshot, ctx.defs);
+  adapter.commit = streamTypedRefCommitAdapter(emitter, t, snapshot, ctx.defs);
 
   const box = (child: IrType, expr: string): string => {
     if (!streamTypedRefEligible(child)) {
-      return `${E.toDynHelper(child)}(${expr})`;
+      return `${emitter.toDynHelper(child)}(${expr})`;
     }
-    const nested = streamTypedRefAdapter(E, child, ctx);
+    const nested = streamTypedRefAdapter(emitter, child, ctx);
     const rc = vAdapters(child);
     const childKey = typeKey(child);
     const keyLit = cStringLiteral(Buffer.from(childKey, "utf8"));
@@ -153,7 +153,7 @@ function streamTypedRefAdapter(
     `  ${cDecl(t, "v")} = (${cType(t).trim()})sc_p;`,
   ];
   if (t.kind === "record") {
-    const shape = E.recordsById.get(t.shapeId);
+    const shape = emitter.recordsById.get(t.shapeId);
     if (!shape) {
       throw new InternalCompilerError(
         `emitter bug: stream typed-ref materialize of unknown shape ${t.shapeId}`,
@@ -163,7 +163,7 @@ function streamTypedRefAdapter(
       (field) => field.name === "handleEvent" && field.type.kind === "func",
     );
     if (ordinary) {
-      lines.push(`  return ${E.toDynHelper(t)}(v);`, `}`, ``);
+      lines.push(`  return ${emitter.toDynHelper(t)}(v);`, `}`, ``);
       ctx.defs.push(...lines);
       return adapter;
     }
@@ -217,7 +217,7 @@ function streamTypedRefAdapter(
     }
     lines.push(`  }`, `  return d;`);
   } else {
-    lines.push(`  return ${E.toDynHelper(t)}(v);`);
+    lines.push(`  return ${emitter.toDynHelper(t)}(v);`);
   }
   lines.push(`}`, ``);
   ctx.defs.push(...lines);
@@ -227,25 +227,25 @@ function streamTypedRefAdapter(
 /** One per-type capsule adapter for Web API arguments whose JavaScript
  * contract preserves the exact input reference. */
 function liveDynRefAdapter(
-  E: CEmitter,
+  emitter: CEmitter,
   t: IrType,
 ): StreamTypedRefAdapter {
   const key = typeKey(t);
-  const existing = E.liveDynRefAdapters.get(key);
+  const existing = emitter.liveDynRefAdapters.get(key);
   if (existing) return existing;
   if (!streamTypedRefEligible(t)) {
     throw new InternalCompilerError(`emitter bug: live dyn ref of ${key}`);
   }
-  const prefix = `sc_ldr_${E.liveDynRefAdapters.size}`;
+  const prefix = `sc_ldr_${emitter.liveDynRefAdapters.size}`;
   const defs: string[] = [];
   const adapter = streamTypedRefAdapter(
-    E,
+    emitter,
     t,
     { prefix, defs, adapters: new Map() },
     `${prefix}_materialize`,
   );
-  E.liveDynRefAdapters.set(key, adapter);
-  E.walkerDefs.push(...defs);
+  emitter.liveDynRefAdapters.set(key, adapter);
+  emitter.walkerDefs.push(...defs);
   return adapter;
 }
 
@@ -254,13 +254,13 @@ function liveDynRefAdapter(
  * directly at that arm's payload. Non-mutable arms keep ordinary dynFrom
  * semantics. */
 function liveDynUnionRefAdapter(
-  E: CEmitter,
+  emitter: CEmitter,
   t: IrType & { kind: "union" },
 ): string {
   const key = typeKey(t);
-  const existing = E.liveDynUnionRefAdapters.get(key);
+  const existing = emitter.liveDynUnionRefAdapters.get(key);
   if (existing) return existing;
-  const union = E.unionsById.get(t.unionId);
+  const union = emitter.unionsById.get(t.unionId);
   if (!union) {
     throw new InternalCompilerError(`emitter bug: live dyn ref of unknown union ${t.unionId}`);
   }
@@ -271,10 +271,10 @@ function liveDynUnionRefAdapter(
     throw new InternalCompilerError(`emitter bug: live dyn ref of immutable union ${key}`);
   }
 
-  const sym = `sc_ldu_${E.liveDynUnionRefAdapters.size}`;
-  E.liveDynUnionRefAdapters.set(key, sym);
+  const sym = `sc_ldu_${emitter.liveDynUnionRefAdapters.size}`;
+  emitter.liveDynUnionRefAdapters.set(key, sym);
   const sig = `static ScrDyn *${sym}(ScrUnion *sc_u)`;
-  E.walkerProtos.push(`${sig}; /* materialize live union value ${key} */`);
+  emitter.walkerProtos.push(`${sig}; /* materialize live union value ${key} */`);
   const defs: string[] = [];
   const adapters = new Map<number, StreamTypedRefAdapter>();
   for (const { arm, tag } of mutableArms) {
@@ -282,7 +282,7 @@ function liveDynUnionRefAdapter(
     adapters.set(
       tag,
       streamTypedRefAdapter(
-        E,
+        emitter,
         arm,
         { prefix, defs, adapters: new Map() },
         `${prefix}_materialize`,
@@ -303,29 +303,29 @@ function liveDynUnionRefAdapter(
   }
   defs.push(
     `  default:`,
-    `    return ${E.toDynHelper(t)}(sc_u);`,
+    `    return ${emitter.toDynHelper(t)}(sc_u);`,
     `  }`,
     `}`,
     ``,
   );
-  E.walkerDefs.push(...defs);
+  emitter.walkerDefs.push(...defs);
   return sym;
 }
 
 function streamFromArrayAdapter(
-  E: CEmitter,
+  emitter: CEmitter,
   t: IrType & { kind: "array" },
 ): string {
   const elem = t.elem;
   const key = typeKey(elem);
-  const existing = E.streamFromArrayAdapters.get(key);
+  const existing = emitter.streamFromArrayAdapters.get(key);
   if (existing) return existing;
-  const sym = `sc_sfa_${E.streamFromArrayAdapters.size}`;
-  E.streamFromArrayAdapters.set(key, sym);
+  const sym = `sc_sfa_${emitter.streamFromArrayAdapters.size}`;
+  emitter.streamFromArrayAdapters.set(key, sym);
   const sig = `static ScrDyn *${sym}(ScrArr *sc_a, double sc_i)`;
-  E.walkerProtos.push(`${sig}; /* ReadableStream.from array<${key}> */`);
+  emitter.walkerProtos.push(`${sig}; /* ReadableStream.from array<${key}> */`);
   const unionDef = elem.kind === "union"
-    ? E.unionsById.get(elem.unionId)
+    ? emitter.unionsById.get(elem.unionId)
     : undefined;
   if (elem.kind === "union" && !unionDef) {
     throw new InternalCompilerError(`emitter bug: streamFrom of unknown union ${elem.unionId}`);
@@ -345,7 +345,7 @@ function streamFromArrayAdapter(
   if (typedRef) {
     if (streamTypedRefEligible(elem)) {
       const adapter = streamTypedRefAdapter(
-        E,
+        emitter,
         elem,
         { prefix: snapshot, defs: d, adapters: new Map() },
         snapshot,
@@ -353,14 +353,14 @@ function streamFromArrayAdapter(
       commit = adapter.commit;
     } else {
       const snapshotSig = `static ScrDyn *${snapshot}(void *sc_p)`;
-      E.walkerProtos.push(`${snapshotSig}; /* materialize stream element ${key} */`);
+      emitter.walkerProtos.push(`${snapshotSig}; /* materialize stream element ${key} */`);
       d.push(
         `${snapshotSig} {`,
-        `  return ${E.toDynHelper(elem)}((${cType(elem).trim()})sc_p);`,
+        `  return ${emitter.toDynHelper(elem)}((${cType(elem).trim()})sc_p);`,
         `}`,
         ``,
       );
-      commit = streamTypedRefCommitAdapter(E, elem, snapshot, d);
+      commit = streamTypedRefCommitAdapter(emitter, elem, snapshot, d);
     }
   }
   const unionCommits = new Map<number, string>();
@@ -368,26 +368,26 @@ function streamFromArrayAdapter(
     const armKey = typeKey(arm);
     const armSnapshot = `${snapshot}_${tag}`;
     const snapshotSig = `static ScrDyn *${armSnapshot}(void *sc_p)`;
-    E.walkerProtos.push(`${snapshotSig}; /* materialize stream union arm ${armKey} */`);
+    emitter.walkerProtos.push(`${snapshotSig}; /* materialize stream union arm ${armKey} */`);
     d.push(
       `${snapshotSig} {`,
-      `  return ${E.toDynHelper(arm)}((${cType(arm).trim()})sc_p);`,
+      `  return ${emitter.toDynHelper(arm)}((${cType(arm).trim()})sc_p);`,
       `}`,
       ``,
     );
     unionCommits.set(
       tag,
-      streamTypedRefCommitAdapter(E, arm, armSnapshot, d),
+      streamTypedRefCommitAdapter(emitter, arm, armSnapshot, d),
     );
   }
   d.push(`${sig} { /* ReadableStream.from array<${key}> */`);
   if (elem.kind === "f64") {
     d.push(
-      `  return ${E.toDynHelper(elem)}(scr_arr_get_f64(sc_a, sc_i));`,
+      `  return ${emitter.toDynHelper(elem)}(scr_arr_get_f64(sc_a, sc_i));`,
     );
   } else if (elem.kind === "bool") {
     d.push(
-      `  return ${E.toDynHelper(elem)}(scr_arr_get_bool(sc_a, sc_i));`,
+      `  return ${emitter.toDynHelper(elem)}(scr_arr_get_bool(sc_a, sc_i));`,
     );
   } else {
     d.push(`  ${cDecl(elem, "sc_v")} = (${cType(elem).trim()})scr_arr_get_ref(sc_a, sc_i);`);
@@ -405,7 +405,7 @@ function streamFromArrayAdapter(
       }
       d.push(
         `  default:`,
-        `    sc_d = ${E.toDynHelper(elem)}(sc_v);`,
+        `    sc_d = ${emitter.toDynHelper(elem)}(sc_v);`,
         `    break;`,
         `  }`,
       );
@@ -417,7 +417,7 @@ function streamFromArrayAdapter(
         `  ScrDyn *sc_d = scr_dyn_new_typed_ref(sc_v, &${rc.retain}, &${rc.release}, ${keyLit}, ${keyLen}, &${snapshot}, ${commit});`,
       );
     } else {
-      d.push(`  ScrDyn *sc_d = ${E.toDynHelper(elem)}(sc_v);`);
+      d.push(`  ScrDyn *sc_d = ${emitter.toDynHelper(elem)}(sc_v);`);
     }
     d.push(
       `  ${releaseCallC(elem, "sc_v")};`,
@@ -425,12 +425,12 @@ function streamFromArrayAdapter(
     );
   }
   d.push(`}`, ``);
-  E.walkerDefs.push(...d);
+  emitter.walkerDefs.push(...d);
   return sym;
 }
 
 function dynPromiseAdapter(
-  E: CEmitter,
+  emitter: CEmitter,
   inner: IrType,
 ): string {
   if (!isRefCounted(inner) || inner.kind === "dyn") {
@@ -439,23 +439,23 @@ function dynPromiseAdapter(
     );
   }
   const key = typeKey(inner);
-  const existing = E.dynPromiseAdapters.get(key);
+  const existing = emitter.dynPromiseAdapters.get(key);
   if (existing) return existing;
-  const sym = `sc_dpa_${E.dynPromiseAdapters.size}`;
-  E.dynPromiseAdapters.set(key, sym);
+  const sym = `sc_dpa_${emitter.dynPromiseAdapters.size}`;
+  emitter.dynPromiseAdapters.set(key, sym);
   const sig = `static void ${sym}(ScrPromise *sc_dst, ScrPromise *sc_src)`;
-  E.walkerProtos.push(`${sig}; /* checked-dynamic promise exit ${key} */`);
+  emitter.walkerProtos.push(`${sig}; /* checked-dynamic promise exit ${key} */`);
   let fulfill: string;
   if (inner.kind === "string") {
     fulfill = `scr_promise_fulfill_str(sc_dst, sc_v);`;
   } else {
     const rc = vAdapters(inner);
-    fulfill = `scr_promise_fulfill_ref(sc_dst, sc_v, &${rc.retain}, &${rc.release}, ${E.traceArgC(inner)});`;
+    fulfill = `scr_promise_fulfill_ref(sc_dst, sc_v, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(inner)});`;
   }
-  E.walkerDefs.push(
+  emitter.walkerDefs.push(
     `${sig} { /* checked-dynamic promise exit ${key} */`,
     `  ScrDyn *sc_d = (ScrDyn *)scr_promise_payload_ref(sc_src);`,
-    `  ${cDecl(inner, "sc_v")} = ${E.dynCheckHelper(inner)}(sc_d, NULL);`,
+    `  ${cDecl(inner, "sc_v")} = ${emitter.dynCheckHelper(inner)}(sc_d, NULL);`,
     `  scr_dyn_release(sc_d);`,
     `  if (scr_exc_pending()) {`,
     `    scr_promise_reject_pending(sc_dst);`,
@@ -477,27 +477,27 @@ function dynPromiseAdapter(
  * binding and all later operands are stable. The binding's scope/global
  * owner then keeps the value alive, avoiding retain/release traffic around
  * every indexed access. Any uncertain shape falls back to an owned temp. */
-export function emitBytesReceiver(E: CEmitter, receiver: IrExpr, following: IrExpr[]): Temp {
+export function emitBytesReceiver(emitter: CEmitter, receiver: IrExpr, following: IrExpr[]): Temp {
   if (
     receiver.kind === "varRef" &&
     following.every((operand) => isStableBytesOperand(operand, receiver.localId))
   ) {
-    const local = E.currentLocals.get(receiver.localId);
+    const local = emitter.currentLocals.get(receiver.localId);
     if (local && !local.boxed) {
-      return E.newBorrowedTemp(receiver.type, mangleLocal(receiver.localId));
+      return emitter.newBorrowedTemp(receiver.type, mangleLocal(receiver.localId));
     }
-    if (!local && E.globalsById.has(receiver.localId)) {
-      return E.newBorrowedTemp(receiver.type, mangleGlobal(receiver.localId));
+    if (!local && emitter.globalsById.has(receiver.localId)) {
+      return emitter.newBorrowedTemp(receiver.type, mangleGlobal(receiver.localId));
     }
   }
-  return E.emitExpr(receiver);
+  return emitter.emitExpr(receiver);
 }
 
 function emitMapLikeIntrinsic(
-  E: CEmitter,
+  emitter: CEmitter,
   e: Extract<IrExpr, { kind: "mapIntrinsic" | "setIntrinsic" }>,
 ): Temp {
-  const r = E.emitExpr(e.receiver);
+  const r = emitter.emitExpr(e.receiver);
   const receiverType = e.receiver.type;
   if (e.kind === "mapIntrinsic" && receiverType.kind !== "map") {
     throw new InternalCompilerError("emitter bug: mapIntrinsic on non-map");
@@ -524,100 +524,100 @@ function emitMapLikeIntrinsic(
       // union, the stored box IS the result: `undefined` sorts last
       // in canonical arm order, so V's tags coincide with the result
       // union's and no re-tag exists (validated).
-      const k = E.emitExpr(e.args[0]!);
+      const k = emitter.emitExpr(e.args[0]!);
       if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: map get result is not a union");
-      const def = E.unionsById.get(e.type.unionId);
-      const undefTag = undefinedArmTag(e.type, E.unionsById);
+      const def = emitter.unionsById.get(e.type.unionId);
+      const undefTag = undefinedArmTag(e.type, emitter.unionsById);
       if (!def || undefTag < 0) throw new InternalCompilerError("emitter bug: map get union lacks its undefined arm");
-      const absent = E.unitInstanceRef(e.type.unionId, undefTag);
+      const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
       if (value.kind === "union") {
-        const t = E.newTemp(
+        const t = emitter.newTemp(
           e.type,
           `(ScrUnion *)scr_map_get_${kAcc}_ref(${r.name}, ${k.name})`,
         );
-        E.line(`if (!${t.name}) ${t.name} = ${absent};`);
+        emitter.line(`if (!${t.name}) ${t.name} = ${absent};`);
         return t;
       }
       const valueTag = def.arms.findIndex((a) => typeEquals(a, value));
       if (valueTag < 0) throw new InternalCompilerError("emitter bug: map get union lacks its value arm");
       if (value.kind === "f64" || value.kind === "bool") {
-        const out = `sc_t${E.tempCounter++}`;
-        const found = `sc_t${E.tempCounter++}`;
-        E.line(`${cDecl(value, out)} = 0;`);
-        E.line(`bool ${found} = scr_map_get_${kAcc}_${vAcc}(${r.name}, ${k.name}, &${out});`);
+        const out = `sc_t${emitter.tempCounter++}`;
+        const found = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`${cDecl(value, out)} = 0;`);
+        emitter.line(`bool ${found} = scr_map_get_${kAcc}_${vAcc}(${r.name}, ${k.name}, &${out});`);
         const make = `scr_union_new_${value.kind}(${valueTag}, ${out})`;
-        return E.newTemp(e.type, `${found} ? ${make} : ${absent}`);
+        return emitter.newTemp(e.type, `${found} ? ${make} : ${absent}`);
       }
       const rc = vAdapters(value);
-      const v = E.newTemp(value, `(${cType(value).trim()})scr_map_get_${kAcc}_ref(${r.name}, ${k.name})`);
-      E.moveTemp(v); // moves into the box when present; NULL otherwise
-      const present = `scr_union_new_ref(${valueTag}, ${v.name}, &${rc.retain}, &${rc.release}, ${E.traceArgC(value)})`;
-      return E.newTemp(e.type, `${v.name} ? ${present} : ${absent}`);
+      const v = emitter.newTemp(value, `(${cType(value).trim()})scr_map_get_${kAcc}_ref(${r.name}, ${k.name})`);
+      emitter.moveTemp(v); // moves into the box when present; NULL otherwise
+      const present = `scr_union_new_ref(${valueTag}, ${v.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(value)})`;
+      return emitter.newTemp(e.type, `${v.name} ? ${present} : ${absent}`);
     }
     case "set": {
       if (receiverType.kind !== "map") throw new InternalCompilerError("unreachable");
       // Key borrowed (the runtime retains stored string keys); the
       // value MOVES in (replacement releases the old value inside).
-      const k = E.emitExpr(e.args[0]!);
-      const v = E.emitExpr(e.args[1]!);
+      const k = emitter.emitExpr(e.args[0]!);
+      const v = emitter.emitExpr(e.args[1]!);
       const vAcc = elemAccess(receiverType.value);
-      if (vAcc === "ref") E.moveTemp(v);
-      E.line(`scr_map_set_${kAcc}_${vAcc}(${r.name}, ${k.name}, ${v.name});${E.srcComment(e.loc)}`);
+      if (vAcc === "ref") emitter.moveTemp(v);
+      emitter.line(`scr_map_set_${kAcc}_${vAcc}(${r.name}, ${k.name}, ${v.name});${emitter.srcComment(e.loc)}`);
       return { name: "", type: e.type };
     }
     case "add": {
       if (receiverType.kind !== "set") throw new InternalCompilerError("unreachable");
       // Element borrowed (the runtime retains stored strings); the unit
       // value is 0. Re-adding overwrites in place, preserving insertion.
-      const k = E.emitExpr(e.args[0]!);
-      E.line(`scr_map_set_${kAcc}_f64(${r.name}, ${k.name}, 0);${E.srcComment(e.loc)}`);
+      const k = emitter.emitExpr(e.args[0]!);
+      emitter.line(`scr_map_set_${kAcc}_f64(${r.name}, ${k.name}, 0);${emitter.srcComment(e.loc)}`);
       return { name: "", type: e.type };
     }
     case "has": {
-      const k = E.emitExpr(e.args[0]!);
-      return E.newTemp(e.type, `scr_map_has_${kAcc}(${r.name}, ${k.name})`);
+      const k = emitter.emitExpr(e.args[0]!);
+      return emitter.newTemp(e.type, `scr_map_has_${kAcc}(${r.name}, ${k.name})`);
     }
     case "delete": {
-      const k = E.emitExpr(e.args[0]!);
-      return E.newTemp(e.type, `scr_map_delete_${kAcc}(${r.name}, ${k.name})`);
+      const k = emitter.emitExpr(e.args[0]!);
+      return emitter.newTemp(e.type, `scr_map_delete_${kAcc}(${r.name}, ${k.name})`);
     }
     case "size":
-      return E.newTemp(e.type, `scr_map_size(${r.name})`);
+      return emitter.newTemp(e.type, `scr_map_size(${r.name})`);
     case "clear":
-      E.line(`scr_map_clear(${r.name});${E.srcComment(e.loc)}`);
+      emitter.line(`scr_map_clear(${r.name});${emitter.srcComment(e.loc)}`);
       return { name: "", type: e.type };
     case "iterCount":
-      return E.newTemp(e.type, `scr_map_iter_count(${r.name})`);
+      return emitter.newTemp(e.type, `scr_map_iter_count(${r.name})`);
     case "iterLive": {
-      const i = E.emitExpr(e.args[0]!);
-      return E.newTemp(e.type, `scr_map_iter_live(${r.name}, ${i.name})`);
+      const i = emitter.emitExpr(e.args[0]!);
+      return emitter.newTemp(e.type, `scr_map_iter_live(${r.name}, ${i.name})`);
     }
     case "iterKey": {
       // String/ref keys and elements come back +1.
-      const i = E.emitExpr(e.args[0]!);
-      return E.newTemp(e.type, `scr_map_iter_key_${kAcc}(${r.name}, ${i.name})`);
+      const i = emitter.emitExpr(e.args[0]!);
+      return emitter.newTemp(e.type, `scr_map_iter_key_${kAcc}(${r.name}, ${i.name})`);
     }
     case "iterValue": {
       if (receiverType.kind !== "map") throw new InternalCompilerError("unreachable");
       const value = receiverType.value;
       const vAcc = elemAccess(value);
-      const i = E.emitExpr(e.args[0]!);
+      const i = emitter.emitExpr(e.args[0]!);
       const read =
         vAcc === "ref"
           ? `(${cType(value).trim()})scr_map_iter_val_ref(${r.name}, ${i.name})`
           : `scr_map_iter_val_${vAcc}(${r.name}, ${i.name})`;
-      return E.newTemp(e.type, read);
+      return emitter.newTemp(e.type, read);
     }
     case "iterEnter":
-      E.line(`scr_map_iter_enter(${r.name});${E.srcComment(e.loc)}`);
+      emitter.line(`scr_map_iter_enter(${r.name});${emitter.srcComment(e.loc)}`);
       return { name: "", type: e.type };
     case "iterExit":
-      E.line(`scr_map_iter_exit(${r.name});${E.srcComment(e.loc)}`);
+      emitter.line(`scr_map_iter_exit(${r.name});${emitter.srcComment(e.loc)}`);
       return { name: "", type: e.type };
     case "toArray": {
       if (receiverType.kind !== "set") throw new InternalCompilerError("unreachable");
       // Fresh +1 elem[] of the live entries in insertion order.
-      return E.newTemp(e.type, `scr_set_to_arr_${kAcc}(${r.name})`);
+      return emitter.newTemp(e.type, `scr_set_to_arr_${kAcc}(${r.name})`);
     }
     default: {
       const _exhaustive: never = method;
@@ -627,27 +627,27 @@ function emitMapLikeIntrinsic(
   }
 }
 
-export function emitExpr(E: CEmitter, e: IrExpr): Temp {
+export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
     switch (e.kind) {
       case "numLit":
-        return E.newTemp(e.type, cNumberLiteral(e.value));
+        return emitter.newTemp(e.type, cNumberLiteral(e.value));
       case "boolLit":
-        return E.newTemp(e.type, e.value ? "true" : "false");
+        return emitter.newTemp(e.type, e.value ? "true" : "false");
       case "strLit": {
-        const sym = E.internLiteral(e.value);
-        return E.newTemp(e.type, retainCallC(e.type, `(ScrStr *)&${sym}`));
+        const sym = emitter.internLiteral(e.value);
+        return emitter.newTemp(e.type, retainCallC(e.type, `(ScrStr *)&${sym}`));
       }
       case "unitLit":
         // unitLits are consumed inline by the unionWrap case (a unit arm is
         // tag-only); one reaching the generic dispatch escaped its wrap.
         throw new InternalCompilerError(`emitter bug: bare unitLit '${e.unit}'`);
       case "varRef": {
-        const integerLoopIndex = E.integerLoopIndex(e);
-        if (integerLoopIndex !== null) return E.newTemp(e.type, `(double)${integerLoopIndex}`);
-        const local = E.currentLocals.get(e.localId);
-        if (!local && E.globalsById.has(e.localId)) {
+        const integerLoopIndex = emitter.integerLoopIndex(e);
+        if (integerLoopIndex !== null) return emitter.newTemp(e.type, `(double)${integerLoopIndex}`);
+        const local = emitter.currentLocals.get(e.localId);
+        if (!local && emitter.globalsById.has(e.localId)) {
           const gname = mangleGlobal(e.localId);
-          return E.newTemp(e.type, isRefCounted(e.type) ? retainCallC(e.type, gname) : gname);
+          return emitter.newTemp(e.type, isRefCounted(e.type) ? retainCallC(e.type, gname) : gname);
         }
         const name = mangleLocal(e.localId);
         if (local?.boxed) {
@@ -670,78 +670,78 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // an empty box would dereference NULL; the scalar cell peek
             // would too). Interned literals are immortal (rc SIZE_MAX), so
             // handing them to the ownership-taking thrower is safe.
-            const errName = E.internLiteral("ReferenceError");
-            const msg = E.internLiteral(`Cannot access '${local.name}' before initialization`);
-            E.line(`if (${name}->slot == 0) { /* TDZ: read before initialization */`);
-            E.indent++;
-            E.line(`scr_throw_error_named((ScrStr *)&${errName}, (ScrStr *)&${msg});`);
-            E.emitUnwind();
-            E.indent--;
-            E.line(`}`);
+            const errName = emitter.internLiteral("ReferenceError");
+            const msg = emitter.internLiteral(`Cannot access '${local.name}' before initialization`);
+            emitter.line(`if (${name}->slot == 0) { /* TDZ: read before initialization */`);
+            emitter.indent++;
+            emitter.line(`scr_throw_error_named((ScrStr *)&${errName}, (ScrStr *)&${msg});`);
+            emitter.emitUnwind();
+            emitter.indent--;
+            emitter.line(`}`);
           }
-          return E.newTemp(e.type, read);
+          return emitter.newTemp(e.type, read);
         }
-        return E.newTemp(e.type, isRefCounted(e.type) ? retainCallC(e.type, name) : name);
+        return emitter.newTemp(e.type, isRefCounted(e.type) ? retainCallC(e.type, name) : name);
       }
       case "bin": {
-        const l = E.emitExpr(e.left);
-        const r = E.emitExpr(e.right);
+        const l = emitter.emitExpr(e.left);
+        const r = emitter.emitExpr(e.right);
         switch (e.op) {
           case "%":
-            return E.newTemp(e.type, `fmod(${l.name}, ${r.name})`);
+            return emitter.newTemp(e.type, `fmod(${l.name}, ${r.name})`);
           case "**":
-            return E.newTemp(e.type, `pow(${l.name}, ${r.name})`);
+            return emitter.newTemp(e.type, `pow(${l.name}, ${r.name})`);
           case "===":
-            return E.newTemp(e.type, `${l.name} == ${r.name}`);
+            return emitter.newTemp(e.type, `${l.name} == ${r.name}`);
           case "!==":
-            return E.newTemp(e.type, `${l.name} != ${r.name}`);
+            return emitter.newTemp(e.type, `${l.name} != ${r.name}`);
           // The bitwise six ride runtime helpers (ToInt32/ToUint32 wrap,
           // 5-bit shift masks, exact C-portable arithmetic shifts).
           case "&":
-            return E.newTemp(e.type, `scr_bit_and(${l.name}, ${r.name})`);
+            return emitter.newTemp(e.type, `scr_bit_and(${l.name}, ${r.name})`);
           case "|":
-            return E.newTemp(e.type, `scr_bit_or(${l.name}, ${r.name})`);
+            return emitter.newTemp(e.type, `scr_bit_or(${l.name}, ${r.name})`);
           case "^":
-            return E.newTemp(e.type, `scr_bit_xor(${l.name}, ${r.name})`);
+            return emitter.newTemp(e.type, `scr_bit_xor(${l.name}, ${r.name})`);
           case "<<":
-            return E.newTemp(e.type, `scr_bit_shl(${l.name}, ${r.name})`);
+            return emitter.newTemp(e.type, `scr_bit_shl(${l.name}, ${r.name})`);
           case ">>":
-            return E.newTemp(e.type, `scr_bit_shr(${l.name}, ${r.name})`);
+            return emitter.newTemp(e.type, `scr_bit_shr(${l.name}, ${r.name})`);
           case ">>>":
-            return E.newTemp(e.type, `scr_bit_ushr(${l.name}, ${r.name})`);
+            return emitter.newTemp(e.type, `scr_bit_ushr(${l.name}, ${r.name})`);
           default:
-            return E.newTemp(e.type, `${l.name} ${e.op} ${r.name}`);
+            return emitter.newTemp(e.type, `${l.name} ${e.op} ${r.name}`);
         }
       }
       case "unary": {
-        const v = E.emitExpr(e.operand);
-        if (e.op === "~") return E.newTemp(e.type, `scr_bit_not(${v.name})`);
-        return E.newTemp(e.type, `${e.op}${v.name}`);
+        const v = emitter.emitExpr(e.operand);
+        if (e.op === "~") return emitter.newTemp(e.type, `scr_bit_not(${v.name})`);
+        return emitter.newTemp(e.type, `${e.op}${v.name}`);
       }
       case "incDec": {
         // Expression-position ++/--: read, write ±1, yield old (postfix)
         // or new (prefix) — the yielded value is snapshotted into its own
         // temp, so later writes to the binding can't disturb it. Receivers
         // are always f64 (frontend fence), so no RC bookkeeping.
-        const local = E.currentLocals.get(e.localId);
+        const local = emitter.currentLocals.get(e.localId);
         const one = e.op === "+" ? "+ 1" : "- 1";
         if (local?.boxed) {
           const box = mangleLocal(e.localId);
-          const old = E.newTemp(e.type, `scr_box_get_${boxAccess(e.type)}(${box})`);
+          const old = emitter.newTemp(e.type, `scr_box_get_${boxAccess(e.type)}(${box})`);
           if (e.prefix) {
-            const t = E.newTemp(e.type, `${old.name} ${one}`);
-            E.line(`scr_box_set_${boxAccess(e.type)}(${box}, ${t.name});`);
+            const t = emitter.newTemp(e.type, `${old.name} ${one}`);
+            emitter.line(`scr_box_set_${boxAccess(e.type)}(${box}, ${t.name});`);
             return t;
           }
-          E.line(`scr_box_set_${boxAccess(e.type)}(${box}, ${old.name} ${one});`);
+          emitter.line(`scr_box_set_${boxAccess(e.type)}(${box}, ${old.name} ${one});`);
           return old;
         }
-        if (!local && !E.globalsById.has(e.localId)) {
+        if (!local && !emitter.globalsById.has(e.localId)) {
           throw new InternalCompilerError(`emitter bug: incDec of unknown binding ${e.localId}`);
         }
         const target = local ? mangleLocal(e.localId) : mangleGlobal(e.localId);
-        const t = E.newTemp(e.type, e.prefix ? `${target} ${one}` : target);
-        E.line(`${target} = ${e.prefix ? t.name : `${t.name} ${one}`};`);
+        const t = emitter.newTemp(e.type, e.prefix ? `${target} ${one}` : target);
+        emitter.line(`${target} = ${e.prefix ? t.name : `${t.name} ${one}`};`);
         return t;
       }
       case "fieldIncDec": {
@@ -752,26 +752,26 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // TypeError on non-numbers), compute, and box the result back into
         // the slot. Unlink-then-release like fieldSet: the old box leaves
         // the heap edge before its count is given up (scr_cycle.c).
-        const obj = E.emitExpr(e.obj);
+        const obj = emitter.emitExpr(e.obj);
         const field = `${obj.name}->${mangleField(e.field)}`;
         const one = e.op === "+" ? "+ 1" : "- 1";
         if (!e.fieldDyn) {
-          const old = E.newTemp(e.type, field);
+          const old = emitter.newTemp(e.type, field);
           if (e.prefix) {
-            const t = E.newTemp(e.type, `${old.name} ${one}`);
-            E.line(`${field} = ${t.name};${E.srcComment(e.loc)}`);
+            const t = emitter.newTemp(e.type, `${old.name} ${one}`);
+            emitter.line(`${field} = ${t.name};${emitter.srcComment(e.loc)}`);
             return t;
           }
-          E.line(`${field} = ${old.name} ${one};${E.srcComment(e.loc)}`);
+          emitter.line(`${field} = ${old.name} ${one};${emitter.srcComment(e.loc)}`);
           return old;
         }
-        const helper = E.dynCheckHelper(e.type);
-        const old = E.fallibleTemp(e.type, `${helper}(${field}, NULL)`);
-        const next = E.newTemp(e.type, `${old.name} ${one}`);
-        const oldBox = `sc_t${E.tempCounter++}`;
-        E.line(`ScrDyn *${oldBox} = ${field};`);
-        E.line(`${field} = scr_dyn_new_num(${next.name});${E.srcComment(e.loc)}`);
-        E.releaseValue(oldBox, DYN);
+        const helper = emitter.dynCheckHelper(e.type);
+        const old = emitter.fallibleTemp(e.type, `${helper}(${field}, NULL)`);
+        const next = emitter.newTemp(e.type, `${old.name} ${one}`);
+        const oldBox = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`ScrDyn *${oldBox} = ${field};`);
+        emitter.line(`${field} = scr_dyn_new_num(${next.name});${emitter.srcComment(e.loc)}`);
+        emitter.releaseValue(oldBox, DYN);
         return e.prefix ? next : old;
       }
       case "assignExpr": {
@@ -780,26 +780,26 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // reference for the yielded value, released at statement end as usual),
         // and the temp is the expression's value. Mirrors the `assign`
         // statement's old-value release / boxed-set behavior exactly.
-        const local = E.currentLocals.get(e.localId);
-        const v = E.emitExpr(e.value);
+        const local = emitter.currentLocals.get(e.localId);
+        const v = emitter.emitExpr(e.value);
         if (local?.boxed) {
           // box_set takes ownership of the passed reference, so hand it a
           // retained copy and keep the temp's own reference for the yield.
           const stored = isRefCounted(v.type) ? retainCallC(v.type, v.name) : v.name;
-          E.line(`scr_box_set_${boxAccess(local.type)}(${mangleLocal(e.localId)}, ${stored});`);
+          emitter.line(`scr_box_set_${boxAccess(local.type)}(${mangleLocal(e.localId)}, ${stored});`);
           return v;
         }
-        if (!local && !E.globalsById.has(e.localId)) {
+        if (!local && !emitter.globalsById.has(e.localId)) {
           throw new InternalCompilerError(`emitter bug: assignExpr to unknown binding ${e.localId}`);
         }
         const target = local ? mangleLocal(e.localId) : mangleGlobal(e.localId);
         if (isRefCounted(v.type)) {
           // Old-value release is NULL-tolerant for globals (statics start
           // NULL); locals always hold a live value by definite assignment.
-          E.releaseValue(target, v.type);
-          E.line(`${target} = ${retainCallC(v.type, v.name)};`);
+          emitter.releaseValue(target, v.type);
+          emitter.line(`${target} = ${retainCallC(v.type, v.name)};`);
         } else {
-          E.line(`${target} = ${v.name};`);
+          emitter.line(`${target} = ${v.name};`);
         }
         return v;
       }
@@ -809,23 +809,23 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // position) and the result is an ordinary temp of the current
         // frame. The validator restricted stmts to straight-line writes —
         // no jump can leave the region.
-        for (const s of e.stmts) E.emitStmt(s);
-        return E.emitExpr(e.result);
+        for (const s of e.stmts) emitter.emitStmt(s);
+        return emitter.emitExpr(e.result);
       }
       case "dynDestrCheck": {
         // RequireObjectCoercible with V8's destructuring TypeError. dyn
         // values check in the runtime helper and pass through unchanged
         // (same temp, same ownership); island values check in the engine
         // (a fresh +1 cell for the same value comes back).
-        const v = E.emitExpr(e.value);
+        const v = emitter.emitExpr(e.value);
         const first = e.firstProp !== undefined ? cStringLiteral(Buffer.from(e.firstProp, "utf8")) : "NULL";
         const spell = cStringLiteral(Buffer.from(e.spelling, "utf8"));
         if (e.value.type.kind === "jsval") {
-          return E.fallibleTemp(e.type, `scr_jsval_destr_check(${v.name}, ${spell}, ${first})`);
+          return emitter.fallibleTemp(e.type, `scr_jsval_destr_check(${v.name}, ${spell}, ${first})`);
         }
-        const helper = dynDestrCheckHelper(E);
-        E.line(`${helper}(${v.name}, ${spell}, ${first});${E.srcComment(e.loc)}`);
-        E.emitPendingCheck();
+        const helper = dynDestrCheckHelper(emitter);
+        emitter.line(`${helper}(${v.name}, ${spell}, ${first});${emitter.srcComment(e.loc)}`);
+        emitter.emitPendingCheck();
         return v;
       }
       case "dynIterN": {
@@ -833,18 +833,18 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // not-iterable TypeError on non-iterables): the dyn helper for
         // dyn operands, the engine's real iterator protocol for island
         // ones.
-        const v = E.emitExpr(e.value);
+        const v = emitter.emitExpr(e.value);
         if (e.value.type.kind === "jsval") {
-          return E.fallibleTemp(e.type, `scr_jsval_iter_n(${v.name}, ${e.count})`);
+          return emitter.fallibleTemp(e.type, `scr_jsval_iter_n(${v.name}, ${e.count})`);
         }
-        const helper = dynIterNHelper(E);
-        return E.fallibleTemp(e.type, `${helper}(${v.name}, ${e.count})`);
+        const helper = dynIterNHelper(emitter);
+        return emitter.fallibleTemp(e.type, `${helper}(${v.name}, ${e.count})`);
       }
       case "toBool": {
         // JS ToBoolean. The operand temp (for strings: owned by the current
         // frame) is only read here and released at statement end as usual.
-        const v = E.emitExpr(e.operand);
-        return E.newTemp(e.type, E.truthyC(v));
+        const v = emitter.emitExpr(e.operand);
+        return emitter.newTemp(e.type, emitter.truthyC(v));
       }
       case "logical": {
         // JS value semantics: `a && b` ≡ `toBool(a) ? b : a`, `a || b` ≡
@@ -854,38 +854,38 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // instead, the stale left value is released first and the right
         // operand runs in its own frame (its leftover temps release inside
         // the branch). Same move/release dance as `ternary`.
-        const l = E.emitExpr(e.left);
-        E.moveTemp(l);
-        const name = `sc_t${E.tempCounter++}`;
-        E.line(`${cDecl(e.type, name)} = ${l.name};`);
-        const truthy = E.truthyC({ name, type: e.type });
-        E.line(`if (${e.op === "&&" ? truthy : `!(${truthy})`}) {`);
-        E.indent++;
-        if (isRefCounted(e.type)) E.releaseValue(name, e.type);
-        E.emitBranchInto(name, e.right);
-        E.indent--;
-        E.line(`}`);
-        if (isRefCounted(e.type)) E.currentFrame().push({ name, type: e.type });
+        const l = emitter.emitExpr(e.left);
+        emitter.moveTemp(l);
+        const name = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`${cDecl(e.type, name)} = ${l.name};`);
+        const truthy = emitter.truthyC({ name, type: e.type });
+        emitter.line(`if (${e.op === "&&" ? truthy : `!(${truthy})`}) {`);
+        emitter.indent++;
+        if (isRefCounted(e.type)) emitter.releaseValue(name, e.type);
+        emitter.emitBranchInto(name, e.right);
+        emitter.indent--;
+        emitter.line(`}`);
+        if (isRefCounted(e.type)) emitter.currentFrame().push({ name, type: e.type });
         return { name, type: e.type };
       }
       case "ternary": {
         // Exactly one arm evaluates. Each arm runs in its own frame: the
         // chosen value's ownership moves to the result temp, everything
         // else the arm allocated is released inside its branch.
-        const c = E.emitExpr(e.cond);
-        const name = `sc_t${E.tempCounter++}`;
-        E.line(`${cDecl(e.type, name)};`);
+        const c = emitter.emitExpr(e.cond);
+        const name = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`${cDecl(e.type, name)};`);
         const emitArm = (arm: IrExpr) => {
-          E.indent++;
-          E.emitBranchInto(name, arm);
-          E.indent--;
+          emitter.indent++;
+          emitter.emitBranchInto(name, arm);
+          emitter.indent--;
         };
-        E.line(`if (${c.name}) {`);
+        emitter.line(`if (${c.name}) {`);
         emitArm(e.then);
-        E.line(`} else {`);
+        emitter.line(`} else {`);
         emitArm(e.else_);
-        E.line(`}`);
-        if (isRefCounted(e.type)) E.currentFrame().push({ name, type: e.type });
+        emitter.line(`}`);
+        if (isRefCounted(e.type)) emitter.currentFrame().push({ name, type: e.type });
         return { name, type: e.type };
       }
       case "optChain": {
@@ -900,25 +900,25 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // unit path result is the engine's undefined (+1 cell), the body
         // runs lazily over the bound handle otherwise.
         if (e.receiver.type.kind === "jsval") {
-          const r = E.emitExpr(e.receiver);
-          const bind = `sc_t${E.tempCounter++}`;
-          E.line(`${cDecl(e.type, bind)} = NULL;`);
-          E.currentFrame().push({ name: bind, type: e.type });
-          const name = `sc_t${E.tempCounter++}`;
-          E.line(`${cDecl(e.type, name)};`);
-          E.line(`if (scr_jsval_is_nullish(${r.name})) {`);
-          E.indent++;
-          E.line(`${name} = scr_jsval_undefined();`);
-          E.indent--;
-          E.line(`} else {`);
-          E.indent++;
-          E.line(`${bind} = scr_jsval_retain(${r.name});`);
-          E.chainTemps.set(e.id, { name: bind, type: e.type });
-          E.emitBranchInto(name, e.body);
-          E.chainTemps.delete(e.id);
-          E.indent--;
-          E.line(`}`);
-          E.currentFrame().push({ name, type: e.type });
+          const r = emitter.emitExpr(e.receiver);
+          const bind = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`${cDecl(e.type, bind)} = NULL;`);
+          emitter.currentFrame().push({ name: bind, type: e.type });
+          const name = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`${cDecl(e.type, name)};`);
+          emitter.line(`if (scr_jsval_is_nullish(${r.name})) {`);
+          emitter.indent++;
+          emitter.line(`${name} = scr_jsval_undefined();`);
+          emitter.indent--;
+          emitter.line(`} else {`);
+          emitter.indent++;
+          emitter.line(`${bind} = scr_jsval_retain(${r.name});`);
+          emitter.chainTemps.set(e.id, { name: bind, type: e.type });
+          emitter.emitBranchInto(name, e.body);
+          emitter.chainTemps.delete(e.id);
+          emitter.indent--;
+          emitter.line(`}`);
+          emitter.currentFrame().push({ name, type: e.type });
           return { name, type: e.type };
         }
         // A dyn (dyn) receiver — the `rawName?.match(re)` step: the nullish
@@ -928,53 +928,53 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // dispatch, its result converted back into the checked-dynamic tree by the
         // frontend's dynFrom wrap).
         if (e.receiver.type.kind === "dyn") {
-          const r = E.emitExpr(e.receiver);
+          const r = emitter.emitExpr(e.receiver);
           const test = `(${r.name}->kind == SCR_DYN_UNDEF || ${r.name}->kind == SCR_DYN_NULL)`;
-          const bind = `sc_t${E.tempCounter++}`;
-          E.line(`${cDecl(e.receiver.type, bind)} = NULL;`);
-          E.currentFrame().push({ name: bind, type: e.receiver.type });
+          const bind = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`${cDecl(e.receiver.type, bind)} = NULL;`);
+          emitter.currentFrame().push({ name: bind, type: e.receiver.type });
           if (e.type.kind === "void") {
-            E.line(`if (!${test}) {`);
-            E.indent++;
-            E.line(`${bind} = scr_dyn_retain(${r.name});`);
-            E.chainTemps.set(e.id, { name: bind, type: e.receiver.type });
-            E.frames.push([]);
-            E.emitExpr(e.body);
-            E.releaseFrame(E.frames.pop()!);
-            E.chainTemps.delete(e.id);
-            E.indent--;
-            E.line(`}`);
+            emitter.line(`if (!${test}) {`);
+            emitter.indent++;
+            emitter.line(`${bind} = scr_dyn_retain(${r.name});`);
+            emitter.chainTemps.set(e.id, { name: bind, type: e.receiver.type });
+            emitter.frames.push([]);
+            emitter.emitExpr(e.body);
+            emitter.releaseFrame(emitter.frames.pop()!);
+            emitter.chainTemps.delete(e.id);
+            emitter.indent--;
+            emitter.line(`}`);
             return { name: "", type: e.type };
           }
           if (e.type.kind !== "dyn") throw new InternalCompilerError("emitter bug: dyn optChain result kind");
-          const name = `sc_t${E.tempCounter++}`;
-          E.line(`${cDecl(e.type, name)};`);
-          E.line(`if (${test}) {`);
-          E.indent++;
-          E.line(`${name} = scr_dyn_retain(scr_dyn_undefined());`);
-          E.indent--;
-          E.line(`} else {`);
-          E.indent++;
-          E.line(`${bind} = scr_dyn_retain(${r.name});`);
-          E.chainTemps.set(e.id, { name: bind, type: e.receiver.type });
-          E.emitBranchInto(name, e.body);
-          E.chainTemps.delete(e.id);
-          E.indent--;
-          E.line(`}`);
-          E.currentFrame().push({ name, type: e.type });
+          const name = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`${cDecl(e.type, name)};`);
+          emitter.line(`if (${test}) {`);
+          emitter.indent++;
+          emitter.line(`${name} = scr_dyn_retain(scr_dyn_undefined());`);
+          emitter.indent--;
+          emitter.line(`} else {`);
+          emitter.indent++;
+          emitter.line(`${bind} = scr_dyn_retain(${r.name});`);
+          emitter.chainTemps.set(e.id, { name: bind, type: e.receiver.type });
+          emitter.emitBranchInto(name, e.body);
+          emitter.chainTemps.delete(e.id);
+          emitter.indent--;
+          emitter.line(`}`);
+          emitter.currentFrame().push({ name, type: e.type });
           return { name, type: e.type };
         }
         if (e.receiver.type.kind !== "union") throw new InternalCompilerError("emitter bug: optChain receiver is not a union");
-        const def = E.unionsById.get(e.receiver.type.unionId);
+        const def = emitter.unionsById.get(e.receiver.type.unionId);
         if (!def) throw new InternalCompilerError(`emitter bug: optChain of unknown union ${e.receiver.type.unionId}`);
         const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
         const narrowIdx = def.arms.findIndex((a) => !isUnitType(a));
         if (unitTags.length === 0 || narrowIdx < 0) throw new InternalCompilerError("emitter bug: optChain union arms");
         const narrowed = def.arms[narrowIdx]!;
-        const r = E.emitExpr(e.receiver);
-        const bind = `sc_t${E.tempCounter++}`;
-        E.line(`${cDecl(narrowed, bind)} = ${isRefCounted(narrowed) ? "NULL" : "0"};`);
-        if (isRefCounted(narrowed)) E.currentFrame().push({ name: bind, type: narrowed });
+        const r = emitter.emitExpr(e.receiver);
+        const bind = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`${cDecl(narrowed, bind)} = ${isRefCounted(narrowed) ? "NULL" : "0"};`);
+        if (isRefCounted(narrowed)) emitter.currentFrame().push({ name: bind, type: narrowed });
         const test = unitTags.map((t) => `${r.name}->tag == ${t}`).join(" || ");
         const extract =
           narrowed.kind === "f64"
@@ -984,63 +984,63 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               : retainCallC(narrowed, `(${cType(narrowed).trim()})scr_union_peek(${r.name})`);
         if (e.type.kind === "void") {
           // Statement form (cb?.()): no result value at all.
-          E.line(`if (!(${test})) {`);
-          E.indent++;
-          E.line(`${bind} = ${extract};`);
-          E.chainTemps.set(e.id, { name: bind, type: narrowed });
-          E.frames.push([]);
-          E.emitExpr(e.body);
-          E.releaseFrame(E.frames.pop()!);
-          E.chainTemps.delete(e.id);
-          E.indent--;
-          E.line(`}`);
+          emitter.line(`if (!(${test})) {`);
+          emitter.indent++;
+          emitter.line(`${bind} = ${extract};`);
+          emitter.chainTemps.set(e.id, { name: bind, type: narrowed });
+          emitter.frames.push([]);
+          emitter.emitExpr(e.body);
+          emitter.releaseFrame(emitter.frames.pop()!);
+          emitter.chainTemps.delete(e.id);
+          emitter.indent--;
+          emitter.line(`}`);
           return { name: "", type: e.type };
         }
         // A dyn-typed chain (`pricing?.[key]` over an unknown-valued index
         // signature): the unit path is the undefined dyn value — dyn
         // represents undefined directly, no union wrapper exists.
         if (e.type.kind === "dyn") {
-          const name = `sc_t${E.tempCounter++}`;
-          E.line(`${cDecl(e.type, name)};`);
-          E.line(`if (${test}) {`);
-          E.indent++;
-          E.line(`${name} = scr_dyn_retain(scr_dyn_undefined());`);
-          E.indent--;
-          E.line(`} else {`);
-          E.indent++;
-          E.line(`${bind} = ${extract};`);
-          E.chainTemps.set(e.id, { name: bind, type: narrowed });
-          E.emitBranchInto(name, e.body);
-          E.chainTemps.delete(e.id);
-          E.indent--;
-          E.line(`}`);
-          E.currentFrame().push({ name, type: e.type });
+          const name = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`${cDecl(e.type, name)};`);
+          emitter.line(`if (${test}) {`);
+          emitter.indent++;
+          emitter.line(`${name} = scr_dyn_retain(scr_dyn_undefined());`);
+          emitter.indent--;
+          emitter.line(`} else {`);
+          emitter.indent++;
+          emitter.line(`${bind} = ${extract};`);
+          emitter.chainTemps.set(e.id, { name: bind, type: narrowed });
+          emitter.emitBranchInto(name, e.body);
+          emitter.chainTemps.delete(e.id);
+          emitter.indent--;
+          emitter.line(`}`);
+          emitter.currentFrame().push({ name, type: e.type });
           return { name, type: e.type };
         }
         if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: optChain result is not a union");
-        const undefTag = undefinedArmTag(e.type, E.unionsById);
+        const undefTag = undefinedArmTag(e.type, emitter.unionsById);
         if (undefTag < 0) throw new InternalCompilerError("emitter bug: optChain result lacks its undefined arm");
-        const name = `sc_t${E.tempCounter++}`;
-        E.line(`${cDecl(e.type, name)};`);
-        E.line(`if (${test}) {`);
-        E.indent++;
-        E.line(`${name} = ${E.unitInstanceRef(e.type.unionId, undefTag)};`);
-        E.indent--;
-        E.line(`} else {`);
-        E.indent++;
-        E.line(`${bind} = ${extract};`);
-        E.chainTemps.set(e.id, { name: bind, type: narrowed });
-        E.emitBranchInto(name, e.body);
-        E.chainTemps.delete(e.id);
-        E.indent--;
-        E.line(`}`);
-        E.currentFrame().push({ name, type: e.type });
+        const name = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`${cDecl(e.type, name)};`);
+        emitter.line(`if (${test}) {`);
+        emitter.indent++;
+        emitter.line(`${name} = ${emitter.unitInstanceRef(e.type.unionId, undefTag)};`);
+        emitter.indent--;
+        emitter.line(`} else {`);
+        emitter.indent++;
+        emitter.line(`${bind} = ${extract};`);
+        emitter.chainTemps.set(e.id, { name: bind, type: narrowed });
+        emitter.emitBranchInto(name, e.body);
+        emitter.chainTemps.delete(e.id);
+        emitter.indent--;
+        emitter.line(`}`);
+        emitter.currentFrame().push({ name, type: e.type });
         return { name, type: e.type };
       }
       case "chainRecv": {
-        const bound = E.chainTemps.get(e.id);
+        const bound = emitter.chainTemps.get(e.id);
         if (!bound) throw new InternalCompilerError(`emitter bug: chainRecv "${e.id}" outside its chain`);
-        return E.newTemp(
+        return emitter.newTemp(
           e.type,
           isRefCounted(e.type) ? retainCallC(e.type, bound.name) : bound.name,
         );
@@ -1050,19 +1050,19 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // with the per-union TRUTHY helper as the test — truthy extracts
         // the arm (+1 for ref kinds), falsy releases and runs the default.
         if (e.left.type.kind !== "union") throw new InternalCompilerError("emitter bug: orDefault left is not a union");
-        const l = E.emitExpr(e.left);
-        E.moveTemp(l);
-        const name = `sc_t${E.tempCounter++}`;
-        E.line(`${cDecl(e.type, name)};`);
-        E.line(`if (${E.unionTruthyHelper(e.left.type.unionId)}(${l.name})) {`);
-        E.indent++;
+        const l = emitter.emitExpr(e.left);
+        emitter.moveTemp(l);
+        const name = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`${cDecl(e.type, name)};`);
+        emitter.line(`if (${emitter.unionTruthyHelper(e.left.type.unionId)}(${l.name})) {`);
+        emitter.indent++;
         if (e.retag !== undefined) {
           // The helper CONSUMES the left box (callees own their params), so
           // no release on this side — the falsy side still owns and frees it.
           // An unwind here produces the NULL dummy and never reaches the
           // frame push below, so the slot needs no early registration.
-          E.line(`${name} = ${E.callTargetC(e.retag)}(${l.name});`);
-          if (E.mayThrow.has(e.retag)) E.emitPendingCheck();
+          emitter.line(`${name} = ${emitter.callTargetC(e.retag)}(${l.name});`);
+          if (emitter.mayThrow.has(e.retag)) emitter.emitPendingCheck();
         } else {
           const arm = e.type;
           const read =
@@ -1071,17 +1071,17 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               : arm.kind === "bool"
                 ? `scr_union_get_bool(${l.name})`
                 : retainCallC(arm, `(${cType(arm).trim()})scr_union_peek(${l.name})`);
-          E.line(`${name} = ${read};`);
-          E.releaseValue(l.name, e.left.type);
+          emitter.line(`${name} = ${read};`);
+          emitter.releaseValue(l.name, e.left.type);
         }
-        E.indent--;
-        E.line(`} else {`);
-        E.indent++;
-        E.releaseValue(l.name, e.left.type);
-        E.emitBranchInto(name, e.right);
-        E.indent--;
-        E.line(`}`);
-        if (isRefCounted(e.type)) E.currentFrame().push({ name, type: e.type });
+        emitter.indent--;
+        emitter.line(`} else {`);
+        emitter.indent++;
+        emitter.releaseValue(l.name, e.left.type);
+        emitter.emitBranchInto(name, e.right);
+        emitter.indent--;
+        emitter.line(`}`);
+        if (isRefCounted(e.type)) emitter.currentFrame().push({ name, type: e.type });
         return { name, type: e.type };
       }
       case "nullish": {
@@ -1095,63 +1095,63 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         if (e.left.type.kind === "jsval") {
           // `a ?? b` on an island value: the engine's nullish test; the
           // right runs lazily in its branch (already jsval-typed).
-          const l = E.emitExpr(e.left);
-          E.moveTemp(l);
-          const name = `sc_t${E.tempCounter++}`;
-          E.line(`${cDecl(e.type, name)};`);
-          E.line(`if (scr_jsval_is_nullish(${l.name})) {`);
-          E.indent++;
-          E.releaseValue(l.name, e.left.type);
-          E.emitBranchInto(name, e.right);
-          E.indent--;
-          E.line(`} else {`);
-          E.indent++;
-          E.line(`${name} = ${l.name};`);
-          E.indent--;
-          E.line(`}`);
-          if (isRefCounted(e.type)) E.currentFrame().push({ name, type: e.type });
+          const l = emitter.emitExpr(e.left);
+          emitter.moveTemp(l);
+          const name = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`${cDecl(e.type, name)};`);
+          emitter.line(`if (scr_jsval_is_nullish(${l.name})) {`);
+          emitter.indent++;
+          emitter.releaseValue(l.name, e.left.type);
+          emitter.emitBranchInto(name, e.right);
+          emitter.indent--;
+          emitter.line(`} else {`);
+          emitter.indent++;
+          emitter.line(`${name} = ${l.name};`);
+          emitter.indent--;
+          emitter.line(`}`);
+          if (isRefCounted(e.type)) emitter.currentFrame().push({ name, type: e.type });
           return { name, type: e.type };
         }
         if (e.left.type.kind === "dyn") {
           // `a ?? b` on a checked-dynamic left: the runtime kind decides
           // (UNDEF/NULL take the default; a wrapped island value asks the
           // engine); the right runs lazily in its branch (already dyn).
-          const l = E.emitExpr(e.left);
-          E.moveTemp(l);
-          const name = `sc_t${E.tempCounter++}`;
-          E.line(`${cDecl(e.type, name)};`);
-          E.line(`if (scr_dyn_is_nullish(${l.name})) {`);
-          E.indent++;
-          E.releaseValue(l.name, e.left.type);
-          E.emitBranchInto(name, e.right);
-          E.indent--;
-          E.line(`} else {`);
-          E.indent++;
-          E.line(`${name} = ${l.name};`);
-          E.indent--;
-          E.line(`}`);
-          if (isRefCounted(e.type)) E.currentFrame().push({ name, type: e.type });
+          const l = emitter.emitExpr(e.left);
+          emitter.moveTemp(l);
+          const name = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`${cDecl(e.type, name)};`);
+          emitter.line(`if (scr_dyn_is_nullish(${l.name})) {`);
+          emitter.indent++;
+          emitter.releaseValue(l.name, e.left.type);
+          emitter.emitBranchInto(name, e.right);
+          emitter.indent--;
+          emitter.line(`} else {`);
+          emitter.indent++;
+          emitter.line(`${name} = ${l.name};`);
+          emitter.indent--;
+          emitter.line(`}`);
+          if (isRefCounted(e.type)) emitter.currentFrame().push({ name, type: e.type });
           return { name, type: e.type };
         }
         if (e.left.type.kind !== "union") throw new InternalCompilerError("emitter bug: nullish left is not a union");
-        const def = E.unionsById.get(e.left.type.unionId);
+        const def = emitter.unionsById.get(e.left.type.unionId);
         if (!def) throw new InternalCompilerError(`emitter bug: nullish of unknown union ${e.left.type.unionId}`);
         const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
         if (unitTags.length === 0) throw new InternalCompilerError("emitter bug: nullish union lacks unit arms");
-        const l = E.emitExpr(e.left);
-        E.moveTemp(l);
-        const name = `sc_t${E.tempCounter++}`;
-        E.line(`${cDecl(e.type, name)};`);
+        const l = emitter.emitExpr(e.left);
+        emitter.moveTemp(l);
+        const name = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`${cDecl(e.type, name)};`);
         const test = unitTags.map((t) => `${l.name}->tag == ${t}`).join(" || ");
-        E.line(`if (${test}) {`);
-        E.indent++;
-        E.releaseValue(l.name, e.left.type);
-        E.emitBranchInto(name, e.right);
-        E.indent--;
-        E.line(`} else {`);
-        E.indent++;
+        emitter.line(`if (${test}) {`);
+        emitter.indent++;
+        emitter.releaseValue(l.name, e.left.type);
+        emitter.emitBranchInto(name, e.right);
+        emitter.indent--;
+        emitter.line(`} else {`);
+        emitter.indent++;
         if (typeEquals(e.type, e.left.type)) {
-          E.line(`${name} = ${l.name};`);
+          emitter.line(`${name} = ${l.name};`);
         } else {
           const arm = e.type;
           const read =
@@ -1160,57 +1160,57 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               : arm.kind === "bool"
                 ? `scr_union_get_bool(${l.name})`
                 : retainCallC(arm, `(${cType(arm).trim()})scr_union_peek(${l.name})`);
-          E.line(`${name} = ${read};`);
-          E.releaseValue(l.name, e.left.type);
+          emitter.line(`${name} = ${read};`);
+          emitter.releaseValue(l.name, e.left.type);
         }
-        E.indent--;
-        E.line(`}`);
-        if (isRefCounted(e.type)) E.currentFrame().push({ name, type: e.type });
+        emitter.indent--;
+        emitter.line(`}`);
+        if (isRefCounted(e.type)) emitter.currentFrame().push({ name, type: e.type });
         return { name, type: e.type };
       }
       case "strConcat": {
-        const l = E.emitExpr(e.left);
-        const r = E.emitExpr(e.right);
-        return E.newTemp(e.type, `scr_str_concat(${l.name}, ${r.name})`);
+        const l = emitter.emitExpr(e.left);
+        const r = emitter.emitExpr(e.right);
+        return emitter.newTemp(e.type, `scr_str_concat(${l.name}, ${r.name})`);
       }
       case "strEq": {
-        const l = E.emitExpr(e.left);
-        const r = E.emitExpr(e.right);
-        return E.newTemp(e.type, `${e.negated ? "!" : ""}scr_str_eq(${l.name}, ${r.name})`);
+        const l = emitter.emitExpr(e.left);
+        const r = emitter.emitExpr(e.right);
+        return emitter.newTemp(e.type, `${e.negated ? "!" : ""}scr_str_eq(${l.name}, ${r.name})`);
       }
       case "strCmp": {
-        const l = E.emitExpr(e.left);
-        const r = E.emitExpr(e.right);
+        const l = emitter.emitExpr(e.left);
+        const r = emitter.emitExpr(e.right);
         const fn = e.utf16 === true ? "scr_str_cmp_u16" : "scr_str_cmp";
-        return E.newTemp(e.type, `${fn}(${l.name}, ${r.name}) ${e.op} 0`);
+        return emitter.newTemp(e.type, `${fn}(${l.name}, ${r.name}) ${e.op} 0`);
       }
       case "toString": {
-        const v = E.emitExpr(e.operand);
+        const v = emitter.emitExpr(e.operand);
         if (v.type.kind === "union") {
           // The ARM value's ToString via the per-union interned helper
           // (unit arms are interned literals, string arms retain the
           // payload, f64/bool arms format). Box borrowed; result +1.
-          return E.newTemp(e.type, `${E.unionToStrHelper(v.type.unionId)}(${v.name})`);
+          return emitter.newTemp(e.type, `${emitter.unionToStrHelper(v.type.unionId)}(${v.name})`);
         }
         if (v.type.kind === "caught") {
           // String(e) over the exception snapshot. Box borrowed; result +1.
-          return E.newTemp(e.type, `scr_caught_to_string(${v.name})`);
+          return emitter.newTemp(e.type, `scr_caught_to_string(${v.name})`);
         }
         if (v.type.kind === "dyn") {
           // String(unknown): dispatch over the dyn kind (dynToStrHelper —
           // Node's String() incl. arrays-join and "[object Object]").
-          return E.newTemp(e.type, `${E.dynToStrHelper()}(${v.name})`);
+          return emitter.newTemp(e.type, `${emitter.dynToStrHelper()}(${v.name})`);
         }
         if (v.type.kind === "record") {
           // String(record) / `${record}`: Object.prototype.toString's
           // constant. The operand temp was emitted above (effects and RC
           // ride the frame like any other statement temp); the result is
           // the interned literal, retained like a strLit.
-          const sym = E.internLiteral("[object Object]");
-          return E.newTemp(e.type, retainCallC(e.type, `(ScrStr *)&${sym}`));
+          const sym = emitter.internLiteral("[object Object]");
+          return emitter.newTemp(e.type, retainCallC(e.type, `(ScrStr *)&${sym}`));
         }
         const fn = v.type.kind === "bool" ? "scr_bool_to_scrstr" : "scr_f64_to_scrstr";
-        return E.newTemp(e.type, `${fn}(${v.name})`);
+        return emitter.newTemp(e.type, `${fn}(${v.name})`);
       }
       case "strIntrinsic": {
         // Receiver and string arguments are owned temps in the current
@@ -1220,18 +1220,18 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // other owned string temp. Omitted optional args get the C-side
         // defaults from docs/ir.md: indexOf position 0, slice start 0,
         // slice end INFINITY (math.h is always included).
-        const r = E.emitExpr(e.receiver);
-        const args = e.args.map((a) => E.emitExpr(a));
+        const r = emitter.emitExpr(e.receiver);
+        const args = e.args.map((a) => emitter.emitExpr(a));
         const method = e.method;
         switch (method) {
           case "length":
-            return E.newTemp(e.type, `scr_str_utf16_len(${r.name})`);
+            return emitter.newTemp(e.type, `scr_str_utf16_len(${r.name})`);
           case "charCodeAt":
-            return E.newTemp(e.type, `scr_str_char_code_at(${r.name}, ${args[0]!.name})`);
+            return emitter.newTemp(e.type, `scr_str_char_code_at(${r.name}, ${args[0]!.name})`);
           case "charAt":
-            return E.newTemp(e.type, `scr_str_char_at(${r.name}, ${args[0]!.name})`);
+            return emitter.newTemp(e.type, `scr_str_char_at(${r.name}, ${args[0]!.name})`);
           case "indexOf":
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_str_index_of(${r.name}, ${args[0]!.name}, ${args[1]?.name ?? "0"})`,
             );
@@ -1239,63 +1239,63 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // The position form is indexOf's clamp exactly (the spec
             // routes both through StringIndexOf): found ⇔ index != -1.
             if (args[1]) {
-              return E.newTemp(
+              return emitter.newTemp(
                 e.type,
                 `scr_str_index_of(${r.name}, ${args[0]!.name}, ${args[1].name}) != -1`,
               );
             }
-            return E.newTemp(e.type, `scr_str_includes(${r.name}, ${args[0]!.name})`);
+            return emitter.newTemp(e.type, `scr_str_includes(${r.name}, ${args[0]!.name})`);
           case "startsWith":
-            return E.newTemp(e.type, `scr_str_starts_with(${r.name}, ${args[0]!.name})`);
+            return emitter.newTemp(e.type, `scr_str_starts_with(${r.name}, ${args[0]!.name})`);
           case "endsWith":
-            return E.newTemp(e.type, `scr_str_ends_with(${r.name}, ${args[0]!.name})`);
+            return emitter.newTemp(e.type, `scr_str_ends_with(${r.name}, ${args[0]!.name})`);
           case "slice":
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_str_slice(${r.name}, ${args[0]?.name ?? "0"}, ${args[1]?.name ?? "INFINITY"})`,
             );
           case "substring":
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_str_substring(${r.name}, ${args[0]!.name}, ${args[1]?.name ?? "INFINITY"})`,
             );
           case "repeat":
-            return E.newTemp(e.type, `scr_str_repeat(${r.name}, ${args[0]!.name})`);
+            return emitter.newTemp(e.type, `scr_str_repeat(${r.name}, ${args[0]!.name})`);
           case "trim":
-            return E.newTemp(e.type, `scr_str_trim(${r.name})`);
+            return emitter.newTemp(e.type, `scr_str_trim(${r.name})`);
           case "trimStart":
-            return E.newTemp(e.type, `scr_str_trim_start(${r.name})`);
+            return emitter.newTemp(e.type, `scr_str_trim_start(${r.name})`);
           case "trimEnd":
-            return E.newTemp(e.type, `scr_str_trim_end(${r.name})`);
+            return emitter.newTemp(e.type, `scr_str_trim_end(${r.name})`);
           case "split":
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_str_split_limit(${r.name}, ${args[0]!.name}, ${args[1]!.name})`,
             );
           case "padStart":
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_str_pad_start(${r.name}, ${args[0]!.name}, ${args[1]!.name})`,
             );
           case "padEnd":
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_str_pad_end(${r.name}, ${args[0]!.name}, ${args[1]!.name})`,
             );
           // The lre-backed pair (scr_regex.c): the IR's presence flips the
           // regex link switch, so the symbols always resolve.
           case "toLowerCase":
-            return E.newTemp(e.type, `scr_str_to_lower(${r.name})`);
+            return emitter.newTemp(e.type, `scr_str_to_lower(${r.name})`);
           case "toUpperCase":
-            return E.newTemp(e.type, `scr_str_to_upper(${r.name})`);
+            return emitter.newTemp(e.type, `scr_str_to_upper(${r.name})`);
           // The well-formedness pair: no-ops over well-formed storage
           // (constant true / retained identity; scr_string.c).
           case "isWellFormed":
-            return E.newTemp(e.type, `scr_str_is_well_formed(${r.name})`);
+            return emitter.newTemp(e.type, `scr_str_is_well_formed(${r.name})`);
           case "toWellFormed":
-            return E.newTemp(e.type, `scr_str_to_well_formed(${r.name})`);
+            return emitter.newTemp(e.type, `scr_str_to_well_formed(${r.name})`);
           case "cpAt":
-            return E.newTemp(e.type, `scr_str_cp_at(${r.name}, ${args[0]!.name})`);
+            return emitter.newTemp(e.type, `scr_str_cp_at(${r.name}, ${args[0]!.name})`);
           default: {
             const _exhaustive: never = method;
             void _exhaustive;
@@ -1309,85 +1309,85 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // Pattern/flags strings are interned NOW so the literal table is
         // complete when emit() assembles the file.
         const key = `${e.flags}/${e.pattern}`;
-        let sym = E.regexInstances.get(key);
+        let sym = emitter.regexInstances.get(key);
         if (!sym) {
-          sym = `sc_re_${E.regexInstances.size}`;
-          E.regexInstances.set(key, sym);
-          E.internLiteral(e.pattern);
-          E.internLiteral(e.flags);
+          sym = `sc_re_${emitter.regexInstances.size}`;
+          emitter.regexInstances.set(key, sym);
+          emitter.internLiteral(e.pattern);
+          emitter.internLiteral(e.flags);
         }
-        return E.newTemp(e.type, `scr_regex_retain(&${sym})`);
+        return emitter.newTemp(e.type, `scr_regex_retain(&${sym})`);
       }
       case "templateStrings": {
         // One immortal static string array per template SITE (the key);
         // the +1 retain is a no-op on immortals but keeps the owned-temps
         // discipline uniform. Cooked strings intern NOW so the literal
         // table is complete when emit() assembles the file.
-        let inst = E.templateStringsInstances.get(e.key);
+        let inst = emitter.templateStringsInstances.get(e.key);
         if (!inst) {
-          inst = { sym: `sc_tsa_${E.templateStringsInstances.size}`, cooked: e.cooked };
-          E.templateStringsInstances.set(e.key, inst);
-          for (const s of e.cooked) E.internLiteral(s);
+          inst = { sym: `sc_tsa_${emitter.templateStringsInstances.size}`, cooked: e.cooked };
+          emitter.templateStringsInstances.set(e.key, inst);
+          for (const s of e.cooked) emitter.internLiteral(s);
         }
-        return E.newTemp(e.type, `scr_arr_retain(&${inst.sym})`);
+        return emitter.newTemp(e.type, `scr_arr_retain(&${inst.sym})`);
       }
       case "regexIntrinsic": {
         // Receiver and args are borrowed frame temps; string/array results
         // come back +1 and join the frame via newTemp. replaceAll and split
         // may THROW (catchable) — fallibleTemp emits the pending check.
-        const r = E.emitExpr(e.receiver);
-        const args = e.args.map((a) => E.emitExpr(a));
+        const r = emitter.emitExpr(e.receiver);
+        const args = e.args.map((a) => emitter.emitExpr(a));
         const method = e.method;
         switch (method) {
           case "test":
-            return E.newTemp(e.type, `scr_regex_test(${r.name}, ${args[0]!.name})`);
+            return emitter.newTemp(e.type, `scr_regex_test(${r.name}, ${args[0]!.name})`);
           case "match": {
             // +1 string[] or NULL from the runtime; the `string[] | null`
             // union wraps type-directedly, the process.envGet convention.
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: match result not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const arrTag = def ? def.arms.findIndex((a) => a.kind === "array") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (arrTag < 0 || nullTag < 0) {
               throw new InternalCompilerError("emitter bug: match union lacks its arms");
             }
-            const m = E.newTemp(arrayOf(STRING), `scr_regex_match(${r.name}, ${args[0]!.name})`);
-            E.moveTemp(m); // moves into the union box when present; NULL otherwise
+            const m = emitter.newTemp(arrayOf(STRING), `scr_regex_match(${r.name}, ${args[0]!.name})`);
+            emitter.moveTemp(m); // moves into the union box when present; NULL otherwise
             const present = `scr_union_new_ref(${arrTag}, ${m.name}, &scr_arr_retain_v, &scr_arr_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, nullTag);
-            return E.newTemp(e.type, `${m.name} ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, nullTag);
+            return emitter.newTemp(e.type, `${m.name} ? ${present} : ${absent}`);
           }
           case "matchAll":
             // Every match drained eagerly into a fresh +1 string[][];
             // throws Node's TypeError on a non-global regex (catchable —
             // fallibleTemp's pending check).
-            return E.fallibleTemp(e.type, `scr_regex_match_all(${r.name}, ${args[0]!.name})`);
+            return emitter.fallibleTemp(e.type, `scr_regex_match_all(${r.name}, ${args[0]!.name})`);
           case "matchAllInto":
             // matchAll's companion-index form: args[1] (a number[]) also
             // receives each match's UTF-16 start index.
-            return E.fallibleTemp(
+            return emitter.fallibleTemp(
               e.type,
               `scr_regex_match_all_into(${r.name}, ${args[0]!.name}, ${args[1]!.name})`,
             );
           case "search":
             // First-match index or -1 — a plain double; never throws.
-            return E.newTemp(e.type, `scr_regex_search(${r.name}, ${args[0]!.name})`);
+            return emitter.newTemp(e.type, `scr_regex_search(${r.name}, ${args[0]!.name})`);
           case "source":
-            return E.newTemp(e.type, `scr_regex_source(${r.name})`);
+            return emitter.newTemp(e.type, `scr_regex_source(${r.name})`);
           case "flags":
-            return E.newTemp(e.type, `scr_regex_flags(${r.name})`);
+            return emitter.newTemp(e.type, `scr_regex_flags(${r.name})`);
           case "replace":
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_regex_replace(${r.name}, ${args[0]!.name}, ${args[1]!.name})`,
             );
           case "replaceAll":
-            return E.fallibleTemp(
+            return emitter.fallibleTemp(
               e.type,
               `scr_regex_replace_all(${r.name}, ${args[0]!.name}, ${args[1]!.name})`,
             );
           case "split":
-            return E.fallibleTemp(
+            return emitter.fallibleTemp(
               e.type,
               `scr_regex_split_limit(${r.name}, ${args[0]!.name}, ${args[1]!.name})`,
             );
@@ -1408,22 +1408,22 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // snapshotted before the loop.
         if (e.type.kind !== "array") throw new InternalCompilerError("emitter bug: arrayLit of non-array type");
         const elem = e.type.elem;
-        const arr = E.newTemp(e.type, E.arrNewC(elem, e.elems.length));
+        const arr = emitter.newTemp(e.type, emitter.arrNewC(elem, e.elems.length));
         const acc = elemAccess(elem);
         const spreadSet = new Set(e.spreads ?? []);
         e.elems.forEach((el, i) => {
-          const v = E.emitExpr(el);
+          const v = emitter.emitExpr(el);
           if (spreadSet.has(i)) {
-            const n = `sc_i${E.tempCounter++}`;
-            E.line(`for (size_t ${n} = 0, ${n}_len = (size_t)scr_arr_len(${v.name}); ${n} < ${n}_len; ${n}++) {`);
-            E.indent++;
-            E.line(`scr_arr_push_${acc}(${arr.name}, scr_arr_get_${acc}(${v.name}, (double)${n}));`);
-            E.indent--;
-            E.line(`}`);
+            const n = `sc_i${emitter.tempCounter++}`;
+            emitter.line(`for (size_t ${n} = 0, ${n}_len = (size_t)scr_arr_len(${v.name}); ${n} < ${n}_len; ${n}++) {`);
+            emitter.indent++;
+            emitter.line(`scr_arr_push_${acc}(${arr.name}, scr_arr_get_${acc}(${v.name}, (double)${n}));`);
+            emitter.indent--;
+            emitter.line(`}`);
             return;
           }
-          if (acc === "ref") E.moveTemp(v);
-          E.line(`scr_arr_push_${acc}(${arr.name}, ${v.name});`);
+          if (acc === "ref") emitter.moveTemp(v);
+          emitter.line(`scr_arr_push_${acc}(${arr.name}, ${v.name});`);
         });
         return arr;
       }
@@ -1436,39 +1436,39 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // fractions truncate, negative/NaN produce an empty array.
         if (e.type.kind !== "array") throw new InternalCompilerError("emitter bug: arrayNewLen of non-array type");
         const elem = e.type.elem;
-        const n = E.emitExpr(e.length);
-        const arr = E.newTemp(e.type, E.arrNewC(elem, 0));
+        const n = emitter.emitExpr(e.length);
+        const arr = emitter.newTemp(e.type, emitter.arrNewC(elem, 0));
         let fill = "NULL";
         if (elem.kind === "union") {
-          const def = E.unionsById.get(elem.unionId);
+          const def = emitter.unionsById.get(elem.unionId);
           const tag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
-          if (tag >= 0) fill = E.unitInstanceRef(elem.unionId, tag);
+          if (tag >= 0) fill = emitter.unitInstanceRef(elem.unionId, tag);
         }
-        const i = `sc_i${E.tempCounter++}`;
-        E.line(`for (double ${i} = 0; ${i} <= ${n.name} - 1; ${i} += 1) {`);
-        E.indent++;
-        E.line(`scr_arr_push_${elemAccess(elem)}(${arr.name}, ${fill});`);
-        E.indent--;
-        E.line(`}`);
+        const i = `sc_i${emitter.tempCounter++}`;
+        emitter.line(`for (double ${i} = 0; ${i} <= ${n.name} - 1; ${i} += 1) {`);
+        emitter.indent++;
+        emitter.line(`scr_arr_push_${elemAccess(elem)}(${arr.name}, ${fill});`);
+        emitter.indent--;
+        emitter.line(`}`);
         return arr;
       }
       case "arrayGet": {
-        const arr = E.emitExpr(e.arr);
-        const idx = E.emitExpr(e.index);
+        const arr = emitter.emitExpr(e.arr);
+        const idx = emitter.emitExpr(e.index);
         if (e.arr.type.kind !== "array") throw new InternalCompilerError("emitter bug: arrayGet on non-array");
         // Ref-element reads return +1 (the runtime retains); newTemp
         // registers the owned temp in the frame like any other.
         const acc = elemAccess(e.arr.type.elem);
-        return E.newTemp(e.type, `scr_arr_get_${acc}(${arr.name}, ${idx.name})`);
+        return emitter.newTemp(e.type, `scr_arr_get_${acc}(${arr.name}, ${idx.name})`);
       }
       case "arrIntrinsic": {
-        const r = E.emitExpr(e.receiver);
+        const r = emitter.emitExpr(e.receiver);
         if (e.receiver.type.kind !== "array") throw new InternalCompilerError("emitter bug: arrIntrinsic on non-array");
         const acc = elemAccess(e.receiver.type.elem);
         const method = e.method;
         switch (method) {
           case "length":
-            return E.newTemp(e.type, `scr_arr_len(${r.name})`);
+            return emitter.newTemp(e.type, `scr_arr_len(${r.name})`);
           case "push": {
             // Variadic like JS: every argument evaluates first (left to
             // right — an argument reading the array sees the pre-push
@@ -1476,108 +1476,108 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // arguments moves into the array; the result is the new length
             // (f64) — the last push's return, or the unchanged length for
             // Node's no-op zero-argument call.
-            const vs = e.args.map((a) => E.emitExpr(a));
-            if (acc === "ref") vs.forEach((v) => E.moveTemp(v));
+            const vs = e.args.map((a) => emitter.emitExpr(a));
+            if (acc === "ref") vs.forEach((v) => emitter.moveTemp(v));
             for (let i = 0; i < vs.length - 1; i++) {
-              E.line(`scr_arr_push_${acc}(${r.name}, ${vs[i]!.name});`);
+              emitter.line(`scr_arr_push_${acc}(${r.name}, ${vs[i]!.name});`);
             }
             const last = vs[vs.length - 1];
             return last
-              ? E.newTemp(e.type, `scr_arr_push_${acc}(${r.name}, ${last.name})`)
-              : E.newTemp(e.type, `scr_arr_len(${r.name})`);
+              ? emitter.newTemp(e.type, `scr_arr_push_${acc}(${r.name}, ${last.name})`)
+              : emitter.newTemp(e.type, `scr_arr_len(${r.name})`);
           }
           case "pushSpread": {
             // `a.push(...src)`: append src's elements in order. The source
             // is BORROWED; the count snapshots before the loop so
             // `a.push(...a)` duplicates exactly like JS. _get_ref's +1
             // moves into _push_ref — RC-balanced. Result: the new length.
-            const src = E.emitExpr(e.args[0]!);
-            const n = `sc_i${E.tempCounter++}`;
-            E.line(`for (size_t ${n} = 0, ${n}_len = (size_t)scr_arr_len(${src.name}); ${n} < ${n}_len; ${n}++) {`);
-            E.indent++;
-            E.line(`scr_arr_push_${acc}(${r.name}, scr_arr_get_${acc}(${src.name}, (double)${n}));`);
-            E.indent--;
-            E.line(`}`);
-            return E.newTemp(e.type, `scr_arr_len(${r.name})`);
+            const src = emitter.emitExpr(e.args[0]!);
+            const n = `sc_i${emitter.tempCounter++}`;
+            emitter.line(`for (size_t ${n} = 0, ${n}_len = (size_t)scr_arr_len(${src.name}); ${n} < ${n}_len; ${n}++) {`);
+            emitter.indent++;
+            emitter.line(`scr_arr_push_${acc}(${r.name}, scr_arr_get_${acc}(${src.name}, (double)${n}));`);
+            emitter.indent--;
+            emitter.line(`}`);
+            return emitter.newTemp(e.type, `scr_arr_len(${r.name})`);
           }
           case "unshift": {
             // Like push, every argument evaluates before mutation. Apply
             // them from right to left so their final front order remains
             // the source order. Ref ownership moves into the array.
-            const vs = e.args.map((a) => E.emitExpr(a));
-            if (acc === "ref") vs.forEach((v) => E.moveTemp(v));
+            const vs = e.args.map((a) => emitter.emitExpr(a));
+            if (acc === "ref") vs.forEach((v) => emitter.moveTemp(v));
             let last: Temp | undefined;
             for (let i = vs.length - 1; i >= 0; i--) {
-              last = E.newTemp(e.type, `scr_arr_unshift_${acc}(${r.name}, ${vs[i]!.name})`);
+              last = emitter.newTemp(e.type, `scr_arr_unshift_${acc}(${r.name}, ${vs[i]!.name})`);
             }
-            return last ?? E.newTemp(e.type, `scr_arr_len(${r.name})`);
+            return last ?? emitter.newTemp(e.type, `scr_arr_len(${r.name})`);
           }
           case "unshiftSpread": {
             // The runtime snapshots and retains the borrowed source,
             // including the aliasing `a.unshift(...a)` case.
-            const src = E.emitExpr(e.args[0]!);
-            return E.newTemp(e.type, `scr_arr_unshift_spread(${r.name}, ${src.name})`);
+            const src = emitter.emitExpr(e.args[0]!);
+            return emitter.newTemp(e.type, `scr_arr_unshift_spread(${r.name}, ${src.name})`);
           }
           case "pop":
             // Ownership of a refcounted element moves OUT of the array to
             // this temp (+1 to us, the runtime does not release it).
-            return E.newTemp(e.type, `scr_arr_pop_${acc}(${r.name})`);
+            return emitter.newTemp(e.type, `scr_arr_pop_${acc}(${r.name})`);
           case "indexOf": {
             // The needle is BORROWED (released with this statement's frame);
             // the ref variant dispatches on the array's element kind
             // (strings by content, arrays by pointer). Strict equality.
-            const v = E.emitExpr(e.args[0]!);
-            return E.newTemp(e.type, `scr_arr_index_of_${acc}(${r.name}, ${v.name})`);
+            const v = emitter.emitExpr(e.args[0]!);
+            return emitter.newTemp(e.type, `scr_arr_index_of_${acc}(${r.name}, ${v.name})`);
           }
           case "includes": {
             // Borrowed needle, SameValueZero (NaN matches NaN).
-            const v = E.emitExpr(e.args[0]!);
-            return E.newTemp(e.type, `scr_arr_includes_${acc}(${r.name}, ${v.name})`);
+            const v = emitter.emitExpr(e.args[0]!);
+            return emitter.newTemp(e.type, `scr_arr_includes_${acc}(${r.name}, ${v.name})`);
           }
           case "join": {
             // Separator borrowed; the result is an owned (+1) string.
             // Union elements route through the per-union join walker
             // (nullish arms print empty, exactly Array.prototype.join).
-            const sep = E.emitExpr(e.args[0]!);
+            const sep = emitter.emitExpr(e.args[0]!);
             if (e.receiver.type.kind === "array" && e.receiver.type.elem.kind === "union") {
-              return E.newTemp(
+              return emitter.newTemp(
                 e.type,
-                `${E.unionJoinHelper(e.receiver.type.elem.unionId)}(${r.name}, ${sep.name})`,
+                `${emitter.unionJoinHelper(e.receiver.type.elem.unionId)}(${r.name}, ${sep.name})`,
               );
             }
-            return E.newTemp(e.type, `scr_arr_join(${r.name}, ${sep.name})`);
+            return emitter.newTemp(e.type, `scr_arr_join(${r.name}, ${sep.name})`);
           }
           case "slice": {
             // Receiver borrowed; the result is a fresh +1 shallow copy
             // (ref elements retained). Omitted indices get the JS
             // defaults, the string-slice convention.
-            const start = e.args[0] ? E.emitExpr(e.args[0]).name : "0";
-            const end = e.args[1] ? E.emitExpr(e.args[1]).name : "INFINITY";
-            return E.newTemp(e.type, `scr_arr_slice(${r.name}, ${start}, ${end})`);
+            const start = e.args[0] ? emitter.emitExpr(e.args[0]).name : "0";
+            const end = e.args[1] ? emitter.emitExpr(e.args[1]).name : "INFINITY";
+            return emitter.newTemp(e.type, `scr_arr_slice(${r.name}, ${start}, ${end})`);
           }
           case "toReversed":
-            return E.newTemp(e.type, `scr_arr_to_reversed(${r.name})`);
+            return emitter.newTemp(e.type, `scr_arr_to_reversed(${r.name})`);
           case "reverse":
             // Mutates in place and returns a retained reference to the
             // receiver, preserving Array.prototype.reverse identity.
-            return E.newTemp(e.type, `scr_arr_reverse(${r.name})`);
+            return emitter.newTemp(e.type, `scr_arr_reverse(${r.name})`);
           case "toSpliced": {
-            const start = E.emitExpr(e.args[0]!);
-            const count = E.emitExpr(e.args[1]!);
-            const items = E.emitExpr(e.args[2]!);
-            return E.newTemp(
+            const start = emitter.emitExpr(e.args[0]!);
+            const count = emitter.emitExpr(e.args[1]!);
+            const items = emitter.emitExpr(e.args[2]!);
+            return emitter.newTemp(
               e.type,
               `scr_arr_to_spliced(${r.name}, ${start.name}, ${count.name}, ${items.name})`,
             );
           }
           case "with": {
-            const index = E.emitExpr(e.args[0]!);
-            const value = E.emitExpr(e.args[1]!);
-            const out = E.newTemp(
+            const index = emitter.emitExpr(e.args[0]!);
+            const value = emitter.emitExpr(e.args[1]!);
+            const out = emitter.newTemp(
               e.type,
               `scr_arr_with_${acc}(${r.name}, ${index.name}, ${value.name})`,
             );
-            E.emitPendingCheck();
+            emitter.emitPendingCheck();
             return out;
           }
           case "splice": {
@@ -1585,9 +1585,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // fresh +1 array, their ownership MOVED out of the receiver
             // (no retain/release churn). An omitted count removes to the
             // end (+Infinity, the slice convention).
-            const start = E.emitExpr(e.args[0]!);
-            const cnt = e.args[1] ? E.emitExpr(e.args[1]).name : "INFINITY";
-            return E.newTemp(e.type, `scr_arr_splice(${r.name}, ${start.name}, ${cnt})`);
+            const start = emitter.emitExpr(e.args[0]!);
+            const cnt = e.args[1] ? emitter.emitExpr(e.args[1]).name : "INFINITY";
+            return emitter.newTemp(e.type, `scr_arr_splice(${r.name}, ${start.name}, ${cnt})`);
           }
           case "shift": {
             // JS shift: undefined on an empty array, else the first
@@ -1596,11 +1596,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // here, the envGet convention.
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: shift result is not a union");
             const elemT = e.receiver.type.elem;
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const tag = def ? def.arms.findIndex((a) => typeEquals(a, elemT)) : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (tag < 0 || undefTag < 0) throw new InternalCompilerError("emitter bug: shift union lacks its arms");
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
             const present =
               elemT.kind === "f64"
                 ? `scr_union_new_f64(${tag}, scr_arr_shift_f64(${r.name}))`
@@ -1608,9 +1608,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
                   ? `scr_union_new_bool(${tag}, scr_arr_shift_bool(${r.name}))`
                   : (() => {
                       const rc = vAdapters(elemT);
-                      return `scr_union_new_ref(${tag}, scr_arr_shift_ref(${r.name}), &${rc.retain}, &${rc.release}, ${E.traceArgC(elemT)})`;
+                      return `scr_union_new_ref(${tag}, scr_arr_shift_ref(${r.name}), &${rc.retain}, &${rc.release}, ${emitter.traceArgC(elemT)})`;
                     })();
-            return E.newTemp(e.type, `scr_arr_len(${r.name}) ? ${present} : ${absent}`);
+            return emitter.newTemp(e.type, `scr_arr_len(${r.name}) ? ${present} : ${absent}`);
           }
           default: {
             const _exhaustive: never = method;
@@ -1627,18 +1627,18 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // after the temp joins its frame.
         if (e.type.kind !== "bytes") throw new InternalCompilerError("emitter bug: bytesNew of non-bytes type");
         const kind = bytesElemKindC(e.type.elem);
-        if (!e.source) return E.newTemp(e.type, `scr_bytes_new(${kind}, 0)`);
-        const src = E.emitExpr(e.source);
+        if (!e.source) return emitter.newTemp(e.type, `scr_bytes_new(${kind}, 0)`);
+        const src = emitter.emitExpr(e.source);
         if (e.source.type.kind === "f64") {
-          const t = E.newTemp(e.type, `scr_bytes_new(${kind}, ${src.name})`);
-          E.emitPendingCheck();
+          const t = emitter.newTemp(e.type, `scr_bytes_new(${kind}, ${src.name})`);
+          emitter.emitPendingCheck();
           return t;
         }
         if (e.source.type.kind === "bytes") {
-          return E.newTemp(e.type, `scr_bytes_copy(${src.name})`);
+          return emitter.newTemp(e.type, `scr_bytes_copy(${src.name})`);
         }
         if (e.source.type.kind === "array") {
-          return E.newTemp(e.type, `scr_bytes_from_arr(${kind}, ${src.name})`);
+          return emitter.newTemp(e.type, `scr_bytes_from_arr(${kind}, ${src.name})`);
         }
         throw new InternalCompilerError(`emitter bug: bytesNew source of kind ${e.source.type.kind}`);
       }
@@ -1653,8 +1653,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         if (e.method === "readNum" || e.method === "writeNum" || e.method === "readNumVar" || e.method === "writeNumVar") {
           const tok = e.args[0]!;
           if (tok.kind !== "strLit") throw new InternalCompilerError(`emitter bug: bytesIntrinsic ${e.method} kind must be a strLit`);
-          const r0 = E.emitExpr(e.receiver);
-          const rest = e.args.slice(1).map((a) => E.emitExpr(a));
+          const r0 = emitter.emitExpr(e.receiver);
+          const rest = e.args.slice(1).map((a) => emitter.emitExpr(a));
           let call: string;
           if (e.method === "readNum" || e.method === "writeNum") {
             const spec = BYTES_NUM_KIND_C[tok.value];
@@ -1671,25 +1671,25 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
                 ? `scr_bytes_read_var(${r0.name}, ${rest[0]!.name}, ${rest[1]!.name}, ${spec.sign}, ${spec.le})`
                 : `scr_bytes_write_var(${r0.name}, ${rest[0]!.name}, ${rest[1]!.name}, ${rest[2]!.name}, ${spec.sign}, ${spec.le})`;
           }
-          const t = E.newTemp(e.type, call);
-          E.emitPendingCheck();
+          const t = emitter.newTemp(e.type, call);
+          emitter.emitPendingCheck();
           return t;
         }
         const method = e.method;
         const directElementAccess = method === "length" || method === "byteLength" || method === "get";
         const r = directElementAccess
-          ? emitBytesReceiver(E, e.receiver, e.args)
-          : E.emitExpr(e.receiver);
-        const integerIndex = method === "get" ? E.integerLoopIndex(e.args[0]!) : null;
-        const args = integerIndex === null ? e.args.map((a) => E.emitExpr(a)) : [];
+          ? emitBytesReceiver(emitter, e.receiver, e.args)
+          : emitter.emitExpr(e.receiver);
+        const integerIndex = method === "get" ? emitter.integerLoopIndex(e.args[0]!) : null;
+        const args = integerIndex === null ? e.args.map((a) => emitter.emitExpr(a)) : [];
         switch (method) {
           case "length":
-            return E.newTemp(e.type, `(double)${r.name}->len`);
+            return emitter.newTemp(e.type, `(double)${r.name}->len`);
           case "byteLength":
             if (e.receiver.type.kind !== "bytes") {
               throw new InternalCompilerError("emitter bug: bytesIntrinsic byteLength on non-bytes");
             }
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `(double)(${r.name}->len * ${e.receiver.type.elem === "u8" ? "1" : "4"})`,
             );
@@ -1698,48 +1698,48 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.receiver.type.kind !== "bytes") {
               throw new InternalCompilerError("emitter bug: bytesIntrinsic get on non-bytes");
             }
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
-              `${E.bytesElementHelper("get", e.receiver.type.elem, integerIndex !== null)}(${r.name}, ${integerIndex ?? args[0]!.name})`,
+              `${emitter.bytesElementHelper("get", e.receiver.type.elem, integerIndex !== null)}(${r.name}, ${integerIndex ?? args[0]!.name})`,
             );
           case "slice":
             // Omitted relative indices default like string slice: start 0,
             // end +Infinity (math.h is always included). Fresh copy, +1.
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_bytes_slice(${r.name}, ${args[0]?.name ?? "0"}, ${args[1]?.name ?? "INFINITY"})`,
             );
           case "subarray":
             // Same defaults; the result is a +1 VIEW aliasing the
             // receiver's storage (subarray / Buffer's slice).
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_bytes_subarray(${r.name}, ${args[0]?.name ?? "0"}, ${args[1]?.name ?? "INFINITY"})`,
             );
           case "toReversed":
-            return E.newTemp(e.type, `scr_bytes_to_reversed(${r.name})`);
+            return emitter.newTemp(e.type, `scr_bytes_to_reversed(${r.name})`);
           case "with": {
-            const out = E.newTemp(
+            const out = emitter.newTemp(
               e.type,
               `scr_bytes_with(${r.name}, ${args[0]!.name}, ${args[1]!.name})`,
             );
-            E.emitPendingCheck();
+            emitter.emitPendingCheck();
             return out;
           }
           case "join":
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_bytes_join(${r.name}, ${args[0]!.name})`,
             );
           case "toArray":
-            return E.newTemp(e.type, `scr_bytes_to_arr(${r.name})`);
+            return emitter.newTemp(e.type, `scr_bytes_to_arr(${r.name})`);
           case "setFrom": {
             // dst.set(src, offset?) — void; throws Node's RangeError on
             // overflow (may-throw seed).
-            E.line(
-              `scr_bytes_set_from(${r.name}, ${args[0]!.name}, ${args[1]?.name ?? "0"});${E.srcComment(e.loc)}`,
+            emitter.line(
+              `scr_bytes_set_from(${r.name}, ${args[0]!.name}, ${args[1]?.name ?? "0"});${emitter.srcComment(e.loc)}`,
             );
-            E.emitPendingCheck();
+            emitter.emitPendingCheck();
             return { name: "", type: e.type };
           }
           case "toString":
@@ -1755,27 +1755,27 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const stem = checked ? "scr_bytes_to_str_checked" : "scr_bytes_to_str";
             let out: Temp;
             if (args.length === 3) {
-              out = E.newTemp(e.type, `${stem}_range(${r.name}, ${args[0]!.name}, ${args[1]!.name}, ${args[2]!.name})`);
+              out = emitter.newTemp(e.type, `${stem}_range(${r.name}, ${args[0]!.name}, ${args[1]!.name}, ${args[2]!.name})`);
             } else if (args.length === 2) {
-              out = E.newTemp(e.type, `${stem}_range(${r.name}, ${args[0]!.name}, ${args[1]!.name}, (double)${r.name}->len)`);
+              out = emitter.newTemp(e.type, `${stem}_range(${r.name}, ${args[0]!.name}, ${args[1]!.name}, (double)${r.name}->len)`);
             } else {
-              out = E.newTemp(e.type, `${stem}(${r.name}, ${args[0]!.name})`);
+              out = emitter.newTemp(e.type, `${stem}(${r.name}, ${args[0]!.name})`);
             }
-            if (checked) E.emitPendingCheck();
+            if (checked) emitter.emitPendingCheck();
             return out;
           }
           case "equals":
-            return E.newTemp(e.type, `scr_bytes_equals(${r.name}, ${args[0]!.name})`);
+            return emitter.newTemp(e.type, `scr_bytes_equals(${r.name}, ${args[0]!.name})`);
           case "compareBuf": {
             // nargs = the PRESENT index args (omitted ones skip Node's
             // validation); the 0 placeholders are never read past nargs.
             const n = e.args.length - 1;
             const idx = [1, 2, 3, 4].map((i) => args[i]?.name ?? "0");
-            const t = E.newTemp(
+            const t = emitter.newTemp(
               e.type,
               `scr_bytes_compare(${r.name}, ${args[0]!.name}, ${n}, ${idx.join(", ")})`,
             );
-            E.emitPendingCheck();
+            emitter.emitPendingCheck();
             return t;
           }
           case "indexOf":
@@ -1785,86 +1785,86 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // is NaN — the runtime's search-everything default.
             const fwd = method !== "lastIndexOf";
             const call = `scr_bytes_index_of(${r.name}, ${args[0]!.name}, ${args[2]?.name ?? "NAN"}, ${args[1]!.name}, ${fwd})`;
-            return E.newTemp(e.type, method === "includes" ? `(${call} != -1)` : call);
+            return emitter.newTemp(e.type, method === "includes" ? `(${call} != -1)` : call);
           }
           case "indexOfNum":
           case "lastIndexOfNum":
           case "includesNum": {
             const fwd = method !== "lastIndexOfNum";
             const call = `scr_bytes_index_of_num(${r.name}, ${args[0]!.name}, ${args[1]?.name ?? "NAN"}, ${fwd})`;
-            return E.newTemp(e.type, method === "includesNum" ? `(${call} != -1)` : call);
+            return emitter.newTemp(e.type, method === "includesNum" ? `(${call} != -1)` : call);
           }
           case "fill":
           case "fillNum": {
             const fn = method === "fill" ? "scr_bytes_fill" : "scr_bytes_fill_num";
             const n = e.args.length - 1;
-            const t = E.newTemp(
+            const t = emitter.newTemp(
               e.type,
               `${fn}(${r.name}, ${args[0]!.name}, ${n}, ${args[1]?.name ?? "0"}, ${args[2]?.name ?? "0"})`,
             );
-            E.emitPendingCheck();
+            emitter.emitPendingCheck();
             return t;
           }
           case "fillElem":
             // Per-element TypedArray fill (non-u8): slice-style index
             // defaults, never throws; the receiver comes back +1.
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_bytes_fill_elem(${r.name}, ${args[0]!.name}, ${args[1]?.name ?? "0"}, ${args[2]?.name ?? "INFINITY"})`,
             );
           case "fillStr": {
             const n = e.args.length - 2;
-            const t = E.newTemp(
+            const t = emitter.newTemp(
               e.type,
               `scr_bytes_fill_str(${r.name}, ${args[0]!.name}, ${args[1]!.name}, ${n}, ` +
                 `${args[2]?.name ?? "0"}, ${args[3]?.name ?? "0"})`,
             );
-            E.emitPendingCheck();
+            emitter.emitPendingCheck();
             return t;
           }
           case "copy": {
             const n = e.args.length - 1;
-            const t = E.newTemp(
+            const t = emitter.newTemp(
               e.type,
               `scr_bytes_copy_into(${r.name}, ${args[0]!.name}, ${n}, ` +
                 `${args[1]?.name ?? "0"}, ${args[2]?.name ?? "0"}, ${args[3]?.name ?? "0"})`,
             );
-            E.emitPendingCheck();
+            emitter.emitPendingCheck();
             return t;
           }
           case "swap16":
           case "swap32":
           case "swap64": {
             const w = method === "swap16" ? 2 : method === "swap32" ? 4 : 8;
-            const t = E.newTemp(e.type, `scr_bytes_swap(${r.name}, ${w})`);
-            E.emitPendingCheck();
+            const t = emitter.newTemp(e.type, `scr_bytes_swap(${r.name}, ${w})`);
+            emitter.emitPendingCheck();
             return t;
           }
           case "writeStr": {
-            const t = E.newTemp(
+            const t = emitter.newTemp(
               e.type,
               `scr_bytes_write_str(${r.name}, ${args[0]!.name}, ${args[1]!.name}, ${args[2]!.name}, ` +
                 `${args[3]?.name ?? "0"}, ${args[3] ? "true" : "false"})`,
             );
-            E.emitPendingCheck();
+            emitter.emitPendingCheck();
             return t;
           }
           case "byteOffset":
             // 0 for owners, the view's offset into its owner for a
             // DataView. Never throws.
-            return E.newTemp(e.type, `scr_bytes_byte_offset(${r.name})`);
+            return emitter.newTemp(e.type, `scr_bytes_byte_offset(${r.name})`);
           case "dataViewNew": {
             // new DataView(x.buffer, byteOffset?, byteLength?) — receiver
             // is x itself (the frontend peeled `.buffer`). Omitted offset
             // defaults to 0; the has_len flag keeps an omitted length
             // distinct from every numeric value (the default is "to the
             // end of the buffer"). Throws Node's RangeErrors; +1 view.
-            const t = E.newTemp(
+            const t = emitter.newTemp(
               e.type,
               `scr_dataview_new(${r.name}, ${args[0]?.name ?? "0"}, ` +
                 `${args[1] ? "true" : "false"}, ${args[1]?.name ?? "0"})`,
             );
-            E.emitPendingCheck();
+            emitter.emitPendingCheck();
             return t;
           }
           case "dvGetUint8":
@@ -1881,11 +1881,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // (the JS default). Throw Node's constant RangeError on a bad
             // offset.
             const kind = DV_GET_KIND_C[method];
-            const t = E.newTemp(
+            const t = emitter.newTemp(
               e.type,
               `scr_dataview_get(${r.name}, ${args[0]!.name}, ${kind}, ${args[1]?.name ?? "false"})`,
             );
-            E.emitPendingCheck();
+            emitter.emitPendingCheck();
             return t;
           }
           case "dvSetUint8":
@@ -1899,11 +1899,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // DataView setters: [offset, value, littleEndian?] — void;
             // throw the getters' constant RangeError on a bad offset.
             const kind = DV_SET_KIND_C[method];
-            E.line(
+            emitter.line(
               `scr_dataview_set(${r.name}, ${args[0]!.name}, ${args[1]!.name}, ${kind}, ` +
-                `${args[2]?.name ?? "false"});${E.srcComment(e.loc)}`,
+                `${args[2]?.name ?? "false"});${emitter.srcComment(e.loc)}`,
             );
-            E.emitPendingCheck();
+            emitter.emitPendingCheck();
             return { name: "", type: e.type };
           }
           default: {
@@ -1923,27 +1923,27 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         if (e.type.kind !== "map") throw new InternalCompilerError("emitter bug: mapNew of non-map type");
         const value = e.type.value;
         const rc = isRefCounted(value) ? vAdapters(value) : null;
-        const m = E.newTemp(
+        const m = emitter.newTemp(
           e.type,
           `scr_map_new(${mapKeyKindC(e.type.key)}, ${mapValKindC(value)}, ` +
-            `${rc ? `&${rc.retain}` : "NULL"}, ${rc ? `&${rc.release}` : "NULL"}, ${E.traceArgC(value)})`,
+            `${rc ? `&${rc.retain}` : "NULL"}, ${rc ? `&${rc.release}` : "NULL"}, ${emitter.traceArgC(value)})`,
         );
         // Seeded construction: set() each pair in source order — exactly
         // the statements the user would write on an empty map, so a
         // repeated key overwrites (the runtime releases the old value).
         for (const pair of e.seed ?? []) {
-          const k = E.emitExpr(pair.key);
-          const v = E.emitExpr(pair.value);
-          if (elemAccess(value) === "ref") E.moveTemp(v); // value MOVES in, like mapIntrinsic set
-          E.line(
-            `scr_map_set_${mapKeyAccess(e.type.key)}_${elemAccess(value)}(${m.name}, ${k.name}, ${v.name});${E.srcComment(e.loc)}`,
+          const k = emitter.emitExpr(pair.key);
+          const v = emitter.emitExpr(pair.value);
+          if (elemAccess(value) === "ref") emitter.moveTemp(v); // value MOVES in, like mapIntrinsic set
+          emitter.line(
+            `scr_map_set_${mapKeyAccess(e.type.key)}_${elemAccess(value)}(${m.name}, ${k.name}, ${v.name});${emitter.srcComment(e.loc)}`,
           );
         }
         return m;
       }
       case "mapIntrinsic":
       case "setIntrinsic":
-        return emitMapLikeIntrinsic(E, e);
+        return emitMapLikeIntrinsic(emitter, e);
       case "setNew": {
         // Empty set: the map runtime with the element as the KEY and the
         // value slot pinned to the scalar kind (every stored value is 0.0,
@@ -1955,7 +1955,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // at construction — the scr_arr_new_ref technique.
         const elemAcc = mapKeyAccess(e.type.elem);
         const rcAdapters = elemAcc === "ref" ? vAdapters(e.type.elem) : null;
-        const s = E.newTemp(
+        const s = emitter.newTemp(
           e.type,
           rcAdapters
             ? `scr_set_new_ref(&${rcAdapters.retain}, &${rcAdapters.release})`
@@ -1965,28 +1965,28 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // elements add() in order — the runtime helper walks the array
         // (duplicates overwrite in place, insertion position preserved).
         if (e.seed) {
-          const arr = E.emitExpr(e.seed);
-          E.line(`scr_set_add_all(${s.name}, ${arr.name});${E.srcComment(e.loc)}`);
+          const arr = emitter.emitExpr(e.seed);
+          emitter.line(`scr_set_add_all(${s.name}, ${arr.name});${emitter.srcComment(e.loc)}`);
         }
         return s;
       }
       case "call": {
-        const args = e.args.map((a) => E.emitExpr(a));
+        const args = e.args.map((a) => emitter.emitExpr(a));
         // Callees own their params: ownership of refcounted args moves.
-        for (const a of args) E.moveTemp(a);
+        for (const a of args) emitter.moveTemp(a);
         // Async callee: the spawn wrapper runs the body eagerly to its
         // first suspension and returns the promise (+1). The call itself
         // never unwinds — rejections surface at await.
-        const call = `${E.callTargetC(e.callee)}(${args.map((a) => a.name).join(", ")})`;
+        const call = `${emitter.callTargetC(e.callee)}(${args.map((a) => a.name).join(", ")})`;
         if (e.type.kind === "void") {
-          E.line(`${call};${E.srcComment(e.loc)}`);
-          if (E.mayThrow.has(e.callee)) E.emitPendingCheck();
+          emitter.line(`${call};${emitter.srcComment(e.loc)}`);
+          if (emitter.mayThrow.has(e.callee)) emitter.emitPendingCheck();
           return { name: "", type: e.type };
         }
-        const t = E.newTemp(e.type, call);
+        const t = emitter.newTemp(e.type, call);
         // The check runs AFTER the result temp joins the frame: an unwind
         // releases it (the dummy is NULL for refcounted returns).
-        if (E.mayThrow.has(e.callee)) E.emitPendingCheck();
+        if (emitter.mayThrow.has(e.callee)) emitter.emitPendingCheck();
         return t;
       }
       case "ffiCall": {
@@ -2000,9 +2000,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // u8/u32/i32 plumbing classes ride JS's ToUint32/ToInt32, and a
         // scalar return converts to f64 exactly. The host cannot raise a
         // scriptc exception, so no pending check follows.
-        const libCb = E.mod.lib?.callbacks?.find((c) => c.name === e.import);
+        const libCb = emitter.mod.lib?.callbacks?.find((c) => c.name === e.import);
         if (libCb !== undefined) {
-          const cbArgs = e.args.map((arg) => E.emitExpr(arg));
+          const cbArgs = e.args.map((arg) => emitter.emitExpr(arg));
           const natTypes: string[] = ["void *"];
           const natArgs: string[] = [`scr_library_cb_ctx(${libCb.slot})`];
           libCb.params.forEach((cls, i) => {
@@ -2046,19 +2046,19 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           const call = `${target}(${natArgs.join(", ")})`;
           switch (libCb.returns) {
             case "void":
-              E.line(`${call};${E.srcComment(e.loc)}`);
+              emitter.line(`${call};${emitter.srcComment(e.loc)}`);
               return { name: "", type: e.type };
             case "f64":
-              return E.newTemp(e.type, call);
+              return emitter.newTemp(e.type, call);
             case "bool":
-              return E.newTemp(e.type, `(${call} != 0)`);
+              return emitter.newTemp(e.type, `(${call} != 0)`);
             default: // u8/u32/i32 — exact widenings back to f64
-              return E.newTemp(e.type, `(double)${call}`);
+              return emitter.newTemp(e.type, `(double)${call}`);
           }
         }
-        const entry = E.ffiByName.get(e.import);
+        const entry = emitter.ffiByName.get(e.import);
         if (!entry) throw new InternalCompilerError(`emitter bug: unknown FFI import ${e.import}`);
-        const args = e.args.map((arg) => E.emitExpr(arg));
+        const args = e.args.map((arg) => emitter.emitExpr(arg));
         const sourceArgs = new Map<number, Temp>();
         const callbackArgs = new Map<string, Temp>();
         let sourceIndex = 0;
@@ -2071,7 +2071,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         });
 
         const { registrations: retainedRegistrations, releases: retainedReleases } =
-          collectFfiRetainedOps<Temp>(entry, callbackArgs, (binding, id) => E.ffiCallbackAdapter(binding, id));
+          collectFfiRetainedOps<Temp>(entry, callbackArgs, (binding, id) => emitter.ffiCallbackAdapter(binding, id));
 
         // Pin before registration. Raw retained descriptors are native
         // singletons: the incoming closure is pinned (and an EMPTY slot
@@ -2082,18 +2082,18 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // superseded pins after the call.
         for (const registration of retainedRegistrations) {
           if (registration.global !== null) {
-            E.line(`scr_ffi_retain_slot(&${registration.table}, &${registration.global}, ${registration.callback.name});`);
+            emitter.line(`scr_ffi_retain_slot(&${registration.table}, &${registration.global}, ${registration.callback.name});`);
           } else if (registration.foreign) {
-            E.line(`scr_ffi_retain_foreign(&${registration.table}, ${registration.callback.name});`);
+            emitter.line(`scr_ffi_retain_foreign(&${registration.table}, ${registration.callback.name});`);
           } else {
-            E.line(`scr_ffi_retain(&${registration.table}, ${registration.callback.name});`);
+            emitter.line(`scr_ffi_retain(&${registration.table}, ${registration.callback.name});`);
           }
         }
         // Validate releases BEFORE the native removal call runs: a bogus
         // release traps without native code observing any side effect. The
         // registration itself is unpinned only after the call returns.
         for (const release of retainedReleases) {
-          E.line(`scr_ffi_require${release.foreign ? "_foreign" : ""}(&${release.table}, ${release.callback.name});`);
+          emitter.line(`scr_ffi_require${release.foreign ? "_foreign" : ""}(&${release.table}, ${release.callback.name});`);
         }
 
         // Raw C callback pointers carry no userdata. For the documented
@@ -2103,23 +2103,23 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         const rawContexts: { tls: string; previous: Temp }[] = [];
         for (const param of entry.params) {
           if (!isFfiCallbackParam(param)) continue;
-          const adapter = E.ffiCallbackAdapter(entry.name, param.callback.id);
+          const adapter = emitter.ffiCallbackAdapter(entry.name, param.callback.id);
           if (adapter.tls === null) continue;
           const callback = callbackArgs.get(param.callback.id)!;
-          const previous = E.newBorrowedTemp(callback.type, adapter.tls);
-          E.line(`${adapter.tls} = ${callback.name};`);
+          const previous = emitter.newBorrowedTemp(callback.type, adapter.tls);
+          emitter.line(`${adapter.tls} = ${callback.name};`);
           rawContexts.push({ tls: adapter.tls, previous });
         }
         const nativeArgs: string[] = [];
         entry.params.forEach((param, i) => {
           if (isFfiCallbackParam(param)) {
-            const adapter = E.ffiCallbackAdapter(entry.name, param.callback.id);
+            const adapter = emitter.ffiCallbackAdapter(entry.name, param.callback.id);
             nativeArgs.push(`&${adapter.symbol}`);
             return;
           }
           if (isFfiReleaseParam(param)) {
             const { binding, id } = parseFfiCallbackKey(param.callback.release);
-            const adapter = E.ffiCallbackAdapter(binding, id);
+            const adapter = emitter.ffiCallbackAdapter(binding, id);
             nativeArgs.push(`&${adapter.symbol}`);
             return;
           }
@@ -2158,7 +2158,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         const restoreRawContexts = (): void => {
           for (let i = rawContexts.length - 1; i >= 0; i--) {
             const saved = rawContexts[i]!;
-            E.line(`${saved.tls} = ${saved.previous.name};`);
+            emitter.line(`${saved.tls} = ${saved.previous.name};`);
           }
         };
         const finishRetainedReleases = (): void => {
@@ -2167,107 +2167,107 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // disarms the slot itself when the released closure holds it.
           for (const registration of retainedRegistrations) {
             if (registration.global !== null) {
-              E.line(`scr_ffi_commit_slot(&${registration.table}, ${registration.callback.name});`);
+              emitter.line(`scr_ffi_commit_slot(&${registration.table}, ${registration.callback.name});`);
             }
           }
           for (const release of retainedReleases) {
-            E.line(`scr_ffi_release${release.foreign ? "_foreign" : ""}(&${release.table}, ${release.callback.name});`);
+            emitter.line(`scr_ffi_release${release.foreign ? "_foreign" : ""}(&${release.table}, ${release.callback.name});`);
           }
         };
-        const callbacksMayThrow = callbackArgs.size > 0 || E.ffiHasRetainedCallback;
+        const callbacksMayThrow = callbackArgs.size > 0 || emitter.ffiHasRetainedCallback;
         switch (entry.returns) {
           case "void":
-            E.line(`${call};${E.srcComment(e.loc)}`);
+            emitter.line(`${call};${emitter.srcComment(e.loc)}`);
             restoreRawContexts();
             finishRetainedReleases();
-            if (callbacksMayThrow) E.emitPendingCheck();
+            if (callbacksMayThrow) emitter.emitPendingCheck();
             return { name: "", type: e.type };
           case "f64": {
-            const result = E.newTemp(e.type, call);
+            const result = emitter.newTemp(e.type, call);
             restoreRawContexts();
             finishRetainedReleases();
-            if (callbacksMayThrow) E.emitPendingCheck();
+            if (callbacksMayThrow) emitter.emitPendingCheck();
             return result;
           }
           case "bool": {
-            const result = E.newTemp(e.type, `(${call} != 0)`);
+            const result = emitter.newTemp(e.type, `(${call} != 0)`);
             restoreRawContexts();
             finishRetainedReleases();
-            if (callbacksMayThrow) E.emitPendingCheck();
+            if (callbacksMayThrow) emitter.emitPendingCheck();
             return result;
           }
           case "u8":
           case "u32":
           case "i32": {
-            const result = E.newTemp(e.type, `(double)${call}`);
+            const result = emitter.newTemp(e.type, `(double)${call}`);
             restoreRawContexts();
             finishRetainedReleases();
-            if (callbacksMayThrow) E.emitPendingCheck();
+            if (callbacksMayThrow) emitter.emitPendingCheck();
             return result;
           }
         }
       }
       case "closure": {
-        const target = E.fnByName.get(e.fnName);
+        const target = emitter.fnByName.get(e.fnName);
         if (!target) throw new InternalCompilerError(`emitter bug: closure over unknown function ${e.fnName}`);
         if (target.captures === undefined) {
           // Declared function as a value: the interned immortal closure —
           // every mention yields the same pointer, so `f === f` is true.
-          E.fnValues.add(e.fnName);
-          return E.newTemp(
+          emitter.fnValues.add(e.fnName);
+          return emitter.newTemp(
             e.type,
             retainCallC(e.type, `(ScrClosure *)&${mangleFnClosure(e.fnName)}`),
           );
         }
-        const t = E.newTemp(
+        const t = emitter.newTemp(
           e.type,
-          `scr_closure_new((void *)&${E.callTargetC(e.fnName)}, ${e.captures.length})`,
+          `scr_closure_new((void *)&${emitter.callTargetC(e.fnName)}, ${e.captures.length})`,
         );
         e.captures.forEach((localId, i) => {
-          E.line(`${t.name}->caps[${i}] = scr_box_retain(${mangleLocal(localId)});`);
+          emitter.line(`${t.name}->caps[${i}] = scr_box_retain(${mangleLocal(localId)});`);
         });
         return t;
       }
       case "callValue": {
-        const callee = E.emitExpr(e.callee);
-        const args = e.args.map((a) => E.emitExpr(a));
-        for (const a of args) E.moveTemp(a); // callee owns its params
+        const callee = emitter.emitExpr(e.callee);
+        const args = e.args.map((a) => emitter.emitExpr(a));
+        for (const a of args) emitter.moveTemp(a); // callee owns its params
         if (e.callee.type.kind !== "func") throw new InternalCompilerError("emitter bug: callValue on non-func");
         const cast = cFnPtrCast(e.callee.type);
         const argList = [callee.name, ...args.map((a) => a.name)].join(", ");
         const call = `(${cast}${callee.name}->fn)(${argList})`;
         if (e.type.kind === "void") {
-          E.line(`${call};${E.srcComment(e.loc)}`);
-          if (E.indirectMayThrow) E.emitPendingCheck();
+          emitter.line(`${call};${emitter.srcComment(e.loc)}`);
+          if (emitter.indirectMayThrow) emitter.emitPendingCheck();
           return { name: "", type: e.type };
         }
-        const t = E.newTemp(e.type, call);
-        if (E.indirectMayThrow) E.emitPendingCheck();
+        const t = emitter.newTemp(e.type, call);
+        if (emitter.indirectMayThrow) emitter.emitPendingCheck();
         return t;
       }
       case "selfRef":
         // The running closure itself (env is borrowed; the result is owned).
-        return E.newTemp(e.type, retainCallC(e.type, "sc_env"));
+        return emitter.newTemp(e.type, retainCallC(e.type, "sc_env"));
       case "new": {
         // Allocate (fields zeroed), then run the ctor. The ctor owns and
         // releases its `this` param like any callee, so it receives a +1
         // distinct from the one this expression returns.
-        const t = E.newTemp(e.type, `${mangleClassNew(e.className)}()`);
-        const args = e.args.map((a) => E.emitExpr(a));
-        for (const a of args) E.moveTemp(a);
+        const t = emitter.newTemp(e.type, `${mangleClassNew(e.className)}()`);
+        const args = e.args.map((a) => emitter.emitExpr(a));
+        for (const a of args) emitter.moveTemp(a);
         const ctorArgs = [`${mangleClassRetain(e.className)}(${t.name})`, ...args.map((a) => a.name)];
-        E.line(`${mangleFunction(`%${e.className}.constructor`)}(${ctorArgs.join(", ")});${E.srcComment(e.loc)}`);
+        emitter.line(`${mangleFunction(`%${e.className}.constructor`)}(${ctorArgs.join(", ")});${emitter.srcComment(e.loc)}`);
         // A throwing constructor unwinds like any call; the half-built
         // object is in this frame and releases with it.
-        if (E.mayThrow.has(`%${e.className}.constructor`)) E.emitPendingCheck();
+        if (emitter.mayThrow.has(`%${e.className}.constructor`)) emitter.emitPendingCheck();
         return t;
       }
       case "classRef": {
         // The class itself as a value: the immortal class object's
         // address. The +1 retain is a no-op on immortals but keeps the
         // owned-temps discipline uniform (the regexLit pattern).
-        const sym = E.classObjSym(e.className);
-        return E.newTemp(e.type, `scr_classobj_retain(&${sym})`);
+        const sym = emitter.classObjSym(e.className);
+        return emitter.newTemp(e.type, `scr_classobj_retain(&${sym})`);
       }
       case "newValue": {
         // Construction through a class VALUE: call the class object's
@@ -2280,34 +2280,34 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           throw new InternalCompilerError("emitter bug: newValue on non-classval callee");
         }
         const cls = e.callee.type.className;
-        const ctor = E.fnByName.get(`%${cls}.constructor`);
+        const ctor = emitter.fnByName.get(`%${cls}.constructor`);
         if (!ctor) throw new InternalCompilerError(`emitter bug: newValue on ${cls} without a constructor`);
-        const callee = E.emitExpr(e.callee);
-        const args = e.args.map((a) => E.emitExpr(a));
-        for (const a of args) E.moveTemp(a); // the constructor owns its params
+        const callee = emitter.emitExpr(e.callee);
+        const args = e.args.map((a) => emitter.emitExpr(a));
+        for (const a of args) emitter.moveTemp(a); // the constructor owns its params
         const paramTypes = ctor.params.slice(1).map((p) => cType(p.type).trim());
         const cast = `(void *(*)(${paramTypes.join(", ") || "void"}))`;
         const call = `(${cast}${callee.name}->ctor)(${args.map((a) => a.name).join(", ")})`;
-        const t = E.newTemp(e.type, `(${cType(e.type).trim()})${call}`);
-        if (newValueMayThrow(cls, E.classMeta, E.mayThrow)) E.emitPendingCheck();
+        const t = emitter.newTemp(e.type, `(${cType(e.type).trim()})${call}`);
+        if (newValueMayThrow(cls, emitter.classMeta, emitter.mayThrow)) emitter.emitPendingCheck();
         return t;
       }
       case "instanceOfValue": {
         // The interval check with the target loaded from the class object
         // (same numbering the vtables carry). Frontend guarantees both
         // sides are hierarchy members, so the operand has a vt word.
-        const v = E.emitExpr(e.value);
-        const target = E.emitExpr(e.classValue);
-        return E.newTemp(
+        const v = emitter.emitExpr(e.value);
+        const target = emitter.emitExpr(e.classValue);
+        return emitter.newTemp(
           e.type,
           `${v.name}->vt->pre >= ${target.name}->pre && ${v.name}->vt->pre <= ${target.name}->post`,
         );
       }
       case "promiseVoidWiden": {
         // One ScrPromise* either way — ownership transfers, type-only.
-        const v = E.emitExpr(e.value);
-        E.moveTemp(v);
-        return E.newTemp(e.type, v.name);
+        const v = emitter.emitExpr(e.value);
+        emitter.moveTemp(v);
+        return emitter.newTemp(e.type, v.name);
       }
       case "upcast":
       case "downcast": {
@@ -2317,17 +2317,17 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // one +1 releases exactly once). Classval upcasts are the same
         // pointer with only the static type changing (one ScrClassObj
         // struct covers every class), so the cast is a no-op spelling.
-        const v = E.emitExpr(e.value);
-        E.moveTemp(v);
-        return E.newTemp(e.type, `(${cType(e.type).trim()})${v.name}`);
+        const v = emitter.emitExpr(e.value);
+        emitter.moveTemp(v);
+        return emitter.newTemp(e.type, `(${cType(e.type).trim()})${v.name}`);
       }
       case "instanceOf": {
         // O(1) preorder-interval test against the vtable the object
         // carries; the target's interval is a compile-time constant.
-        const v = E.emitExpr(e.value);
-        const target = E.classMeta.get(e.className);
+        const v = emitter.emitExpr(e.value);
+        const target = emitter.classMeta.get(e.className);
         if (!target) throw new InternalCompilerError(`emitter bug: instanceOf against unknown class ${e.className}`);
-        return E.newTemp(
+        return emitter.newTemp(
           e.type,
           `${v.name}->vt->pre >= ${target.pre} && ${v.name}->vt->pre <= ${target.post}`,
         );
@@ -2337,15 +2337,15 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // method's root-most declaring class (an ancestor of the static
         // class), whose signature the slot pointer carries — the receiver
         // upcasts to it, another prefix-layout reinterpret.
-        const meta = E.classMeta.get(e.className);
+        const meta = emitter.classMeta.get(e.className);
         if (!meta) throw new InternalCompilerError(`emitter bug: virtualCall on unknown class ${e.className}`);
         const slot = meta.root.slots.find(
           (sl) =>
             sl.method === e.method && sl.declarer.pre <= meta.pre && meta.pre <= sl.declarer.post,
         );
         if (!slot) throw new InternalCompilerError(`emitter bug: no vtable slot for ${e.className}.${e.method}`);
-        const args = e.args.map((a) => E.emitExpr(a));
-        for (const a of args) E.moveTemp(a); // callees own their params
+        const args = e.args.map((a) => emitter.emitExpr(a));
+        for (const a of args) emitter.moveTemp(a); // callees own their params
         const recv = args[0]!.name;
         const recvArg =
           slot.declarer === meta ? recv : `(${mangleClassStruct(slot.declarer.def.name)} *)${recv}`;
@@ -2353,24 +2353,24 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         const argList = [recvArg, ...args.slice(1).map((a) => a.name)].join(", ");
         const call = `((const ${vtt} *)${recv}->vt)->${slot.member}(${argList})`;
         if (e.type.kind === "void") {
-          E.line(`${call};${E.srcComment(e.loc)}`);
-          if (E.mayThrowMethods.has(e.method)) E.emitPendingCheck();
+          emitter.line(`${call};${emitter.srcComment(e.loc)}`);
+          if (emitter.mayThrowMethods.has(e.method)) emitter.emitPendingCheck();
           return { name: "", type: e.type };
         }
-        const t = E.newTemp(e.type, call);
-        if (E.mayThrowMethods.has(e.method)) E.emitPendingCheck();
+        const t = emitter.newTemp(e.type, call);
+        if (emitter.mayThrowMethods.has(e.method)) emitter.emitPendingCheck();
         return t;
       }
       case "fieldGet":
       case "recordGet": {
-        const obj = E.emitExpr(e.obj);
+        const obj = emitter.emitExpr(e.obj);
         // Runtime error classes use ScrError's own member names.
         const member =
           e.kind === "fieldGet" && RUNTIME_ERROR_CLASSES.has(e.className)
             ? e.field
             : mangleField(e.field);
         const field = `${obj.name}->${member}`;
-        return E.newTemp(e.type, isRefCounted(e.type) ? retainCallC(e.type, field) : field);
+        return emitter.newTemp(e.type, isRefCounted(e.type) ? retainCallC(e.type, field) : field);
       }
       case "recordLit": {
         // Allocate (fields zeroed), then write each field IN SOURCE ORDER —
@@ -2380,51 +2380,51 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // of an index-signature shape) insert into the shape's overflow
         // map in the same interleaved order — the map takes ownership.
         if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: recordLit of non-record type");
-        const rec = E.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
+        const rec = emitter.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
         for (const f of e.fields) {
           if (f.drop) {
             // A mapping-dropped field (the PromiseSettledResult subset):
             // the initializer runs in its source-order slot — effects and
             // throws included — and the result (if any) releases with the
             // statement frame instead of storing.
-            E.emitExpr(f.value);
+            emitter.emitExpr(f.value);
             continue;
           }
-          const v = E.emitExpr(f.value);
+          const v = emitter.emitExpr(f.value);
           if (f.overflow) {
-            const lit = E.internLiteral(f.name);
+            const lit = emitter.internLiteral(f.name);
             const acc =
               v.type.kind === "f64" ? "f64" : v.type.kind === "bool" ? "bool" : "ref";
-            if (acc === "ref") E.moveTemp(v);
-            E.line(
+            if (acc === "ref") emitter.moveTemp(v);
+            emitter.line(
               `scr_map_set_str_${acc}(${rec.name}->${OVERFLOW_MEMBER}, (ScrStr *)&${lit}, ${v.name});`,
             );
             continue;
           }
-          if (isRefCounted(v.type)) E.moveTemp(v);
-          E.line(`${rec.name}->${mangleField(f.name)} = ${v.name};`);
+          if (isRefCounted(v.type)) emitter.moveTemp(v);
+          emitter.line(`${rec.name}->${mangleField(f.name)} = ${v.name};`);
         }
         return rec;
       }
       case "recordClone": {
         if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: recordClone of non-record type");
-        E.recordCloneShapes.add(e.type.shapeId);
+        emitter.recordCloneShapes.add(e.type.shapeId);
         // Source first, then each override in source order. The helper
         // returns a fully retained owned clone; replacement unlinks before
         // releasing the copied value, matching recordSet's cycle discipline.
-        const source = E.emitExpr(e.source);
-        const rec = E.newTemp(e.type, `${mangleRecordClone(e.type.shapeId)}(${source.name})`);
+        const source = emitter.emitExpr(e.source);
+        const rec = emitter.newTemp(e.type, `${mangleRecordClone(e.type.shapeId)}(${source.name})`);
         for (const f of e.overrides) {
-          const v = E.emitExpr(f.value);
+          const v = emitter.emitExpr(f.value);
           const field = `${rec.name}->${mangleField(f.name)}`;
           if (isRefCounted(v.type)) {
-            E.moveTemp(v);
-            const old = `sc_t${E.tempCounter++}`;
-            E.line(`${cDecl(v.type, old)} = ${field};`);
-            E.line(`${field} = ${v.name};`);
-            E.releaseValue(old, v.type);
+            emitter.moveTemp(v);
+            const old = `sc_t${emitter.tempCounter++}`;
+            emitter.line(`${cDecl(v.type, old)} = ${field};`);
+            emitter.line(`${field} = ${v.name};`);
+            emitter.releaseValue(old, v.type);
           } else {
-            E.line(`${field} = ${v.name};`);
+            emitter.line(`${field} = ${v.name};`);
           }
         }
         return rec;
@@ -2433,16 +2433,16 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // Dynamic-keyed record read through the per-(shape, result type)
         // helper — declared-field string switch, then the overflow map.
         // Never throws (a smuggled miss traps in the helper).
-        const obj = E.emitExpr(e.obj);
-        const key = E.emitExpr(e.key);
-        const helper = E.recordKeyGetHelper(e.shapeId, e.type, e.overflowOnly === true);
-        return E.newTemp(e.type, `${helper}(${obj.name}, ${key.name})`);
+        const obj = emitter.emitExpr(e.obj);
+        const key = emitter.emitExpr(e.key);
+        const helper = emitter.recordKeyGetHelper(e.shapeId, e.type, e.overflowOnly === true);
+        return emitter.newTemp(e.type, `${helper}(${obj.name}, ${key.name})`);
       }
       case "recordOvfKeys": {
         // The overflow map's live keys in JS own-key order — a fresh
         // string[] snapshot (+1); the record is borrowed.
-        const obj = E.emitExpr(e.obj);
-        return E.newTemp(e.type, `scr_map_keys_js_order(${obj.name}->${OVERFLOW_MEMBER})`);
+        const obj = emitter.emitExpr(e.obj);
+        return emitter.newTemp(e.type, `scr_map_keys_js_order(${obj.name}->${OVERFLOW_MEMBER})`);
       }
       case "dynFrom": {
         // Static value → fresh dyn tree (+1) through the interned per-type
@@ -2450,24 +2450,24 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // Bare unit literals (an `undefined`/`null` stored under an
         // `unknown` index signature) are the dyn unit values directly.
         if (e.value.kind === "unitLit") {
-          return E.newTemp(
+          return emitter.newTemp(
             e.type,
             e.value.unit === "undefined"
               ? "scr_dyn_retain(scr_dyn_undefined())"
               : "scr_dyn_new_null()",
           );
         }
-        const v = E.emitExpr(e.value);
+        const v = emitter.emitExpr(e.value);
         if (e.liveRef) {
           if (v.type.kind === "union") {
-            const adapter = liveDynUnionRefAdapter(E, v.type);
-            return E.newTemp(e.type, `${adapter}(${v.name})`);
+            const adapter = liveDynUnionRefAdapter(emitter, v.type);
+            return emitter.newTemp(e.type, `${adapter}(${v.name})`);
           }
-          const adapter = liveDynRefAdapter(E, v.type);
+          const adapter = liveDynRefAdapter(emitter, v.type);
           const rc = vAdapters(v.type);
           const key = typeKey(v.type);
           const keyLit = cStringLiteral(Buffer.from(key, "utf8"));
-          return E.newTemp(
+          return emitter.newTemp(
             e.type,
             `scr_dyn_new_typed_ref(${v.name}, &${rc.retain}, &${rc.release}, ${keyLit}, ${Buffer.byteLength(key, "utf8")}, &${adapter.snapshot}, ${adapter.commit})`,
           );
@@ -2481,16 +2481,16 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             e.fnName !== undefined && e.fnName !== ""
               ? cStringLiteral(Buffer.from(e.fnName, "utf8"))
               : "NULL";
-          return E.newTemp(e.type, `${E.dynFuncBoxHelper(v.type)}(${v.name}, ${name})`);
+          return emitter.newTemp(e.type, `${emitter.dynFuncBoxHelper(v.type)}(${v.name}, ${name})`);
         }
-        return E.newTemp(e.type, `${E.toDynHelper(v.type)}(${v.name})`);
+        return emitter.newTemp(e.type, `${emitter.toDynHelper(v.type)}(${v.name})`);
       }
       case "dynFromJsval": {
         // Island value → dyn: the by-reference wrap (scr_dyn_from_jsval
         // retains the cell in; engine scalars normalize to native dyn
         // kinds at wrap time). Operand borrowed, result +1, never throws.
-        const v = E.emitExpr(e.value);
-        return E.newTemp(e.type, `scr_dyn_from_jsval(${v.name})`);
+        const v = emitter.emitExpr(e.value);
+        return emitter.newTemp(e.type, `scr_dyn_from_jsval(${v.name})`);
       }
       case "dynCall": {
         // Calling a dyn value: args are already dyn (the lowering boxed or
@@ -2498,7 +2498,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // boxed thunk builds its own typed copies — so the temps release
         // with the frame as usual. The callee's source spelling rides
         // along for Node's "<name> is not a function" TypeError.
-        const callee = E.emitExpr(e.callee);
+        const callee = emitter.emitExpr(e.callee);
         const what = cStringLiteral(Buffer.from(e.calleeName, "utf8"));
         if (e.spreads !== undefined && e.spreads.length > 0) {
           // The RUNTIME-ARITY form (`f(...args)`): one fresh dyn array
@@ -2509,29 +2509,29 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // ArgumentListEvaluation order) — then apply calls through the
           // array's elements (borrowed, exactly scr_dyn_call).
           const spreadAt = new Map(e.spreads.map((s) => [s.arg, s.what]));
-          const pack = E.newTemp(DYN, "scr_dyn_new_arr()");
+          const pack = emitter.newTemp(DYN, "scr_dyn_new_arr()");
           e.args.forEach((a, i) => {
-            const v = E.emitExpr(a);
+            const v = emitter.emitExpr(a);
             const spreadWhat = spreadAt.get(i);
             if (spreadWhat !== undefined) {
               const w = cStringLiteral(Buffer.from(spreadWhat, "utf8"));
-              E.line(`scr_dyn_arr_push_spread(${pack.name}, ${v.name}, ${w});`);
-              E.emitPendingCheck();
+              emitter.line(`scr_dyn_arr_push_spread(${pack.name}, ${v.name}, ${w});`);
+              emitter.emitPendingCheck();
             } else {
-              E.moveTemp(v);
-              E.line(`scr_dyn_arr_push(${pack.name}, ${v.name});`);
+              emitter.moveTemp(v);
+              emitter.line(`scr_dyn_arr_push(${pack.name}, ${v.name});`);
             }
           });
-          return E.fallibleTemp(e.type, `scr_dyn_apply(${callee.name}, ${pack.name}, ${what})`);
+          return emitter.fallibleTemp(e.type, `scr_dyn_apply(${callee.name}, ${pack.name}, ${what})`);
         }
-        const args = e.args.map((a) => E.emitExpr(a));
+        const args = e.args.map((a) => emitter.emitExpr(a));
         let argsExpr = "NULL";
         if (args.length > 0) {
-          const arr = `sc_t${E.tempCounter++}`;
-          E.line(`ScrDyn *${arr}[${args.length}] = { ${args.map((a) => a.name).join(", ")} };`);
+          const arr = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`ScrDyn *${arr}[${args.length}] = { ${args.map((a) => a.name).join(", ")} };`);
           argsExpr = arr;
         }
-        return E.fallibleTemp(
+        return emitter.fallibleTemp(
           e.type,
           `scr_dyn_call(${callee.name}, ${argsExpr}, ${args.length}, ${what})`,
         );
@@ -2540,17 +2540,17 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // Prototype-method dispatch on a dyn receiver: everything is
         // BORROWED by scr_dyn_invoke (temps release with the frame); the
         // result is owned and may ride a pending exception.
-        const recv = E.emitExpr(e.recv);
-        const args = e.args.map((a) => E.emitExpr(a));
+        const recv = emitter.emitExpr(e.recv);
+        const args = e.args.map((a) => emitter.emitExpr(a));
         let argsExpr = "NULL";
         if (args.length > 0) {
-          const arr = `sc_t${E.tempCounter++}`;
-          E.line(`ScrDyn *${arr}[${args.length}] = { ${args.map((a) => a.name).join(", ")} };`);
+          const arr = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`ScrDyn *${arr}[${args.length}] = { ${args.map((a) => a.name).join(", ")} };`);
           argsExpr = arr;
         }
         const method = cStringLiteral(Buffer.from(e.method, "utf8"));
         const what = cStringLiteral(Buffer.from(e.calleeName, "utf8"));
-        return E.fallibleTemp(
+        return emitter.fallibleTemp(
           e.type,
           `scr_dyn_invoke(${recv.name}, ${method}, ${argsExpr}, ${args.length}, ${what})`,
         );
@@ -2558,11 +2558,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
       case "dynArrLit": {
         // A dyn array built element-by-element: ownership of each dyn
         // element MOVES into the array (scr_dyn_arr_push's contract).
-        const arr = E.newTemp(e.type, "scr_dyn_new_arr()");
+        const arr = emitter.newTemp(e.type, "scr_dyn_new_arr()");
         for (const el of e.elems) {
-          const v = E.emitExpr(el);
-          E.moveTemp(v);
-          E.line(`scr_dyn_arr_push(${arr.name}, ${v.name});`);
+          const v = emitter.emitExpr(el);
+          emitter.moveTemp(v);
+          emitter.line(`scr_dyn_arr_push(${arr.name}, ${v.name});`);
         }
         return arr;
       }
@@ -2572,11 +2572,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // three (the member retains the value in), so key/value temps
         // release with the frame as usual; the receiver is a fresh OBJ,
         // so the non-object throw paths are unreachable here.
-        const obj = E.newTemp(e.type, "scr_dyn_new_obj()");
+        const obj = emitter.newTemp(e.type, "scr_dyn_new_obj()");
         for (const f of e.fields ?? []) {
-          const k = E.emitExpr(f.key);
-          const v = E.emitExpr(f.value);
-          E.line(`scr_dyn_key_set(${obj.name}, ${k.name}, ${v.name});`);
+          const k = emitter.emitExpr(f.key);
+          const v = emitter.emitExpr(f.value);
+          emitter.line(`scr_dyn_key_set(${obj.name}, ${k.name}, ${v.name});`);
         }
         return obj;
       }
@@ -2590,25 +2590,25 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // which the RC entry points and the cycle collector both skip).
         const arm = e.value.type;
         if (isUnitType(arm)) {
-          return E.newTemp(e.type, E.unitInstanceRef(e.unionId, e.tag));
+          return emitter.newTemp(e.type, emitter.unitInstanceRef(e.unionId, e.tag));
         }
         // A VOID payload (a void call wrapping into an undefined arm):
         // evaluate for effects, produce the interned unit instance.
         if (arm.kind === "void") {
-          E.emitExpr(e.value);
-          return E.newTemp(e.type, E.unitInstanceRef(e.unionId, e.tag));
+          emitter.emitExpr(e.value);
+          return emitter.newTemp(e.type, emitter.unitInstanceRef(e.unionId, e.tag));
         }
-        const v = E.emitExpr(e.value);
+        const v = emitter.emitExpr(e.value);
         if (isRefCounted(arm)) {
-          E.moveTemp(v);
+          emitter.moveTemp(v);
           const rc = vAdapters(arm);
-          return E.newTemp(
+          return emitter.newTemp(
             e.type,
-            `scr_union_new_ref(${e.tag}, ${v.name}, &${rc.retain}, &${rc.release}, ${E.traceArgC(arm)})`,
+            `scr_union_new_ref(${e.tag}, ${v.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(arm)})`,
           );
         }
-        if (arm.kind === "f64") return E.newTemp(e.type, `scr_union_new_f64(${e.tag}, ${v.name})`);
-        if (arm.kind === "bool") return E.newTemp(e.type, `scr_union_new_bool(${e.tag}, ${v.name})`);
+        if (arm.kind === "f64") return emitter.newTemp(e.type, `scr_union_new_f64(${e.tag}, ${v.name})`);
+        if (arm.kind === "bool") return emitter.newTemp(e.type, `scr_union_new_bool(${e.tag}, ${v.name})`);
         throw new InternalCompilerError(`emitter bug: unionWrap of ${arm.kind}`);
       }
       case "unionNarrow": {
@@ -2617,26 +2617,26 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // Ref payloads come out +1 via the arm's CONCRETE retain (statically
         // known here — no need for the stored fn ptr); the union temp itself
         // releases with this statement's frame as usual.
-        const u = E.emitExpr(e.value);
+        const u = emitter.emitExpr(e.value);
         const arm = e.type;
         if (isUnitType(arm)) throw new InternalCompilerError(`emitter bug: unionNarrow to unit arm ${arm.kind}`);
-        if (arm.kind === "f64") return E.newTemp(arm, `scr_union_get_f64(${u.name})`);
-        if (arm.kind === "bool") return E.newTemp(arm, `scr_union_get_bool(${u.name})`);
+        if (arm.kind === "f64") return emitter.newTemp(arm, `scr_union_get_f64(${u.name})`);
+        if (arm.kind === "bool") return emitter.newTemp(arm, `scr_union_get_bool(${u.name})`);
         const payload = `(${cType(arm).trim()})scr_union_peek(${u.name})`;
-        return E.newTemp(arm, retainCallC(arm, payload));
+        return emitter.newTemp(arm, retainCallC(arm, payload));
       }
       case "unionDisc": {
         // Shared-field read `r.kind` / `spec.config`: switch on the runtime
         // tag and read the (same-typed) field from the concretely-cast
         // payload. Ref-counted results come out retained (+1), owned by
         // this frame.
-        const u = E.emitExpr(e.value);
-        const def = E.unionsById.get(e.unionId);
+        const u = emitter.emitExpr(e.value);
+        const def = emitter.unionsById.get(e.unionId);
         if (!def) throw new InternalCompilerError(`emitter bug: unionDisc of unknown union ${e.unionId}`);
-        const name = `sc_t${E.tempCounter++}`;
-        E.line(`${cDecl(e.type, name)};`);
-        E.line(`switch (${u.name}->tag) {`);
-        E.indent++;
+        const name = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`${cDecl(e.type, name)};`);
+        emitter.line(`switch (${u.name}->tag) {`);
+        emitter.indent++;
         def.arms.forEach((arm, i) => {
           if (arm.kind !== "record" && arm.kind !== "object") {
             throw new InternalCompilerError(`emitter bug: unionDisc arm of kind ${arm.kind}`);
@@ -2649,12 +2649,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               : mangleField(e.field);
           const read = `((${cType(arm).trim()})scr_union_peek(${u.name}))->${member}`;
           const value = isRefCounted(e.type) ? retainCallC(e.type, read) : read;
-          E.line(`case ${i}: ${name} = ${value}; break;`);
+          emitter.line(`case ${i}: ${name} = ${value}; break;`);
         });
-        E.line(`default: scr_trap("scriptc: internal error: invalid union tag\\n");`);
-        E.indent--;
-        E.line(`}`);
-        if (isRefCounted(e.type)) E.currentFrame().push({ name, type: e.type });
+        emitter.line(`default: scr_trap("scriptc: internal error: invalid union tag\\n");`);
+        emitter.indent--;
+        emitter.line(`}`);
+        if (isRefCounted(e.type)) emitter.currentFrame().push({ name, type: e.type });
         return { name, type: e.type };
       }
       case "unionKeyGet": {
@@ -2664,23 +2664,23 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // arm goes through the shared keyed-read helper (owned result,
         // missing-key policy included), and a unit arm answers the interned
         // undefined arm (the optional-chain tail's short-circuit value).
-        const u = E.emitExpr(e.value);
-        const k = E.emitExpr(e.key);
-        const def = E.unionsById.get(e.unionId);
+        const u = emitter.emitExpr(e.value);
+        const k = emitter.emitExpr(e.key);
+        const def = emitter.unionsById.get(e.unionId);
         if (!def) throw new InternalCompilerError(`emitter bug: unionKeyGet of unknown union ${e.unionId}`);
-        const resultDef = e.type.kind === "union" ? E.unionsById.get(e.type.unionId) : undefined;
+        const resultDef = e.type.kind === "union" ? emitter.unionsById.get(e.type.unionId) : undefined;
         const literal = e.key.kind === "strLit" ? e.key.value : null;
-        const name = `sc_t${E.tempCounter++}`;
-        E.line(`${cDecl(e.type, name)};`);
-        E.line(`switch (${u.name}->tag) {`);
-        E.indent++;
+        const name = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`${cDecl(e.type, name)};`);
+        emitter.line(`switch (${u.name}->tag) {`);
+        emitter.indent++;
         def.arms.forEach((arm, i) => {
           if (isUnitType(arm)) {
             const tag = resultDef?.arms.findIndex((a) => a.kind === "undefinedT") ?? -1;
             if (tag < 0 || e.type.kind !== "union") {
               throw new InternalCompilerError("emitter bug: unionKeyGet unit arm without an undefined result arm");
             }
-            E.line(`case ${i}: ${name} = ${E.unitInstanceRef(e.type.unionId, tag)}; break;`);
+            emitter.line(`case ${i}: ${name} = ${emitter.unitInstanceRef(e.type.unionId, tag)}; break;`);
             return;
           }
           if (arm.kind === "array") {
@@ -2690,7 +2690,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // wraps into the join when unit arms widened it.
             const read = `scr_arr_get_${elemAccess(arm.elem)}((${cType(arm).trim()})scr_union_peek(${u.name}), ${k.name})`;
             if (typeEquals(arm.elem, e.type)) {
-              E.line(`case ${i}: ${name} = ${read}; break;`);
+              emitter.line(`case ${i}: ${name} = ${read}; break;`);
               return;
             }
             const tag = resultDef?.arms.findIndex((a) => typeEquals(a, arm.elem)) ?? -1;
@@ -2706,20 +2706,20 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
                       const rc = vAdapters(arm.elem);
                       // The element read is already owned (+1) — ownership
                       // MOVES into the union box, no extra retain.
-                      return `scr_union_new_ref(${tag}, ${read}, &${rc.retain}, &${rc.release}, ${E.traceArgC(arm.elem)})`;
+                      return `scr_union_new_ref(${tag}, ${read}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(arm.elem)})`;
                     })();
-            E.line(`case ${i}: ${name} = ${wrapped}; break;`);
+            emitter.line(`case ${i}: ${name} = ${wrapped}; break;`);
             return;
           }
           if (arm.kind !== "record") throw new InternalCompilerError(`emitter bug: unionKeyGet arm of kind ${arm.kind}`);
-          const shape = E.recordsById.get(arm.shapeId);
+          const shape = emitter.recordsById.get(arm.shapeId);
           if (!shape) throw new InternalCompilerError(`emitter bug: unionKeyGet arm of unknown shape ${arm.shapeId}`);
           const declared = literal !== null ? shape.fields.find((f) => f.name === literal) : undefined;
           if (declared) {
             const ft = declared.type;
             const read = `((${cType(arm).trim()})scr_union_peek(${u.name}))->${mangleField(declared.name)}`;
             if (typeEquals(ft, e.type)) {
-              E.line(`case ${i}: ${name} = ${isRefCounted(ft) ? retainCallC(ft, read) : read}; break;`);
+              emitter.line(`case ${i}: ${name} = ${isRefCounted(ft) ? retainCallC(ft, read) : read}; break;`);
               return;
             }
             const tag = resultDef?.arms.findIndex((a) => typeEquals(a, ft)) ?? -1;
@@ -2733,27 +2733,27 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
                   ? `scr_union_new_bool(${tag}, ${read})`
                   : (() => {
                       const rc = vAdapters(ft);
-                      return `scr_union_new_ref(${tag}, ${retainCallC(ft, read)}, &${rc.retain}, &${rc.release}, ${E.traceArgC(ft)})`;
+                      return `scr_union_new_ref(${tag}, ${retainCallC(ft, read)}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(ft)})`;
                     })();
-            E.line(`case ${i}: ${name} = ${wrapped}; break;`);
+            emitter.line(`case ${i}: ${name} = ${wrapped}; break;`);
             return;
           }
           // Index-signature arm (or declared-only shape under a runtime
           // key): the per-(shape, join type) keyed-read helper — a literal
           // key naming no declared field touches only the overflow map.
-          const helper = E.recordKeyGetHelper(arm.shapeId, e.type, literal !== null && !!shape.indexValue);
-          E.line(`case ${i}: ${name} = ${helper}((${cType(arm).trim()})scr_union_peek(${u.name}), ${k.name}); break;`);
+          const helper = emitter.recordKeyGetHelper(arm.shapeId, e.type, literal !== null && !!shape.indexValue);
+          emitter.line(`case ${i}: ${name} = ${helper}((${cType(arm).trim()})scr_union_peek(${u.name}), ${k.name}); break;`);
         });
-        E.line(`default: scr_trap("scriptc: internal error: invalid union tag\\n");`);
-        E.indent--;
-        E.line(`}`);
-        if (isRefCounted(e.type)) E.currentFrame().push({ name, type: e.type });
+        emitter.line(`default: scr_trap("scriptc: internal error: invalid union tag\\n");`);
+        emitter.indent--;
+        emitter.line(`}`);
+        if (isRefCounted(e.type)) emitter.currentFrame().push({ name, type: e.type });
         return { name, type: e.type };
       }
       case "unionIsTag": {
         // A pure tag compare — the box is borrowed, no payload is touched.
-        const u = E.emitExpr(e.value);
-        return E.newTemp(e.type, `${u.name}->tag ${e.negated ? "!=" : "=="} ${e.tag}`);
+        const u = emitter.emitExpr(e.value);
+        return emitter.newTemp(e.type, `${u.name}->tag ${e.negated ? "!=" : "=="} ${e.tag}`);
       }
       case "dynKeyGet": {
         // Keyed read on the checked-dynamic tree through the one interned helper — the
@@ -2761,11 +2761,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // receiver, and HANDLE receivers can throw the loud unmodeled-
         // property ladder on EITHER form, so both ride a fallible temp;
         // the result is owned (+1).
-        const d = E.emitExpr(e.value);
-        const k = E.emitExpr(e.key);
-        const helper = dynKeyGetHelper(E);
+        const d = emitter.emitExpr(e.value);
+        const k = emitter.emitExpr(e.key);
+        const helper = dynKeyGetHelper(emitter);
         const call = `${helper}(${d.name}, ${k.name}, ${e.optional ? "true" : "false"})`;
-        return E.fallibleTemp(e.type, call);
+        return emitter.fallibleTemp(e.type, call);
       }
       case "dynHasKey": {
         // `"k" in pkg`: a kind-guarded presence answer, computed against
@@ -2773,7 +2773,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // An ISLAND-held receiver fences loudly (Node asks the real
         // engine object — `false` would be a silent wrong answer), so
         // the temp rides the fallible path.
-        const d = E.emitExpr(e.value);
+        const d = emitter.emitExpr(e.value);
         const keyBytes = Buffer.from(e.key, "utf8");
         const keyLit = cStringLiteral(keyBytes);
         const objTest = `scr_dyn_obj_get(${d.name}, ${keyLit}, ${keyBytes.length}) != NULL`;
@@ -2784,14 +2784,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               ? `${d.name}->v.arr.len > ${e.key}`
               : "false";
         const test = `(${d.name}->kind == SCR_DYN_OBJ ? (${objTest}) : ${d.name}->kind == SCR_DYN_ARR ? (${arrTest}) : scr_dyn_isl_fence(${d.name}, "'in'"))`;
-        return E.fallibleTemp(e.type, e.negated ? `!${test}` : test);
+        return emitter.fallibleTemp(e.type, e.negated ? `!${test}` : test);
       }
       case "dynScalarEq": {
         // dyn vs scalar strict equality: kind test + payload compare.
         // Operands emit in SOURCE order (JS evaluation order); the dyn
         // side is found by type. Both borrowed, no allocation.
-        const l = E.emitExpr(e.left);
-        const r = E.emitExpr(e.right);
+        const l = emitter.emitExpr(e.left);
+        const r = emitter.emitExpr(e.right);
         const [d, s, st] = e.left.type.kind === "dyn" ? [l, r, e.right.type] : [r, l, e.left.type];
         const test =
           st.kind === "dyn"
@@ -2803,7 +2803,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             : st.kind === "f64"
               ? `(${d.name}->kind == SCR_DYN_NUM && ${d.name}->v.num == ${s.name})`
               : `(${d.name}->kind == SCR_DYN_BOOL && ${d.name}->v.b == ${s.name})`;
-        return E.newTemp(e.type, e.negated ? `!${test}` : test);
+        return emitter.newTemp(e.type, e.negated ? `!${test}` : test);
       }
       case "dynTest": {
         // A pure kind compare on the dyn node — borrowed; only the truthy
@@ -2813,7 +2813,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // answer through the scr_dyn_isl_* helpers (false on every other
         // kind, so the calls stay unconditional); narrowing never changes
         // representation (SEMANTICS.md).
-        const d = E.emitExpr(e.value);
+        const d = emitter.emitExpr(e.value);
         const test =
           e.test === "nullish"
             ? `(${d.name}->kind == SCR_DYN_UNDEF || ${d.name}->kind == SCR_DYN_NULL)`
@@ -2841,48 +2841,48 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
                       : `${d.name}->kind == ${
                           { string: "SCR_DYN_STR", number: "SCR_DYN_NUM", boolean: "SCR_DYN_BOOL", undefined: "SCR_DYN_UNDEF", null: "SCR_DYN_NULL", bytes: "SCR_DYN_BYTES" }[e.test]
                         }`;
-        return E.newTemp(e.type, e.negated ? `!(${test})` : test);
+        return emitter.newTemp(e.type, e.negated ? `!(${test})` : test);
       }
       case "unionEq": {
         // Strict equality (or Object.is's SameValue — the f64 arm's
         // compare is the one difference) of the ARM values via the
         // per-union helper (tag compare + per-arm payload compare). Both
         // boxes are borrowed.
-        const l = E.emitExpr(e.left);
-        const r = E.emitExpr(e.right);
-        const call = `${E.unionEqHelper(e.unionId, e.sameValue)}(${l.name}, ${r.name})`;
-        return E.newTemp(e.type, e.negated ? `!${call}` : call);
+        const l = emitter.emitExpr(e.left);
+        const r = emitter.emitExpr(e.right);
+        const call = `${emitter.unionEqHelper(e.unionId, e.sameValue)}(${l.name}, ${r.name})`;
+        return emitter.newTemp(e.type, e.negated ? `!${call}` : call);
       }
       case "unionFuncEq": {
-        const u = E.emitExpr(e.union);
-        const f = E.emitExpr(e.func);
+        const u = emitter.emitExpr(e.union);
+        const f = emitter.emitExpr(e.func);
         const test = `(${u.name}->tag == ${e.tag} && scr_union_peek(${u.name}) == ${f.name})`;
-        return E.newTemp(e.type, e.negated ? `!${test}` : test);
+        return emitter.newTemp(e.type, e.negated ? `!${test}` : test);
       }
       case "caughtTest": {
         // Kind-tag tests read the snapshot directly; instanceof compares an
         // OBJ payload's vtable preorder against the class's compile-time
         // interval (false for every other payload kind). Box borrowed.
-        const c = E.emitExpr(e.value);
+        const c = emitter.emitExpr(e.value);
         if (e.test === "instanceof") {
-          const target = E.classMeta.get(e.className!);
+          const target = emitter.classMeta.get(e.className!);
           if (!target) throw new InternalCompilerError(`emitter bug: caughtTest against unknown class ${e.className}`);
           const test = `scr_caught_instanceof(${c.name}, ${target.pre}, ${target.post})`;
-          return E.newTemp(e.type, e.negated ? `!${test}` : test);
+          return emitter.newTemp(e.type, e.negated ? `!${test}` : test);
         }
         const tag = { string: "SCR_EXC_STR", number: "SCR_EXC_F64", boolean: "SCR_EXC_BOOL" }[e.test];
-        return E.newTemp(e.type, `${c.name}->kind ${e.negated ? "!=" : "=="} ${tag}`);
+        return emitter.newTemp(e.type, `${c.name}->kind ${e.negated ? "!=" : "=="} ${tag}`);
       }
       case "caughtCheck": {
         // Checked payload extraction (`e as C`): instanceof match extracts
         // +1, anything else throws the catchable TypeError — the result
         // joins the frame BEFORE the pending check so an unwind releases
         // the NULL dummy harmlessly. Box borrowed.
-        const c = E.emitExpr(e.value);
-        const target = E.classMeta.get(e.className);
+        const c = emitter.emitExpr(e.value);
+        const target = emitter.classMeta.get(e.className);
         if (!target) throw new InternalCompilerError(`emitter bug: caughtCheck against unknown class ${e.className}`);
         const display = e.className.startsWith("%") ? e.className.slice(1) : e.className;
-        return E.fallibleTemp(
+        return emitter.fallibleTemp(
           e.type,
           `(${cType(e.type).trim()})scr_caught_check_obj(${c.name}, ${target.pre}, ${target.post}, ${cStringLiteral(Buffer.from(display, "utf8"))})`,
         );
@@ -2891,14 +2891,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // Checker-trusted extraction (the matching caughtTest was proven by
         // tsc's narrowing): scalars read the snapshot's slots, refcounted
         // payloads come out retained (+1). Box borrowed.
-        const c = E.emitExpr(e.value);
-        if (e.type.kind === "f64") return E.newTemp(e.type, `${c.name}->f64`);
-        if (e.type.kind === "bool") return E.newTemp(e.type, `${c.name}->b`);
+        const c = emitter.emitExpr(e.value);
+        if (e.type.kind === "f64") return emitter.newTemp(e.type, `${c.name}->f64`);
+        if (e.type.kind === "bool") return emitter.newTemp(e.type, `${c.name}->b`);
         if (e.type.kind === "string") {
-          return E.newTemp(e.type, `scr_str_retain((ScrStr *)${c.name}->payload)`);
+          return emitter.newTemp(e.type, `scr_str_retain((ScrStr *)${c.name}->payload)`);
         }
         if (e.type.kind === "object") {
-          return E.newTemp(e.type, `(${cType(e.type).trim()})${c.name}->retain_fn(${c.name}->payload)`);
+          return emitter.newTemp(e.type, `(${cType(e.type).trim()})${c.name}->retain_fn(${c.name}->payload)`);
         }
         throw new InternalCompilerError(`emitter bug: caughtNarrow to ${e.type.kind}`);
       }
@@ -2906,17 +2906,17 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // The caught snapshot converting to a dyn value (an unknown
         // slot) — the interned runtime-kind dispatch. Box borrowed; the
         // result is a fresh tree (+1). Never throws.
-        const c = E.emitExpr(e.value);
-        return E.newTemp(e.type, `${E.caughtToDynHelper()}(${c.name})`);
+        const c = emitter.emitExpr(e.value);
+        return emitter.newTemp(e.type, `${emitter.caughtToDynHelper()}(${c.name})`);
       }
       case "intrinsic": {
         if (e.name === "module.await") {
           // The module evaluator's dependency wait: park only while the
           // promise is pending. A settled dependency continues in this
           // turn (no JavaScript-await hop); a rejection rethrows.
-          const p = E.emitExpr(e.args[0]!);
-          E.line(`scr_module_await(${p.name});${E.srcComment(e.loc)}`);
-          E.emitPendingCheck();
+          const p = emitter.emitExpr(e.args[0]!);
+          emitter.line(`scr_module_await(${p.name});${emitter.srcComment(e.loc)}`);
+          emitter.emitPendingCheck();
           return { name: "", type: e.type };
         }
         if (e.name === "promise.all") {
@@ -2931,9 +2931,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           if (entries.type.kind !== "array" || entries.type.elem.kind !== "promise") {
             throw new InternalCompilerError("emitter bug: promise.all argument");
           }
-          const ps = E.emitExpr(entries);
+          const ps = emitter.emitExpr(entries);
           if (e.type.inner.kind === "void") {
-            return E.newTemp(e.type, `scr_promise_all(${ps.name}, NULL, NULL)`);
+            return emitter.newTemp(e.type, `scr_promise_all(${ps.name}, NULL, NULL)`);
           }
           if (e.type.inner.kind !== "array") throw new InternalCompilerError("emitter bug: promise.all result");
           const elem = e.type.inner.elem;
@@ -2948,8 +2948,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // Entry array and values array both stay frame-owned; the
           // combinator BORROWS them and retains what it keeps (the race
           // convention).
-          const vals = E.newTemp(e.type.inner, E.arrNewC(elem, `(size_t)scr_arr_len(${ps.name})`));
-          return E.newTemp(e.type, `scr_promise_all(${ps.name}, ${vals.name}, &${store})`);
+          const vals = emitter.newTemp(e.type.inner, emitter.arrNewC(elem, `(size_t)scr_arr_len(${ps.name})`));
+          return emitter.newTemp(e.type, `scr_promise_all(${ps.name}, ${vals.name}, &${store})`);
         }
         if (e.name === "promise.reject") {
           // A fresh promise rejected through the exception cell: the
@@ -2961,27 +2961,27 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // ledger until an await/then observes it. The cell is consumed
           // immediately, so no pending check runs in between.
           if (e.type.kind !== "promise") throw new InternalCompilerError("emitter bug: promise.reject type");
-          const reason = E.emitExpr(e.args[0]!);
+          const reason = emitter.emitExpr(e.args[0]!);
           const t = e.args[0]!.type;
           if (t.kind !== "object" && t.kind !== "dyn") {
             throw new InternalCompilerError("emitter bug: promise.reject reason");
           }
-          const p = E.newTemp(e.type, `scr_promise_new()`);
-          E.moveTemp(reason); // the cell takes ownership
+          const p = emitter.newTemp(e.type, `scr_promise_new()`);
+          emitter.moveTemp(reason); // the cell takes ownership
           const rc = vAdapters(t);
           if (t.kind === "dyn") {
             // The thrown-dyn representation (REF + dyn adapters): catch
             // bindings and the unhandled dispatch see the dyn value
             // itself — identity preserved.
-            E.line(
-              `scr_throw_ref(${reason.name}, &${rc.retain}, &${rc.release}, NULL);${E.srcComment(e.loc)}`,
+            emitter.line(
+              `scr_throw_ref(${reason.name}, &${rc.retain}, &${rc.release}, NULL);${emitter.srcComment(e.loc)}`,
             );
           } else {
-            E.line(
-              `scr_throw_obj(${reason.name}, &${rc.retain}, &${rc.release}, ${E.traceArgC(t)});${E.srcComment(e.loc)}`,
+            emitter.line(
+              `scr_throw_obj(${reason.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(t)});${emitter.srcComment(e.loc)}`,
             );
           }
-          E.line(`scr_promise_reject_pending(${p.name});`);
+          emitter.line(`scr_promise_reject_pending(${p.name});`);
           return p;
         }
         if (e.name === "promise.resolve") {
@@ -2991,30 +2991,30 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // async-return trampoline's fulfill exactly. No waiters exist
           // yet, so the wake is a no-op.
           if (e.type.kind !== "promise") throw new InternalCompilerError("emitter bug: promise.resolve type");
-          const p = E.newTemp(e.type, `scr_promise_new()`);
+          const p = emitter.newTemp(e.type, `scr_promise_new()`);
           if (e.args.length === 0) {
-            E.line(`scr_promise_fulfill_void(${p.name});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_promise_fulfill_void(${p.name});${emitter.srcComment(e.loc)}`);
             return p;
           }
-          const v = E.emitExpr(e.args[0]!);
+          const v = emitter.emitExpr(e.args[0]!);
           const t = e.args[0]!.type;
           switch (t.kind) {
             case "f64":
             case "date":
-              E.line(`scr_promise_fulfill_f64(${p.name}, ${v.name});${E.srcComment(e.loc)}`);
+              emitter.line(`scr_promise_fulfill_f64(${p.name}, ${v.name});${emitter.srcComment(e.loc)}`);
               break;
             case "bool":
-              E.line(`scr_promise_fulfill_bool(${p.name}, ${v.name});${E.srcComment(e.loc)}`);
+              emitter.line(`scr_promise_fulfill_bool(${p.name}, ${v.name});${emitter.srcComment(e.loc)}`);
               break;
             case "string":
-              E.moveTemp(v);
-              E.line(`scr_promise_fulfill_str(${p.name}, ${v.name});${E.srcComment(e.loc)}`);
+              emitter.moveTemp(v);
+              emitter.line(`scr_promise_fulfill_str(${p.name}, ${v.name});${emitter.srcComment(e.loc)}`);
               break;
             default: {
               const rc = vAdapters(t);
-              E.moveTemp(v);
-              E.line(
-                `scr_promise_fulfill_ref(${p.name}, ${v.name}, ${rc.retain}, ${rc.release}, ${E.traceArgC(t)});${E.srcComment(e.loc)}`,
+              emitter.moveTemp(v);
+              emitter.line(
+                `scr_promise_fulfill_ref(${p.name}, ${v.name}, ${rc.retain}, ${rc.release}, ${emitter.traceArgC(t)});${emitter.srcComment(e.loc)}`,
               );
             }
           }
@@ -3027,37 +3027,37 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // entry's payload to the result's inner type; entry temps stay
           // frame-owned (race_add retains what it keeps).
           if (e.type.kind !== "promise") throw new InternalCompilerError("emitter bug: promise.race type");
-          const result = E.newTemp(e.type, `scr_promise_new()`);
+          const result = emitter.newTemp(e.type, `scr_promise_new()`);
           for (const entry of e.args) {
             if (entry.type.kind !== "promise") throw new InternalCompilerError("emitter bug: promise.race entry");
-            const p = E.emitExpr(entry);
-            const adapter = E.raceAdapterFor(entry.type.inner, e.type.inner);
-            E.line(`scr_promise_race_add(${result.name}, ${p.name}, &${adapter});${E.srcComment(e.loc)}`);
+            const p = emitter.emitExpr(entry);
+            const adapter = emitter.raceAdapterFor(entry.type.inner, e.type.inner);
+            emitter.line(`scr_promise_race_add(${result.name}, ${p.name}, &${adapter});${emitter.srcComment(e.loc)}`);
           }
           return result;
         }
         // console.log and its stderr twin console.error share the ScrLogArg
         // packing; only the runtime entry point (stream) differs.
-        const args = e.args.map((a) => E.emitExpr(a));
-        const arr = `sc_t${E.tempCounter++}`;
-        E.line(`ScrLogArg ${arr}[${Math.max(args.length, 1)}];`);
+        const args = e.args.map((a) => emitter.emitExpr(a));
+        const arr = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`ScrLogArg ${arr}[${Math.max(args.length, 1)}];`);
         args.forEach((a, i) => {
           switch (a.type.kind) {
             case "f64":
-              E.line(`${arr}[${i}].tag = SCR_ARG_F64; ${arr}[${i}].v.f = ${a.name};`);
+              emitter.line(`${arr}[${i}].tag = SCR_ARG_F64; ${arr}[${i}].v.f = ${a.name};`);
               break;
             case "string":
-              E.line(`${arr}[${i}].tag = SCR_ARG_STR; ${arr}[${i}].v.s = ${a.name};`);
+              emitter.line(`${arr}[${i}].tag = SCR_ARG_STR; ${arr}[${i}].v.s = ${a.name};`);
               break;
             case "bool":
-              E.line(`${arr}[${i}].tag = SCR_ARG_BOOL; ${arr}[${i}].v.b = ${a.name};`);
+              emitter.line(`${arr}[${i}].tag = SCR_ARG_BOOL; ${arr}[${i}].v.b = ${a.name};`);
               break;
             default:
               throw new InternalCompilerError(`${e.name} arg of type ${a.type.kind}`);
           }
         });
         const consoleFn = e.name === "console.error" ? "scr_console_error" : "scr_console_log";
-        E.line(`${consoleFn}(${args.length}, ${arr});${E.srcComment(e.loc)}`);
+        emitter.line(`${consoleFn}(${args.length}, ${arr});${emitter.srcComment(e.loc)}`);
         return { name: "", type: e.type };
       }
       case "libCall": {
@@ -3067,22 +3067,22 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // JS identity — everything else fresh). Throwing members (the
         // may-throw seed set) get the standard pending check, emitted after
         // a result temp joins its frame so an unwind releases it.
-        const args = e.args.map((a) => E.emitExpr(a));
+        const args = e.args.map((a) => emitter.emitExpr(a));
         const arg = (i: number) => args[i]!.name;
         const finish = (call: string): Temp => {
           if (e.type.kind === "void") {
-            E.line(`${call};${E.srcComment(e.loc)}`);
-            if (MAY_THROW_LIB_FNS.has(e.fn)) E.emitPendingCheck();
+            emitter.line(`${call};${emitter.srcComment(e.loc)}`);
+            if (MAY_THROW_LIB_FNS.has(e.fn)) emitter.emitPendingCheck();
             return { name: "", type: e.type };
           }
-          const t = E.newTemp(e.type, call);
-          if (MAY_THROW_LIB_FNS.has(e.fn)) E.emitPendingCheck();
+          const t = emitter.newTemp(e.type, call);
+          if (MAY_THROW_LIB_FNS.has(e.fn)) emitter.emitPendingCheck();
           return t;
         };
         const fn = e.fn;
         switch (fn) {
           case "fetch.start":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_fetch_static(${arg(0)}, ${arg(1)})`);
           case "fetch.responseNew":
             return finish(`scr_fetch_response_new(${arg(0)}, ${arg(1)})`);
@@ -3097,33 +3097,33 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               fn === "fetch.responseText"
                 ? "scr_fetch_response_text"
                 : "scr_fetch_response_bytes";
-            const source = E.newTemp(
+            const source = emitter.newTemp(
               { kind: "promise", inner: DYN },
               `${runtimeFn}(${arg(0)})`,
             );
-            const result = E.newTemp(e.type, `scr_promise_new()`);
-            const adapter = dynPromiseAdapter(E, e.type.inner);
-            E.line(
-              `scr_promise_race_add(${result.name}, ${source.name}, &${adapter});${E.srcComment(e.loc)}`,
+            const result = emitter.newTemp(e.type, `scr_promise_new()`);
+            const adapter = dynPromiseAdapter(emitter, e.type.inner);
+            emitter.line(
+              `scr_promise_race_add(${result.name}, ${source.name}, &${adapter});${emitter.srcComment(e.loc)}`,
             );
             return result;
           }
           case "fetch.abortControllerNew":
             return finish(`scr_fetch_abort_controller_new()`);
           case "fetch.abortTimeout":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_fetch_abort_timeout(${arg(0)})`);
           case "fetch.abortNow":
             return finish(`scr_fetch_abort_now(${arg(0)})`);
           case "fetch.abortAny":
             return finish(`scr_fetch_abort_any(${arg(0)})`);
           case "fetch.streamNew":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_fetch_stream_new(${arg(0)})`);
           case "fetch.streamFrom":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             if (e.args[0]!.type.kind === "array") {
-              const adapter = streamFromArrayAdapter(E, e.args[0]!.type);
+              const adapter = streamFromArrayAdapter(emitter, e.args[0]!.type);
               return finish(
                 `scr_fetch_stream_from_array(${arg(0)}, &${adapter})`,
               );
@@ -3139,14 +3139,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
               throw new InternalCompilerError("emitter bug: fetch.readerRead result");
             }
-            const source = E.newTemp(
+            const source = emitter.newTemp(
               { kind: "promise", inner: DYN },
               `scr_fetch_reader_read(${arg(0)})`,
             );
-            const result = E.newTemp(e.type, `scr_promise_new()`);
-            const adapter = dynPromiseAdapter(E, e.type.inner);
-            E.line(
-              `scr_promise_race_add(${result.name}, ${source.name}, &${adapter});${E.srcComment(e.loc)}`,
+            const result = emitter.newTemp(e.type, `scr_promise_new()`);
+            const adapter = dynPromiseAdapter(emitter, e.type.inner);
+            emitter.line(
+              `scr_promise_race_add(${result.name}, ${source.name}, &${adapter});${emitter.srcComment(e.loc)}`,
             );
             return result;
           }
@@ -3252,23 +3252,23 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               throw new InternalCompilerError("emitter bug: readdirTypesSync result is not a record array");
             }
             const recT = e.type.elem;
-            const snap = `sc_t${E.tempCounter++}`;
-            E.line(`ScrScandir *${snap} = scr_fs_scandir(${arg(0)});${E.srcComment(e.loc)}`);
-            E.emitPendingCheck();
-            const out = E.newTemp(e.type, E.arrNewC(recT, `scr_fs_scandir_count(${snap})`));
-            const i = `sc_t${E.tempCounter++}`;
-            const n = `sc_t${E.tempCounter++}`;
-            E.line(`for (size_t ${i} = 0, ${n} = scr_fs_scandir_count(${snap}); ${i} < ${n}; ${i}++) {`);
-            E.indent++;
-            const row = `sc_t${E.tempCounter++}`;
-            E.line(`${mangleRecordStruct(recT.shapeId)} *${row} = ${mangleRecordNew(recT.shapeId)}();`);
-            E.line(`${row}->${mangleField("%dtype")} = scr_fs_scandir_type(${snap}, ${i});`);
-            E.line(`${row}->${mangleField("name")} = scr_fs_scandir_name(${snap}, ${i});`);
-            E.line(`${row}->${mangleField("parentPath")} = ${retainCallC({ kind: "string" }, arg(0))};`);
-            E.line(`scr_arr_push_ref(${out.name}, ${row});`); // push takes ownership of the row
-            E.indent--;
-            E.line(`}`);
-            E.line(`scr_fs_scandir_free(${snap});`);
+            const snap = `sc_t${emitter.tempCounter++}`;
+            emitter.line(`ScrScandir *${snap} = scr_fs_scandir(${arg(0)});${emitter.srcComment(e.loc)}`);
+            emitter.emitPendingCheck();
+            const out = emitter.newTemp(e.type, emitter.arrNewC(recT, `scr_fs_scandir_count(${snap})`));
+            const i = `sc_t${emitter.tempCounter++}`;
+            const n = `sc_t${emitter.tempCounter++}`;
+            emitter.line(`for (size_t ${i} = 0, ${n} = scr_fs_scandir_count(${snap}); ${i} < ${n}; ${i}++) {`);
+            emitter.indent++;
+            const row = `sc_t${emitter.tempCounter++}`;
+            emitter.line(`${mangleRecordStruct(recT.shapeId)} *${row} = ${mangleRecordNew(recT.shapeId)}();`);
+            emitter.line(`${row}->${mangleField("%dtype")} = scr_fs_scandir_type(${snap}, ${i});`);
+            emitter.line(`${row}->${mangleField("name")} = scr_fs_scandir_name(${snap}, ${i});`);
+            emitter.line(`${row}->${mangleField("parentPath")} = ${retainCallC({ kind: "string" }, arg(0))};`);
+            emitter.line(`scr_arr_push_ref(${out.name}, ${row});`); // push takes ownership of the row
+            emitter.indent--;
+            emitter.line(`}`);
+            emitter.line(`scr_fs_scandir_free(${snap});`);
             return out;
           }
           // node:path (scr_path.c): pure string algorithms, POSIX rules.
@@ -3340,102 +3340,102 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // fresh Info[] wrapped into the `Info[] | undefined` union arm
             // the overflow map stores).
             if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: networkInterfaces result is not a record");
-            const dictShape = E.recordsById.get(e.type.shapeId);
+            const dictShape = emitter.recordsById.get(e.type.shapeId);
             const iv = dictShape?.indexValue;
             if (!dictShape || iv?.kind !== "union") throw new InternalCompilerError("emitter bug: networkInterfaces dict shape");
-            const ivDef = E.unionsById.get(iv.unionId);
+            const ivDef = emitter.unionsById.get(iv.unionId);
             const arrTag = ivDef?.arms.findIndex((a) => a.kind === "array") ?? -1;
             const arrT = ivDef?.arms[arrTag];
             if (arrT?.kind !== "array" || arrT.elem.kind !== "union") throw new InternalCompilerError("emitter bug: networkInterfaces bucket type");
             const infoT = arrT.elem;
-            const infoDef = E.unionsById.get(infoT.unionId);
+            const infoDef = emitter.unionsById.get(infoT.unionId);
             if (!infoDef || infoDef.arms.length !== 2) throw new InternalCompilerError("emitter bug: networkInterfaces Info union");
             const tag6 = infoDef.arms.findIndex(
-              (a) => a.kind === "record" && E.recordsById.get(a.shapeId)?.fields.find((f) => f.name === "scopeid")?.type.kind === "f64",
+              (a) => a.kind === "record" && emitter.recordsById.get(a.shapeId)?.fields.find((f) => f.name === "scopeid")?.type.kind === "f64",
             );
             const tag4 = 1 - tag6;
             const armShape = (tag: number): { t: IrType & { kind: "record" }; shape: IrRecordShape } => {
               const t = infoDef.arms[tag];
               if (t?.kind !== "record") throw new InternalCompilerError("emitter bug: networkInterfaces Info arm");
-              const shape = E.recordsById.get(t.shapeId);
+              const shape = emitter.recordsById.get(t.shapeId);
               if (!shape) throw new InternalCompilerError("emitter bug: networkInterfaces Info shape");
               return { t, shape };
             };
-            const dict = E.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
-            const snap = `sc_t${E.tempCounter++}`;
-            const i = `sc_t${E.tempCounter++}`;
-            const n = `sc_t${E.tempCounter++}`;
-            E.line(`ScrIfaddrs *${snap} = scr_os_ifaddrs();${E.srcComment(e.loc)}`);
-            E.line(`for (size_t ${i} = 0, ${n} = scr_os_ifaddrs_count(${snap}); ${i} < ${n}; ${i}++) {`);
-            E.indent++;
-            const row = `sc_t${E.tempCounter++}`;
-            E.line(`ScrUnion *${row};`);
+            const dict = emitter.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
+            const snap = `sc_t${emitter.tempCounter++}`;
+            const i = `sc_t${emitter.tempCounter++}`;
+            const n = `sc_t${emitter.tempCounter++}`;
+            emitter.line(`ScrIfaddrs *${snap} = scr_os_ifaddrs();${emitter.srcComment(e.loc)}`);
+            emitter.line(`for (size_t ${i} = 0, ${n} = scr_os_ifaddrs_count(${snap}); ${i} < ${n}; ${i}++) {`);
+            emitter.indent++;
+            const row = `sc_t${emitter.tempCounter++}`;
+            emitter.line(`ScrUnion *${row};`);
             const emitRow = (tag: number, v6: boolean): void => {
               const { t, shape } = armShape(tag);
               const cidrT = shape.fields.find((f) => f.name === "cidr")?.type;
-              const cidrDef = cidrT?.kind === "union" ? E.unionsById.get(cidrT.unionId) : undefined;
+              const cidrDef = cidrT?.kind === "union" ? emitter.unionsById.get(cidrT.unionId) : undefined;
               if (cidrT?.kind !== "union" || !cidrDef) throw new InternalCompilerError("emitter bug: networkInterfaces cidr type");
               const cidrStrTag = cidrDef.arms.findIndex((a) => a.kind === "string");
               const cidrNullTag = cidrDef.arms.findIndex((a) => a.kind === "nullT");
-              const r = `sc_t${E.tempCounter++}`;
+              const r = `sc_t${emitter.tempCounter++}`;
               const struct = mangleRecordStruct(t.shapeId);
-              E.line(`${struct} *${r} = ${mangleRecordNew(t.shapeId)}();`);
-              E.line(`${r}->${mangleField("address")} = scr_os_ifaddrs_address(${snap}, ${i});`);
-              E.line(`${r}->${mangleField("netmask")} = scr_os_ifaddrs_netmask(${snap}, ${i});`);
-              E.line(`${r}->${mangleField("family")} = scr_os_ifaddrs_family(${snap}, ${i});`);
-              E.line(`${r}->${mangleField("mac")} = scr_os_ifaddrs_mac(${snap}, ${i});`);
-              E.line(`${r}->${mangleField("internal")} = scr_os_ifaddrs_internal(${snap}, ${i});`);
-              const cs = `sc_t${E.tempCounter++}`;
-              E.line(`ScrStr *${cs} = scr_os_ifaddrs_cidr(${snap}, ${i});`);
-              E.line(
-                `${r}->${mangleField("cidr")} = ${cs} ? scr_union_new_ref(${cidrStrTag}, ${cs}, &scr_str_retain_v, &scr_str_release_v, NULL) : scr_union_retain(${E.unitInstanceRef(cidrT.unionId, cidrNullTag)});`,
+              emitter.line(`${struct} *${r} = ${mangleRecordNew(t.shapeId)}();`);
+              emitter.line(`${r}->${mangleField("address")} = scr_os_ifaddrs_address(${snap}, ${i});`);
+              emitter.line(`${r}->${mangleField("netmask")} = scr_os_ifaddrs_netmask(${snap}, ${i});`);
+              emitter.line(`${r}->${mangleField("family")} = scr_os_ifaddrs_family(${snap}, ${i});`);
+              emitter.line(`${r}->${mangleField("mac")} = scr_os_ifaddrs_mac(${snap}, ${i});`);
+              emitter.line(`${r}->${mangleField("internal")} = scr_os_ifaddrs_internal(${snap}, ${i});`);
+              const cs = `sc_t${emitter.tempCounter++}`;
+              emitter.line(`ScrStr *${cs} = scr_os_ifaddrs_cidr(${snap}, ${i});`);
+              emitter.line(
+                `${r}->${mangleField("cidr")} = ${cs} ? scr_union_new_ref(${cidrStrTag}, ${cs}, &scr_str_retain_v, &scr_str_release_v, NULL) : scr_union_retain(${emitter.unitInstanceRef(cidrT.unionId, cidrNullTag)});`,
               );
               if (v6) {
-                E.line(`${r}->${mangleField("scopeid")} = scr_os_ifaddrs_scopeid(${snap}, ${i});`);
+                emitter.line(`${r}->${mangleField("scopeid")} = scr_os_ifaddrs_scopeid(${snap}, ${i});`);
               } else {
                 const st = shape.fields.find((f) => f.name === "scopeid")?.type;
                 if (st?.kind !== "union") throw new InternalCompilerError("emitter bug: networkInterfaces IPv4 scopeid type");
-                const undefTag = undefinedArmTag(st, E.unionsById);
-                E.line(`${r}->${mangleField("scopeid")} = scr_union_retain(${E.unitInstanceRef(st.unionId, undefTag)});`);
+                const undefTag = undefinedArmTag(st, emitter.unionsById);
+                emitter.line(`${r}->${mangleField("scopeid")} = scr_union_retain(${emitter.unitInstanceRef(st.unionId, undefTag)});`);
               }
               const rc = vAdapters(t);
-              E.line(`${row} = scr_union_new_ref(${tag}, ${r}, &${rc.retain}, &${rc.release}, ${E.traceArgC(t)});`);
+              emitter.line(`${row} = scr_union_new_ref(${tag}, ${r}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(t)});`);
             };
-            E.line(`if (scr_os_ifaddrs_ipv6(${snap}, ${i})) {`);
-            E.indent++;
+            emitter.line(`if (scr_os_ifaddrs_ipv6(${snap}, ${i})) {`);
+            emitter.indent++;
             emitRow(tag6, true);
-            E.indent--;
-            E.line(`} else {`);
-            E.indent++;
+            emitter.indent--;
+            emitter.line(`} else {`);
+            emitter.indent++;
             emitRow(tag4, false);
-            E.indent--;
-            E.line(`}`);
-            const name = `sc_t${E.tempCounter++}`;
-            const cell = `sc_t${E.tempCounter++}`;
-            const rows = `sc_t${E.tempCounter++}`;
-            E.line(`ScrStr *${name} = scr_os_ifaddrs_name(${snap}, ${i});`);
-            E.line(`ScrUnion *${cell} = scr_map_get_str_ref(${dict.name}->${OVERFLOW_MEMBER}, ${name});`);
-            E.line(`ScrArr *${rows};`);
-            E.line(`if (${cell}) {`);
-            E.indent++;
-            E.line(`${rows} = scr_arr_retain((ScrArr *)scr_union_peek(${cell}));`);
-            E.line(`scr_union_release(${cell});`);
-            E.indent--;
-            E.line(`} else {`);
-            E.indent++;
-            E.line(`${rows} = ${E.arrNewC(infoT, 1)};`);
+            emitter.indent--;
+            emitter.line(`}`);
+            const name = `sc_t${emitter.tempCounter++}`;
+            const cell = `sc_t${emitter.tempCounter++}`;
+            const rows = `sc_t${emitter.tempCounter++}`;
+            emitter.line(`ScrStr *${name} = scr_os_ifaddrs_name(${snap}, ${i});`);
+            emitter.line(`ScrUnion *${cell} = scr_map_get_str_ref(${dict.name}->${OVERFLOW_MEMBER}, ${name});`);
+            emitter.line(`ScrArr *${rows};`);
+            emitter.line(`if (${cell}) {`);
+            emitter.indent++;
+            emitter.line(`${rows} = scr_arr_retain((ScrArr *)scr_union_peek(${cell}));`);
+            emitter.line(`scr_union_release(${cell});`);
+            emitter.indent--;
+            emitter.line(`} else {`);
+            emitter.indent++;
+            emitter.line(`${rows} = ${emitter.arrNewC(infoT, 1)};`);
             const arrRc = vAdapters(arrT);
-            E.line(
-              `scr_map_set_str_ref(${dict.name}->${OVERFLOW_MEMBER}, ${name}, scr_union_new_ref(${arrTag}, scr_arr_retain(${rows}), &${arrRc.retain}, &${arrRc.release}, ${E.traceArgC(arrT)}));`,
+            emitter.line(
+              `scr_map_set_str_ref(${dict.name}->${OVERFLOW_MEMBER}, ${name}, scr_union_new_ref(${arrTag}, scr_arr_retain(${rows}), &${arrRc.retain}, &${arrRc.release}, ${emitter.traceArgC(arrT)}));`,
             );
-            E.indent--;
-            E.line(`}`);
-            E.line(`scr_arr_push_ref(${rows}, ${row});`); // push takes ownership of the row
-            E.line(`scr_arr_release(${rows});`);
-            E.line(`scr_str_release(${name});`);
-            E.indent--;
-            E.line(`}`);
-            E.line(`scr_os_ifaddrs_free(${snap});`);
+            emitter.indent--;
+            emitter.line(`}`);
+            emitter.line(`scr_arr_push_ref(${rows}, ${row});`); // push takes ownership of the row
+            emitter.line(`scr_arr_release(${rows});`);
+            emitter.line(`scr_str_release(${name});`);
+            emitter.indent--;
+            emitter.line(`}`);
+            emitter.line(`scr_os_ifaddrs_free(${snap});`);
             return dict;
           }
           // Math.max/min over one spread number[] — the JS fold in C
@@ -3538,18 +3538,18 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") {
               throw new InternalCompilerError(`emitter bug: ${e.fn} result is not a union`);
             }
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const undefTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError(`emitter bug: ${e.fn} union lacks its arms`);
             }
             const get = e.fn === "sym.desc" ? "scr_sym_desc" : "scr_sym_key_for";
-            const raw = E.newTemp(STRING, `${get}(${arg(0)})`);
-            E.moveTemp(raw); // ownership passes into the union arm below
+            const raw = emitter.newTemp(STRING, `${get}(${arg(0)})`);
+            emitter.moveTemp(raw); // ownership passes into the union arm below
             const present = `scr_union_new_ref(${strTag}, ${raw.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            return E.newTemp(e.type, `${raw.name} != NULL ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${raw.name} != NULL ? ${present} : ${absent}`);
           }
           case "url.new":
             return finish(`scr_url_new(${arg(0)})`);
@@ -3598,17 +3598,17 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") {
               throw new InternalCompilerError("emitter bug: sp.get result is not a union");
             }
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (strTag < 0 || nullTag < 0) {
               throw new InternalCompilerError("emitter bug: sp.get union lacks its arms");
             }
-            const raw = E.newTemp(STRING, `scr_sp_get(${arg(0)}, ${arg(1)})`);
-            E.moveTemp(raw); // ownership passes into the union arm below
+            const raw = emitter.newTemp(STRING, `scr_sp_get(${arg(0)}, ${arg(1)})`);
+            emitter.moveTemp(raw); // ownership passes into the union arm below
             const present = `scr_union_new_ref(${strTag}, ${raw.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, nullTag);
-            return E.newTemp(e.type, `${raw.name} != NULL ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, nullTag);
+            return emitter.newTemp(e.type, `${raw.name} != NULL ? ${present} : ${absent}`);
           }
           case "sp.getAll":
             return finish(`scr_sp_get_all(${arg(0)}, ${arg(1)})`);
@@ -3653,16 +3653,16 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // lookups here only guard emitter bugs. Args: qs, sep, eq,
             // maxKeys.
             if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: qs.parse result is not a record");
-            const dictShape = E.recordsById.get(e.type.shapeId);
+            const dictShape = emitter.recordsById.get(e.type.shapeId);
             const iv = dictShape?.indexValue;
             if (!dictShape || iv?.kind !== "union") throw new InternalCompilerError("emitter bug: qs.parse dict shape");
-            const ivDef = E.unionsById.get(iv.unionId);
+            const ivDef = emitter.unionsById.get(iv.unionId);
             const strTag = ivDef?.arms.findIndex((a) => a.kind === "string") ?? -1;
             const arrTag = ivDef?.arms.findIndex((a) => a.kind === "array") ?? -1;
             if (strTag < 0 || arrTag < 0) throw new InternalCompilerError("emitter bug: qs.parse index union lacks its arms");
-            const dict = E.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
-            E.line(
-              `scr_qs_parse_into(${dict.name}->${OVERFLOW_MEMBER}, ${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${strTag}, ${arrTag});${E.srcComment(e.loc)}`,
+            const dict = emitter.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
+            emitter.line(
+              `scr_qs_parse_into(${dict.name}->${OVERFLOW_MEMBER}, ${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${strTag}, ${arrTag});${emitter.srcComment(e.loc)}`,
             );
             return dict;
           }
@@ -3688,17 +3688,17 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // Throws Node-shaped fs errors when the path won't open
             // (may-throw seed set). An open watcher holds the loop:
             // usesTimers.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_fs_watch(${arg(0)}, NULL, NULL)`);
           case "fs.watchCb": {
             // The callback MOVES into the watcher's registry; the adapter
             // is runtime-provided per listener shape (zero-param, or the
             // eventType string).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: fs.watchCb callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_watch_thunk0" : "scr_watch_thunk_event";
             return finish(`scr_fs_watch(${arg(0)}, ${cb.name}, &${adapter})`);
           }
@@ -3718,7 +3718,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "crypto.x509ValidToStr":
             return finish(`scr_crypto_x509_valid_to_str(${arg(0)})`);
           case "watcher.close":
-            E.line(`scr_watcher_close(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_watcher_close(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "fs.statSync":
             return finish(`scr_fs_stat(${arg(0)})`);
@@ -3760,7 +3760,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // Throws Node's exec errors; the +1 stdout result must join
             // the frame BEFORE the pending check (fallibleTemp) so an
             // unwind releases the NULL dummy harmlessly.
-            return E.fallibleTemp(
+            return emitter.fallibleTemp(
               e.type,
               `scr_exec_sync(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)}, ${arg(7)}, ${arg(8)}, ${arg(9)}, ${arg(10)})`,
             );
@@ -3768,7 +3768,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // The promisified-execFile core: throws Node's ASYNC exec
             // errors (the interned async helper's fiber makes them the
             // rejection); +1 spawnRes result, same fallible discipline.
-            return E.fallibleTemp(
+            return emitter.fallibleTemp(
               e.type,
               `scr_exec_capture(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)})`,
             );
@@ -3780,15 +3780,15 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") {
               throw new InternalCompilerError("emitter bug: spawnRes.status result is not a union");
             }
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (f64Tag < 0 || nullTag < 0) {
               throw new InternalCompilerError("emitter bug: spawnRes.status union lacks its arms");
             }
             const present = `scr_union_new_f64(${f64Tag}, scr_spawn_res_status(${arg(0)}))`;
-            const absent = E.unitInstanceRef(e.type.unionId, nullTag);
-            return E.newTemp(
+            const absent = emitter.unitInstanceRef(e.type.unionId, nullTag);
+            return emitter.newTemp(
               e.type,
               `scr_spawn_res_has_status(${arg(0)}) ? ${present} : ${absent}`,
             );
@@ -3804,20 +3804,20 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") {
               throw new InternalCompilerError("emitter bug: spawnRes.signal result is not a union");
             }
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (strTag < 0 || nullTag < 0) {
               throw new InternalCompilerError("emitter bug: spawnRes.signal union lacks its arms");
             }
-            const sv = E.newTemp(
+            const sv = emitter.newTemp(
               STRING,
               `scr_spawn_res_has_signal(${arg(0)}) ? scr_spawn_res_signal(${arg(0)}) : NULL`,
             );
-            E.moveTemp(sv); // moves into the box when present; NULL otherwise
+            emitter.moveTemp(sv); // moves into the box when present; NULL otherwise
             const present = `scr_union_new_ref(${strTag}, ${sv.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, nullTag);
-            return E.newTemp(e.type, `${sv.name} ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, nullTag);
+            return emitter.newTemp(e.type, `${sv.name} ? ${present} : ${absent}`);
           }
           case "spawnRes.error": {
             // The `Error | undefined` union, the envGet convention: a
@@ -3826,18 +3826,18 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") {
               throw new InternalCompilerError("emitter bug: spawnRes.error result is not a union");
             }
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const errTag = def ? def.arms.findIndex((a) => a.kind === "object" && a.className === "%Error") : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (errTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: spawnRes.error union lacks its arms");
             }
             const errT: IrType = { kind: "object", className: "%Error" };
-            const ev = E.newTemp(errT, `scr_spawn_res_error(${arg(0)})`);
-            E.moveTemp(ev); // moves into the box when present; NULL otherwise
-            const present = `scr_union_new_ref(${errTag}, ${ev.name}, &scr_error_retain_v, &scr_error_release_v, ${E.traceArgC(errT)})`;
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            return E.newTemp(e.type, `${ev.name} ? ${present} : ${absent}`);
+            const ev = emitter.newTemp(errT, `scr_spawn_res_error(${arg(0)})`);
+            emitter.moveTemp(ev); // moves into the box when present; NULL otherwise
+            const present = `scr_union_new_ref(${errTag}, ${ev.name}, &scr_error_retain_v, &scr_error_release_v, ${emitter.traceArgC(errT)})`;
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${ev.name} ? ${present} : ${absent}`);
           }
           case "child.pid":
           case "child.exitCode": {
@@ -3848,7 +3848,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") {
               throw new InternalCompilerError(`emitter bug: ${e.fn} result is not a union`);
             }
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const wantUnit = e.fn === "child.pid" ? "undefinedT" : "nullT";
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
             const unitTag = def ? def.arms.findIndex((a) => a.kind === wantUnit) : -1;
@@ -3858,8 +3858,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const has = e.fn === "child.pid" ? "scr_child_has_pid" : "scr_child_has_exit_code";
             const get = e.fn === "child.pid" ? "scr_child_pid" : "scr_child_exit_code";
             const present = `scr_union_new_f64(${f64Tag}, ${get}(${arg(0)}))`;
-            const absent = E.unitInstanceRef(e.type.unionId, unitTag);
-            return E.newTemp(e.type, `${has}(${arg(0)}) ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, unitTag);
+            return emitter.newTemp(e.type, `${has}(${arg(0)}) ? ${present} : ${absent}`);
           }
           case "child.stdout":
           case "child.stderr": {
@@ -3868,45 +3868,45 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") {
               throw new InternalCompilerError(`emitter bug: ${e.fn} result is not a union`);
             }
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const streamTag = def ? def.arms.findIndex((a) => a.kind === "childStream") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (streamTag < 0 || nullTag < 0) {
               throw new InternalCompilerError(`emitter bug: ${e.fn} union lacks its arms`);
             }
             const get = e.fn === "child.stdout" ? "scr_child_stdout" : "scr_child_stderr";
-            const raw = E.newTemp(CHILDSTREAM_T, `${get}(${arg(0)})`);
-            E.moveTemp(raw); // ownership passes into the union arm below
+            const raw = emitter.newTemp(CHILDSTREAM_T, `${get}(${arg(0)})`);
+            emitter.moveTemp(raw); // ownership passes into the union arm below
             const present = `scr_union_new_ref(${streamTag}, ${raw.name}, &scr_child_stream_retain_v, &scr_child_stream_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, nullTag);
-            return E.newTemp(e.type, `${raw.name} != NULL ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, nullTag);
+            return emitter.newTemp(e.type, `${raw.name} != NULL ? ${present} : ${absent}`);
           }
           case "stream.onData": {
             // The callback MOVES into the stream's listener registry; the
             // adapter is per callback shape — runtime-provided for the
             // zero-param and Buffer forms, emitted per union for the
             // `Buffer | string` chunk (the chunk wraps at its Buffer arm).
-            E.usesTimers = true; // a flowing stream holds the loop
+            emitter.usesTimers = true; // a flowing stream holds the loop
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: stream.onData callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const param = cbT.params[0];
             const adapter =
               param === undefined
                 ? "scr_child_stream_thunk0"
                 : param.kind === "union"
-                  ? E.childDataThunkFor(param)
+                  ? emitter.childDataThunkFor(param)
                   : "scr_child_stream_thunk_bytes";
-            E.line(
-              `scr_child_stream_on_data(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`,
+            emitter.line(
+              `scr_child_stream_on_data(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`,
             );
             return { name: "", type: e.type };
           }
           case "stream.onEnd": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_child_stream_on_end(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_child_stream_on_end(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "procStream.write":
@@ -3926,13 +3926,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // starts NOW (posix_spawnp); the loop reaps it and fires its
           // listeners. Never throws — spawn failure defers to "error".
           case "cp.spawn":
-            E.usesTimers = true; // the loop must run to reap the child
+            emitter.usesTimers = true; // the loop must run to reap the child
             return finish(`scr_spawn(${arg(0)}, ${arg(1)})`);
           case "cp.spawnOpts":
             // The options form: per-slot stdio (ignore/inherit/fd — the
             // fds dup2 into the child), detached (setsid), env
             // replacement, cwd. Same loop/reap story as cp.spawn.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(
               `scr_spawn_opts(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)}, ${arg(7)}, ${arg(8)}, ${arg(9)}, ${arg(10)})`,
             );
@@ -3944,15 +3944,15 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: child.onExit callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 0
                 ? "scr_child_exit_thunk0"
                 : cbT.params.length === 1
-                  ? E.childExitThunkFor(cbT.params[0]!)
-                  : E.childExitThunkFor2(cbT.params[0]!, cbT.params[1]!);
-            E.line(
-              `scr_child_on_exit(${arg(0)}, ${cb.name}, &${adapter});${E.srcComment(e.loc)}`,
+                  ? emitter.childExitThunkFor(cbT.params[0]!)
+                  : emitter.childExitSignalThunkFor(cbT.params[0]!, cbT.params[1]!);
+            emitter.line(
+              `scr_child_on_exit(${arg(0)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`,
             );
             return { name: "", type: e.type };
           }
@@ -3966,27 +3966,27 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[0]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: net.createServerCb handler not a func");
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_net_conn_thunk0" : "scr_net_conn_thunk_sock";
             return finish(`scr_net_create_server(${cb.name}, &${adapter})`);
           }
           case "net.listen":
-            E.usesTimers = true; // a listening server holds the loop open
-            E.line(`scr_net_listen(${arg(0)}, ${arg(1)}, NULL);${E.srcComment(e.loc)}`);
+            emitter.usesTimers = true; // a listening server holds the loop open
+            emitter.line(`scr_net_listen(${arg(0)}, ${arg(1)}, NULL);${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.listenCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[2]!;
-            E.moveTemp(cb);
-            E.line(`scr_net_listen(${arg(0)}, ${arg(1)}, ${cb.name});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_net_listen(${arg(0)}, ${arg(1)}, ${cb.name});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.listenOpts":
-            E.usesTimers = true;
-            E.line(`scr_net_listen_opts(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, NULL);${E.srcComment(e.loc)}`);
+            emitter.usesTimers = true;
+            emitter.line(`scr_net_listen_opts(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, NULL);${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.listenOptsCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             // The callback slot may be the `(() => void) | undefined`
             // optional-binding union: unwrap to a nullable closure (the
             // createSecureServerSni pattern).
@@ -3994,22 +3994,22 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             let cbExpr: string;
             if (cbT.kind === "func") {
               const cb = args[4]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
             } else {
               if (cbT.kind !== "union") throw new InternalCompilerError("emitter bug: net.listenOptsCb callback shape");
-              const def = E.unionsById.get(cbT.unionId);
+              const def = emitter.unionsById.get(cbT.unionId);
               const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
               if (funcTag < 0) throw new InternalCompilerError("emitter bug: net.listenOptsCb union lacks its func arm");
               const u = args[4]!;
-              const t = E.newTemp(
+              const t = emitter.newTemp(
                 def!.arms[funcTag]!,
                 `${u.name}->tag == ${funcTag} ? scr_closure_retain((ScrClosure *)scr_union_peek(${u.name})) : NULL`,
               );
-              E.moveTemp(t);
+              emitter.moveTemp(t);
               cbExpr = t.name;
             }
-            E.line(`scr_net_listen_opts(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${cbExpr});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_listen_opts(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${cbExpr});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.serverPort":
@@ -4018,31 +4018,31 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // The AddressInfo record from the three runtime reads (the
             // dgram.address materialization; none of these throw).
             if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: net.serverAddress result is not a record");
-            const ip = E.newTemp(STRING, `scr_net_server_addr_ip(${arg(0)})`);
-            const rec = E.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
-            E.moveTemp(ip);
-            E.line(`${rec.name}->${mangleField("address")} = ${ip.name};`);
-            E.line(`${rec.name}->${mangleField("family")} = scr_net_server_addr_family(${arg(0)});`);
-            E.line(`${rec.name}->${mangleField("port")} = scr_net_server_port(${arg(0)});`);
+            const ip = emitter.newTemp(STRING, `scr_net_server_addr_ip(${arg(0)})`);
+            const rec = emitter.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
+            emitter.moveTemp(ip);
+            emitter.line(`${rec.name}->${mangleField("address")} = ${ip.name};`);
+            emitter.line(`${rec.name}->${mangleField("family")} = scr_net_server_addr_family(${arg(0)});`);
+            emitter.line(`${rec.name}->${mangleField("port")} = scr_net_server_port(${arg(0)});`);
             return rec;
           }
           case "net.serverClose":
-            E.line(`scr_net_server_close(${arg(0)}, NULL);${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_server_close(${arg(0)}, NULL);${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.serverCloseCb": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_net_server_close(${arg(0)}, ${cb.name});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_net_server_close(${arg(0)}, ${cb.name});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.serverCloseBind": {
             // The bound REAL close as a value: an emitted adapter behind
             // a fresh closure whose one env slot holds the +1 server.
             if (e.type.kind !== "func") throw new InternalCompilerError("emitter bug: net.serverCloseBind result not a func");
-            const fnSym = E.closeBindThunkFor(e.type.params[0]!, e.type.ret.kind === "netServer");
-            const bound = E.newTemp(e.type, `scr_closure_new((void *)&${fnSym}, 1)`);
-            E.line(`${bound.name}->caps[0] = scr_box_new_obj(&scr_net_server_retain_v, &scr_net_server_release_v, NULL);`);
-            E.line(`scr_box_set_ref(${bound.name}->caps[0], scr_net_server_retain(${arg(0)}));`);
+            const fnSym = emitter.closeBindThunkFor(e.type.params[0]!, e.type.ret.kind === "netServer");
+            const bound = emitter.newTemp(e.type, `scr_closure_new((void *)&${fnSym}, 1)`);
+            emitter.line(`${bound.name}->caps[0] = scr_box_new_obj(&scr_net_server_retain_v, &scr_net_server_release_v, NULL);`);
+            emitter.line(`scr_box_set_ref(${bound.name}->caps[0], scr_net_server_retain(${arg(0)}));`);
             return bound;
           }
           case "net.serverSetCloseOverride": {
@@ -4051,14 +4051,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // callback union — tags are program data).
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: close override not a func");
-            const wrapSym = E.closeOverrideWrapFor(cbT.params[0]!, cbT.ret.kind === "netServer");
+            const wrapSym = emitter.closeOverrideWrapFor(cbT.params[0]!, cbT.ret.kind === "netServer");
             const cb = args[1]!;
-            E.moveTemp(cb); // ownership moves into the wrapper's env box
-            const wrap = E.newTemp(e.args[1]!.type, `scr_closure_new((void *)&${wrapSym}, 1)`);
-            E.line(`${wrap.name}->caps[0] = scr_box_new(SCR_BOX_FUNC);`);
-            E.line(`scr_box_set_ref(${wrap.name}->caps[0], ${cb.name});`);
-            E.moveTemp(wrap); // and the wrapper moves into the server's slot
-            E.line(`scr_net_server_set_close_override(${arg(0)}, ${wrap.name});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb); // ownership moves into the wrapper's env box
+            const wrap = emitter.newTemp(e.args[1]!.type, `scr_closure_new((void *)&${wrapSym}, 1)`);
+            emitter.line(`${wrap.name}->caps[0] = scr_box_new(SCR_BOX_FUNC);`);
+            emitter.line(`scr_box_set_ref(${wrap.name}->caps[0], ${cb.name});`);
+            emitter.moveTemp(wrap); // and the wrapper moves into the server's slot
+            emitter.line(`scr_net_server_set_close_override(${arg(0)}, ${wrap.name});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.serverOnError":
@@ -4067,16 +4067,16 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} callback not a func`);
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
             const fn = e.fn === "net.serverOnError" ? "scr_net_server_on_error" : "scr_net_sock_on_error";
-            E.line(`${fn}(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`${fn}(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.serverOnClose": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_net_server_on_close(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_net_server_on_close(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.serverOnConnection":
@@ -4084,21 +4084,21 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} callback not a func`);
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_net_conn_thunk0" : "scr_net_conn_thunk_sock";
             const entry = e.fn === "net.serverOnConnection"
               ? "scr_net_server_on_connection"
               : "scr_net_server_on_secure_connection";
-            E.line(`${entry}(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`${entry}(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.connect":
-            E.usesTimers = true; // a connecting/open socket holds the loop open
+            emitter.usesTimers = true; // a connecting/open socket holds the loop open
             return finish(`scr_net_connect(${arg(0)}, ${arg(1)}, NULL)`);
           case "net.connectAttempt":
             // The validated autoSelectFamilyAttemptTimeout form: Node's
             // range ladder runs first, the dial follows.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_net_connect_attempt(${arg(0)}, ${arg(1)}, ${arg(2)})`);
           case "net.connectOptsChk":
             // The runtime option-bag ladder (always throws — a validation
@@ -4107,9 +4107,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               `(scr_net_connect_opts_chk(${arg(0)}, ${arg(1)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
             );
           case "net.connectCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[2]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_net_connect(${arg(0)}, ${arg(1)}, ${cb.name})`);
           }
           case "net.connectLookup": {
@@ -4118,39 +4118,39 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // answer closure's fn is the emitted per-shape thunk (its
             // union tag and record field are program data — the SNI
             // pattern). The lookup moves in.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const lookupT = e.args[2]!.type;
             if (lookupT.kind !== "func" || lookupT.params[2]?.kind !== "func") {
               throw new InternalCompilerError("emitter bug: net.connectLookup resolver shape (frontend must fence)");
             }
-            const thunk = E.netLookupAnswerThunkFor(lookupT.params[2]);
+            const thunk = emitter.netLookupAnswerThunkFor(lookupT.params[2]);
             const lookup = args[2]!;
-            E.moveTemp(lookup);
+            emitter.moveTemp(lookup);
             return finish(`scr_net_connect_lookup(${arg(0)}, ${arg(1)}, ${lookup.name}, (void *)&${thunk})`);
           }
           case "net.sockWrite":
-            E.line(`scr_net_sock_write_str(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_write_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockWriteBytes":
-            E.line(`scr_net_sock_write_bytes(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_write_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockEnd":
-            E.line(`scr_net_sock_end(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_end(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockEndStr":
-            E.line(`scr_net_sock_end_str(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_end_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockEndBytes":
-            E.line(`scr_net_sock_end_bytes(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_end_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockWriteDyn":
-            E.line(`scr_net_sock_write_dynv(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_write_dynv(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockEndDyn":
-            E.line(`scr_net_sock_end_dynv(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_end_dynv(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockDestroy":
-            E.line(`scr_net_sock_destroy(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_destroy(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockPause":
             return finish(`scr_net_sock_pause(${arg(0)})`);
@@ -4159,7 +4159,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "net.sockSetNoDelay":
             return finish(`scr_net_sock_set_nodelay(${arg(0)}, ${arg(1)})`);
           case "net.sockDestroySoon":
-            E.line(`scr_net_sock_destroy_soon(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_destroy_soon(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockBytesWritten":
             return finish(`scr_net_sock_bytes_written(${arg(0)})`);
@@ -4167,35 +4167,35 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return finish(`scr_net_sock_readable(${arg(0)})`);
           case "net.sockOnFinish": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_net_sock_on_finish(${arg(0)}, ${cb.name});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_net_sock_on_finish(${arg(0)}, ${cb.name});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.sockPipe":
-            E.line(`scr_net_sock_pipe(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_pipe(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockOnData": {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: net.sockOnData callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 0 ? "scr_net_data_thunk0"
               : cbT.params[0]!.kind === "dyn" ? "scr_net_data_thunk_dyn"
               : cbT.params[0]!.kind === "string" ? "scr_net_data_thunk_str"
               : "scr_net_data_thunk_bytes";
-            E.line(`scr_net_sock_on_data(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_on_data(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.sockOnEnd":
           case "net.sockOnClose":
           case "net.sockOnConnect": {
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const fn = e.fn === "net.sockOnEnd" ? "scr_net_sock_on_end"
               : e.fn === "net.sockOnClose" ? "scr_net_sock_on_close"
               : "scr_net_sock_on_connect";
-            E.line(`${fn}(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`${fn}(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           // node:dgram + node:dns (scr_dgram.c + the loop's dgram hook —
@@ -4205,31 +4205,31 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "dgram.createSocket":
             return finish(`scr_dgram_create(${arg(0)})`);
           case "dgram.bind":
-            E.usesTimers = true; // a bound socket holds the loop open
+            emitter.usesTimers = true; // a bound socket holds the loop open
             return finish(`scr_dgram_bind(${arg(0)}, ${arg(1)}, ${arg(2)}, NULL)`);
           case "dgram.bindCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[3]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_dgram_bind(${arg(0)}, ${arg(1)}, ${arg(2)}, ${cb.name})`);
           }
           case "dgram.connect":
-            E.usesTimers = true; // a connected socket holds the loop open
+            emitter.usesTimers = true; // a connected socket holds the loop open
             return finish(`scr_dgram_connect(${arg(0)}, ${arg(1)}, ${arg(2)}, NULL)`);
           case "dgram.connectCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[3]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_dgram_connect(${arg(0)}, ${arg(1)}, ${arg(2)}, ${cb.name})`);
           }
           case "dgram.sendStr":
-            E.usesTimers = true; // send implicit-binds; the socket stays open
+            emitter.usesTimers = true; // send implicit-binds; the socket stays open
             return finish(`scr_dgram_send_str(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`);
           case "dgram.sendBytes":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_dgram_send_bytes(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`);
           case "dgram.sendChk":
-            E.usesTimers = true; // a validated send implicit-binds
+            emitter.usesTimers = true; // a validated send implicit-binds
             return finish(
               `scr_dgram_send_chk(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)})`,
             );
@@ -4240,37 +4240,37 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // throw for a never-bound socket; family/port never throw
             // once it passed.
             if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: dgram.address result is not a record");
-            const ip = E.fallibleTemp(STRING, `scr_dgram_addr_ip(${arg(0)})`);
-            const rec = E.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
-            E.moveTemp(ip);
-            E.line(`${rec.name}->${mangleField("address")} = ${ip.name};`);
-            E.line(`${rec.name}->${mangleField("family")} = scr_dgram_addr_family(${arg(0)});`);
-            E.line(`${rec.name}->${mangleField("port")} = scr_dgram_addr_port(${arg(0)});`);
+            const ip = emitter.fallibleTemp(STRING, `scr_dgram_addr_ip(${arg(0)})`);
+            const rec = emitter.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
+            emitter.moveTemp(ip);
+            emitter.line(`${rec.name}->${mangleField("address")} = ${ip.name};`);
+            emitter.line(`${rec.name}->${mangleField("family")} = scr_dgram_addr_family(${arg(0)});`);
+            emitter.line(`${rec.name}->${mangleField("port")} = scr_dgram_addr_port(${arg(0)});`);
             return rec;
           }
           case "dgram.close":
             return finish(`scr_dgram_close(${arg(0)}, NULL)`);
           case "dgram.closeCb": {
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_dgram_close(${arg(0)}, ${cb.name})`);
           }
           case "dgram.unref":
-            E.line(`scr_dgram_unref(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_dgram_unref(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "dgram.ref":
-            E.line(`scr_dgram_ref(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_dgram_ref(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "dgram.onMessage": {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: dgram.onMessage callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 0 ? "scr_dgram_msg_thunk0"
               : cbT.params.length === 1 ? "scr_dgram_msg_thunk1"
-              : E.dgramMsgThunkFor(cbT.params[1]!);
-            E.line(`scr_dgram_on_message(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+              : emitter.dgramMsgThunkFor(cbT.params[1]!);
+            emitter.line(`scr_dgram_on_message(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "dgram.onError": {
@@ -4278,31 +4278,31 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: dgram.onError callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
-            E.line(`scr_dgram_on_error(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_dgram_on_error(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "dgram.onListening":
           case "dgram.onClose":
           case "dgram.onConnect": {
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const fn = e.fn === "dgram.onListening" ? "scr_dgram_on_listening"
               : e.fn === "dgram.onClose" ? "scr_dgram_on_close"
               : "scr_dgram_on_connect";
-            E.line(`${fn}(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`${fn}(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "dns.lookup": {
             // getaddrinfo runs NOW; the callback (moved in) fires at the
             // next loop turn through its per-shape adapter.
-            E.usesTimers = true; // the pending callback holds the loop open
+            emitter.usesTimers = true; // the pending callback holds the loop open
             const cbT = e.args[2]!.type;
             const cb = args[2]!;
-            E.moveTemp(cb);
-            const adapter = E.dnsLookupThunkFor(cbT);
-            E.line(`scr_dns_lookup(${arg(0)}, ${arg(1)}, ${cb.name}, &${adapter});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            const adapter = emitter.dnsLookupThunkFor(cbT);
+            emitter.line(`scr_dns_lookup(${arg(0)}, ${arg(1)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           // node:test (scr_test.c — linked only when these appear on the
@@ -4310,60 +4310,60 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // callbacks MOVE. Registrations keep the loop-run emitted
           // (usesTimers): the runner fiber drains after main returns.
           case "test.register": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[3]!;
-            E.moveTemp(cb);
-            E.line(`scr_test_register(${arg(0)}, ${arg(1)}, ${arg(2)}, ${cb.name}, ${arg(4)}, ${arg(5)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_test_register(${arg(0)}, ${arg(1)}, ${arg(2)}, ${cb.name}, ${arg(4)}, ${arg(5)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "test.registerEmpty":
-            E.usesTimers = true;
-            E.line(`scr_test_register(${arg(0)}, ${arg(1)}, ${arg(2)}, NULL, ${arg(3)}, ${arg(4)});${E.srcComment(e.loc)}`);
+            emitter.usesTimers = true;
+            emitter.line(`scr_test_register(${arg(0)}, ${arg(1)}, ${arg(2)}, NULL, ${arg(3)}, ${arg(4)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "test.suite": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[3]!;
-            E.moveTemp(cb);
-            E.line(`scr_test_suite(${arg(0)}, ${arg(1)}, ${arg(2)}, ${cb.name}, ${arg(4)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_test_suite(${arg(0)}, ${arg(1)}, ${arg(2)}, ${cb.name}, ${arg(4)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "test.hook": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_test_hook(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_test_hook(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "test.sub": {
             // Runs the subtest INLINE on the runner fiber; the settled
             // promise (+1) is the await's operand.
             const cb = args[4]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_test_sub(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${cb.name}, ${arg(5)}, ${arg(6)})`);
           }
           case "test.subEmpty":
             // Fn-less subtest: the settled promise is discarded here (the
             // lowering types it void — nothing consumes it).
-            E.line(`scr_promise_release(scr_test_sub(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, NULL, 0, ${arg(4)}));${E.srcComment(e.loc)}`);
+            emitter.line(`scr_promise_release(scr_test_sub(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, NULL, 0, ${arg(4)}));${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "test.ctxSkip":
-            E.line(`scr_test_ctx_skip(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_test_ctx_skip(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "test.ctxTodo":
-            E.line(`scr_test_ctx_todo(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_test_ctx_todo(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "test.ctxDiagnostic":
-            E.line(`scr_test_ctx_diagnostic(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_test_ctx_diagnostic(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "test.ctxName":
             return finish(`scr_test_ctx_name(${arg(0)})`);
           // node:http, the server slice (scr_http.c over scr_net.c).
           case "http.createServer": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[0]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.createServer handler not a func");
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 2 ? "scr_http_handler_thunk2"
               : cbT.params.length === 1 ? "scr_http_handler_thunk1"
@@ -4388,66 +4388,66 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // string|undefined, type-directed exactly like process.envGet:
             // the runtime answers +1 or NULL; NULL takes the undefined arm.
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqHeader result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: http.reqHeader union lacks its arms");
             }
-            const s = E.newTemp(STRING, `scr_http_req_header(${arg(0)}, ${arg(1)})`);
-            E.moveTemp(s); // moves into the box when present; NULL otherwise
+            const s = emitter.newTemp(STRING, `scr_http_req_header(${arg(0)}, ${arg(1)})`);
+            emitter.moveTemp(s); // moves into the box when present; NULL otherwise
             const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            return E.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
           }
           case "http.reqOnData": {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.reqOnData callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 0 ? "scr_net_data_thunk0"
               : cbT.params[0]!.kind === "dyn" ? "scr_net_data_thunk_dyn"
               : cbT.params[0]!.kind === "string" ? "scr_net_data_thunk_str"
               : "scr_net_data_thunk_bytes";
-            E.line(`scr_http_req_on_data(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_req_on_data(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http.reqOnEnd": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_http_req_on_end(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_http_req_on_end(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http.resSetHeader":
-            E.line(`scr_http_res_set_header(${arg(0)}, ${arg(1)}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_set_header(${arg(0)}, ${arg(1)}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resWriteHead":
-            E.line(`scr_http_res_write_head(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_write_head(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resWriteHeadN":
-            E.line(`scr_http_res_write_head_n(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_write_head_n(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resWrite":
-            E.line(`scr_http_res_write_str(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_write_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resWriteBytes":
-            E.line(`scr_http_res_write_bytes(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_write_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resEnd":
-            E.line(`scr_http_res_end(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_end(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resEndStr":
-            E.line(`scr_http_res_end_str(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_end_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resEndBytes":
-            E.line(`scr_http_res_end_bytes(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_end_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resWriteDyn":
-            E.line(`scr_http_res_write_dynv(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_write_dynv(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resEndDyn":
-            E.line(`scr_http_res_end_dynv(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_end_dynv(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resHeadersSent":
             return finish(`scr_http_res_headers_sent(${arg(0)})`);
@@ -4456,45 +4456,45 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // number | undefined, type-directed like process.columns: the
             // runtime answers a negative status for server requests.
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqStatusCode result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (f64Tag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: http.reqStatusCode union lacks its arms");
             }
-            const w = E.newTemp(F64, `scr_http_req_status(${arg(0)})`);
+            const w = emitter.newTemp(F64, `scr_http_req_status(${arg(0)})`);
             const present = `scr_union_new_f64(${f64Tag}, ${w.name})`;
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            return E.newTemp(e.type, `${w.name} >= 0 ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${w.name} >= 0 ? ${present} : ${absent}`);
           }
           case "net.sockEncrypted": {
             // boolean | undefined: the true arm iff the socket carries a
             // TLS transport; plain sockets answer the undefined arm (Node
             // types `encrypted` on TLSSocket only).
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockEncrypted result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const boolTag = def ? def.arms.findIndex((a) => a.kind === "bool") : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (boolTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: net.sockEncrypted union lacks its arms");
             }
-            const w = E.newTemp(BOOL, `scr_net_sock_encrypted(${arg(0)})`);
+            const w = emitter.newTemp(BOOL, `scr_net_sock_encrypted(${arg(0)})`);
             const present = `scr_union_new_bool(${boolTag}, true)`;
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            return E.newTemp(e.type, `${w.name} ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${w.name} ? ${present} : ${absent}`);
           }
           case "http.reqSocket":
             return finish(`scr_http_req_socket(${arg(0)})`);
           case "http.reqH2Stream": {
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqH2Stream result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const streamTag = def ? def.arms.findIndex((a) => a.kind === "http2Stream") : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (streamTag < 0 || undefTag < 0) throw new InternalCompilerError("emitter bug: http.reqH2Stream union lacks its arms");
-            const st = E.newTemp({ kind: "http2Stream" }, `scr_http_req_h2_stream(${arg(0)})`);
-            E.moveTemp(st);
+            const st = emitter.newTemp({ kind: "http2Stream" }, `scr_http_req_h2_stream(${arg(0)})`);
+            emitter.moveTemp(st);
             const present = `scr_union_new_ref(${streamTag}, ${st.name}, &scr_http2_stream_retain_v, &scr_http2_stream_release_v, NULL)`;
-            return E.newTemp(e.type, `${st.name} ? ${present} : ${E.unitInstanceRef(e.type.unionId, undefTag)}`);
+            return emitter.newTemp(e.type, `${st.name} ? ${present} : ${emitter.unitInstanceRef(e.type.unionId, undefTag)}`);
           }
           case "http.reqH2StreamOrThrow":
             return finish(`scr_http_req_h2_stream_or_throw(${arg(0)}, ${arg(1)})`);
@@ -4507,17 +4507,17 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // NULL (the undefined arm) on server requests — the
             // sockRemoteAddress shape.
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.reqStatusMessage result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: http.reqStatusMessage union lacks its arms");
             }
-            const m = E.newTemp(STRING, `scr_http_req_status_message(${arg(0)})`);
-            E.moveTemp(m);
+            const m = emitter.newTemp(STRING, `scr_http_req_status_message(${arg(0)})`);
+            emitter.moveTemp(m);
             const present = `scr_union_new_ref(${strTag}, ${m.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            return E.newTemp(e.type, `${m.name} ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${m.name} ? ${present} : ${absent}`);
           }
           case "net.sockDestroyed":
             return finish(`scr_net_sock_destroyed(${arg(0)})`);
@@ -4528,7 +4528,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} listener not a func`);
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 3 ? "scr_http_upgrade_thunk3"
               : cbT.params.length === 2 ? "scr_http_upgrade_thunk2"
@@ -4537,7 +4537,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const entry = e.fn === "http.serverOnUpgrade"
               ? "scr_http_server_on_upgrade"
               : "scr_http_client_on_upgrade";
-            E.line(`${entry}(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`${entry}(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http.serverOnConnect": {
@@ -4548,127 +4548,127 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.serverOnConnect listener not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const p1 = cbT.params[1];
             const adapter =
               p1 !== undefined && p1.kind === "union"
-                ? E.connectSockThunkFor(cbT)
+                ? emitter.connectSockThunkFor(cbT)
                 : cbT.params.length === 3 ? "scr_http_upgrade_thunk3"
                 : cbT.params.length === 2 ? "scr_http_upgrade_thunk2"
                 : cbT.params.length === 1 ? "scr_http_upgrade_thunk1"
                 : "scr_http_upgrade_thunk0";
-            const h2Def = p1?.kind === "union" ? E.unionsById.get(p1.unionId) : undefined;
+            const h2Def = p1?.kind === "union" ? emitter.unionsById.get(p1.unionId) : undefined;
             const h2Adapter = cbT.params.length >= 2
-              ? h2Def?.arms.some((arm) => arm.kind === "httpRes") ? `&${E.connectResThunkFor(cbT)}` : "NULL"
+              ? h2Def?.arms.some((arm) => arm.kind === "httpRes") ? `&${emitter.connectResThunkFor(cbT)}` : "NULL"
               : cbT.params.length === 1 ? "&scr_http_handler_thunk1" : "&scr_http_handler_thunk0";
-            E.line(`scr_http_server_on_connect(${arg(0)}, ${cb.name}, &${adapter}, ${h2Adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_server_on_connect(${arg(0)}, ${cb.name}, &${adapter}, ${h2Adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.sockPipeRes":
-            E.line(`scr_http_sock_pipe_res(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_sock_pipe_res(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.reqPipeRes":
-            E.line(`scr_http_req_pipe_res(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_req_pipe_res(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.reqPipeClient":
-            E.line(`scr_http_req_pipe_client(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_req_pipe_client(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.reqPipeSock":
-            E.line(`scr_http_req_pipe_sock(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_req_pipe_sock(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.reqResume":
-            E.line(`scr_http_req_resume(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_req_resume(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.reqDestroy":
-            E.line(`scr_http_req_destroy(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_req_destroy(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.reqOnError": {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.reqOnError callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
-            E.line(`scr_http_req_on_error(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_req_on_error(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http.reqOnClose": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_http_req_on_close(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_http_req_on_close(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http.reqOnAborted": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_http_req_on_aborted(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_http_req_on_aborted(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http.resDestroy":
-            E.line(`scr_http_res_destroy(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_destroy(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resOnClose": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_http_res_on_close(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_http_res_on_close(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http.createServerEmpty":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_http_create_server(NULL, NULL)`);
           case "http.serverJoinDupHeaders":
-            E.line(`scr_http_server_join_duplicate_headers(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_server_join_duplicate_headers(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.serverTimeoutGet":
             return finish(`scr_net_server_timeout_get(${arg(0)}, ${arg(1)})`);
           case "http.serverTimeoutSet":
-            E.line(`scr_net_server_timeout_set(${arg(0)}, ${arg(1)}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_server_timeout_set(${arg(0)}, ${arg(1)}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.serverTimeoutOptionSet":
             return finish(`scr_net_server_timeout_option_set(${arg(0)}, ${arg(1)}, ${arg(2)})`);
           case "net.serverOnListening": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_net_server_on_listening(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_net_server_on_listening(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http.resStatusGet":
             return finish(`scr_http_res_status_get(${arg(0)})`);
           case "http.resStatusSet":
-            E.line(`scr_http_res_status_set(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_status_set(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resStatusMsgGet":
             return finish(`scr_http_res_status_msg_get(${arg(0)})`);
           case "http.resStatusMsgSet":
-            E.line(`scr_http_res_status_msg_set(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_status_msg_set(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resGetHeader": {
             // string|undefined, exactly the http.reqHeader emission.
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: http.resGetHeader result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: http.resGetHeader union lacks its arms");
             }
-            const s = E.newTemp(STRING, `scr_http_res_get_header(${arg(0)}, ${arg(1)})`);
-            E.moveTemp(s); // moves into the box when present; NULL otherwise
+            const s = emitter.newTemp(STRING, `scr_http_res_get_header(${arg(0)}, ${arg(1)})`);
+            emitter.moveTemp(s); // moves into the box when present; NULL otherwise
             const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            return E.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
           }
           case "http.resHasHeader":
             return finish(`scr_http_res_has_header_named(${arg(0)}, ${arg(1)})`);
           case "http.resRemoveHeader":
-            E.line(`scr_http_res_remove_header(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_remove_header(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resOnFinish": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_http_res_on_finish(${arg(0)}, ${cb.name});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_http_res_on_finish(${arg(0)}, ${cb.name});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http.resWriteHeadPairs":
-            E.line(`scr_http_res_write_head_pairs(${arg(0)}, ${arg(1)}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_res_write_head_pairs(${arg(0)}, ${arg(1)}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.resWriteHeadDyn":
             return finish(`scr_http_res_write_head_dyn(${arg(0)}, ${arg(1)}, ${arg(2)})`);
@@ -4677,69 +4677,69 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http.reqSetEncoding":
             return finish(`scr_http_req_set_encoding(${arg(0)}, ${arg(1)})`);
           case "net.sockSetTimeout":
-            E.line(`scr_net_sock_set_timeout(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_set_timeout(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockOnTimeout": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_net_sock_on_timeout(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_net_sock_on_timeout(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.sockOnReadable": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_net_sock_on_readable(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_net_sock_on_readable(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.sockRead": {
             // Buffer | null, type-directed like http.reqHeader: NULL (not
             // enough buffered) takes the null arm.
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockRead result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes" && a.elem === "u8") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (bytesTag < 0 || nullTag < 0) {
               throw new InternalCompilerError("emitter bug: net.sockRead union lacks its arms");
             }
-            const b = E.newTemp(BYTES_U8, `scr_net_sock_read_bytes(${arg(0)}, ${arg(1)})`);
-            E.moveTemp(b); // moves into the box when present; NULL otherwise
+            const b = emitter.newTemp(BYTES_U8, `scr_net_sock_read_bytes(${arg(0)}, ${arg(1)})`);
+            emitter.moveTemp(b); // moves into the box when present; NULL otherwise
             const present = `scr_union_new_ref(${bytesTag}, ${b.name}, &scr_bytes_retain_v, &scr_bytes_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, nullTag);
-            return E.newTemp(e.type, `${b.name} ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, nullTag);
+            return emitter.newTemp(e.type, `${b.name} ? ${present} : ${absent}`);
           }
           case "net.sockUnshift":
-            E.line(`scr_net_sock_unshift_bytes(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_sock_unshift_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.serverEmitConnection":
-            E.line(`scr_net_server_emit_connection(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_net_server_emit_connection(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "net.sockRemoteAddress": {
             // string | undefined, type-directed like http.reqHeader: NULL
             // (closed socket) takes the undefined arm.
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockRemoteAddress result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: net.sockRemoteAddress union lacks its arms");
             }
-            const s = E.newTemp(STRING, `scr_net_sock_remote_address(${arg(0)})`);
-            E.moveTemp(s);
+            const s = emitter.newTemp(STRING, `scr_net_sock_remote_address(${arg(0)})`);
+            emitter.moveTemp(s);
             const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            return E.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
           }
           // node:http, the client slice (scr_http.c over the net client).
           case "http.request":
           case "http.requestCb": {
-            E.usesTimers = true; // an in-flight request holds the loop open
+            emitter.usesTimers = true; // an in-flight request holds the loop open
             let cbExpr = "NULL";
             let adapter = "NULL";
             if (e.fn === "http.requestCb") {
               const cbT = e.args[7]!.type;
               if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.requestCb callback not a func");
               const cb = args[7]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
               adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
             }
@@ -4748,20 +4748,20 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             );
           }
           case "http.agentNew":
-            E.usesTimers = true; // queued dials hold the loop open
+            emitter.usesTimers = true; // queued dials hold the loop open
             return finish(
               `scr_http_agent_new(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)})`,
             );
           case "http.requestAgent":
           case "http.requestAgentCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             let cbExpr = "NULL";
             let adapter = "NULL";
             if (e.fn === "http.requestAgentCb") {
               const cbT = e.args[8]!.type;
               if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.requestAgentCb callback not a func");
               const cb = args[8]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
               adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
             }
@@ -4773,7 +4773,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http.requestUrlCb":
           case "https.requestUrl":
           case "https.requestUrlCb": {
-            E.usesTimers = true; // an in-flight request holds the loop open
+            emitter.usesTimers = true; // an in-flight request holds the loop open
             const tls = e.fn.startsWith("https.");
             let cbExpr = "NULL";
             let adapter = "NULL";
@@ -4781,7 +4781,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               const cbT = e.args[3]!.type;
               if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} callback not a func`);
               const cb = args[3]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
               adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
             }
@@ -4792,19 +4792,19 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           case "http.requestConn":
           case "http.requestConnCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             let cbExpr = "NULL";
             let adapter = "NULL";
             if (e.fn === "http.requestConnCb") {
               const cbT = e.args[6]!.type;
               if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.requestConnCb callback not a func");
               const cb = args[6]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
               adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
             }
             const dial = args[0]!;
-            E.moveTemp(dial);
+            emitter.moveTemp(dial);
             return finish(
               `scr_http_request_conn(${dial.name}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${cbExpr}, ${adapter})`,
             );
@@ -4815,14 +4815,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // ScrBytes' uint8_t*).
           case "tls.createServer":
           case "tls.createServerCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             let cbExpr = "NULL";
             let adapter = "NULL";
             if (e.fn === "tls.createServerCb") {
               const cbT = e.args[2]!.type;
               if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: tls.createServerCb handler not a func");
               const cb = args[2]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
               adapter = cbT.params.length === 0 ? "&scr_net_conn_thunk0" : "&scr_net_conn_thunk_sock";
             }
@@ -4831,11 +4831,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             );
           }
           case "https.createServer": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[2]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.createServer handler not a func");
             const cb = args[2]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 2 ? "scr_http_handler_thunk2"
               : cbT.params.length === 1 ? "scr_http_handler_thunk1"
@@ -4850,28 +4850,28 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return finish(`scr_tls_pem_from_dyn(${arg(0)}, ${arg(1)}->data)`);
           case "tls.createServerDyn":
           case "tls.createServerDynCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             let cbExpr = "NULL";
             let adapter = "NULL";
             if (e.fn === "tls.createServerDynCb") {
               const cbT = e.args[1]!.type;
               if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: tls.createServerDynCb handler not a func");
               const cb = args[1]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
               adapter = cbT.params.length === 0 ? "&scr_net_conn_thunk0" : "&scr_net_conn_thunk_sock";
             }
             return finish(`scr_tls_create_server_dyn(${arg(0)}, ${cbExpr}, ${adapter})`);
           }
           case "https.createServerDyn":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_https_create_server_dyn(${arg(0)}, NULL, NULL)`);
           case "https.createServerDynCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.createServerDynCb handler not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 2 ? "scr_http_handler_thunk2"
               : cbT.params.length === 1 ? "scr_http_handler_thunk1"
@@ -4885,45 +4885,45 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // string | null: the verify-failure code string, or the null
             // arm when authorized / never verified (Node's value shape).
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: tls.sockAuthError result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (strTag < 0 || nullTag < 0) {
               throw new InternalCompilerError("emitter bug: tls.sockAuthError union lacks its arms");
             }
-            const s = E.newTemp(STRING, `scr_tls_sock_auth_error(${arg(0)})`);
-            E.moveTemp(s);
+            const s = emitter.newTemp(STRING, `scr_tls_sock_auth_error(${arg(0)})`);
+            emitter.moveTemp(s);
             const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, nullTag);
-            return E.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, nullTag);
+            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
           }
           case "tls.sockOnSecureConnect": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_tls_sock_on_secure_connect(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_tls_sock_on_secure_connect(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "tls.sockOnSession": {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: tls.sockOnSession callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 0 ? "scr_net_data_thunk0"
               : cbT.params[0]!.kind === "dyn" ? "scr_net_data_thunk_dyn"
               : "scr_net_data_thunk_bytes";
-            E.line(`scr_tls_sock_on_session(${arg(0)}, ${cb.name}, (void *)&${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_tls_sock_on_session(${arg(0)}, ${cb.name}, (void *)&${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           // tls.connect (the TLS client socket): the callback moves in and
           // fires post-handshake — the conn list's secureConnect timing.
           case "tls.connect":
           case "tls.connectCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             let cbExpr = "NULL";
             if (e.fn === "tls.connectCb") {
               const cb = args[3]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
             }
             return finish(
@@ -4931,7 +4931,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             );
           }
           case "http2.createSecureServer":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(
               `scr_http2_create_secure_server_allow_http1((const char *)${arg(0)}->data, ${arg(0)}->len, (const char *)${arg(1)}->data, ${arg(1)}->len, NULL, NULL, NULL, NULL, ${arg(2)})`,
             );
@@ -4939,7 +4939,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // The REAL h2-over-TLS server (no allowHTTP1): ALPN advertises
             // h2 alone and the h2 session attaches at establishment —
             // 'stream'/'session' listeners, exactly the h2c surface.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(
               `scr_http2_create_secure_server((const char *)${arg(0)}->data, ${arg(0)}->len, (const char *)${arg(1)}->data, ${arg(1)}->len, ${arg(2)})`,
             );
@@ -4948,11 +4948,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // createSecureServer(options, handler): the eager COMPAT
             // handler is the first 'request' listener on either flavor
             // (the createServerReq adapter family).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[2]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} handler not a func`);
             const cb = args[2]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 2 ? "scr_http_handler_thunk2"
               : cbT.params.length === 1 ? "scr_http_handler_thunk1"
@@ -4967,14 +4967,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http2.createSecureServerDyn":
             // The runtime options record: allowHTTP1/cert/key read at
             // runtime (may-throw — the divergence-66 walk).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_http2_create_secure_server_dyn(${arg(0)}, NULL, NULL)`);
           case "http2.createSecureServerDynCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: createSecureServerDynCb handler not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 2 ? "scr_http_handler_thunk2"
               : cbT.params.length === 1 ? "scr_http_handler_thunk1"
@@ -4989,34 +4989,34 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // the emitted per-shape thunk (its unions' tags are program
             // data). A union-typed arg is the conditional-spread spelling
             // — the undefined arm passes NULL, exactly the no-SNI server.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const sniT = e.args[2]!.type;
             let cbFuncT: IrType;
             let cbExpr: string;
             if (sniT.kind === "func") {
               cbFuncT = sniT;
               const cb = args[2]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
             } else {
               if (sniT.kind !== "union") throw new InternalCompilerError("emitter bug: createSecureServerSni callback shape");
-              const def = E.unionsById.get(sniT.unionId);
+              const def = emitter.unionsById.get(sniT.unionId);
               const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
               const funcArm = def?.arms[funcTag];
               if (funcTag < 0 || !funcArm) throw new InternalCompilerError("emitter bug: createSecureServerSni union lacks its func arm");
               cbFuncT = funcArm;
               const u = args[2]!;
-              const t = E.newTemp(
+              const t = emitter.newTemp(
                 funcArm,
                 `${u.name}->tag == ${funcTag} ? scr_closure_retain((ScrClosure *)scr_union_peek(${u.name})) : NULL`,
               );
-              E.moveTemp(t);
+              emitter.moveTemp(t);
               cbExpr = t.name;
             }
             if (cbFuncT.kind !== "func" || cbFuncT.params[1]?.kind !== "func") {
               throw new InternalCompilerError("emitter bug: createSecureServerSni callback shape (frontend must fence)");
             }
-            const answer = E.sniAnswerThunkFor(cbFuncT.params[1]);
+            const answer = emitter.sniAnswerThunkFor(cbFuncT.params[1]);
             return finish(
               `scr_http2_create_secure_server_allow_http1((const char *)${arg(0)}->data, ${arg(0)}->len, (const char *)${arg(1)}->data, ${arg(1)}->len, NULL, NULL, ${cbExpr}, (void *)&${answer}, ${arg(3)})`,
             );
@@ -5050,25 +5050,25 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.serverOnRequest handler not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 2 ? "scr_http_handler_thunk2"
               : cbT.params.length === 1 ? "scr_http_handler_thunk1"
               : "scr_http_handler_thunk0";
-            E.line(`scr_http_server_on_request(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_server_on_request(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.serverOnSessionError": {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: sessionError listener not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 2
               ? "scr_http2_session_error_thunk2"
               : cbT.params.length === 1
                 ? "scr_http2_session_error_thunk1"
                 : "scr_http2_session_error_thunk0";
-            E.line(`scr_http2_server_on_session_error(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_server_on_session_error(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.streamNoop":
@@ -5086,16 +5086,16 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // by the frontend — it owns arity and headers-record building),
           // so the runtime thunk is a fixed passthrough per payload shape.
           case "http2.createServer":
-            E.usesTimers = true; // a listening server holds the loop open
+            emitter.usesTimers = true; // a listening server holds the loop open
             return finish(`scr_http2_create_server()`);
           case "http2.createServerReq": {
             // createServer(handler): the eager COMPAT handler — the first
             // 'request' listener, the http.createServer adapter family.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[0]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http2.createServerReq handler not a func");
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 2 ? "scr_http_handler_thunk2"
               : cbT.params.length === 1 ? "scr_http_handler_thunk1"
@@ -5105,43 +5105,43 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http2.serverOnStream":
           case "http2.sessionOnStream": {
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const fn = e.fn === "http2.serverOnStream" ? "scr_http2_server_on_stream" : "scr_http2_session_on_stream";
-            E.line(`${fn}(${arg(0)}, ${cb.name}, &scr_http2_stream_thunk, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`${fn}(${arg(0)}, ${cb.name}, &scr_http2_stream_thunk, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.serverOnSession": {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: serverOnSession listener not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_http2_session_thunk0" : "scr_http2_session_thunk";
-            E.line(`scr_http2_server_on_session(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_server_on_session(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.sessionOnConnect": {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: sessionOnConnect listener not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length >= 2 ? "scr_http2_connect_thunk2"
               : cbT.params.length === 1 ? "scr_http2_connect_thunk1"
               : "scr_http2_connect_thunk0";
-            E.line(`scr_http2_session_on_connect(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_session_on_connect(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.connect":
-            E.usesTimers = true; // an open session holds the loop open
+            emitter.usesTimers = true; // an open session holds the loop open
             return finish(
               `scr_http2_connect(${arg(0)}, ${arg(1)}, (const char *)${arg(2)}->data, ${arg(2)}->len, NULL, NULL)`,
             );
           case "http2.connectCb": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[3]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http2.connectCb listener not a func");
             const cb = args[3]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length >= 2 ? "scr_http2_connect_thunk2"
               : cbT.params.length === 1 ? "scr_http2_connect_thunk1"
@@ -5153,21 +5153,21 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http2.sessionRequest":
             return finish(`scr_http2_session_request(${arg(0)}, ${arg(1)}, ${arg(2)})`);
           case "http2.sessionClose":
-            E.line(`scr_http2_session_close(${arg(0)}, NULL);${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_session_close(${arg(0)}, NULL);${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.sessionCloseCb": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_http2_session_close(${arg(0)}, ${cb.name});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_http2_session_close(${arg(0)}, ${cb.name});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.sessionDestroy":
-            E.line(`scr_http2_session_destroy(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_session_destroy(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.sessionOnClose": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_http2_session_on_close(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_http2_session_on_close(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.sessionOnError":
@@ -5175,22 +5175,22 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError(`emitter bug: ${e.fn} listener not a func`);
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
             const fn = e.fn === "http2.sessionOnError" ? "scr_http2_session_on_error" : "scr_http2_stream_on_error";
-            E.line(`${fn}(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`${fn}(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.sessionOnGoaway": {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: sessionOnGoaway listener not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length >= 2 ? "scr_http2_goaway_thunk2"
               : cbT.params.length === 1 ? "scr_http2_goaway_thunk1"
               : "scr_http2_goaway_thunk0";
-            E.line(`scr_http2_session_on_goaway(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_session_on_goaway(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.sessionClosed":
@@ -5206,57 +5206,57 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http2.sessionSocket":
             return finish(`scr_http2_session_socket(${arg(0)})`);
           case "http2.streamRespond":
-            E.line(`scr_http2_stream_respond(${arg(0)}, ${arg(1)}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_respond(${arg(0)}, ${arg(1)}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.streamWrite":
-            E.line(`scr_http2_stream_write_str(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_write_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.streamWriteBytes":
-            E.line(`scr_http2_stream_write_bytes(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_write_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.streamEnd":
-            E.line(`scr_http2_stream_end(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_end(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.streamEndStr":
-            E.line(`scr_http2_stream_end_str(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_end_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.streamEndBytes":
-            E.line(`scr_http2_stream_end_bytes(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_end_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.streamClose":
-            E.line(`scr_http2_stream_close(${arg(0)}, ${arg(1)}, NULL);${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_close(${arg(0)}, ${arg(1)}, NULL);${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.streamCloseCb": {
             const cb = args[2]!;
-            E.moveTemp(cb);
-            E.line(`scr_http2_stream_close(${arg(0)}, ${arg(1)}, ${cb.name});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_http2_stream_close(${arg(0)}, ${arg(1)}, ${cb.name});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.streamDestroy":
-            E.line(`scr_http2_stream_destroy(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_destroy(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.sessionSettings0":
-            E.line(`scr_http2_session_settings(${arg(0)}, NULL, NULL, NULL);${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_session_settings(${arg(0)}, NULL, NULL, NULL);${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.sessionSettings":
-            E.line(`scr_http2_session_settings(${arg(0)}, ${arg(1)}, NULL, NULL);${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_session_settings(${arg(0)}, ${arg(1)}, NULL, NULL);${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.sessionSettingsDynCb":
-            E.line(`scr_http2_session_settings_dyncb(${arg(0)}, ${arg(1)}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_session_settings_dyncb(${arg(0)}, ${arg(1)}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.sessionSettingsCb0": {
             const cb = args[2]!;
-            E.moveTemp(cb);
-            E.line(`scr_http2_session_settings(${arg(0)}, ${arg(1)}, ${cb.name}, &scr_http2_settings_thunk0);${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_http2_session_settings(${arg(0)}, ${arg(1)}, ${cb.name}, &scr_http2_settings_thunk0);${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.sessionOnSettingsDyn":
-            E.line(`scr_http2_session_on_settings_dyn(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_session_on_settings_dyn(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.sessionOnSettings0": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_http2_session_on_settings(${arg(0)}, ${cb.name}, &scr_http2_settings_thunk0, ${arg(2)}, ${arg(3)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_http2_session_on_settings(${arg(0)}, ${cb.name}, &scr_http2_settings_thunk0, ${arg(2)}, ${arg(3)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.sessionSettingsGet":
@@ -5266,45 +5266,45 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "http2.getDefaultSettings":
             return finish(`scr_http2_get_default_settings()`);
           case "http2.streamSetEncoding":
-            E.line(`scr_http2_stream_set_encoding(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_set_encoding(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.streamSetEncodingRet":
             // the chaining spelling: same write, answers the receiver +1
             return finish(`scr_http2_stream_set_encoding_ret(${arg(0)}, ${arg(1)})`);
           case "http2.streamResume":
-            E.line(`scr_http2_stream_resume(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_resume(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.streamPause":
-            E.line(`scr_http2_stream_pause(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_pause(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http2.streamOnData": {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: streamOnData callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 0 ? "scr_net_data_thunk0"
               : cbT.params[0]!.kind === "dyn" ? "scr_net_data_thunk_dyn"
               : cbT.params[0]!.kind === "string" ? "scr_net_data_thunk_str"
               : "scr_net_data_thunk_bytes";
-            E.line(`scr_http2_stream_on_data(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http2_stream_on_data(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.streamOnEnd":
           case "http2.streamOnClose":
           case "http2.streamOnAborted": {
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const fn = e.fn === "http2.streamOnEnd" ? "scr_http2_stream_on_end"
               : e.fn === "http2.streamOnClose" ? "scr_http2_stream_on_close"
               : "scr_http2_stream_on_aborted";
-            E.line(`${fn}(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`${fn}(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.streamOnResponse": {
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_http2_stream_on_response(${arg(0)}, ${cb.name}, &scr_http2_resp_thunk, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_http2_stream_on_response(${arg(0)}, ${cb.name}, &scr_http2_resp_thunk, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http2.streamId":
@@ -5342,14 +5342,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             );
           case "https.request":
           case "https.requestCb": {
-            E.usesTimers = true; // an in-flight request holds the loop open
+            emitter.usesTimers = true; // an in-flight request holds the loop open
             let cbExpr = "NULL";
             let adapter = "NULL";
             if (e.fn === "https.requestCb") {
               const cbT = e.args[9]!.type;
               if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestCb callback not a func");
               const cb = args[9]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
               adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
             }
@@ -5359,14 +5359,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           case "https.requestAgent":
           case "https.requestAgentCb": {
-            E.usesTimers = true; // an in-flight request holds the loop open
+            emitter.usesTimers = true; // an in-flight request holds the loop open
             let cbExpr = "NULL";
             let adapter = "NULL";
             if (e.fn === "https.requestAgentCb") {
               const cbT = e.args[10]!.type;
               if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestAgentCb callback not a func");
               const cb = args[10]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
               adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
             }
@@ -5382,14 +5382,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // moves into whichever). The https row's reject/ca args are
             // simply unused on the plain side, like Node's http.request
             // with TLS options.
-            E.usesTimers = true; // an in-flight request holds the loop open
+            emitter.usesTimers = true; // an in-flight request holds the loop open
             let cbExpr = "NULL";
             let adapter = "NULL";
             if (e.fn === "https.requestFnCb") {
               const cbT = e.args[10]!.type;
               if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestFnCb callback not a func");
               const cb = args[10]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbExpr = cb.name;
               adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
             }
@@ -5398,28 +5398,28 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             );
           }
           case "http.clientWrite":
-            E.line(`scr_http_client_write_str(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_client_write_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.clientWriteBytes":
-            E.line(`scr_http_client_write_bytes(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_client_write_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.clientEnd":
-            E.line(`scr_http_client_end(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_client_end(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.clientEndStr":
-            E.line(`scr_http_client_end_str(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_client_end_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.clientEndBytes":
-            E.line(`scr_http_client_end_bytes(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_client_end_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.clientWriteDyn":
-            E.line(`scr_http_client_write_dynv(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_client_write_dynv(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.clientEndDyn":
-            E.line(`scr_http_client_end_dynv(${arg(0)}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_client_end_dynv(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.clientDestroy":
-            E.line(`scr_http_client_destroy(${arg(0)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_client_destroy(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           case "http.clientDestroyed":
             return finish(`scr_http_client_destroyed(${arg(0)})`);
@@ -5427,26 +5427,26 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.clientOnResponse callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_http_resp_thunk0" : "scr_http_resp_thunk_res";
-            E.line(`scr_http_client_on_response(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_client_on_response(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http.clientOnError": {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.clientOnError callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
-            E.line(`scr_http_client_on_error(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_http_client_on_error(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "http.clientOnTimeout":
           case "http.clientOnClose": {
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const fn = e.fn === "http.clientOnTimeout" ? "scr_http_client_on_timeout" : "scr_http_client_on_close";
-            E.line(`${fn}(${arg(0)}, ${cb.name}, ${arg(2)});${E.srcComment(e.loc)}`);
+            emitter.line(`${fn}(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "child.onError": {
@@ -5455,11 +5455,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[1]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: child.onError callback not a func");
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
-            E.line(
-              `scr_child_on_error(${arg(0)}, ${cb.name}, &${adapter});${E.srcComment(e.loc)}`,
+            emitter.line(
+              `scr_child_on_error(${arg(0)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`,
             );
             return { name: "", type: e.type };
           }
@@ -5510,19 +5510,19 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // error.nodeThrow dummy pattern; mkdtempSyncChk and the lchmod
           // pair answer real results on a validated pass.
           case "fs.existsChk":
-            E.usesTimers = true; // the scheduled answer holds the loop open
+            emitter.usesTimers = true; // the scheduled answer holds the loop open
             return finish(`scr_fs_exists_async(${arg(0)}, ${arg(1)})`);
           case "fs.renameCb": {
             // The callback MOVES into the scheduled operation. Its
             // adapter constructs the program-specific Error | null union
             // (or dyn error/null for the JS lane) when the timer fires.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[2]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: fs.rename callback not a func");
             const cb = args[2]!;
-            E.moveTemp(cb);
-            const adapter = E.fsRenameThunkFor(cbT);
-            E.line(`scr_fs_rename_async(${arg(0)}, ${arg(1)}, ${cb.name}, &${adapter});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            const adapter = emitter.fsRenameThunkFor(cbT);
+            emitter.line(`scr_fs_rename_async(${arg(0)}, ${arg(1)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "fs.mkdtempChk":
@@ -5595,17 +5595,17 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // Submit the bytes only after every call argument evaluated,
             // then move the completion callback onto the next-tick queue.
             // The shared error-first adapter materializes success `null`.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[2]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: process write callback not a func");
             const cb = args[2]!;
-            E.moveTemp(cb);
-            const adapter = E.fsRenameThunkFor(cbT);
+            emitter.moveTemp(cb);
+            const adapter = emitter.fsRenameThunkFor(cbT);
             const write = e.fn === "process.stdoutWriteBytesCb"
               ? "scr_process_stdout_write_bytes"
               : "scr_process_stderr_write_bytes";
-            const out = E.newTemp(e.type, `${write}(${arg(0)}, ${arg(1)})`);
-            E.line(`scr_process_write_callback(${cb.name}, &${adapter});${E.srcComment(e.loc)}`);
+            const out = emitter.newTemp(e.type, `${write}(${arg(0)}, ${arg(1)})`);
+            emitter.line(`scr_process_write_callback(${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`);
             return out;
           }
           case "tp.setTimeout":
@@ -5633,10 +5633,10 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "timers.setImmediateFnValue":
             // Calling the minted value schedules a real immediate — the
             // loop must run to fire it.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_set_immediate_dyn_value()`);
           case "timers.immediatePromise":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_immediate_promise()`);
           case "dc.tracingChannel":
             return finish(`scr_dc_tracing_channel(${arg(0)})`);
@@ -5657,10 +5657,10 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "assert.expectsErrDyn":
             return finish(`scr_assert_expects_err_dyn(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`);
           case "async.hop":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_await_hop()`);
           case "async.awaitDyn":
-            E.usesTimers = true; // the hop rides the loop
+            emitter.usesTimers = true; // the hop rides the loop
             return finish(`scr_await_dyn_value(${arg(0)})`);
           case "als.new":
             return finish(`scr_als_new()`);
@@ -5682,7 +5682,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return finish(`scr_dc_chan_run_stores(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)})`);
           case "dc.tcTracePromise":
             // The reaction fiber needs the loop to drain it.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_dc_tc_trace_promise(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)})`);
           case "process.onWarning":
             return finish(`scr_process_on_warning(${arg(0)})`);
@@ -5692,14 +5692,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return finish(`scr_process_emit_warning(${arg(0)})`);
           case "process.onUnhandledRejection":
             // The completed-checkpoint report dispatches the listeners.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_process_on_unhandled_rejection(${arg(0)}, ${arg(1)})`);
           case "process.offUnhandledRejection":
             return finish(`scr_process_off_unhandled_rejection(${arg(0)})`);
           case "process.onRejectionHandled":
             // Fires after a reported promise gains a handler — the loop
             // must be live for the checkpoint report to run.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_process_on_rejection_handled(${arg(0)}, ${arg(1)})`);
           case "process.offRejectionHandled":
             return finish(`scr_process_off_rejection_handled(${arg(0)})`);
@@ -5757,14 +5757,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               : e.fn === "fileHandle.writeBytes"
                 ? `scr_file_handle_write_bytes(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)})`
                 : `scr_file_handle_write_str(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`;
-            const count = E.newTemp(F64, countFn);
-            const row = E.newTemp(inner, `${mangleRecordNew(inner.shapeId)}()`);
+            const count = emitter.newTemp(F64, countFn);
+            const row = emitter.newTemp(inner, `${mangleRecordNew(inner.shapeId)}()`);
             const countField = e.fn === "fileHandle.read" ? "bytesRead" : "bytesWritten";
-            E.line(`${row.name}->${mangleField(countField)} = ${count.name};`);
-            E.line(`${row.name}->${mangleField("buffer")} = ${retainCallC(e.args[1]!.type, arg(1))};`);
+            emitter.line(`${row.name}->${mangleField(countField)} = ${count.name};`);
+            emitter.line(`${row.name}->${mangleField("buffer")} = ${retainCallC(e.args[1]!.type, arg(1))};`);
             const rc = vAdapters(inner);
-            E.moveTemp(row); // promise fulfillment owns the result record
-            return finish(`scr_promise_settled_ref(${row.name}, &${rc.retain}, &${rc.release}, ${E.traceArgC(inner)})`);
+            emitter.moveTemp(row); // promise fulfillment owns the result record
+            return finish(`scr_promise_settled_ref(${row.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(inner)})`);
           }
           case "process.argv":
             return finish(`scr_process_argv()`);
@@ -5785,17 +5785,17 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") {
               throw new InternalCompilerError("emitter bug: process.envGet result is not a union");
             }
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: process.envGet union lacks its arms");
             }
-            const s = E.newTemp(STRING, `scr_env_get(${arg(0)})`);
-            E.moveTemp(s); // moves into the box when present; NULL otherwise
+            const s = emitter.newTemp(STRING, `scr_env_get(${arg(0)})`);
+            emitter.moveTemp(s); // moves into the box when present; NULL otherwise
             const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            return E.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
           }
           case "process.envSet":
             return finish(`scr_env_set(${arg(0)}, ${arg(1)})`);
@@ -5841,7 +5841,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return finish(`scr_process_rusage(${arg(0)})`);
           case "process.activeResources":
             // The loop's bookkeeping needs the loop linked.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_active_resources()`);
           case "process.getgid":
             return finish(`scr_process_getgid()`);
@@ -5878,57 +5878,57 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return finish(`scr_process_exit(${arg(0)})`);
           case "timers.setTimeout": {
             // The loop owns the callback until it fires.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_set_timeout(${cb.name}, ${arg(1)})`);
           }
           case "timers.setInterval": {
             // The loop owns the callback until clearInterval; the f64
             // handle comes back. A live interval keeps the loop alive.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_set_interval(${cb.name}, ${arg(1)})`);
           }
           case "timers.clearInterval":
             return finish(`scr_clear_interval(${arg(0)})`);
           case "timers.setTimeoutHandle": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_set_timeout_handle(${cb.name}, ${arg(1)})`);
           }
           case "timers.clearTimeout":
             return finish(`scr_clear_interval(${arg(0)})`);
           case "timers.unref":
             // Returns the handle for chaining (comma expr: bookkeep, yield).
-            return E.newTemp(e.type, `(scr_timer_unref(${arg(0)}), ${arg(0)})`);
+            return emitter.newTemp(e.type, `(scr_timer_unref(${arg(0)}), ${arg(0)})`);
           case "timers.ref":
-            return E.newTemp(e.type, `(scr_timer_ref(${arg(0)}), ${arg(0)})`);
+            return emitter.newTemp(e.type, `(scr_timer_ref(${arg(0)}), ${arg(0)})`);
           case "timers.hasRef":
             return finish(`scr_timer_has_ref(${arg(0)})`);
           case "timers.refresh":
-            return E.newTemp(e.type, `(scr_timer_refresh(${arg(0)}), ${arg(0)})`);
+            return emitter.newTemp(e.type, `(scr_timer_refresh(${arg(0)}), ${arg(0)})`);
           case "timers.setImmediate": {
             // The loop owns the callback until the check phase fires it.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_set_immediate(${cb.name})`);
           }
           case "timers.queueMicrotask": {
             // The envelope owns the callback until the drain runs it; the
             // loop must run so a main-queued microtask fires after %main.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_queue_microtask(${cb.name})`);
           }
           case "timers.queueMicrotaskDyn":
             // Borrowed dyn; a non-function throws ERR_INVALID_ARG_TYPE
             // synchronously (may-throw seed set).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_queue_microtask_dyn(${arg(0)})`);
           case "timers.clearImmediate":
             return finish(`scr_clear_immediate(${arg(0)})`);
@@ -5936,15 +5936,15 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // The tick queue owns the callback until the drain fires it;
             // ticks run before promise jobs at every loop checkpoint and
             // keep the loop alive while queued, so main runs the loop.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_next_tick(${cb.name})`);
           }
           case "timers.immediateUnref":
-            return E.newTemp(e.type, `(scr_immediate_unref(${arg(0)}), ${arg(0)})`);
+            return emitter.newTemp(e.type, `(scr_immediate_unref(${arg(0)}), ${arg(0)})`);
           case "timers.immediateRef":
-            return E.newTemp(e.type, `(scr_immediate_ref(${arg(0)}), ${arg(0)})`);
+            return emitter.newTemp(e.type, `(scr_immediate_ref(${arg(0)}), ${arg(0)})`);
           case "timers.immediateHasRef":
             return finish(`scr_immediate_has_ref(${arg(0)})`);
           case "timers.clearNoop":
@@ -5954,9 +5954,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "process.onSignal": {
             // The registry owns the callback (zero-param — frontend-pinned)
             // until off/once removes it. The loop dispatches deliveries.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[1]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_signal_on(${arg(0)}, ${cb.name}, ${arg(2)})`);
           }
           case "process.offSignal":
@@ -5968,9 +5968,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             const cbT = e.args[0]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: process.onExit callback not a func");
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter = cbT.params.length === 0 ? "scr_exit_thunk0" : "scr_exit_thunk_code";
-            E.line(`scr_process_on_exit(${cb.name}, &${adapter}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_process_on_exit(${cb.name}, &${adapter}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "process.offExit":
@@ -5978,38 +5978,38 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "stdin.onData": {
             // A data listener is a consumer: the loop watches fd 0 and
             // stays alive until EOF, so main must run it.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[0]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: stdin.onData callback not a func");
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 0 ? "scr_stdin_data_thunk0" : "scr_stdin_data_thunk_bytes";
-            E.line(`scr_stdin_on_data(${cb.name}, &${adapter}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_stdin_on_data(${cb.name}, &${adapter}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "stdin.onEnd": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             return finish(`scr_stdin_on_end(${cb.name}, ${arg(1)})`);
           }
           case "stdin.onError": {
             // The child error adapters fit exactly (message → %Error).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[0]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: stdin.onError callback not a func");
             const cb = args[0]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
-            E.line(`scr_stdin_on_error(${cb.name}, &${adapter}, ${arg(1)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_stdin_on_error(${cb.name}, &${adapter}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "stdin.nextChunk":
             // +1 promise of the next chunk (empty = EOF); the await parks
             // the fiber while the loop watches fd 0.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stdin_next_chunk()`);
           case "error.new": {
             // Which builtin the runtime constructs is named by the RESULT
@@ -6124,8 +6124,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // May-throw: 'newListener' meta listeners run inside.
             const cbT = e.args[2]!.type;
             const cb = args[2]!;
-            E.moveTemp(cb);
-            const thunk = E.emitterInvokeThunkFor(cbT);
+            emitter.moveTemp(cb);
+            const thunk = emitter.emitterInvokeThunkFor(cbT);
             return finish(
               `(${cType(e.type).trim()})scr_emitter_on((ScrEmitter *)${arg(0)}, ${arg(1)}, ${cb.name}, &${thunk}, ${arg(3)}, ${arg(4)})`,
             );
@@ -6149,8 +6149,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // runtime keeps the original as the entry's identity.
             const adT = e.args[3]!.type;
             const adapter = args[3]!;
-            E.moveTemp(adapter);
-            const dynThunk = E.emitterInvokeThunkFor(adT);
+            emitter.moveTemp(adapter);
+            const dynThunk = emitter.emitterInvokeThunkFor(adT);
             return finish(
               `(${cType(e.type).trim()})scr_emitter_on_dyn((ScrEmitter *)${arg(0)}, ${arg(1)}, ${arg(2)}, ${adapter.name}, &${dynThunk}, ${arg(4)}, ${arg(5)})`,
             );
@@ -6161,8 +6161,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // ABI — see scr_stream_emit_data).
             const cbT = e.args[2]!.type;
             const cb = args[2]!;
-            E.moveTemp(cb);
-            const thunk = E.streamDataThunkFor(cbT);
+            emitter.moveTemp(cb);
+            const thunk = emitter.streamDataThunkFor(cbT);
             return finish(
               `(${cType(e.type).trim()})scr_emitter_on((ScrEmitter *)${arg(0)}, ${arg(1)}, ${cb.name}, &${thunk}, ${arg(3)}, ${arg(4)})`,
             );
@@ -6172,8 +6172,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // dyn parameter; the data thunk boxes the payload by tag.
             const adT = e.args[3]!.type;
             const adapter = args[3]!;
-            E.moveTemp(adapter);
-            const dynThunk = E.streamDataThunkFor(adT);
+            emitter.moveTemp(adapter);
+            const dynThunk = emitter.streamDataThunkFor(adT);
             return finish(
               `(${cType(e.type).trim()})scr_emitter_on_dyn((ScrEmitter *)${arg(0)}, ${arg(1)}, ${arg(2)}, ${adapter.name}, &${dynThunk}, ${arg(4)}, ${arg(5)})`,
             );
@@ -6255,7 +6255,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "duplex.init":
           case "transform.init":
           case "passthrough.init": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             // Head args then flags then the PRESENT callbacks in canonical
             // order — the flags literal names which; absent ones emit NULL.
             // The .init forms (a subclass constructor's super(options))
@@ -6286,8 +6286,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               }
               const cb = args[at]!;
               const cbT = e.args[at]!.type;
-              E.moveTemp(cb); // the callback closure MOVES into the stream
-              cbArgs.push(cb.name, `&${E.streamCbThunkFor(canonical[i]!.kind, cbT)}`);
+              emitter.moveTemp(cb); // the callback closure MOVES into the stream
+              cbArgs.push(cb.name, `&${emitter.streamCbThunkFor(canonical[i]!.kind, cbT)}`);
               at++;
             }
             const entry = isInit ? `scr_stream_init_${base}` : `scr_stream_new_${base}`;
@@ -6307,7 +6307,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // The underscore-method assignment surface: the runtime slot
             // swaps its closure (+1 moves in) and invoke thunk — the next
             // _read/_write/... dispatch uses it, Node's timing.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const kindOf: Record<string, "r" | "w" | "f" | "d" | "t" | "l"> = {
               "stream.setRead": "r", "stream.setWrite": "w", "stream.setFinal": "f",
               "stream.setDestroy": "d", "stream.setTransform": "t", "stream.setFlush": "l",
@@ -6319,27 +6319,27 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             };
             const cb = args[1]!;
             const cbT = e.args[1]!.type;
-            E.moveTemp(cb); // the callback closure MOVES into the stream
-            return finish(`${symOf[fn]!}((ScrStream *)${arg(0)}, ${cb.name}, &${E.streamCbThunkFor(kindOf[fn]!, cbT)})`);
+            emitter.moveTemp(cb); // the callback closure MOVES into the stream
+            return finish(`${symOf[fn]!}((ScrStream *)${arg(0)}, ${cb.name}, &${emitter.streamCbThunkFor(kindOf[fn]!, cbT)})`);
           }
           case "stream.finished":
           case "stream.finishedDyn": {
             // finished(s, cb): the +1 cleanup closure answers. Typed
             // callbacks ride the "e" thunk (this + Error|null prefix);
             // dyn values ride the runtime's own inv.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             if (fn === "stream.finishedDyn") {
               return finish(`(${cType(e.type).trim()})scr_stream_finished_dyn((ScrStream *)${arg(0)}, ${arg(1)})`);
             }
             const cb = args[1]!;
-            E.moveTemp(cb); // the watcher closure MOVES into the stream
-            const thunk = E.streamCbThunkFor("e", e.args[1]!.type);
+            emitter.moveTemp(cb); // the watcher closure MOVES into the stream
+            const thunk = emitter.streamCbThunkFor("e", e.args[1]!.type);
             return finish(`(${cType(e.type).trim()})scr_stream_finished((ScrStream *)${arg(0)}, ${cb.name}, &${thunk})`);
           }
           case "stream.pipeline":
           case "stream.pipelineDyn": {
             // pipeline(count, s1..sn, cb): the destination answers +1.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const countArg = e.args[0]!;
             if (countArg.kind !== "numLit") throw new InternalCompilerError(`emitter bug: ${fn} count not a literal`);
             const n = countArg.value;
@@ -6350,8 +6350,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               );
             }
             const cb = args[1 + n]!;
-            E.moveTemp(cb);
-            const thunk = E.streamCbThunkFor("e", e.args[1 + n]!.type);
+            emitter.moveTemp(cb);
+            const thunk = emitter.streamCbThunkFor("e", e.args[1 + n]!.type);
             return finish(
               `(${cType(e.type).trim()})scr_stream_pipeline(${n}, (ScrStream *[]){ ${list} }, ${cb.name}, &${thunk})`,
             );
@@ -6359,12 +6359,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "sp.finished":
             // The stream/promises form: a +1 pending promise the terminal
             // watcher settles — no callback, no cleanup exposure.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_sp_finished((ScrStream *)${arg(0)})`);
           case "sp.pipeline": {
             // pipeline(count, s1..sn) settling a void promise; the stream
             // list rides the callback form's compound literal.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const countArg = e.args[0]!;
             if (countArg.kind !== "numLit") throw new InternalCompilerError(`emitter bug: ${fn} count not a literal`);
             const n = countArg.value;
@@ -6375,13 +6375,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // stream/consumers: +1 pending promises the accumulate-and-
             // settle machinery resolves or rejects (the stream's
             // error / premature close / json's SyntaxError).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_sc_text((ScrStream *)${arg(0)})`);
           case "sc.json":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_sc_json((ScrStream *)${arg(0)})`);
           case "sc.buffer":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_sc_buffer((ScrStream *)${arg(0)})`);
           case "readable.newDyn":
           case "writable.newDyn":
@@ -6391,7 +6391,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // The dyn-options constructor: the runtime walks the record
             // (borrowed). MAY THROW (NULL result with the exception
             // pending — the seed set carries these).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const base = fn.slice(0, fn.indexOf("."));
             return finish(`(${cType(e.type).trim()})scr_stream_new_${base}_dyn(${arg(0)})`);
           }
@@ -6404,7 +6404,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // then the FALLBACK underscore-method wrappers in canonical
             // order (flags names which; absent ones emit NULL — exactly
             // the .init callback ABI; wrappers MOVE).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const base = fn.slice(0, fn.indexOf("."));
             const flagsArg = e.args[2]!;
             if (flagsArg.kind !== "numLit") throw new InternalCompilerError(`emitter bug: ${fn} flags not a literal`);
@@ -6426,37 +6426,37 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               }
               const cb = args[at]!;
               const cbT = e.args[at]!.type;
-              E.moveTemp(cb);
-              cbArgs.push(cb.name, `&${E.streamCbThunkFor(canonical[i]!.kind, cbT)}`);
+              emitter.moveTemp(cb);
+              cbArgs.push(cb.name, `&${emitter.streamCbThunkFor(canonical[i]!.kind, cbT)}`);
               at++;
             }
             return finish(`scr_stream_init_${base}_dyn((ScrStream *)${arg(0)}, ${arg(1)}, ${cbArgs.join(", ")})`);
           }
           case "readable.push":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stream_push((ScrStream *)${arg(0)}, ${arg(1)})`);
           case "readable.pushStr":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stream_push_str((ScrStream *)${arg(0)}, ${arg(1)})`);
           case "readable.pushStrEnc":
             // push(chunk, enc) with a literal non-utf8 encoding.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stream_push_str_enc((ScrStream *)${arg(0)}, ${arg(1)}, ${arg(2)})`);
           case "readable.pushEncoding":
             // The defaultEncoding option's push side (chaining, +1).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`(${cType(e.type).trim()})scr_stream_set_push_encoding((ScrStream *)${arg(0)}, ${arg(1)})`);
           case "readable.pushNull":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stream_push_null((ScrStream *)${arg(0)})`);
           case "readable.pushU":
           case "writable.writeU": {
             // Union-typed chunk: dispatch by tag (bytes / string / null
             // arms — the frontend admitted exactly those).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const t = e.args[1]!.type;
             if (t.kind !== "union") throw new InternalCompilerError(`emitter bug: ${fn} chunk not a union`);
-            const def = E.unionsById.get(t.unionId);
+            const def = emitter.unionsById.get(t.unionId);
             if (!def) throw new InternalCompilerError(`emitter bug: ${fn} union unknown`);
             const bytesTag = def.arms.findIndex((a) => a.kind === "bytes");
             const strTag = def.arms.findIndex((a) => a.kind === "string");
@@ -6484,54 +6484,54 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return finish(chain.length > 0 ? `(${chain.join(" : ")} : ${tail})` : tail);
           }
           case "readable.pushDyn":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stream_push_dyn((ScrStream *)${arg(0)}, ${arg(1)})`);
           case "readable.unshift":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stream_unshift((ScrStream *)${arg(0)}, ${arg(1)})`);
           case "readable.unshiftStr":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stream_unshift_str((ScrStream *)${arg(0)}, ${arg(1)})`);
           case "readable.read": {
             // +1 Buffer or NULL → the `Buffer | null` union, constructed
             // type-directedly (the error.code pattern).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: readable.read result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (bytesTag < 0 || nullTag < 0) throw new InternalCompilerError("emitter bug: readable.read union lacks its arms");
-            const b = E.newTemp(bytesOf("u8"), `scr_stream_read((ScrStream *)${arg(0)}, ${arg(1)})`);
-            E.emitPendingCheck();
-            E.moveTemp(b); // moves into the union arm when present
+            const b = emitter.newTemp(bytesOf("u8"), `scr_stream_read((ScrStream *)${arg(0)}, ${arg(1)})`);
+            emitter.emitPendingCheck();
+            emitter.moveTemp(b); // moves into the union arm when present
             const present = `scr_union_new_ref(${bytesTag}, ${b.name}, &scr_bytes_retain_v, &scr_bytes_release_v, NULL)`;
-            return E.newTemp(e.type, `${b.name} ? ${present} : scr_union_retain(${E.unitInstanceRef(e.type.unionId, nullTag)})`);
+            return emitter.newTemp(e.type, `${b.name} ? ${present} : scr_union_retain(${emitter.unitInstanceRef(e.type.unionId, nullTag)})`);
           }
           case "readable.pause":
             return finish(`(${cType(e.type).trim()})scr_stream_pause((ScrStream *)${arg(0)})`);
           case "readable.setEncoding":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`(${cType(e.type).trim()})scr_stream_set_encoding((ScrStream *)${arg(0)}, ${arg(1)})`);
           case "readable.nextChunk":
             // +1 promise; may run the user _read synchronously (may-throw).
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stream_next_chunk((ScrStream *)${arg(0)})`);
           case "readable.nextChunkDyn":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stream_next_chunk_dyn((ScrStream *)${arg(0)})`);
           case "readable.fromArr":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`(${cType(e.type).trim()})scr_stream_from_arr(${arg(0)}, ${arg(1)})`);
           case "readable.resume":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`(${cType(e.type).trim()})scr_stream_resume((ScrStream *)${arg(0)})`);
           case "readable.isPaused":
             return finish(`scr_stream_is_paused((ScrStream *)${arg(0)})`);
           case "readable.pipe":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`(${cType(e.type).trim()})scr_stream_pipe((ScrStream *)${arg(0)}, (ScrStream *)${arg(1)}, ${arg(2)})`);
           case "readable.unpipe":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(
               e.args.length > 1
                 ? `(${cType(e.type).trim()})scr_stream_unpipe((ScrStream *)${arg(0)}, (ScrStream *)${arg(1)})`
@@ -6540,26 +6540,26 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "readable.flowing": {
             // -1 (null: never kicked) / 0 / 1 → the `boolean | null` union.
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: readable.flowing result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const boolTag = def ? def.arms.findIndex((a) => a.kind === "bool") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (boolTag < 0 || nullTag < 0) throw new InternalCompilerError("emitter bug: readable.flowing union lacks its arms");
-            const f = E.newTemp({ kind: "f64" }, `scr_stream_flowing((ScrStream *)${arg(0)})`);
-            return E.newTemp(
+            const f = emitter.newTemp({ kind: "f64" }, `scr_stream_flowing((ScrStream *)${arg(0)})`);
+            return emitter.newTemp(
               e.type,
-              `${f.name} < 0 ? scr_union_retain(${E.unitInstanceRef(e.type.unionId, nullTag)}) : scr_union_new_bool(${boolTag}, ${f.name} > 0)`,
+              `${f.name} < 0 ? scr_union_retain(${emitter.unitInstanceRef(e.type.unionId, nullTag)}) : scr_union_new_bool(${boolTag}, ${f.name} > 0)`,
             );
           }
           case "writable.writeDyn":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stream_write_dyn((ScrStream *)${arg(0)}, ${arg(1)}, NULL)`);
           case "writable.write":
           case "writable.writeStr": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const entry = fn === "writable.write" ? "scr_stream_write" : "scr_stream_write_str";
             if (e.args.length > 2) {
               const cb = args[2]!;
-              E.moveTemp(cb); // the user's completion callback MOVES
+              emitter.moveTemp(cb); // the user's completion callback MOVES
               return finish(`${entry}((ScrStream *)${arg(0)}, ${arg(1)}, ${cb.name})`);
             }
             return finish(`${entry}((ScrStream *)${arg(0)}, ${arg(1)}, NULL)`);
@@ -6567,7 +6567,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "writable.end": {
             // (recv, flags[, chunk][, cb]) — flags: 1 bytes chunk, 2 string
             // chunk, 4 callback.
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const flagsArg = e.args[1]!;
             if (flagsArg.kind !== "numLit") throw new InternalCompilerError("emitter bug: writable.end flags not a literal");
             const flags = flagsArg.value;
@@ -6581,7 +6581,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             let cbName = "NULL";
             if (flags & 4) {
               const cb = args[at]!;
-              E.moveTemp(cb);
+              emitter.moveTemp(cb);
               cbName = cb.name;
             }
             const endCall = `(${cType(e.type).trim()})scr_stream_end((ScrStream *)${arg(0)}, ${chunkB}, ${chunkS}, ${cbName})`;
@@ -6595,13 +6595,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "writable.cork":
             return finish(`scr_stream_cork((ScrStream *)${arg(0)})`);
           case "writable.uncork":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_stream_uncork((ScrStream *)${arg(0)})`);
           case "stream.destroy":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`(${cType(e.type).trim()})scr_stream_destroy((ScrStream *)${arg(0)}, NULL)`);
           case "stream.destroyErr":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`(${cType(e.type).trim()})scr_stream_destroy((ScrStream *)${arg(0)}, ${arg(1)})`);
           case "stream.prop": {
             // The property NAME is a compile-time literal; args[1]'s
@@ -6615,14 +6615,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // +1 error or NULL → the `Error | null` union (error.code's
             // construction pattern).
             if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: stream.errored result is not a union");
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const errTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
             const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
             if (errTag < 0 || nullTag < 0) throw new InternalCompilerError("emitter bug: stream.errored union lacks its arms");
-            const er = E.newTemp({ kind: "object", className: "%Error" }, `scr_stream_errored((ScrStream *)${arg(0)})`);
-            E.moveTemp(er);
+            const er = emitter.newTemp({ kind: "object", className: "%Error" }, `scr_stream_errored((ScrStream *)${arg(0)})`);
+            emitter.moveTemp(er);
             const present = `scr_union_new_ref(${errTag}, ${er.name}, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg())`;
-            return E.newTemp(e.type, `${er.name} ? ${present} : scr_union_retain(${E.unitInstanceRef(e.type.unionId, nullTag)})`);
+            return emitter.newTemp(e.type, `${er.name} ? ${present} : scr_union_retain(${emitter.unitInstanceRef(e.type.unionId, nullTag)})`);
           }
           case "error.code": {
             // `string | undefined`, constructed type-directedly like
@@ -6634,17 +6634,17 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") {
               throw new InternalCompilerError("emitter bug: error.code result is not a union");
             }
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (strTag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: error.code union lacks its arms");
             }
-            const s = E.newTemp(STRING, `scr_error_code((ScrError *)${arg(0)})`);
-            E.moveTemp(s); // moves into the box when present; NULL otherwise
+            const s = emitter.newTemp(STRING, `scr_error_code((ScrError *)${arg(0)})`);
+            emitter.moveTemp(s); // moves into the box when present; NULL otherwise
             const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            return E.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
           }
           // node:assert (scr_assert.c; match in scr_regex.c): all args
           // borrowed; failures throw the catchable AssertionError (the
@@ -6773,29 +6773,29 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           // node:readline (scr_readline.c, the events gate): an OPEN
           // interface is a stdin consumer — the loop must run.
           case "rl.create":
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             return finish(`scr_rl_create()`);
           case "rl.question": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cbT = e.args[2]!.type;
             if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: rl.question callback not a func");
             const cb = args[2]!;
-            E.moveTemp(cb);
+            emitter.moveTemp(cb);
             const adapter =
               cbT.params.length === 0 ? "scr_rl_answer_thunk0" : "scr_rl_answer_thunk_str";
             // Throws Node's use-after-close error; the pending check comes
             // from the may-throw seed.
-            E.line(`scr_rl_question(${arg(0)}, ${arg(1)}, ${cb.name}, &${adapter});${E.srcComment(e.loc)}`);
-            E.emitPendingCheck();
+            emitter.line(`scr_rl_question(${arg(0)}, ${arg(1)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`);
+            emitter.emitPendingCheck();
             return { name: "", type: e.type };
           }
           case "rl.close":
             return finish(`scr_rl_close(${arg(0)})`);
           case "rl.onClose": {
-            E.usesTimers = true;
+            emitter.usesTimers = true;
             const cb = args[1]!;
-            E.moveTemp(cb);
-            E.line(`scr_rl_on_close(${arg(0)}, ${cb.name});${E.srcComment(e.loc)}`);
+            emitter.moveTemp(cb);
+            emitter.line(`scr_rl_on_close(${arg(0)}, ${cb.name});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           // The StringDecoder trio (scr_bytes.c): pure functions over the
@@ -6937,16 +6937,16 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             if (e.type.kind !== "union") {
               throw new InternalCompilerError("emitter bug: process.columns result is not a union");
             }
-            const def = E.unionsById.get(e.type.unionId);
+            const def = emitter.unionsById.get(e.type.unionId);
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
-            const undefTag = undefinedArmTag(e.type, E.unionsById);
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (f64Tag < 0 || undefTag < 0) {
               throw new InternalCompilerError("emitter bug: process.columns union lacks its arms");
             }
-            const w = E.newTemp(F64, `scr_process_columns(${arg(0)})`);
+            const w = emitter.newTemp(F64, `scr_process_columns(${arg(0)})`);
             const present = `scr_union_new_f64(${f64Tag}, ${w.name})`;
-            const absent = E.unitInstanceRef(e.type.unionId, undefTag);
-            return E.newTemp(e.type, `${w.name} >= 0 ? ${present} : ${absent}`);
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${w.name} >= 0 ? ${present} : ${absent}`);
           }
           case "string.fromCharCode":
             // One packed f64[] (the frontend built it) or one bytes value
@@ -6986,7 +6986,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // the result string is owned (+1). Throws only over CYCLE-CAPABLE
         // types (recursive records — the circular-structure TypeError) and
         // dyn roots; everything else keeps the throw-free path.
-        const v = E.emitExpr(e.value);
+        const v = emitter.emitExpr(e.value);
         // A dyn root: the runtime's dyn walker (scr_dyn_format_j — the %j
         // serializer IS JSON.stringify over the checked-dynamic tree: number/string/bool/
         // null/array/object exact, dropped members omitted, a dropped ROOT
@@ -6994,18 +6994,18 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // throws) — fallible, so the pending-exception check runs.
         const compact =
           e.value.type.kind === "dyn"
-            ? E.fallibleTemp(e.type, `scr_dyn_format_j(${v.name})`)
+            ? emitter.fallibleTemp(e.type, `scr_dyn_format_j(${v.name})`)
             : (() => {
-                const helper = E.jsonWriteHelper(e.value.type);
-                const buf = `sc_t${E.tempCounter++}`;
-                E.line(`ScrJsonBuf ${buf}; scr_jb_init(&${buf});${E.srcComment(e.loc)}`);
-                E.line(`${helper}(&${buf}, ${v.name});`);
-                const t = E.newTemp(e.type, `scr_jb_finish(&${buf})`);
+                const helper = emitter.jsonWriteHelper(e.value.type);
+                const buf = `sc_t${emitter.tempCounter++}`;
+                emitter.line(`ScrJsonBuf ${buf}; scr_jb_init(&${buf});${emitter.srcComment(e.loc)}`);
+                emitter.line(`${helper}(&${buf}, ${v.name});`);
+                const t = emitter.newTemp(e.type, `scr_jb_finish(&${buf})`);
                 // A cycle-capable root can throw the circular-structure
                 // TypeError mid-walk: finish still runs (frees the buffer,
                 // the partial string joins the frame and releases on
                 // unwind), then the pending check unwinds.
-                if (E.traceAdapterC(e.value.type) !== null) E.emitPendingCheck();
+                if (emitter.traceAdapterC(e.value.type) !== null) emitter.emitPendingCheck();
                 return t;
               })();
         // A pretty-print form (`stringify(v, null, 2)`): the frontend
@@ -7016,9 +7016,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         const indent = (e as { indent?: string }).indent;
         if (!indent) return compact;
         const bytes = Buffer.from(indent, "utf8");
-        return E.newTemp(
+        return emitter.newTemp(
           e.type,
-          `${E.jsonIndentHelper()}(${compact.name}, ${cStringLiteral(bytes)}, ${bytes.length})`,
+          `${emitter.jsonIndentHelper()}(${compact.name}, ${cStringLiteral(bytes)}, ${bytes.length})`,
         );
       }
       case "dynCheck": {
@@ -7027,9 +7027,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // TypeError-shaped, path-annotated string. The dyn temp is BORROWED;
         // the result joins the frame BEFORE the pending check so an unwind
         // releases the dummy (NULL for refcounted targets) harmlessly.
-        const dyn = E.emitExpr(e.value);
-        const helper = E.dynCheckHelper(e.type);
-        return E.fallibleTemp(e.type, `${helper}(${dyn.name}, NULL)`);
+        const dyn = emitter.emitExpr(e.value);
+        const helper = emitter.dynCheckHelper(e.type);
+        return emitter.fallibleTemp(e.type, `${helper}(${dyn.name}, NULL)`);
       }
       case "yieldExpr": {
         // Park the operand in the generator's OUT slot (moved in, typed by
@@ -7037,20 +7037,20 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // Control returns at the next resume — possibly with an injected
         // .throw payload or the GENRET sentinel pending, hence the check.
         // The result is the .next(v) argument, moved out of the IN slot.
-        const gen = E.currentGenerator;
+        const gen = emitter.currentGenerator;
         if (!gen) throw new InternalCompilerError("emitter bug: yieldExpr outside a generator body");
         if (e.value === null) throw new InternalCompilerError("emitter bug: yieldExpr with no operand (frontend fills undefined)");
-        const v = E.emitExpr(e.value);
+        const v = emitter.emitExpr(e.value);
         const yt = e.value.type;
         if (yt.kind === "f64" || yt.kind === "date") {
-          E.line(`scr_gen_yield_f64(${v.name});${E.srcComment(e.loc)}`);
+          emitter.line(`scr_gen_yield_f64(${v.name});${emitter.srcComment(e.loc)}`);
         } else if (yt.kind === "bool") {
-          E.line(`scr_gen_yield_bool(${v.name});${E.srcComment(e.loc)}`);
+          emitter.line(`scr_gen_yield_bool(${v.name});${emitter.srcComment(e.loc)}`);
         } else {
-          E.moveTemp(v); // the OUT slot takes ownership
-          E.line(`scr_gen_yield_ref(${v.name}, ${vAdapters(yt).release});${E.srcComment(e.loc)}`);
+          emitter.moveTemp(v); // the OUT slot takes ownership
+          emitter.line(`scr_gen_yield_ref(${v.name}, ${vAdapters(yt).release});${emitter.srcComment(e.loc)}`);
         }
-        E.emitPendingCheck();
+        emitter.emitPendingCheck();
         switch (e.type.kind) {
           case "void":
             // An undefined next-channel: nothing to read (the frontend
@@ -7058,12 +7058,12 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             return { name: "", type: e.type };
           case "f64":
           case "date":
-            return E.newTemp(e.type, `scr_gen_take_in_f64()`);
+            return emitter.newTemp(e.type, `scr_gen_take_in_f64()`);
           case "bool":
-            return E.newTemp(e.type, `scr_gen_take_in_bool()`);
+            return emitter.newTemp(e.type, `scr_gen_take_in_bool()`);
           default:
             // Refcounted channels (dyn included): the slot's +1 moves out.
-            return E.newTemp(e.type, `(${cType(e.type).trim()})scr_gen_take_in_ref()`);
+            return emitter.newTemp(e.type, `(${cType(e.type).trim()})scr_gen_take_in_ref()`);
         }
       }
       case "genResume": {
@@ -7073,77 +7073,77 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         const genT = e.gen.type;
         if (genT.kind !== "generator") throw new InternalCompilerError("emitter bug: genResume on a non-generator");
         if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: genResume result is not a record");
-        const g = E.emitExpr(e.gen); // borrowed for the calls below
+        const g = emitter.emitExpr(e.gen); // borrowed for the calls below
         const sendArg = (store: (a: Temp) => string): void => {
-          const a = E.emitExpr(e.arg!);
-          if (isRefCounted(e.arg!.type)) E.moveTemp(a); // the slot takes ownership
-          E.line(store(a));
+          const a = emitter.emitExpr(e.arg!);
+          if (isRefCounted(e.arg!.type)) emitter.moveTemp(a); // the slot takes ownership
+          emitter.line(store(a));
         };
         if (e.mode === "next") {
           if (e.arg === null) {
             // Valueless resume: dyn channels read JS's undefined; unit
             // channels have nothing to read.
             if (genT.nextT.kind === "dyn") {
-              E.line(`scr_gen_in_ref(${g.name}, scr_dyn_retain(scr_dyn_undefined()), scr_dyn_release_v);${E.srcComment(e.loc)}`);
+              emitter.line(`scr_gen_in_ref(${g.name}, scr_dyn_retain(scr_dyn_undefined()), scr_dyn_release_v);${emitter.srcComment(e.loc)}`);
             } else {
-              E.line(`scr_gen_in_none(${g.name});${E.srcComment(e.loc)}`);
+              emitter.line(`scr_gen_in_none(${g.name});${emitter.srcComment(e.loc)}`);
             }
           } else {
             const nt = e.arg.type;
             sendArg((a) =>
-              nt.kind === "f64" || nt.kind === "date" ? `scr_gen_in_f64(${g.name}, ${a.name});${E.srcComment(e.loc)}`
-              : nt.kind === "bool" ? `scr_gen_in_bool(${g.name}, ${a.name});${E.srcComment(e.loc)}`
-              : `scr_gen_in_ref(${g.name}, ${a.name}, ${vAdapters(nt).release});${E.srcComment(e.loc)}`);
+              nt.kind === "f64" || nt.kind === "date" ? `scr_gen_in_f64(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
+              : nt.kind === "bool" ? `scr_gen_in_bool(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
+              : `scr_gen_in_ref(${g.name}, ${a.name}, ${vAdapters(nt).release});${emitter.srcComment(e.loc)}`);
           }
-          E.line(`scr_gen_resume(${g.name});`);
+          emitter.line(`scr_gen_resume(${g.name});`);
         } else if (e.mode === "return") {
           if (e.arg === null) {
-            E.line(`scr_gen_ret_none(${g.name});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_gen_ret_none(${g.name});${emitter.srcComment(e.loc)}`);
           } else {
             const rt = e.arg.type;
             sendArg((a) =>
-              rt.kind === "f64" || rt.kind === "date" ? `scr_gen_ret_f64(${g.name}, ${a.name});${E.srcComment(e.loc)}`
-              : rt.kind === "bool" ? `scr_gen_ret_bool(${g.name}, ${a.name});${E.srcComment(e.loc)}`
-              : `scr_gen_ret_ref(${g.name}, ${a.name}, ${vAdapters(rt).release});${E.srcComment(e.loc)}`);
+              rt.kind === "f64" || rt.kind === "date" ? `scr_gen_ret_f64(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
+              : rt.kind === "bool" ? `scr_gen_ret_bool(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
+              : `scr_gen_ret_ref(${g.name}, ${a.name}, ${vAdapters(rt).release});${emitter.srcComment(e.loc)}`);
           }
-          E.line(`scr_gen_resume_return(${g.name});`);
+          emitter.line(`scr_gen_resume_return(${g.name});`);
         } else {
           // .throw(e): park the payload in the CALLER's cell (the throw
           // statement's exact kind dispatch), then resume — the runtime
           // moves it into the fiber, or leaves it pending (non-suspended
           // generators: the .throw call itself throws at the check below).
           if (e.arg === null) throw new InternalCompilerError("emitter bug: genResume throw with no payload");
-          const a = E.emitExpr(e.arg);
+          const a = emitter.emitExpr(e.arg);
           const t = e.arg.type;
-          if (isRefCounted(t)) E.moveTemp(a); // the cell takes ownership
+          if (isRefCounted(t)) emitter.moveTemp(a); // the cell takes ownership
           if (t.kind === "date") {
             throw new InternalCompilerError("emitter bug: Date generator throw reached backend");
           } else if (t.kind === "f64") {
-            E.line(`scr_throw_f64(${a.name});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_throw_f64(${a.name});${emitter.srcComment(e.loc)}`);
           } else if (t.kind === "bool") {
-            E.line(`scr_throw_bool(${a.name});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_throw_bool(${a.name});${emitter.srcComment(e.loc)}`);
           } else if (t.kind === "string") {
-            E.line(`scr_throw_str(${a.name});${E.srcComment(e.loc)}`);
-          } else if (t.kind === "object" && E.classMeta.get(t.className)?.hierarchy) {
+            emitter.line(`scr_throw_str(${a.name});${emitter.srcComment(e.loc)}`);
+          } else if (t.kind === "object" && emitter.classMeta.get(t.className)?.hierarchy) {
             const rc = vAdapters(t);
-            E.line(`scr_throw_obj(${a.name}, &${rc.retain}, &${rc.release}, ${E.traceArgC(t)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_throw_obj(${a.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(t)});${emitter.srcComment(e.loc)}`);
           } else {
             const rc = vAdapters(t);
-            E.line(`scr_throw_ref(${a.name}, &${rc.retain}, &${rc.release}, ${E.traceArgC(t)});${E.srcComment(e.loc)}`);
+            emitter.line(`scr_throw_ref(${a.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(t)});${emitter.srcComment(e.loc)}`);
           }
-          E.line(`scr_gen_resume_throw(${g.name});`);
+          emitter.line(`scr_gen_resume_throw(${g.name});`);
         }
-        const helper = genResultThunkFor(E, genT, e.type);
+        const helper = genResultThunkFor(emitter, genT, e.type);
         // The record builds before the check so an unwind (a propagated
         // body exception) releases it as the frame's never-read dummy.
-        return E.fallibleTemp(e.type, `${helper}(${g.name})`);
+        return emitter.fallibleTemp(e.type, `${helper}(${g.name})`);
       }
       case "awaitExpr": {
         // Parks the fiber until the promise settles; rejected promises
         // re-throw here (hence the pending check). Promise temp borrowed;
         // refcounted results arrive +1 and join the frame pre-check so an
         // unwind releases the dummy (NULL) harmlessly.
-        const pr = E.emitExpr(e.value);
+        const pr = emitter.emitExpr(e.value);
         let read: string;
         switch (e.type.kind) {
           case "f64":
@@ -7157,8 +7157,8 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             read = `scr_await_str(${pr.name})`;
             break;
           case "void": {
-            E.line(`scr_await_void(${pr.name});${E.srcComment(e.loc)}`);
-            E.emitPendingCheck();
+            emitter.line(`scr_await_void(${pr.name});${emitter.srcComment(e.loc)}`);
+            emitter.emitPendingCheck();
             return { name: "", type: e.type };
           }
           case "dyn":
@@ -7170,7 +7170,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           default:
             read = `(${cType(e.type).trim()})scr_await_ref(${pr.name})`;
         }
-        return E.fallibleTemp(e.type, read);
+        return emitter.fallibleTemp(e.type, read);
       }
       case "awaitUnionExpr": {
         // Await of a promise-or-absent union: the promise arm awaits like
@@ -7183,25 +7183,25 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         if (e.value.type.kind !== "union") {
           throw new InternalCompilerError("emitter bug: awaitUnion of a non-union");
         }
-        const def = E.unionsById.get(e.value.type.unionId);
+        const def = emitter.unionsById.get(e.value.type.unionId);
         const promiseArm = def?.arms[e.promiseTag];
         if (!def || promiseArm?.kind !== "promise") {
           throw new InternalCompilerError("emitter bug: awaitUnion arm is not a promise");
         }
         const inner = promiseArm.inner;
-        const u = E.emitExpr(e.value);
+        const u = emitter.emitExpr(e.value);
         const peek = `(ScrPromise *)scr_union_peek(${u.name})`;
         if (e.type.kind === "void") {
-          E.line(
-            `if (${u.name}->tag == ${e.promiseTag}) scr_await_void(${peek}); else scr_await_hop();${E.srcComment(e.loc)}`,
+          emitter.line(
+            `if (${u.name}->tag == ${e.promiseTag}) scr_await_void(${peek}); else scr_await_hop();${emitter.srcComment(e.loc)}`,
           );
-          E.emitPendingCheck();
+          emitter.emitPendingCheck();
           return { name: "", type: e.type };
         }
         if (e.type.kind !== "union") {
           throw new InternalCompilerError("emitter bug: awaitUnion result is neither void nor a union");
         }
-        const resDef = E.unionsById.get(e.type.unionId);
+        const resDef = emitter.unionsById.get(e.type.unionId);
         if (!resDef) throw new InternalCompilerError("emitter bug: awaitUnion result union unknown");
         const resTagOf = (arm: (typeof resDef.arms)[number]): number => {
           const tag = resDef.arms.findIndex((a) => typeEquals(a, arm));
@@ -7209,11 +7209,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           return tag;
         };
         const innerTag = resTagOf(inner);
-        const name = `sc_t${E.tempCounter++}`;
-        E.line(`${cDecl(e.type, name)} = NULL;${E.srcComment(e.loc)}`);
-        E.currentFrame().push({ name, type: e.type });
-        E.line(`if (${u.name}->tag == ${e.promiseTag}) {`);
-        E.indent++;
+        const name = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`${cDecl(e.type, name)} = NULL;${emitter.srcComment(e.loc)}`);
+        emitter.currentFrame().push({ name, type: e.type });
+        emitter.line(`if (${u.name}->tag == ${e.promiseTag}) {`);
+        emitter.indent++;
         let wrap: string;
         switch (inner.kind) {
           case "f64":
@@ -7227,28 +7227,28 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             break;
           default: {
             const v = vAdapters(inner);
-            wrap = `scr_union_new_ref(${innerTag}, scr_await_ref(${peek}), ${v.retain}, ${v.release}, ${E.traceArgC(inner)})`;
+            wrap = `scr_union_new_ref(${innerTag}, scr_await_ref(${peek}), ${v.retain}, ${v.release}, ${emitter.traceArgC(inner)})`;
           }
         }
-        E.line(`${name} = ${wrap};`);
-        E.indent--;
-        E.line(`} else {`);
-        E.indent++;
-        E.line(`scr_await_hop();`);
+        emitter.line(`${name} = ${wrap};`);
+        emitter.indent--;
+        emitter.line(`} else {`);
+        emitter.indent++;
+        emitter.line(`scr_await_hop();`);
         const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
         if (unitTags.length === 1) {
-          E.line(`${name} = ${E.unitInstanceRef(e.type.unionId, resTagOf(def.arms[unitTags[0]!]!))};`);
+          emitter.line(`${name} = ${emitter.unitInstanceRef(e.type.unionId, resTagOf(def.arms[unitTags[0]!]!))};`);
         } else {
-          E.line(`switch (${u.name}->tag) {`);
+          emitter.line(`switch (${u.name}->tag) {`);
           for (const t of unitTags) {
-            E.line(`case ${t}: ${name} = ${E.unitInstanceRef(e.type.unionId, resTagOf(def.arms[t]!))}; break;`);
+            emitter.line(`case ${t}: ${name} = ${emitter.unitInstanceRef(e.type.unionId, resTagOf(def.arms[t]!))}; break;`);
           }
-          E.line(`default: break;`);
-          E.line(`}`);
+          emitter.line(`default: break;`);
+          emitter.line(`}`);
         }
-        E.indent--;
-        E.line(`}`);
-        E.emitPendingCheck();
+        emitter.indent--;
+        emitter.line(`}`);
+        emitter.emitPendingCheck();
         return { name, type: e.type };
       }
       case "newPromise": {
@@ -7257,13 +7257,13 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // pending check here). Executor/resolve temps are frame-owned.
         if (e.type.kind !== "promise") throw new InternalCompilerError("emitter bug: newPromise type");
         const inner = e.type.inner;
-        const p = E.newTemp(e.type, `scr_promise_new()`);
+        const p = emitter.newTemp(e.type, `scr_promise_new()`);
         // Zero-param executor: no resolve exists — a forever-pending
         // promise unless the executor throws (which rejects it).
         if (e.executor.type.kind === "func" && e.executor.type.params.length === 0) {
-          const exec0 = E.emitExpr(e.executor);
-          E.line(
-            `scr_promise_run_executor0(${p.name}, ${exec0.name});${E.srcComment(e.loc)}`,
+          const exec0 = emitter.emitExpr(e.executor);
+          emitter.line(
+            `scr_promise_run_executor0(${p.name}, ${exec0.name});${emitter.srcComment(e.loc)}`,
           );
           return p;
         }
@@ -7283,9 +7283,9 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             mk = `scr_make_resolve(${p.name}, 3)`;
             break;
           default:
-            mk = `scr_make_resolve_fn(${p.name}, (void *)&${E.resolveThunkFor(inner)})`;
+            mk = `scr_make_resolve_fn(${p.name}, (void *)&${emitter.resolveThunkFor(inner)})`;
         }
-        const resolve = E.newTemp(
+        const resolve = emitter.newTemp(
           { kind: "func", params: inner.kind === "void" ? [] : [inner], ret: { kind: "void" } },
           mk,
         );
@@ -7294,25 +7294,25 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // and the uncaught printer see exactly a thrown Error). First settle
         // wins in the runtime; both closures' +1 move into the call.
         if (e.executor.type.kind === "func" && e.executor.type.params.length === 2) {
-          const reject = E.newTemp(
+          const reject = emitter.newTemp(
             { kind: "func", params: [{ kind: "object", className: "%Error" }], ret: { kind: "void" } },
             `scr_make_reject(${p.name})`,
           );
-          const exec2 = E.emitExpr(e.executor);
-          E.moveTemp(resolve);
-          E.moveTemp(reject);
-          E.line(
-            `scr_promise_run_executor2(${p.name}, ${exec2.name}, ${resolve.name}, ${reject.name});${E.srcComment(e.loc)}`,
+          const exec2 = emitter.emitExpr(e.executor);
+          emitter.moveTemp(resolve);
+          emitter.moveTemp(reject);
+          emitter.line(
+            `scr_promise_run_executor2(${p.name}, ${exec2.name}, ${resolve.name}, ${reject.name});${emitter.srcComment(e.loc)}`,
           );
           return p;
         }
-        const exec = E.emitExpr(e.executor);
+        const exec = emitter.emitExpr(e.executor);
         // The executor is a compiled closure and OWNS its params (it
         // releases them on exit) — resolve's +1 moves into the call. The
         // executor closure itself is borrowed (frame-released here).
-        E.moveTemp(resolve);
-        E.line(
-          `scr_promise_run_executor(${p.name}, ${exec.name}, ${resolve.name});${E.srcComment(e.loc)}`,
+        emitter.moveTemp(resolve);
+        emitter.line(
+          `scr_promise_run_executor(${p.name}, ${exec.name}, ${resolve.name});${emitter.srcComment(e.loc)}`,
         );
         return p;
       }
@@ -7322,7 +7322,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // the reject closure, written into the fresh record. Closure +1s
         // move into the record's fields; never throws.
         if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: promiseWithResolvers type");
-        const shape = E.recordsById.get(e.type.shapeId);
+        const shape = emitter.recordsById.get(e.type.shapeId);
         const promT = shape?.fields.find((f) => f.name === "promise")?.type;
         const resolveT = shape?.fields.find((f) => f.name === "resolve")?.type;
         const rejectT = shape?.fields.find((f) => f.name === "reject")?.type;
@@ -7330,7 +7330,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           throw new InternalCompilerError("emitter bug: promiseWithResolvers record shape");
         }
         const inner = promT.inner;
-        const p = E.newTemp(promT, `scr_promise_new()`);
+        const p = emitter.newTemp(promT, `scr_promise_new()`);
         let mk: string;
         switch (inner.kind) {
           case "f64":
@@ -7347,19 +7347,19 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             mk = `scr_make_resolve(${p.name}, 3)`;
             break;
           default:
-            mk = `scr_make_resolve_fn(${p.name}, (void *)&${E.resolveThunkFor(inner)})`;
+            mk = `scr_make_resolve_fn(${p.name}, (void *)&${emitter.resolveThunkFor(inner)})`;
         }
-        const resolve = E.newTemp(resolveT, mk);
-        const reject = E.newTemp(rejectT, `scr_make_reject(${p.name})`);
-        const rec = E.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
+        const resolve = emitter.newTemp(resolveT, mk);
+        const reject = emitter.newTemp(rejectT, `scr_make_reject(${p.name})`);
+        const rec = emitter.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
         // The promise's +1 moves into the record; the record's own read
         // of it at the call site retains per field access as usual.
-        E.moveTemp(p);
-        E.moveTemp(resolve);
-        E.moveTemp(reject);
-        E.line(`${rec.name}->${mangleField("promise")} = ${p.name};`);
-        E.line(`${rec.name}->${mangleField("resolve")} = ${resolve.name};`);
-        E.line(`${rec.name}->${mangleField("reject")} = ${reject.name};`);
+        emitter.moveTemp(p);
+        emitter.moveTemp(resolve);
+        emitter.moveTemp(reject);
+        emitter.line(`${rec.name}->${mangleField("promise")} = ${p.name};`);
+        emitter.line(`${rec.name}->${mangleField("resolve")} = ${resolve.name};`);
+        emitter.line(`${rec.name}->${mangleField("reject")} = ${reject.name};`);
         return rec;
       }
       case "jsMarshal": {
@@ -7369,26 +7369,26 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // Operand borrowed; result +1. from_json cannot fail on this
         // machine-produced JSON but reports engine surprises via NULL +
         // pending — check like a may-throw so the dummy unwinds cleanly.
-        const v = E.emitExpr(e.value);
+        const v = emitter.emitExpr(e.value);
         switch (e.value.type.kind) {
           case "f64":
-            return E.newTemp(e.type, `scr_jsval_from_f64(${v.name})`);
+            return emitter.newTemp(e.type, `scr_jsval_from_f64(${v.name})`);
           case "bool":
-            return E.newTemp(e.type, `scr_jsval_from_bool(${v.name})`);
+            return emitter.newTemp(e.type, `scr_jsval_from_bool(${v.name})`);
           case "string":
-            return E.newTemp(e.type, `scr_jsval_from_str(${v.name})`);
+            return emitter.newTemp(e.type, `scr_jsval_from_str(${v.name})`);
           case "dyn":
             // A CHECKED-DYNAMIC (dyn) value entering the island: deep
             // copy, data kinds only — boxed functions/handles/promises
             // throw the catchable TypeError in the runtime.
-            return E.fallibleTemp(e.type, `scr_jsval_from_dyn(${v.name})`);
+            return emitter.fallibleTemp(e.type, `scr_jsval_from_dyn(${v.name})`);
           case "bytes":
             // A typed array crossing IN: an engine typed array of the same
             // element kind — a COPY (the boundary's copy stance).
-            return E.fallibleTemp(e.type, `scr_jsval_from_bytes(${v.name})`);
+            return emitter.fallibleTemp(e.type, `scr_jsval_from_bytes(${v.name})`);
           case "url":
             // A URL crossing IN: an engine URL instance built from href.
-            return E.fallibleTemp(e.type, `scr_jsval_from_url(${v.name})`);
+            return emitter.fallibleTemp(e.type, `scr_jsval_from_url(${v.name})`);
           case "promise": {
             // A STATIC promise crossing IN: a real engine thenable
             // settled when the scriptc promise settles (the async-
@@ -7400,7 +7400,7 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
               void: "SCR_ISLP_VOID", f64: "SCR_ISLP_F64", bool: "SCR_ISLP_BOOL",
               string: "SCR_ISLP_STR", jsval: "SCR_ISLP_JSVAL", jsvalArr: "SCR_ISLP_JSVAL_ARR",
             }[tag];
-            return E.fallibleTemp(e.type, `scr_jsval_from_promise(scr_promise_retain(${v.name}), ${tagC})`);
+            return emitter.fallibleTemp(e.type, `scr_jsval_from_promise(scr_promise_retain(${v.name}), ${tagC})`);
           }
           case "func": {
             // A closure entering the island as a host function (the
@@ -7413,27 +7413,27 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // param's static type through the exit machinery.
             const fn = e.value.type;
             const adapter = canMarshalFuncIntoIsland(fn)
-              ? E.islandAdapter(
+              ? emitter.islandAdapter(
                   fn.params.length,
                   fn.ret.kind as "void" | "jsval" | "f64" | "bool" | "string",
                 )
-              : E.islandTypedAdapter(fn);
+              : emitter.islandTypedAdapter(fn);
             // ISLAND-REST closures encode a NEGATIVE arity: the wrapper
             // pads the leading declared params and hands the trailing
             // slot the ENGINE array of the surplus arguments.
             const arity = fn.rest === true && fn.restAbi === "jsval" ? -fn.params.length : fn.params.length;
-            return E.newTemp(
+            return emitter.newTemp(
               e.type,
               `scr_jsval_from_closure(${v.name}, ${arity}, ${adapter})`,
             );
           }
           default: {
-            const helper = E.jsonWriteHelper(e.value.type);
-            const buf = `sc_t${E.tempCounter++}`;
-            E.line(`ScrJsonBuf ${buf}; scr_jb_init(&${buf});${E.srcComment(e.loc)}`);
-            E.line(`${helper}(&${buf}, ${v.name});`);
-            const json = E.newTemp(STRING, `scr_jb_finish(&${buf})`);
-            return E.fallibleTemp(e.type, `scr_jsval_from_json(${json.name})`);
+            const helper = emitter.jsonWriteHelper(e.value.type);
+            const buf = `sc_t${emitter.tempCounter++}`;
+            emitter.line(`ScrJsonBuf ${buf}; scr_jb_init(&${buf});${emitter.srcComment(e.loc)}`);
+            emitter.line(`${helper}(&${buf}, ${v.name});`);
+            const json = emitter.newTemp(STRING, `scr_jb_finish(&${buf})`);
+            return emitter.fallibleTemp(e.type, `scr_jsval_from_json(${json.name})`);
           }
         }
       }
@@ -7442,14 +7442,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // closures), never C reimplementations. jsval args are borrowed
         // frame temps; jsval/string results +1. Engine exceptions bridge
         // into the cell — pending checks after every fallible op.
-        const args = e.args.map((a) => E.emitExpr(a));
+        const args = e.args.map((a) => emitter.emitExpr(a));
         const a = (i: number) => args[i]!.name;
-        const nameSym = () => `(ScrStr *)&${E.internLiteral(e.name!)}`;
-        const finishFallible = (call: string): Temp => E.fallibleTemp(e.type, call);
+        const nameSym = () => `(ScrStr *)&${emitter.internLiteral(e.name!)}`;
+        const finishFallible = (call: string): Temp => emitter.fallibleTemp(e.type, call);
         const argPack = (list: string[]): string => {
           if (list.length === 0) return "NULL";
-          const arr = `sc_t${E.tempCounter++}`;
-          E.line(`ScrJsval *${arr}[] = { ${list.join(", ")} };`);
+          const arr = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`ScrJsval *${arr}[] = { ${list.join(", ")} };`);
           return arr;
         };
         switch (e.op) {
@@ -7468,11 +7468,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "plus":
             return finishFallible(`scr_jsval_plus(${a(0)})`);
           case "truthy":
-            return E.newTemp(e.type, `(scr_jsval_truthy(${a(0)}) != 0)`);
+            return emitter.newTemp(e.type, `(scr_jsval_truthy(${a(0)}) != 0)`);
           case "not":
-            return E.newTemp(e.type, `(scr_jsval_truthy(${a(0)}) == 0)`);
+            return emitter.newTemp(e.type, `(scr_jsval_truthy(${a(0)}) == 0)`);
           case "typeof":
-            return E.newTemp(e.type, `scr_jsval_typeof(${a(0)})`);
+            return emitter.newTemp(e.type, `scr_jsval_typeof(${a(0)})`);
           case "toStr":
             return finishFallible(`scr_jsval_to_str(${a(0)})`);
           case "getProp":
@@ -7480,16 +7480,16 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           case "globalGet":
             return finishFallible(`scr_jsval_global_get(${nameSym()})`);
           case "setProp":
-            E.line(`scr_jsval_set_prop(${a(0)}, ${nameSym()}, ${a(1)});${E.srcComment(e.loc)}`);
-            E.emitPendingCheck();
+            emitter.line(`scr_jsval_set_prop(${a(0)}, ${nameSym()}, ${a(1)});${emitter.srcComment(e.loc)}`);
+            emitter.emitPendingCheck();
             return { name: "", type: e.type };
           case "getIdx":
             return finishFallible(`scr_jsval_get_idx(${a(0)}, ${a(1)})`);
           case "iterNew":
             return finishFallible(`scr_jsval_iter_new(${a(0)})`);
           case "setIdx":
-            E.line(`scr_jsval_set_idx(${a(0)}, ${a(1)}, ${a(2)});${E.srcComment(e.loc)}`);
-            E.emitPendingCheck();
+            emitter.line(`scr_jsval_set_idx(${a(0)}, ${a(1)}, ${a(2)});${emitter.srcComment(e.loc)}`);
+            emitter.emitPendingCheck();
             return { name: "", type: e.type };
           case "optCallMethod": {
             const pack = argPack(args.slice(1).map((x) => x.name));
@@ -7526,11 +7526,11 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
           }
           case "objLit": {
             const pack = argPack(args.map((x) => x.name));
-            return E.newTemp(e.type, `scr_jsval_obj_lit(${args.length / 2}, ${pack})`);
+            return emitter.newTemp(e.type, `scr_jsval_obj_lit(${args.length / 2}, ${pack})`);
           }
           case "tplStrings": {
             const pack = argPack(args.map((x) => x.name));
-            return E.newTemp(e.type, `scr_jsval_tpl_strings(${args.length / 2}, ${pack})`);
+            return emitter.newTemp(e.type, `scr_jsval_tpl_strings(${args.length / 2}, ${pack})`);
           }
           case "objSpread":
             // Spread completion: engine CopyDataProperties (getters can
@@ -7540,15 +7540,15 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // Getter completion for an island literal: defines key (a(1))
             // on obj (a(0)) as an engine getter invoking a(2); answers the
             // object (+1) for chaining.
-            return E.newTemp(e.type, `scr_jsval_define_getter(${a(0)}, ${a(1)}, ${a(2)})`);
+            return emitter.newTemp(e.type, `scr_jsval_define_getter(${a(0)}, ${a(1)}, ${a(2)})`);
           case "arrLit": {
             const pack = argPack(args.map((x) => x.name));
-            return E.newTemp(e.type, `scr_jsval_arr_lit(${args.length}, ${pack})`);
+            return emitter.newTemp(e.type, `scr_jsval_arr_lit(${args.length}, ${pack})`);
           }
           case "undefLit":
-            return E.newTemp(e.type, `scr_jsval_undefined()`);
+            return emitter.newTemp(e.type, `scr_jsval_undefined()`);
           case "nullLit":
-            return E.newTemp(e.type, `scr_jsval_null()`);
+            return emitter.newTemp(e.type, `scr_jsval_null()`);
           default: {
             const _exhaustive: never = e;
             void _exhaustive;
@@ -7563,32 +7563,32 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // dynCheck walker, inheriting its width tolerance and path-annotated
         // failures. Every step is a may-throw with the standard pending
         // discipline; intermediate temps are frame-owned.
-        const v = E.emitExpr(e.value);
+        const v = emitter.emitExpr(e.value);
         switch (e.type.kind) {
           case "f64":
           case "bool": {
-            const name = `sc_t${E.tempCounter++}`;
+            const name = `sc_t${emitter.tempCounter++}`;
             const ctype = e.type.kind === "f64" ? "double" : "bool";
             const fn = e.type.kind === "f64" ? "scr_jsval_exit_f64" : "scr_jsval_exit_bool";
-            E.line(`${ctype} ${name} = 0;${E.srcComment(e.loc)}`);
-            E.line(`${fn}(${v.name}, &${name});`);
-            E.emitPendingCheck();
+            emitter.line(`${ctype} ${name} = 0;${emitter.srcComment(e.loc)}`);
+            emitter.line(`${fn}(${v.name}, &${name});`);
+            emitter.emitPendingCheck();
             return { name, type: e.type };
           }
           case "string":
-            return E.fallibleTemp(e.type, `scr_jsval_exit_str(${v.name})`);
+            return emitter.fallibleTemp(e.type, `scr_jsval_exit_str(${v.name})`);
           case "bytes":
             // Uint8Array exit: kind-checked, copied out (+1) — engine
             // Buffers pass (they ARE Uint8Arrays). The frontend only
             // emits u8 targets (canExitIslandToType).
-            return E.fallibleTemp(e.type, `scr_jsval_exit_bytes(${v.name})`);
+            return emitter.fallibleTemp(e.type, `scr_jsval_exit_bytes(${v.name})`);
           default: {
             // `any[]`-declared slot: the engine array exits Array.isArray-
             // gated, elements BY REFERENCE (identity crosses; the spine is
             // a snapshot copy). JSON-safe element types keep the round
             // trip below.
             if (e.type.kind === "array" && e.type.elem.kind === "jsval") {
-              return E.fallibleTemp(e.type, `scr_jsval_exit_jsval_arr(${v.name})`);
+              return emitter.fallibleTemp(e.type, `scr_jsval_exit_jsval_arr(${v.name})`);
             }
             // An undefined-armed union target: the engine's undefined takes
             // the undefined arm FIRST — JSON cannot spell it (to_json would
@@ -7596,42 +7596,42 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
             // into the union's dynCheck like any composite (or, for the
             // `any[] | undefined` defaulted-parameter spelling, the
             // jsval-element array exit wrapped into the data arm).
-            const undefTag = e.type.kind === "union" ? undefinedArmTag(e.type, E.unionsById) : -1;
+            const undefTag = e.type.kind === "union" ? undefinedArmTag(e.type, emitter.unionsById) : -1;
             if (e.type.kind === "union" && undefTag >= 0) {
-              const name = `sc_t${E.tempCounter++}`;
-              E.line(`${cDecl(e.type, name)};`);
-              E.line(`if (scr_jsval_is_undefined(${v.name})) {`);
-              E.indent++;
-              E.line(`${name} = ${E.unitInstanceRef(e.type.unionId, undefTag)};`);
-              E.indent--;
-              E.line(`} else {`);
-              E.indent++;
-              E.frames.push([]);
-              const unionDef = E.unionsById.get(e.type.unionId);
+              const name = `sc_t${emitter.tempCounter++}`;
+              emitter.line(`${cDecl(e.type, name)};`);
+              emitter.line(`if (scr_jsval_is_undefined(${v.name})) {`);
+              emitter.indent++;
+              emitter.line(`${name} = ${emitter.unitInstanceRef(e.type.unionId, undefTag)};`);
+              emitter.indent--;
+              emitter.line(`} else {`);
+              emitter.indent++;
+              emitter.frames.push([]);
+              const unionDef = emitter.unionsById.get(e.type.unionId);
               const dataArms = unionDef ? unionDef.arms.flatMap((a, i) => (isUnitType(a) ? [] : [{ a, i }])) : [];
               const jsvalArr = dataArms.length === 1 && dataArms[0]!.a.kind === "array" && dataArms[0]!.a.elem.kind === "jsval" ? dataArms[0]! : null;
               if (jsvalArr) {
                 // The `any[] | undefined` defaulted-parameter spelling:
                 // the engine array exits BY REFERENCE into the data arm.
-                const arr = E.fallibleTemp(jsvalArr.a, `scr_jsval_exit_jsval_arr(${v.name})`);
-                E.moveTemp(arr);
-                E.line(`${name} = scr_union_new_ref(${jsvalArr.i}, ${arr.name}, &scr_arr_retain_v, &scr_arr_release_v, NULL);`);
+                const arr = emitter.fallibleTemp(jsvalArr.a, `scr_jsval_exit_jsval_arr(${v.name})`);
+                emitter.moveTemp(arr);
+                emitter.line(`${name} = scr_union_new_ref(${jsvalArr.i}, ${arr.name}, &scr_arr_retain_v, &scr_arr_release_v, NULL);`);
               } else {
-                const json = E.fallibleTemp(STRING, `scr_jsval_to_json(${v.name})`);
-                const dom = E.fallibleTemp(DYN, `scr_json_parse(${json.name})`);
-                const out = E.fallibleTemp(e.type, `${E.dynCheckHelper(e.type)}(${dom.name}, NULL)`);
-                E.moveTemp(out);
-                E.line(`${name} = ${out.name};`);
+                const json = emitter.fallibleTemp(STRING, `scr_jsval_to_json(${v.name})`);
+                const dom = emitter.fallibleTemp(DYN, `scr_json_parse(${json.name})`);
+                const out = emitter.fallibleTemp(e.type, `${emitter.dynCheckHelper(e.type)}(${dom.name}, NULL)`);
+                emitter.moveTemp(out);
+                emitter.line(`${name} = ${out.name};`);
               }
-              E.releaseFrame(E.frames.pop()!);
-              E.indent--;
-              E.line(`}`);
-              E.currentFrame().push({ name, type: e.type });
+              emitter.releaseFrame(emitter.frames.pop()!);
+              emitter.indent--;
+              emitter.line(`}`);
+              emitter.currentFrame().push({ name, type: e.type });
               return { name, type: e.type };
             }
-            const json = E.fallibleTemp(STRING, `scr_jsval_to_json(${v.name})`);
-            const dom = E.fallibleTemp(DYN, `scr_json_parse(${json.name})`);
-            return E.fallibleTemp(e.type, `${E.dynCheckHelper(e.type)}(${dom.name}, NULL)`);
+            const json = emitter.fallibleTemp(STRING, `scr_jsval_to_json(${v.name})`);
+            const dom = emitter.fallibleTemp(DYN, `scr_json_parse(${json.name})`);
+            return emitter.fallibleTemp(e.type, `${emitter.dynCheckHelper(e.type)}(${dom.name}, NULL)`);
           }
         }
       }
@@ -7641,14 +7641,14 @@ export function emitExpr(E: CEmitter, e: IrExpr): Temp {
         // void; rejection = the bridged reason). Operand borrowed; the +1
         // promise joins the frame. Fails only on an engine-level surprise
         // minting the subscription — pending check like other island ops.
-        const v = E.emitExpr(e.value);
+        const v = emitter.emitExpr(e.value);
         const payload =
           e.type.kind === "promise" && e.type.inner.kind === "void"
             ? "SCR_ISLP_VOID"
             : e.type.kind === "promise" && e.type.inner.kind === "array" && e.type.inner.elem.kind === "jsval"
               ? "SCR_ISLP_JSVAL_ARR" // `any[]` fulfillment: the Array.isArray-gated by-reference exit at settle
               : "SCR_ISLP_JSVAL";
-        return E.fallibleTemp(e.type, `scr_jsval_bridge_promise(${v.name}, ${payload})`);
+        return emitter.fallibleTemp(e.type, `scr_jsval_bridge_promise(${v.name}, ${payload})`);
       }
       default: {
         const _exhaustive: never = e;

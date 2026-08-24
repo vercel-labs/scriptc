@@ -5,7 +5,7 @@ import type { Lowerer } from "./lowerer.js";
  * surrounding receiver and remain transparent; declarations that bind
  * their own receiver (and nested classes) are opaque. */
 export function rejectStaticThis(
-  L: Lowerer,
+  lowerer: Lowerer,
   root: ts.Node,
   message: (keyword: "this" | "super") => string,
   includeRoot = false,
@@ -21,7 +21,7 @@ export function rejectStaticThis(
     }
     if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword) {
       const keyword = node.kind === ts.SyntaxKind.ThisKeyword ? "this" : "super";
-      L.unsupported("SC1090", node, message(keyword));
+      lowerer.unsupported("SC1090", node, message(keyword));
     }
     node.forEachChild(visit);
   };

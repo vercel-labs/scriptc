@@ -29,7 +29,7 @@
  *   export const envMsgs       = [{ env: "NAME", msg: "arm" }, ...] as const;
  */
 import * as ts from "./ts7/adapter.js";
-import type { SrcLoc } from "../ir/nodes.js";
+import type { SrcLoc } from "../ir/ir.js";
 
 /** A syntactic type shape — exactly what the source spells, no checker. */
 export type ContractTypeShape =

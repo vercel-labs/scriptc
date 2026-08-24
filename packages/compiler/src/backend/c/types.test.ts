@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { RUNTIME_EMITTER_CLASS } from "../../ir/nodes.js";
-import { releaseCallC, retainCallC, vAdapters } from "./emit-types.js";
+import { RUNTIME_EMITTER_CLASS } from "../../ir/ir.js";
+import { releaseCallC, retainCallC, vAdapters } from "./types.js";
 
 describe("runtime RC symbols", () => {
   test("derives typed and adapter symbols from the shared stems", () => {

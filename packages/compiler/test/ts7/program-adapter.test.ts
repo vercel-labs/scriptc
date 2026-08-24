@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { checkPreflight, loadProgram } from "../../src/frontend/program.js";
-import { tsgoPath } from "../../src/frontend/shared.js";
+import { tsgoPath } from "../../src/frontend/dts-paths.js";
 import { CheckerFacade } from "../../src/frontend/ts7/checker.js";
 import type { Checker, Project } from "typescript/unstable/sync";
 

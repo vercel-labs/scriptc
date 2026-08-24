@@ -6,26 +6,26 @@ import { InternalCompilerError } from "../../errors.js";
  * dynMatchers, dynBuilders, unionTruthyFns, unionEqFns, walkerProtos/Defs) —
  * interning ORDER is part of the emitted C, so the registries stay on
  * CEmitter and these functions only consult them through it. */
-import type { CEmitter } from "./emitter.js";
-import { DYN_HANDLE_KINDS, IrType, isRefCounted, typeEquals, typeKey } from "../../ir/nodes.js";
+import type { CEmitter } from "./c-emitter.js";
+import { DYN_HANDLE_KINDS, IrType, isRefCounted, typeEquals, typeKey } from "../../ir/ir.js";
 import { dynDesc, undefinedArmTag } from "../../ir/analysis.js";
-import { cDecl, cStringLiteral, cType, elemAccess, releaseCallC, retainCallC, vAdapters } from "./emit-types.js";
+import { cDecl, cStringLiteral, cType, elemAccess, releaseCallC, retainCallC, vAdapters } from "./types.js";
 import { mangleField, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
-import { OVERFLOW_MEMBER } from "./emit-shapes.js";
+import { OVERFLOW_MEMBER } from "./shapes.js";
 
 /** The per-union ToBoolean helper (interned per unionId): switch on the
    * runtime tag — unit arms false, f64 arms 0/NaN-falsy, string arms
    * empty-falsy, bool arms by payload, ref arms always true (JS objects),
    * jsval arms answered by the engine. Borrows the operand. */
-  export function unionTruthyHelper(E: CEmitter, unionId: string): string {
-    const existing = E.unionTruthyFns.get(unionId);
+  export function unionTruthyHelper(emitter: CEmitter, unionId: string): string {
+    const existing = emitter.unionTruthyFns.get(unionId);
     if (existing) return existing;
-    const def = E.unionsById.get(unionId);
+    const def = emitter.unionsById.get(unionId);
     if (!def) throw new InternalCompilerError(`emitter bug: truthiness of unknown union ${unionId}`);
-    const name = `sc_ut_${E.unionTruthyFns.size}`;
-    E.unionTruthyFns.set(unionId, name);
+    const name = `sc_ut_${emitter.unionTruthyFns.size}`;
+    emitter.unionTruthyFns.set(unionId, name);
     const sig = `static bool ${name}(ScrUnion *v)`;
-    E.walkerProtos.push(`${sig}; /* ToBoolean ${unionId} */`);
+    emitter.walkerProtos.push(`${sig}; /* ToBoolean ${unionId} */`);
     const d: string[] = [`${sig} { /* ToBoolean ${unionId} */`, `  switch (v->tag) {`];
     def.arms.forEach((arm, i) => {
       switch (arm.kind) {
@@ -57,7 +57,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
       `}`,
       ``,
     );
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }
 
@@ -68,17 +68,17 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
    * (NaN equals NaN, +0 differs from -0) under the sameValue flag,
    * strings by bytes, bools by value, ref arms by POINTER identity (JS
    * object equality). Borrows both operands. */
-  export function unionEqHelper(E: CEmitter, unionId: string, sameValue: boolean): string {
+  export function unionEqHelper(emitter: CEmitter, unionId: string, sameValue: boolean): string {
     const key = sameValue ? `sv:${unionId}` : unionId;
-    const existing = E.unionEqFns.get(key);
+    const existing = emitter.unionEqFns.get(key);
     if (existing) return existing;
-    const def = E.unionsById.get(unionId);
+    const def = emitter.unionsById.get(unionId);
     if (!def) throw new InternalCompilerError(`emitter bug: equality of unknown union ${unionId}`);
-    const name = `sc_ue_${E.unionEqFns.size}`;
-    E.unionEqFns.set(key, name);
+    const name = `sc_ue_${emitter.unionEqFns.size}`;
+    emitter.unionEqFns.set(key, name);
     const what = sameValue ? "SameValue" : "strict equality";
     const sig = `static bool ${name}(ScrUnion *a, ScrUnion *b)`;
-    E.walkerProtos.push(`${sig}; /* ${what} ${unionId} */`);
+    emitter.walkerProtos.push(`${sig}; /* ${what} ${unionId} */`);
     const d: string[] = [
       `${sig} { /* ${what} ${unionId} */`,
       `  if (a->tag != b->tag) return false;`,
@@ -116,7 +116,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
       `}`,
       ``,
     );
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }
 
@@ -126,21 +126,21 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
    * formatters (String(x) semantics). Ref arms never arrive (the frontend
    * fences unions with object arms from string conversion — JS would print
    * "[object Object]"). Borrows the operand; the result is owned (+1). */
-  export function unionToStrHelper(E: CEmitter, unionId: string): string {
-    const existing = E.unionToStrFns.get(unionId);
+  export function unionToStrHelper(emitter: CEmitter, unionId: string): string {
+    const existing = emitter.unionToStrFns.get(unionId);
     if (existing) return existing;
-    const def = E.unionsById.get(unionId);
+    const def = emitter.unionsById.get(unionId);
     if (!def) throw new InternalCompilerError(`emitter bug: ToString of unknown union ${unionId}`);
-    const name = `sc_us_${E.unionToStrFns.size}`;
-    E.unionToStrFns.set(unionId, name);
+    const name = `sc_us_${emitter.unionToStrFns.size}`;
+    emitter.unionToStrFns.set(unionId, name);
     const sig = `static ScrStr *${name}(ScrUnion *v)`;
-    E.walkerProtos.push(`${sig}; /* ToString ${unionId} */`);
+    emitter.walkerProtos.push(`${sig}; /* ToString ${unionId} */`);
     const d: string[] = [`${sig} { /* ToString ${unionId} */`, `  switch (v->tag) {`];
     def.arms.forEach((arm, i) => {
       switch (arm.kind) {
         case "undefinedT":
         case "nullT": {
-          const lit = E.internLiteral(arm.kind === "undefinedT" ? "undefined" : "null");
+          const lit = emitter.internLiteral(arm.kind === "undefinedT" ? "undefined" : "null");
           d.push(`  case ${i}: return scr_str_retain((ScrStr *)&${lit});`);
           break;
         }
@@ -156,7 +156,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
         case "bytes": {
           // Buffer.toString() IS the utf8 decode (Node's default
           // encoding) — the `Buffer | string` chunk idiom.
-          const enc = E.internLiteral("utf8");
+          const enc = emitter.internLiteral("utf8");
           d.push(`  case ${i}: return scr_bytes_to_str((ScrBytes *)scr_union_peek(v), (ScrStr *)&${enc});`);
           break;
         }
@@ -170,7 +170,7 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
       `}`,
       ``,
     );
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }
 
@@ -181,20 +181,20 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
    * f64/bool via the JS-exact formatters). The frontend admits only unions
    * of f64/string/bool/unit arms here. Borrows the array and separator;
    * the result is owned (+1). */
-  export function unionJoinHelper(E: CEmitter, unionId: string): string {
-    const existing = E.unionJoinFns.get(unionId);
+  export function unionJoinHelper(emitter: CEmitter, unionId: string): string {
+    const existing = emitter.unionJoinFns.get(unionId);
     if (existing) return existing;
-    const def = E.unionsById.get(unionId);
+    const def = emitter.unionsById.get(unionId);
     if (!def) throw new InternalCompilerError(`emitter bug: join of unknown union ${unionId}`);
-    const name = `sc_uj_${E.unionJoinFns.size}`;
-    E.unionJoinFns.set(unionId, name);
-    const toStr = unionToStrHelper(E, unionId);
+    const name = `sc_uj_${emitter.unionJoinFns.size}`;
+    emitter.unionJoinFns.set(unionId, name);
+    const toStr = unionToStrHelper(emitter, unionId);
     const unitTags = def.arms.flatMap((a, i) =>
       a.kind === "undefinedT" || a.kind === "nullT" ? [i] : [],
     );
     const sig = `static ScrStr *${name}(ScrArr *a, ScrStr *sep)`;
-    E.walkerProtos.push(`${sig}; /* join ${unionId} */`);
-    E.walkerDefs.push(
+    emitter.walkerProtos.push(`${sig}; /* join ${unionId} */`);
+    emitter.walkerDefs.push(
       `${sig} { /* Array#join over ${unionId}: nullish arms print empty */`,
       `  ScrJsonBuf b;`,
       `  scr_jb_init(&b);`,
@@ -224,15 +224,15 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
    * with ","; null/undefined ELEMENTS print empty, nested arrays flatten
    * through the recursion — JS-exact), plain objects as
    * "[object Object]". The operand is borrowed; the result is owned (+1). */
-  export function dynToStrHelper(E: CEmitter): string {
-    if (E.dynToStrFn) return E.dynToStrFn;
+  export function dynToStrHelper(emitter: CEmitter): string {
+    if (emitter.dynToStrFn) return emitter.dynToStrFn;
     const name = "sc_ds";
-    E.dynToStrFn = name;
-    E.walkerProtos.push(
+    emitter.dynToStrFn = name;
+    emitter.walkerProtos.push(
       `static void ${name}_buf(ScrJsonBuf *b, const ScrDyn *d); /* String(unknown) walker */`,
       `static ScrStr *${name}(const ScrDyn *d); /* String(unknown) */`,
     );
-    E.walkerDefs.push(
+    emitter.walkerDefs.push(
       `static void ${name}_buf(ScrJsonBuf *b, const ScrDyn *d) { /* String(unknown), recursive */`,
       `  switch (d->kind) {`,
       `  case SCR_DYN_UNDEF: scr_jb_puts(b, "undefined"); break;`,
@@ -344,13 +344,13 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
    * closures, unions — and non-Error hierarchy objects, type-erased at
    * runtime) becomes an EMPTY dyn object (SEMANTICS.md 67). Borrows the
    * snapshot; the result is a fresh tree (+1). Never throws. */
-  export function caughtToDynHelper(E: CEmitter): string {
-    if (E.caughtToDynFn) return E.caughtToDynFn;
+  export function caughtToDynHelper(emitter: CEmitter): string {
+    if (emitter.caughtToDynFn) return emitter.caughtToDynFn;
     const name = "sc_cd";
-    E.caughtToDynFn = name;
+    emitter.caughtToDynFn = name;
     const sig = `static ScrDyn *${name}(const ScrCaught *c)`;
-    E.walkerProtos.push(`${sig}; /* caught -> unknown */`);
-    E.walkerDefs.push(
+    emitter.walkerProtos.push(`${sig}; /* caught -> unknown */`);
+    emitter.walkerDefs.push(
       `${sig} { /* caught -> unknown (+1, fresh tree) */`,
       `  switch (c->kind) {`,
       `  case SCR_EXC_F64: return scr_dyn_new_num(c->f64);`,
@@ -391,13 +391,13 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
    * commas, and colons inside JSON strings untouched. Compact input is
    * BORROWED; the result is a fresh string (+1). An empty indent (space 0,
    * "", null) never reaches here — the frontend drops the property. */
-  export function jsonIndentHelper(E: CEmitter): string {
-    if (E.jsonIndentFn) return E.jsonIndentFn;
+  export function jsonIndentHelper(emitter: CEmitter): string {
+    if (emitter.jsonIndentFn) return emitter.jsonIndentFn;
     const name = "sc_ji";
-    E.jsonIndentFn = name;
+    emitter.jsonIndentFn = name;
     const sig = `static ScrStr *${name}(ScrStr *compact, const char *indent, size_t ilen)`;
-    E.walkerProtos.push(`${sig}; /* stringify space re-indent */`);
-    E.walkerDefs.push(
+    emitter.walkerProtos.push(`${sig}; /* stringify space re-indent */`);
+    emitter.walkerDefs.push(
       `${sig} { /* stringify space re-indent (Node's gap algorithm) */`,
       `  ScrJsonBuf b;`,
       `  scr_jb_init(&b);`,
@@ -454,14 +454,14 @@ import { OVERFLOW_MEMBER } from "./emit-shapes.js";
     return name;
   }
 
-export function jsonWriteHelper(E: CEmitter, t: IrType): string {
+export function jsonWriteHelper(emitter: CEmitter, t: IrType): string {
     const key = typeKey(t);
-    const existing = E.jsonWriters.get(key);
+    const existing = emitter.jsonWriters.get(key);
     if (existing) return existing;
-    const name = `sc_jw_${E.jsonWriters.size}`;
-    E.jsonWriters.set(key, name);
+    const name = `sc_jw_${emitter.jsonWriters.size}`;
+    emitter.jsonWriters.set(key, name);
     const sig = `static void ${name}(ScrJsonBuf *b, ${cDecl(t, "v")})`;
-    E.walkerProtos.push(`${sig}; /* stringify ${key} */`);
+    emitter.walkerProtos.push(`${sig}; /* stringify ${key} */`);
     const d: string[] = [`${sig} { /* stringify ${key} */`];
     switch (t.kind) {
       case "f64":
@@ -474,7 +474,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         d.push(`  scr_jb_put_json_str(b, v);`);
         break;
       case "record": {
-        const shape = E.recordsById.get(t.shapeId);
+        const shape = emitter.recordsById.get(t.shapeId);
         if (!shape) throw new InternalCompilerError(`emitter bug: jsonStringify of unknown shape ${t.shapeId}`);
         // CYCLE-CAPABLE shapes (recursive record types — the collector-
         // fixpoint set) bracket the walk with the circular-detection
@@ -482,8 +482,8 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         // circular-structure TypeError (scr_jb_enter). Edge labels stamp
         // only before members whose walk can re-enter (cycle-capable
         // types); acyclic shapes pay nothing.
-        const cyclic = E.traceAdapterC(t) !== null;
-        const edgeable = (ft: IrType): boolean => cyclic && E.traceAdapterC(ft) !== null;
+        const cyclic = emitter.traceAdapterC(t) !== null;
+        const edgeable = (ft: IrType): boolean => cyclic && emitter.traceAdapterC(ft) !== null;
         if (cyclic) d.push(`  if (!scr_jb_enter(b, v, ${shape.tuple ? "true" : "false"})) return; /* circular: pending TypeError */`);
         // A tuple serializes as a JSON ARRAY in index order — JS-exact
         // (JSON.stringify(["a", 1]) is `["a",1]`). Every position is
@@ -494,7 +494,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           byIndex.forEach((f, i) => {
             if (i > 0) d.push(`  scr_jb_putc(b, ',');`);
             if (edgeable(f.type)) d.push(`  scr_jb_edge_idx(b, ${i});`);
-            d.push(`  ${E.jsonWriteHelper(f.type)}(b, v->${mangleField(f.name)});`);
+            d.push(`  ${emitter.jsonWriteHelper(f.type)}(b, v->${mangleField(f.name)});`);
           });
           d.push(`  scr_jb_putc(b, ']');`);
           if (cyclic) d.push(`  scr_jb_leave(b);`);
@@ -523,7 +523,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         // overflow portion forces the dynamic path too (entry count is
         // runtime state).
         const droppable =
-          emitFields.some((f) => undefinedArmTag(f.type, E.unionsById) >= 0) || !!shape.indexValue;
+          emitFields.some((f) => undefinedArmTag(f.type, emitter.unionsById) >= 0) || !!shape.indexValue;
         d.push(`  scr_jb_putc(b, '{');`);
         if (!droppable) {
           emitFields.forEach((f, i) => {
@@ -532,13 +532,13 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             if (edgeable(f.type)) d.push(`  scr_jb_edge_prop(b, ${cStringLiteral(Buffer.from(f.name, "utf8"))});`);
             // Refcounted fields are BORROWED straight off the struct (the
             // record itself is borrowed for the whole call).
-            d.push(`  ${E.jsonWriteHelper(f.type)}(b, v->${mangleField(f.name)});`);
+            d.push(`  ${emitter.jsonWriteHelper(f.type)}(b, v->${mangleField(f.name)});`);
           });
         } else {
           d.push(`  bool first = true;`);
           for (const f of emitFields) {
             const label = cStringLiteral(Buffer.from(`"${f.name}":`, "utf8"));
-            const utag = undefinedArmTag(f.type, E.unionsById);
+            const utag = undefinedArmTag(f.type, emitter.unionsById);
             const pad = utag >= 0 ? "    " : "  ";
             if (utag >= 0) {
               d.push(`  if (v->${mangleField(f.name)}->tag != ${utag}) { /* undefined-valued field: dropped, like Node */`);
@@ -547,7 +547,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             d.push(`${pad}first = false;`);
             d.push(`${pad}scr_jb_puts(b, ${label});`);
             if (edgeable(f.type)) d.push(`${pad}scr_jb_edge_prop(b, ${cStringLiteral(Buffer.from(f.name, "utf8"))});`);
-            d.push(`${pad}${E.jsonWriteHelper(f.type)}(b, v->${mangleField(f.name)});`);
+            d.push(`${pad}${emitter.jsonWriteHelper(f.type)}(b, v->${mangleField(f.name)});`);
             if (utag >= 0) d.push(`  }`);
           }
           // Overflow entries follow the declared fields, themselves in JS
@@ -574,8 +574,8 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             const skipUndef =
               iv.kind === "dyn"
                 ? `e->kind == SCR_DYN_UNDEF`
-                : undefinedArmTag(iv, E.unionsById) >= 0
-                  ? `e->tag == ${undefinedArmTag(iv, E.unionsById)}`
+                : undefinedArmTag(iv, emitter.unionsById) >= 0
+                  ? `e->tag == ${undefinedArmTag(iv, emitter.unionsById)}`
                   : null;
             if (skipUndef) {
               d.push(`      if (${skipUndef}) { /* undefined-valued entry: dropped, like Node */`);
@@ -589,7 +589,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             d.push(`      scr_jb_put_json_str(b, k);`);
             d.push(`      scr_jb_putc(b, ':');`);
             if (edgeable(iv)) d.push(`      scr_jb_edge_key(b, k);`);
-            d.push(`      ${E.jsonWriteHelper(iv)}(b, e);`);
+            d.push(`      ${emitter.jsonWriteHelper(iv)}(b, e);`);
             d.push(`      scr_str_release(k);`);
             if (isRefCounted(iv)) d.push(`      ${releaseCallC(iv, "e")};`);
             d.push(`    }`);
@@ -611,10 +611,10 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         break;
       case "array": {
         const elem = t.elem;
-        const w = E.jsonWriteHelper(elem);
+        const w = emitter.jsonWriteHelper(elem);
         // A cycle-capable array (elements can point back at it) joins the
         // circular-detection stack exactly like a cycle-capable record.
-        const cyclic = E.traceAdapterC(t) !== null;
+        const cyclic = emitter.traceAdapterC(t) !== null;
         if (cyclic) d.push(`  if (!scr_jb_enter(b, v, true)) return; /* circular: pending TypeError */`);
         d.push(`  scr_jb_putc(b, '[');`);
         d.push(`  for (size_t i = 0; i < v->len; i++) {`);
@@ -636,7 +636,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         break;
       }
       case "union": {
-        const def = E.unionsById.get(t.unionId);
+        const def = emitter.unionsById.get(t.unionId);
         if (!def) throw new InternalCompilerError(`emitter bug: jsonStringify of unknown union ${t.unionId}`);
         d.push(`  switch (v->tag) {`);
         def.arms.forEach((arm, i) => {
@@ -655,7 +655,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             d.push(`    scr_trap("scriptc: internal error: stringify reached an undefined arm\\n");`);
             return;
           }
-          const w = E.jsonWriteHelper(arm);
+          const w = emitter.jsonWriteHelper(arm);
           if (arm.kind === "f64") {
             d.push(`  case ${i}: ${w}(b, scr_union_get_f64(v)); break;`);
           } else if (arm.kind === "bool") {
@@ -673,7 +673,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         throw new InternalCompilerError(`emitter bug: jsonStringify of non-JSON type ${t.kind}`);
     }
     d.push(`}`, ``);
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }
 
@@ -682,14 +682,14 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * Never throws, builds nothing; union builders use it to try arms in
    * canonical order (first FULL match wins). Records are width-tolerant
    * here too: extra keys are ignored, only declared fields are examined. */
-  export function dynMatchHelper(E: CEmitter, t: IrType): string {
+  export function dynMatchHelper(emitter: CEmitter, t: IrType): string {
     const key = typeKey(t);
-    const existing = E.dynMatchers.get(key);
+    const existing = emitter.dynMatchers.get(key);
     if (existing) return existing;
-    const name = `sc_dm_${E.dynMatchers.size}`;
-    E.dynMatchers.set(key, name);
+    const name = `sc_dm_${emitter.dynMatchers.size}`;
+    emitter.dynMatchers.set(key, name);
     const sig = `static bool ${name}(const ScrDyn *d)`;
-    E.walkerProtos.push(`${sig}; /* matches ${key} */`);
+    emitter.walkerProtos.push(`${sig}; /* matches ${key} */`);
     const d: string[] = [`${sig} { /* matches ${key} */`];
     if (isRefCounted(t) && t.kind !== "dyn") {
       const keyLit = cStringLiteral(Buffer.from(key, "utf8"));
@@ -739,7 +739,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         d.push(`  return d->kind == SCR_DYN_BYTES;`);
         break;
       case "record": {
-        const shape = E.recordsById.get(t.shapeId);
+        const shape = emitter.recordsById.get(t.shapeId);
         if (!shape) throw new InternalCompilerError(`emitter bug: dynCheck of unknown shape ${t.shapeId}`);
         // A tuple matches a JSON ARRAY of EXACTLY its arity whose elements
         // match positionally (arity is part of the type — width tolerance
@@ -748,7 +748,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           const byIndex = [...shape.fields].sort((a, b) => Number(a.name) - Number(b.name));
           d.push(`  if (d->kind != SCR_DYN_ARR || d->v.arr.len != ${byIndex.length}) return false;`);
           byIndex.forEach((f, i) => {
-            d.push(`  if (!${E.dynMatchHelper(f.type)}(d->v.arr.items[${i}])) return false;`);
+            d.push(`  if (!${emitter.dynMatchHelper(f.type)}(d->v.arr.items[${i}])) return false;`);
           });
           d.push(`  return true;`);
           break;
@@ -762,12 +762,12 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           const keyLit = cStringLiteral(Buffer.from(f.name, "utf8"));
           const keyLen = Buffer.byteLength(f.name, "utf8");
           d.push(`  m = scr_dyn_obj_get(d, ${keyLit}, ${keyLen});`);
-          if (undefinedArmTag(f.type, E.unionsById) >= 0) {
+          if (undefinedArmTag(f.type, emitter.unionsById) >= 0) {
             // Optional-flavored field: a MISSING key is the undefined arm
             // (a match); a PRESENT key must fit the union as usual.
-            d.push(`  if (m && !${E.dynMatchHelper(f.type)}(m)) return false;`);
+            d.push(`  if (m && !${emitter.dynMatchHelper(f.type)}(m)) return false;`);
           } else {
-            d.push(`  if (!m || !${E.dynMatchHelper(f.type)}(m)) return false;`);
+            d.push(`  if (!m || !${emitter.dynMatchHelper(f.type)}(m)) return false;`);
           }
         }
         // Index-signature shapes: UNDECLARED keys must fit the overflow
@@ -785,14 +785,14 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           d.push(`  for (size_t i = 0; i < d->v.obj.len; i++) {`);
           d.push(`    const ScrDynEntry *e = &d->v.obj.entries[i];`);
           if (shape.fields.length > 0) d.push(`    if (${skip}) continue;`);
-          d.push(`    if (!${E.dynMatchHelper(shape.indexValue)}(e->value)) return false;`);
+          d.push(`    if (!${emitter.dynMatchHelper(shape.indexValue)}(e->value)) return false;`);
           d.push(`  }`);
         }
         d.push(`  return true;`);
         break;
       }
       case "array": {
-        const m = E.dynMatchHelper(t.elem);
+        const m = emitter.dynMatchHelper(t.elem);
         d.push(`  if (d->kind != SCR_DYN_ARR) return false;`);
         d.push(`  for (size_t i = 0; i < d->v.arr.len; i++) {`);
         d.push(`    if (!${m}(d->v.arr.items[i])) return false;`);
@@ -801,14 +801,14 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         break;
       }
       case "union": {
-        const def = E.unionsById.get(t.unionId);
+        const def = emitter.unionsById.get(t.unionId);
         if (!def) throw new InternalCompilerError(`emitter bug: dynCheck of unknown union ${t.unionId}`);
         // The undefined arm participates: parsed JSON never contains
         // undefined (a MISSING record key was the arm's only source), but
         // the checked-dynamic tree can hold the undefined value now — overflow entries
         // under `unknown` index signatures — and it matches exactly the
         // undefined arm.
-        const arms = def.arms.map((a) => `${E.dynMatchHelper(a)}(d)`);
+        const arms = def.arms.map((a) => `${emitter.dynMatchHelper(a)}(d)`);
         d.push(`  return ${arms.join(" || ")};`);
         break;
       }
@@ -816,7 +816,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         throw new InternalCompilerError(`emitter bug: dynMatch of non-JSON type ${t.kind}`);
     }
     d.push(`}`, ``);
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }
 
@@ -835,15 +835,15 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * is undefined." (or "…null."), the property form "Cannot destructure
    * property 'PROP' of 'SPELL' …" when firstProp is non-NULL — V8's exact
    * strings, source spelling included. Non-nullish values pass silently. */
-  export function dynDestrCheckHelper(E: CEmitter): string {
+  export function dynDestrCheckHelper(emitter: CEmitter): string {
     const memoKey = "%dynDestrCheck";
-    const existing = E.dynBuilders.get(memoKey);
+    const existing = emitter.dynBuilders.get(memoKey);
     if (existing) return existing;
     const name = "sc_dyn_destr_check";
-    E.dynBuilders.set(memoKey, name);
+    emitter.dynBuilders.set(memoKey, name);
     const sig = `static void ${name}(const ScrDyn *d, const char *spell, const char *firstProp)`;
-    E.walkerProtos.push(`${sig}; /* destructuring RequireObjectCoercible */`);
-    E.walkerDefs.push(
+    emitter.walkerProtos.push(`${sig}; /* destructuring RequireObjectCoercible */`);
+    emitter.walkerDefs.push(
       `${sig} { /* destructuring RequireObjectCoercible */`,
       `  if (d->kind != SCR_DYN_UNDEF && d->kind != SCR_DYN_NULL) return;`,
       `  ScrJsonBuf b;`,
@@ -876,15 +876,15 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * "function …" — each with the "(cannot read property
    * Symbol(Symbol.iterator))" tail). Returns a fresh +1 dyn array of
    * exactly n elements, undefined-padded past the end. */
-  export function dynIterNHelper(E: CEmitter): string {
+  export function dynIterNHelper(emitter: CEmitter): string {
     const memoKey = "%dynIterN";
-    const existing = E.dynBuilders.get(memoKey);
+    const existing = emitter.dynBuilders.get(memoKey);
     if (existing) return existing;
     const name = "sc_dyn_iter_n";
-    E.dynBuilders.set(memoKey, name);
+    emitter.dynBuilders.set(memoKey, name);
     const sig = `static ScrDyn *${name}(const ScrDyn *d, size_t n)`;
-    E.walkerProtos.push(`${sig}; /* destructuring GetIterator + N steps */`);
-    E.walkerDefs.push(
+    emitter.walkerProtos.push(`${sig}; /* destructuring GetIterator + N steps */`);
+    emitter.walkerDefs.push(
       `${sig} { /* destructuring GetIterator + N steps */`,
       `  if (d->kind == SCR_DYN_TYPED_REF) {`,
       `    ScrDyn *sc_materialized = scr_dyn_typed_ref_materialize(d);`,
@@ -953,14 +953,14 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
     return name;
   }
 
-  export function dynKeyGetHelper(E: CEmitter): string {
+  export function dynKeyGetHelper(emitter: CEmitter): string {
     const memoKey = "%dynKeyGet";
-    const existing = E.dynBuilders.get(memoKey);
+    const existing = emitter.dynBuilders.get(memoKey);
     if (existing) return existing;
     const name = "sc_dyn_key_get";
-    E.dynBuilders.set(memoKey, name);
+    emitter.dynBuilders.set(memoKey, name);
     const sig = `static ScrDyn *${name}(ScrDyn *d, ScrStr *k, bool opt)`;
-    E.walkerProtos.push(`${sig}; /* d[k] on dyn */`);
+    emitter.walkerProtos.push(`${sig}; /* d[k] on dyn */`);
     const d: string[] = [`${sig} { /* d[k] on dyn */`];
     d.push(`  if (d->kind == SCR_DYN_UNDEF || d->kind == SCR_DYN_NULL) {`);
     d.push(`    if (opt) return scr_dyn_retain(scr_dyn_undefined());`);
@@ -1046,7 +1046,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
     d.push(`  }`);
     d.push(`  return scr_dyn_retain(scr_dyn_undefined());`);
     d.push(`}`, ``);
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }
 
@@ -1058,15 +1058,15 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * Recursive calls propagate a pending exception by releasing the
    * partially-built value and returning — the same pending-check discipline
    * emitted function bodies follow. */
-  export function dynCheckHelper(E: CEmitter, t: IrType): string {
+  export function dynCheckHelper(emitter: CEmitter, t: IrType): string {
     const key = typeKey(t);
-    const existing = E.dynBuilders.get(key);
+    const existing = emitter.dynBuilders.get(key);
     if (existing) return existing;
-    const name = `sc_dc_${E.dynBuilders.size}`;
-    E.dynBuilders.set(key, name);
+    const name = `sc_dc_${emitter.dynBuilders.size}`;
+    emitter.dynBuilders.set(key, name);
     const sig = `static ${cType(t)}${cType(t).endsWith("*") ? "" : " "}${name}(const ScrDyn *d, const ScrDynPath *path)`;
-    E.walkerProtos.push(`${sig}; /* check ${key} */`);
-    const want = cStringLiteral(Buffer.from(dynDesc(t, E.recordsById, E.unionsById), "utf8"));
+    emitter.walkerProtos.push(`${sig}; /* check ${key} */`);
+    const want = cStringLiteral(Buffer.from(dynDesc(t, emitter.recordsById, emitter.unionsById), "utf8"));
     const d: string[] = [`${sig} { /* check ${key} */`];
     if (isRefCounted(t) && t.kind !== "dyn") {
       const keyLit = cStringLiteral(Buffer.from(key, "utf8"));
@@ -1091,7 +1091,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           `    scr_dyn_release(sc_materialized);`,
         );
         if (t.kind === "record") {
-          const shape = E.recordsById.get(t.shapeId);
+          const shape = emitter.recordsById.get(t.shapeId);
           if (!shape) {
             throw new InternalCompilerError(
               `emitter bug: cached typed-ref cast of unknown shape ${t.shapeId}`,
@@ -1190,7 +1190,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         d.push(`  return scr_error_from_dyn(d);`);
         break;
       case "record": {
-        const shape = E.recordsById.get(t.shapeId);
+        const shape = emitter.recordsById.get(t.shapeId);
         if (!shape) throw new InternalCompilerError(`emitter bug: dynCheck of unknown shape ${t.shapeId}`);
         const rel = (v: string) => releaseCallC(t, v);
         // Tuple targets: a JSON ARRAY of exactly the arity, validated and
@@ -1206,7 +1206,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           byIndex.forEach((f, i) => {
             d.push(`  {`);
             d.push(`    ScrDynPath p = { path, NULL, ${i} };`);
-            d.push(`    r->${mangleField(f.name)} = ${E.dynCheckHelper(f.type)}(d->v.arr.items[${i}], &p);`);
+            d.push(`    r->${mangleField(f.name)} = ${emitter.dynCheckHelper(f.type)}(d->v.arr.items[${i}], &p);`);
             d.push(`    if (scr_exc_pending()) { ${rel("r")}; return NULL; }`);
             d.push(`  }`);
           });
@@ -1218,14 +1218,14 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         for (const f of shape.fields) {
           const keyLit = cStringLiteral(Buffer.from(f.name, "utf8"));
           const keyLen = Buffer.byteLength(f.name, "utf8");
-          const fieldWant = cStringLiteral(Buffer.from(dynDesc(f.type, E.recordsById, E.unionsById), "utf8"));
+          const fieldWant = cStringLiteral(Buffer.from(dynDesc(f.type, emitter.recordsById, emitter.unionsById), "utf8"));
           // Width tolerance: only declared fields are looked up — extra JSON
           // keys are simply never examined (check-and-extract, not shape
           // equality). A missing field fails as "got undefined" — except
           // optional-flavored fields (undefined-armed unions), where the
           // missing key IS the undefined arm: the interned immortal
           // instance, no retain owed (rc == SIZE_MAX).
-          const utag = f.type.kind === "union" ? undefinedArmTag(f.type, E.unionsById) : -1;
+          const utag = f.type.kind === "union" ? undefinedArmTag(f.type, emitter.unionsById) : -1;
           d.push(`  {`);
           d.push(`    ScrDynPath p = { path, ${keyLit}, 0 };`);
           d.push(`    const ScrDyn *m = scr_dyn_obj_get(d, ${keyLit}, ${keyLen});`);
@@ -1234,18 +1234,18 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             // one IS the undefined dyn value (JS's missing-property read).
             // Go through the dyn builder so a Web-stream typed-ref capsule
             // cannot escape inside a checked record field.
-            d.push(`    r->${mangleField(f.name)} = ${E.dynCheckHelper(f.type)}(m ? m : scr_dyn_undefined(), &p);`);
+            d.push(`    r->${mangleField(f.name)} = ${emitter.dynCheckHelper(f.type)}(m ? m : scr_dyn_undefined(), &p);`);
           } else if (utag >= 0 && f.type.kind === "union") {
-            const unit = E.unitInstanceRef(f.type.unionId, utag);
+            const unit = emitter.unitInstanceRef(f.type.unionId, utag);
             d.push(`    if (!m) {`);
             d.push(`      r->${mangleField(f.name)} = ${unit}; /* absent key -> the undefined arm */`);
             d.push(`    } else {`);
-            d.push(`      r->${mangleField(f.name)} = ${E.dynCheckHelper(f.type)}(m, &p);`);
+            d.push(`      r->${mangleField(f.name)} = ${emitter.dynCheckHelper(f.type)}(m, &p);`);
             d.push(`      if (scr_exc_pending()) { ${rel("r")}; return NULL; }`);
             d.push(`    }`);
           } else {
             d.push(`    if (!m) { scr_dyn_check_fail(&p, ${fieldWant}, NULL); ${rel("r")}; return NULL; }`);
-            d.push(`    r->${mangleField(f.name)} = ${E.dynCheckHelper(f.type)}(m, &p);`);
+            d.push(`    r->${mangleField(f.name)} = ${emitter.dynCheckHelper(f.type)}(m, &p);`);
             d.push(`    if (scr_exc_pending()) { ${rel("r")}; return NULL; }`);
           }
           d.push(`  }`);
@@ -1270,7 +1270,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             d.push(`    ${cDecl(iv, "ev")} = scr_dyn_retain(e->value);`);
           } else {
             d.push(`    ScrDynPath p = { path, e->key, 0 };`);
-            d.push(`    ${cDecl(iv, "ev")} = ${E.dynCheckHelper(iv)}(e->value, &p);`);
+            d.push(`    ${cDecl(iv, "ev")} = ${emitter.dynCheckHelper(iv)}(e->value, &p);`);
             d.push(`    if (scr_exc_pending()) { ${rel("r")}; return NULL; }`);
           }
           d.push(`    ScrStr *ek = scr_str_new(e->key, e->key_len);`);
@@ -1287,9 +1287,9 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       }
       case "array": {
         const elem = t.elem;
-        const c = E.dynCheckHelper(elem);
+        const c = emitter.dynCheckHelper(elem);
         d.push(`  if (d->kind != SCR_DYN_ARR) { scr_dyn_check_fail(path, ${want}, d); return NULL; }`);
-        d.push(`  ScrArr *a = ${E.arrNewC(elem, "d->v.arr.len")};`);
+        d.push(`  ScrArr *a = ${emitter.arrNewC(elem, "d->v.arr.len")};`);
         d.push(`  for (size_t i = 0; i < d->v.arr.len; i++) {`);
         d.push(`    ScrDynPath p = { path, NULL, i };`);
         d.push(`    ${cDecl(elem, "e")} = ${c}(d->v.arr.items[i], &p);`);
@@ -1300,13 +1300,13 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         break;
       }
       case "union": {
-        const def = E.unionsById.get(t.unionId);
+        const def = emitter.unionsById.get(t.unionId);
         if (!def) throw new InternalCompilerError(`emitter bug: dynCheck of unknown union ${t.unionId}`);
         // Arms in CANONICAL order, first FULL match wins (discriminated
         // unions disambiguate naturally: the arm whose declared fields all
         // fit). The matched arm's builder can no longer fail.
         def.arms.forEach((arm, i) => {
-          const m = E.dynMatchHelper(arm);
+          const m = emitter.dynMatchHelper(arm);
           if (arm.kind === "undefinedT") {
             // Parsed JSON never matches here (no undefined in JSON text —
             // a MISSING record key builds this arm in the record builder
@@ -1314,7 +1314,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             // `unknown` index-signature overflows and builds the interned
             // unit instance exactly like null.
             d.push(`  if (${m}(d)) {`);
-            d.push(`    return ${E.unitInstanceRef(t.unionId, i)};`);
+            d.push(`    return ${emitter.unitInstanceRef(t.unionId, i)};`);
             d.push(`  }`);
             return;
           }
@@ -1323,11 +1323,11 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             // immortal instance (rc == SIZE_MAX — RC entry points and the
             // collector both skip it, so no retain is owed).
             d.push(`  if (${m}(d)) {`);
-            d.push(`    return ${E.unitInstanceRef(t.unionId, i)};`);
+            d.push(`    return ${emitter.unitInstanceRef(t.unionId, i)};`);
             d.push(`  }`);
             return;
           }
-          const c = E.dynCheckHelper(arm);
+          const c = emitter.dynCheckHelper(arm);
           d.push(`  if (${m}(d)) {`);
           if (arm.kind === "f64") {
             d.push(`    return scr_union_new_f64(${i}, ${c}(d, path));`);
@@ -1335,7 +1335,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             d.push(`    return scr_union_new_bool(${i}, ${c}(d, path));`);
           } else {
             const rc = vAdapters(arm);
-            d.push(`    return scr_union_new_ref(${i}, ${c}(d, path), &${rc.retain}, &${rc.release}, ${E.traceArgC(arm)});`);
+            d.push(`    return scr_union_new_ref(${i}, ${c}(d, path), &${rc.retain}, &${rc.release}, ${emitter.traceArgC(arm)});`);
           }
           d.push(`  }`);
         });
@@ -1384,7 +1384,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         // wrapper, retained); anything else wraps in the per-target
         // adapter closure, whose caps[0] obj-box owns the dyn value
         // (untraced — cycles through dyn never collect, SEMANTICS.md).
-        const adapter = dynFuncAdapterHelper(E, t);
+        const adapter = dynFuncAdapterHelper(emitter, t);
         const sigLit = cStringLiteral(Buffer.from(key, "utf8"));
         d.push(`  if (d->kind != SCR_DYN_FUNC) { scr_dyn_check_fail(path, ${want}, d); return NULL; }`);
         d.push(`  if (strcmp(d->v.fn.sig, ${sigLit}) == 0) return scr_closure_retain(d->v.fn.clo);`);
@@ -1409,7 +1409,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       }
     }
     d.push(`}`, ``);
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }
 
@@ -1420,14 +1420,14 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * plus undefined-armed unions (the undefined arm becomes the undefined
    * dyn singleton) and index-signature records (whose overflow entries
    * copy over). The operand is borrowed. Never throws. */
-  export function toDynHelper(E: CEmitter, t: IrType): string {
+  export function toDynHelper(emitter: CEmitter, t: IrType): string {
     const key = typeKey(t);
-    const existing = E.toDynFns.get(key);
+    const existing = emitter.toDynFns.get(key);
     if (existing) return existing;
-    const name = `sc_td_${E.toDynFns.size}`;
-    E.toDynFns.set(key, name);
+    const name = `sc_td_${emitter.toDynFns.size}`;
+    emitter.toDynFns.set(key, name);
     const sig = `static ScrDyn *${name}(${cDecl(t, "v")})`;
-    E.walkerProtos.push(`${sig}; /* to-dyn ${key} */`);
+    emitter.walkerProtos.push(`${sig}; /* to-dyn ${key} */`);
     const d: string[] = [`${sig} { /* to-dyn ${key} */`];
     let sourceAccessor: { name: string; release: string } | null = null;
     switch (t.kind) {
@@ -1465,7 +1465,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         // Function-valued record/array fields (EventListenerObject's
         // handleEvent method) box through the same identity-preserving
         // closure bridge as a bare dynFrom function.
-        d.push(`  return ${dynFuncBoxHelper(E, t)}(v, NULL);`);
+        d.push(`  return ${dynFuncBoxHelper(emitter, t)}(v, NULL);`);
         break;
       case "bytes":
         // bytes<u8> → the checked-dynamic tree's bytes kind, payload COPIED (the boundary
@@ -1474,19 +1474,19 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         d.push(`  return scr_dyn_new_bytes_copy(v);`);
         break;
       case "record": {
-        const shape = E.recordsById.get(t.shapeId);
+        const shape = emitter.recordsById.get(t.shapeId);
         if (!shape) throw new InternalCompilerError(`emitter bug: to-dyn of unknown shape ${t.shapeId}`);
         // CYCLE-CAPABLE shapes guard the deep copy: a cyclic value has no
         // finite dyn copy, so enter TRAPS on re-entry (SEMANTICS.md — Node
         // shares the reference instead of copying).
-        const cyclicRec = E.traceAdapterC(t) !== null;
+        const cyclicRec = emitter.traceAdapterC(t) !== null;
         if (cyclicRec) d.push(`  scr_dyn_from_enter(v);`);
         if (shape.tuple) {
           // A tuple converts as the JSON ARRAY it is everywhere else.
           const byIndex = [...shape.fields].sort((a, b) => Number(a.name) - Number(b.name));
           d.push(`  ScrDyn *d = scr_dyn_new_arr();`);
           for (const f of byIndex) {
-            d.push(`  scr_dyn_arr_push(d, ${E.toDynHelper(f.type)}(v->${mangleField(f.name)}));`);
+            d.push(`  scr_dyn_arr_push(d, ${emitter.toDynHelper(f.type)}(v->${mangleField(f.name)}));`);
           }
           if (cyclicRec) d.push(`  scr_dyn_from_leave();`);
           d.push(`  return d;`);
@@ -1501,7 +1501,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             name: `${name}_source_access`,
             release: rc.release,
           };
-          E.walkerProtos.push(
+          emitter.walkerProtos.push(
             `static ScrDyn *${sourceAccessor.name}(void *v, bool materialize); /* live listener source ${key} */`,
           );
           d.push(
@@ -1527,7 +1527,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           for (const f of dynFields) {
             const keyLit = cStringLiteral(Buffer.from(f.name, "utf8"));
             const keyLen = Buffer.byteLength(f.name, "utf8");
-            d.push(`  scr_dyn_obj_set(d, ${keyLit}, ${keyLen}, ${E.toDynHelper(f.type)}(v->${mangleField(f.name)}));`);
+            d.push(`  scr_dyn_obj_set(d, ${keyLit}, ${keyLen}, ${emitter.toDynHelper(f.type)}(v->${mangleField(f.name)}));`);
           }
         }
         if (shape.indexValue) {
@@ -1548,7 +1548,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
             d.push(`      scr_dyn_obj_set(d, k->data, k->len, (ScrDyn *)scr_map_get_str_ref(${m}, k));`);
           } else {
             d.push(`      ${cDecl(iv, "e")} = (${cType(iv).trim()})scr_map_get_str_ref(${m}, k);`);
-            d.push(`      scr_dyn_obj_set(d, k->data, k->len, ${E.toDynHelper(iv)}(e));`);
+            d.push(`      scr_dyn_obj_set(d, k->data, k->len, ${emitter.toDynHelper(iv)}(e));`);
             d.push(`      ${releaseCallC(iv, "e")};`);
           }
           d.push(`      scr_str_release(k);`);
@@ -1563,7 +1563,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       case "array": {
         const elem = t.elem;
         // Cycle-capable arrays guard the deep copy like records above.
-        const cyclicArr = E.traceAdapterC(t) !== null;
+        const cyclicArr = emitter.traceAdapterC(t) !== null;
         if (cyclicArr) d.push(`  scr_dyn_from_enter(v);`);
         d.push(`  ScrDyn *d = scr_dyn_new_arr();`);
         d.push(`  for (size_t i = 0; i < v->len; i++) {`);
@@ -1573,7 +1573,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           d.push(`    scr_dyn_arr_push(d, scr_dyn_new_bool(scr_arr_get_bool(v, (double)i)));`);
         } else {
           d.push(`    ${cDecl(elem, "e")} = (${cType(elem).trim()})scr_arr_get_ref(v, (double)i);`);
-          d.push(`    scr_dyn_arr_push(d, ${E.toDynHelper(elem)}(e));`);
+          d.push(`    scr_dyn_arr_push(d, ${emitter.toDynHelper(elem)}(e));`);
           d.push(`    ${releaseCallC(elem, "e")};`);
         }
         d.push(`  }`);
@@ -1582,7 +1582,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         break;
       }
       case "union": {
-        const def = E.unionsById.get(t.unionId);
+        const def = emitter.unionsById.get(t.unionId);
         if (!def) throw new InternalCompilerError(`emitter bug: to-dyn of unknown union ${t.unionId}`);
         d.push(`  switch (v->tag) {`);
         def.arms.forEach((arm, i) => {
@@ -1597,9 +1597,9 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           } else if (arm.kind === "func") {
             // A boxable function arm crosses through the checked-dynamic
             // function boundary (the dynFrom func special case, sans name).
-            d.push(`  case ${i}: return ${dynFuncBoxHelper(E, arm)}((ScrClosure *)scr_union_peek(v), NULL);`);
+            d.push(`  case ${i}: return ${dynFuncBoxHelper(emitter, arm)}((ScrClosure *)scr_union_peek(v), NULL);`);
           } else {
-            d.push(`  case ${i}: return ${E.toDynHelper(arm)}((${cType(arm).trim()})scr_union_peek(v));`);
+            d.push(`  case ${i}: return ${emitter.toDynHelper(arm)}((${cType(arm).trim()})scr_union_peek(v));`);
           }
         });
         d.push(`  default: scr_trap("scriptc: internal error: invalid union tag\\n");`);
@@ -1616,7 +1616,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
           d.push(`  return scr_dyn_new_promise(v);`);
           break;
         }
-        d.push(`  return scr_dyn_new_promise_adapting(v, &${promiseDynAdapterHelper(E, t.inner)});`);
+        d.push(`  return scr_dyn_new_promise_adapting(v, &${promiseDynAdapterHelper(emitter, t.inner)});`);
         break;
       }
       default: {
@@ -1632,9 +1632,9 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       }
     }
     d.push(`}`, ``);
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     if (sourceAccessor) {
-      E.walkerDefs.push(
+      emitter.walkerDefs.push(
         `static ScrDyn *${sourceAccessor.name}(void *v, bool materialize) {`,
         `  if (materialize) return ${name}((${cType(t).trim()})v);`,
         `  ${sourceAccessor.release}(v);`,
@@ -1652,14 +1652,14 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * value, and fulfill dst with it (scr_dyn_new_promise_adapting's
    * callback; rejections never reach an adapter — the runtime copies them
    * raw). Interned per inner typeKey. */
-  function promiseDynAdapterHelper(E: CEmitter, inner: IrType): string {
+  function promiseDynAdapterHelper(emitter: CEmitter, inner: IrType): string {
     const key = typeKey(inner);
-    const existing = E.promiseDynAdapters.get(key);
+    const existing = emitter.promiseDynAdapters.get(key);
     if (existing) return existing;
-    const name = `sc_pda_${E.promiseDynAdapters.size}`;
-    E.promiseDynAdapters.set(key, name);
+    const name = `sc_pda_${emitter.promiseDynAdapters.size}`;
+    emitter.promiseDynAdapters.set(key, name);
     const sig = `static void ${name}(ScrPromise *dst, ScrPromise *src)`;
-    E.walkerProtos.push(`${sig}; /* dyn-box settle adapter for promise<${key}> */`);
+    emitter.walkerProtos.push(`${sig}; /* dyn-box settle adapter for promise<${key}> */`);
     const d: string[] = [`${sig} { /* dyn-box settle adapter for promise<${key}> */`];
     const fulfill = (expr: string) =>
       `  scr_promise_fulfill_ref(dst, ${expr}, scr_dyn_retain_v, scr_dyn_release_v, NULL);`;
@@ -1690,18 +1690,18 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         // nested promises, handles): extract (+1 via the stored retain),
         // convert through the shared to-dyn spelling, release the extract.
         d.push(`  ${cDecl(inner, "pv")} = (${cType(inner).trim()})scr_promise_payload_ref(src);`);
-        d.push(`  ScrDyn *dv = ${toDynExprC(E, inner, "pv")};`);
+        d.push(`  ScrDyn *dv = ${toDynExprC(emitter, inner, "pv")};`);
         if (isRefCounted(inner)) d.push(`  ${releaseCallC(inner, "pv")};`);
         d.push(fulfill(`dv`));
         break;
       }
     }
     d.push(`}`, ``);
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }
 
-/* ── the checked-dynamic function boundary (nodes.ts) ─────────────────
+/* ── the checked-dynamic function boundary (ir.ts) ─────────────────
    * Three interned per-signature helpers:
    *
    *   sc_dfk_<n> — the CALL THUNK a dyn-boxed closure carries: validate
@@ -1727,24 +1727,24 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * result uniformly), funcs box (anonymous — the static name is gone by
    * the time a value flows through an adapter; SEMANTICS.md), everything
    * else rides the toDyn converter. `expr` is BORROWED in every arm. */
-  function toDynExprC(E: CEmitter, t: IrType, expr: string): string {
+  function toDynExprC(emitter: CEmitter, t: IrType, expr: string): string {
     if (t.kind === "dyn") return `scr_dyn_retain(${expr})`;
-    if (t.kind === "func") return `${E.dynFuncBoxHelper(t)}(${expr}, NULL)`;
+    if (t.kind === "func") return `${emitter.dynFuncBoxHelper(t)}(${expr}, NULL)`;
     // An island value wraps by reference (scalar-normalizing) — the
     // jsval-returning callback shape of the routed-dispatch lane.
     if (t.kind === "jsval") return `scr_dyn_from_jsval(${expr})`;
-    return `${E.toDynHelper(t)}(${expr})`;
+    return `${emitter.toDynHelper(t)}(${expr})`;
   }
 
 /** The call thunk for one closure signature (see the block comment). */
-  function dynFuncThunkHelper(E: CEmitter, t: IrType & { kind: "func" }): string {
+  function dynFuncThunkHelper(emitter: CEmitter, t: IrType & { kind: "func" }): string {
     const key = typeKey(t);
-    const existing = E.dynFuncThunks.get(key);
+    const existing = emitter.dynFuncThunks.get(key);
     if (existing) return existing;
-    const name = `sc_dfk_${E.dynFuncThunks.size}`;
-    E.dynFuncThunks.set(key, name);
+    const name = `sc_dfk_${emitter.dynFuncThunks.size}`;
+    emitter.dynFuncThunks.set(key, name);
     const sig = `static ScrDyn *${name}(ScrClosure *c, ScrDyn *const *args, size_t argc)`;
-    E.walkerProtos.push(`${sig}; /* dyn call thunk for ${key} */`);
+    emitter.walkerProtos.push(`${sig}; /* dyn call thunk for ${key} */`);
     const d: string[] = [`${sig} { /* dyn call thunk for ${key} */`];
     if (t.params.length === 0) d.push(`  (void)args;`);
     d.push(`  (void)argc;`);
@@ -1769,7 +1769,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
         d.push(`    if (!a${i}) { ${undo.join(" ")}${undo.length > 0 ? " " : ""}return NULL; }`);
       } else {
         d.push(`    ScrDynPath pp = { NULL, NULL, ${i} };`);
-        d.push(`    a${i} = ${E.dynCheckHelper(p)}(ad, &pp);`);
+        d.push(`    a${i} = ${emitter.dynCheckHelper(p)}(ad, &pp);`);
         const undo = t.params
           .slice(0, i)
           .flatMap((q, j) => (isRefCounted(q) ? [`${releaseCallC(q, `a${j}`)};`] : []));
@@ -1802,27 +1802,27 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
     } else {
       d.push(`  ${cDecl(t.ret, "r")} = ${call};`);
       d.push(`  if (scr_exc_pending()) return NULL;`);
-      d.push(`  ScrDyn *out = ${toDynExprC(E, t.ret, "r")};`);
+      d.push(`  ScrDyn *out = ${toDynExprC(emitter, t.ret, "r")};`);
       if (isRefCounted(t.ret)) d.push(`  ${releaseCallC(t.ret, "r")};`);
       d.push(`  return out;`);
     }
     d.push(`}`, ``);
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }
 
 /** The box builder dynFrom emits for one closure signature. */
-  export function dynFuncBoxHelper(E: CEmitter, t: IrType & { kind: "func" }): string {
+  export function dynFuncBoxHelper(emitter: CEmitter, t: IrType & { kind: "func" }): string {
     const key = typeKey(t);
-    const existing = E.dynFuncBoxes.get(key);
+    const existing = emitter.dynFuncBoxes.get(key);
     if (existing) return existing;
-    const name = `sc_dfb_${E.dynFuncBoxes.size}`;
-    E.dynFuncBoxes.set(key, name);
+    const name = `sc_dfb_${emitter.dynFuncBoxes.size}`;
+    emitter.dynFuncBoxes.set(key, name);
     const sig = `static ScrDyn *${name}(ScrClosure *v, const char *fname)`;
-    E.walkerProtos.push(`${sig}; /* box ${key} into dyn */`);
-    const thunk = dynFuncThunkHelper(E, t);
+    emitter.walkerProtos.push(`${sig}; /* box ${key} into dyn */`);
+    const thunk = dynFuncThunkHelper(emitter, t);
     const sigLit = cStringLiteral(Buffer.from(key, "utf8"));
-    E.walkerDefs.push(
+    emitter.walkerDefs.push(
       `${sig} { /* box ${key} into dyn */`,
       `  return scr_dyn_new_func(scr_closure_retain(v), &${thunk}, ${t.params.length}, ${sigLit}, fname);`,
       `}`,
@@ -1835,15 +1835,15 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * function a func-targeted dynCheck wraps a non-identical boxed
    * signature in. caps[0] is an untraced obj-box owning the dyn function
    * value. */
-  function dynFuncAdapterHelper(E: CEmitter, t: IrType & { kind: "func" }): string {
+  function dynFuncAdapterHelper(emitter: CEmitter, t: IrType & { kind: "func" }): string {
     const key = typeKey(t);
-    const existing = E.dynFuncAdapters.get(key);
+    const existing = emitter.dynFuncAdapters.get(key);
     if (existing) return existing;
-    const name = `sc_dfa_${E.dynFuncAdapters.size}`;
-    E.dynFuncAdapters.set(key, name);
+    const name = `sc_dfa_${emitter.dynFuncAdapters.size}`;
+    emitter.dynFuncAdapters.set(key, name);
     const params = ["ScrClosure *sc_env", ...t.params.map((p, i) => cDecl(p, `a${i}`))].join(", ");
     const sig = `static ${cType(t.ret)}${cType(t.ret).endsWith("*") ? "" : " "}${name}(${params})`;
-    E.walkerProtos.push(`${sig}; /* dyn fn adapter to ${key} */`);
+    emitter.walkerProtos.push(`${sig}; /* dyn fn adapter to ${key} */`);
     const dummy =
       t.ret.kind === "void" ? "" : t.ret.kind === "f64" ? "0" : t.ret.kind === "bool" ? "false" : "NULL";
     const d: string[] = [`${sig} { /* dyn fn adapter to ${key} */`];
@@ -1853,7 +1853,7 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
     if (t.params.length > 0) {
       d.push(`  ScrDyn *sc_args[${t.params.length}];`);
       t.params.forEach((p, i) => {
-        d.push(`  sc_args[${i}] = ${toDynExprC(E, p, `a${i}`)};`);
+        d.push(`  sc_args[${i}] = ${toDynExprC(emitter, p, `a${i}`)};`);
         if (isRefCounted(p)) d.push(`  ${releaseCallC(p, `a${i}`)};`);
       });
     }
@@ -1874,12 +1874,12 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       // Validate the dyn result into the target's return type — a lying
       // wrapper throws the catchable TypeError here (path "$"), exactly
       // the dynCheck stance; the dummy result rides the pending unwind.
-      d.push(`  ${cDecl(t.ret, "out")} = ${E.dynCheckHelper(t.ret)}(sc_r, NULL);`);
+      d.push(`  ${cDecl(t.ret, "out")} = ${emitter.dynCheckHelper(t.ret)}(sc_r, NULL);`);
       d.push(`  scr_dyn_release(sc_r);`);
       d.push(`  return out;`);
     }
     d.push(`}`, ``);
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }
 
@@ -1892,17 +1892,17 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * arm (T undefined-armed union), or TRAPS with the key text (the array
    * OOB policy — the checker claimed T and no undefined is representable).
    * Borrows both; refcounted results are owned (+1). */
-  export function recordKeyGetHelper(E: CEmitter, shapeId: string, t: IrType, overflowOnly = false): string {
+  export function recordKeyGetHelper(emitter: CEmitter, shapeId: string, t: IrType, overflowOnly = false): string {
     const key = `${shapeId}|${typeKey(t)}${overflowOnly ? "|ovf" : ""}`;
-    const existing = E.recordKeyGetFns.get(key);
+    const existing = emitter.recordKeyGetFns.get(key);
     if (existing) return existing;
-    const shape = E.recordsById.get(shapeId);
+    const shape = emitter.recordsById.get(shapeId);
     if (!shape) throw new InternalCompilerError(`emitter bug: keyed read of unknown shape ${shapeId}`);
-    const name = `sc_rkg_${E.recordKeyGetFns.size}`;
-    E.recordKeyGetFns.set(key, name);
+    const name = `sc_rkg_${emitter.recordKeyGetFns.size}`;
+    emitter.recordKeyGetFns.set(key, name);
     const struct = mangleRecordStruct(shapeId);
     const sig = `static ${cType(t)}${cType(t).endsWith("*") ? "" : " "}${name}(${struct} *r, ScrStr *k)`;
-    E.walkerProtos.push(`${sig}; /* r[k] on ${shapeId} as ${typeKey(t)} */`);
+    emitter.walkerProtos.push(`${sig}; /* r[k] on ${shapeId} as ${typeKey(t)} */`);
     const d: string[] = [`${sig} { /* r[k] on ${shapeId} as ${typeKey(t)} */`];
     // How a value of type `vt` (a field, or the overflow hit) surfaces as T.
     const surface = (vt: IrType, expr: string, owned: boolean): string => {
@@ -1911,24 +1911,24 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       }
       if (t.kind === "dyn") {
         // toDyn borrows — an owned operand would leak; callers pass borrowed.
-        return `${E.toDynHelper(vt)}(${expr})`;
+        return `${emitter.toDynHelper(vt)}(${expr})`;
       }
       if (t.kind === "union") {
-        const def = E.unionsById.get(t.unionId);
+        const def = emitter.unionsById.get(t.unionId);
         const tag = def?.arms.findIndex((a) => typeEquals(a, vt)) ?? -1;
         if (tag < 0) throw new InternalCompilerError(`emitter bug: keyed read arm for ${typeKey(vt)} in ${typeKey(t)}`);
         if (vt.kind === "f64") return `scr_union_new_f64(${tag}, ${expr})`;
         if (vt.kind === "bool") return `scr_union_new_bool(${tag}, ${expr})`;
         const rc = vAdapters(vt);
         const payload = owned ? expr : retainCallC(vt, expr);
-        return `scr_union_new_ref(${tag}, ${payload}, &${rc.retain}, &${rc.release}, ${E.traceArgC(vt)})`;
+        return `scr_union_new_ref(${tag}, ${payload}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(vt)})`;
       }
       throw new InternalCompilerError(`emitter bug: keyed read cannot surface ${typeKey(vt)} as ${typeKey(t)}`);
     };
     // overflowOnly (a literal key naming no declared field): the declared
     // switch can never hit — only the overflow answers.
     for (const f of overflowOnly ? [] : shape.fields) {
-      const lit = E.internLiteral(f.name);
+      const lit = emitter.internLiteral(f.name);
       d.push(`  if (scr_str_eq(k, (ScrStr *)&${lit})) { /* ${f.name} */`);
       d.push(`    return ${surface(f.type, `r->${mangleField(f.name)}`, false)};`);
       d.push(`  }`);
@@ -1958,16 +1958,16 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
     // The miss path.
     if (t.kind === "dyn") {
       d.push(`  return scr_dyn_retain(scr_dyn_undefined());`);
-    } else if (t.kind === "union" && undefinedArmTag(t, E.unionsById) >= 0) {
-      d.push(`  return ${E.unitInstanceRef(t.unionId, undefinedArmTag(t, E.unionsById))};`);
+    } else if (t.kind === "union" && undefinedArmTag(t, emitter.unionsById) >= 0) {
+      d.push(`  return ${emitter.unitInstanceRef(t.unionId, undefinedArmTag(t, emitter.unionsById))};`);
     } else {
       // JS would answer undefined; T has no way to say it (the checker
       // claimed T without noUncheckedIndexedAccess) — trap like an array
       // OOB read instead of corrupting a typed slot (SEMANTICS.md).
-      d.push(`  scr_trap_fmt("scriptc: TypeError: record has no key '%.*s' (typed '${dynDesc(t, E.recordsById, E.unionsById)}' — no undefined is representable)\\n", (int)k->len, k->data);`);
+      d.push(`  scr_trap_fmt("scriptc: TypeError: record has no key '%.*s' (typed '${dynDesc(t, emitter.recordsById, emitter.unionsById)}' — no undefined is representable)\\n", (int)k->len, k->data);`);
     }
     d.push(`}`, ``);
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }
 
@@ -1979,30 +1979,30 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
    * anything, the documented divergence; typed values store directly),
    * an undeclared key inserts/replaces in the overflow map. Borrows r and
    * k; OWNS v (+1 moves in — released on the validation-failure path). */
-  export function recordKeySetHelper(E: CEmitter, shapeId: string): string {
-    const existing = E.recordKeySetFns.get(shapeId);
+  export function recordKeySetHelper(emitter: CEmitter, shapeId: string): string {
+    const existing = emitter.recordKeySetFns.get(shapeId);
     if (existing) return existing;
-    const shape = E.recordsById.get(shapeId);
+    const shape = emitter.recordsById.get(shapeId);
     // Signature-free shapes dispatch over their (one-typed) declared
     // fields and TRAP on a miss (scr_record_key_miss — JS would add the
     // property, which a monomorphic struct cannot); overflow shapes keep
     // the map insert tail.
     const iv = shape?.indexValue ?? shape?.fields[0]?.type;
     if (!shape || !iv) throw new InternalCompilerError(`emitter bug: keyed write on field-free non-overflow shape ${shapeId}`);
-    const name = `sc_rks_${E.recordKeySetFns.size}`;
-    E.recordKeySetFns.set(shapeId, name);
+    const name = `sc_rks_${emitter.recordKeySetFns.size}`;
+    emitter.recordKeySetFns.set(shapeId, name);
     const struct = mangleRecordStruct(shapeId);
     const sig = `static void ${name}(${struct} *r, ScrStr *k, ${cDecl(iv, "v")})`;
-    E.walkerProtos.push(`${sig}; /* r[k] = v on ${shapeId} */`);
+    emitter.walkerProtos.push(`${sig}; /* r[k] = v on ${shapeId} */`);
     const d: string[] = [`${sig} { /* r[k] = v on ${shapeId} */`];
     for (const f of shape.fields) {
-      const lit = E.internLiteral(f.name);
+      const lit = emitter.internLiteral(f.name);
       const member = `r->${mangleField(f.name)}`;
       d.push(`  if (scr_str_eq(k, (ScrStr *)&${lit})) { /* ${f.name} */`);
       if (iv.kind === "dyn" && shape.indexValue) {
         const keyLit = cStringLiteral(Buffer.from(f.name, "utf8"));
         d.push(`    ScrDynPath p = { NULL, ${keyLit}, 0 };`);
-        d.push(`    ${cDecl(f.type, "nv")} = ${E.dynCheckHelper(f.type)}(v, &p);`);
+        d.push(`    ${cDecl(f.type, "nv")} = ${emitter.dynCheckHelper(f.type)}(v, &p);`);
         d.push(`    scr_dyn_release(v);`);
         d.push(`    if (scr_exc_pending()) return; /* mismatched write: TypeError, field untouched */`);
         d.push(`    ${isRefCounted(f.type) ? `if (${member}) ${releaseCallC(f.type, member)};` : `(void)0;`}`);
@@ -2032,6 +2032,6 @@ export function jsonWriteHelper(E: CEmitter, t: IrType): string {
       }
     }
     d.push(`}`, ``);
-    E.walkerDefs.push(...d);
+    emitter.walkerDefs.push(...d);
     return name;
   }

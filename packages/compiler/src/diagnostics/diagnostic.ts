@@ -51,7 +51,7 @@
  *            failures while applying a valid profile (SC5004)
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
-import type { SrcLoc } from "../ir/nodes.js";
+import type { SrcLoc } from "../ir/ir.js";
 
 /* Internal prioritization buckets. NEVER rendered to users — user-facing
  * output says only what is and isn't supported (plus hints); scheduling is
@@ -552,7 +552,7 @@ export function intersectionTypeDiag(typeText: string, loc: SrcLoc): ScrDiagnost
  * key-value domains, array and tuple elements, union arms, function
  * parameters/returns, and record members. The container is not the blocker
  * — `detail` (computed by describeComponentBlocker/
- * describeRecordMemberBlocker in frontend/types.ts, which mirror mapType's
+ * describeRecordMemberBlocker in frontend/type-mapper.ts, which mirror mapType's
  * own rules) names the component and the slot it cannot fill. */
 export function componentTypeDiag(typeText: string, detail: string, loc: SrcLoc): ScrDiagnostic {
   return {

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { analyze, buildTargetPlatform, compile, compileC, compileLibrary, isExactExternalTypeSpecifier, renderAll, renderCoverage, resolveProvenanceSources, setProvenanceSources, warmNativeCaches, type NativeCacheWarmProfile } from "@scriptc/compiler";
+import { analyze, buildTargetPlatform, compile, compileC, compileLibrary, isExactExternalTypeSpecifier, renderDiagnostics, renderCoverage, resolveProvenanceSources, setProvenanceSources, warmNativeCaches, type NativeCacheWarmProfile } from "@scriptc/compiler";
 import { defaultExecutableName } from "./paths.js";
 import { CLI_OPTIONS, USAGE } from "./usage.js";
 
@@ -133,7 +133,7 @@ async function main(): Promise<number> {
     });
     if (!result.ok) {
       const color = process.stderr.isTTY ?? false;
-      process.stderr.write(renderAll(result.diagnostics, result.sourceTexts, { color }) + "\n");
+      process.stderr.write(renderDiagnostics(result.diagnostics, result.sourceTexts, { color }) + "\n");
       const n = result.diagnostics.length;
       process.stderr.write(`\n${n} error${n === 1 ? "" : "s"}.\n`);
       return 1;
@@ -255,7 +255,7 @@ async function main(): Promise<number> {
     });
     if (!result.ok) {
       const color = process.stderr.isTTY ?? false;
-      process.stderr.write(renderAll(result.diagnostics, result.sourceTexts, { color }) + "\n");
+      process.stderr.write(renderDiagnostics(result.diagnostics, result.sourceTexts, { color }) + "\n");
       const n = result.diagnostics.length;
       process.stderr.write(`\n${n} error${n === 1 ? "" : "s"}.\n`);
       throw new CliExit(1);

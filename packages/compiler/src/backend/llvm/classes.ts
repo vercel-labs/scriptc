@@ -1,6 +1,6 @@
 import { InternalCompilerError } from "../../errors.js";
 /* The LLVM backend's class machinery — the .ll mirror of the C emitter's
- * class slice (emit-shapes.ts): the class graph (base/children links, the
+ * class slice (shapes.ts): the class graph (base/children links, the
  * whole-program preorder numbering behind O(1) instanceof, hierarchy
  * membership, per-hierarchy virtual slot lists), per-class struct types and
  * RC/trace helper families, the hierarchy vtable instances, and the class
@@ -20,8 +20,8 @@ import { InternalCompilerError } from "../../errors.js";
  * Emitter- and stream-rooted classes stay out of the tier (their prefixes
  * embed runtime registry/state slots and their surfaces are async-shaped);
  * the emitter refuses them by name before anything here runs. */
-import type { IrClassDef, IrFunction, IrModule, IrType, IrUnionDef } from "../../ir/nodes.js";
-import { isRefCounted, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES } from "../../ir/nodes.js";
+import type { IrClassDef, IrFunction, IrModule, IrType, IrUnionDef } from "../../ir/ir.js";
+import { isRefCounted, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES } from "../../ir/ir.js";
 import { streamRooted, undefinedArmTag } from "../../ir/analysis.js";
 import {
   mangleClassGcFree,
@@ -169,7 +169,7 @@ export function classStructSym(className: string): string {
 /** True when the class descends from the runtime emitter class: its
  * struct embeds ScrEmitter's remaining prefix (the registry pointer and
  * the display-name slot) after the vtable word, so an upcast to
- * ScrEmitter* is the usual pointer reinterpret (emit-shapes.ts's rule). */
+ * ScrEmitter* is the usual pointer reinterpret (shapes.ts's rule). */
 function emitterRooted(meta: LlClassMeta): boolean {
   return meta.root.def.name === RUNTIME_EMITTER_CLASS;
 }
@@ -450,7 +450,7 @@ export function emitClassShapes(
     if (isEmitterRooted) {
       // The ScrEmitter prefix: registry stays NULL (zeroed allocation);
       // the display name Node's leak warning prints ([My]) is the source
-      // class name, without the module qualifier (emit-shapes.ts's rule).
+      // class name, without the module qualifier (shapes.ts's rule).
       const displayName = cls.name.includes(".")
         ? cls.name.slice(cls.name.lastIndexOf(".") + 1)
         : cls.name;

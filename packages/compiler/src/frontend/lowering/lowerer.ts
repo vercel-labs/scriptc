@@ -14,7 +14,8 @@ import { InternalCompilerError } from "../../errors.js";
  *   ("x.0", "x.1" for shadowing); the IR is scope-flat.
  */
 import { resolve } from "node:path";
-import { isRelativeSpecifier, tsgoPath } from "../shared.js";
+import { tsgoPath } from "../dts-paths.js";
+import { isRelativeSpecifier } from "../workspace-registry.js";
 import * as ts from "../ts7/adapter.js";
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import {
@@ -51,8 +52,8 @@ import type {
   IrType,
   IrUnionDef,
   SrcLoc,
-} from "../../ir/nodes.js";
-import { arrayOf, BOOL, canAdaptDynFuncTo, canConvertToDyn, canCrossIslandBoundary, canExitIslandToType, canMarshalTypedFuncIntoIsland, DYN, F64, isJsonSafeType, isUndefinedArmedUnion, isUnitType, JSVAL, RUNTIME_ERROR_CLASSES, STRING, typeEquals, UNDEFINED_T, VOID } from "../../ir/nodes.js";
+} from "../../ir/ir.js";
+import { arrayOf, BOOL, canAdaptDynFuncTo, canConvertToDyn, canCrossIslandBoundary, canExitIslandToType, canMarshalTypedFuncIntoIsland, DYN, F64, isJsonSafeType, isUndefinedArmedUnion, isUnitType, JSVAL, RUNTIME_ERROR_CLASSES, STRING, typeEquals, UNDEFINED_T, VOID } from "../../ir/ir.js";
 import { type DynamicImportResolution, type NpmBuiltinUse, type NpmLazyTrap } from "../npm.js";
 import { provenanceActive } from "../provenance-registry.js";
 import {
@@ -89,7 +90,7 @@ import {
   type TypeMapperCtx,
   UnionRegistry,
   withUndefinedArm as withUndefinedArmCanonical,
-} from "../types.js";
+} from "../type-mapper.js";
 import { CompoundOp, IslandFnEntry, boundaryIntoIslandMsg, boundaryOutOfIslandMsg, BuiltinModuleFn, builtinConstLit, builtinModuleConstOf, builtinModulesArrayLit, builtinFenceHintOf, builtinModuleFnOf, stdlibMemberFence, isStdlibMember, isStdlibSymbol, isStdlibGlobal, stdlibGlobalMember, nodeTypesOnlySymbol } from "./surfaces.js";
 import { FileParts, splitFiles, collectProgram, collectNpmImports, collectJsonImports, moduleArtifacts, collectGlobals, declSymbolOf, defaultExportSymbolOf, lowerFileInit, lowerDefaultExport, buildMain, appendDynamicImportModules } from "./lower-modules.js";
 import { ClassInfo, ClassIteratorInfo, GenericClassInfo, registerBuiltinErrorClasses, registerBuiltinEmitterClass, registerBuiltinStreamClasses, builtinErrorInfoOf, builtinEmitterInfoOf, builtinStreamInfoOf, analyzeClassDecoration, classIteratorDrainCall, classIteratorNextCall, classIteratorOf, classIteratorOpenCall, classIteratorRestDrainCall, classMemberNameOf, classValueRef, collectClassShape, exactClassOfReceiver, collectClassShapeInner, ctorAbiEquals, findMethodOn, findStaticOn, findGenericMethodOn, findGenericStaticOn, genericClassInstanceType, isSubclassOf, inHierarchy, overrideBelow, staticShadowBelow, upcastTo, lowerClassMembers, lowerClassCtor, lowerClassExpression, lowerClassExpressionInfo, lowerClassMethodMember, lowerClassValueProperty, lowerStaticMethod, throwingSetterFn, fieldInitStmts, lowerStaticFieldInits, lowerStaticFieldRead, lowerDerivedCtorBody, superCallStmt, lowerSuperMethodCall, superThisRef, lowerSuperAccessorRead, lowerSuperAccessorWrite, inheritsBuiltinErrorCtor, inheritsBuiltinEmitterCtor, errorMessageArg, lowerNew, accessorCall } from "./lower-classes.js";
@@ -97,7 +98,7 @@ import { MixinFnShape, mixinCallClassInfoOf, mixinIntersectionInstanceType } fro
 import { ParamShape, FnSig, GenericFnInfo, GenericInstance, bindingNeverReassigned, bodyReadsArguments, implicitMonoFile, isThisParameter, paramShape, paramShapes, checkDefaultParamBodyType, completeArgs, wrappedUndefined, undefinedArgFor, requireExactArityValue, bodyReturnType, declaredReturnType, collectSignature, collectSignatureInner, collectGenericSignature, genericFnOf, lowerGenericCall, lowerGenericFnValue, inferTypeParamBindings, lowerGenericInstance, lowerCall, lowerFfiCall, lowerTimersMemberCall, lowerPromiseMethodCall, lowerFilterNarrowCall, isTopLevelFnSymbol, lowerNestedFunctionDecl, lambdaSignature, lowerLambda, lowerFunction, validateFfiImports } from "./lower-calls.js";
 import { lowerArrayMethodCall, lowerBufferStaticCall, lowerBytesMethodCall, lowerBytesNew, lowerMapMethodCall, lowerMapForEachCall, buildMapForEachFn, lowerRecordOvfCaptureHelper, lowerEnvToPairsHelper, lowerSetMethodCall, lowerSetForEachCall, buildSetForEachFn, lowerRegexMethodCall, lowerStringMethodCall } from "./lower-containers.js";
 import { lowerStreamModuleCall } from "./lower-stream.js";
-import { lowerEmitOverrideSpec, type EmitSpecCtx, type EmitSpecRequest } from "./lower-emitter.js";
+import { lowerEmitOverrideSpec, type EmitSpecCtx, type EmitSpecRequest } from "./lower-event-emitter.js";
 import { builtinImportOf, createRequireBindingDecl, createRequireNamespaceDecl, createRequireSpecOf, stripTypeCasts, lowerBuiltinModuleCall, lowerFsToUnixTimestampCall, lowerFsLadderCall, lowerChildArgsArg, lowerSpawnSyncCall, lowerSpawnCall, lowerExecSyncCall, recordToEnvPairs, lowerJsonMethodCall, fencedBuiltinImportOf, lowerCryptoComposedCall, lowerUrlMethodCall, lowerSearchParamsMethodCall, lowerStatsMethodCall, lowerChildMethodCall, lowerAtomicsCall, lowerBuiltinExtraProperty, promisifiedExecFileDecl, lowerExecFileAsyncCall, execFileAsyncHelper, lowerStringDecoderMethodCall, strdecHelper, lowerReadlineMethodCall, lowerDcChannelMethodCall, lowerDcChannelProperty, lowerAlsMethodCall, lowerDcTracingChannelMethodCall, lowerDcTracingChannelProperty, lowerJsonProperty, lowerErrorCodeProperty, lowerProcessProperty, isProcessEnv, envValueType, lowerProcessEnvGet, lowerProcessMethodCall, lowerProcessOptionalMethodCall, lowerTimeoutMethodCall, envSnapshotHelper, isConsoleLog, consoleCallMember, lowerNumberStaticCall, lowerNumberStaticProperty, lowerDateCall, lowerTextCodecCall, lowerCryptoModuleCall, lowerFsConstantsProperty, lowerBuiltinConstantsProperty, builtinConstantBindingOf, builtinConstantsDestructureDecl, lowerProcessStreamProperty, lowerStringStaticCall, lowerStringLastIndexOfCall, lowerPromiseStaticCall, textCodecBindingClassOf } from "./lower-builtins.js";
 import { fenceFetchObjectAssignment, fenceFetchObjectBinding, fenceStaticAbortControllerMemberRead, fenceStaticHeadersIteration, fenceStaticHeadersMember, fenceStaticReadableStreamMember, fenceStaticResponseMember, fenceUnsupportedFetchConstructorMember, isIslandExpr, islandFuncValueFence, islandRegexpOf, jsvalIn, requireDynamicApi, islandGlobalFnOf, lowerAbortControllerNew, lowerDynamicHeadersIteratorCall, lowerDynamicHeadersSpread, lowerDynamicImportCall, lowerFetchCall, lowerFetchElementMethodCall, lowerResponseNew, lowerStaticFetchCompanionCall, lowerStaticAbortControllerCall, lowerStaticAbortSignalListenerCall, lowerStaticReadableStreamCancelCall, lowerStaticReadableStreamControllerCall, lowerStaticReadableStreamNew, lowerStaticReadableStreamReaderCall, lowerStaticResponseCall, lowerIslandMethodCall, lowerMathProperty, npmPackageOf, npmMemberFence, npmPackageOfSymbol } from "./lower-island.js";
 import { lowerHttpHeadersElement, lowerNetModuleCall, lowerServerMethodCall, lowerServerProperty, lowerTlsRootCertificates } from "./lower-server.js";
@@ -160,7 +161,7 @@ const THIS_BINDING = { escapedName: "%this" } as unknown as ts.Symbol;
 
 /* ── the island boundary, in one voice ────────────────────────────────
  * Whether a value can cross between the static world and the island is
- * ONE question — canCrossIslandBoundary (nodes.ts), asked here through
+ * ONE question — canCrossIslandBoundary (ir.ts), asked here through
  * boundarySafe() — and each rejected direction has ONE message builder,
  * so the rule and its wording cannot drift apart across the implicit
  * coercion path, the explicit marshal path, and the exact-type fence. */
@@ -631,28 +632,28 @@ export function importCallHandleType(expr: ts.Expression | undefined): IrType | 
  * Ambient (.d.ts) declarations never reach this: they have no compiled
  * implementation, so their calls lower through the island/builtin paths
  * whose validated exits keep the checker-trust trap. */
-export function uncheckedOverloadHandleCall(L: Lowerer, expr: ts.Expression | undefined): boolean {
-  if (!L.dynamic || !expr) return false;
+export function uncheckedOverloadHandleCall(lowerer: Lowerer, expr: ts.Expression | undefined): boolean {
+  if (!lowerer.dynamic || !expr) return false;
   let e = expr;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   // Tagged templates are calls too (tag(strings, ...values)) and resolve
   // overload sets the same way — foo1`${1}` against a TemplateStringsArray
   // overload of an any-returning implementation stores the handle.
   if (!ts.isCallExpression(e) && !ts.isTaggedTemplateExpression(e)) return false;
-  const rsig = L.checker.getResolvedSignature(e);
-  const rdecl = rsig ? L.checker.signatureDeclaration(rsig) : undefined;
+  const rsig = lowerer.checker.getResolvedSignature(e);
+  const rdecl = rsig ? lowerer.checker.signatureDeclaration(rsig) : undefined;
   if (!rsig || !rdecl) return false;
   if (!(ts.isFunctionDeclaration(rdecl) || ts.isMethodDeclaration(rdecl)) || rdecl.body) return false;
   const name = rdecl.name;
-  const symbol = name ? L.checker.getSymbolAtLocation(name) : undefined;
+  const symbol = name ? lowerer.checker.getSymbolAtLocation(name) : undefined;
   if (!symbol) return false;
-  const impl = L.checker
+  const impl = lowerer.checker
     .declarationsOf(symbol)
     .find((d) => (ts.isFunctionDeclaration(d) || ts.isMethodDeclaration(d)) && (d as ts.FunctionDeclaration).body !== undefined);
   if (!impl) return false;
-  const implSig = L.checker.getSignatureFromDeclaration(impl);
+  const implSig = lowerer.checker.getSignatureFromDeclaration(impl);
   if (!implSig) return false;
-  return L.mapTypeOf(L.checker.getReturnTypeOfSignature(implSig))?.kind === "jsval";
+  return lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(implSig))?.kind === "jsval";
 }
 
 /** The JavaScript declaration fallback for unmappable binding types (see
@@ -672,13 +673,13 @@ export function uncheckedOverloadHandleCall(L: Lowerer, expr: ts.Expression | un
  * checked-dynamic fallbacks apply, the pre-never-mapping behavior. Bare
  * `never` at the ROOT stays out (`for (const v of [])`'s loop var — the
  * dead read the f64 mapping is FOR). */
-export function neverTaintedJsType(L: Lowerer, node: ts.Node, t: ts.Type): boolean {
+export function neverTaintedJsType(lowerer: Lowerer, node: ts.Node, t: ts.Type): boolean {
   if (!isJsSourceFile(node.getSourceFile())) return false;
   const walk = (x: ts.Type, depth: number): boolean => {
     if (depth === 0) return false;
     if (x.isUnionType()) return ts.constituentTypes(x).some((a) => walk(a, depth - 1));
-    if (L.checker.isArrayType(x) || L.checker.isTupleType(x)) {
-      return L.checker
+    if (lowerer.checker.isArrayType(x) || lowerer.checker.isTupleType(x)) {
+      return lowerer.checker
         .getTypeArguments(x as ts.TypeReference)
         .some((a) => (a.flags & ts.TypeFlags.Never) !== 0 || walk(a, depth - 1));
     }
@@ -730,10 +731,10 @@ export function nodeThrowExpr(kind: 0 | 1 | 2, code: string, message: string, ty
  * (scr_throw_lowering_fence). The diagnostic joins the runtime-fence
  * ledger exactly like a deferred statement fence — nothing silently
  * drops off the coverage report. */
-export function ladderFenceExpr(L: Lowerer, surface: string, node: ts.Node, hint?: string): IrExpr {
+export function ladderFenceExpr(lowerer: Lowerer, surface: string, node: ts.Node, hint?: string): IrExpr {
   const loc = locOf(node);
   const d = noLoweringDiag(surface, loc, hint);
-  L.runtimeFences.push(d);
+  lowerer.runtimeFences.push(d);
   const sf = node.getSourceFile();
   const pos = ts.getLineAndCharacterOfPosition(sf, loc.start);
   return {
@@ -767,21 +768,21 @@ export function ladderFenceExpr(L: Lowerer, surface: string, node: ts.Node, hint
  * this fallback for `any` (mapType answers jsval first).
  *
  * Null for void (no value exists to represent). */
-export function dynFallbackType(L: Lowerer, node: ts.Node, t: ts.Type): IrType | null {
+export function dynFallbackType(lowerer: Lowerer, node: ts.Node, t: ts.Type): IrType | null {
   if (t.flags & ts.TypeFlags.Void) return null;
   if (!isJsSourceFile(node.getSourceFile())) {
     if (t.flags & ts.TypeFlags.Any) return DYN;
     // TS single-call-signature function types: per-piece fallback, but
     // ONLY `any` pieces fall to dyn — any other unmappable piece keeps
     // the whole type's own fence.
-    return anyPiecedFuncType(L, node, t);
+    return anyPiecedFuncType(lowerer, node, t);
   }
-  if (L.checker.isArrayType(t)) {
-    const elem = L.checker.getTypeArguments(t as ts.TypeReference)[0];
+  if (lowerer.checker.isArrayType(t)) {
+    const elem = lowerer.checker.getTypeArguments(t as ts.TypeReference)[0];
     const elemTainted =
       elem !== undefined &&
-      ((elem.flags & ts.TypeFlags.Never) !== 0 || neverTaintedJsType(L, node, elem));
-    const mappedElem = elem !== undefined && !elemTainted ? L.mapTypeOf(elem) : null;
+      ((elem.flags & ts.TypeFlags.Never) !== 0 || neverTaintedJsType(lowerer, node, elem));
+    const mappedElem = elem !== undefined && !elemTainted ? lowerer.mapTypeOf(elem) : null;
     // A mappable element keeps the static array; an unmappable one makes
     // the WHOLE value dyn (the checked-dynamic tree has real arrays — length/index/push
     // read through the keyed-dyn paths; dyn-element STATIC arrays have no
@@ -797,15 +798,15 @@ export function dynFallbackType(L: Lowerer, node: ts.Node, t: ts.Type): IrType |
   // construct signatures, overloads, and function-with-properties shapes
   // stay out (the whole value falls to dyn below, where every reached
   // use meets its own fence or boxes as-is).
-  const sig = pureSingleCallSignatureOf(L, t);
+  const sig = pureSingleCallSignatureOf(lowerer, t);
   if (sig) {
     const params = sig.getParameters().map((p): IrType => {
-      const pt = L.checker.getTypeOfSymbolAtLocation(p, node);
-      return L.mapTypeOf(pt) ?? DYN;
+      const pt = lowerer.checker.getTypeOfSymbolAtLocation(p, node);
+      return lowerer.mapTypeOf(pt) ?? DYN;
     });
-    const retT = L.checker.getReturnTypeOfSignature(sig);
+    const retT = lowerer.checker.getReturnTypeOfSignature(sig);
     const ret: IrType =
-      retT.flags & ts.TypeFlags.Void ? VOID : L.mapTypeOf(retT) ?? DYN;
+      retT.flags & ts.TypeFlags.Void ? VOID : lowerer.mapTypeOf(retT) ?? DYN;
     return { kind: "func", params, ret };
   }
   return DYN;
@@ -815,17 +816,17 @@ export function dynFallbackType(L: Lowerer, node: ts.Node, t: ts.Type): IrType |
  * properties, no construct signatures, no type parameters, no rest params
  * (declared or synthesized from an `arguments` read). Null for every
  * other shape. The structural gate both dynFallbackType arms share. */
-function pureSingleCallSignatureOf(L: Lowerer, t: ts.Type): ts.Signature | null {
+function pureSingleCallSignatureOf(lowerer: Lowerer, t: ts.Type): ts.Signature | null {
   if (!(t.flags & ts.TypeFlags.Object)) return null;
-  const sigs = L.checker.getCallSignatures(t);
+  const sigs = lowerer.checker.getCallSignatures(t);
   if (
     sigs.length === 1 &&
-    L.checker.getPropertiesOfType(t).length === 0 &&
-    L.checker.getConstructSignatures(t).length === 0 &&
+    lowerer.checker.getPropertiesOfType(t).length === 0 &&
+    lowerer.checker.getConstructSignatures(t).length === 0 &&
     sigs[0]!.getTypeParameters().length === 0 &&
     sigs[0]!.getParameters().every(
       (p) => {
-        const pDecl = L.checker.valueDeclarationOf(p);
+        const pDecl = lowerer.checker.valueDeclarationOf(p);
         return !pDecl || !ts.isParameter(pDecl) || pDecl.dotDotDotToken === undefined;
       },
     ) &&
@@ -833,7 +834,7 @@ function pureSingleCallSignatureOf(L: Lowerer, t: ts.Type): ts.Signature | null 
     // valueDeclaration to carry the dotDotDot): param-count mismatch
     // against the signature's declaration; the whole value stays dyn.
     (() => {
-      const sigDecl = L.checker.signatureDeclaration(sigs[0]!);
+      const sigDecl = lowerer.checker.signatureDeclaration(sigs[0]!);
       const declParams = sigDecl !== undefined && ts.isFunctionLike(sigDecl) ? sigDecl.parameters : undefined;
       if (declParams !== undefined && declParams.length !== sigs[0]!.getParameters().length) return false;
       // tsgo never synthesizes the `arguments` pseudo-rest into the
@@ -854,20 +855,20 @@ function pureSingleCallSignatureOf(L: Lowerer, t: ts.Type): ts.Signature | null 
  * irTypeOf fallback, so the binding type and the closure type agree).
  * A piece that fails to map for any other reason answers null — the
  * whole type keeps its own diagnostic. */
-function anyPiecedFuncType(L: Lowerer, node: ts.Node, t: ts.Type): IrType | null {
-  const sig = pureSingleCallSignatureOf(L, t);
+function anyPiecedFuncType(lowerer: Lowerer, node: ts.Node, t: ts.Type): IrType | null {
+  const sig = pureSingleCallSignatureOf(lowerer, t);
   if (!sig) return null;
   const params: IrType[] = [];
   for (const p of sig.getParameters()) {
-    const pt = L.checker.getTypeOfSymbolAtLocation(p, node);
-    const mapped = L.mapTypeOf(pt) ?? (pt.flags & ts.TypeFlags.Any ? DYN : null);
+    const pt = lowerer.checker.getTypeOfSymbolAtLocation(p, node);
+    const mapped = lowerer.mapTypeOf(pt) ?? (pt.flags & ts.TypeFlags.Any ? DYN : null);
     if (!mapped || mapped.kind === "void") return null;
     params.push(mapped);
   }
-  const retT = L.checker.getReturnTypeOfSignature(sig);
+  const retT = lowerer.checker.getReturnTypeOfSignature(sig);
   const ret: IrType | null =
     retT.flags & (ts.TypeFlags.Void | ts.TypeFlags.Never) ? VOID
-    : L.mapTypeOf(retT) ?? (retT.flags & ts.TypeFlags.Any ? DYN : null);
+    : lowerer.mapTypeOf(retT) ?? (retT.flags & ts.TypeFlags.Any ? DYN : null);
   if (!ret) return null;
   return { kind: "func", params, ret };
 }
@@ -1169,7 +1170,7 @@ export class Lowerer {
    * Reachability lowers inits before the declarations they discover, so
    * these rebuild after the worklist restores historical shape metadata. */
   readonly shapeOrderHelperFinalizers: (() => void)[] = [];
-  /** Emit-override specializations (`%C.emit:<event>` — lower-emitter.ts's
+  /** Emit-override specializations (`%C.emit:<event>` — lower-event-emitter.ts's
    * emit-overrides block): interned names, the drive-loop queue, and the
    * currently-lowering specialization's context (the super-forward
    * interception reads it). */
@@ -3865,7 +3866,7 @@ export class Lowerer {
   /** Unwraps a HYBRID (function-with-properties) record to its callable:
    * a record whose shape carries the reserved `%call` func field reads
    * that field; anything else returns unchanged. The consumer half of
-   * types.ts's chalk-shape mapping — call paths and func-slot coercions
+   * type-mapper.ts's chalk-shape mapping — call paths and func-slot coercions
    * share it. */
   hybridCallUnwrap(expr: IrExpr): IrExpr {
     if (expr.type.kind !== "record") return expr;
@@ -4055,7 +4056,7 @@ export class Lowerer {
     }
     // A HYBRID (function-with-properties) record flowing into a plain
     // func slot extracts its reserved %call field — the chalk shape's
-    // "the value IS callable" half (types.ts's hybrid mapping).
+    // "the value IS callable" half (type-mapper.ts's hybrid mapping).
     if (expected.kind === "func" && expr.type.kind === "record") {
       const un = this.hybridCallUnwrap(expr);
       if (un !== expr && typeEquals(un.type, expected)) return un;
@@ -8157,7 +8158,7 @@ export class Lowerer {
    * node_modules but NOT the standard library (typescript's own lib files
    * live under node_modules too), or inside a registered workspace-linked
    * package (a node_modules symlink whose realpath'd files carry no
-   * node_modules segment — shared.ts). The provenance half of the npm
+   * node_modules segment — workspace-registry.ts). The provenance half of the npm
    * typing rule (package types are island handles) and of the per-package
    * requires-dynamic attribution. */
   readonly isNpmFile = (sf: ts.SourceFile): boolean =>

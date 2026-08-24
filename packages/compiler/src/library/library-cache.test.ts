@@ -2,14 +2,14 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import type { IrModule } from "../ir/nodes.js";
+import type { IrModule } from "../ir/ir.js";
 import { FrontendInputTracker, trackedAccessibleEntries, trackedDirectoryExists, trackedFileExists, trackedReadFile } from "../frontend/input-tracker.js";
 import {
   publishEarlyLibraryCache,
   readEarlyLibraryCache,
   readSemanticLibraryCache,
   type EarlyLibraryCacheOptions,
-} from "./early-cache.js";
+} from "./library-cache.js";
 
 const scratch: string[] = [];
 

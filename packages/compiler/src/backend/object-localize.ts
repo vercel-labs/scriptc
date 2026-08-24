@@ -1,5 +1,5 @@
 /* Format-aware symbol localization for multi-instance library mode
- * (abi.localize_runtime) — the in-process half of cc.ts's
+ * (abi.localize_runtime) — the in-process half of native-toolchain.ts's
  * localizeLibraryObjects. Host toolchains cover the classic pairings
  * (darwin's ld64 does combine+demote in one step; host-linux binutils runs
  * `ld -r` + objcopy), but no portable toolchain performs the COFF

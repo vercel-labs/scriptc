@@ -7,7 +7,7 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { UNSUPPORTED } from "../../diagnostics/diagnostic.js";
-import { BOOL, BYTES_U8, CHILD_T, DYN, F64, FILEHANDLE_T, IrExpr, IrLibFn, IrStrIntrinsicMethod, IrType, RUNTIME_ERROR_CLASSES, SPAWNRES_T, STATS_T, STRING, URL_T, VOID, arrayOf } from "../../ir/nodes.js";
+import { BOOL, BYTES_U8, CHILD_T, DYN, F64, FILEHANDLE_T, IrExpr, IrLibFn, IrStrIntrinsicMethod, IrType, RUNTIME_ERROR_CLASSES, SPAWNRES_T, STATS_T, STRING, URL_T, VOID, arrayOf } from "../../ir/ir.js";
 import { isNodeTypesPath, requireSpecOf } from "../program.js";
 
 /** Statement-level constructs rejected wholesale, keyed by syntax kind. */
@@ -126,7 +126,7 @@ export function sideEffectFreeOptionValue(node: ts.Expression): boolean {
 /** True when an object-literal `__proto__: value` entry is provably a
  * no-op. The special prototype setter accepts only objects or null; every
  * primitive value is ignored. Unknown/object-capable types stay fenced. */
-function primitiveProtoValueIsIgnored(L: Lowerer, node: ts.Expression): boolean {
+function primitiveProtoValueIsIgnored(lowerer: Lowerer, node: ts.Expression): boolean {
   const primitive =
     ts.TypeFlags.StringLike |
     ts.TypeFlags.NumberLike |
@@ -137,7 +137,7 @@ function primitiveProtoValueIsIgnored(L: Lowerer, node: ts.Expression): boolean 
     ts.TypeFlags.Undefined |
     ts.TypeFlags.Void |
     ts.TypeFlags.Never;
-  const t = L.typeOf(node);
+  const t = lowerer.typeOf(node);
   const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
   return parts.every((p) => (p.flags & primitive) !== 0);
 }
@@ -148,7 +148,7 @@ function primitiveProtoValueIsIgnored(L: Lowerer, node: ts.Expression): boolean 
  * drops them when the value is side-effect-free, and fence when it is
  * not. `prop` is the property entry (assignment or shorthand) for spans. */
 export function fenceOrDropOptionKey(
-  L: Lowerer,
+  lowerer: Lowerer,
   prop: ts.ObjectLiteralElementLike,
   key: string,
   api: string,
@@ -157,15 +157,15 @@ export function fenceOrDropOptionKey(
   pointedHints?: Record<string, string | undefined>,
 ): void {
   if (documented.has(key)) {
-    L.noLowering(`${api} option '${key}'`, prop, pointedHints?.[key] ?? supportedHint);
+    lowerer.noLowering(`${api} option '${key}'`, prop, pointedHints?.[key] ?? supportedHint);
   }
   if (
     key === "__proto__" &&
     ts.isPropertyAssignment(prop) &&
     !ts.isComputedPropertyName(prop.name) &&
-    !primitiveProtoValueIsIgnored(L, prop.initializer)
+    !primitiveProtoValueIsIgnored(lowerer, prop.initializer)
   ) {
-    L.noLowering(
+    lowerer.noLowering(
       `${api} option '__proto__'`,
       prop,
       "a bare __proto__: value entry changes the options object's prototype, so inherited options cannot be lowered",
@@ -173,7 +173,7 @@ export function fenceOrDropOptionKey(
   }
   const value = ts.isPropertyAssignment(prop) ? prop.initializer : null;
   if (value !== null && !sideEffectFreeOptionValue(value)) {
-    L.noLowering(
+    lowerer.noLowering(
       `the undocumented ${api} option '${key}' with an effectful value`,
       prop,
       "Node ignores undocumented option keys and so does this compiler, but Node still evaluates the value — hoist it (const v = ...) or drop the entry",
@@ -711,7 +711,7 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
   zlib: {
     // Buffer in, Buffer out, Node's default options; string inputs fence
     // per site (see the zlib special case in lowerBuiltinModuleCall).
-    // cc.ts links libz only when these appear on the IR.
+    // native-toolchain.ts links libz only when these appear on the IR.
     deflateSync: { fn: "zlib.deflateSync", params: [BYTES_U8], result: BYTES_U8 },
     inflateSync: { fn: "zlib.inflateSync", params: [BYTES_U8], result: BYTES_U8 },
   },
@@ -836,7 +836,7 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
     setImmediate: { fn: "tp.setImmediate", params: [], result: { kind: "promise", inner: VOID } },
   },
   // node:diagnostics_channel — the pub/sub core. channel() answers an f64
-  // handle (types.ts maps Channel to F64); the subscriber arguments box
+  // handle (type-mapper.ts maps Channel to F64); the subscriber arguments box
   // into the checked-dynamic tree (special-cased in lowerBuiltinModuleCall — the entries
   // carry canonical shapes and route the dispatch). The Channel method
   // surface lowers through lowerDcChannelMethodCall/lowerDcChannelProperty.
@@ -922,7 +922,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<string, Record<string, readonly I
 /** Ambient surfaces lowered through DEDICATED code paths (no lowering-table
  * row): the Date compositions, perf_hooks' performance.now, and the process
  * global's ambient reads and authority calls. These are the determinism
- * attestation's ground (ir/nodes.ts's LIB_NONDETERMINISTIC_PREFIXES), so
+ * attestation's ground (ir/ir.ts's LIB_NONDETERMINISTIC_PREFIXES), so
  * each row projects one surface-manifest entry — a permanent, fenceable id
  * — and carries the libCall spellings that witness the surface's reach in
  * a compiled graph (the fence detector and the attestation must agree; the
@@ -1140,8 +1140,8 @@ const URL_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
  * TARGET: a win32 triple compiles Node-on-Windows semantics — `path` is
  * path.win32 and url's bridge takes the win32 flavors. Fence wording is
  * unaffected — callers keep naming the module the source spelled. */
-function builtinModuleFnsOf(L: Lowerer, module: string): Record<string, BuiltinModuleFn | undefined> | undefined {
-  if (L.targetPlatform === "win32") {
+function builtinModuleFnsOf(lowerer: Lowerer, module: string): Record<string, BuiltinModuleFn | undefined> | undefined {
+  if (lowerer.targetPlatform === "win32") {
     if (module === "path") return BUILTIN_MODULE_FNS["path/win32"];
     if (module === "url") return URL_WIN32_MODULE_FNS;
   }
@@ -1159,8 +1159,8 @@ function ownEntry<T>(table: Record<string, T | undefined>, key: string): T | und
 
 /** One MEMBER's table entry, own-property-safe (`path.toString` must not
  * answer Object.prototype.toString as a BuiltinModuleFn). */
-export function builtinModuleFnOf(L: Lowerer, module: string, member: string): BuiltinModuleFn | undefined {
-  const mod = builtinModuleFnsOf(L, module);
+export function builtinModuleFnOf(lowerer: Lowerer, module: string, member: string): BuiltinModuleFn | undefined {
+  const mod = builtinModuleFnsOf(lowerer, module);
   return mod ? ownEntry(mod, member) : undefined;
 }
 
@@ -1173,8 +1173,8 @@ export function builtinFenceHintOf(module: string, member: string): string | und
 
 /** BUILTIN_MODULE_CONSTS with the win32-target overrides applied — the
  * constants twin of builtinModuleFnsOf. */
-export function builtinModuleConstOf(L: Lowerer, module: string, member: string): string | number | boolean | undefined {
-  if (L.targetPlatform === "win32") {
+export function builtinModuleConstOf(lowerer: Lowerer, module: string, member: string): string | number | boolean | undefined {
+  if (lowerer.targetPlatform === "win32") {
     const mod = ownEntry(WIN32_TARGET_CONSTS, module);
     const w = mod ? ownEntry(mod, member) : undefined;
     if (w !== undefined) return w;
@@ -1386,9 +1386,9 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
    * receiver's global name when it IS a stdlib global like Math or Promise,
    * its widened type text otherwise). Returns silently for non-stdlib
    * members so the caller's generic rejection applies. */
-  export function stdlibMemberFence(L: Lowerer, access: ts.PropertyAccessExpression): void {
-    const sym = L.checker.getSymbolAtLocation(access.name);
-    if (!sym || !L.isStdlibSymbol(sym)) return;
+  export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpression): void {
+    const sym = lowerer.checker.getSymbolAtLocation(access.name);
+    if (!sym || !lowerer.isStdlibSymbol(sym)) return;
     const member = access.name.text;
     const recv = access.expression;
     // A CHECKED-DYNAMIC receiver whose checker type is a concrete stdlib
@@ -1396,14 +1396,14 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
     // at runtime through the dyn/handle machinery — the keyed-read claim
     // below this fence answers, member-or-refusal ladder, so no compile
     // fence belongs here.
-    if (L.mapTypeOf(L.typeOf(recv))?.kind === "dyn") return;
+    if (lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn") return;
     // Name the container the way the source reads: the global's name when
     // the receiver IS a stdlib global (Math, process), the dotted path for
     // a member of one (process.stdout — its TYPE text would be the useless
     // 'WriteStream & { fd: 1; }'), the receiver's widened type text
     // otherwise.
     const globalPathOf = (e: ts.Expression): string | null => {
-      if (ts.isIdentifier(e) && L.isStdlibSymbol(L.checker.getSymbolAtLocation(e))) {
+      if (ts.isIdentifier(e) && lowerer.isStdlibSymbol(lowerer.checker.getSymbolAtLocation(e))) {
         return e.text;
       }
       if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression)) {
@@ -1414,9 +1414,9 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
     };
     const container =
       globalPathOf(recv) ??
-      L.checker.typeToString(L.checker.getBaseTypeOfLiteralType(L.typeOf(recv)));
+      lowerer.checker.typeToString(lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(recv)));
     let hint: string | undefined;
-    const recvIr = L.mapTypeOf(L.typeOf(recv));
+    const recvIr = lowerer.mapTypeOf(lowerer.typeOf(recv));
     if (recvIr?.kind === "promise" && (member === "then" || member === "catch" || member === "finally")) {
       hint =
         "'await' is the supported way to chain (p.then(f) with one fulfillment handler, p.catch " +
@@ -1536,14 +1536,14 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
         "other aliased targets are real mutation, and a function target (Object.assign(fn, { prop })) " +
         "is a function-with-properties value the model cannot represent: bind the property separately";
     }
-    L.noLowering(`${container}.${member}`, access, hint, sym);
+    lowerer.noLowering(`${container}.${member}`, access, hint, sym);
   }
 
 /** True iff the accessed member is declared by the standard library —
    * the same technique as isConsoleLog: trust declarations, not names. */
-  export function isStdlibMember(L: Lowerer, access: ts.PropertyAccessExpression): boolean {
-    const direct = L.checker.getSymbolAtLocation(access.name);
-    if (direct) return L.isStdlibSymbol(direct);
+  export function isStdlibMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+    const direct = lowerer.checker.getSymbolAtLocation(access.name);
+    if (direct) return lowerer.isStdlibSymbol(direct);
     // An IMPLICIT-ANY instance body (the checker sees an `any` receiver —
     // no member symbol resolves) or an ALIASED-TYPEOF narrow (the checker
     // sees the un-narrowed union — `val.length` on String|Number has no
@@ -1551,9 +1551,9 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
     // the member from it, the same provenance answer the checker would
     // give on a typed receiver (`path.startsWith` with path bound string
     // IS String.prototype.startsWith).
-    if (L.implicitParamTypes !== null || L.aliasNarrowTypes.size > 0) {
-      const viaType = L.checker.getPropertyOfType(L.typeOf(access.expression), access.name.text);
-      return L.isStdlibSymbol(viaType ?? undefined);
+    if (lowerer.implicitParamTypes !== null || lowerer.aliasNarrowTypes.size > 0) {
+      const viaType = lowerer.checker.getPropertyOfType(lowerer.typeOf(access.expression), access.name.text);
+      return lowerer.isStdlibSymbol(viaType ?? undefined);
     }
     return false;
   }
@@ -1564,14 +1564,14 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
    * interface only when EVERY member names the lowered ChildProcess
    * surface, so accepting its members here cannot widen the surface;
    * the receiver-kind gate already proved the type maps to child). */
-  export function isChildSurfaceMember(L: Lowerer, access: ts.PropertyAccessExpression): boolean {
-    if (isStdlibMember(L, access)) return true;
-    const sym = L.checker.getSymbolAtLocation(access.name);
-    const decl = sym ? L.checker.declarationsOf(sym)[0] : undefined;
+  export function isChildSurfaceMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+    if (isStdlibMember(lowerer, access)) return true;
+    const sym = lowerer.checker.getSymbolAtLocation(access.name);
+    const decl = sym ? lowerer.checker.declarationsOf(sym)[0] : undefined;
     const iface = decl?.parent;
     if (!decl || !iface || !ts.isInterfaceDeclaration(iface)) return false;
-    if (L.isStdlibFile(decl.getSourceFile())) return false;
-    return L.mapTypeOf(L.checker.getTypeAtLocation(iface.name))?.kind === "child";
+    if (lowerer.isStdlibFile(decl.getSourceFile())) return false;
+    return lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(iface.name))?.kind === "child";
   }
 
 /** True iff some declaration of the symbol lives in the standard library
@@ -1579,8 +1579,8 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
    * supported-surface check). `some`, not `[0]`: divergence overrides merge
    * with lib interfaces, so a member can carry declarations from both. A
    * user's own declaration is in neither, so shadowing never matches. */
-  export function isStdlibSymbol(L: Lowerer, symbol: ts.Symbol | undefined): boolean {
-    return !!symbol && L.checker.declarationsOf(symbol).some((d) => L.isStdlibFile(d.getSourceFile()));
+  export function isStdlibSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined): boolean {
+    return !!symbol && lowerer.checker.declarationsOf(symbol).some((d) => lowerer.isStdlibFile(d.getSourceFile()));
   }
 
 /** The canonical stdlib-global name `expr` denotes, or null. Three
@@ -1593,16 +1593,16 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
    *     `typeof globalThis`, same symbol either way;
    *   - a local alias binding (`const process = globalThis.process`, the
    *     tamper-guard prologue) registered in stdlibGlobalAliases. */
-  export function stdlibGlobalNameOf(L: Lowerer, expr: ts.Expression): string | null {
-    if (ts.isParenthesizedExpression(expr)) return stdlibGlobalNameOf(L, expr.expression);
+  export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): string | null {
+    if (ts.isParenthesizedExpression(expr)) return stdlibGlobalNameOf(lowerer, expr.expression);
     if (ts.isIdentifier(expr)) {
       // `globalThis` itself: a reserved intrinsic — tsc rejects user
       // bindings of the name, and its special symbol carries no ordinary
       // declarations for the provenance check to see.
       if (expr.text === "globalThis") return "globalThis";
-      const symbol = L.checker.getSymbolAtLocation(expr);
+      const symbol = lowerer.checker.getSymbolAtLocation(expr);
       if (!symbol) return null;
-      const alias = L.stdlibGlobalAliases.get(symbol);
+      const alias = lowerer.stdlibGlobalAliases.get(symbol);
       if (alias !== undefined) return alias;
       // An IMPORTED binding of a builtin module's re-exported global
       // (`import { Buffer } from "node:buffer"` — Node's module spelling
@@ -1610,14 +1610,14 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
       // file's own export, so provenance and name check out exactly like
       // the bare-global spelling. A user module re-exporting its own
       // `Buffer` resolves to a user-file declaration and still misses.
-      const resolved = symbol.flags & ts.SymbolFlags.Alias ? L.checker.getAliasedSymbol(symbol) : symbol;
-      if (!L.isStdlibSymbol(resolved)) return null;
+      const resolved = symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
+      if (!lowerer.isStdlibSymbol(resolved)) return null;
       return resolved.name === "global" ? "globalThis" : resolved.name;
     }
     if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
-      if (stdlibGlobalNameOf(L, expr.expression) !== "globalThis") return null;
-      const symbol = L.checker.getSymbolAtLocation(expr.name);
-      if (!symbol || !L.isStdlibSymbol(symbol)) return null;
+      if (stdlibGlobalNameOf(lowerer, expr.expression) !== "globalThis") return null;
+      const symbol = lowerer.checker.getSymbolAtLocation(expr.name);
+      if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
       return symbol.name === "global" ? "globalThis" : symbol.name;
     }
     return null;
@@ -1629,17 +1629,17 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
    * binding shadowing a global's name has a different, non-stdlib symbol.
    * All of stdlibGlobalNameOf's spellings answer (globalThis.process is
    * process; `const process = globalThis.process` aliases through). */
-  export function isStdlibGlobal(L: Lowerer, expr: ts.Expression, name: string): boolean {
-    return stdlibGlobalNameOf(L, expr) === name;
+  export function isStdlibGlobal(lowerer: Lowerer, expr: ts.Expression, name: string): boolean {
+    return stdlibGlobalNameOf(lowerer, expr) === name;
   }
 
 /** The member name of a `<global>.<member>` access whose receiver is THE
    * standard-library global `name` (console, JSON, process, Math). Null for
    * anything else, so property-lowering chains keep trying other
    * receivers. */
-  export function stdlibGlobalMember(L: Lowerer, access: ts.PropertyAccessExpression, name: string): string | null {
+  export function stdlibGlobalMember(lowerer: Lowerer, access: ts.PropertyAccessExpression, name: string): string | null {
     if (access.questionDotToken) return null;
-    return L.isStdlibGlobal(access.expression, name) ? access.name.text : null;
+    return lowerer.isStdlibGlobal(access.expression, name) ? access.name.text : null;
   }
 
 /** `const process = globalThis.process` (and any `const x = <stdlib
@@ -1651,7 +1651,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
    * nothing. Only the globals with lowered member surfaces alias this
    * way; aliasing, say, `Math` would change nothing (its members lower
    * by receiver too). Returns true when recognized. */
-  export function stdlibGlobalAliasDecl(L: Lowerer, nameNode: ts.Node, init: ts.Expression | undefined): boolean {
+  export function stdlibGlobalAliasDecl(lowerer: Lowerer, nameNode: ts.Node, init: ts.Expression | undefined): boolean {
     if (!init || !ts.isIdentifier(nameNode)) return false;
     // `const process = require('node:process')`: Node's process MODULE is
     // the global process object (module.exports === globalThis.process),
@@ -1663,7 +1663,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
     const name =
       requireSpec === "process" || requireSpec === "node:process"
         ? "process"
-        : stdlibGlobalNameOf(L, init);
+        : stdlibGlobalNameOf(lowerer, init);
     if (name === null) return false;
     // Only alias OBJECT-shaped globals whose members lower by receiver
     // identity (process, console, globalThis itself, and perf_hooks'
@@ -1671,9 +1671,9 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
     // globals (setTimeout) taken as values are a different story — the
     // ordinary value paths (and their fences) apply.
     if (name !== "process" && name !== "console" && name !== "globalThis" && name !== "performance") return false;
-    const symbol = L.checker.getSymbolAtLocation(nameNode);
+    const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
     if (!symbol) return false;
-    L.stdlibGlobalAliases.set(symbol, name);
+    lowerer.stdlibGlobalAliases.set(symbol, name);
     return true;
   }
 
@@ -1681,14 +1681,14 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
    * surface (no es-lib or shipped-ambient declaration merges in) — chooses
    * the SC2020 fence's wording: "typed by @types/node", not "standard
    * library". */
-  export function nodeTypesOnlySymbol(L: Lowerer, sym: ts.Symbol | null | undefined): boolean {
-    const decls = sym ? L.checker.declarationsOf(sym) : undefined;
+  export function nodeTypesOnlySymbol(lowerer: Lowerer, sym: ts.Symbol | null | undefined): boolean {
+    const decls = sym ? lowerer.checker.declarationsOf(sym) : undefined;
     if (!decls || decls.length === 0) return false;
     let viaNode = false;
     for (const d of decls) {
       const sf = d.getSourceFile();
       if (sf.isDeclarationFile && isNodeTypesPath(sf.fileName)) viaNode = true;
-      else if (L.isStdlibFile(sf)) return false;
+      else if (lowerer.isStdlibFile(sf)) return false;
     }
     return viaNode;
   }

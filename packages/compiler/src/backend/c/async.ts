@@ -2,10 +2,10 @@ import { InternalCompilerError } from "../../errors.js";
 /* Async C emission: the per-async-function argpack/trampoline/spawn-wrapper
  * scaffolding, plus the interned resolve/child-exit thunks that adapt typed
  * payloads onto the runtime's promise and child-process machinery. */
-import type { CEmitter } from "./emitter.js";
+import type { CEmitter } from "./c-emitter.js";
 import { mangleArgPack, mangleAsyncSpawn, mangleChildDataThunk, mangleChildExitThunk, mangleCloseBindThunk, mangleCloseOverrideWrap, mangleConnectResThunk, mangleConnectSockThunk, mangleDgramMsgThunk, mangleDnsLookupThunk, mangleField, mangleFsRenameThunk, mangleFunction, mangleGenDrop, mangleGenResThunk, mangleGenSpawn, mangleGlobal, mangleLocal, mangleRaceThunk, mangleRawParam, mangleNetLookupAnswerThunk, mangleEmitterInvokeThunk, mangleStreamCbThunk, mangleStreamDoneFn, mangleRecordNew, mangleRecordRelease, mangleRecordStruct, mangleResolveThunk, mangleSniAnswerThunk, mangleTrampoline } from "../mangle.js";
-import { cDecl, cType, releaseCallC, retainCallC, vAdapters } from "./emit-types.js";
-import { IrFunction, IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/nodes.js";
+import { cDecl, cType, releaseCallC, retainCallC, vAdapters } from "./types.js";
+import { IrFunction, IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/ir.js";
 
 interface ArgPackAndTrampolinePrologue {
   definitions: string[];
@@ -69,8 +69,8 @@ function emitArgPackAndTrampolinePrologue(
    * (unpacks, runs the ordinary compiled body, settles the promise), and a
    * spawn wrapper call sites use. Lifted async lambdas additionally thread
    * their closure env through the pack (+1, released after the body). */
-  export function emitAsyncScaffolding(E: CEmitter, out: string[]): void {
-    for (const fn of E.mod.functions) {
+  export function emitAsyncScaffolding(emitter: CEmitter, out: string[]): void {
+    for (const fn of emitter.mod.functions) {
       if (!fn.async) continue;
       const { definitions, ret, lines, spawnParams, argPackLines } =
         emitArgPackAndTrampolinePrologue(fn);
@@ -93,7 +93,7 @@ function emitArgPackAndTrampolinePrologue(
         default: {
           const v = vAdapters(ret);
           lines.push(
-            `    scr_promise_fulfill_ref(scr_fiber_promise(sc_self), sc_r, ${v.retain}, ${v.release}, ${E.traceArgC(ret)});`,
+            `    scr_promise_fulfill_ref(scr_fiber_promise(sc_self), sc_r, ${v.retain}, ${v.release}, ${emitter.traceArgC(ret)});`,
           );
         }
       }
@@ -151,7 +151,7 @@ function emitArgPackAndTrampolinePrologue(
         `}`,
       );
     }
-    emitGenScaffolding(E, out);
+    emitGenScaffolding(emitter, out);
   }
 
 /** Per-generator-function machinery — the async scaffolding's lazy
@@ -160,8 +160,8 @@ function emitArgPackAndTrampolinePrologue(
    * promoting the parked .return value), a spawn wrapper that only
    * ALLOCATES the suspended fiber (nothing runs until the first .next()),
    * and the never-started teardown that drops the packed (+1) arguments. */
-  function emitGenScaffolding(E: CEmitter, out: string[]): void {
-    for (const fn of E.mod.functions) {
+  function emitGenScaffolding(emitter: CEmitter, out: string[]): void {
+    for (const fn of emitter.mod.functions) {
       if (!fn.generator) continue;
       const { definitions, pack, lifted, pname, ret, lines, spawnParams, argPackLines } =
         emitArgPackAndTrampolinePrologue(fn);
@@ -224,27 +224,27 @@ function emitArgPackAndTrampolinePrologue(
    * owns the union param per the universal convention (unit-arm
    * instances are immortal; their release is a no-op). The one-param
    * shape ignores the signal. */
-  export function childExitThunkFor(E: CEmitter, param: IrType): string {
+  export function childExitThunkFor(emitter: CEmitter, param: IrType): string {
     if (param.kind !== "union") throw new InternalCompilerError("emitter bug: exit listener param not a union");
     const key = param.unionId;
-    let sym = E.childExitThunks.get(key);
+    let sym = emitter.childExitThunks.get(key);
     if (!sym) {
-      sym = mangleChildExitThunk(E.childExitThunks.size);
-      E.childExitThunks.set(key, sym);
-      const def = E.unionsById.get(param.unionId);
+      sym = mangleChildExitThunk(emitter.childExitThunks.size);
+      emitter.childExitThunks.set(key, sym);
+      const def = emitter.unionsById.get(param.unionId);
       const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
       if (f64Tag < 0 || nullTag < 0) {
         throw new InternalCompilerError("emitter bug: exit listener union lacks its arms");
       }
-      E.walkerProtos.push(
+      emitter.walkerProtos.push(
         `static void ${sym}(ScrClosure *sc_cb, bool sc_has, double sc_code, const char *sc_sig);`,
       );
-      E.walkerDefs.push(
+      emitter.walkerDefs.push(
         `static void ${sym}(ScrClosure *sc_cb, bool sc_has, double sc_code, const char *sc_sig) {`,
         `  (void)sc_sig;`,
         `  ScrUnion *sc_u = sc_has ? scr_union_new_f64(${f64Tag}, sc_code)`,
-        `                           : ${E.unitInstanceRef(param.unionId, nullTag)};`,
+        `                           : ${emitter.unitInstanceRef(param.unionId, nullTag)};`,
         `  ((void (*)(ScrClosure *, ScrUnion *))sc_cb->fn)(sc_cb, sc_u);`,
         `}`,
       );
@@ -256,34 +256,34 @@ function emitArgPackAndTrampolinePrologue(
    * the code union as above plus the signal as its own `string | null`
    * union (a fresh string from the runtime's static signal name when a
    * signal killed the child, the null arm otherwise). */
-  export function childExitThunkFor2(E: CEmitter, codeParam: IrType, sigParam: IrType): string {
+  export function childExitSignalThunkFor(emitter: CEmitter, codeParam: IrType, sigParam: IrType): string {
     if (codeParam.kind !== "union" || sigParam.kind !== "union") {
       throw new InternalCompilerError("emitter bug: exit listener params not unions");
     }
     const key = `${codeParam.unionId}+${sigParam.unionId}`;
-    let sym = E.childExitThunks.get(key);
+    let sym = emitter.childExitThunks.get(key);
     if (!sym) {
-      sym = mangleChildExitThunk(E.childExitThunks.size);
-      E.childExitThunks.set(key, sym);
-      const codeDef = E.unionsById.get(codeParam.unionId);
+      sym = mangleChildExitThunk(emitter.childExitThunks.size);
+      emitter.childExitThunks.set(key, sym);
+      const codeDef = emitter.unionsById.get(codeParam.unionId);
       const f64Tag = codeDef ? codeDef.arms.findIndex((a) => a.kind === "f64") : -1;
       const codeNullTag = codeDef ? codeDef.arms.findIndex((a) => a.kind === "nullT") : -1;
-      const sigDef = E.unionsById.get(sigParam.unionId);
+      const sigDef = emitter.unionsById.get(sigParam.unionId);
       const strTag = sigDef ? sigDef.arms.findIndex((a) => a.kind === "string") : -1;
       const sigNullTag = sigDef ? sigDef.arms.findIndex((a) => a.kind === "nullT") : -1;
       if (f64Tag < 0 || codeNullTag < 0 || strTag < 0 || sigNullTag < 0) {
         throw new InternalCompilerError("emitter bug: exit listener unions lack their arms");
       }
-      E.walkerProtos.push(
+      emitter.walkerProtos.push(
         `static void ${sym}(ScrClosure *sc_cb, bool sc_has, double sc_code, const char *sc_sig);`,
       );
-      E.walkerDefs.push(
+      emitter.walkerDefs.push(
         `static void ${sym}(ScrClosure *sc_cb, bool sc_has, double sc_code, const char *sc_sig) {`,
         `  ScrUnion *sc_u = sc_has ? scr_union_new_f64(${f64Tag}, sc_code)`,
-        `                           : ${E.unitInstanceRef(codeParam.unionId, codeNullTag)};`,
+        `                           : ${emitter.unitInstanceRef(codeParam.unionId, codeNullTag)};`,
         `  ScrUnion *sc_s = sc_sig`,
         `      ? scr_union_new_ref(${strTag}, scr_str_new(sc_sig, strlen(sc_sig)), &scr_str_retain_v, &scr_str_release_v, NULL)`,
-        `      : ${E.unitInstanceRef(sigParam.unionId, sigNullTag)};`,
+        `      : ${emitter.unitInstanceRef(sigParam.unionId, sigNullTag)};`,
         `  ((void (*)(ScrClosure *, ScrUnion *, ScrUnion *))sc_cb->fn)(sc_cb, sc_u, sc_s);`,
         `}`,
       );
@@ -297,22 +297,22 @@ function emitArgPackAndTrampolinePrologue(
    * the arm exists — the ngrok `Buffer | string` listener; strings never
    * fire from a pipe) and calls the listener, which owns the union param
    * per the universal convention. */
-  export function childDataThunkFor(E: CEmitter, param: IrType): string {
+  export function childDataThunkFor(emitter: CEmitter, param: IrType): string {
     if (param.kind !== "union") throw new InternalCompilerError("emitter bug: stream data listener param not a union");
     const key = param.unionId;
-    let sym = E.childDataThunks.get(key);
+    let sym = emitter.childDataThunks.get(key);
     if (!sym) {
-      sym = mangleChildDataThunk(E.childDataThunks.size);
-      E.childDataThunks.set(key, sym);
-      const def = E.unionsById.get(param.unionId);
+      sym = mangleChildDataThunk(emitter.childDataThunks.size);
+      emitter.childDataThunks.set(key, sym);
+      const def = emitter.unionsById.get(param.unionId);
       const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes" && a.elem === "u8") : -1;
       if (bytesTag < 0) {
         throw new InternalCompilerError("emitter bug: stream data listener union lacks its Buffer arm");
       }
-      E.walkerProtos.push(
+      emitter.walkerProtos.push(
         `static void ${sym}(ScrClosure *sc_cb, ScrBytes *sc_chunk);`,
       );
-      E.walkerDefs.push(
+      emitter.walkerDefs.push(
         `static void ${sym}(ScrClosure *sc_cb, ScrBytes *sc_chunk) {`,
         `  ScrUnion *sc_u = scr_union_new_ref(${bytesTag}, scr_bytes_retain(sc_chunk), &scr_bytes_retain_v, &scr_bytes_release_v, NULL);`,
         `  ((void (*)(ScrClosure *, ScrUnion *))sc_cb->fn)(sc_cb, sc_u);`,
@@ -330,14 +330,14 @@ function emitArgPackAndTrampolinePrologue(
    * `(err?: Error) => void`) behind an emitted zero-arg trampoline that
    * fires it with the undefined arm (a clean close carries no error) —
    * and answers the +1 server (Node's chaining return). */
-  export function closeBindThunkFor(E: CEmitter, cbUnion: IrType, retServer: boolean): string {
+  export function closeBindThunkFor(emitter: CEmitter, cbUnion: IrType, retServer: boolean): string {
     if (cbUnion.kind !== "union") throw new InternalCompilerError("emitter bug: bound-close callback param not a union");
     const key = `${cbUnion.unionId}:${retServer ? "srv" : "void"}`;
-    let sym = E.closeBindThunks.get(key);
+    let sym = emitter.closeBindThunks.get(key);
     if (sym) return sym;
-    sym = mangleCloseBindThunk(E.closeBindThunks.size);
-    E.closeBindThunks.set(key, sym);
-    const def = E.unionsById.get(cbUnion.unionId);
+    sym = mangleCloseBindThunk(emitter.closeBindThunks.size);
+    emitter.closeBindThunks.set(key, sym);
+    const def = emitter.unionsById.get(cbUnion.unionId);
     const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
     const funcArm = funcTag >= 0 ? (def!.arms[funcTag] as IrType & { kind: "func" }) : null;
     if (!funcArm) throw new InternalCompilerError("emitter bug: bound-close callback union lacks its func arm");
@@ -348,22 +348,22 @@ function emitArgPackAndTrampolinePrologue(
       if (errParam.kind !== "union") {
         throw new InternalCompilerError("emitter bug: bound-close callback's err param is not a union");
       }
-      const errDef = E.unionsById.get(errParam.unionId);
+      const errDef = emitter.unionsById.get(errParam.unionId);
       const undefTag = errDef ? errDef.arms.findIndex((a) => a.kind === "undefinedT") : -1;
       if (undefTag < 0) throw new InternalCompilerError("emitter bug: bound-close err union lacks its undefined arm");
       trampoline = `${sym}_cb`;
-      E.walkerProtos.push(`static void ${trampoline}(ScrClosure *sc_self);`);
-      E.walkerDefs.push(
+      emitter.walkerProtos.push(`static void ${trampoline}(ScrClosure *sc_self);`);
+      emitter.walkerDefs.push(
         `static void ${trampoline}(ScrClosure *sc_self) { /* close cb: fire with no error */`,
         `  ScrClosure *sc_inner = (ScrClosure *)scr_box_get_ref(sc_self->caps[0]); /* +1 */`,
-        `  ((void (*)(ScrClosure *, ScrUnion *))sc_inner->fn)(sc_inner, ${E.unitInstanceRef(errParam.unionId, undefTag)});`,
+        `  ((void (*)(ScrClosure *, ScrUnion *))sc_inner->fn)(sc_inner, ${emitter.unitInstanceRef(errParam.unionId, undefTag)});`,
         `  scr_closure_release(sc_inner);`,
         `}`,
       );
     }
     const retC = retServer ? "ScrNetServer *" : "void";
-    E.walkerProtos.push(`static ${retC}${retServer ? "" : " "}${sym}(ScrClosure *sc_self, ScrUnion *sc_cb);`);
-    E.walkerDefs.push(
+    emitter.walkerProtos.push(`static ${retC}${retServer ? "" : " "}${sym}(ScrClosure *sc_self, ScrUnion *sc_cb);`);
+    emitter.walkerDefs.push(
       `static ${retC}${retServer ? "" : " "}${sym}(ScrClosure *sc_self, ScrUnion *sc_cb) { /* bound server.close */`,
       `  ScrNetServer *sc_srv = (ScrNetServer *)scr_box_get_ref(sc_self->caps[0]); /* +1 */`,
       `  ScrClosure *sc_reg = NULL;`,
@@ -391,27 +391,27 @@ function emitArgPackAndTrampolinePrologue(
    * types, so this wrapper carries the user function and fires it with
    * the undefined-arm callback argument (tags are program data),
    * releasing the chaining-return server when the signature answers one. */
-  export function closeOverrideWrapFor(E: CEmitter, cbUnion: IrType, retServer: boolean): string {
+  export function closeOverrideWrapFor(emitter: CEmitter, cbUnion: IrType, retServer: boolean): string {
     if (cbUnion.kind !== "union") throw new InternalCompilerError("emitter bug: close-override callback param not a union");
     const key = `${cbUnion.unionId}:${retServer ? "srv" : "void"}`;
-    let sym = E.closeOverrideWraps.get(key);
+    let sym = emitter.closeOverrideWraps.get(key);
     if (sym) return sym;
-    sym = mangleCloseOverrideWrap(E.closeOverrideWraps.size);
-    E.closeOverrideWraps.set(key, sym);
-    const def = E.unionsById.get(cbUnion.unionId);
+    sym = mangleCloseOverrideWrap(emitter.closeOverrideWraps.size);
+    emitter.closeOverrideWraps.set(key, sym);
+    const def = emitter.unionsById.get(cbUnion.unionId);
     const undefTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
     if (undefTag < 0) throw new InternalCompilerError("emitter bug: close-override callback union lacks its undefined arm");
-    E.walkerProtos.push(`static void ${sym}(ScrClosure *sc_self);`);
-    E.walkerDefs.push(
+    emitter.walkerProtos.push(`static void ${sym}(ScrClosure *sc_self);`);
+    emitter.walkerDefs.push(
       `static void ${sym}(ScrClosure *sc_self) { /* close override wrapper */`,
       `  ScrClosure *sc_inner = (ScrClosure *)scr_box_get_ref(sc_self->caps[0]); /* +1 */`,
       ...(retServer
         ? [
-            `  ScrNetServer *sc_r = ((ScrNetServer *(*)(ScrClosure *, ScrUnion *))sc_inner->fn)(sc_inner, ${E.unitInstanceRef(cbUnion.unionId, undefTag)});`,
+            `  ScrNetServer *sc_r = ((ScrNetServer *(*)(ScrClosure *, ScrUnion *))sc_inner->fn)(sc_inner, ${emitter.unitInstanceRef(cbUnion.unionId, undefTag)});`,
             `  scr_net_server_release(sc_r); /* the chaining return is unobserved here */`,
           ]
         : [
-            `  ((void (*)(ScrClosure *, ScrUnion *))sc_inner->fn)(sc_inner, ${E.unitInstanceRef(cbUnion.unionId, undefTag)});`,
+            `  ((void (*)(ScrClosure *, ScrUnion *))sc_inner->fn)(sc_inner, ${emitter.unitInstanceRef(cbUnion.unionId, undefTag)});`,
           ]),
       `  scr_closure_release(sc_inner);`,
       `}`,
@@ -426,18 +426,18 @@ function emitArgPackAndTrampolinePrologue(
    * which owns both params per the universal convention (msg retains like
    * the net data thunk). Zero/one-param listeners take the runtime's own
    * scr_dgram_msg_thunk0/1. */
-  export function dgramMsgThunkFor(E: CEmitter, param: IrType): string {
+  export function dgramMsgThunkFor(emitter: CEmitter, param: IrType): string {
     if (param.kind !== "record") throw new InternalCompilerError("emitter bug: message listener rinfo not a record");
     const key = param.shapeId;
-    let sym = E.dgramMsgThunks.get(key);
+    let sym = emitter.dgramMsgThunks.get(key);
     if (!sym) {
-      sym = mangleDgramMsgThunk(E.dgramMsgThunks.size);
-      E.dgramMsgThunks.set(key, sym);
+      sym = mangleDgramMsgThunk(emitter.dgramMsgThunks.size);
+      emitter.dgramMsgThunks.set(key, sym);
       const struct = mangleRecordStruct(param.shapeId);
-      E.walkerProtos.push(
+      emitter.walkerProtos.push(
         `static void ${sym}(ScrClosure *sc_cb, ScrBytes *sc_msg, ScrStr *sc_addr, ScrStr *sc_family, double sc_port, double sc_size);`,
       );
-      E.walkerDefs.push(
+      emitter.walkerDefs.push(
         `static void ${sym}(ScrClosure *sc_cb, ScrBytes *sc_msg, ScrStr *sc_addr, ScrStr *sc_family, double sc_port, double sc_size) {`,
         `  ${struct} *sc_ri = ${mangleRecordNew(param.shapeId)}();`,
         `  sc_ri->${mangleField("address")} = scr_str_retain(sc_addr);`,
@@ -457,18 +457,18 @@ function emitArgPackAndTrampolinePrologue(
    * argument (tags are program data — the frontend pinned the union) and
    * calls the listener with as many arguments as it declared, each owned
    * per the universal convention. */
-  export function dnsLookupThunkFor(E: CEmitter, cbT: IrType): string {
+  export function dnsLookupThunkFor(emitter: CEmitter, cbT: IrType): string {
     if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: dns.lookup callback not a func");
     const nparams = cbT.params.length;
     if (nparams === 0) return "scr_dns_thunk0";
     const errT = cbT.params[0]!;
     if (errT.kind !== "union") throw new InternalCompilerError("emitter bug: dns.lookup err param not a union");
     const key = `${errT.unionId}/${nparams}`;
-    let sym = E.dnsLookupThunks.get(key);
+    let sym = emitter.dnsLookupThunks.get(key);
     if (!sym) {
-      sym = mangleDnsLookupThunk(E.dnsLookupThunks.size);
-      E.dnsLookupThunks.set(key, sym);
-      const def = E.unionsById.get(errT.unionId);
+      sym = mangleDnsLookupThunk(emitter.dnsLookupThunks.size);
+      emitter.dnsLookupThunks.set(key, sym);
+      const def = emitter.unionsById.get(errT.unionId);
       const errTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
       if (errTag < 0 || nullTag < 0) {
@@ -476,15 +476,15 @@ function emitArgPackAndTrampolinePrologue(
       }
       const callSig = ["ScrClosure *", "ScrUnion *", ...(nparams >= 2 ? ["ScrStr *"] : []), ...(nparams >= 3 ? ["double"] : [])].join(", ");
       const callArgs = ["sc_cb", "sc_u", ...(nparams >= 2 ? ["scr_str_retain(sc_addr)"] : []), ...(nparams >= 3 ? ["sc_family"] : [])].join(", ");
-      E.walkerProtos.push(
+      emitter.walkerProtos.push(
         `static void ${sym}(ScrClosure *sc_cb, ScrStr *sc_err, ScrStr *sc_addr, double sc_family);`,
       );
-      E.walkerDefs.push(
+      emitter.walkerDefs.push(
         `static void ${sym}(ScrClosure *sc_cb, ScrStr *sc_err, ScrStr *sc_addr, double sc_family) {`,
         `  (void)sc_addr; (void)sc_family;`,
         `  ScrUnion *sc_u = sc_err`,
         `      ? scr_union_new_ref(${errTag}, scr_error_new(0, sc_err), &scr_error_retain_v, &scr_error_release_v, NULL)`,
-        `      : ${E.unitInstanceRef(errT.unionId, nullTag)};`,
+        `      : ${emitter.unitInstanceRef(errT.unionId, nullTag)};`,
         `  ((void (*)(${callSig}))sc_cb->fn)(${callArgs});`,
         `}`,
       );
@@ -495,18 +495,18 @@ function emitArgPackAndTrampolinePrologue(
 /** Interned fs.rename callback adapter. The runtime supplies a borrowed
  * ScrError (or NULL); the adapter builds the callback's program-specific
  * Error | null union, or a dyn error/null for checkJs callbacks. */
-  export function fsRenameThunkFor(E: CEmitter, cbT: IrType): string {
+  export function fsRenameThunkFor(emitter: CEmitter, cbT: IrType): string {
     if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: fs.rename callback not a func");
     if (cbT.params.length === 0) return "scr_fs_rename_thunk0";
     const param = cbT.params[0]!;
     const key = typeKey(cbT);
-    let sym = E.fsRenameThunks.get(key);
+    let sym = emitter.fsRenameThunks.get(key);
     if (sym) return sym;
-    sym = mangleFsRenameThunk(E.fsRenameThunks.size);
-    E.fsRenameThunks.set(key, sym);
-    E.walkerProtos.push(`static void ${sym}(ScrClosure *sc_cb, ScrError *sc_err);`);
+    sym = mangleFsRenameThunk(emitter.fsRenameThunks.size);
+    emitter.fsRenameThunks.set(key, sym);
+    emitter.walkerProtos.push(`static void ${sym}(ScrClosure *sc_cb, ScrError *sc_err);`);
     if (param.kind === "dyn") {
-      E.walkerDefs.push(
+      emitter.walkerDefs.push(
         `static void ${sym}(ScrClosure *sc_cb, ScrError *sc_err) {`,
         `  ScrDyn *sc_arg = sc_err ? scr_dyn_from_error(sc_err) : scr_dyn_new_null();`,
         `  ((void (*)(ScrClosure *, ScrDyn *))sc_cb->fn)(sc_cb, sc_arg);`,
@@ -515,15 +515,15 @@ function emitArgPackAndTrampolinePrologue(
       return sym;
     }
     if (param.kind !== "union") throw new InternalCompilerError("emitter bug: fs.rename error param not a union");
-    const def = E.unionsById.get(param.unionId);
+    const def = emitter.unionsById.get(param.unionId);
     const errTag = def ? def.arms.findIndex((a) => a.kind === "object" && a.className === "%Error") : -1;
     const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
     if (errTag < 0 || nullTag < 0) throw new InternalCompilerError("emitter bug: fs.rename error union lacks its arms");
-    E.walkerDefs.push(
+    emitter.walkerDefs.push(
       `static void ${sym}(ScrClosure *sc_cb, ScrError *sc_err) {`,
       `  ScrUnion *sc_u = sc_err`,
       `      ? scr_union_new_ref(${errTag}, scr_error_retain(sc_err), &scr_error_retain_v, &scr_error_release_v, NULL)`,
-      `      : ${E.unitInstanceRef(param.unionId, nullTag)};`,
+      `      : ${emitter.unitInstanceRef(param.unionId, nullTag)};`,
       `  ((void (*)(ScrClosure *, ScrUnion *))sc_cb->fn)(sc_cb, sc_u);`,
       `}`,
     );
@@ -536,24 +536,24 @@ function emitArgPackAndTrampolinePrologue(
    * the adapter wraps the socket at the union's netSocket arm (its tag is
    * program data) and drops `head` when the listener declares two params.
    * All three runtime args arrive +1; the union takes the socket's. */
-  export function connectSockThunkFor(E: CEmitter, cbT: IrType): string {
+  export function connectSockThunkFor(emitter: CEmitter, cbT: IrType): string {
     if (cbT.kind !== "func" || cbT.params[1]?.kind !== "union") {
       throw new InternalCompilerError("emitter bug: connect listener union shape (frontend must fence)");
     }
     const key = typeKey(cbT);
-    let sym = E.connectSockThunks.get(key);
+    let sym = emitter.connectSockThunks.get(key);
     if (sym) return sym;
-    sym = mangleConnectSockThunk(E.connectSockThunks.size);
-    E.connectSockThunks.set(key, sym);
+    sym = mangleConnectSockThunk(emitter.connectSockThunks.size);
+    emitter.connectSockThunks.set(key, sym);
     const sockT = cbT.params[1];
-    const def = E.unionsById.get(sockT.unionId);
+    const def = emitter.unionsById.get(sockT.unionId);
     const tag = def ? def.arms.findIndex((a) => a.kind === "netSocket") : -1;
     if (tag < 0) throw new InternalCompilerError("emitter bug: connect listener union lacks its socket arm");
     const three = cbT.params.length === 3;
-    E.walkerProtos.push(
+    emitter.walkerProtos.push(
       `static void ${sym}(ScrClosure *sc_cb, ScrHttpReq *sc_req, ScrNetSocket *sc_sock, ScrBytes *sc_head);`,
     );
-    E.walkerDefs.push(
+    emitter.walkerDefs.push(
       `static void ${sym}(ScrClosure *sc_cb, ScrHttpReq *sc_req, ScrNetSocket *sc_sock, ScrBytes *sc_head) {`,
       ...(three ? [] : [`  scr_bytes_release(sc_head);`]),
       `  ScrUnion *sc_u = scr_union_new_ref(${tag}, sc_sock, &scr_net_sock_retain_v, &scr_net_sock_release_v, NULL);`,
@@ -565,23 +565,23 @@ function emitArgPackAndTrampolinePrologue(
     return sym;
   }
 
-  export function connectResThunkFor(E: CEmitter, cbT: IrType): string {
+  export function connectResThunkFor(emitter: CEmitter, cbT: IrType): string {
     if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: connect listener shape");
     const key = `res:${typeKey(cbT)}`;
-    let sym = E.connectSockThunks.get(key);
+    let sym = emitter.connectSockThunks.get(key);
     if (sym) return sym;
-    sym = mangleConnectResThunk(E.connectSockThunks.size);
-    E.connectSockThunks.set(key, sym);
+    sym = mangleConnectResThunk(emitter.connectSockThunks.size);
+    emitter.connectSockThunks.set(key, sym);
     const p1 = cbT.params[1];
-    const def = p1?.kind === "union" ? E.unionsById.get(p1.unionId) : undefined;
+    const def = p1?.kind === "union" ? emitter.unionsById.get(p1.unionId) : undefined;
     const tag = def ? def.arms.findIndex((a) => a.kind === "httpRes") : -1;
     if (p1?.kind === "union" && tag < 0) throw new InternalCompilerError("emitter bug: connect listener union lacks its response arm");
-    E.walkerProtos.push(`static void ${sym}(ScrClosure *sc_cb, ScrHttpReq *sc_req, ScrHttpRes *sc_res);`);
+    emitter.walkerProtos.push(`static void ${sym}(ScrClosure *sc_cb, ScrHttpReq *sc_req, ScrHttpRes *sc_res);`);
     const second = p1?.kind === "union"
       ? `ScrUnion *sc_u = scr_union_new_ref(${tag}, sc_res, &scr_http_res_retain_v, &scr_http_res_release_v, NULL);`
       : "";
     const arg = p1?.kind === "union" ? "sc_u" : "sc_res";
-    E.walkerDefs.push(
+    emitter.walkerDefs.push(
       `static void ${sym}(ScrClosure *sc_cb, ScrHttpReq *sc_req, ScrHttpRes *sc_res) {`,
       ...(second ? [`  ${second}`] : []),
       ...(cbT.params.length === 0
@@ -602,18 +602,18 @@ function emitArgPackAndTrampolinePrologue(
    * tag) and the addresses record's field layout down to the runtime's
    * (has_err, message, ip-list) answer. Params arrive +1 and release
    * here; the extracted message/ips hand over +1. */
-  export function netLookupAnswerThunkFor(E: CEmitter, cbT: IrType): string {
+  export function netLookupAnswerThunkFor(emitter: CEmitter, cbT: IrType): string {
     if (cbT.kind !== "func" || cbT.params.length !== 2) {
       throw new InternalCompilerError("emitter bug: lookup answer cb shape (frontend must fence)");
     }
     const key = typeKey(cbT);
-    let sym = E.netLookupAnswerThunks.get(key);
+    let sym = emitter.netLookupAnswerThunks.get(key);
     if (sym) return sym;
-    sym = mangleNetLookupAnswerThunk(E.netLookupAnswerThunks.size);
-    E.netLookupAnswerThunks.set(key, sym);
+    sym = mangleNetLookupAnswerThunk(emitter.netLookupAnswerThunks.size);
+    emitter.netLookupAnswerThunks.set(key, sym);
     const errT = cbT.params[0]!;
     if (errT.kind !== "union") throw new InternalCompilerError("emitter bug: lookup answer err param not a union");
-    const errDef = E.unionsById.get(errT.unionId);
+    const errDef = emitter.unionsById.get(errT.unionId);
     const nullTag = errDef ? errDef.arms.findIndex((a) => a.kind === "nullT") : -1;
     if (nullTag < 0) throw new InternalCompilerError("emitter bug: lookup answer err union lacks its null arm");
     const addrsT = cbT.params[1]!;
@@ -623,8 +623,8 @@ function emitArgPackAndTrampolinePrologue(
     const recStruct = mangleRecordStruct(addrsT.elem.shapeId);
     const recRelease = mangleRecordRelease(addrsT.elem.shapeId);
     const addrField = mangleField("address");
-    E.walkerProtos.push(`static void ${sym}(ScrClosure *sc_self, ScrUnion *sc_err, ScrArr *sc_addrs);`);
-    E.walkerDefs.push(
+    emitter.walkerProtos.push(`static void ${sym}(ScrClosure *sc_self, ScrUnion *sc_err, ScrArr *sc_addrs);`);
+    emitter.walkerDefs.push(
       `static void ${sym}(ScrClosure *sc_self, ScrUnion *sc_err, ScrArr *sc_addrs) {`,
       `  bool sc_has_err = sc_err->tag != ${nullTag};`,
       `  ScrStr *sc_msg = NULL;`,
@@ -657,13 +657,13 @@ function emitArgPackAndTrampolinePrologue(
    * to the runtime's (has_err, ctx-or-NULL) answer. The thunk owns its
    * union params per the universal convention (the ctx payload retains
    * +1 before its union releases; ownership moves to the runtime). */
-  export function sniAnswerThunkFor(E: CEmitter, cbT: IrType): string {
+  export function sniAnswerThunkFor(emitter: CEmitter, cbT: IrType): string {
     if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: SNI answer cb not a func");
     const key = typeKey(cbT);
-    let sym = E.sniAnswerThunks.get(key);
+    let sym = emitter.sniAnswerThunks.get(key);
     if (sym) return sym;
-    sym = mangleSniAnswerThunk(E.sniAnswerThunks.size);
-    E.sniAnswerThunks.set(key, sym);
+    sym = mangleSniAnswerThunk(emitter.sniAnswerThunks.size);
+    emitter.sniAnswerThunks.set(key, sym);
     const nparams = cbT.params.length;
     const params = ["ScrClosure *sc_self"];
     const body: string[] = [];
@@ -671,7 +671,7 @@ function emitArgPackAndTrampolinePrologue(
     if (nparams >= 1) {
       const errT = cbT.params[0]!;
       if (errT.kind !== "union") throw new InternalCompilerError("emitter bug: SNI answer err param not a union");
-      const def = E.unionsById.get(errT.unionId);
+      const def = emitter.unionsById.get(errT.unionId);
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
       if (nullTag < 0) throw new InternalCompilerError("emitter bug: SNI answer err union lacks its null arm");
       params.push("ScrUnion *sc_err");
@@ -681,7 +681,7 @@ function emitArgPackAndTrampolinePrologue(
     if (nparams >= 2) {
       const ctxT = cbT.params[1]!;
       if (ctxT.kind !== "union") throw new InternalCompilerError("emitter bug: SNI answer ctx param not a union");
-      const def = E.unionsById.get(ctxT.unionId);
+      const def = emitter.unionsById.get(ctxT.unionId);
       const ctxTag = def ? def.arms.findIndex((a) => a.kind === "secureCtx") : -1;
       if (ctxTag < 0) throw new InternalCompilerError("emitter bug: SNI answer ctx union lacks its SecureContext arm");
       params.push("ScrUnion *sc_ctx");
@@ -694,8 +694,8 @@ function emitArgPackAndTrampolinePrologue(
     body.push(`  bool sc_has_err = ${hasErr};`);
     if (nparams >= 1) body.push(`  scr_union_release(sc_err);`);
     body.push(`  scr_tls_sni_answer(sc_self, sc_has_err, ${ctx});`);
-    E.walkerProtos.push(`static void ${sym}(${params.join(", ")});`);
-    E.walkerDefs.push(`static void ${sym}(${params.join(", ")}) {`, ...body, `}`);
+    emitter.walkerProtos.push(`static void ${sym}(${params.join(", ")});`);
+    emitter.walkerDefs.push(`static void ${sym}(${params.join(", ")}) {`, ...body, `}`);
     return sym;
   }
 
@@ -707,15 +707,15 @@ function emitArgPackAndTrampolinePrologue(
    * entry re-tags arm-wise (canonical arm order makes the mapping a
    * typeKey lookup). Rejections never reach adapters — the runtime copies
    * them raw. */
-  export function raceAdapterFor(E: CEmitter, from: IrType, to: IrType): string {
+  export function raceAdapterFor(emitter: CEmitter, from: IrType, to: IrType): string {
     if (typeEquals(from, to)) return "scr_promise_adapt_copy";
     const key = `${typeKey(from)}=>${typeKey(to)}`;
-    let sym = E.raceThunks.get(key);
+    let sym = emitter.raceThunks.get(key);
     if (sym) return sym;
-    sym = mangleRaceThunk(E.raceThunks.size);
-    E.raceThunks.set(key, sym);
+    sym = mangleRaceThunk(emitter.raceThunks.size);
+    emitter.raceThunks.set(key, sym);
     if (to.kind !== "union") throw new InternalCompilerError("emitter bug: race adapter to a non-union");
-    const toDef = E.unionsById.get(to.unionId);
+    const toDef = emitter.unionsById.get(to.unionId);
     if (!toDef) throw new InternalCompilerError("emitter bug: race adapter to an unknown union");
     const tagOf = (t: IrType): number => {
       const tag = toDef.arms.findIndex((a) => typeEquals(a, t));
@@ -724,8 +724,8 @@ function emitArgPackAndTrampolinePrologue(
     };
     const rv = vAdapters(to);
     const fulfill = (value: string): string =>
-      `scr_promise_fulfill_ref(sc_dst, ${value}, ${rv.retain}, ${rv.release}, ${E.traceArgC(to)});`;
-    E.walkerProtos.push(`static void ${sym}(ScrPromise *sc_dst, ScrPromise *sc_src);`);
+      `scr_promise_fulfill_ref(sc_dst, ${value}, ${rv.retain}, ${rv.release}, ${emitter.traceArgC(to)});`;
+    emitter.walkerProtos.push(`static void ${sym}(ScrPromise *sc_dst, ScrPromise *sc_src);`);
     if (from.kind !== "union") {
       // One arm wrap, straight off the payload accessors.
       const tag = tagOf(from);
@@ -742,10 +742,10 @@ function emitArgPackAndTrampolinePrologue(
           break;
         default: {
           const fv = vAdapters(from);
-          value = `scr_union_new_ref(${tag}, scr_promise_payload_ref(sc_src), ${fv.retain}, ${fv.release}, ${E.traceArgC(from)})`;
+          value = `scr_union_new_ref(${tag}, scr_promise_payload_ref(sc_src), ${fv.retain}, ${fv.release}, ${emitter.traceArgC(from)})`;
         }
       }
-      E.walkerDefs.push(
+      emitter.walkerDefs.push(
         `static void ${sym}(ScrPromise *sc_dst, ScrPromise *sc_src) {`,
         `  ${fulfill(value)}`,
         `}`,
@@ -754,24 +754,24 @@ function emitArgPackAndTrampolinePrologue(
     }
     // Sub-union re-tag: switch over the entry's arms, rebuild under the
     // result's tags (payloads retained through each arm's own adapters).
-    const fromDef = E.unionsById.get(from.unionId);
+    const fromDef = emitter.unionsById.get(from.unionId);
     if (!fromDef) throw new InternalCompilerError("emitter bug: race adapter from an unknown union");
     const cases = fromDef.arms.map((arm, i) => {
       const tag = tagOf(arm);
       let build: string;
       if (isUnitType(arm)) {
-        build = E.unitInstanceRef(to.unionId, tag);
+        build = emitter.unitInstanceRef(to.unionId, tag);
       } else if (arm.kind === "f64") {
         build = `scr_union_new_f64(${tag}, scr_union_get_f64(sc_u))`;
       } else if (arm.kind === "bool") {
         build = `scr_union_new_bool(${tag}, scr_union_get_bool(sc_u))`;
       } else {
         const av = vAdapters(arm);
-        build = `scr_union_new_ref(${tag}, ${av.retain}(scr_union_peek(sc_u)), ${av.retain}, ${av.release}, ${E.traceArgC(arm)})`;
+        build = `scr_union_new_ref(${tag}, ${av.retain}(scr_union_peek(sc_u)), ${av.retain}, ${av.release}, ${emitter.traceArgC(arm)})`;
       }
       return `  case ${i}: sc_v = ${build}; break;`;
     });
-    E.walkerDefs.push(
+    emitter.walkerDefs.push(
       `static void ${sym}(ScrPromise *sc_dst, ScrPromise *sc_src) {`,
       `  ScrUnion *sc_u = (ScrUnion *)scr_promise_payload_ref(sc_src);`,
       `  ScrUnion *sc_v = NULL;`,
@@ -796,17 +796,17 @@ function emitArgPackAndTrampolinePrologue(
    * JS's undefined (the interned undefined arm — or the dyn undefined
    * when V is dyn, the any/unknown channel). */
   export function genResultThunkFor(
-    E: CEmitter,
+    emitter: CEmitter,
     genT: IrType & { kind: "generator" },
     recT: IrType & { kind: "record" },
   ): string {
     const key = typeKey(genT);
-    let sym = E.genResThunks.get(key);
+    let sym = emitter.genResThunks.get(key);
     if (sym) return sym;
-    sym = mangleGenResThunk(E.genResThunks.size);
-    E.genResThunks.set(key, sym);
+    sym = mangleGenResThunk(emitter.genResThunks.size);
+    emitter.genResThunks.set(key, sym);
     const struct = mangleRecordStruct(recT.shapeId);
-    const shape = E.mod.records?.find((r) => r.id === recT.shapeId);
+    const shape = emitter.mod.records?.find((r) => r.id === recT.shapeId);
     const valueT = shape?.fields.find((f) => f.name === "value")?.type;
     if (!valueT) throw new InternalCompilerError("emitter bug: genResume record lacks its value field");
     const lines: string[] = [
@@ -826,7 +826,7 @@ function emitArgPackAndTrampolinePrologue(
       if (valueT.kind !== "union") {
         throw new InternalCompilerError("emitter bug: genResume value slot is neither dyn nor a union");
       }
-      const def = E.unionsById.get(valueT.unionId);
+      const def = emitter.unionsById.get(valueT.unionId);
       if (!def) throw new InternalCompilerError("emitter bug: genResume value union unknown");
       const tagOf = (t: IrType): number => {
         const tag = def.arms.findIndex((a) => typeEquals(a, t));
@@ -846,7 +846,7 @@ function emitArgPackAndTrampolinePrologue(
         if (srcT.kind !== "union") {
           const v = vAdapters(srcT);
           return [
-            `    sc_v = scr_union_new_ref(${tagOf(srcT)}, scr_gen_take_out_ref(sc_g), ${v.retain}, ${v.release}, ${E.traceArgC(srcT)});`,
+            `    sc_v = scr_union_new_ref(${tagOf(srcT)}, scr_gen_take_out_ref(sc_g), ${v.retain}, ${v.release}, ${emitter.traceArgC(srcT)});`,
           ];
         }
         // A union channel: OUT holds the union box itself. Identical V
@@ -855,20 +855,20 @@ function emitArgPackAndTrampolinePrologue(
         if (typeEquals(srcT, valueT)) {
           return [`    sc_v = (ScrUnion *)scr_gen_take_out_ref(sc_g);`];
         }
-        const srcDef = E.unionsById.get(srcT.unionId);
+        const srcDef = emitter.unionsById.get(srcT.unionId);
         if (!srcDef) throw new InternalCompilerError("emitter bug: genResume channel union unknown");
         const cases = srcDef.arms.map((arm, i) => {
           const tag = tagOf(arm);
           let build: string;
           if (isUnitType(arm)) {
-            build = E.unitInstanceRef(valueT.unionId, tag);
+            build = emitter.unitInstanceRef(valueT.unionId, tag);
           } else if (arm.kind === "f64") {
             build = `scr_union_new_f64(${tag}, scr_union_get_f64(sc_u))`;
           } else if (arm.kind === "bool") {
             build = `scr_union_new_bool(${tag}, scr_union_get_bool(sc_u))`;
           } else {
             const av = vAdapters(arm);
-            build = `scr_union_new_ref(${tag}, ${av.retain}(scr_union_peek(sc_u)), ${av.retain}, ${av.release}, ${E.traceArgC(arm)})`;
+            build = `scr_union_new_ref(${tag}, ${av.retain}(scr_union_peek(sc_u)), ${av.retain}, ${av.release}, ${emitter.traceArgC(arm)})`;
           }
           return `    case ${i}: sc_v = ${build}; break;`;
         });
@@ -876,12 +876,12 @@ function emitArgPackAndTrampolinePrologue(
           `    { ScrUnion *sc_u = (ScrUnion *)scr_gen_take_out_ref(sc_g);`,
           `    switch (sc_u->tag) {`,
           ...cases,
-          `    default: sc_v = ${E.unitInstanceRef(valueT.unionId, undefTag)}; break;`,
+          `    default: sc_v = ${emitter.unitInstanceRef(valueT.unionId, undefTag)}; break;`,
           `    }`,
           `    scr_union_release(sc_u); }`,
         ];
       };
-      const undefLine = `    sc_v = ${E.unitInstanceRef(valueT.unionId, undefTag)};`;
+      const undefLine = `    sc_v = ${emitter.unitInstanceRef(valueT.unionId, undefTag)};`;
       lines.push(`  ScrUnion *sc_v;`);
       lines.push(`  if (!sc_d) {`);
       // yieldT VOID marks a generator that can never yield (TS's `never`):
@@ -894,25 +894,25 @@ function emitArgPackAndTrampolinePrologue(
       lines.push(`  sc_r->${mangleField("value")} = sc_v;`);
     }
     lines.push(`  return sc_r;`, `}`);
-    E.walkerProtos.push(`static ${struct} *${sym}(ScrGen *sc_g);`);
-    E.walkerDefs.push(...lines, ``);
+    emitter.walkerProtos.push(`static ${struct} *${sym}(ScrGen *sc_g);`);
+    emitter.walkerDefs.push(...lines, ``);
     return sym;
   }
 
 /** Interned per inner-type resolve thunk for ref-kind new Promise. */
-  export function resolveThunkFor(E: CEmitter, inner: IrType): string {
+  export function resolveThunkFor(emitter: CEmitter, inner: IrType): string {
     const key = typeKey(inner);
-    let sym = E.resolveThunks.get(key);
+    let sym = emitter.resolveThunks.get(key);
     if (!sym) {
-      sym = mangleResolveThunk(E.resolveThunks.size);
-      E.resolveThunks.set(key, sym);
+      sym = mangleResolveThunk(emitter.resolveThunks.size);
+      emitter.resolveThunks.set(key, sym);
       const v = vAdapters(inner);
-      E.walkerProtos.push(
+      emitter.walkerProtos.push(
         `static void ${sym}(ScrClosure *sc_self, ${cDecl(inner, "sc_v")});`,
       );
-      E.walkerDefs.push(
+      emitter.walkerDefs.push(
         `static void ${sym}(ScrClosure *sc_self, ${cDecl(inner, "sc_v")}) {`,
-        `  scr_resolve_ref_impl(sc_self, sc_v, ${v.retain}, ${v.release}, ${E.traceArgC(inner)});`,
+        `  scr_resolve_ref_impl(sc_self, sc_v, ${v.retain}, ${v.release}, ${emitter.traceArgC(inner)});`,
         `}`,
       );
     }
@@ -925,15 +925,15 @@ function emitArgPackAndTrampolinePrologue(
  * the tuple, so reads agree with writes), retains each refcounted value
  * (the callee owns +1 per the universal convention; f64/bool copy), and
  * calls cb->fn behind its exact C signature. Interned per func-type key. */
-export function emitterInvokeThunkFor(E: CEmitter, cbT: IrType): string {
+export function emitterInvokeThunkFor(emitter: CEmitter, cbT: IrType): string {
   if (cbT.kind !== "func") {
     throw new InternalCompilerError("emitter bug: emitter.on listener not a func (frontend must fence)");
   }
   const key = typeKey(cbT);
-  let sym = E.emitterInvokeThunks.get(key);
+  let sym = emitter.emitterInvokeThunks.get(key);
   if (sym) return sym;
-  sym = mangleEmitterInvokeThunk(E.emitterInvokeThunks.size);
-  E.emitterInvokeThunks.set(key, sym);
+  sym = mangleEmitterInvokeThunk(emitter.emitterInvokeThunks.size);
+  emitter.emitterInvokeThunks.set(key, sym);
   const reads: string[] = [];
   const passed: string[] = [];
   cbT.params.forEach((p, i) => {
@@ -956,8 +956,8 @@ export function emitterInvokeThunkFor(E: CEmitter, cbT: IrType): string {
   // listener return values.
   const retC = cbT.ret.kind === "void" ? "void" : cType(cbT.ret).trim();
   const invoke = `((${retC} (*)(${sigParams}))sc_cb->fn)(${["sc_cb", ...passed].join(", ")})`;
-  E.walkerProtos.push(`static void ${sym}(ScrClosure *sc_cb, va_list sc_ap);`);
-  E.walkerDefs.push(
+  emitter.walkerProtos.push(`static void ${sym}(ScrClosure *sc_cb, va_list sc_ap);`);
+  emitter.walkerDefs.push(
     `static void ${sym}(ScrClosure *sc_cb, va_list sc_ap) {`,
     ...(cbT.params.length === 0 ? [`  (void)sc_ap;`] : reads),
     ...(cbT.ret.kind === "void"
@@ -979,15 +979,15 @@ export function emitterInvokeThunkFor(E: CEmitter, cbT: IrType): string {
  * scr_stream_final_done, "d" scr_stream_destroy_done, "t"
  * scr_stream_transform_done, "l" scr_stream_flush_done. Args arrive
  * callee-owned (+1) per the universal convention and are released here. */
-function streamDoneFnFor(E: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: IrType): string {
+function streamDoneFnFor(emitter: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: IrType): string {
   if (doneT.kind !== "func") {
     throw new InternalCompilerError("emitter bug: stream done callback not a func (frontend must fence)");
   }
   const key = `${kind}:${typeKey(doneT)}`;
-  let sym = E.streamDoneFns.get(key);
+  let sym = emitter.streamDoneFns.get(key);
   if (sym) return sym;
-  sym = mangleStreamDoneFn(E.streamDoneFns.size);
-  E.streamDoneFns.set(key, sym);
+  sym = mangleStreamDoneFn(emitter.streamDoneFns.size);
+  emitter.streamDoneFns.set(key, sym);
   const params: string[] = ["ScrClosure *sc_self"];
   const body: string[] = [
     `  ScrStream *sc_s = (ScrStream *)scr_box_get_ref(sc_self->caps[0]); /* +1 */`,
@@ -996,7 +996,7 @@ function streamDoneFnFor(E: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: 
   const errT = doneT.params[0];
   if (errT !== undefined) {
     if (errT.kind !== "union") throw new InternalCompilerError("emitter bug: stream done err param not a union");
-    const def = E.unionsById.get(errT.unionId);
+    const def = emitter.unionsById.get(errT.unionId);
     const errTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
     if (errTag < 0) throw new InternalCompilerError("emitter bug: stream done err union lacks its Error arm");
     params.push("ScrUnion *sc_e");
@@ -1010,7 +1010,7 @@ function streamDoneFnFor(E: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: 
     body.push(...dataLines);
     if (dataT !== undefined) {
       if (dataT.kind !== "union") throw new InternalCompilerError("emitter bug: stream done data param not a union");
-      const def = E.unionsById.get(dataT.unionId);
+      const def = emitter.unionsById.get(dataT.unionId);
       const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes") : -1;
       const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
       params.push("ScrUnion *sc_d");
@@ -1033,8 +1033,8 @@ function streamDoneFnFor(E: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: 
     kind === "t" || kind === "l"
       ? `${entry}(sc_s, sc_err, sc_data, sc_dataStr);`
       : `${entry}(sc_s, sc_err);`;
-  E.walkerProtos.push(`static void ${sym}(${params.join(", ")});`);
-  E.walkerDefs.push(
+  emitter.walkerProtos.push(`static void ${sym}(${params.join(", ")});`);
+  emitter.walkerDefs.push(
     `static void ${sym}(${params.join(", ")}) {`,
     ...body,
     `  ${tail} /* moves sc_err/sc_data; borrows sc_s */`,
@@ -1056,15 +1056,15 @@ function streamDoneFnFor(E: CEmitter, kind: "w" | "f" | "d" | "t" | "l", doneT: 
  * just hand the value over — SEMANTICS.md). Zero-parameter listeners
  * ignore both slots; DYN-parameter listeners (the JS lane's adapter,
  * emitter.onDataDyn) box by tag, which is always right. */
-export function streamDataThunkFor(E: CEmitter, cbT: IrType): string {
+export function streamDataThunkFor(emitter: CEmitter, cbT: IrType): string {
   if (cbT.kind !== "func") {
     throw new InternalCompilerError("emitter bug: stream data listener not a func (frontend must fence)");
   }
   const key = `data:${typeKey(cbT)}`;
-  let sym = E.emitterInvokeThunks.get(key);
+  let sym = emitter.emitterInvokeThunks.get(key);
   if (sym) return sym;
-  sym = mangleEmitterInvokeThunk(E.emitterInvokeThunks.size);
-  E.emitterInvokeThunks.set(key, sym);
+  sym = mangleEmitterInvokeThunk(emitter.emitterInvokeThunks.size);
+  emitter.emitterInvokeThunks.set(key, sym);
   const p = cbT.params[0];
   if (cbT.params.length > 1 || (p && p.kind !== "bytes" && p.kind !== "string" && p.kind !== "dyn")) {
     throw new InternalCompilerError("emitter bug: stream data listener param shape (frontend must fence)");
@@ -1102,8 +1102,8 @@ export function streamDataThunkFor(E: CEmitter, cbT: IrType): string {
   const sigParams = ["ScrClosure *", ...cbT.params.map((q) => cType(q).trim())].join(", ");
   const retC = cbT.ret.kind === "void" ? "void" : cType(cbT.ret).trim();
   const invoke = `((${retC} (*)(${sigParams}))sc_cb->fn)(${passed.join(", ")})`;
-  E.walkerProtos.push(`static void ${sym}(ScrClosure *sc_cb, va_list sc_ap);`);
-  E.walkerDefs.push(
+  emitter.walkerProtos.push(`static void ${sym}(ScrClosure *sc_cb, va_list sc_ap);`);
+  emitter.walkerDefs.push(
     `static void ${sym}(ScrClosure *sc_cb, va_list sc_ap) {`,
     ...body,
     ...(cbT.ret.kind === "void"
@@ -1128,15 +1128,15 @@ export function streamDataThunkFor(E: CEmitter, cbT: IrType): string {
  * never complete, exactly Node. Kinds: "r" read(size), "w" write(chunk,
  * enc, cb), "f" final(cb), "d" destroy(err, cb), "t" transform(chunk,
  * enc, cb), "l" flush(cb). */
-export function streamCbThunkFor(E: CEmitter, kind: "r" | "w" | "f" | "d" | "t" | "l" | "e", cbT: IrType): string {
+export function streamCbThunkFor(emitter: CEmitter, kind: "r" | "w" | "f" | "d" | "t" | "l" | "e", cbT: IrType): string {
   if (cbT.kind !== "func") {
     throw new InternalCompilerError("emitter bug: stream option callback not a func (frontend must fence)");
   }
   const key = `${kind}:${typeKey(cbT)}`;
-  let sym = E.streamCbThunks.get(key);
+  let sym = emitter.streamCbThunks.get(key);
   if (sym) return sym;
-  sym = mangleStreamCbThunk(E.streamCbThunks.size);
-  E.streamCbThunks.set(key, sym);
+  sym = mangleStreamCbThunk(emitter.streamCbThunks.size);
+  emitter.streamCbThunks.set(key, sym);
   // The runtime-facing C signatures, per kind.
   const runtimeParams =
     kind === "r" ? ["ScrStream *sc_s", "double sc_size"] :
@@ -1225,7 +1225,7 @@ export function streamCbThunkFor(E: CEmitter, kind: "r" | "w" | "f" | "d" | "t" 
       // undefined` (the @types signature); success prefers the undefined
       // arm there (Node calls the eos callback with NO arguments).
       if (p.kind !== "union") throw new InternalCompilerError("emitter bug: stream destroy err param not a union");
-      const def = E.unionsById.get(p.unionId);
+      const def = emitter.unionsById.get(p.unionId);
       const errTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
       const undefTag = kind === "e" && def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
       const nullTag = def
@@ -1233,12 +1233,12 @@ export function streamCbThunkFor(E: CEmitter, kind: "r" | "w" | "f" | "d" | "t" 
         : -1;
       if (errTag < 0 || nullTag < 0) throw new InternalCompilerError("emitter bug: stream destroy err union lacks its arms");
       body.push(
-        `  ScrUnion *sc_eu = sc_err ? scr_union_new_ref(${errTag}, scr_error_retain(sc_err), &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg()) : scr_union_retain(${E.unitInstanceRef(p.unionId, nullTag)});`,
+        `  ScrUnion *sc_eu = sc_err ? scr_union_new_ref(${errTag}, scr_error_retain(sc_err), &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg()) : scr_union_retain(${emitter.unitInstanceRef(p.unionId, nullTag)});`,
       );
       passed.push(`sc_eu`);
     } else if (isDonePos) {
       const doneKind = kind as "w" | "f" | "d" | "t" | "l"; // "e" has no done position
-      const doneFn = streamDoneFnFor(E, doneKind, p);
+      const doneFn = streamDoneFnFor(emitter, doneKind, p);
       body.push(
         `  ScrClosure *sc_done = scr_closure_new((void *)&${doneFn}, 1);`,
         `  sc_done->caps[0] = scr_box_new_obj(&scr_stream_retain_v, &scr_stream_release_v, &scr_stream_trace);`,
@@ -1262,8 +1262,8 @@ export function streamCbThunkFor(E: CEmitter, kind: "r" | "w" | "f" | "d" | "t" 
   // callback results (`read: () => this.push(null)`).
   const retC = cbT.ret.kind === "void" ? "void" : cType(cbT.ret).trim();
   const invoke = `((${retC} (*)(${sigParams}))sc_cb->fn)(${passed.join(", ")})`;
-  E.walkerProtos.push(`static void ${sym}(ScrClosure *sc_cb, ${runtimeParams.join(", ")});`);
-  E.walkerDefs.push(
+  emitter.walkerProtos.push(`static void ${sym}(ScrClosure *sc_cb, ${runtimeParams.join(", ")});`);
+  emitter.walkerDefs.push(
     `static void ${sym}(ScrClosure *sc_cb, ${runtimeParams.join(", ")}) {`,
     ...unused,
     ...body,

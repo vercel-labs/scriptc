@@ -1,6 +1,6 @@
 import { InternalCompilerError } from "../../errors.js";
 /* Structure-walking helper EMITTERS for the LLVM backend — the .ll mirror
- * of emit-walkers.ts's phase-3 slice: type-directed JSON serializers over
+ * of walkers.ts's phase-3 slice: type-directed JSON serializers over
  * the external scr_jb_* string builder (one emitted function per typeKey,
  * interned), the pretty-print re-indenter (Node's gap algorithm), and the
  * per-union ToString/join pair Array#join needs over union elements.
@@ -13,8 +13,8 @@ import { InternalCompilerError } from "../../errors.js";
  * enter set the pending TypeError and the walker chain return early — the
  * jsonStringify emission site runs the pending check (join still walks
  * only f64/string/bool/unit arms — the frontend's fence). */
-import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/nodes.js";
-import { isRefCounted, typeKey } from "../../ir/nodes.js";
+import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
+import { isRefCounted, typeKey } from "../../ir/ir.js";
 import { mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { llFieldType, releaseSym, traceAdapter, type ShapeHost } from "./shapes.js";
@@ -235,7 +235,7 @@ export class LlWalkers {
     const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
-    // emit-walkers.ts's contract, ported.
+    // walkers.ts's contract, ported.
     const cyclic = traceAdapter(this.host, { kind: "record", shapeId }) !== null;
     const edgeable = (ft: IrType): boolean => cyclic && traceAdapter(this.host, ft) !== null;
     if (cyclic) this.jbEnter(B, shape.tuple === true);
@@ -518,7 +518,7 @@ export class LlWalkers {
   /* ── the pretty-print re-indenter (jsonIndentHelper, ported) ──────────── */
 
   /** `JSON.stringify(v, null, space)` as a REWRITE of the compact text —
-   * Node's gap algorithm exactly (see emit-walkers.ts's sc_ji). The indent
+   * Node's gap algorithm exactly (see walkers.ts's sc_ji). The indent
    * rides as a NUL-terminated constant + byte length. */
   jsonIndentHelper(): string {
     if (this.indentFn) return this.indentFn;

@@ -24,7 +24,7 @@ import { beforeAll, describe, expect, test } from "vitest";
 import {
   compile,
   NODE24_FETCH_COMPAT_PROFILE,
-  renderAll,
+  renderDiagnostics,
   type FetchCompatEvidence,
 } from "@scriptc/compiler";
 import {
@@ -136,7 +136,7 @@ async function build(backend: "c" | "llvm"): Promise<string> {
   if (!result.ok) {
     expect.unreachable(
       `generated fetch conformance program failed to compile (${backend}):\n` +
-        renderAll(result.diagnostics, result.sourceTexts, { color: false }) +
+        renderDiagnostics(result.diagnostics, result.sourceTexts, { color: false }) +
         `\ngenerated source: ${entry}`,
     );
   }

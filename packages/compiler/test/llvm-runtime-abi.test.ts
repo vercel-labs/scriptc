@@ -34,7 +34,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import { resolveCc, runtimeSrcDir } from "../src/backend/cc.js";
+import { resolveCc, runtimeSrcDir } from "../src/backend/native-toolchain.js";
 import { compile } from "../src/index.js";
 
 const execFileAsync = promisify(execFile);

@@ -17,7 +17,7 @@
  *   - a fenced STATIC entry is policed against the COMPILED module graph:
  *     the emit pass lowers only reachability-discovered bodies, so the
  *     module IR *is* the reached graph — the same ground the sidecar's
- *     `deterministic` attestation stands on (ir/nodes.ts's
+ *     `deterministic` attestation stands on (ir/ir.ts's
  *     moduleLibNondeterministicSurface). Fence evaluation reuses that
  *     posture with one generic walk collecting the reached surface facts
  *     (libCall spellings, str/arr/map/set intrinsic methods); each fenced
@@ -59,7 +59,7 @@ import {
   STATIC_NUMBER_METHODS,
   STR_METHODS,
 } from "../frontend/lowering/surfaces.js";
-import type { IrModule, SrcLoc } from "../ir/nodes.js";
+import type { IrModule, SrcLoc } from "../ir/ir.js";
 import { compilerReleaseVersion } from "./sidecar.js";
 
 /** One raw fence declaration as the profile spelled it (validated for

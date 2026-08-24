@@ -7,7 +7,7 @@ import {
   type IrStmt,
   type IrType,
   type IrUnionDef,
-} from "./nodes.js";
+} from "./ir.js";
 
 /** The class-graph surface needed by backend-independent hierarchy queries. */
 export interface IrClassGraphNode {

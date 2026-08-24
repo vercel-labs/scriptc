@@ -1,6 +1,6 @@
 import { InternalCompilerError } from "../../errors.js";
 /* The dyn (ScrDyn dyn) helper EMITTERS for the LLVM backend — the .ll
- * mirror of emit-walkers.ts's dyn slice: per-type match predicates
+ * mirror of walkers.ts's dyn slice: per-type match predicates
  * (dynMatchHelper), checked builders (dynCheckHelper), static→dyn
  * converters (toDynHelper), the type-independent singletons (String
  * (unknown), caught→dyn, the keyed read, the destructuring
@@ -23,8 +23,8 @@ import { InternalCompilerError } from "../../errors.js";
  *               FUNC=8 HANDLE=9.
  *   ScrBytes { rc +0; len +8; elem +16; data +24 }.
  *   ScrDynPath { parent, key, index } — the %ScrDynPath type. */
-import type { IrType } from "../../ir/nodes.js";
-import { DYN_HANDLE_KINDS, isRefCounted, typeKey } from "../../ir/nodes.js";
+import type { IrType } from "../../ir/ir.js";
+import { DYN_HANDLE_KINDS, isRefCounted, typeKey } from "../../ir/ir.js";
 import { dynDesc, undefinedArmTag } from "../../ir/analysis.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
@@ -41,7 +41,7 @@ const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   netServer: 3,
 };
 
-export const DK = {
+export const DYN_KIND = {
   NULL: 0,
   BOOL: 1,
   NUM: 2,
@@ -293,7 +293,7 @@ export class LlDyn {
     B.startBlock(lk);
   }
 
-  /* ── dynMatchHelper (emit-walkers.ts, ported) ──────────────────────── */
+  /* ── dynMatchHelper (walkers.ts, ported) ──────────────────────── */
 
   /** `sc_dm_<n>(ptr d) -> i1` — does this dyn fit T? Never throws. */
   dynMatchHelper(t: IrType): string {
@@ -321,7 +321,7 @@ export class LlDyn {
       this.host.declare(`declare void @scr_dyn_release_v(ptr)`);
       const kind = this.kindOf(B, "%d");
       const capsule = B.tmp();
-      B.line(`${capsule} = icmp eq i32 ${kind}, ${DK.TYPED_REF}`);
+      B.line(`${capsule} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
       const lCapsule = B.newLabel("dm.tr.mat");
       const lPlain = B.newLabel("dm.tr.plain");
       B.condBr(capsule, lCapsule, lPlain);
@@ -342,19 +342,19 @@ export class LlDyn {
     };
     switch (t.kind) {
       case "f64":
-        kindIs(DK.NUM);
+        kindIs(DYN_KIND.NUM);
         break;
       case "string":
-        kindIs(DK.STR);
+        kindIs(DYN_KIND.STR);
         break;
       case "bool":
-        kindIs(DK.BOOL);
+        kindIs(DYN_KIND.BOOL);
         break;
       case "nullT":
-        kindIs(DK.NULL);
+        kindIs(DYN_KIND.NULL);
         break;
       case "undefinedT":
-        kindIs(DK.UNDEF);
+        kindIs(DYN_KIND.UNDEF);
         break;
       case "dyn":
         // An `unknown` target: every dyn value fits, undefined included.
@@ -362,7 +362,7 @@ export class LlDyn {
         break;
       case "bytes":
         if (t.elem !== "u8") throw new InternalCompilerError(`llvm emitter bug: dynMatch of bytes<${t.elem}>`);
-        kindIs(DK.BYTES);
+        kindIs(DYN_KIND.BYTES);
         break;
       case "record": {
         const shape = this.host.recordsById.get(t.shapeId);
@@ -373,7 +373,7 @@ export class LlDyn {
         if (shape.tuple) {
           const byIndex = [...shape.fields].sort((a, b) => Number(a.name) - Number(b.name));
           const isArr = B.tmp();
-          B.line(`${isArr} = icmp eq i32 ${kd}, ${DK.ARR}`);
+          B.line(`${isArr} = icmp eq i32 ${kd}, ${DYN_KIND.ARR}`);
           const l1 = B.newLabel("dm.a");
           B.condBr(isArr, l1, fail);
           B.startBlock(l1);
@@ -398,7 +398,7 @@ export class LlDyn {
           break;
         }
         const isObj = B.tmp();
-        B.line(`${isObj} = icmp eq i32 ${kd}, ${DK.OBJ}`);
+        B.line(`${isObj} = icmp eq i32 ${kd}, ${DYN_KIND.OBJ}`);
         const l0 = B.newLabel("dm.o");
         B.condBr(isObj, l0, fail);
         B.startBlock(l0);
@@ -470,7 +470,7 @@ export class LlDyn {
         const fail = B.newLabel("dm.f");
         const kd = this.kindOf(B, "%d");
         const isArr = B.tmp();
-        B.line(`${isArr} = icmp eq i32 ${kd}, ${DK.ARR}`);
+        B.line(`${isArr} = icmp eq i32 ${kd}, ${DYN_KIND.ARR}`);
         const l0 = B.newLabel("dm.a");
         B.condBr(isArr, l0, fail);
         B.startBlock(l0);
@@ -518,7 +518,7 @@ export class LlDyn {
     return name;
   }
 
-  /* ── dynCheckHelper (emit-walkers.ts, ported) ──────────────────────── */
+  /* ── dynCheckHelper (walkers.ts, ported) ──────────────────────── */
 
   /** `sc_dc_<n>(ptr d, ptr path) -> T` — validate the checked-dynamic tree against T and
    * BUILD the typed value (+1), or throw the catchable path-annotated
@@ -558,7 +558,7 @@ export class LlDyn {
         const rc = vAdapters(host, t);
         const kind = this.kindOf(B, "%d");
         const capsule = B.tmp();
-        B.line(`${capsule} = icmp eq i32 ${kind}, ${DK.TYPED_REF}`);
+        B.line(`${capsule} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
         const lCapsule = B.newLabel("dc.tr.cap");
         const lPlain = B.newLabel("dc.tr.plain");
         B.condBr(capsule, lCapsule, lPlain);
@@ -676,19 +676,19 @@ export class LlDyn {
     };
     switch (t.kind) {
       case "f64": {
-        requireKind(DK.NUM, "dc");
+        requireKind(DYN_KIND.NUM, "dc");
         const v = this.payloadOf(B, "%d", "double");
         B.terminate(`ret double ${v}`);
         break;
       }
       case "bool": {
-        requireKind(DK.BOOL, "dc");
+        requireKind(DYN_KIND.BOOL, "dc");
         const v = this.boolOf(B, "%d");
         B.terminate(`ret i1 ${v}`);
         break;
       }
       case "string": {
-        requireKind(DK.STR, "dc");
+        requireKind(DYN_KIND.STR, "dc");
         host.declare(`declare ptr @scr_str_retain_v(ptr)`);
         const s = this.payloadOf(B, "%d", "ptr");
         const r = B.tmp();
@@ -707,7 +707,7 @@ export class LlDyn {
       case "bytes": {
         // `u as Uint8Array`: kind check, then a fresh COPY out.
         if (t.elem !== "u8") throw new InternalCompilerError(`llvm emitter bug: dynCheck of bytes<${t.elem}>`);
-        requireKind(DK.BYTES, "dc");
+        requireKind(DYN_KIND.BYTES, "dc");
         host.declare(`declare ptr @scr_dyn_bytes_copy_out(ptr)`);
         const r = B.tmp();
         B.line(`${r} = call ptr @scr_dyn_bytes_copy_out(ptr %d)`);
@@ -728,7 +728,7 @@ export class LlDyn {
         }
         const kd = this.kindOf(B, "%d");
         const isObj = B.tmp();
-        B.line(`${isObj} = icmp eq i32 ${kd}, ${DK.OBJ}`);
+        B.line(`${isObj} = icmp eq i32 ${kd}, ${DYN_KIND.OBJ}`);
         const lObj = B.newLabel("dce.o");
         const lFail = B.newLabel("dce.f");
         B.condBr(isObj, lObj, lFail);
@@ -798,7 +798,7 @@ export class LlDyn {
         if (shape.tuple) {
           const byIndex = [...shape.fields].sort((a, b) => Number(a.name) - Number(b.name));
           const arityWant = host.cstr(`array of length ${byIndex.length}`);
-          requireKind(DK.ARR, "dct");
+          requireKind(DYN_KIND.ARR, "dct");
           const len = this.lenOf(B, "%d");
           const lenOk = B.tmp();
           B.line(`${lenOk} = icmp eq ${host.sizeType} ${len}, ${byIndex.length}`);
@@ -822,7 +822,7 @@ export class LlDyn {
           B.terminate(`ret ptr %r0`);
           break;
         }
-        requireKind(DK.OBJ, "dcr");
+        requireKind(DYN_KIND.OBJ, "dcr");
         B.line(`%r0 = call ptr @${mangleRecordNew(t.shapeId)}()`);
         for (const f of shape.fields) {
           const fieldWant = host.cstr(dynDesc(f.type, this.host.recordsById, this.host.unionsById));
@@ -945,7 +945,7 @@ export class LlDyn {
       case "array": {
         const elem = t.elem;
         const c = this.dynCheckHelper(elem);
-        requireKind(DK.ARR, "dca");
+        requireKind(DYN_KIND.ARR, "dca");
         const n = this.lenOf(B, "%d");
         const a = B.tmp();
         B.line(`${a} = ${arrNewCall(host, elem, n)}`);
@@ -1036,7 +1036,7 @@ export class LlDyn {
         const rc = vAdapters(host, t);
         const kind = this.kindOf(B, "%d");
         const capsule = B.tmp();
-        B.line(`${capsule} = icmp eq i32 ${kind}, ${DK.TYPED_REF}`);
+        B.line(`${capsule} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
         const lCapsule = B.newLabel("dcu.cap");
         const lFail = B.newLabel("dcu.fail");
         B.condBr(capsule, lCapsule, lFail);
@@ -1104,7 +1104,7 @@ export class LlDyn {
         // caps[0] obj-box owns the dyn value (untraced).
         const adapter = this.dynFuncAdapterHelper(t);
         const sigLit = host.cstr(key);
-        requireKind(DK.FUNC, "dcf");
+        requireKind(DYN_KIND.FUNC, "dcf");
         host.declare(`declare i32 @strcmp(ptr, ptr)`);
         const sigp = B.tmp();
         const sig = B.tmp();
@@ -1168,7 +1168,7 @@ export class LlDyn {
     return name;
   }
 
-  /* ── toDynHelper (emit-walkers.ts, ported) ─────────────────────────── */
+  /* ── toDynHelper (walkers.ts, ported) ─────────────────────────── */
 
   /** `sc_td_<n>(<T> v) -> ptr` — build a fresh dyn value from a
    * static one (+1), DEEP-COPYING composites. Borrows the operand.
@@ -1549,7 +1549,7 @@ export class LlDyn {
   }
 
   /** The checked-dynamic tree-promise settle adapter for one fulfillment payload type —
-   * promiseDynAdapterHelper (emit-walkers.ts), ported:
+   * promiseDynAdapterHelper (walkers.ts), ported:
    * `void sc_pda_<n>(ptr %dst, ptr %src)` reads src's fulfilled payload
    * by its compile-time kind, converts it to a dyn value, and fulfills
    * dst with it (scr_dyn_new_promise_adapting's callback; rejections
@@ -1662,13 +1662,13 @@ export class LlDyn {
       const kd = this.kindOf(B, "%d");
       const done = B.newLabel("ds.d");
       const labels = new Map<number, string>();
-      for (const k of [DK.NULL, DK.BOOL, DK.NUM, DK.STR, DK.ARR, DK.OBJ, DK.UNDEF, DK.BYTES, DK.FUNC, DK.HANDLE, DK.PROMISE, DK.JSVAL, DK.TYPED_REF]) {
+      for (const k of [DYN_KIND.NULL, DYN_KIND.BOOL, DYN_KIND.NUM, DYN_KIND.STR, DYN_KIND.ARR, DYN_KIND.OBJ, DYN_KIND.UNDEF, DYN_KIND.BYTES, DYN_KIND.FUNC, DYN_KIND.HANDLE, DYN_KIND.PROMISE, DYN_KIND.JSVAL, DYN_KIND.TYPED_REF]) {
         labels.set(k, B.newLabel(`ds.k${k}`));
       }
       B.terminate(
         `switch i32 ${kd}, label %${done} [ ${[...labels].map(([k, l]) => `i32 ${k}, label %${l}`).join(" ")} ]`,
       );
-      B.startBlock(labels.get(DK.JSVAL)!);
+      B.startBlock(labels.get(DYN_KIND.JSVAL)!);
       {
         // Island-held: the engine's own ToString (a bridged failure
         // leaves the exception pending and appends nothing).
@@ -1676,7 +1676,7 @@ export class LlDyn {
         B.line(`call void @scr_dyn_isl_tostr_buf(ptr %b, ptr %d)`);
         B.br(done);
       }
-      B.startBlock(labels.get(DK.TYPED_REF)!);
+      B.startBlock(labels.get(DYN_KIND.TYPED_REF)!);
       {
         host.declare(`declare ptr @scr_dyn_typed_ref_materialize(ptr)`);
         host.declare(`declare void @scr_dyn_release_v(ptr)`);
@@ -1686,13 +1686,13 @@ export class LlDyn {
         B.line(`call void @scr_dyn_release_v(ptr ${materialized})`);
         B.br(done);
       }
-      B.startBlock(labels.get(DK.UNDEF)!);
+      B.startBlock(labels.get(DYN_KIND.UNDEF)!);
       this.puts(B, "%b", "undefined");
       B.br(done);
-      B.startBlock(labels.get(DK.NULL)!);
+      B.startBlock(labels.get(DYN_KIND.NULL)!);
       this.puts(B, "%b", "null");
       B.br(done);
-      B.startBlock(labels.get(DK.BOOL)!);
+      B.startBlock(labels.get(DYN_KIND.BOOL)!);
       {
         const bv = this.boolOf(B, "%d");
         const s = B.tmp();
@@ -1700,7 +1700,7 @@ export class LlDyn {
         B.line(`call void @scr_jb_puts(ptr %b, ptr ${s})`);
         B.br(done);
       }
-      B.startBlock(labels.get(DK.NUM)!);
+      B.startBlock(labels.get(DYN_KIND.NUM)!);
       {
         // String(n): NaN/Infinity spelled out, not the JSON null.
         const x = this.payloadOf(B, "%d", "double");
@@ -1710,13 +1710,13 @@ export class LlDyn {
         B.line(`call void @scr_str_release(ptr ${s})`);
         B.br(done);
       }
-      B.startBlock(labels.get(DK.STR)!);
+      B.startBlock(labels.get(DYN_KIND.STR)!);
       {
         const s = this.payloadOf(B, "%d", "ptr");
         this.putScrStr(B, "%b", s);
         B.br(done);
       }
-      B.startBlock(labels.get(DK.ARR)!);
+      B.startBlock(labels.get(DYN_KIND.ARR)!);
       {
         // Array.prototype.toString: join(",") — null/undefined ELEMENTS
         // print empty (unlike top level), nested arrays flatten.
@@ -1737,8 +1737,8 @@ export class LlDyn {
           const isU = B.tmp();
           const isN = B.tmp();
           const unit = B.tmp();
-          B.line(`${isU} = icmp eq i32 ${ek}, ${DK.UNDEF}`);
-          B.line(`${isN} = icmp eq i32 ${ek}, ${DK.NULL}`);
+          B.line(`${isU} = icmp eq i32 ${ek}, ${DYN_KIND.UNDEF}`);
+          B.line(`${isN} = icmp eq i32 ${ek}, ${DYN_KIND.NULL}`);
           B.line(`${unit} = or i1 ${isU}, ${isN}`);
           const lSkip = B.newLabel("ds.sk");
           const lRec = B.newLabel("ds.rc");
@@ -1750,7 +1750,7 @@ export class LlDyn {
         });
         B.br(done);
       }
-      B.startBlock(labels.get(DK.OBJ)!);
+      B.startBlock(labels.get(DYN_KIND.OBJ)!);
       {
         // The checked-dynamic tree's error encoding renders Error.prototype.toString;
         // plain objects are "[object Object]".
@@ -1779,7 +1779,7 @@ export class LlDyn {
           B.startBlock(lt);
           const k = this.kindOf(B, m);
           const isStr = B.tmp();
-          B.line(`${isStr} = icmp eq i32 ${k}, ${DK.STR}`);
+          B.line(`${isStr} = icmp eq i32 ${k}, ${DYN_KIND.STR}`);
           const ls = B.newLabel(`${hint}.s`);
           B.condBr(isStr, ls, lj);
           B.startBlock(ls);
@@ -1842,7 +1842,7 @@ export class LlDyn {
         putIf(ems, "ds.pm");
         B.br(done);
       }
-      B.startBlock(labels.get(DK.BYTES)!);
+      B.startBlock(labels.get(DYN_KIND.BYTES)!);
       {
         // Buffer-flavored values coerce utf8; plain Uint8Array joins
         // its elements.
@@ -1897,7 +1897,7 @@ export class LlDyn {
         });
         B.br(done);
       }
-      B.startBlock(labels.get(DK.FUNC)!);
+      B.startBlock(labels.get(DYN_KIND.FUNC)!);
       {
         // Function.prototype.toString: the native-code form.
         this.puts(B, "%b", "function ");
@@ -1917,10 +1917,10 @@ export class LlDyn {
         this.puts(B, "%b", "() { [native code] }");
         B.br(done);
       }
-      B.startBlock(labels.get(DK.HANDLE)!);
+      B.startBlock(labels.get(DYN_KIND.HANDLE)!);
       this.puts(B, "%b", "[object Object]");
       B.br(done);
-      B.startBlock(labels.get(DK.PROMISE)!);
+      B.startBlock(labels.get(DYN_KIND.PROMISE)!);
       // Object.prototype.toString with the Promise @@toStringTag.
       this.puts(B, "%b", "[object Promise]");
       B.br(done);
@@ -1939,7 +1939,7 @@ export class LlDyn {
       const B = new BlockBuilder();
       const kd = this.kindOf(B, "%d");
       const isStr = B.tmp();
-      B.line(`${isStr} = icmp eq i32 ${kd}, ${DK.STR}`);
+      B.line(`${isStr} = icmp eq i32 ${kd}, ${DYN_KIND.STR}`);
       const lFast = B.newLabel("ds.f");
       const lSlow = B.newLabel("ds.s");
       B.condBr(isStr, lFast, lSlow);
@@ -1967,7 +1967,7 @@ export class LlDyn {
     return name;
   }
 
-  /* ── caughtToDyn (emit-walkers.ts, ported) ─────────────────────────── */
+  /* ── caughtToDyn (walkers.ts, ported) ─────────────────────────── */
 
   /** A catch binding flowing into an `unknown` slot: the typed→unknown
    * deep-copy stance over the exception snapshot's runtime kind. */
@@ -2108,8 +2108,8 @@ export class LlDyn {
       const isU = B.tmp();
       const isN = B.tmp();
       const unit = B.tmp();
-      B.line(`${isU} = icmp eq i32 ${kd}, ${DK.UNDEF}`);
-      B.line(`${isN} = icmp eq i32 ${kd}, ${DK.NULL}`);
+      B.line(`${isU} = icmp eq i32 ${kd}, ${DYN_KIND.UNDEF}`);
+      B.line(`${isN} = icmp eq i32 ${kd}, ${DYN_KIND.NULL}`);
       B.line(`${unit} = or i1 ${isU}, ${isN}`);
       const lUnit = B.newLabel("kg.u");
       const lNext = B.newLabel("kg.n");
@@ -2150,7 +2150,7 @@ export class LlDyn {
     // ordinary property reads while the capsule itself keeps identity.
     {
       const isTyped = B.tmp();
-      B.line(`${isTyped} = icmp eq i32 ${kd}, ${DK.TYPED_REF}`);
+      B.line(`${isTyped} = icmp eq i32 ${kd}, ${DYN_KIND.TYPED_REF}`);
       const lTyped = B.newLabel("kg.tr");
       const lNext = B.newLabel("kg.n");
       B.condBr(isTyped, lTyped, lNext);
@@ -2170,7 +2170,7 @@ export class LlDyn {
     // scalar-normalized — the routed keyed read that retired the fence.
     {
       const isJv = B.tmp();
-      B.line(`${isJv} = icmp eq i32 ${kd}, ${DK.JSVAL}`);
+      B.line(`${isJv} = icmp eq i32 ${kd}, ${DYN_KIND.JSVAL}`);
       const lJv = B.newLabel("kg.jv");
       const lNext = B.newLabel("kg.n");
       B.condBr(isJv, lJv, lNext);
@@ -2184,7 +2184,7 @@ export class LlDyn {
     // OBJ: the own member (+1) or the undefined singleton.
     {
       const isObj = B.tmp();
-      B.line(`${isObj} = icmp eq i32 ${kd}, ${DK.OBJ}`);
+      B.line(`${isObj} = icmp eq i32 ${kd}, ${DYN_KIND.OBJ}`);
       const lObj = B.newLabel("kg.ob");
       const lNext = B.newLabel("kg.n");
       B.condBr(isObj, lObj, lNext);
@@ -2204,7 +2204,7 @@ export class LlDyn {
     // HANDLE: the tag's modeled properties through the installed ops.
     {
       const isH = B.tmp();
-      B.line(`${isH} = icmp eq i32 ${kd}, ${DK.HANDLE}`);
+      B.line(`${isH} = icmp eq i32 ${kd}, ${DYN_KIND.HANDLE}`);
       const lH = B.newLabel("kg.h");
       const lNext = B.newLabel("kg.n");
       B.condBr(isH, lH, lNext);
@@ -2313,7 +2313,7 @@ export class LlDyn {
     // BYTES: .length and canonical-index byte reads answer like Node.
     {
       const isB = B.tmp();
-      B.line(`${isB} = icmp eq i32 ${kd}, ${DK.BYTES}`);
+      B.line(`${isB} = icmp eq i32 ${kd}, ${DYN_KIND.BYTES}`);
       const lB = B.newLabel("kg.by");
       const lNext = B.newLabel("kg.n");
       B.condBr(isB, lB, lNext);
@@ -2362,7 +2362,7 @@ export class LlDyn {
     // FUNC: own props (defineProperties writes), then name/length.
     {
       const isF = B.tmp();
-      B.line(`${isF} = icmp eq i32 ${kd}, ${DK.FUNC}`);
+      B.line(`${isF} = icmp eq i32 ${kd}, ${DYN_KIND.FUNC}`);
       const lF = B.newLabel("kg.fn");
       const lNext = B.newLabel("kg.n");
       B.condBr(isF, lF, lNext);
@@ -2386,8 +2386,8 @@ export class LlDyn {
       const isA = B.tmp();
       const isS = B.tmp();
       const either = B.tmp();
-      B.line(`${isA} = icmp eq i32 ${kd}, ${DK.ARR}`);
-      B.line(`${isS} = icmp eq i32 ${kd}, ${DK.STR}`);
+      B.line(`${isA} = icmp eq i32 ${kd}, ${DYN_KIND.ARR}`);
+      B.line(`${isS} = icmp eq i32 ${kd}, ${DYN_KIND.STR}`);
       B.line(`${either} = or i1 ${isA}, ${isS}`);
       const lAS = B.newLabel("kg.as");
       const lNext = B.newLabel("kg.n");
@@ -2491,8 +2491,8 @@ export class LlDyn {
     const isU = B.tmp();
     const isN = B.tmp();
     const unit = B.tmp();
-    B.line(`${isU} = icmp eq i32 ${kd}, ${DK.UNDEF}`);
-    B.line(`${isN} = icmp eq i32 ${kd}, ${DK.NULL}`);
+    B.line(`${isU} = icmp eq i32 ${kd}, ${DYN_KIND.UNDEF}`);
+    B.line(`${isN} = icmp eq i32 ${kd}, ${DYN_KIND.NULL}`);
     B.line(`${unit} = or i1 ${isU}, ${isN}`);
     const lThrow = B.newLabel("ddc.t");
     const lOk = B.newLabel("ddc.o");
@@ -2561,7 +2561,7 @@ export class LlDyn {
     // Typed stream capsules iterate their cached, refreshed dyn view.
     {
       const isTyped = B.tmp();
-      B.line(`${isTyped} = icmp eq i32 ${kd}, ${DK.TYPED_REF}`);
+      B.line(`${isTyped} = icmp eq i32 ${kd}, ${DYN_KIND.TYPED_REF}`);
       const lTyped = B.newLabel("din.tr");
       const lNext = B.newLabel("din.nt");
       B.condBr(isTyped, lTyped, lNext);
@@ -2581,7 +2581,7 @@ export class LlDyn {
     // dyn-routing-ops).
     {
       const isJv = B.tmp();
-      B.line(`${isJv} = icmp eq i32 ${kd}, ${DK.JSVAL}`);
+      B.line(`${isJv} = icmp eq i32 ${kd}, ${DYN_KIND.JSVAL}`);
       const lJv = B.newLabel("din.jv");
       const lNotJv = B.newLabel("din.njv");
       B.condBr(isJv, lJv, lNotJv);
@@ -2597,9 +2597,9 @@ export class LlDyn {
     const okB = B.tmp();
     const ok01 = B.tmp();
     const ok = B.tmp();
-    B.line(`${okA} = icmp eq i32 ${kd}, ${DK.ARR}`);
-    B.line(`${okS} = icmp eq i32 ${kd}, ${DK.STR}`);
-    B.line(`${okB} = icmp eq i32 ${kd}, ${DK.BYTES}`);
+    B.line(`${okA} = icmp eq i32 ${kd}, ${DYN_KIND.ARR}`);
+    B.line(`${okS} = icmp eq i32 ${kd}, ${DYN_KIND.STR}`);
+    B.line(`${okB} = icmp eq i32 ${kd}, ${DYN_KIND.BYTES}`);
     B.line(`${ok01} = or i1 ${okA}, ${okS}`);
     B.line(`${ok} = or i1 ${ok01}, ${okB}`);
     const lGo = B.newLabel("din.g");
@@ -2618,7 +2618,7 @@ export class LlDyn {
     const lDef = B.newLabel("din.d");
     const lTail = B.newLabel("din.e");
     B.terminate(
-      `switch i32 ${kd}, label %${lDef} [ i32 ${DK.UNDEF}, label %${lU} i32 ${DK.NULL}, label %${lN} i32 ${DK.BOOL}, label %${lB2} i32 ${DK.NUM}, label %${lNum} i32 ${DK.FUNC}, label %${lF} ]`,
+      `switch i32 ${kd}, label %${lDef} [ i32 ${DYN_KIND.UNDEF}, label %${lU} i32 ${DYN_KIND.NULL}, label %${lN} i32 ${DYN_KIND.BOOL}, label %${lB2} i32 ${DYN_KIND.NUM}, label %${lNum} i32 ${DYN_KIND.FUNC}, label %${lF} ]`,
     );
     B.startBlock(lU);
     this.puts(B, buf, "undefined");

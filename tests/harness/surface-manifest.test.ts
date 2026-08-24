@@ -26,7 +26,7 @@ import {
   generateSurfaceManifest,
   ir,
   LIB_FN_SIGS,
-  renderAll,
+  renderDiagnostics,
   renderSurfaceManifest,
   resolveLibraryFences,
   type SurfaceManifest,
@@ -247,7 +247,7 @@ describe("surface manifest sampling harness", () => {
       if (!result.ok) {
         expect.unreachable(
           `${probe.id} is listed static but did not compile:\n` +
-            renderAll(result.diagnostics, result.sourceTexts, { color: false }),
+            renderDiagnostics(result.diagnostics, result.sourceTexts, { color: false }),
         );
       }
       const dyn = analyze(file, { dynamic: true }).coverage;
@@ -671,7 +671,7 @@ test("constructing a spread RequestInit does not apply fetch conversion fences",
 
 /* ── attestation ↔ fence parity: the ask-5 §4 invariant's ground ─────────
  * The library sidecar's `deterministic` attestation demotes on libCall
- * spellings by prefix (ir/nodes.ts's LIB_NONDETERMINISTIC_PREFIXES); the
+ * spellings by prefix (ir/ir.ts's LIB_NONDETERMINISTIC_PREFIXES); the
  * profile's determinism fences deny surfaces by manifest id. The §4
  * invariant — a program that compiles under full fences attests
  * deterministic: true — holds only if every spelling the attestation

@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
-import { emitModule } from "../src/backend/emission/emitter.js";
-import { compileC } from "../src/backend/cc.js";
+import { emitCModule } from "../src/backend/c/c-emitter.js";
+import { compileC } from "../src/backend/native-toolchain.js";
 import { validateModule } from "../src/ir/validate.js";
 import { fibModule } from "./fixtures/fib-ir.js";
-import { BOOL, F64, STRING, VOID, type IrExpr, type IrModule } from "../src/ir/nodes.js";
+import { BOOL, F64, STRING, VOID, type IrExpr, type IrModule } from "../src/ir/ir.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,7 +16,7 @@ async function emitCompileRun(mod: IrModule, sanitize = true): Promise<string> {
   expect(validateModule(mod)).toEqual([]);
   const dir = await mkdtemp(join(tmpdir(), "scriptc-emit-"));
   const cPath = join(dir, "program.c");
-  await writeFile(cPath, emitModule(mod));
+  await writeFile(cPath, emitCModule(mod));
   const outPath = join(dir, "program");
   await compileC({ cPath, outPath, sanitize });
   const { stdout } = await execFileAsync(outPath);

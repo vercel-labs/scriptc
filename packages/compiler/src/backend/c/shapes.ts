@@ -4,11 +4,11 @@ import { InternalCompilerError } from "../../errors.js";
  * instances, exact-signature adapter thunks), and the capture-box
  * constructors. Everything here is driven by the class graph (ClassMeta,
  * VtSlot) the emitter builds up front; emission ORDER is part of the C. */
-import type { CEmitter } from "./emitter.js";
-import type { IrFunction } from "../../ir/nodes.js";
-import { IrClassDef, IrType, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, isRefCounted, mapOf, STRING } from "../../ir/nodes.js";
+import type { CEmitter } from "./c-emitter.js";
+import type { IrFunction } from "../../ir/ir.js";
+import { IrClassDef, IrType, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, isRefCounted, mapOf, STRING } from "../../ir/ir.js";
 import { mangleClassGcFree, mangleClassNew, mangleClassRelease, mangleClassReleaseDirect, mangleClassRetain, mangleClassStruct, mangleClassTrace, mangleCtorThunk, mangleField, mangleFunction, mangleRecordClone, mangleRecordGcFree, mangleRecordNew, mangleRecordRelease, mangleRecordRetain, mangleRecordStruct, mangleRecordTrace, mangleVtAdapter, mangleVtInstance, mangleVtStruct } from "../mangle.js";
-import { boxKindC, cDecl, cType, elemKindC, mapValKindC, releaseCallC, retainCallC, vAdapters } from "./emit-types.js";
+import { boxKindC, cDecl, cType, elemKindC, mapValKindC, releaseCallC, retainCallC, vAdapters } from "./types.js";
 import { streamRooted } from "../../ir/analysis.js";
 
 /** The overflow map's C member name on index-signature record structs.
@@ -59,7 +59,7 @@ export interface ClassMeta {
    * exactly the other refcounted fields (the trace/teardown complement
    * contract in scr_runtime.h) — and their retain/release feed the
    * candidate-root buffer. Acyclic shapes keep the lean 1-word header. */
-  export function emitStructDefs(E: CEmitter, out: string[]): void {
+  export function emitStructDefs(emitter: CEmitter, out: string[]): void {
     interface StructShape {
       struct: string;
       newFn: string;
@@ -84,26 +84,26 @@ export interface ClassMeta {
     // their ClassMeta (preorder numbering, instanceof constants, vtable
     // struct type for user subclasses); main() stamps their intervals.
     const shapes: StructShape[] = [
-      ...(E.mod.classes ?? []).filter((cls) => !cls.runtime).map((cls) => ({
+      ...(emitter.mod.classes ?? []).filter((cls) => !cls.runtime).map((cls) => ({
         struct: mangleClassStruct(cls.name),
         newFn: mangleClassNew(cls.name),
         retain: mangleClassRetain(cls.name),
         release: mangleClassRelease(cls.name),
         trace: mangleClassTrace(cls.name),
         gcFree: mangleClassGcFree(cls.name),
-        traced: E.tracedShapes.has(`object:${cls.name}`),
+        traced: emitter.tracedShapes.has(`object:${cls.name}`),
         fields: cls.fields,
         comment: `class ${cls.name}`,
-        meta: E.classMeta.get(cls.name) ?? null,
+        meta: emitter.classMeta.get(cls.name) ?? null,
       })),
-      ...(E.mod.records ?? []).map((rec) => ({
+      ...(emitter.mod.records ?? []).map((rec) => ({
         struct: mangleRecordStruct(rec.id),
         newFn: mangleRecordNew(rec.id),
         retain: mangleRecordRetain(rec.id),
         release: mangleRecordRelease(rec.id),
         trace: mangleRecordTrace(rec.id),
         gcFree: mangleRecordGcFree(rec.id),
-        traced: E.tracedShapes.has(`record:${rec.id}`),
+        traced: emitter.tracedShapes.has(`record:${rec.id}`),
         fields: rec.fields,
         recordId: rec.id,
         ...(rec.indexValue ? { indexValue: rec.indexValue } : {}),
@@ -136,7 +136,7 @@ export interface ClassMeta {
     // fields, the dynCheck/JSON builders fill missing keys), and the
     // immortal instance costs nothing if overwritten (releases skip it).
     const undefFieldInitC = (s: StructShape): string[] =>
-      s.meta === null ? [] : s.fields.flatMap((f) => E.undefFieldInitLineC(f.name, f.type));
+      s.meta === null ? [] : s.fields.flatMap((f) => emitter.undefFieldInitLineC(f.name, f.type));
     // The overflow map's construction call (in the shape's newFn): value
     // handling is type-directed exactly like a user Map's.
     const overflowNewC = (s: StructShape): string => {
@@ -146,7 +146,7 @@ export interface ClassMeta {
         return `scr_map_new(SCR_MAP_KEY_STR, ${valKind}, NULL, NULL, NULL)`;
       }
       const rc = vAdapters(v);
-      return `scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_REF, &${rc.retain}, &${rc.release}, ${E.traceArgC(v)})`;
+      return `scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_REF, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(v)})`;
     };
 
     for (const s of shapes) {
@@ -192,14 +192,14 @@ export interface ClassMeta {
     // from the EMITTED hierarchy classes' roots, while adapter prototypes,
     // instances, and helpers stay shapes-only (the runtime owns the
     // builtin classes; a subclass-free Error tree emits nothing at all).
-    E.emitVtableDecls(out, shapes.filter(inHierarchy).map((s) => s.meta!));
+    emitter.emitVtableDecls(out, shapes.filter(inHierarchy).map((s) => s.meta!));
     for (const s of shapes) {
       out.push(
         `static ${s.struct} *${s.retain}(${s.struct} *o);`,
         `static void ${s.release}(${s.struct} *o);`,
         `static ${s.struct} *${s.newFn}(void);`,
       );
-      if (s.recordId !== undefined && E.recordCloneShapes.has(s.recordId)) {
+      if (s.recordId !== undefined && emitter.recordCloneShapes.has(s.recordId)) {
         out.push(`static ${s.struct} *${mangleRecordClone(s.recordId)}(${s.struct} *src);`);
       }
       if (inHierarchy(s)) {
@@ -213,10 +213,10 @@ export interface ClassMeta {
       }
     }
     out.push("");
-    E.emitVtableInstances(out, shapes.filter(inHierarchy).map((s) => s.meta!));
+    emitter.emitVtableInstances(out, shapes.filter(inHierarchy).map((s) => s.meta!));
     for (const s of shapes) {
       if (inHierarchy(s)) {
-        E.emitHierarchyClassHelpers(out, s.meta!, s);
+        emitter.emitHierarchyClassHelpers(out, s.meta!, s);
         continue;
       }
       // NULL-tolerant: zeroed fields (calloc) and user `null as unknown as C`
@@ -250,7 +250,7 @@ export interface ClassMeta {
           `  scr_obj_alloc_note();`,
           `  return o;`,
           `}`,
-          ...(s.recordId !== undefined && E.recordCloneShapes.has(s.recordId)
+          ...(s.recordId !== undefined && emitter.recordCloneShapes.has(s.recordId)
             ? emitRecordCloneC(s.recordId, s.struct, s.fields, s.newFn)
             : []),
           `static void *${s.retain}_v(void *o) { return ${s.retain}((${s.struct} *)o); }`,
@@ -261,9 +261,9 @@ export interface ClassMeta {
       }
       // Cycle-capable shape: cycle-headered allocation, root-buffer hooks
       // on release, and the trace/teardown complement pair.
-      const tracedFields = rcMembers(s).filter((m) => E.traceAdapterC(m.type) !== null);
+      const tracedFields = rcMembers(s).filter((m) => emitter.traceAdapterC(m.type) !== null);
       const untracedRefFields = rcMembers(s).filter(
-        (m) => isRefCounted(m.type) && E.traceAdapterC(m.type) === null,
+        (m) => isRefCounted(m.type) && emitter.traceAdapterC(m.type) === null,
       );
       out.push(
         `static ${s.struct} *${s.retain}(${s.struct} *o) {`,
@@ -298,7 +298,7 @@ export interface ClassMeta {
         `  scr_obj_alloc_note();`,
         `  return o;`,
         `}`,
-        ...(s.recordId !== undefined && E.recordCloneShapes.has(s.recordId)
+        ...(s.recordId !== undefined && emitter.recordCloneShapes.has(s.recordId)
           ? emitRecordCloneC(s.recordId, s.struct, s.fields, s.newFn)
           : []),
         `static void ${s.trace}(void *o0, ScrTraceVisit visit, void *ctx) {`,
@@ -364,7 +364,7 @@ function emitRecordCloneC(
    * ABSTRACT class whose chain holds only abstract declarations of the
    * slot also answers null — the class never instantiates (tsc), so its
    * own vtable entry can never dispatch. */
-  export function vtEntriesFor(E: CEmitter, meta: ClassMeta): { slot: VtSlot; impl: ClassMeta | null }[] {
+  export function vtEntriesFor(emitter: CEmitter, meta: ClassMeta): { slot: VtSlot; impl: ClassMeta | null }[] {
     return meta.root.slots.map((slot) => {
       if (!(slot.declarer.pre <= meta.pre && meta.pre <= slot.declarer.post)) {
         return { slot, impl: null };
@@ -380,7 +380,7 @@ function emitRecordCloneC(
   }
 
 /** The C parameter list of a slot (declaring-class `this` first). */
-  export function vtSlotParams(E: CEmitter, slot: VtSlot, named: boolean): string[] {
+  export function vtSlotParams(emitter: CEmitter, slot: VtSlot, named: boolean): string[] {
     const thisParam = named
       ? `${mangleClassStruct(slot.declarer.def.name)} *o`
       : `${mangleClassStruct(slot.declarer.def.name)} *`;
@@ -392,7 +392,7 @@ function emitRecordCloneC(
 
 /** Vtable struct typedefs + adapter prototypes (the definitions call
    * function bodies, so they flush after the signature block — see emit). */
-  export function emitVtableDecls(E: CEmitter, out: string[], hierarchyClasses: ClassMeta[]): void {
+  export function emitVtableDecls(emitter: CEmitter, out: string[], hierarchyClasses: ClassMeta[]): void {
     // Roots of the EMITTED classes' hierarchies — a runtime root (%Error)
     // counts exactly when some emitted subclass needs its vtable type.
     const roots = [...new Set(hierarchyClasses.map((m) => m.root))];
@@ -403,34 +403,34 @@ function emitRecordCloneC(
       for (const slot of root.slots) {
         const ret = cType(slot.fn.returnType).trim();
         out.push(
-          `  ${ret} (*${slot.member})(${E.vtSlotParams(slot, false).join(", ")}); /* ${slot.method} */`,
+          `  ${ret} (*${slot.member})(${emitter.vtSlotParams(slot, false).join(", ")}); /* ${slot.method} */`,
         );
       }
       out.push(`} ${vtt};`);
     }
     if (roots.length > 0) out.push("");
     for (const meta of hierarchyClasses) {
-      for (const { slot, impl } of E.vtEntriesFor(meta)) {
+      for (const { slot, impl } of emitter.vtEntriesFor(meta)) {
         if (impl === null) continue;
         const key = `${impl.def.name}.${slot.method}`;
-        if (E.vtAdapters.has(key)) continue;
-        E.vtAdapters.set(key, { impl, slot });
+        if (emitter.vtAdapters.has(key)) continue;
+        emitter.vtAdapters.set(key, { impl, slot });
         const ret = cType(slot.fn.returnType).trim();
         out.push(
-          `static ${ret} ${mangleVtAdapter(impl.def.name, slot.method)}(${E.vtSlotParams(slot, false).join(", ")});`,
+          `static ${ret} ${mangleVtAdapter(impl.def.name, slot.method)}(${emitter.vtSlotParams(slot, false).join(", ")});`,
         );
       }
     }
-    if (E.vtAdapters.size > 0) out.push("");
+    if (emitter.vtAdapters.size > 0) out.push("");
   }
 
 /** One static const vtable per hierarchy class: interval, direct
    * release, and the class's dispatch entry for every slot. */
-  export function emitVtableInstances(E: CEmitter, out: string[], hierarchyClasses: ClassMeta[]): void {
+  export function emitVtableInstances(emitter: CEmitter, out: string[], hierarchyClasses: ClassMeta[]): void {
     for (const meta of hierarchyClasses) {
       const vtt = mangleVtStruct(meta.root.def.name);
       const head = `{ ${meta.pre}, ${meta.post}, &${mangleClassReleaseDirect(meta.def.name)} }`;
-      const entries = E.vtEntriesFor(meta).map(({ slot, impl }) =>
+      const entries = emitter.vtEntriesFor(meta).map(({ slot, impl }) =>
         impl === null
           ? `0 /* ${slot.method}: outside the declaring subtree */`
           : `&${mangleVtAdapter(impl.def.name, slot.method)} /* ${slot.method} */`,
@@ -446,8 +446,8 @@ function emitRecordCloneC(
 
 /** Adapter definitions (flushed after the signature block): the impl
    * class's method behind the slot's declaring-class signature. */
-  export function emitVtAdapterDefs(E: CEmitter, out: string[]): void {
-    for (const { impl, slot } of E.vtAdapters.values()) {
+  export function emitVtAdapterDefs(emitter: CEmitter, out: string[]): void {
+    for (const { impl, slot } of emitter.vtAdapters.values()) {
       const ret = cType(slot.fn.returnType).trim();
       const recv =
         impl === slot.declarer ? "o" : `(${mangleClassStruct(impl.def.name)} *)o`;
@@ -455,7 +455,7 @@ function emitRecordCloneC(
       const call = `${mangleFunction(`%${impl.def.name}.${slot.method}`)}(${args})`;
       out.push(
         ``,
-        `static ${ret} ${mangleVtAdapter(impl.def.name, slot.method)}(${E.vtSlotParams(slot, true).join(", ")}) {`,
+        `static ${ret} ${mangleVtAdapter(impl.def.name, slot.method)}(${emitter.vtSlotParams(slot, true).join(", ")}) {`,
         slot.fn.returnType.kind === "void" ? `  ${call};` : `  return ${call};`,
         `}`,
       );
@@ -469,7 +469,7 @@ function emitRecordCloneC(
    * teardown. Cycle capability is hierarchy-uniform (constructor fixpoint),
    * and the cycle header's trace/teardown are stamped with the concrete
    * class's functions at allocation — the collector needs no vtable. */
-  export function emitHierarchyClassHelpers(E: CEmitter, out: string[],
+  export function emitHierarchyClassHelpers(emitter: CEmitter, out: string[],
     meta: ClassMeta,
     s: {
       struct: string;
@@ -538,15 +538,15 @@ function emitRecordCloneC(
       // Undefined-admitting fields start as JS's undefined, not NULL — see
       // undefFieldInitLineC. s.fields is the FLATTENED layout (base prefix
       // + own), so a derived allocation covers inherited fields too.
-      ...s.fields.flatMap((f) => E.undefFieldInitLineC(f.name, f.type)),
+      ...s.fields.flatMap((f) => emitter.undefFieldInitLineC(f.name, f.type)),
       `  scr_obj_alloc_note();`,
       `  return o;`,
       `}`,
     );
     if (s.traced) {
-      const tracedFields = s.fields.filter((f) => E.traceAdapterC(f.type) !== null);
+      const tracedFields = s.fields.filter((f) => emitter.traceAdapterC(f.type) !== null);
       const untracedRefFields = s.fields.filter(
-        (f) => isRefCounted(f.type) && E.traceAdapterC(f.type) === null,
+        (f) => isRefCounted(f.type) && emitter.traceAdapterC(f.type) === null,
       );
       out.push(
         `static void ${s.trace}(void *o0, ScrTraceVisit visit, void *ctx) {`,
@@ -591,11 +591,11 @@ function emitRecordCloneC(
    * (definitions land later with the other synthesized bodies —
    * emitCtorThunkDefs). The interval constants are the same numbering the
    * vtables carry, so instanceOfValue agrees with compiled instanceOf. */
-  export function emitClassObjs(E: CEmitter, out: string[]): void {
-    if (E.classObjs.size === 0) return;
+  export function emitClassObjs(emitter: CEmitter, out: string[]): void {
+    if (emitter.classObjs.size === 0) return;
     out.push("");
-    for (const [className, sym] of E.classObjs) {
-      const meta = E.classMeta.get(className);
+    for (const [className, sym] of emitter.classObjs) {
+      const meta = emitter.classMeta.get(className);
       if (!meta) throw new InternalCompilerError(`emitter bug: class object for unknown class ${className}`);
       // A generic-class INSTANTIATION's class object carries its FAMILY's
       // interval: at runtime JS has ONE `Box`, so instanceof through the
@@ -603,12 +603,12 @@ function emitRecordCloneC(
       // their subclasses) — IrClassDef.genericOf. Construction still
       // dispatches the instantiation's own thunk.
       const intervalMeta = meta.def.genericOf !== undefined
-        ? E.classMeta.get(meta.def.genericOf)
+        ? emitter.classMeta.get(meta.def.genericOf)
         : meta;
       if (!intervalMeta) throw new InternalCompilerError(`emitter bug: class object for ${className} names unknown family ${meta.def.genericOf ?? ""}`);
-      const nameSym = E.internLiteral(meta.def.jsName ?? "");
+      const nameSym = emitter.internLiteral(meta.def.jsName ?? "");
       out.push(
-        `static void *${mangleCtorThunk(className)}(${ctorThunkParams(E, className).decls || "void"});`,
+        `static void *${mangleCtorThunk(className)}(${ctorThunkParams(emitter, className).decls || "void"});`,
         `static ScrClassObj ${sym} = { SIZE_MAX, ${intervalMeta.pre}, ${intervalMeta.post}, ` +
           `(void *)&${mangleCtorThunk(className)}, (const ScrStr *)&${nameSym} }; /* class ${className} */`,
       );
@@ -617,8 +617,8 @@ function emitRecordCloneC(
 
 /** The construct thunk's parameter list: the constructor's completed ABI
    * minus the `this` the thunk allocates itself. */
-  function ctorThunkParams(E: CEmitter, className: string): { decls: string; names: string[] } {
-    const ctor = E.fnByName.get(`%${className}.constructor`);
+  function ctorThunkParams(emitter: CEmitter, className: string): { decls: string; names: string[] } {
+    const ctor = emitter.fnByName.get(`%${className}.constructor`);
     if (!ctor) throw new InternalCompilerError(`emitter bug: class object for ${className} without a constructor`);
     const params = ctor.params.slice(1);
     return {
@@ -635,9 +635,9 @@ function emitRecordCloneC(
    * constructor leaves the pending flag set: the thunk releases the
    * half-built object and returns NULL (a dummy the checked call site
    * never reads). */
-  export function emitCtorThunkDefs(E: CEmitter, out: string[]): void {
-    for (const className of E.classObjs.keys()) {
-      const { decls, names } = ctorThunkParams(E, className);
+  export function emitCtorThunkDefs(emitter: CEmitter, out: string[]): void {
+    for (const className of emitter.classObjs.keys()) {
+      const { decls, names } = ctorThunkParams(emitter, className);
       const struct = mangleClassStruct(className);
       const lines = [
         ``,
@@ -645,7 +645,7 @@ function emitRecordCloneC(
         `  ${struct} *o = ${mangleClassNew(className)}();`,
         `  ${mangleFunction(`%${className}.constructor`)}(${[`${mangleClassRetain(className)}(o)`, ...names].join(", ")});`,
       ];
-      if (E.mayThrow.has(`%${className}.constructor`)) {
+      if (emitter.mayThrow.has(`%${className}.constructor`)) {
         lines.push(
           `  if (scr_exc_pending()) {`,
           `    ${mangleClassRelease(className)}(o);`,
@@ -664,16 +664,16 @@ function emitRecordCloneC(
    * cycle-capable fields — capability is hierarchy-uniform, so the
    * runtime's own allocations need collector headers too). Empty for
    * hand-written IR without the builtin defs. */
-  export function errorVtStampLines(E: CEmitter): string[] {
+  export function errorVtStampLines(emitter: CEmitter): string[] {
     const lines: string[] = [];
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
-      const meta = E.classMeta.get(name);
+      const meta = emitter.classMeta.get(name);
       if (!meta) return [];
       lines.push(
         `  scr_error_vts[${rec.kind}].pre = ${meta.pre}; scr_error_vts[${rec.kind}].post = ${meta.post}; /* ${rec.lib} */`,
       );
     }
-    if (E.tracedShapes.has("object:%Error")) {
+    if (emitter.tracedShapes.has("object:%Error")) {
       lines.push(`  scr_error_set_traced();`);
     }
     return lines;
@@ -683,8 +683,8 @@ function emitRecordCloneC(
    * interval from THIS module's numbering (the errorVtStampLines story).
    * Empty when the program never touches the emitter surface — the class
    * def only rides modules that reference it. */
-  export function emitterVtStampLines(E: CEmitter): string[] {
-    const meta = E.classMeta.get(RUNTIME_EMITTER_CLASS);
+  export function emitterVtStampLines(emitter: CEmitter): string[] {
+    const meta = emitter.classMeta.get(RUNTIME_EMITTER_CLASS);
     if (!meta) return [];
     return [
       `  scr_emitter_vt.pre = ${meta.pre}; scr_emitter_vt.post = ${meta.post}; /* EventEmitter */`,
@@ -696,10 +696,10 @@ function emitRecordCloneC(
    * def rides the module only when the program touches the stream
    * surface, and instanceof needs their preorder intervals under the
    * emitter root. */
-  export function streamVtStampLines(E: CEmitter): string[] {
+  export function streamVtStampLines(emitter: CEmitter): string[] {
     const lines: string[] = [];
     for (const [name, rec] of RUNTIME_STREAM_CLASSES) {
-      const meta = E.classMeta.get(name);
+      const meta = emitter.classMeta.get(name);
       if (!meta) continue;
       const vt = `scr_${rec.lib.toLowerCase()}_vt`;
       lines.push(`  ${vt}.pre = ${meta.pre}; ${vt}.post = ${meta.post}; /* ${rec.lib} */`);
@@ -709,42 +709,42 @@ function emitRecordCloneC(
 
 /** The trace entry point symbol for a payload/field type, or null when
    * the type cannot participate in a cycle (see the constructor fixpoint). */
-  export function traceAdapterC(E: CEmitter, t: IrType): string | null {
+  export function traceAdapterC(emitter: CEmitter, t: IrType): string | null {
     switch (t.kind) {
       case "func":
         return "scr_closure_trace_v";
       case "union":
-        return E.tracedUnions.has(t.unionId) ? "scr_union_trace_v" : null;
+        return emitter.tracedUnions.has(t.unionId) ? "scr_union_trace_v" : null;
       case "promise":
         return "scr_promise_trace_v";
       case "object":
-        if (!E.tracedShapes.has(`object:${t.className}`)) return null;
+        if (!emitter.tracedShapes.has(`object:${t.className}`)) return null;
         if (RUNTIME_ERROR_CLASSES.has(t.className)) return "scr_error_trace";
         if (t.className === RUNTIME_EMITTER_CLASS) return "scr_emitter_trace";
         if (RUNTIME_STREAM_CLASSES.has(t.className)) return "scr_stream_trace";
         return mangleClassTrace(t.className);
       case "record":
-        return E.tracedShapes.has(`record:${t.shapeId}`) ? mangleRecordTrace(t.shapeId) : null;
+        return emitter.tracedShapes.has(`record:${t.shapeId}`) ? mangleRecordTrace(t.shapeId) : null;
       // Cycle-capable exactly when the VALUE type is (mirrors the
       // constructor fixpoint's map rule): such maps allocate with the
       // collector header and their runtime trace visits every live value.
       case "map":
-        return E.traceAdapterC(t.value) !== null ? "scr_map_trace_v" : null;
+        return emitter.traceAdapterC(t.value) !== null ? "scr_map_trace_v" : null;
       // Arrays mirror maps: cycle-capable exactly when the ELEMENT type is
       // (a record/object/union element — or a cycle-capable inner array —
       // can point back at the array holding it). Such arrays allocate with
       // the collector header (scr_arr_new_ref with a trace); scalar/
       // string/bytes-element arrays stay lean.
       case "array":
-        return E.traceAdapterC(t.elem) !== null ? "scr_arr_trace_v" : null;
+        return emitter.traceAdapterC(t.elem) !== null ? "scr_arr_trace_v" : null;
       default:
         return null;
     }
   }
 
 /** `&<trace>` or `NULL` — the trace argument at a container call site. */
-  export function traceArgC(E: CEmitter, t: IrType): string {
-    const sym = E.traceAdapterC(t);
+  export function traceArgC(emitter: CEmitter, t: IrType): string {
+    const sym = emitter.traceAdapterC(t);
     return sym ? `&${sym}` : "NULL";
   }
 
@@ -756,7 +756,7 @@ function emitRecordCloneC(
    * allocates with the collector header exactly when the element type
    * carries one (trace non-NULL). Every other element kind keeps the
    * historic scr_arr_new call. */
-  export function arrNewC(E: CEmitter, elem: IrType, capExpr: string | number): string {
+  export function arrNewC(emitter: CEmitter, elem: IrType, capExpr: string | number): string {
     const useRef =
       elem.kind === "record" || elem.kind === "object" || elem.kind === "union" ||
       // Promise elements (Promise.all's food): refcounted, cycle-headered
@@ -772,22 +772,22 @@ function emitRecordCloneC(
       // Closures: scr_closure_* adapters + scr_closure_trace_v (always
       // cycle-headered — captures can reach back through boxes).
       elem.kind === "func" ||
-      (elem.kind === "array" && E.traceAdapterC(elem) !== null);
+      (elem.kind === "array" && emitter.traceAdapterC(elem) !== null);
     if (!useRef) return `scr_arr_new(${elemKindC(elem)}, ${capExpr})`;
     const v = vAdapters(elem);
-    return `scr_arr_new_ref(&${v.retain}, &${v.release}, ${E.traceArgC(elem)}, ${capExpr})`;
+    return `scr_arr_new_ref(&${v.retain}, &${v.release}, ${emitter.traceArgC(elem)}, ${capExpr})`;
   }
 
 /** Box construction expression — object/record/union/promise boxes carry
    * their RC entry points (and the payload's trace) as function pointers
    * (the SCR_BOX_OBJ mechanism: the runtime can't know per-shape layouts). */
-  export function boxNewC(E: CEmitter, t: IrType): string {
+  export function boxNewC(emitter: CEmitter, t: IrType): string {
     // A captured local can be typed by a class the module never collected
     // (a runtime-fenced JS class — e.g. one declared inside a block —
     // whose declaration and every use compile to runtime traps): no
     // instance can ever exist, so the box is an inert placeholder — its
     // RC adapters were never emitted and must not be referenced.
-    if (t.kind === "object" && !E.classMeta.has(t.className)) {
+    if (t.kind === "object" && !emitter.classMeta.has(t.className)) {
       return `scr_box_new(SCR_BOX_F64) /* ${t.className}: uncollected class, all uses trap */`;
     }
     if (
@@ -818,10 +818,10 @@ function emitRecordCloneC(
       // A CYCLE-CAPABLE array must ride the obj-box so the box's trace
       // reaches it (SCR_BOX_ARR payloads are never traced); acyclic arrays
       // keep the historic plain-kind box below.
-      (t.kind === "array" && E.traceAdapterC(t) !== null)
+      (t.kind === "array" && emitter.traceAdapterC(t) !== null)
     ) {
       const v = vAdapters(t);
-      return `scr_box_new_obj(&${v.retain}, &${v.release}, ${E.traceArgC(t)})`;
+      return `scr_box_new_obj(&${v.retain}, &${v.release}, ${emitter.traceArgC(t)})`;
     }
     return `scr_box_new(${boxKindC(t)})`;
   }

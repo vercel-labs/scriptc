@@ -9,8 +9,8 @@
  * Exercises the IR (and later the C emitter) from the consumer side before
  * any frontend exists.
  */
-import type { IrExpr, IrModule, SrcLoc } from "../../src/ir/nodes.js";
-import { BOOL, F64, VOID } from "../../src/ir/nodes.js";
+import type { IrExpr, IrModule, SrcLoc } from "../../src/ir/ir.js";
+import { BOOL, F64, VOID } from "../../src/ir/ir.js";
 
 const loc: SrcLoc = { file: "fib.ts", start: 0, end: 0 };
 

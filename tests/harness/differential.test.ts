@@ -227,7 +227,7 @@ function programInputs(file: string): string[] {
 // and the cwd). Only the SPAWN is skipped: the native side always runs live
 // and the comparison itself never changes. SCRIPTC_NO_CACHE=1 (or an unset
 // SCRIPTC_CACHE_DIR) disables the cache in both directions — no reads, no writes.
-// Storage shares the compile cache's root and its LRU sweep (see cc.ts).
+// Storage shares the compile cache's root and its LRU sweep (see native-toolchain.ts).
 const oracleDir =
   process.env["SCRIPTC_NO_CACHE"] !== "1" && process.env["SCRIPTC_CACHE_DIR"]
     ? join(process.env["SCRIPTC_CACHE_DIR"], "oracle")

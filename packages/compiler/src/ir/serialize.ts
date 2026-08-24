@@ -4,7 +4,7 @@ import { InternalCompilerError } from "../errors.js";
  * holds a JS number — NaN/Infinity literals cannot appear in source, but
  * a frontend bug producing one must not silently become `null` in JSON).
  */
-import type { IrModule } from "./nodes.js";
+import type { IrModule } from "./ir.js";
 
 export const IR_VERSION = 6 as const;
 

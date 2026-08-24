@@ -78,7 +78,7 @@ import ts from "typescript5";
 import { bareRequireSpecOf, cjsLexedExportsOf, cjsLexerVisibleNames, isExportsIdent, isModuleExports } from "./cjs-lexer.js";
 import { trackedDirectoryExists, trackedFileExists, trackedReadFile } from "./input-tracker.js";
 import { resolveExports } from "./resolve.js";
-import { packageNameOfSpecifier } from "./shared.js";
+import { packageNameOfSpecifier } from "./workspace-registry.js";
 
 const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default"]);
 

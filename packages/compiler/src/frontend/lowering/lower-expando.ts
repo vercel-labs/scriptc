@@ -32,9 +32,9 @@
  *   precedent); runtime-valued keys keep their fences. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
-import { IrExpr, IrGlobal, IrStmt, IrType } from "../../ir/nodes.js";
+import { IrExpr, IrGlobal, IrStmt, IrType } from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import { isUnitOnlyTsType, unitOnlyUnion } from "../types.js";
+import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
 
 /** The registry entry for one expando member slot. */
 export interface ExpandoMember {
@@ -57,13 +57,13 @@ const READONLY_FN_MEMBERS = new Set(["length", "name", "caller", "arguments", "p
 /** The member key of an assignment target / read site: a spelled or
  * folded string name, a unique-symbol const's ts.Symbol, or null (not a
  * routable key). */
-function memberKeyOf(L: Lowerer, expr: ts.PropertyAccessExpression | ts.ElementAccessExpression): string | ts.Symbol | null {
+function memberKeyOf(lowerer: Lowerer, expr: ts.PropertyAccessExpression | ts.ElementAccessExpression): string | ts.Symbol | null {
   if (ts.isPropertyAccessExpression(expr)) {
     return ts.isIdentifier(expr.name) ? expr.name.text : null;
   }
-  const sym = L.uniqueSymbolKeyOf(expr.argumentExpression);
+  const sym = lowerer.uniqueSymbolKeyOf(expr.argumentExpression);
   if (sym) return sym.sym;
-  return L.foldedStringKeyOf(expr.argumentExpression);
+  return lowerer.foldedStringKeyOf(expr.argumentExpression);
 }
 
 /** The module-level function-ish symbol a receiver expression resolves
@@ -71,16 +71,16 @@ function memberKeyOf(L: Lowerer, expr: ts.PropertyAccessExpression | ts.ElementA
  * variable whose checker type is callable (arrow/function-expression
  * consts, interface-typed callable consts). Only direct identifier
  * references qualify — routing is by symbol identity. */
-function expandoFnSymbolOf(L: Lowerer, recv: ts.Expression): ts.Symbol | null {
+function expandoFnSymbolOf(lowerer: Lowerer, recv: ts.Expression): ts.Symbol | null {
   if (!ts.isIdentifier(recv)) return null;
   // Island and checked-dynamic receivers never qualify by construction:
   // the declaration-shape checks below (a function DECLARATION, or a
   // const whose initializer is a function/arrow LITERAL in a TS file)
   // exclude import bindings, call results, and JS-file values — their
   // member stories (engine property writes, dyn keyed writes) stay put.
-  const sym = L.resolveValueSymbol(recv);
+  const sym = lowerer.resolveValueSymbol(recv);
   if (!sym) return null;
-  const decl = L.checker.valueDeclarationOf(sym);
+  const decl = lowerer.checker.valueDeclarationOf(sym);
   if (!decl || decl.getSourceFile().isDeclarationFile) return null;
   if (isJsSourceFile(decl.getSourceFile())) return null;
   if (ts.isFunctionDeclaration(decl)) {
@@ -95,7 +95,7 @@ function expandoFnSymbolOf(L: Lowerer, recv: ts.Expression): ts.Symbol | null {
     let init = decl.initializer;
     while (init !== undefined && (ts.isParenthesizedExpression(init) || ts.isAsExpression(init) || ts.isTypeAssertion(init))) init = init.expression;
     if (init === undefined || (!ts.isArrowFunction(init) && !ts.isFunctionExpression(init))) return null;
-    if (L.checker.getCallSignatures(L.checker.getTypeOfSymbol(sym)).length === 0) return null;
+    if (lowerer.checker.getCallSignatures(lowerer.checker.getTypeOfSymbol(sym)).length === 0) return null;
     return sym;
   }
   return null;
@@ -104,7 +104,7 @@ function expandoFnSymbolOf(L: Lowerer, recv: ts.Expression): ts.Symbol | null {
 /** A member-assignment statement's pieces (`<fn>.<key> = <value>` /
  * `<fn>[KEY] = <value>` under any assignment operator), or null. */
 function expandoWriteOf(
-  L: Lowerer,
+  lowerer: Lowerer,
   node: ts.Node,
 ): { fnSym: ts.Symbol; key: string | ts.Symbol; access: ts.PropertyAccessExpression | ts.ElementAccessExpression } | null {
   if (!ts.isBinaryExpression(node)) return null;
@@ -115,9 +115,9 @@ function expandoWriteOf(
   const left = node.left;
   if (!ts.isPropertyAccessExpression(left) && !ts.isElementAccessExpression(left)) return null;
   if (ts.isPropertyAccessExpression(left) && left.questionDotToken) return null;
-  const fnSym = expandoFnSymbolOf(L, left.expression);
+  const fnSym = expandoFnSymbolOf(lowerer, left.expression);
   if (!fnSym) return null;
-  const key = memberKeyOf(L, left);
+  const key = memberKeyOf(lowerer, left);
   if (key === null) return null;
   return { fnSym, key, access: left };
 }
@@ -127,43 +127,43 @@ function expandoWriteOf(
  * collectGlobals — before any statement lowers — so reads inside earlier
  * function bodies resolve. Registration failures (unmappable member
  * types) register nothing: the write statement's own lowering fences. */
-export function collectExpandoMembers(L: Lowerer, sf: ts.SourceFile): void {
-  const rawTag = L.fileTag.get(sf) ?? "";
+export function collectExpandoMembers(lowerer: Lowerer, sf: ts.SourceFile): void {
+  const rawTag = lowerer.fileTag.get(sf) ?? "";
   const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
   // Worklist walk, not recursion: pathologically deep expressions (the
   // 7000-level nesting fixtures) must reach their own named fences, not
   // blow the collection pass's stack.
   const queue: ts.Node[] = [];
   const process = (node: ts.Node): void => {
-    const w = expandoWriteOf(L, node);
+    const w = expandoWriteOf(lowerer, node);
     if (w) {
-      let members = L.expandoMembers.get(w.fnSym);
+      let members = lowerer.expandoMembers.get(w.fnSym);
       if (!members) {
         members = new Map();
-        L.expandoMembers.set(w.fnSym, members);
+        lowerer.expandoMembers.set(w.fnSym, members);
       }
       const existing = members.get(w.key);
       if (existing) {
         existing.firstWriteStart = Math.min(existing.firstWriteStart, node.getStart());
-      } else if (!(typeof w.key === "string" && READONLY_FN_MEMBERS.has(w.key)) && !nsOwnedMember(L, w.access)) {
+      } else if (!(typeof w.key === "string" && READONLY_FN_MEMBERS.has(w.key)) && !nsOwnedMember(lowerer, w.access)) {
         // The member slot's type is the checker's DECLARED member type at
         // the access (expando members widen across all assignments;
         // interface members carry their declared type). Mapping failures
         // register nothing and drop their collection-time diagnostics —
         // the write statement's own lowering re-diagnoses in context.
-        const diagsBefore = L.diags.length;
-        const tsType = L.typeOf(w.access);
+        const diagsBefore = lowerer.diags.length;
+        const tsType = lowerer.typeOf(w.access);
         let type: IrType | null;
         try {
-          type = L.mapTypeOf(tsType);
+          type = lowerer.mapTypeOf(tsType);
         } catch {
-          L.diags.splice(diagsBefore); // PoisonError — the statement re-diagnoses
+          lowerer.diags.splice(diagsBefore); // PoisonError — the statement re-diagnoses
           type = null;
         }
-        if (type?.kind === "void" && isUnitOnlyTsType(tsType)) type = unitOnlyUnion(L.unions);
+        if (type?.kind === "void" && isUnitOnlyTsType(tsType)) type = unitOnlyUnion(lowerer.unions);
         if (type && type.kind !== "void") {
           const fnName = w.fnSym.name;
-          const memberName = typeof w.key === "string" ? w.key : `sym%${w.key.name}%${L.checker.declarationsOf(w.key)[0]?.getStart() ?? 0}`;
+          const memberName = typeof w.key === "string" ? w.key : `sym%${w.key.name}%${lowerer.checker.declarationsOf(w.key)[0]?.getStart() ?? 0}`;
           const g: IrGlobal = {
             id: `%g.${tag}${fnName}%.${memberName}`,
             name: `${fnName}.${memberName}`,
@@ -171,7 +171,7 @@ export function collectExpandoMembers(L: Lowerer, sf: ts.SourceFile): void {
             mutable: true,
           };
           members.set(w.key, { global: g, firstWriteStart: node.getStart(), file: sf });
-          L.globalsList.push(g);
+          lowerer.globalsList.push(g);
         }
       }
     }
@@ -191,11 +191,11 @@ export function collectExpandoMembers(L: Lowerer, sf: ts.SourceFile): void {
  * nsWritableTarget routes them). Ambient (`declare namespace`) members
  * have no storage anywhere and are exactly the declared-expando idiom
  * this module lowers. */
-function nsOwnedMember(L: Lowerer, access: ts.PropertyAccessExpression | ts.ElementAccessExpression): boolean {
+function nsOwnedMember(lowerer: Lowerer, access: ts.PropertyAccessExpression | ts.ElementAccessExpression): boolean {
   const nameNode = ts.isPropertyAccessExpression(access) ? access.name : access.argumentExpression;
-  const sym = L.checker.getSymbolAtLocation(nameNode);
+  const sym = lowerer.checker.getSymbolAtLocation(nameNode);
   if (!sym) return false;
-  for (const d of L.checker.declarationsOf(sym)) {
+  for (const d of lowerer.checker.declarationsOf(sym)) {
     for (let p: ts.Node | undefined = d.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
       if (ts.isModuleDeclaration(p)) {
         return !(p.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword) || p.getSourceFile().isDeclarationFile);
@@ -220,22 +220,22 @@ function initExecutingPosition(node: ts.Node): boolean {
  * module global. Fences read-only function members by name. Null when
  * the access is not an expando member at all. */
 export function expandoWritableTarget(
-  L: Lowerer,
+  lowerer: Lowerer,
   access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): { id: string; type: IrType } | null {
   if (ts.isPropertyAccessExpression(access) && access.questionDotToken) return null;
-  const fnSym = expandoFnSymbolOf(L, access.expression);
+  const fnSym = expandoFnSymbolOf(lowerer, access.expression);
   if (!fnSym) return null;
-  const key = memberKeyOf(L, access);
+  const key = memberKeyOf(lowerer, access);
   if (key === null) return null;
   if (typeof key === "string" && READONLY_FN_MEMBERS.has(key)) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       access,
       `assigning the read-only function member '${key}' (strict-mode JS — every module — throws TypeError here)`,
     );
   }
-  const member = L.expandoMembers.get(fnSym)?.get(key);
+  const member = lowerer.expandoMembers.get(fnSym)?.get(key);
   if (!member) return null;
   return { id: member.global.id, type: member.global.type };
 }
@@ -245,16 +245,16 @@ export function expandoWritableTarget(
  * (Node answers undefined there — the global would answer a later
  * write's value). Null when not an expando member read. */
 export function expandoMemberRead(
-  L: Lowerer,
+  lowerer: Lowerer,
   access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): IrExpr | null {
   if (ts.isPropertyAccessExpression(access) && access.questionDotToken) return null;
   if (ts.isElementAccessExpression(access) && access.questionDotToken) return null;
-  const fnSym = expandoFnSymbolOf(L, access.expression);
+  const fnSym = expandoFnSymbolOf(lowerer, access.expression);
   if (!fnSym) return null;
-  const key = memberKeyOf(L, access);
+  const key = memberKeyOf(lowerer, access);
   if (key === null) return null;
-  const member = L.expandoMembers.get(fnSym)?.get(key);
+  const member = lowerer.expandoMembers.get(fnSym)?.get(key);
   if (!member) return null;
   if (
     access.getSourceFile() === member.file &&
@@ -262,7 +262,7 @@ export function expandoMemberRead(
     access.getStart() < member.firstWriteStart
   ) {
     const name = typeof key === "string" ? key : key.name;
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       access,
       `reading the function member '${name}' above its first assignment (JS answers undefined there, which the member's type cannot hold — move the read below the assignment)`,
@@ -273,12 +273,12 @@ export function expandoMemberRead(
 
 /** The statement lowering for `<fn>.<key> = <value>`: an ordinary global
  * assign with the usual RHS coercion. Null when not an expando write. */
-export function lowerExpandoAssignStmt(L: Lowerer, expr: ts.BinaryExpression): IrStmt | null {
+export function lowerExpandoAssignStmt(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt | null {
   if (expr.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
   const left = expr.left;
   if (!ts.isPropertyAccessExpression(left) && !ts.isElementAccessExpression(left)) return null;
-  const target = expandoWritableTarget(L, left);
+  const target = expandoWritableTarget(lowerer, left);
   if (!target) return null;
-  const value = L.lowerExprExpecting(expr.right, target.type);
+  const value = lowerer.lowerExprExpecting(expr.right, target.type);
   return { kind: "assign", localId: target.id, value, loc: locOf(expr) };
 }

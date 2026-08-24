@@ -18,7 +18,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { isNpmStaticPackage, npmStaticPackageOfPath, npmStaticTransformPkgJson } from "./npm-static.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import { trackedAccessibleEntries, trackedDirectoryExists, trackedExists, trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
-import { packageNameOfSpecifier } from "./shared.js";
+import { packageNameOfSpecifier } from "./workspace-registry.js";
 
 function isFile(path: string): boolean {
   return trackedFileExists(path);
@@ -552,9 +552,9 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
  * fails does a second identical walk run admitting the JavaScript files
  * themselves. An untyped package with an @types twin therefore answers the
  * @types files; an untyped package without one answers its own .js. */
-type NmPass = "types" | "js";
+type ResolutionPass = "types" | "js";
 
-function extensionsFor(pass: NmPass, flavor: "plain" | "x" | "m" | "c"): string[] {
+function extensionsFor(pass: ResolutionPass, flavor: "plain" | "x" | "m" | "c"): string[] {
   if (pass === "types") {
     switch (flavor) {
       case "m": return [".mts", ".d.mts"];
@@ -574,7 +574,7 @@ function extensionsFor(pass: NmPass, flavor: "plain" | "x" | "m" | "c"): string[
 /** File resolution of an exports-map target (or types/typings/main field)
  * inside node_modules, for one pass: recognized-extension substitution,
  * extension addition, then directory index. */
-function loadTargetInPass(pkgDir: string, target: string, pass: NmPass): string | null {
+function loadTargetInPass(pkgDir: string, target: string, pass: ResolutionPass): string | null {
   const path = join(pkgDir, target);
   if (pass === "types") {
     if (/\.(d\.ts|d\.mts|d\.cts|ts|tsx|mts|cts)$/.test(path) && isFile(path)) return path;
@@ -619,7 +619,7 @@ function loadTargetInPass(pkgDir: string, target: string, pass: NmPass): string 
 
 /** node_modules file-or-directory resolution for a package-internal path (a
  * subpath without exports, the root lookup), for one pass. */
-function loadPathInPass(pkgDir: string, rel: string, pass: NmPass): string | null {
+function loadPathInPass(pkgDir: string, rel: string, pass: ResolutionPass): string | null {
   const base = rel === "." ? pkgDir : join(pkgDir, rel);
   if (rel !== ".") {
     const viaFile = loadTargetInPass(pkgDir, rel, pass);
@@ -702,7 +702,7 @@ export function resolveBareModule(
   const npmStatic = mode === "js-only" || isNpmStaticPackage(pkgName);
   const conditions = npmStatic ? JS_ONLY_CONDITIONS : EXPORT_CONDITIONS;
 
-  const inPackage = (nmPkgDir: string, name: string, pass: NmPass): BareResolution | null => {
+  const inPackage = (nmPkgDir: string, name: string, pass: ResolutionPass): BareResolution | null => {
     // A workspace link: the answer's realpath escaped node_modules, so the
     // package directory is a symlink into the project. Stamp the realpath'd
     // package root so callers can classify (and register) the package.
@@ -756,7 +756,7 @@ export function resolveBareModule(
     return withWorkspace(packageAnswer(answerDir, name, file));
   };
 
-  const passOnce = (pass: NmPass): BareResolution | null => {
+  const passOnce = (pass: ResolutionPass): BareResolution | null => {
     for (let dir = dirname(resolve(fromFile)); ; ) {
       const nm = join(dir, "node_modules");
       if (isDirectory(nm)) {

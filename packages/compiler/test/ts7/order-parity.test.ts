@@ -42,7 +42,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { checkPreflightTs7 } from "../../src/frontend/program.js";
-import { Ts7Host } from "../../src/frontend/ts7/program.js";
+import { Ts7Host } from "../../src/frontend/ts7/program-adapter.js";
 import type { ScrDiagnostic } from "../../src/diagnostics/diagnostic.js";
 
 const repoRoot = join(import.meta.dirname, "../../../..");

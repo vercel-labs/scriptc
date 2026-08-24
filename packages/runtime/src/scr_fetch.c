@@ -7195,7 +7195,7 @@ void scr_fetch_install(void) {
    * the loop alive nor dispatch. */
   scr_net_install();
   /* The island's node:http/https client bridge rides the same units and
-   * is always compiled beside the native fetch (cc.ts) — embedded graphs
+   * is always compiled beside the native fetch (native-toolchain.ts) — embedded graphs
    * that require node:http/https get working clients, not refusals. */
   scr_net_island_install();
   scr_island_set_fetch(fx_boot, NULL, NULL, fx_teardown);

@@ -1,7 +1,7 @@
 /* The Windows backend of the platform readiness contract (scr_platform.h):
  * WSAPoll for socket readiness, deadline bookkeeping for the one-shot
  * timers (no timerfd analogue — scrp_drain expires due keys against the
- * loop's scr_now_ms clock). cc.ts links this TU alongside the kqueue and
+ * loop's scr_now_ms clock). native-toolchain.ts links this TU alongside the kqueue and
  * epoll backends whenever a poller-using unit compiles; each is empty off
  * its platform.
  *

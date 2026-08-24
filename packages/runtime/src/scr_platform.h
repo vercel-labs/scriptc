@@ -12,7 +12,7 @@
  * child-exit filter, and the zero-timeout drains. This header names that
  * plumbing so each unit can call one spelling and link either backend.
  *
- * STATUS: LIVE. scr_net.c and scr_dgram.c call this contract; cc.ts
+ * STATUS: LIVE. scr_net.c and scr_dgram.c call this contract; native-toolchain.ts
  * links BOTH backends whenever either unit compiles (scr_loop_kqueue.c —
  * a stateless spelling of the units' historical inline syscall
  * sequences, byte-identical on macOS by construction — and

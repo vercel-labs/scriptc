@@ -7,7 +7,7 @@ import { delimiter, join } from "node:path";
 import { afterAll, afterEach, expect, test as vitestTest } from "vitest";
 import {
   cacheTargetIdentity,
-  ccVersionOnce,
+  ccVersion,
   compileC,
   compileLibArchive,
   executableNativeEnvironmentFingerprint,
@@ -23,7 +23,7 @@ import {
   vendorCacheBuildIdentity,
   vendorCacheTargetFlavor,
   warmNativeCaches,
-} from "./cc.js";
+} from "./native-toolchain.js";
 import { splitLlvmProgram } from "./llvm/split.js";
 
 const scratch: string[] = [];
@@ -300,7 +300,7 @@ printf 'fake zig cc version probe\n'
       // Zig 0.16 creates cwd/a.o for `zig cc --version`. Model that side
       // effect directly so this regression does not depend on Zig being
       // installed in every generic test shard.
-      await ccVersionOnce([fakeCompiler, "cc"], `version-probe-${dir}`);
+      await ccVersion([fakeCompiler, "cc"], `version-probe-${dir}`);
       expect(await readdir(probeTmp)).toEqual([]);
     } finally {
       if (oldTmpdir === undefined) delete process.env["TMPDIR"];
@@ -3121,7 +3121,7 @@ test("fresh processes preserve output-local dependency coverage after source edi
 
   await writeFile(
     helperPath,
-    `import { compileC } from ${JSON.stringify(new URL("./cc.ts", import.meta.url).href)};\n` +
+    `import { compileC } from ${JSON.stringify(new URL("./native-toolchain.ts", import.meta.url).href)};\n` +
       `await compileC({ cPath: process.argv[2], outPath: process.argv[3], cacheIdentity: "scriptc-generated-v1" });\n`,
   );
   const compileInFreshProcess = (): void => {

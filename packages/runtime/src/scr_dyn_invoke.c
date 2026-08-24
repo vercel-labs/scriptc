@@ -2,7 +2,7 @@
  * and its companions: JS String() over the checked-dynamic tree (scr_dyn_display — join
  * and the error texts need it standalone) and Object.defineProperties
  * over dyn values (scr_dyn_define_props). Linked only when the IR
- * carries dynInvoke nodes or dyn.defineProps calls (cc.ts gates on
+ * carries dynInvoke nodes or dyn.defineProps calls (native-toolchain.ts gates on
  * moduleUsesDynInvoke — the scr_assert.c precedent), so dispatch-free
  * binaries keep their exact size class. The checked-dynamic tree itself lives in
  * scr_json.c; this unit uses only its public surface plus ScrJsonBuf.

@@ -6,7 +6,7 @@
  * validators call them too), and the runtime-built listener adapter
  * closures whose fire thunks box event tuples back into the checked-dynamic tree. Split
  * out of scr_json.c so handle-free binaries keep their exact size
- * class: cc.ts compiles this unit exactly when a user of it links (the
+ * class: native-toolchain.ts compiles this unit exactly when a user of it links (the
  * net or emitter gate — http implies net).
  */
 #include "scr_runtime.h"

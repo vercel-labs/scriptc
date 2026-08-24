@@ -3,11 +3,11 @@ import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { deserialize as deserializeV8, serialize as serializeV8 } from "node:v8";
 import { gzip, gunzip } from "node:zlib";
-import type { IrModule } from "../ir/nodes.js";
+import type { IrModule } from "../ir/ir.js";
 import { IR_VERSION } from "../ir/serialize.js";
 import { frontendInputsSemanticallyMatch, frontendInputsStillMatch, validFrontendInputSnapshot, type FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { rebaseSourceLocations, semanticallyEqualSource, sourceLineRebaseIsIdentity } from "./semantic-source.js";
-import { compilerImplementationIdentity } from "./implementation-identity.js";
+import { compilerImplementationIdentity } from "./compiler-self-identity.js";
 import {
   cacheKey as sharedCacheKey,
   digest,

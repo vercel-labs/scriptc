@@ -28,7 +28,7 @@ import type {
 import type { SourceFile } from "typescript/unstable/ast";
 import { CheckerFacade } from "./checker.js";
 import { enumKeyOf, ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget } from "./enums.js";
-import { tsgoPath } from "../shared.js";
+import { tsgoPath } from "../dts-paths.js";
 import { trackedAccessibleEntries, trackedDirectoryExists, trackedFileExists, trackedReadFile, trackedRealpath } from "../input-tracker.js";
 
 /** The compiler options our createProgram accepts: TS7's CompilerOptions

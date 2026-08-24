@@ -4,7 +4,7 @@
  * of mbedTLS: everything here is PEM-BLOCK bookkeeping over the host
  * roots (plus crypt32 store access on Windows), so a program that only
  * inspects the CA store never builds the TLS archive. scr_tls.c (when it
- * links — cc.ts compiles this unit alongside it) consults
+ * links — native-toolchain.ts compiles this unit alongside it) consults
  * scr_tls_ca_default_override for its client trust anchors, which is what
  * makes setDefaultCACertificates LIVE semantics: the next https/tls dial
  * verifies against the replaced set.

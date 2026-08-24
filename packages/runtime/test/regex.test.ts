@@ -25,7 +25,7 @@ beforeAll(async () => {
     join(testDir, "test_regex.c"),
     join(testDir, "../src/scr_regex.c"),
     // scr_regex.c hosts assert.match and calls the assert throw/inspect
-    // helpers — regex-linking binaries always carry scr_assert.c (cc.ts).
+    // helpers — regex-linking binaries always carry scr_assert.c (native-toolchain.ts).
     join(testDir, "../src/scr_assert.c"),
     join(vendorDir, "libregexp.c"),
     join(vendorDir, "libunicode.c"),

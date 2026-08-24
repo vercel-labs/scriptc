@@ -41,7 +41,7 @@ const invariantCaseShardedFiles = ["tests/harness/coverage.test.ts"];
 // They are sanitizer-invariant and use their own shard variable so the
 // independent cases can spread across the once lane's Sandboxes without
 // colliding with corpus case selection.
-const cacheCaseShardedFiles = ["packages/compiler/src/backend/cc.test.ts"];
+const cacheCaseShardedFiles = ["packages/compiler/src/backend/native-toolchain.test.ts"];
 const caseShardedFiles = [
   ...laneCaseShardedFiles,
   ...invariantCaseShardedFiles,
@@ -64,7 +64,7 @@ const invariantRemoteFiles = [
   "packages/compiler/test/ts7/facade.test.ts",
   "packages/compiler/test/ts7/order-parity.test.ts",
   "packages/compiler/test/ts7/parity.test.ts",
-  "packages/compiler/test/ts7/program.test.ts",
+  "packages/compiler/test/ts7/program-adapter.test.ts",
   "packages/compiler/test/ts7/resolver-parity.test.ts",
   // These C runtime units compile with ASan + SCR_RC_AUDIT themselves.
   "packages/runtime/test/array.test.ts",

@@ -546,7 +546,7 @@ describe.skipIf(!enabled)(`linux differential (${target})`, () => {
           results = await Promise.all([runLinuxNode(file), crossCompileAndRun(file)]);
         } catch (err) {
           // Programs whose IR needs a cross-gated feature (tls/zlib/... —
-          // see cc.ts) SKIP with the gate's reason: they are follow-up
+          // see native-toolchain.ts) SKIP with the gate's reason: they are follow-up
           // scope, not Linux failures. Everything else is a real failure.
           if (err instanceof Error && err.message.includes("not supported under a cross target")) {
             ctx.skip(err.message.split("\n").find((l) => l.includes("not supported")) ?? err.message);

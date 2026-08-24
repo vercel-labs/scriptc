@@ -1,6 +1,6 @@
 /* Type-directed RC/trace/box dispatch tables of the LLVM backend, the
  * cycle-capability fixpoint, and per-record-shape emission — the .ll
- * mirror of the C emitter's emit-types.ts + emit-shapes.ts slice that the
+ * mirror of the C emitter's types.ts + shapes.ts slice that the
  * phase-2 tier needs. Everything here follows the SAME contracts the C
  * backend compiled into the runtime: `_v` adapters where a container
  * stores RC entry points as data, per-shape retain/release/new (and
@@ -10,8 +10,8 @@
  *
  * Anything outside the tier refuses loudly (LlvmUnsupportedError naming
  * the type kind) — the tables never guess. */
-import type { IrModule, IrRecordShape, IrType } from "../../ir/nodes.js";
-import { funcOf, isRefCounted, mapOf, POINTER_KINDS, runtimeRcStem, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, VOID } from "../../ir/nodes.js";
+import type { IrModule, IrRecordShape, IrType } from "../../ir/ir.js";
+import { funcOf, isRefCounted, mapOf, POINTER_KINDS, runtimeRcStem, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, VOID } from "../../ir/ir.js";
 import {
   mangleClassRelease,
   mangleClassRetain,
@@ -215,7 +215,7 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
       return "@scr_closure_trace_v";
     case "promise":
       // Promises are unconditionally cycle-capable (a rejection payload
-      // is an arbitrary thrown value) — emit-shapes.ts's row.
+      // is an arbitrary thrown value) — shapes.ts's row.
       host.declare(`declare void @scr_promise_trace_v(ptr, ptr, ptr)`);
       return "@scr_promise_trace_v";
     case "union":
@@ -262,7 +262,7 @@ export function traceArg(host: ShapeHost, t: IrType): string {
 
 /* ── arrays ───────────────────────────────────────────────────────────── */
 
-/** Runtime accessor suffix for an element type (matches emit-types.ts:
+/** Runtime accessor suffix for an element type (matches types.ts:
  * f64 and bool unboxed, everything refcounted through the `_ref` family). */
 export function elemAccess(elem: IrType): "f64" | "bool" | "ref" {
   return elem.kind === "f64" ? "f64" : elem.kind === "bool" ? "bool" : "ref";
@@ -515,7 +515,7 @@ export function emitRecordShapes(host: ShapeHost, mod: IrModule): { typeDefs: st
     // release: NULL-tolerant, immortal-skip; at rc == 0 release every
     // refcounted member (runtime releases are NULL-tolerant) and free —
     // traced shapes route through the collector (on_dead/on_release,
-    // scr_cyc_free) exactly like emit-shapes.ts.
+    // scr_cyc_free) exactly like shapes.ts.
     const freeBody: string[] = [];
     if (traced) {
       host.declare(`declare void @scr_cyc_on_dead(ptr)`);
@@ -568,7 +568,7 @@ export function emitRecordShapes(host: ShapeHost, mod: IrModule): { typeDefs: st
     nw.push(`  store ${host.sizeType} 1, ptr %o`);
     if (shape.indexValue) {
       // The overflow map (string-keyed): value handling is type-directed
-      // exactly like emit-shapes.ts's overflowNewC.
+      // exactly like shapes.ts's overflowNewC.
       host.declare(`declare ptr @scr_map_new(i32, i32, ptr, ptr, ptr)`);
       const v = shape.indexValue;
       const valKind = v.kind === "f64" ? 0 : v.kind === "bool" ? 1 : 2;

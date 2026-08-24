@@ -1,6 +1,6 @@
 import { InternalCompilerError } from "../errors.js";
-import type { IrFfiCallbackParam, IrFfiImport } from "../ir/nodes.js";
-import { isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam } from "../ir/nodes.js";
+import type { IrFfiCallbackParam, IrFfiImport } from "../ir/ir.js";
+import { isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam } from "../ir/ir.js";
 
 export interface FfiCallbackAdapter {
   symbol: string;

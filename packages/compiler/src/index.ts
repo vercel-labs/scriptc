@@ -1,14 +1,14 @@
 import { InternalCompilerError } from "./errors.js";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/cc.js";
-import { emitModule } from "./backend/emission/emitter.js";
+import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/native-toolchain.js";
+import { emitCModule } from "./backend/c/c-emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
 import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
-import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "./backend/library-identity.js";
+import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "./backend/library-identity-markers.js";
 import { checkerPanicDiag, ffiNativeBuildDiag, libAsyncExportDiag, libAsyncSurfaceDiag, libExportUnresolvedDiag, libGenericExportDiag, libIntBoundaryDiag, libNpmIneligibleDiag, libSidecarDiag, libUnmappableSignatureDiag, iceDiag, isCheckerPanic, LIB_INBOUND_BYTES_TRAP_CODE, LIB_RUNTIME_TRAP_CODES, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import { checkLibraryIntegerSlots, classSeed, hasIntSlots, numberCarrierKind, type FnIntSlots, type IntSlotConfig } from "./library/int-infer.js";
-import { loadLibraryProfile, profileRemediation, profileTeaching, type LibraryProfile } from "./library/profile.js";
+import { loadLibraryProfile, profileRemediation, profileTeaching, type LibraryProfile } from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals, evaluateLibraryFences } from "./library/fence-eval.js";
 import { assembleTrapTeaching } from "./library/trap-teaching.js";
 import {
@@ -26,23 +26,24 @@ import {
 import { validateSidecar } from "./library/sidecar-validate.js";
 import { entryFunctionExports, type EntryExportInfo } from "./frontend/lib-exports.js";
 import { entryContractFacts, type ContractFacts } from "./frontend/lib-contract.js";
-import { moduleLibAsyncSurface, moduleLibNondeterministicSurface, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesAssert, moduleUsesCopying, moduleUsesDc, moduleUsesDgram, moduleUsesDynAsync, moduleUsesDynInvoke, moduleUsesEmitter, moduleUsesFetch, moduleUsesFileHandle, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesInspect, moduleUsesLegacyTextDecoder, moduleUsesNet, moduleUsesNodeTest, moduleUsesParseArgs, moduleUsesProcessEvents, moduleUsesQs, moduleUsesRegex, moduleUsesSearchParams, moduleUsesStream, moduleUsesSymbol, moduleUsesTls, moduleUsesTlsCa, moduleUsesZlib, type IrFfiImport, type IrLibSection, type IrModule, type IrRecordShape, type IrType, type SrcLoc } from "./ir/nodes.js";
+import { moduleLibAsyncSurface, moduleLibNondeterministicSurface, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesAssert, moduleUsesCopying, moduleUsesDc, moduleUsesDgram, moduleUsesDynAsync, moduleUsesDynInvoke, moduleUsesEmitter, moduleUsesFetch, moduleUsesFileHandle, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesInspect, moduleUsesLegacyTextDecoder, moduleUsesNet, moduleUsesNodeTest, moduleUsesParseArgs, moduleUsesProcessEvents, moduleUsesQs, moduleUsesRegex, moduleUsesSearchParams, moduleUsesStream, moduleUsesSymbol, moduleUsesTls, moduleUsesTlsCa, moduleUsesZlib, type IrFfiImport, type IrLibSection, type IrModule, type IrRecordShape, type IrType, type SrcLoc } from "./ir/ir.js";
 import { serializeModule } from "./ir/serialize.js";
 import { validateModule } from "./ir/validate.js";
 import { canonicalBuiltinModule, checkPreflight, isNodeTypesPath, loadProgram, locOf, requiresOf, resolveNpmImport, type LoadResult } from "./frontend/program.js";
 import { npmStaticIneligibleReason, npmStaticOffenders, npmStaticPackageOfPath } from "./frontend/npm-static.js";
 import { provenanceSources } from "./frontend/provenance-registry.js";
 import { clearResolveCaches, resolveBareModule } from "./frontend/resolve.js";
-import { isJsSourceFileName, isRelativeSpecifier, packageNameOfSpecifier } from "./frontend/shared.js";
+import { isJsSourceFileName } from "./frontend/tsc-codes.js";
+import { isRelativeSpecifier, packageNameOfSpecifier } from "./frontend/workspace-registry.js";
 import { lowerToIr, type LowerOptions, type LowerResult } from "./frontend/lowering/lowerer.js";
 import type { CoverageInput, NpmStaticStatus } from "./coverage/report.js";
-import { loadFfiProfile, type FfiProfile } from "./ffi/profile.js";
+import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
 import { hasForeignFfiCallback } from "./backend/ffi-callbacks.js";
 import { FrontendInputTracker, trackedReadFile } from "./frontend/input-tracker.js";
-import { libraryFrontendImplementationFingerprint, publishEarlyLibraryCache, readEarlyLibraryCache, readSemanticLibraryCache, type EarlyLibraryCacheOptions, type EarlyLibraryCachePublish, type EarlyLibraryNativeFeatures, type SemanticLibraryCacheHit } from "./library/early-cache.js";
+import { libraryFrontendImplementationFingerprint, publishEarlyLibraryCache, readEarlyLibraryCache, readSemanticLibraryCache, type EarlyLibraryCacheOptions, type EarlyLibraryCachePublish, type EarlyLibraryNativeFeatures, type SemanticLibraryCacheHit } from "./library/library-cache.js";
 import { createSourceLineRebaser } from "./library/semantic-source.js";
-import { publishEarlyExecutableCache, publishEarlyExecutableRoute, readEarlyExecutableCache, type EarlyExecutableCacheOptions, type EarlyExecutableNativeFeatures } from "./executable/early-cache.js";
-import { compilerImplementationIdentity } from "./library/implementation-identity.js";
+import { publishEarlyExecutableCache, publishEarlyExecutableRoute, readEarlyExecutableCache, type EarlyExecutableCacheOptions, type EarlyExecutableNativeFeatures } from "./executable/executable-cache.js";
+import { compilerImplementationIdentity } from "./library/compiler-self-identity.js";
 
 export const VERSION = "0.0.1";
 
@@ -55,11 +56,11 @@ export {
   type NativeCacheWarmProfile,
   type WarmNativeCachesOptions,
   type WarmNativeCachesResult,
-} from "./backend/cc.js";
-export { ANDROID_MIN_API, IPHONEOS_MIN_VERSION, isAndroidTarget, isIosTarget, isMobileTarget, mobileLibraryTarget, mobileTargetRefusal } from "./backend/cc.js";
-export { emitModule, type CEmitOptions } from "./backend/emission/emitter.js";
+} from "./backend/native-toolchain.js";
+export { ANDROID_MIN_API, IPHONEOS_MIN_VERSION, isAndroidTarget, isIosTarget, isMobileTarget, mobileLibraryTarget, mobileTargetRefusal } from "./backend/native-toolchain.js";
+export { emitCModule, type CEmitOptions } from "./backend/c/c-emitter.js";
 export type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
-export { renderAll, renderDiagnostic } from "./diagnostics/render.js";
+export { renderDiagnostics, renderDiagnostic } from "./diagnostics/render.js";
 export { renderCoverage, type CoverageInput } from "./coverage/report.js";
 export {
   generateSurfaceManifest,
@@ -94,7 +95,7 @@ export {
   type LibrarySidecarConfig,
   type LibParamClass,
   type LibReturnClass,
-} from "./library/profile.js";
+} from "./library/library-profile.js";
 export {
   loadFfiProfile,
   FFI_CALLBACK_PARAM_CLASSES,
@@ -108,7 +109,7 @@ export {
   type FfiProfile,
   type FfiReturnClass,
   type FfiValueParamClass,
-} from "./ffi/profile.js";
+} from "./ffi/ffi-manifest.js";
 export {
   assembleTrapTeaching,
   TRAP_TEACHING_MARKER,
@@ -139,7 +140,7 @@ export {
   type ProvenancePackageSource,
   type ProvenanceSources,
 } from "./frontend/provenance-registry.js";
-export * as ir from "./ir/nodes.js";
+export * as ir from "./ir/ir.js";
 
 export interface CompileOptions {
   /** Output executable path. Default: <outDir>/<stem>. */
@@ -387,7 +388,7 @@ export interface AnalyzeOptions {
  * Frontend shape. */
 interface Frontend {
   preflight: ScrDiagnostic[];
-  /** The entry source file's text (emitModule's header comment input). */
+  /** The entry source file's text (emitCModule's header comment input). */
   entryText: () => string;
   /** Library mode's resolution input: the entry file's exported function
    * declarations (call before dispose — it reads the ts7 AST). */
@@ -1195,7 +1196,7 @@ async function compileTracked(
     }
   }
   if (backend === "c") {
-    await writeFile(cPath, emitModule(lowered.module!, entryText));
+    await writeFile(cPath, emitCModule(lowered.module!, entryText));
   }
   // Kept-TU honesty: outDir persists across builds (the CLI's .scriptc/),
   // so a lane change would leave the PREVIOUS lane's TU beside the fresh
@@ -1955,7 +1956,7 @@ async function compileLibraryTracked(
   // Multi-instance library mode (abi.localize_runtime) localizes per
   // OBJECT FORMAT: ELF and COFF archives localize from any host (cross
   // ELF merges through the cross driver's own lld; COFF merges and
-  // demotes in process — see cc.ts's localizeLibraryObjects), and Mach-O
+  // demotes in process — see native-toolchain.ts's localizeLibraryObjects), and Mach-O
   // localization runs the macOS host linker, so macos and ios targets
   // admit darwin hosts only (the mobile admission above already refused
   // an ios triple off darwin). Everything else refuses before frontend/
@@ -2304,7 +2305,7 @@ async function compileLibraryTracked(
     }
   } else {
     cPath = join(opts.outDir, `${stem}.lib.c`);
-    await writeFile(cPath, emitModule(mod, entryText));
+    await writeFile(cPath, emitCModule(mod, entryText));
   }
   await rm(join(opts.outDir, `${stem}.lib.${profile.emission === "llvm" ? "c" : "ll"}`), { force: true });
 

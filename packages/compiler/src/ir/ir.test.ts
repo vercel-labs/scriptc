@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { HANDLE_KINDS, POINTER_KINDS } from "./nodes.js";
+import { HANDLE_KINDS, POINTER_KINDS } from "./ir.js";
 
 describe("IR kind sets", () => {
   test("keeps procStream as the scalar handle exception", () => {

@@ -1,4 +1,4 @@
-import { BOOL, F64, type IrExpr, type IrStmt, type IrType, STRING, type SrcLoc } from "./nodes.js";
+import { BOOL, F64, type IrExpr, type IrStmt, type IrType, STRING, type SrcLoc } from "./ir.js";
 
 export function varRef(localId: string, type: IrType, loc: SrcLoc): IrExpr {
   return { kind: "varRef", localId, type, loc };

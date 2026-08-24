@@ -1,4 +1,4 @@
-import type { IrExpr, IrLocal, IrStmt } from "./nodes.js";
+import type { IrExpr, IrLocal, IrStmt } from "./ir.js";
 
 /** A canonical byte loop whose induction variable is mathematically an
  * unsigned integer for every body entry. Backends may keep this binding in

@@ -1,6 +1,6 @@
 /* node:diagnostics_channel — the in-process pub/sub core (scr_runtime.h
  * has the API contract). Linked only when the IR carries dc.* libCalls
- * (cc.ts; the zlib gating precedent), pure data structure over the checked-dynamic tree —
+ * (native-toolchain.ts; the zlib gating precedent), pure data structure over the checked-dynamic tree —
  * no loop hooks, no platform seams, cross-compiles everywhere.
  *
  * - The registry is process-global and append-only (Node's channels are

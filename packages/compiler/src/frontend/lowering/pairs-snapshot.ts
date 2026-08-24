@@ -1,11 +1,11 @@
-import { arrayOf, BOOL, F64, type IrExpr, type IrLibFn, type IrParam, type IrType, STRING, type SrcLoc } from "../../ir/nodes.js";
+import { arrayOf, BOOL, F64, type IrExpr, type IrLibFn, type IrParam, type IrType, STRING, type SrcLoc } from "../../ir/ir.js";
 import { numLit, varRef } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** Intern a helper that materializes a pure string-index record from a flat
  * `[key, value, ...]` array returned by a runtime call. */
 export function pairsSnapshotHelper(
-  L: Lowerer,
+  lowerer: Lowerer,
   shapeId: string,
   loc: SrcLoc,
   options: {
@@ -16,18 +16,18 @@ export function pairsSnapshotHelper(
     indexValueOk?: (indexValue: IrType) => boolean;
   },
 ): string | null {
-  const shape = L.shapes.get(shapeId);
+  const shape = lowerer.shapes.get(shapeId);
   if (!shape || shape.tuple || shape.fields.length > 0 || !shape.indexValue) return null;
   const indexValue = shape.indexValue;
   if (options.indexValueOk && !options.indexValueOk(indexValue)) return null;
   if (indexValue.kind !== "union") return null;
-  const stringTag = L.armTag(indexValue.unionId, STRING);
+  const stringTag = lowerer.armTag(indexValue.unionId, STRING);
   if (stringTag < 0) return null;
   const key = `${options.keyPrefix}.snapshot:${shapeId}`;
-  const existing = L.widthHelpers.get(key);
+  const existing = lowerer.widthHelpers.get(key);
   if (existing) return existing;
-  const name = `%${options.keyPrefix}.snapshot.${L.widthHelpers.size}`;
-  L.widthHelpers.set(key, name);
+  const name = `%${options.keyPrefix}.snapshot.${lowerer.widthHelpers.size}`;
+  lowerer.widthHelpers.set(key, name);
   const recordType: IrType = { kind: "record", shapeId };
   const pairsType = arrayOf(STRING);
   const pairAt = (offset: number): IrExpr => ({
@@ -40,7 +40,7 @@ export function pairsSnapshotHelper(
     type: STRING,
     loc,
   });
-  L.liftedFns.push({
+  lowerer.liftedFns.push({
     name,
     params: options.params ?? [],
     returnType: recordType,

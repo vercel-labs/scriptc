@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import { emitModule, InternalCompilerError } from "../src/index.js";
-import { resolveCc } from "../src/backend/cc.js";
+import { emitCModule, InternalCompilerError } from "../src/index.js";
+import { resolveCc } from "../src/backend/native-toolchain.js";
 import { deserializeModule } from "../src/ir/serialize.js";
 import { fibModule } from "./fixtures/fib-ir.js";
 
@@ -40,7 +40,7 @@ test("emitter invariant failures preserve their message and public type", () => 
     loc: statement.loc,
   };
 
-  expect(() => emitModule(malformed)).toThrow(
+  expect(() => emitCModule(malformed)).toThrow(
     expect.objectContaining({
       constructor: InternalCompilerError,
       message: "emitter bug: closure over unknown function missing",

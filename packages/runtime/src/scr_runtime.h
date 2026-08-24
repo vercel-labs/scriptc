@@ -18,7 +18,7 @@
 /* ── libc shims ─────────────────────────────────────────────────────────
  * Win32's missing POSIX/BSD functions live in scr_win.c. Zig's musl sysroot
  * additionally lacks arc4random_buf; scr_musl.c supplies it from Linux's
- * getrandom syscall. Both files are selected by cc.ts only for their target. */
+ * getrandom syscall. Both files are selected by native-toolchain.ts only for their target. */
 #ifdef _WIN32
 #include <time.h> /* time_t / struct tm for the gmtime_r shim */
 char *stpcpy(char *dst, const char *src);
@@ -138,7 +138,7 @@ void scr_library_set_sink(ScrLibSinkFn fn, void *ctx); /* latest wins */
  * unwind/longjmp across library frames: read the borrowed buffers, copy
  * what outlives the call, return. Buffer parameters are borrowed for the
  * duration of the call only. */
-#define SCR_LIB_MAX_CALLBACKS 32 /* keep in step with LIB_MAX_CALLBACKS (library/profile.ts) */
+#define SCR_LIB_MAX_CALLBACKS 32 /* keep in step with LIB_MAX_CALLBACKS (library/library-profile.ts) */
 /* The stored shape: generated call sites cast a slot's pointer to the
  * channel's typed shape before calling. */
 typedef void (*ScrLibCbFn)(void);
@@ -1001,7 +1001,7 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep);
 ScrStr *scr_str_raw(ScrArr *raw, ScrArr *subs);
 
 /* ── regular expressions (scr_regex.c — linked ONLY when the program
- * contains a regex literal; see cc.ts) ────────────────────────────────
+ * contains a regex literal; see native-toolchain.ts) ────────────────────────────────
  * The engine is quickjs-ng's libregexp (the same bytecode interpreter the
  * dynamic island uses), compiled standalone. A ScrRegex is today ALWAYS an
  * immortal interned literal: the compiler emits one static per distinct
@@ -4368,7 +4368,7 @@ void scr_island_set_fetch(void (*boot)(void *jsctx), bool (*pending)(void),
 
 /* ── the island's node:http/https client bridge (scr_net_island.c) ────
  * The one TU referencing BOTH the socket units and the island (the
- * scr_zlib_island.c precedent): cc.ts compiles it exactly when a
+ * scr_zlib_island.c precedent): native-toolchain.ts compiles it exactly when a
  * --dynamic build links the socket units, and the emitted main calls
  * scr_net_island_install before any island entry. `attach` runs while
  * the island builds its bootstrap host object (jsctx and host_obj are
@@ -5064,7 +5064,7 @@ ScrBytes *scr_bytes_concat_len(const ScrArr *list, double total);
 ScrBytes *scr_bytes_concat(const ScrArr *list); /* +1 */
 
 /* ── util.inspect (scr_inspect.c — linked ONLY when the program calls
- * util.inspect/format; see cc.ts) ─────────────────────────────────────
+ * util.inspect/format; see native-toolchain.ts) ─────────────────────────────────────
  * The runtime half of the static inspect rendering: the compiler
  * synthesizes one traversal helper per static type; these entries own
  * Node's exact scalar formatting and the layout engine (frames,
@@ -5176,7 +5176,7 @@ bool scr_process_stderr_write_bytes(const ScrBytes *b, const ScrStr *encoding);
 void scr_fs_throw(int e, const char *op, const ScrStr *path);
 
 /* ── zlib (scr_zlib.c — compiled and linked with -lz only when the
- * program uses zlib, like scr_regex.c/libregexp; see cc.ts) ──────────
+ * program uses zlib, like scr_regex.c/libregexp; see native-toolchain.ts) ──────────
  * deflateSync/inflateSync over u8 bytes with Node's default options
  * (zlib format, default level/windowBits). deflate never throws (OOM
  * aborts); inflate of corrupt input THROWS Node's error catchably
@@ -5191,7 +5191,7 @@ ScrBytes *scr_zlib_inflate_mode(const ScrBytes *data, double mode);
 void scr_zlib_island_install(void);
 
 /* ── node:net (scr_net.c — compiled and linked ONLY when the program
- * uses the net surface, like scr_events.c; see cc.ts) ─────────────────
+ * uses the net surface, like scr_events.c; see native-toolchain.ts) ─────────────────
  * TCP servers and sockets over the unit's own readiness poller
  * (scr_platform.h: kqueue on macOS/BSD, epoll on Linux): refcounted handles
  * whose listeners MOVE in and drop at settlement (the ScrChild ownership
@@ -5594,7 +5594,7 @@ long scr_secure_ctx_live_count(void);
 
 /* ── node:tls, the CA-store introspection slice (scr_tls_ca.c — its own
  * unit and link gate; NO mbedTLS, so a getCACertificates-only binary never
- * builds the archive; cc.ts also compiles it whenever scr_tls.c does). The
+ * builds the archive; native-toolchain.ts also compiles it whenever scr_tls.c does). The
  * HOST roots (Windows' system certificate stores, the established bundle probe on
  * POSIX) stand in for both Node's compiled-in Mozilla roots ('bundled',
  * rootCertificates) and the platform store ('system') — the established

@@ -56,7 +56,7 @@
 
 import { dirname } from "node:path";
 import { rewriteBundlerCjsExports } from "./npm-static-rewrite.js";
-import { npmPackageNameOf, registerWorkspacePackage, workspacePackageOfPath } from "./shared.js";
+import { npmPackageNameOf, registerWorkspacePackage, workspacePackageOfPath } from "./workspace-registry.js";
 import { trackedExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 
 let activePackages: ReadonlySet<string> = new Set();

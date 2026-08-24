@@ -37,7 +37,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import ts from "typescript5";
 import { resolveExports, resolveRelativeModule } from "./resolve.js";
-import { packageNameOfSpecifier as packageNameOf } from "./shared.js";
+import { packageNameOfSpecifier as packageNameOf } from "./workspace-registry.js";
 import type { ProvenancePackageSource, ProvenanceSources } from "./provenance-registry.js";
 
 const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default"]);

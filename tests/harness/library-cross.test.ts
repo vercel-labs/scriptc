@@ -34,7 +34,7 @@
  *   - Linkability: for fixtures with a probe, the probe LINKS against the
  *     cross archive with the target's libc alone — plus, on win32, the
  *     documented embedder system libs (advapi32/iphlpapi/ws2_32, the same
- *     unconditional set cc.ts links into win32 executables). A stray
+ *     unconditional set native-toolchain.ts links into win32 executables). A stray
  *     undefined (the scr_win.c shim gap this lane caught on day one)
  *     fails HERE, at build time on the host, not in an embedder's build.
  *
@@ -86,7 +86,7 @@ type Target = (typeof TARGETS)[number];
  * units import beyond the CRT — advapi32 (RtlGenRandom behind
  * arc4random_buf, GetUserNameA), iphlpapi (GetAdaptersAddresses behind
  * os.networkInterfaces), ws2_32 (inet_ntop/htonl) — exactly the
- * unconditional win32 libs cc.ts links into every win32 executable. An
+ * unconditional win32 libs native-toolchain.ts links into every win32 executable. An
  * archive carries no -l flags, so a win32 embedder spells these on its own
  * link line; the probe links pin the set. */
 const WIN32_EMBEDDER_LIBS = ["-ladvapi32", "-liphlpapi", "-lws2_32"];

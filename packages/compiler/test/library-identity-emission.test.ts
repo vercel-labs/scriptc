@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { emitModule } from "../src/index.js";
+import { emitCModule } from "../src/index.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
-import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "../src/backend/library-identity.js";
-import type { IrModule } from "../src/ir/nodes.js";
+import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "../src/backend/library-identity-markers.js";
+import type { IrModule } from "../src/ir/ir.js";
 import { rebaseSourceLocations, createSourceLineRebaser } from "../src/library/semantic-source.js";
 import { fibModule } from "./fixtures/fib-ir.js";
 
@@ -29,7 +29,7 @@ const libraryModule = (): IrModule => ({
 
 describe("library identity emission", () => {
   test("direct C emission retains the IR-declared identity getters", () => {
-    const emitted = emitModule(libraryModule());
+    const emitted = emitCModule(libraryModule());
     expect(emitted).toContain("uint64_t ie_build_id(void)");
     expect(emitted).toContain("return UINT64_C(0xfedcba9876543210);");
     expect(emitted).toContain("uint32_t ie_abi_version(void)");
@@ -46,18 +46,18 @@ describe("library identity emission", () => {
 
   test("archive program-TU mode suppresses identity definitions in both backends", () => {
     const mod = libraryModule();
-    const c = emitModule(mod, undefined, { emitLibraryIdentity: false });
+    const c = emitCModule(mod, undefined, { emitLibraryIdentity: false });
     const llvm = emitLlvmModule(mod, { emitLibraryIdentity: false });
     expect(c).not.toContain("ie_build_id");
     expect(c).not.toContain("ie_abi_version");
     expect(llvm).not.toContain("@ie_build_id");
     expect(llvm).not.toContain("@ie_abi_version");
-    expect(stripLibraryIdentity(emitModule(mod), "c")).toBe(c);
+    expect(stripLibraryIdentity(emitCModule(mod), "c")).toBe(c);
     expect(stripLibraryIdentity(emitLlvmModule(mod), "llvm")).toBe(llvm);
 
     mod.lib!.resultResetSymbol = "ie_reset";
-    expect(stripLibraryIdentity(emitModule(mod), "c")).toBe(
-      emitModule(mod, undefined, { emitLibraryIdentity: false }),
+    expect(stripLibraryIdentity(emitCModule(mod), "c")).toBe(
+      emitCModule(mod, undefined, { emitLibraryIdentity: false }),
     );
     expect(stripLibraryIdentity(emitLlvmModule(mod), "llvm")).toBe(
       emitLlvmModule(mod, { emitLibraryIdentity: false }),
@@ -72,7 +72,7 @@ describe("library identity emission", () => {
     };
     const expected = libraryModule();
     expected.lib!.identity = identity;
-    expect(replaceLibraryIdentity(emitModule(mod), "c", identity)).toBe(emitModule(expected));
+    expect(replaceLibraryIdentity(emitCModule(mod), "c", identity)).toBe(emitCModule(expected));
     expect(replaceLibraryIdentity(emitLlvmModule(mod), "llvm", identity)).toBe(emitLlvmModule(expected));
   });
 
@@ -129,10 +129,10 @@ describe("library identity emission", () => {
       new Map([["fib.ts", after]]),
     );
     const restored = rebaseLibrarySourceComments(
-      emitModule(cachedMod, before),
+      emitCModule(cachedMod, before),
       "fib.ts",
       createSourceLineRebaser("fib.ts", before, after),
     );
-    expect(restored).toBe(emitModule(currentMod, after));
+    expect(restored).toBe(emitCModule(currentMod, after));
   });
 });

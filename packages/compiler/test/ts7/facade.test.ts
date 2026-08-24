@@ -5,7 +5,7 @@
 
 import { afterAll, expect, test } from "vitest";
 import { lowerToIr } from "../../src/frontend/lowering/lowerer.js";
-import { clearWorkspacePackages, registerWorkspacePackage } from "../../src/frontend/shared.js";
+import { clearWorkspacePackages, registerWorkspacePackage } from "../../src/frontend/workspace-registry.js";
 import { CheckerFacade } from "../../src/frontend/ts7/checker.js";
 import type { Node } from "typescript/unstable/ast";
 import type { Checker, Type } from "typescript/unstable/sync";

@@ -1,4 +1,4 @@
-/* The SCRIPTC_CC / SCRIPTC_TARGET driver contract (cc.ts):
+/* The SCRIPTC_CC / SCRIPTC_TARGET driver contract (native-toolchain.ts):
  *
  * - The DEFAULT path is pinned: no SCRIPTC_CC (or SCRIPTC_CC=clang) resolves to
  *   ["clang"]. macOS keeps zero extra args; host Linux adds glibc's
@@ -25,7 +25,7 @@ import {
   resolveCc,
   runtimeSrcDir,
   subprocessFailureDetail,
-} from "../src/backend/cc.js";
+} from "../src/backend/native-toolchain.js";
 
 const execFileAsync = promisify(execFile);
 

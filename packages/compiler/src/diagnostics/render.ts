@@ -82,7 +82,7 @@ export function renderDiagnostic(
   return out.join("\n");
 }
 
-export function renderAll(
+export function renderDiagnostics(
   diags: ScrDiagnostic[],
   sourceTextByFile: Map<string, string>,
   opts: RenderOptions = {},

@@ -5,9 +5,9 @@ import { InternalCompilerError } from "../../errors.js";
  * node_modules at runtime) and the interned host-call adapters that let the
  * engine invoke scriptc closures. */
 import { deflateRawSync } from "node:zlib";
-import type { CEmitter } from "./emitter.js";
-import { cDecl, cFnPtrCast, cStringLiteral, releaseCallC } from "./emit-types.js";
-import { IrType, islandCallbackRet, NPM_COMPRESS_MIN, typeKey } from "../../ir/nodes.js";
+import type { CEmitter } from "./c-emitter.js";
+import { cDecl, cFnPtrCast, cStringLiteral, releaseCallC } from "./types.js";
+import { IrType, islandCallbackRet, NPM_COMPRESS_MIN, typeKey } from "../../ir/ir.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
 
 /** Embedded npm modules (--dynamic): every reached module's SOURCE as a
@@ -24,8 +24,8 @@ import { undefinedArmTag } from "../../ir/analysis.js";
  * links scr_zlib.c/libz on the same moduleEmbedsCompressedNpm predicate),
  * so boot touches no compressed page a run never loads — cold start
  * SHRINKS with the binary. */
-export function emitNpmEmbedding(E: CEmitter, out: string[]): void {
-  const embedded = E.mod.embedded;
+export function emitNpmEmbedding(emitter: CEmitter, out: string[]): void {
+  const embedded = emitter.mod.embedded;
   if (embedded && embedded.modules.length > 0) {
     const emitChunked = (name: string, bytes: Buffer, comment?: string): void => {
       out.push(`static const char ${name}[] = ${comment !== undefined ? `/* ${comment} */` : ""}`);
@@ -94,13 +94,13 @@ export function emitNpmEmbedding(E: CEmitter, out: string[]): void {
    * A jsval-returning closure's +1 result passes straight through;
    * primitive returns marshal back by value; void closures return NULL
    * (the wrapper turns that into `undefined`). */
-  export function islandAdapter(E: CEmitter, arity: number, retKind: "void" | "jsval" | "f64" | "bool" | "string"): string {
+  export function islandAdapter(emitter: CEmitter, arity: number, retKind: "void" | "jsval" | "f64" | "bool" | "string"): string {
     const tag = { void: "v", jsval: "j", f64: "f", bool: "b", string: "s" }[retKind];
     const key = `${arity}:${tag}`;
-    const existing = E.islandAdapters.get(key);
+    const existing = emitter.islandAdapters.get(key);
     if (existing) return existing;
     const name = `sc_ia_${arity}${tag}`;
-    E.islandAdapters.set(key, name);
+    emitter.islandAdapters.set(key, name);
     const cRet = { void: "void", jsval: "ScrJsval *", f64: "double", bool: "bool", string: "ScrStr *" }[retKind];
     const params = ["ScrClosure *"].concat(Array<string>(arity).fill("ScrJsval *"));
     const callArgs = ["c", ...Array.from({ length: arity }, (_, i) => `scr_jsval_retain(argv[${i}])`)];
@@ -125,10 +125,10 @@ export function emitNpmEmbedding(E: CEmitter, out: string[]): void {
                   `  return r;`,
                 ];
     const sig = `static ScrJsval *${name}(ScrClosure *c, ScrJsval **argv)`;
-    E.walkerProtos.push(
+    emitter.walkerProtos.push(
       `${sig}; /* island host-call adapter (${arity} arg${arity === 1 ? "" : "s"}, ${retKind}) */`,
     );
-    E.walkerDefs.push(
+    emitter.walkerDefs.push(
       `${sig} {`,
       `  typedef ${cRet} (*Fn)(${params.join(", ")});`,
       ...(arity === 0 ? [`  (void)argv;`] : []),
@@ -156,14 +156,14 @@ export function emitNpmEmbedding(E: CEmitter, out: string[]): void {
    * returns marshal back like the all-'any' adapters; a Promise return
    * (async callbacks) wraps as an engine promise settled when the scriptc
    * promise settles (scr_jsval_from_promise). */
-  export function islandTypedAdapter(E: CEmitter, fn: IrType & { kind: "func" }): string {
-    const ret = islandCallbackRet(fn.ret, (id) => E.recordsById.get(id), (id) => E.unionsById.get(id));
+  export function islandTypedAdapter(emitter: CEmitter, fn: IrType & { kind: "func" }): string {
+    const ret = islandCallbackRet(fn.ret, (id) => emitter.recordsById.get(id), (id) => emitter.unionsById.get(id));
     if (!ret) throw new InternalCompilerError("emitter bug: typed island adapter with unsupported return");
     const key = `${fn.params.map((p) => typeKey(p)).join(",")}=>${ret.async ? "P:" : ""}${ret.tag}`;
-    const existing = E.islandTypedAdapters.get(key);
+    const existing = emitter.islandTypedAdapters.get(key);
     if (existing) return existing;
-    const name = `sc_ita_${E.islandTypedAdapters.size}`;
-    E.islandTypedAdapters.set(key, name);
+    const name = `sc_ita_${emitter.islandTypedAdapters.size}`;
+    emitter.islandTypedAdapters.set(key, name);
     const decls: string[] = [];
     const conv: string[] = [];
     const cleanup: string[] = [];
@@ -196,7 +196,7 @@ export function emitNpmEmbedding(E: CEmitter, out: string[]): void {
           // Composite (record/array/union): the jsExit pipeline — engine
           // JSON.stringify, json.parse, the interned dynCheck builder.
           canFail = true;
-          const utag = undefinedArmTag(p, E.unionsById);
+          const utag = undefinedArmTag(p, emitter.unionsById);
           decls.push(`  ${cDecl(p, a)} = NULL;`);
           const roundTrip = [
             `    ScrStr *sc_j = scr_jsval_to_json(argv[${i}]);`,
@@ -204,14 +204,14 @@ export function emitNpmEmbedding(E: CEmitter, out: string[]): void {
             `    ScrDyn *sc_d = scr_json_parse(sc_j);`,
             `    scr_str_release(sc_j);`,
             `    if (!sc_d) goto sc_convfail;`,
-            `    ${a} = ${E.dynCheckHelper(p)}(sc_d, NULL);`,
+            `    ${a} = ${emitter.dynCheckHelper(p)}(sc_d, NULL);`,
             `    scr_dyn_release(sc_d);`,
             `    if (scr_exc_pending()) goto sc_convfail;`,
           ];
           if (p.kind === "union" && utag >= 0) {
             conv.push(
               `  if (scr_jsval_is_undefined(argv[${i}])) {`,
-              `    ${a} = ${E.unitInstanceRef(p.unionId, utag)}; /* absent/undefined argument -> the undefined arm */`,
+              `    ${a} = ${emitter.unitInstanceRef(p.unionId, utag)}; /* absent/undefined argument -> the undefined arm */`,
               `  } else {`,
               ...roundTrip,
               `  }`,
@@ -284,7 +284,7 @@ export function emitNpmEmbedding(E: CEmitter, out: string[]): void {
           // type-directed serializer, then the engine's JSON parser (deep
           // copy; the documented aliasing divergence). NULL result is the
           // throw-path dummy.
-          const helper = E.jsonWriteHelper(fn.ret);
+          const helper = emitter.jsonWriteHelper(fn.ret);
           body.push(
             `  ${cDecl(fn.ret, "sc_rv")} = ${call};`,
             `  if (scr_exc_pending()) { ${releaseCallC(fn.ret, "sc_rv")}; return NULL; }`,
@@ -312,8 +312,8 @@ export function emitNpmEmbedding(E: CEmitter, out: string[]): void {
         ]
       : [];
     const sig = `static ScrJsval *${name}(ScrClosure *c, ScrJsval **argv)`;
-    E.walkerProtos.push(`${sig}; /* typed island host-call adapter: ${key} */`);
-    E.walkerDefs.push(
+    emitter.walkerProtos.push(`${sig}; /* typed island host-call adapter: ${key} */`);
+    emitter.walkerDefs.push(
       `${sig} { /* ${key} */`,
       ...(fn.params.length === 0 ? [`  (void)argv;`] : []),
       ...decls,

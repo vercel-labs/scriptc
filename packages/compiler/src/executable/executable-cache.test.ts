@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { FrontendInputTracker, trackedFileExists, trackedReadFile } from "../frontend/input-tracker.js";
-import { nativeArtifactDependenciesStillMatch } from "../backend/cc.js";
+import { nativeArtifactDependenciesStillMatch } from "../backend/native-toolchain.js";
 import {
   publishEarlyExecutableCache,
   readEarlyExecutableCache,
   readRoutedExecutableCache,
   type EarlyExecutableCacheOptions,
   type EarlyExecutableNativeFeatures,
-} from "./early-cache.js";
+} from "./executable-cache.js";
 
 const scratch: string[] = [];
 

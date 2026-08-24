@@ -2,7 +2,7 @@
  * REFERENCE implementation. The default fetch is scr_fetch.c (scriptc's
  * own net stack: scr_net + scr_tls + scr_http's client parser + zlib);
  * this file stays compilable for one release behind SCRIPTC_FETCH_CURL=1
- * (cc.ts selects exactly one of the two — same scr_fetch_install symbol,
+ * (native-toolchain.ts selects exactly one of the two — same scr_fetch_install symbol,
  * same island surface, same fixture contract) as the flip's reference,
  * the C-backend-vs-LLVM precedent. Compiled and linked ONLY into
  * --dynamic builds whose embedded npm graph references fetch (emit gates

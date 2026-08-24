@@ -16,7 +16,7 @@ import { InternalCompilerError } from "../../errors.js";
  *
  * RC dispatch is type-directed: frames and scopes carry {name, type} so a
  * release always knows which scr_*_release to call. `isRefCounted` in
- * nodes.ts is the membership test — no `kind === "string"` checks here.
+ * ir.ts is the membership test — no `kind === "string"` checks here.
  *
  * The generated C is a debugging surface: locals keep their TS names inside
  * the mangled form and every statement carries a `source line` comment.
@@ -39,8 +39,8 @@ import type {
   IrType,
   IrUnionDef,
   SrcLoc,
-} from "../../ir/nodes.js";
-import { ffiCallbackType, funcOf, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, mapOf, moduleEmbedsCompressedNpm, moduleUsesDgram, moduleUsesDynInvoke, moduleEmbedsBuiltin, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, POINTER_KINDS, type PointerKind, RUNTIME_EMITTER_CLASS, STRING, VOID } from "../../ir/nodes.js";
+} from "../../ir/ir.js";
+import { ffiCallbackType, funcOf, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, mapOf, moduleEmbedsCompressedNpm, moduleUsesDgram, moduleUsesDynInvoke, moduleEmbedsBuiltin, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, POINTER_KINDS, type PointerKind, RUNTIME_EMITTER_CLASS, STRING, VOID } from "../../ir/ir.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
 import { allocateFfiCallbackAdapters, hasForeignFfiCallback, hasRetainedFfiCallback, type FfiCallbackAdapter } from "../ffi-callbacks.js";
 import {
@@ -56,15 +56,15 @@ import {
   mangleVtSlot,
   mangleWrapper,
 } from "../mangle.js";
-import { cFnPtrCast, cType, releaseCallC, cStringLiteral, cDecl } from "./emit-types.js";
+import { cFnPtrCast, cType, releaseCallC, cStringLiteral, cDecl } from "./types.js";
 import { computeMayThrow } from "./may-throw.js";
-import { unionTruthyHelper, unionEqHelper, unionToStrHelper, unionJoinHelper, jsonWriteHelper, jsonIndentHelper, dynMatchHelper, dynCheckHelper, dynFuncBoxHelper, dynToStrHelper, caughtToDynHelper, toDynHelper, recordKeyGetHelper, recordKeySetHelper } from "./emit-walkers.js";
-import { VtSlot, ClassMeta, emitStructDefs, vtEntriesFor, vtSlotParams, emitVtableDecls, emitVtableInstances, emitVtAdapterDefs, emitHierarchyClassHelpers, emitClassObjs, emitCtorThunkDefs, errorVtStampLines, emitterVtStampLines, streamVtStampLines, traceAdapterC, traceArgC, boxNewC, arrNewC } from "./emit-shapes.js";
-import { emitAsyncScaffolding, childDataThunkFor, childExitThunkFor, childExitThunkFor2, closeBindThunkFor, connectResThunkFor, connectSockThunkFor, closeOverrideWrapFor, dgramMsgThunkFor, dnsLookupThunkFor, fsRenameThunkFor, netLookupAnswerThunkFor, emitterInvokeThunkFor, streamCbThunkFor, streamDataThunkFor, raceAdapterFor, resolveThunkFor, sniAnswerThunkFor } from "./emit-async.js";
-import { emitNpmEmbedding, islandAdapter, islandTypedAdapter } from "./emit-island.js";
-import { emitFunction, emitBlock, emitStmts, emitStmt, emitTryCatch, emitSwitch, mergeBrace, emitBranchInto, emitCondition } from "./emit-stmts.js";
-import { emitExpr } from "./emit-exprs.js";
-import { emitLibraryIdentityLines } from "../library-identity.js";
+import { unionTruthyHelper, unionEqHelper, unionToStrHelper, unionJoinHelper, jsonWriteHelper, jsonIndentHelper, dynMatchHelper, dynCheckHelper, dynFuncBoxHelper, dynToStrHelper, caughtToDynHelper, toDynHelper, recordKeyGetHelper, recordKeySetHelper } from "./walkers.js";
+import { VtSlot, ClassMeta, emitStructDefs, vtEntriesFor, vtSlotParams, emitVtableDecls, emitVtableInstances, emitVtAdapterDefs, emitHierarchyClassHelpers, emitClassObjs, emitCtorThunkDefs, errorVtStampLines, emitterVtStampLines, streamVtStampLines, traceAdapterC, traceArgC, boxNewC, arrNewC } from "./shapes.js";
+import { emitAsyncScaffolding, childDataThunkFor, childExitThunkFor, childExitSignalThunkFor, closeBindThunkFor, connectResThunkFor, connectSockThunkFor, closeOverrideWrapFor, dgramMsgThunkFor, dnsLookupThunkFor, fsRenameThunkFor, netLookupAnswerThunkFor, emitterInvokeThunkFor, streamCbThunkFor, streamDataThunkFor, raceAdapterFor, resolveThunkFor, sniAnswerThunkFor } from "./async.js";
+import { emitNpmEmbedding, islandAdapter, islandTypedAdapter } from "./island.js";
+import { emitFunction, emitBlock, emitStmts, emitStmt, emitTryCatch, emitSwitch, mergeBrace, emitBranchInto, emitCondition } from "./stmts.js";
+import { emitExpr } from "./exprs.js";
+import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 
 export interface CEmitOptions {
   /** Library archive assembly may move the volatile identity getters into a
@@ -72,7 +72,7 @@ export interface CEmitOptions {
   emitLibraryIdentity?: boolean;
 }
 
-export function emitModule(
+export function emitCModule(
   mod: IrModule,
   sourceText?: string,
   options: CEmitOptions = {},
@@ -317,7 +317,7 @@ export class CEmitter {
   readonly liveDynUnionRefAdapters = new Map<string, string>();
   readonly dynPromiseAdapters = new Map<string, string>();
   /** The checked-dynamic function boundary's per-signature helpers (see
-   * emit-walkers.ts): call thunks (sc_dfk_*), box builders (sc_dfb_*),
+   * walkers.ts): call thunks (sc_dfk_*), box builders (sc_dfb_*),
    * and dynCheck adapters (sc_dfa_*), each per func typeKey. */
   readonly dynFuncThunks = new Map<string, string>();
   readonly dynFuncBoxes = new Map<string, string>();
@@ -339,7 +339,7 @@ export class CEmitter {
   /** TYPED island host-call adapters, interned per full signature (param
    * typeKeys + return classification): each incoming engine argument
    * converts to the param's static type through the exit machinery before
-   * the closure runs — see islandTypedAdapter (emit-island.ts). */
+   * the closure runs — see islandTypedAdapter (island.ts). */
   readonly islandTypedAdapters = new Map<string, string>();
   /** Enclosing break/continue targets. An unlabeled `break` binds to the
    * innermost loop-or-switch entry (labeled BLOCK entries are skipped); an
@@ -934,18 +934,18 @@ export class CEmitter {
       // Fetch-referencing programs register the native fetch bridge before any
       // island entry (the engine's lazy boot consults it): the ONLY
       // reference to scr_fetch.c, so fetch-free builds never compile or
-      // link it (cc.ts gates on the same predicate). moduleUsesFetch is
+      // link it (native-toolchain.ts gates on the same predicate). moduleUsesFetch is
       // true only for fetch-referencing embedded graphs and for USER-code
       // fetch (the island-backed ambient's globalGet) — both boot the
       // engine before the global is read.
       ...(moduleUsesFetch(this.mod) ? [`  scr_fetch_install();`] : []),
       // Embedded graphs that import node:zlib register the island's zlib
       // bridge before any island entry — the ONLY reference to
-      // scr_zlib_island.c (cc.ts compiles it on the same predicate), so
+      // scr_zlib_island.c (native-toolchain.ts compiles it on the same predicate), so
       // zlib-free dynamic builds keep the island's clear refusal.
       ...(moduleEmbedsBuiltin(this.mod, "node:zlib") ? [`  scr_zlib_island_install();`] : []),
       // Embedded graphs that import node:http/https register the island's
-      // http client bridge (scr_net_island.c — cc.ts compiles it and the
+      // http client bridge (scr_net_island.c — native-toolchain.ts compiles it and the
       // socket units on the same predicate; native-fetch builds also
       // register it from scr_fetch_install, idempotently).
       ...(moduleEmbedsBuiltin(this.mod, "node:http") || moduleEmbedsBuiltin(this.mod, "node:https")
@@ -953,26 +953,26 @@ export class CEmitter {
         : []),
       // Event-surface programs (signal/exit listeners, stdin events) fill
       // the loop's nullable event hooks before %main — the events unit
-      // (scr_events.c) links only when this line is emitted (cc.ts gates
+      // (scr_events.c) links only when this line is emitted (native-toolchain.ts gates
       // on the same predicate, like fetch).
       ...(moduleUsesProcessEvents(this.mod) ? [`  scr_events_install();`] : []),
       // Net-surface programs fill the loop's net hooks before %main — the
-      // net unit (scr_net.c) links only when this line is emitted (cc.ts
+      // net unit (scr_net.c) links only when this line is emitted (native-toolchain.ts
       // gates on the same predicate, like events). The dyn-install twin
       // stamps the netSocket handle-dispatch ops into the dyn core so
       // sockets can cross the checked-dynamic boundary (SCR_DYN_HANDLE).
       ...(moduleUsesNet(this.mod) ? [`  scr_net_install();`, `  scr_net_dyn_install();`] : []),
       // Http-surface programs additionally stamp the httpReq/httpRes
       // handle-dispatch ops (scr_http.c links exactly when this line is
-      // emitted — cc.ts's http gate).
+      // emitted — native-toolchain.ts's http gate).
       ...(moduleUsesHttpServer(this.mod) ? [`  scr_http_dyn_install();`] : []),
       // http2-surface programs stamp the h2 session/stream handle-dispatch
-      // ops (scr_http2.c links exactly when this line is emitted — cc.ts's
+      // ops (scr_http2.c links exactly when this line is emitted — native-toolchain.ts's
       // http2 gate).
       ...(moduleUsesHttp2(this.mod) ? [`  scr_http2_dyn_install();`] : []),
       // Stream-surface programs fill the loop's stream hook (the deferred
       // next-tick emissions) before %main — scr_stream.c links only when
-      // this line is emitted (cc.ts gates on the same predicate).
+      // this line is emitted (native-toolchain.ts gates on the same predicate).
       ...(moduleUsesStream(this.mod) ? [`  scr_stream_install();`] : []),
       // Dgram/dns-surface programs fill the loop's dgram hooks the same
       // way — scr_dgram.c links only when this line is emitted.
@@ -984,7 +984,7 @@ export class CEmitter {
       // The embedded npm tables must be registered before %main: the %init
       // functions it calls import from them. Static data only — the engine
       // still boots lazily, on the first island entry. Compressed module
-      // text (emit-island.ts stores big sources as raw DEFLATE) needs the
+      // text (island.ts stores big sources as raw DEFLATE) needs the
       // inflater installed first — scr_zlib.c joins the link on the same
       // moduleEmbedsCompressedNpm predicate (index.ts's zlib switch), so
       // compression-free dynamic builds keep their exact link line.
@@ -2076,8 +2076,8 @@ export class CEmitter {
     return closeOverrideWrapFor(this, cbUnion, retServer);
   }
 
-  childExitThunkFor2(codeParam: IrType, sigParam: IrType): string {
-    return childExitThunkFor2(this, codeParam, sigParam);
+  childExitSignalThunkFor(codeParam: IrType, sigParam: IrType): string {
+    return childExitSignalThunkFor(this, codeParam, sigParam);
   }
 
   dgramMsgThunkFor(param: IrType): string {

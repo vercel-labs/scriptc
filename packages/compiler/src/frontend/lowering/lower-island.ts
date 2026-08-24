@@ -5,7 +5,7 @@ import { InternalCompilerError } from "../../errors.js";
  * package boundary fences for node_modules-declared symbols. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
-import { BOOL, BYTES_U8, DYN, F64, IrExpr, IrStmt, IrType, JSVAL, MAX_ISLAND_CALLBACK_ARITY, STRING, VOID, canConvertToDyn, canMarshalTypedFuncIntoIsland, islandPromisePayloadTag, isUnitType } from "../../ir/nodes.js";
+import { BOOL, BYTES_U8, DYN, F64, IrExpr, IrStmt, IrType, JSVAL, MAX_ISLAND_CALLBACK_ARITY, STRING, VOID, canConvertToDyn, canMarshalTypedFuncIntoIsland, islandPromisePayloadTag, isUnitType } from "../../ir/ir.js";
 import { ISLAND_SURFACE, IslandFnEntry, STATIC_MATH_FNS, boundaryIntoIslandMsg } from "./surfaces.js";
 import { requiresDynamicApiDiag, requiresDynamicPackageDiag } from "../../diagnostics/diagnostic.js";
 import { isCjsJsFile, isJsSourceFile, locOf, npmPackageNameOf } from "../program.js";
@@ -30,16 +30,16 @@ import {
    * re-reporting the declared type. The one exclusion is promise-mapped
    * declared types: a package promise held as a handle keeps its existing
    * checker-driven dispatch (the await/.catch bridge lowerings own it). */
-  export function isIslandExpr(L: Lowerer, node: ts.Expression): boolean {
-    const mapped = L.mapTypeOf(L.typeOf(node));
+  export function isIslandExpr(lowerer: Lowerer, node: ts.Expression): boolean {
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(node));
     if (mapped?.kind === "jsval") return true;
     if (mapped?.kind !== "promise" && ts.isIdentifier(node)) {
-      const local = L.peekLocal(node);
+      const local = lowerer.peekLocal(node);
       if (local?.type.kind === "jsval") return true;
       // File-scope handle bindings (a module global slotted jsval by the
       // island-pattern or unchecked-overload rules) take the same rule as
       // locals: the handle is the value's only story.
-      if (!local && L.globalOf(node)?.type.kind === "jsval") return true;
+      if (!local && lowerer.globalOf(node)?.type.kind === "jsval") return true;
     }
     return false;
   }
@@ -55,11 +55,11 @@ import {
    * invoked — building the value compiles; only a call through the
    * island stops the run. Null (caller rethrows) outside the JS deferral
    * gate: TypeScript sources, probe mode, ICEs. */
-  export function islandFuncValueFence(L: Lowerer, err: unknown, diagsBefore: number, node: ts.Node): IrExpr | null {
+  export function islandFuncValueFence(lowerer: Lowerer, err: unknown, diagsBefore: number, node: ts.Node): IrExpr | null {
     if (!(err instanceof PoisonError) || !isJsSourceFile(node.getSourceFile())) return null;
-    const fence = L.deferToRuntimeFence(diagsBefore, node, {
+    const fence = lowerer.deferToRuntimeFence(diagsBefore, node, {
       kind: "closure",
-      name: () => `%fn${L.lambdaCounter++}_islfence`,
+      name: () => `%fn${lowerer.lambdaCounter++}_islfence`,
       returnType: VOID,
       type: { kind: "func", params: [], ret: VOID },
     });
@@ -72,7 +72,7 @@ import {
     };
   }
 
-  export function jsvalIn(L: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
+  export function jsvalIn(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr {
     if (e.type.kind === "jsval") return e;
     // Bare unit literals (`undefined` / `null` in an 'any' slot): the
     // engine's own units — unit-typed expressions are literals (units have
@@ -98,11 +98,11 @@ import {
     // boundary recitation.
     if (
       e.type.kind === "func" &&
-      !canMarshalTypedFuncIntoIsland(e.type, (id) => L.shapes.get(id), (id) => L.unions.get(id))
+      !canMarshalTypedFuncIntoIsland(e.type, (id) => lowerer.shapes.get(id), (id) => lowerer.unions.get(id))
     ) {
-      const diagsBefore = L.diags.length;
+      const diagsBefore = lowerer.diags.length;
       try {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           node,
           `functions with this signature crossing into dynamically-executed code ` +
@@ -122,7 +122,7 @@ import {
         // diagnostic when INVOKED (the withPlugins aggregation shape —
         // wrappers built at module init around functions the smoke path
         // never calls). TypeScript and probe mode keep the poison.
-        const fence = islandFuncValueFence(L, err, diagsBefore, node);
+        const fence = islandFuncValueFence(lowerer, err, diagsBefore, node);
         if (fence) return fence;
         throw err;
       }
@@ -136,7 +136,7 @@ import {
     if (e.type.kind === "promise" && islandPromisePayloadTag(e.type.inner) !== null) {
       return { kind: "jsMarshal", value: e, type: JSVAL, loc: e.loc };
     }
-    if (e.type.kind !== "func" && !L.boundarySafe(e.type)) {
+    if (e.type.kind !== "func" && !lowerer.boundarySafe(e.type)) {
       // A RegExp crossing INTO the island (`z.string().regex(/^a+$/)` —
       // the validation-pattern argument): the engine compiles its own
       // from source+flags. A fresh engine RegExp per marshal — identity
@@ -150,8 +150,8 @@ import {
       // jsval-BEARING composites (an `any[]` value, a record holding one)
       // have no JSON marshal but an honest per-field/per-element island
       // construction — the same lift the implicit coercion path uses.
-      if (L.jsvalLiftable(e.type)) return L.jsvalLiftExpr(e, e.loc);
-      L.unsupported("SC1090", node, boundaryIntoIslandMsg(L.fmt(e.type)));
+      if (lowerer.jsvalLiftable(e.type)) return lowerer.jsvalLiftExpr(e, e.loc);
+      lowerer.unsupported("SC1090", node, boundaryIntoIslandMsg(lowerer.fmt(e.type)));
     }
     return { kind: "jsMarshal", value: e, type: JSVAL, loc: e.loc };
   }
@@ -194,9 +194,9 @@ import {
    * proceeds to engine ops; without it the use site is a per-site SC2012
    * (poison-recovered, so every site in the program reports — and the
    * coverage report groups them under "runs with --dynamic"). */
-  export function requireDynamicApi(L: Lowerer, feature: string, node: ts.Node): void {
-    if (L.dynamic) return;
-    L.pushDiag(requiresDynamicApiDiag(feature, locOf(node)));
+  export function requireDynamicApi(lowerer: Lowerer, feature: string, node: ts.Node): void {
+    if (lowerer.dynamic) return;
+    lowerer.pushDiag(requiresDynamicApiDiag(feature, locOf(node)));
     throw new PoisonError();
   }
 
@@ -204,16 +204,16 @@ import {
    * (parseFloat, isFinite). Provenance, not name: the
    * symbol's declaration must live in the ambient file, so a user function
    * named `parseFloat` never matches. */
-  export function islandGlobalFnOf(L: Lowerer, ident: ts.Identifier): IslandFnEntry | null {
+  export function islandGlobalFnOf(lowerer: Lowerer, ident: ts.Identifier): IslandFnEntry | null {
     const entry = own(ISLAND_SURFACE.globals, ident.text);
     if (!entry) return null;
-    const symbol = L.resolveValueSymbol(ident);
-    if (!symbol || !L.isStdlibSymbol(symbol)) return null;
+    const symbol = lowerer.resolveValueSymbol(ident);
+    if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
     return entry;
   }
 
 function requestInitLiteralKey(
-  L: Lowerer,
+  lowerer: Lowerer,
   prop: ts.ObjectLiteralElementLike,
 ): string | null {
   if (
@@ -226,7 +226,7 @@ function requestInitLiteralKey(
   const name = prop.name;
   if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
   if (ts.isNumericLiteral(name)) return String(Number(name.text));
-  if (ts.isComputedPropertyName(name)) return foldedStringKeyOf(L, name.expression);
+  if (ts.isComputedPropertyName(name)) return foldedStringKeyOf(lowerer, name.expression);
   return null;
 }
 
@@ -248,11 +248,11 @@ function requestInitValueExpr(expr: ts.Expression): ts.Expression {
   return current;
 }
 
-function requestInitStaticBoolean(L: Lowerer, value: ts.Expression): boolean | null {
+function requestInitStaticBoolean(lowerer: Lowerer, value: ts.Expression): boolean | null {
   const expr = requestInitValueExpr(value);
   if (expr.kind === ts.SyntaxKind.TrueKeyword) return true;
   if (expr.kind === ts.SyntaxKind.FalseKeyword) return false;
-  const text = L.checker.typeToString(L.typeOf(expr));
+  const text = lowerer.checker.typeToString(lowerer.typeOf(expr));
   return text === "true" ? true : text === "false" ? false : null;
 }
 
@@ -260,8 +260,8 @@ function requestInitStaticBoolean(L: Lowerer, value: ts.Expression): boolean | n
  * binding keeps the binding stable, not the object: following its initializer
  * after `init.cache = undefined` would diagnose the stale literal instead of
  * the value fetch actually observes. Built lazily and diagnostic-free. */
-function requestInitPropMutatedSymbols(L: Lowerer): Set<ts.Symbol> {
-  const holder = L as unknown as {
+function requestInitPropMutatedSymbols(lowerer: Lowerer): Set<ts.Symbol> {
+  const holder = lowerer as unknown as {
     requestInitPropMutatedSyms?: Set<ts.Symbol>;
   };
   if (holder.requestInitPropMutatedSyms) {
@@ -278,13 +278,13 @@ function requestInitPropMutatedSymbols(L: Lowerer): Set<ts.Symbol> {
     }
     if (!ts.isIdentifier(base)) return;
     try {
-      const symbol = L.resolveValueSymbol(base);
+      const symbol = lowerer.resolveValueSymbol(base);
       if (symbol) symbols.add(symbol);
     } catch {
       /* not a traceable RequestInit candidate */
     }
   };
-  for (const source of L.program.getSourceFiles()) {
+  for (const source of lowerer.program.getSourceFiles()) {
     if (source.isDeclarationFile) continue;
     const walk = (node: ts.Node): void => {
       if (
@@ -316,30 +316,30 @@ function requestInitPropMutatedSymbols(L: Lowerer): Set<ts.Symbol> {
 }
 
 function requestInitConstBacked(
-  L: Lowerer,
+  lowerer: Lowerer,
   value: ts.Expression,
   seen: Set<ts.Symbol>,
 ): boolean {
   const expr = requestInitValueExpr(value);
   if (ts.isObjectLiteralExpression(expr)) return true;
   if (ts.isConditionalExpression(expr)) {
-    const selected = requestInitStaticBoolean(L, expr.condition);
+    const selected = requestInitStaticBoolean(lowerer, expr.condition);
     if (selected !== null) {
       return requestInitConstBacked(
-        L,
+        lowerer,
         selected ? expr.whenTrue : expr.whenFalse,
         new Set(seen),
       );
     }
-    return requestInitConstBacked(L, expr.whenTrue, new Set(seen)) &&
-      requestInitConstBacked(L, expr.whenFalse, new Set(seen));
+    return requestInitConstBacked(lowerer, expr.whenTrue, new Set(seen)) &&
+      requestInitConstBacked(lowerer, expr.whenFalse, new Set(seen));
   }
   if (!ts.isIdentifier(expr)) return false;
-  const symbol = L.resolveValueSymbol(expr);
+  const symbol = lowerer.resolveValueSymbol(expr);
   if (!symbol || seen.has(symbol)) return false;
-  if (requestInitPropMutatedSymbols(L).has(symbol)) return false;
+  if (requestInitPropMutatedSymbols(lowerer).has(symbol)) return false;
   seen.add(symbol);
-  const declarations = L.checker.declarationsOf(symbol).filter(
+  const declarations = lowerer.checker.declarationsOf(symbol).filter(
     (declaration): declaration is ts.VariableDeclaration =>
       ts.isVariableDeclaration(declaration) &&
       declaration.initializer !== undefined &&
@@ -347,7 +347,7 @@ function requestInitConstBacked(
       (declaration.parent.flags & ts.NodeFlags.Const) !== 0,
   );
   return declarations.length > 0 && declarations.every((declaration) =>
-    requestInitConstBacked(L, declaration.initializer!, new Set(seen))
+    requestInitConstBacked(lowerer, declaration.initializer!, new Set(seen))
   );
 }
 
@@ -359,7 +359,7 @@ type RequestInitValueSelector =
  * array. Property symbols can come from annotations rather than the literal
  * supplying the runtime value, so tracing follows receiver initializers. */
 function visitRequestInitConstSelectedValues(
-  L: Lowerer,
+  lowerer: Lowerer,
   value: ts.Expression,
   selector: RequestInitValueSelector,
   seen: Set<ts.Symbol>,
@@ -375,7 +375,7 @@ function visitRequestInitConstSelectedValues(
       const property = expr.properties[i]!;
       if (ts.isSpreadAssignment(property)) {
         const defines = visitRequestInitConstSelectedValues(
-          L,
+          lowerer,
           property.expression,
           selector,
           new Set(seen),
@@ -384,7 +384,7 @@ function visitRequestInitConstSelectedValues(
         if (defines) return true;
         continue;
       }
-      if (requestInitLiteralKey(L, property) !== selector.key) continue;
+      if (requestInitLiteralKey(lowerer, property) !== selector.key) continue;
       if (ts.isPropertyAssignment(property)) {
         visit(property.initializer);
       } else if (
@@ -410,10 +410,10 @@ function visitRequestInitConstSelectedValues(
     return true;
   }
   if (ts.isConditionalExpression(expr)) {
-    const selected = requestInitStaticBoolean(L, expr.condition);
+    const selected = requestInitStaticBoolean(lowerer, expr.condition);
     if (selected !== null) {
       return visitRequestInitConstSelectedValues(
-        L,
+        lowerer,
         selected ? expr.whenTrue : expr.whenFalse,
         selector,
         seen,
@@ -421,14 +421,14 @@ function visitRequestInitConstSelectedValues(
       );
     }
     const whenTrue = visitRequestInitConstSelectedValues(
-      L,
+      lowerer,
       expr.whenTrue,
       selector,
       new Set(seen),
       visit,
     );
     const whenFalse = visitRequestInitConstSelectedValues(
-      L,
+      lowerer,
       expr.whenFalse,
       selector,
       new Set(seen),
@@ -439,11 +439,11 @@ function visitRequestInitConstSelectedValues(
   if (ts.isPropertyAccessExpression(expr) || ts.isElementAccessExpression(expr)) {
     const member = ts.isPropertyAccessExpression(expr)
       ? expr.name.text
-      : foldedStringKeyOf(L, expr.argumentExpression);
+      : foldedStringKeyOf(lowerer, expr.argumentExpression);
     if (member === null) return false;
     const nested: ts.Expression[] = [];
     const receiverDefines = visitRequestInitConstSelectedValues(
-      L,
+      lowerer,
       expr.expression,
       { kind: "property", key: member },
       new Set(seen),
@@ -451,20 +451,20 @@ function visitRequestInitConstSelectedValues(
     );
     let nestedDefines = nested.length > 0;
     for (const value of nested) {
-      if (!visitRequestInitConstSelectedValues(L, value, selector, new Set(seen), visit)) {
+      if (!visitRequestInitConstSelectedValues(lowerer, value, selector, new Set(seen), visit)) {
         nestedDefines = false;
       }
     }
     return receiverDefines && nestedDefines;
   }
   if (!ts.isIdentifier(expr)) return false;
-  const symbol = L.resolveValueSymbol(expr);
+  const symbol = lowerer.resolveValueSymbol(expr);
   if (!symbol || seen.has(symbol)) return false;
-  if (requestInitPropMutatedSymbols(L).has(symbol)) return false;
+  if (requestInitPropMutatedSymbols(lowerer).has(symbol)) return false;
   seen.add(symbol);
   let sawDeclaration = false;
   let defines = true;
-  for (const declaration of L.checker.declarationsOf(symbol)) {
+  for (const declaration of lowerer.checker.declarationsOf(symbol)) {
     if (
       ts.isVariableDeclaration(declaration) &&
       declaration.initializer !== undefined &&
@@ -473,7 +473,7 @@ function visitRequestInitConstSelectedValues(
     ) {
       sawDeclaration = true;
       if (!visitRequestInitConstSelectedValues(
-        L,
+        lowerer,
         declaration.initializer,
         selector,
         new Set(seen),
@@ -491,7 +491,7 @@ type RequestInitBindingSelector =
   | { kind: "index"; index: number };
 
 function requestInitConstBindingSource(
-  L: Lowerer,
+  lowerer: Lowerer,
   declaration: ts.BindingElement,
 ): { initializer: ts.Expression; selectors: RequestInitBindingSelector[] } | null {
   const selectors: RequestInitBindingSelector[] = [];
@@ -500,7 +500,7 @@ function requestInitConstBindingSource(
     const pattern = current.parent;
     if (ts.isObjectBindingPattern(pattern)) {
       if (current.dotDotDotToken) return null;
-      const key = fetchObjectBindingMemberName(L, current);
+      const key = fetchObjectBindingMemberName(lowerer, current);
       if (key === null) return null;
       selectors.unshift({ kind: "property", key });
     } else if (ts.isArrayBindingPattern(pattern)) {
@@ -530,7 +530,7 @@ function requestInitConstBindingSource(
 }
 
 function visitRequestInitConstBindingValues(
-  L: Lowerer,
+  lowerer: Lowerer,
   value: ts.Expression,
   selectors: readonly RequestInitBindingSelector[],
   seen: Set<ts.Symbol>,
@@ -544,7 +544,7 @@ function visitRequestInitConstBindingValues(
   let nestedDefines = true;
   const visitNested = (nested: ts.Expression): void => {
     if (!visitRequestInitConstBindingValues(
-      L,
+      lowerer,
       nested,
       selectors.slice(1),
       new Set(seen),
@@ -553,50 +553,50 @@ function visitRequestInitConstBindingValues(
       nestedDefines = false;
     }
   };
-  const defines = visitRequestInitConstSelectedValues(L, value, selector, seen, visitNested);
+  const defines = visitRequestInitConstSelectedValues(lowerer, value, selector, seen, visitNested);
   return defines && nestedDefines;
 }
 
 function fenceRequestInitProperty(
-  L: Lowerer,
+  lowerer: Lowerer,
   access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
   seen: Set<ts.Symbol>,
 ): void {
   const key = ts.isPropertyAccessExpression(access)
     ? access.name.text
-    : foldedStringKeyOf(L, access.argumentExpression);
+    : foldedStringKeyOf(lowerer, access.argumentExpression);
   if (key === null) return;
   visitRequestInitConstSelectedValues(
-    L,
+    lowerer,
     access.expression,
     { kind: "property", key },
     new Set(),
-    (value) => fenceRequestInitValueInner(L, value, seen),
+    (value) => fenceRequestInitValueInner(lowerer, value, seen),
   );
-  if (!requestInitConstBacked(L, access.expression, new Set())) return;
+  if (!requestInitConstBacked(lowerer, access.expression, new Set())) return;
   const symbol = ts.isPropertyAccessExpression(access)
-    ? L.checker.getSymbolAtLocation(access.name)
-    : L.checker.getPropertyOfType(L.typeOf(access.expression), key);
+    ? lowerer.checker.getSymbolAtLocation(access.name)
+    : lowerer.checker.getPropertyOfType(lowerer.typeOf(access.expression), key);
   if (!symbol || seen.has(symbol)) return;
   seen.add(symbol);
-  for (const declaration of L.checker.declarationsOf(symbol)) {
+  for (const declaration of lowerer.checker.declarationsOf(symbol)) {
     if (ts.isPropertyAssignment(declaration)) {
-      fenceRequestInitValueInner(L, declaration.initializer, seen);
+      fenceRequestInitValueInner(lowerer, declaration.initializer, seen);
     } else if (
       ts.isShorthandPropertyAssignment(declaration) &&
       ts.isIdentifier(declaration.name)
     ) {
-      fenceRequestInitValueInner(L, declaration.name, seen);
+      fenceRequestInitValueInner(lowerer, declaration.name, seen);
     }
   }
 }
 
 function fenceRequestInitObject(
-  L: Lowerer,
+  lowerer: Lowerer,
   init: ts.ObjectLiteralExpression,
   seen: Set<ts.Symbol>,
 ): void {
-  const contextual = L.checker.getContextualType(init);
+  const contextual = lowerer.checker.getContextualType(init);
   const contextualArms =
     contextual?.isUnionType() ? ts.constituentTypes(contextual) : contextual ? [contextual] : [];
   const rows = NODE24_FETCH_COMPAT_PROFILE.inventory.entries.filter((entry) =>
@@ -608,9 +608,9 @@ function fenceRequestInitObject(
     value: ts.Expression | null,
     blame: ts.Node,
   ): void => {
-    if (L.dynamic ? row.status !== "unsupported" : row.status === "static") return;
+    if (lowerer.dynamic ? row.status !== "unsupported" : row.status === "static") return;
     if (value !== null) {
-      const type = L.typeOf(requestInitValueExpr(value));
+      const type = lowerer.typeOf(requestInitValueExpr(value));
       if (
         ts.isVoidExpression(requestInitValueExpr(value)) ||
         (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0
@@ -619,10 +619,10 @@ function fenceRequestInitObject(
       }
     }
     const sym = contextualArms
-      .map((arm) => L.checker.getPropertyOfType(arm, row.member))
+      .map((arm) => lowerer.checker.getPropertyOfType(arm, row.member))
       .find((member) => member !== undefined);
-    L.noLowering(
-      `RequestInit option '${row.member}'${L.dynamic ? "" : " in a static build"}`,
+    lowerer.noLowering(
+      `RequestInit option '${row.member}'${lowerer.dynamic ? "" : " in a static build"}`,
       blame,
       row.reason ??
         "the native static RequestInit surface is method, headers, body, duplex, redirect, and signal",
@@ -640,7 +640,7 @@ function fenceRequestInitObject(
       for (const row of rows) {
         if (shadowed.has(row.member)) continue;
         const defines = visitRequestInitConstSelectedValues(
-          L,
+          lowerer,
           prop.expression,
           { kind: "property", key: row.member },
           new Set(seen),
@@ -650,7 +650,7 @@ function fenceRequestInitObject(
       }
       continue;
     }
-    const key = requestInitLiteralKey(L, prop);
+    const key = requestInitLiteralKey(lowerer, prop);
     if (key === null || shadowed.has(key)) continue;
     shadowed.add(key);
     const row = rows.find((entry) => entry.member === key);
@@ -671,27 +671,27 @@ function fenceRequestInitObject(
  * decision. Runtime-computed values keep both fetch runtimes' defensive
  * validation because there is no source member to diagnose. */
 function fenceRequestInitValueInner(
-  L: Lowerer,
+  lowerer: Lowerer,
   value: ts.Expression,
   seen: Set<ts.Symbol>,
 ): void {
   const expr = requestInitValueExpr(value);
   if (ts.isObjectLiteralExpression(expr)) {
-    fenceRequestInitObject(L, expr, seen);
+    fenceRequestInitObject(lowerer, expr, seen);
     return;
   }
   if (ts.isConditionalExpression(expr)) {
-    const selected = requestInitStaticBoolean(L, expr.condition);
+    const selected = requestInitStaticBoolean(lowerer, expr.condition);
     if (selected !== null) {
-      fenceRequestInitValueInner(L, selected ? expr.whenTrue : expr.whenFalse, seen);
+      fenceRequestInitValueInner(lowerer, selected ? expr.whenTrue : expr.whenFalse, seen);
     } else {
-      fenceRequestInitValueInner(L, expr.whenTrue, seen);
-      fenceRequestInitValueInner(L, expr.whenFalse, seen);
+      fenceRequestInitValueInner(lowerer, expr.whenTrue, seen);
+      fenceRequestInitValueInner(lowerer, expr.whenFalse, seen);
     }
     return;
   }
   if (ts.isPropertyAccessExpression(expr) || ts.isElementAccessExpression(expr)) {
-    fenceRequestInitProperty(L, expr, seen);
+    fenceRequestInitProperty(lowerer, expr, seen);
     return;
   }
   if (!ts.isIdentifier(expr)) return;
@@ -699,20 +699,20 @@ function fenceRequestInitValueInner(
   // exported const whose initializer carries the dictionary members.
   // Chase the value alias so local and cross-module const plumbing share
   // the same source-profile fence.
-  const symbol = L.resolveValueSymbol(expr);
+  const symbol = lowerer.resolveValueSymbol(expr);
   if (!symbol || seen.has(symbol)) return;
-  if (requestInitPropMutatedSymbols(L).has(symbol)) return;
+  if (requestInitPropMutatedSymbols(lowerer).has(symbol)) return;
   seen.add(symbol);
-  for (const declaration of L.checker.declarationsOf(symbol)) {
+  for (const declaration of lowerer.checker.declarationsOf(symbol)) {
     if (ts.isBindingElement(declaration)) {
-      const source = requestInitConstBindingSource(L, declaration);
+      const source = requestInitConstBindingSource(lowerer, declaration);
       if (source !== null) {
         visitRequestInitConstBindingValues(
-          L,
+          lowerer,
           source.initializer,
           source.selectors,
           new Set(seen),
-          (bindingValue) => fenceRequestInitValueInner(L, bindingValue, new Set(seen)),
+          (bindingValue) => fenceRequestInitValueInner(lowerer, bindingValue, new Set(seen)),
         );
       }
       continue;
@@ -725,15 +725,15 @@ function fenceRequestInitValueInner(
     ) {
       continue;
     }
-    fenceRequestInitValueInner(L, declaration.initializer, seen);
+    fenceRequestInitValueInner(lowerer, declaration.initializer, seen);
   }
 }
 
 function fenceRequestInitValue(
-  L: Lowerer,
+  lowerer: Lowerer,
   value: ts.Expression,
 ): void {
-  fenceRequestInitValueInner(L, value, new Set());
+  fenceRequestInitValueInner(lowerer, value, new Set());
 }
 
 /** USER-code `fetch(url)` / `fetch(url, init)` — the ambient global
@@ -758,26 +758,26 @@ function fenceRequestInitValue(
    * the user's narrowing sites through the validated-exit machinery.
    * Null for anything that isn't THE ambient fetch, so lowerCall keeps
    * trying. */
-  export function lowerFetchCall(L: Lowerer, call: ts.CallExpression): IrExpr | null {
+  export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
     const callee = call.expression;
     if (!ts.isIdentifier(callee) || callee.text !== "fetch") return null;
     if (call.questionDotToken) return null;
-    const symbol = L.resolveValueSymbol(callee);
-    if (!symbol || !L.isStdlibSymbol(symbol)) return null;
+    const symbol = lowerer.resolveValueSymbol(callee);
+    if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
     if (call.arguments.length < 1) return null;
     const loc = locOf(call);
     const initNode = call.arguments[1];
-    if (initNode !== undefined) fenceRequestInitValue(L, initNode);
-    if (!L.dynamic) {
+    if (initNode !== undefined) fenceRequestInitValue(lowerer, initNode);
+    if (!lowerer.dynamic) {
       const inputNode = call.arguments[0]!;
-      const input = L.lowerExpr(inputNode);
+      const input = lowerer.lowerExpr(inputNode);
       let init: IrExpr;
       if (initNode === undefined) {
         init = dynUndefinedExpr(loc);
       } else if (ts.isObjectLiteralExpression(initNode)) {
-        init = lowerDynObjectLiteral(L, initNode);
+        init = lowerDynObjectLiteral(lowerer, initNode);
       } else {
-        init = L.lowerExprExpecting(initNode, DYN);
+        init = lowerer.lowerExprExpecting(initNode, DYN);
       }
 
       // Calling a WebIDL operation has two distinct phases: JavaScript
@@ -785,8 +785,8 @@ function fenceRequestInitValue(
       // those values. In particular, evaluating RequestInit may mutate a
       // URL object passed as input; its href must not be snapshotted until
       // all argument expressions (including ignored surplus ones) ran.
-      const inputLocal = L.declareHiddenLocal("%fetchInput", input.type);
-      const initLocal = L.declareHiddenLocal("%fetchInit", init.type);
+      const inputLocal = lowerer.declareHiddenLocal("%fetchInput", input.type);
+      const initLocal = lowerer.declareHiddenLocal("%fetchInit", init.type);
       const inputRef: IrExpr = {
         kind: "varRef",
         localId: inputLocal.id,
@@ -805,15 +805,15 @@ function fenceRequestInitValue(
       ];
       for (const argument of call.arguments.slice(2)) {
         if (ts.isSpreadElement(argument)) {
-          L.noLowering(
+          lowerer.noLowering(
             "spread surplus arguments on static fetch()",
             argument,
             "pass surplus arguments without spread syntax",
           );
         }
         const discarded = ts.isVoidExpression(argument)
-          ? L.lowerExpr(argument.expression)
-          : L.lowerExpr(argument);
+          ? lowerer.lowerExpr(argument.expression)
+          : lowerer.lowerExpr(argument);
         stmts.push({ kind: "exprStmt", expr: discarded, loc: discarded.loc });
       }
       const url: IrExpr =
@@ -825,7 +825,7 @@ function fenceRequestInitValue(
               type: STRING,
               loc: locOf(inputNode),
             }
-          : L.coerceInto(inputNode, inputRef, STRING);
+          : lowerer.coerceInto(inputNode, inputRef, STRING);
       const answer: IrExpr = {
         kind: "libCall",
         fn: "fetch.start",
@@ -844,7 +844,7 @@ function fenceRequestInitValue(
     // property names. Non-literal inits marshal as a whole (JSON-safe
     // records; a signal field inside one fences with the boundary rule).
     const args = call.arguments.map((a) =>
-      ts.isObjectLiteralExpression(a) ? lowerIslandObjectLiteral(L, a) : L.jsvalIn(L.lowerExpr(a), a),
+      ts.isObjectLiteralExpression(a) ? lowerIslandObjectLiteral(lowerer, a) : lowerer.jsvalIn(lowerer.lowerExpr(a), a),
     );
     const raw: IrExpr = { kind: "jsOp", op: "callFn", args: [fetchFn, ...args], type: JSVAL, loc };
     return { kind: "jsBridgePromise", value: raw, type: { kind: "promise", inner: JSVAL }, loc };
@@ -853,9 +853,9 @@ function fenceRequestInitValue(
 /** Static Response.json(): consume the native Response's readable body
  * stream and parse its UTF-8 payload into the ordinary checked-dynamic
  * JSON tree. Syntax and stream failures reject at await like the web API. */
-export function lowerStaticResponseCall(L: Lowerer, call: ts.CallExpression): IrExpr | null {
+export function lowerStaticResponseCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (
-    L.dynamic ||
+    lowerer.dynamic ||
     call.questionDotToken ||
     (!ts.isPropertyAccessExpression(call.expression) &&
       !ts.isElementAccessExpression(call.expression))
@@ -863,7 +863,7 @@ export function lowerStaticResponseCall(L: Lowerer, call: ts.CallExpression): Ir
     return null;
   }
   const access = call.expression;
-  const member = staticResponseMemberName(L, access);
+  const member = staticResponseMemberName(lowerer, access);
   if (
     access.questionDotToken ||
     (member !== "json" &&
@@ -874,21 +874,21 @@ export function lowerStaticResponseCall(L: Lowerer, call: ts.CallExpression): Ir
   ) {
     return null;
   }
-  const recvType = L.checker.getBaseTypeOfLiteralType(L.typeOf(access.expression));
+  const recvType = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
   const sym = recvType.getAliasSymbol() ?? recvType.getSymbol();
-  if (!sym || sym.name !== "Response" || !L.isStdlibSymbol(sym)) return null;
+  if (!sym || sym.name !== "Response" || !lowerer.isStdlibSymbol(sym)) return null;
   if (member === "arrayBuffer") {
-    L.noLowering(
+    lowerer.noLowering(
       "Response.arrayBuffer() in a static build",
       call,
       "use Response.bytes() for the native Uint8Array body; free-standing ArrayBuffer values have no static representation",
       sym,
     );
   }
-  const recv = L.lowerExpr(access.expression);
+  const recv = lowerer.lowerExpr(access.expression);
   if (recv.type.kind !== "dyn") return null;
   return lowerStaticFixedFetchMethodCall(
-    L,
+    lowerer,
     call,
     access,
     member,
@@ -921,11 +921,11 @@ type StaticResponseAccess =
   | ts.ElementAccessExpression;
 
 function staticResponseMemberName(
-  L: Lowerer,
+  lowerer: Lowerer,
   access: StaticResponseAccess,
 ): string | null {
   if (ts.isPropertyAccessExpression(access)) return access.name.text;
-  const members = fetchElementMemberNames(L, access.argumentExpression);
+  const members = fetchElementMemberNames(lowerer, access.argumentExpression);
   return members?.length === 1 ? members[0]! : null;
 }
 
@@ -934,7 +934,7 @@ function staticResponseMemberName(
  * must preserve receiver -> key -> arguments order and reject a lying cast
  * whose runtime key is not that name. */
 function lowerStaticFixedFetchMethodCall(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
   access: StaticResponseAccess,
   member: string,
@@ -946,14 +946,14 @@ function lowerStaticFixedFetchMethodCall(
     return invoke(receiver, [...argumentValues]);
   }
   const loc = locOf(call);
-  const key = L.lowerExprExpecting(access.argumentExpression, STRING);
-  const receiverLocal = L.declareHiddenLocal(
+  const key = lowerer.lowerExprExpecting(access.argumentExpression, STRING);
+  const receiverLocal = lowerer.declareHiddenLocal(
     "%fetchReceiver",
     receiver.type,
   );
-  const keyLocal = L.declareHiddenLocal("%fetchMember", STRING);
+  const keyLocal = lowerer.declareHiddenLocal("%fetchMember", STRING);
   const argumentLocals = argumentValues.map((argument) =>
-    L.declareHiddenLocal("%fetchMethodArg", argument.type)
+    lowerer.declareHiddenLocal("%fetchMethodArg", argument.type)
   );
   const receiverRef: IrExpr = {
     kind: "varRef",
@@ -1029,19 +1029,19 @@ function lowerStaticFixedFetchMethodCall(
 }
 
 function fetchElementMemberNames(
-  L: Lowerer,
+  lowerer: Lowerer,
   keyExpr: ts.Expression,
 ): string[] | null {
   if (
     ts.isPropertyAccessExpression(keyExpr) &&
-    L.isStdlibGlobal(keyExpr.expression, "Symbol") &&
+    lowerer.isStdlibGlobal(keyExpr.expression, "Symbol") &&
     (keyExpr.name.text === "iterator" ||
       keyExpr.name.text === "asyncIterator" ||
       keyExpr.name.text === "toStringTag")
   ) {
     return [`[Symbol.${keyExpr.name.text}]`];
   }
-  const key = L.typeOf(keyExpr);
+  const key = lowerer.typeOf(keyExpr);
   if (key.isStringLiteralType()) return [key.value];
   if (!key.isUnionType()) return null;
   const members: string[] = [];
@@ -1053,12 +1053,12 @@ function fetchElementMemberNames(
 }
 
 function fetchAccessMemberNames(
-  L: Lowerer,
+  lowerer: Lowerer,
   access: StaticResponseAccess,
 ): string[] | null {
   return ts.isPropertyAccessExpression(access)
     ? [access.name.text]
-    : fetchElementMemberNames(L, access.argumentExpression);
+    : fetchElementMemberNames(lowerer, access.argumentExpression);
 }
 
 function fetchInventoryStatus(
@@ -1090,24 +1090,24 @@ function fetchInventoryReason(
  * them explicitly so the generic call fallback cannot report SC1090 for
  * Response.json while the other statics report SC2020. */
 export function fenceUnsupportedFetchConstructorMember(
-  L: Lowerer,
+  lowerer: Lowerer,
   access: StaticResponseAccess,
 ): IrExpr | null {
-  if (!L.isStdlibGlobal(access.expression, "Response")) return null;
-  const members = fetchAccessMemberNames(L, access);
+  if (!lowerer.isStdlibGlobal(access.expression, "Response")) return null;
+  const members = fetchAccessMemberNames(lowerer, access);
   if (members === null) return null;
   const member = members.find((candidate) =>
     fetchInventoryStatus("Response", candidate, "static") === "unsupported"
   );
   if (member === undefined) return null;
-  L.noLowering(
+  lowerer.noLowering(
     `Response.${member}`,
     access,
     "Response static constructor-object operations have no compiler lowering in either tier",
   );
 }
 
-function hasLiveWebMutableArm(L: Lowerer, type: IrType): boolean {
+function hasLiveWebMutableArm(lowerer: Lowerer, type: IrType): boolean {
   if (
     type.kind === "record" ||
     type.kind === "array" ||
@@ -1116,8 +1116,8 @@ function hasLiveWebMutableArm(L: Lowerer, type: IrType): boolean {
     return true;
   }
   if (type.kind !== "union") return false;
-  return L.unions.get(type.unionId)?.arms.some((arm) =>
-    hasLiveWebMutableArm(L, arm)
+  return lowerer.unions.get(type.unionId)?.arms.some((arm) =>
+    hasLiveWebMutableArm(lowerer, arm)
   ) ?? false;
 }
 
@@ -1127,17 +1127,17 @@ function hasLiveWebMutableArm(L: Lowerer, type: IrType): boolean {
  * those selected at runtime from a union) that the live materializer can
  * snapshot and commit. */
 function lowerLiveWebValue(
-  L: Lowerer,
+  lowerer: Lowerer,
   node: ts.Expression,
   lowered?: IrExpr,
 ): IrExpr {
-  const value = lowered ?? L.lowerExpr(node);
+  const value = lowered ?? lowerer.lowerExpr(node);
   if (
-    hasLiveWebMutableArm(L, value.type) &&
+    hasLiveWebMutableArm(lowerer, value.type) &&
     canConvertToDyn(
       value.type,
-      (id) => L.shapes.get(id),
-      (id) => L.unions.get(id),
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
     )
   ) {
     return {
@@ -1148,7 +1148,7 @@ function lowerLiveWebValue(
       loc: value.loc,
     };
   }
-  return L.coerceInto(node, value, DYN);
+  return lowerer.coerceInto(node, value, DYN);
 }
 
 function fetchMethodArgumentIsLive(
@@ -1177,33 +1177,33 @@ function fetchMethodArgumentIsLive(
  * fence every other declared member before the generic dyn keyed-read/call
  * paths can turn a missing handle operation into a runtime TypeError. */
 export function fenceStaticResponseMember(
-  L: Lowerer,
+  lowerer: Lowerer,
   access: StaticResponseAccess,
   use: "read" | "call",
 ): IrExpr | null {
-  const recvType = L.checker.getBaseTypeOfLiteralType(L.typeOf(access.expression));
+  const recvType = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
   const sym = recvType.getAliasSymbol() ?? recvType.getSymbol();
-  if (!sym || sym.name !== "Response" || !L.isStdlibSymbol(sym)) return null;
-  const members = fetchAccessMemberNames(L, access);
+  if (!sym || sym.name !== "Response" || !lowerer.isStdlibSymbol(sym)) return null;
+  const members = fetchAccessMemberNames(lowerer, access);
   if (members === null) return null;
   const status = (member: string) => fetchInventoryStatus(
     "Response",
     member,
     member.startsWith("[Symbol.") ? "prototype-symbol" : "prototype",
   );
-  if (L.dynamic && members.every((member) => status(member) !== "unsupported")) {
+  if (lowerer.dynamic && members.every((member) => status(member) !== "unsupported")) {
     return null;
   }
   const supported = (member: string) =>
     use === "call"
       ? STATIC_RESPONSE_CALLS.has(member)
       : STATIC_RESPONSE_READS.has(member);
-  if (!L.dynamic && members.every(supported)) return null;
+  if (!lowerer.dynamic && members.every(supported)) return null;
   const member = members.find((candidate) =>
-    L.dynamic ? status(candidate) === "unsupported" : !supported(candidate)
+    lowerer.dynamic ? status(candidate) === "unsupported" : !supported(candidate)
   )!;
   if (status(member) === "unsupported") {
-    L.noLowering(
+    lowerer.noLowering(
       `Response.${member}`,
       access,
       fetchInventoryReason("Response", member, "prototype") ??
@@ -1211,7 +1211,7 @@ export function fenceStaticResponseMember(
       sym,
     );
   }
-  L.noLowering(
+  lowerer.noLowering(
     `Response.${member} in a static build`,
     access,
     "the native static Response surface is status/ok/statusText/url/redirected/headers/body/bodyUsed plus json(), text(), and bytes(); use --dynamic for the wider Web API",
@@ -1224,40 +1224,40 @@ export function fenceStaticResponseMember(
  * observed Node members cannot fall through to a runtime missing-method
  * error in an engine-free build. */
 export function fenceStaticHeadersMember(
-  L: Lowerer,
+  lowerer: Lowerer,
   access: StaticResponseAccess,
   use: "read" | "call",
 ): IrExpr | null {
-  const recvType = L.checker.getBaseTypeOfLiteralType(L.typeOf(access.expression));
+  const recvType = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
   const sym = recvType.getAliasSymbol() ?? recvType.getSymbol();
-  if (!sym || sym.name !== "Headers" || !L.isStdlibSymbol(sym)) return null;
-  const members = fetchAccessMemberNames(L, access);
+  if (!sym || sym.name !== "Headers" || !lowerer.isStdlibSymbol(sym)) return null;
+  const members = fetchAccessMemberNames(lowerer, access);
   if (members === null) return null;
   const status = (member: string) => fetchInventoryStatus(
     "Headers",
     member,
     member.startsWith("[Symbol.") ? "prototype-symbol" : "prototype",
   );
-  if (L.dynamic && members.every((member) => status(member) !== "unsupported")) {
+  if (lowerer.dynamic && members.every((member) => status(member) !== "unsupported")) {
     return null;
   }
-  if (!L.dynamic && use === "call" && members.every((member) => STATIC_HEADERS_CALLS.has(member))) {
+  if (!lowerer.dynamic && use === "call" && members.every((member) => STATIC_HEADERS_CALLS.has(member))) {
     return null;
   }
   const member = members.find((candidate) =>
-    L.dynamic
+    lowerer.dynamic
       ? status(candidate) === "unsupported"
       : use !== "call" || !STATIC_HEADERS_CALLS.has(candidate)
   )!;
   if (status(member) === "unsupported") {
-    L.noLowering(
+    lowerer.noLowering(
       `Headers.${member}`,
       access,
       "symbol-keyed Headers iteration has no compiler lowering in either tier; call entries() with --dynamic instead",
       sym,
     );
   }
-  L.noLowering(
+  lowerer.noLowering(
     `Headers.${member} in a static build`,
     access,
     "the native static Headers surface is append/delete/get/getSetCookie/has/set/forEach; use keys()/values()/entries() or symbol-keyed iteration with --dynamic, while construction remains unsupported",
@@ -1271,19 +1271,19 @@ export function fenceStaticHeadersMember(
  * keyed-read fallback can silently answer `undefined`. Dynamic builds use
  * the engine's real AbortController object and retain ordinary method reads. */
 export function fenceStaticAbortControllerMemberRead(
-  L: Lowerer,
+  lowerer: Lowerer,
   access: StaticResponseAccess,
 ): IrExpr | null {
-  if (L.dynamic) return null;
+  if (lowerer.dynamic) return null;
   const symbol = isStdlibFetchInterface(
-    L,
+    lowerer,
     access.expression,
     "AbortController",
   );
   if (!symbol) return null;
-  const members = fetchAccessMemberNames(L, access);
+  const members = fetchAccessMemberNames(lowerer, access);
   if (members === null || !members.includes("abort")) return null;
-  L.noLowering(
+  lowerer.noLowering(
     "AbortController.abort through method extraction in a static build",
     access,
     "call controller.abort(...) directly; the native AbortController handle does not expose abort as a first-class function value",
@@ -1292,19 +1292,19 @@ export function fenceStaticAbortControllerMemberRead(
 }
 
 function isStdlibFetchInterface(
-  L: Lowerer,
+  lowerer: Lowerer,
   node: ts.Node,
   owner: string,
 ): ts.Symbol | null {
-  const type = L.checker.getBaseTypeOfLiteralType(L.typeOf(node));
+  const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node));
   for (const symbol of [type.getSymbol(), type.getAliasSymbol()]) {
-    if (symbol?.name === owner && L.isStdlibSymbol(symbol)) return symbol;
+    if (symbol?.name === owner && lowerer.isStdlibSymbol(symbol)) return symbol;
   }
   return null;
 }
 
 function fetchObjectBindingMemberName(
-  L: Lowerer,
+  lowerer: Lowerer,
   element: ts.BindingElement,
 ): string | null {
   const name = element.propertyName ??
@@ -1314,14 +1314,14 @@ function fetchObjectBindingMemberName(
   if (ts.isStringLiteral(name)) return name.text;
   if (ts.isNumericLiteral(name)) return String(Number(name.text));
   if (ts.isComputedPropertyName(name)) {
-    const members = fetchElementMemberNames(L, name.expression);
+    const members = fetchElementMemberNames(lowerer, name.expression);
     return members?.length === 1 ? members[0]! : null;
   }
   return null;
 }
 
 function fetchObjectAssignmentMemberName(
-  L: Lowerer,
+  lowerer: Lowerer,
   property: ts.ObjectLiteralElementLike,
 ): string | null {
   if (ts.isSpreadAssignment(property)) return null;
@@ -1330,31 +1330,31 @@ function fetchObjectAssignmentMemberName(
   if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
   if (ts.isNumericLiteral(name)) return String(Number(name.text));
   if (ts.isComputedPropertyName(name)) {
-    const members = fetchElementMemberNames(L, name.expression);
+    const members = fetchElementMemberNames(lowerer, name.expression);
     return members?.length === 1 ? members[0]! : null;
   }
   return null;
 }
 
 function fetchInterfaceInventoryOwner(
-  L: Lowerer,
+  lowerer: Lowerer,
   node: ts.Node,
 ): { owner: string; symbol: ts.Symbol } | null {
-  const type = L.checker.getBaseTypeOfLiteralType(L.typeOf(node));
+  const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node));
   const symbol = [type.getSymbol(), type.getAliasSymbol()].find((candidate) =>
     candidate !== undefined &&
     NODE24_FETCH_COMPAT_PROFILE.inventory.interfaces.includes(candidate.name) &&
-    L.isStdlibSymbol(candidate)
+    lowerer.isStdlibSymbol(candidate)
   );
   return symbol ? { owner: symbol.name, symbol } : null;
 }
 
 function fenceFetchObjectMembers(
-  L: Lowerer,
+  lowerer: Lowerer,
   ownerNode: ts.Node,
   members: readonly { member: string; node: ts.Node }[],
 ): void {
-  const resolved = fetchInterfaceInventoryOwner(L, ownerNode);
+  const resolved = fetchInterfaceInventoryOwner(lowerer, ownerNode);
   if (!resolved) return;
   const { owner, symbol } = resolved;
   for (const { member, node } of members) {
@@ -1366,18 +1366,18 @@ function fenceFetchObjectMembers(
         entry.placement === "prototype-symbol")
     );
     if (!row || row.status === "out-of-scope") continue;
-    if (L.dynamic && row.status !== "unsupported") continue;
+    if (lowerer.dynamic && row.status !== "unsupported") continue;
     // Static data properties retain the ordinary checked-dynamic keyed-read
     // lowering. Only a method extraction loses the receiver that its direct
     // call bridge would preserve; non-static rows keep their inventory fence.
     const operation = NODE24_FETCH_COMPAT_PROFILE.operations.find(
       (candidate) => candidate.id === row.id,
     );
-    if (!L.dynamic && row.status === "static" && operation?.kind === "property") {
+    if (!lowerer.dynamic && row.status === "static" && operation?.kind === "property") {
       continue;
     }
-    L.noLowering(
-      `${owner}.${member}${L.dynamic ? "" : " through object destructuring in a static build"}`,
+    lowerer.noLowering(
+      `${owner}.${member}${lowerer.dynamic ? "" : " through object destructuring in a static build"}`,
       node,
       row.reason ??
         "the direct lowered read/call form has a compiler bridge, but extracting this member as a value does not",
@@ -1392,15 +1392,15 @@ function fenceFetchObjectMembers(
  * dyn/jsval destructuring either reports SC1031 or admits an unsupported
  * member in the dynamic tier. */
 export function fenceFetchObjectBinding(
-  L: Lowerer,
+  lowerer: Lowerer,
   pattern: ts.ObjectBindingPattern,
 ): void {
   fenceFetchObjectMembers(
-    L,
+    lowerer,
     pattern,
     pattern.elements.flatMap((element) => {
       if (element.dotDotDotToken) return [];
-      const member = fetchObjectBindingMemberName(L, element);
+      const member = fetchObjectBindingMemberName(lowerer, element);
       return member === null ? [] : [{ member, node: element }];
     }),
   );
@@ -1410,15 +1410,15 @@ export function fenceFetchObjectBinding(
  * a binding pattern, but its source type lives on the right-hand expression
  * instead of the target AST. */
 export function fenceFetchObjectAssignment(
-  L: Lowerer,
+  lowerer: Lowerer,
   target: ts.ObjectLiteralExpression,
   source: ts.Expression,
 ): void {
   fenceFetchObjectMembers(
-    L,
+    lowerer,
     source,
     target.properties.flatMap((property) => {
-      const member = fetchObjectAssignmentMemberName(L, property);
+      const member = fetchObjectAssignmentMemberName(lowerer, property);
       return member === null ? [] : [{ member, node: property }];
     }),
   );
@@ -1430,14 +1430,14 @@ export function fenceFetchObjectAssignment(
  * array spread, and array destructuring. The dynamic tier uses the
  * engine's iterator protocol and is intentionally allowed. */
 export function fenceStaticHeadersIteration(
-  L: Lowerer,
+  lowerer: Lowerer,
   node: ts.Node,
 ): void {
-  if (L.dynamic) return;
+  if (lowerer.dynamic) return;
   const value = ts.isExpression(node) ? requestInitValueExpr(node) : node;
-  const sym = isStdlibFetchInterface(L, value, "Headers");
+  const sym = isStdlibFetchInterface(lowerer, value, "Headers");
   if (!sym) return;
-  L.noLowering(
+  lowerer.noLowering(
     "Headers.[Symbol.iterator] in a static build",
     node,
     "Headers iteration requires --dynamic; append/delete/get/getSetCookie/has/set/forEach remain engine-free",
@@ -1451,20 +1451,20 @@ export function fenceStaticHeadersIteration(
  * and key once, preserving the method receiver and JavaScript evaluation
  * order without trying to represent the union of method values. */
 export function lowerDynamicHeadersIteratorCall(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.ElementAccessExpression,
 ): IrExpr | null {
   if (
-    !L.dynamic ||
+    !lowerer.dynamic ||
     call.questionDotToken ||
     access.questionDotToken ||
     call.arguments.length !== 0 ||
-    !isStdlibFetchInterface(L, access.expression, "Headers")
+    !isStdlibFetchInterface(lowerer, access.expression, "Headers")
   ) {
     return null;
   }
-  const members = fetchElementMemberNames(L, access.argumentExpression);
+  const members = fetchElementMemberNames(lowerer, access.argumentExpression);
   if (members === null) return null;
   const symbolIterator = members.length === 1 && members[0] === "[Symbol.iterator]";
   if (
@@ -1475,14 +1475,14 @@ export function lowerDynamicHeadersIteratorCall(
   ) {
     return null;
   }
-  const receiver = L.lowerExpr(access.expression);
+  const receiver = lowerer.lowerExpr(access.expression);
   if (receiver.type.kind !== "jsval") return null;
   const loc = locOf(call);
   if (!symbolIterator) {
-    const key = L.lowerExpr(access.argumentExpression);
+    const key = lowerer.lowerExpr(access.argumentExpression);
     if (key.type.kind !== "string") return null;
-    const recvLocal = L.declareHiddenLocal("%headers", JSVAL);
-    const keyLocal = L.declareHiddenLocal("%headersKey", STRING);
+    const recvLocal = lowerer.declareHiddenLocal("%headers", JSVAL);
+    const keyLocal = lowerer.declareHiddenLocal("%headersKey", STRING);
     const recvRef: IrExpr = {
       kind: "varRef",
       localId: recvLocal.id,
@@ -1560,7 +1560,7 @@ export function lowerDynamicHeadersIteratorCall(
  * key, and arguments once in source order. Finite string-literal unions
  * dispatch through fixed-name calls after the key value is captured. */
 export function lowerFetchElementMethodCall(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
   if (
@@ -1572,9 +1572,9 @@ export function lowerFetchElementMethodCall(
     return null;
   }
   const access = call.expression;
-  const resolved = fetchInterfaceInventoryOwner(L, access.expression);
+  const resolved = fetchInterfaceInventoryOwner(lowerer, access.expression);
   if (!resolved) return null;
-  const members = fetchElementMemberNames(L, access.argumentExpression);
+  const members = fetchElementMemberNames(lowerer, access.argumentExpression);
   if (
     members === null ||
     members.length === 0 ||
@@ -1594,38 +1594,38 @@ export function lowerFetchElementMethodCall(
     rows.some((row) =>
       row === undefined ||
       row.status === "out-of-scope" ||
-      (L.dynamic ? row.status === "unsupported" : row.status !== "static")
+      (lowerer.dynamic ? row.status === "unsupported" : row.status !== "static")
     )
   ) {
     return null;
   }
 
-  const receiver = L.lowerExpr(access.expression);
-  if (receiver.type.kind !== (L.dynamic ? "jsval" : "dyn")) return null;
-  const key = L.lowerExpr(access.argumentExpression);
+  const receiver = lowerer.lowerExpr(access.expression);
+  if (receiver.type.kind !== (lowerer.dynamic ? "jsval" : "dyn")) return null;
+  const key = lowerer.lowerExpr(access.argumentExpression);
   if (key.type.kind !== "string") return null;
   const loc = locOf(call);
-  const receiverLocal = L.declareHiddenLocal(
+  const receiverLocal = lowerer.declareHiddenLocal(
     "%fetchReceiver",
-    L.dynamic ? JSVAL : DYN,
+    lowerer.dynamic ? JSVAL : DYN,
   );
-  const keyLocal = L.declareHiddenLocal("%fetchMember", STRING);
-  const calleeLocal = L.dynamic
-    ? L.declareHiddenLocal("%fetchMethod", JSVAL)
+  const keyLocal = lowerer.declareHiddenLocal("%fetchMember", STRING);
+  const calleeLocal = lowerer.dynamic
+    ? lowerer.declareHiddenLocal("%fetchMethod", JSVAL)
     : null;
   const argumentValues = call.arguments.map((argument, index) =>
-    L.dynamic
-      ? L.jsvalIn(L.lowerExpr(argument), argument)
+    lowerer.dynamic
+      ? lowerer.jsvalIn(lowerer.lowerExpr(argument), argument)
       : fetchMethodArgumentIsLive(
           resolved.owner,
           members,
           index,
         )
-        ? lowerLiveWebValue(L, argument)
-        : L.lowerExprExpecting(argument, DYN)
+        ? lowerLiveWebValue(lowerer, argument)
+        : lowerer.lowerExprExpecting(argument, DYN)
   );
   const argumentLocals = argumentValues.map((argument) =>
-    L.declareHiddenLocal("%fetchMethodArg", argument.type)
+    lowerer.declareHiddenLocal("%fetchMethodArg", argument.type)
   );
   const receiverRef: IrExpr = {
     kind: "varRef",
@@ -1681,7 +1681,7 @@ export function lowerFetchElementMethodCall(
     loc,
   }));
   const staticResponsePromise: IrType | null =
-    !L.dynamic &&
+    !lowerer.dynamic &&
       resolved.owner === "Response" &&
       call.arguments.length === 0 &&
       members.every((member) => member === "text" || member === "bytes")
@@ -1692,13 +1692,13 @@ export function lowerFetchElementMethodCall(
           // result is the ordinary representable value union; use that
           // contextual type for the bridge's fulfillment adapter.
           const inner = ts.isAwaitExpression(call.parent)
-            ? L.mapTypeOf(L.typeOf(call.parent))
+            ? lowerer.mapTypeOf(lowerer.typeOf(call.parent))
             : null;
           return inner ? { kind: "promise", inner } : null;
         })()
       : null;
   const invoke = (member: string): IrExpr =>
-    L.dynamic
+    lowerer.dynamic
       ? {
           kind: "jsOp",
           op: "callFnThis",
@@ -1726,7 +1726,7 @@ export function lowerFetchElementMethodCall(
   // Literal-string unions share the STRING carrier. A cast can therefore
   // smuggle a different runtime key into this call; validate all arms and
   // fail loudly rather than dispatching every mismatch to the last member.
-  const invocationType = staticResponsePromise ?? (L.dynamic ? JSVAL : DYN);
+  const invocationType = staticResponsePromise ?? (lowerer.dynamic ? JSVAL : DYN);
   let result: IrExpr = nodeThrowExpr(
     1,
     "",
@@ -1752,7 +1752,7 @@ export function lowerFetchElementMethodCall(
       loc,
     };
   }
-  const declared = L.dynamic ? L.mapTypeOf(L.typeOf(call)) : null;
+  const declared = lowerer.dynamic ? lowerer.mapTypeOf(lowerer.typeOf(call)) : null;
   if (
     declared &&
     (declared.kind === "f64" ||
@@ -1785,14 +1785,14 @@ export function lowerFetchElementMethodCall(
  * through the checker's declared array type. For Headers this is the
  * spread algorithm's exact iterable snapshot. */
 export function lowerDynamicHeadersSpread(
-  L: Lowerer,
+  lowerer: Lowerer,
   node: ts.Expression,
   type: IrType & { kind: "array" },
 ): IrExpr | null {
-  if (!L.dynamic || !isStdlibFetchInterface(L, requestInitValueExpr(node), "Headers")) {
+  if (!lowerer.dynamic || !isStdlibFetchInterface(lowerer, requestInitValueExpr(node), "Headers")) {
     return null;
   }
-  const receiver = L.lowerExpr(node);
+  const receiver = lowerer.lowerExpr(node);
   if (receiver.type.kind !== "jsval") return null;
   const loc = locOf(node);
   const arrayCtor: IrExpr = {
@@ -1819,32 +1819,32 @@ export function lowerDynamicHeadersSpread(
  * interface. Fence that wider surface before its checked-dynamic handle can
  * fall through to a runtime missing-method error. */
 export function fenceStaticReadableStreamMember(
-  L: Lowerer,
+  lowerer: Lowerer,
   access: StaticResponseAccess,
   use: "read" | "call",
 ): IrExpr | null {
-  const sym = isStdlibFetchInterface(L, access.expression, "ReadableStream");
+  const sym = isStdlibFetchInterface(lowerer, access.expression, "ReadableStream");
   if (!sym) return null;
-  const members = fetchAccessMemberNames(L, access);
+  const members = fetchAccessMemberNames(lowerer, access);
   if (members === null) return null;
   const status = (member: string) => fetchInventoryStatus(
     "ReadableStream",
     member,
     member.startsWith("[Symbol.") ? "prototype-symbol" : "prototype",
   );
-  if (L.dynamic && members.every((member) => status(member) !== "unsupported")) {
+  if (lowerer.dynamic && members.every((member) => status(member) !== "unsupported")) {
     return null;
   }
   const supported = (member: string) =>
     use === "call"
       ? STATIC_READABLE_STREAM_CALLS.has(member)
       : STATIC_READABLE_STREAM_READS.has(member);
-  if (!L.dynamic && members.every(supported)) return null;
+  if (!lowerer.dynamic && members.every(supported)) return null;
   const member = members.find((candidate) =>
-    L.dynamic ? status(candidate) === "unsupported" : !supported(candidate)
+    lowerer.dynamic ? status(candidate) === "unsupported" : !supported(candidate)
   )!;
   if (status(member) === "unsupported") {
-    L.noLowering(
+    lowerer.noLowering(
       `ReadableStream.${member}`,
       access,
       fetchInventoryReason(
@@ -1855,7 +1855,7 @@ export function fenceStaticReadableStreamMember(
       sym,
     );
   }
-  L.noLowering(
+  lowerer.noLowering(
     `ReadableStream.${member} in a static build`,
     access,
     "the native static ReadableStream surface is locked plus cancel() and getReader(); use a reader directly or --dynamic for the wider Web Streams API",
@@ -1868,13 +1868,13 @@ export function fenceStaticReadableStreamMember(
  * claim the direct calls by declaration provenance before the general
  * member-call path tries to lower the receiver as a value. */
 function staticFirstArgWithSurplusArgs(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
   first: IrExpr,
 ): IrExpr {
   const loc = locOf(call);
   if (call.arguments.length <= 1) return first;
-  const firstLocal = L.declareHiddenLocal("%fetchArg", first.type);
+  const firstLocal = lowerer.declareHiddenLocal("%fetchArg", first.type);
   const firstRef: IrExpr = {
     kind: "varRef",
     localId: firstLocal.id,
@@ -1886,7 +1886,7 @@ function staticFirstArgWithSurplusArgs(
   ];
   for (const argument of call.arguments.slice(1)) {
     if (ts.isSpreadElement(argument)) {
-      L.noLowering(
+      lowerer.noLowering(
         "spread surplus arguments on the static fetch companion APIs",
         argument,
         "pass surplus arguments without spread syntax",
@@ -1896,8 +1896,8 @@ function staticFirstArgWithSurplusArgs(
     // surplus argument in source order. A direct void has the operand's
     // effects and no additional work of its own.
     const discarded = ts.isVoidExpression(argument)
-      ? L.lowerExpr(argument.expression)
-      : L.lowerExpr(argument);
+      ? lowerer.lowerExpr(argument.expression)
+      : lowerer.lowerExpr(argument);
     stmts.push({ kind: "exprStmt", expr: discarded, loc: discarded.loc });
   }
   return {
@@ -1910,20 +1910,20 @@ function staticFirstArgWithSurplusArgs(
 }
 
 function staticCallWithSurplusArgs(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
   first: IrExpr,
   result: (first: IrExpr) => IrExpr,
 ): IrExpr {
-  return result(staticFirstArgWithSurplusArgs(L, call, first));
+  return result(staticFirstArgWithSurplusArgs(lowerer, call, first));
 }
 
 export function lowerStaticFetchCompanionCall(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
   if (
-    L.dynamic ||
+    lowerer.dynamic ||
     call.questionDotToken ||
     !ts.isPropertyAccessExpression(call.expression) ||
     call.expression.questionDotToken ||
@@ -1932,8 +1932,8 @@ export function lowerStaticFetchCompanionCall(
     return null;
   }
   const root = call.expression.expression;
-  const symbol = L.resolveValueSymbol(root);
-  if (!symbol || !L.isStdlibSymbol(symbol)) return null;
+  const symbol = lowerer.resolveValueSymbol(root);
+  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   const loc = locOf(call);
   if (root.text === "AbortSignal") {
     switch (call.expression.name.text) {
@@ -1942,10 +1942,10 @@ export function lowerStaticFetchCompanionCall(
           return null;
         }
         return staticCallWithSurplusArgs(
-          L,
+          lowerer,
           call,
           call.arguments[0]
-            ? L.lowerExprExpecting(call.arguments[0], DYN)
+            ? lowerer.lowerExprExpecting(call.arguments[0], DYN)
             : dynUndefinedExpr(loc),
           (first) => ({
             kind: "libCall",
@@ -1967,9 +1967,9 @@ export function lowerStaticFetchCompanionCall(
         }
         if (ts.isSpreadElement(call.arguments[0]!)) return null;
         return staticCallWithSurplusArgs(
-          L,
+          lowerer,
           call,
-          lowerLiveWebValue(L, call.arguments[0]!),
+          lowerLiveWebValue(lowerer, call.arguments[0]!),
           (first) => ({
             kind: "libCall",
             fn: "fetch.abortNow",
@@ -1983,10 +1983,10 @@ export function lowerStaticFetchCompanionCall(
           return null;
         }
         return staticCallWithSurplusArgs(
-          L,
+          lowerer,
           call,
           call.arguments[0]
-            ? L.lowerExprExpecting(call.arguments[0], DYN)
+            ? lowerer.lowerExprExpecting(call.arguments[0], DYN)
             : dynUndefinedExpr(loc),
           (first) => ({
             kind: "libCall",
@@ -2014,20 +2014,20 @@ export function lowerStaticFetchCompanionCall(
         loc,
       };
     }
-    let source = L.lowerExpr(call.arguments[0]!);
+    let source = lowerer.lowerExpr(call.arguments[0]!);
     // A readonly tuple satisfies the fallback's readonly-array overload,
     // but maps to a monomorphic record in IR. Reuse the ordinary
     // tuple→array width conversion with the resolved generic parameter so
     // `ReadableStream.from([1, 2] as const)` follows every other tuple
     // flowing into a readonly T[] slot.
     if (source.type.kind === "record") {
-      const signature = L.checker.getResolvedSignature(call);
+      const signature = lowerer.checker.getResolvedSignature(call);
       const iterableParam = signature?.getParameters()[0];
       const iterableType = iterableParam
-        ? L.mapTypeOf(L.checker.getTypeOfSymbol(iterableParam))
+        ? lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(iterableParam))
         : null;
       if (iterableType?.kind === "array") {
-        source = L.widthCoerce(source, iterableType) ?? source;
+        source = lowerer.widthCoerce(source, iterableType) ?? source;
       }
     }
     const preserve =
@@ -2036,18 +2036,18 @@ export function lowerStaticFetchCompanionCall(
       (source.type.kind === "array" &&
         canConvertToDyn(
           source.type.elem,
-          (id) => L.shapes.get(id),
-          (id) => L.unions.get(id),
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
         )) ||
       source.type.kind === "dyn";
     if (!preserve) {
-      L.noLowering(
-        `ReadableStream.from() over ${L.checker.typeToString(L.typeOf(call.arguments[0]!))} iterables`,
+      lowerer.noLowering(
+        `ReadableStream.from() over ${lowerer.checker.typeToString(lowerer.typeOf(call.arguments[0]!))} iterables`,
         call.arguments[0]!,
         "arrays, Uint8Array, and strings are supported — spread other synchronous iterables into an array first: [...iterable]",
       );
     }
-    return staticCallWithSurplusArgs(L, call, source, (first) => ({
+    return staticCallWithSurplusArgs(lowerer, call, source, (first) => ({
       kind: "libCall",
       fn: "fetch.streamFrom",
       // Arrays and bytes must cross by reference: their iterators read each
@@ -2067,44 +2067,44 @@ export function lowerStaticFetchCompanionCall(
  * `AbortSignal.abort(reason)`; surplus arguments still evaluate in order and
  * are ignored by the runtime operation. */
 export function lowerStaticAbortControllerCall(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
   const access = call.expression;
   if (
-    L.dynamic ||
+    lowerer.dynamic ||
     call.questionDotToken ||
     call.arguments.some((argument) => ts.isSpreadElement(argument)) ||
     (!ts.isPropertyAccessExpression(access) &&
       !ts.isElementAccessExpression(access)) ||
     access.questionDotToken ||
-    staticResponseMemberName(L, access) !== "abort"
+    staticResponseMemberName(lowerer, access) !== "abort"
   ) {
     return null;
   }
-  const receiverTs = L.checker.getBaseTypeOfLiteralType(
-    L.typeOf(access.expression),
+  const receiverTs = lowerer.checker.getBaseTypeOfLiteralType(
+    lowerer.typeOf(access.expression),
   );
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
     symbol?.name !== "AbortController" ||
-    !L.checker.declarationsOf(symbol).some(
+    !lowerer.checker.declarationsOf(symbol).some(
       (d) =>
         ts.isInterfaceDeclaration(d) &&
-        L.isStdlibFile(d.getSourceFile()),
+        lowerer.isStdlibFile(d.getSourceFile()),
     )
   ) {
     return null;
   }
-  const receiver = L.lowerExpr(access.expression);
+  const receiver = lowerer.lowerExpr(access.expression);
   if (receiver.type.kind !== "dyn") return null;
   const loc = locOf(call);
   const first = call.arguments[0]
-    ? lowerLiveWebValue(L, call.arguments[0])
+    ? lowerLiveWebValue(lowerer, call.arguments[0])
     : dynUndefinedExpr(loc);
-  const args = [staticFirstArgWithSurplusArgs(L, call, first)];
+  const args = [staticFirstArgWithSurplusArgs(lowerer, call, first)];
   return lowerStaticFixedFetchMethodCall(
-    L,
+    lowerer,
     call,
     access,
     "abort",
@@ -2126,12 +2126,12 @@ export function lowerStaticAbortControllerCall(
  * general checked-dynamic boundary the Web Streams contract preserves their
  * object identity for the reader/source callbacks that observe them. */
 export function lowerStaticReadableStreamControllerCall(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
   const access = call.expression;
   if (
-    L.dynamic ||
+    lowerer.dynamic ||
     call.questionDotToken ||
     call.arguments.length > 1 ||
     (!ts.isPropertyAccessExpression(access) &&
@@ -2140,32 +2140,32 @@ export function lowerStaticReadableStreamControllerCall(
   ) {
     return null;
   }
-  const member = staticResponseMemberName(L, access);
+  const member = staticResponseMemberName(lowerer, access);
   if (member !== "enqueue" && member !== "error") return null;
-  const receiverTs = L.checker.getBaseTypeOfLiteralType(
-    L.typeOf(access.expression),
+  const receiverTs = lowerer.checker.getBaseTypeOfLiteralType(
+    lowerer.typeOf(access.expression),
   );
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
     symbol?.name !== "ReadableStreamDefaultController" ||
-    !L.checker.declarationsOf(symbol).some(
+    !lowerer.checker.declarationsOf(symbol).some(
       (d) =>
         ts.isInterfaceDeclaration(d) &&
-        L.isStdlibFile(d.getSourceFile()),
+        lowerer.isStdlibFile(d.getSourceFile()),
     )
   ) {
     return null;
   }
-  const recv = L.lowerExpr(access.expression);
+  const recv = lowerer.lowerExpr(access.expression);
   if (recv.type.kind !== "dyn") return null;
   const loc = locOf(call);
   const args = [
     call.arguments[0]
-      ? lowerLiveWebValue(L, call.arguments[0])
+      ? lowerLiveWebValue(lowerer, call.arguments[0])
       : dynUndefinedExpr(loc),
   ];
   return lowerStaticFixedFetchMethodCall(
-    L,
+    lowerer,
     call,
     access,
     member,
@@ -2187,39 +2187,39 @@ export function lowerStaticReadableStreamControllerCall(
  * the same reason object to the underlying source's cancel callback. Keep a
  * live typed-reference capsule instead of the general dyn boundary's copy. */
 export function lowerStaticReadableStreamCancelCall(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
   const access = call.expression;
   if (
-    L.dynamic ||
+    lowerer.dynamic ||
     call.questionDotToken ||
     call.arguments.length > 1 ||
     call.arguments.some((argument) => ts.isSpreadElement(argument)) ||
     (!ts.isPropertyAccessExpression(access) &&
       !ts.isElementAccessExpression(access)) ||
     access.questionDotToken ||
-    staticResponseMemberName(L, access) !== "cancel"
+    staticResponseMemberName(lowerer, access) !== "cancel"
   ) {
     return null;
   }
-  const resolved = fetchInterfaceInventoryOwner(L, access.expression);
+  const resolved = fetchInterfaceInventoryOwner(lowerer, access.expression);
   if (
     resolved?.owner !== "ReadableStream" &&
     resolved?.owner !== "ReadableStreamDefaultReader"
   ) {
     return null;
   }
-  const receiver = L.lowerExpr(access.expression);
+  const receiver = lowerer.lowerExpr(access.expression);
   if (receiver.type.kind !== "dyn") return null;
   const loc = locOf(call);
   const args = [
     call.arguments[0]
-      ? lowerLiveWebValue(L, call.arguments[0])
+      ? lowerLiveWebValue(lowerer, call.arguments[0])
       : dynUndefinedExpr(loc),
   ];
   return lowerStaticFixedFetchMethodCall(
-    L,
+    lowerer,
     call,
     access,
     "cancel",
@@ -2242,12 +2242,12 @@ export function lowerStaticReadableStreamCancelCall(
  * record/array/bytes listeners need the same live capsule used by stream
  * chunks so repeated crossings still denote one EventListener object. */
 export function lowerStaticAbortSignalListenerCall(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
   const access = call.expression;
   if (
-    L.dynamic ||
+    lowerer.dynamic ||
     call.questionDotToken ||
     call.arguments.length < 2 ||
     call.arguments.some((arg) => ts.isSpreadElement(arg)) ||
@@ -2257,34 +2257,34 @@ export function lowerStaticAbortSignalListenerCall(
   ) {
     return null;
   }
-  const member = staticResponseMemberName(L, access);
+  const member = staticResponseMemberName(lowerer, access);
   if (member !== "addEventListener" && member !== "removeEventListener") {
     return null;
   }
-  const receiverTs = L.checker.getBaseTypeOfLiteralType(
-    L.typeOf(access.expression),
+  const receiverTs = lowerer.checker.getBaseTypeOfLiteralType(
+    lowerer.typeOf(access.expression),
   );
   const symbol = receiverTs.getAliasSymbol() ?? receiverTs.getSymbol();
   if (
     symbol?.name !== "AbortSignal" ||
-    !L.checker.declarationsOf(symbol).some(
+    !lowerer.checker.declarationsOf(symbol).some(
       (d) =>
         ts.isInterfaceDeclaration(d) &&
-        L.isStdlibFile(d.getSourceFile()),
+        lowerer.isStdlibFile(d.getSourceFile()),
     )
   ) {
     return null;
   }
-  const recv = L.lowerExpr(access.expression);
+  const recv = lowerer.lowerExpr(access.expression);
   if (recv.type.kind !== "dyn") return null;
   const loc = locOf(call);
   const args = call.arguments.map((arg, index) =>
     index === 1
-      ? lowerLiveWebValue(L, arg)
-      : L.lowerExprExpecting(arg, DYN)
+      ? lowerLiveWebValue(lowerer, arg)
+      : lowerer.lowerExprExpecting(arg, DYN)
   );
   return lowerStaticFixedFetchMethodCall(
-    L,
+    lowerer,
     call,
     access,
     member,
@@ -2307,7 +2307,7 @@ export function lowerStaticAbortSignalListenerCall(
  * island Web object. JavaScript accepts surplus constructor arguments, so
  * both tiers evaluate them even though AbortController ignores their values. */
 export function lowerAbortControllerNew(
-  L: Lowerer,
+  lowerer: Lowerer,
   expr: ts.NewExpression,
 ): IrExpr | null {
   if (
@@ -2316,12 +2316,12 @@ export function lowerAbortControllerNew(
   ) {
     return null;
   }
-  const symbol = L.resolveValueSymbol(expr.expression);
-  if (!symbol || !L.isStdlibSymbol(symbol)) return null;
+  const symbol = lowerer.resolveValueSymbol(expr.expression);
+  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   const args = expr.arguments ?? [];
   if (args.some((argument) => ts.isSpreadElement(argument))) return null;
   const loc = locOf(expr);
-  if (L.dynamic) {
+  if (lowerer.dynamic) {
     const ctor: IrExpr = {
       kind: "jsOp",
       op: "globalGet",
@@ -2334,7 +2334,7 @@ export function lowerAbortControllerNew(
       kind: "jsOp",
       op: "construct",
       args: [ctor, ...args.map((argument) =>
-        L.jsvalIn(L.lowerExpr(argument), argument)
+        lowerer.jsvalIn(lowerer.lowerExpr(argument), argument)
       )],
       type: JSVAL,
       loc,
@@ -2352,7 +2352,7 @@ export function lowerAbortControllerNew(
     kind: "seqExpr",
     stmts: args.map((argument): IrStmt => ({
       kind: "exprStmt",
-      expr: L.lowerExpr(argument),
+      expr: lowerer.lowerExpr(argument),
       loc: locOf(argument),
     })),
     result,
@@ -2365,7 +2365,7 @@ export function lowerAbortControllerNew(
  * the checked-dynamic tree; dynamic builds construct the island's Web
  * stream directly so the returned handle composes with dynamic fetch. */
 export function lowerStaticReadableStreamNew(
-  L: Lowerer,
+  lowerer: Lowerer,
   expr: ts.NewExpression,
 ): IrExpr | null {
   if (
@@ -2374,12 +2374,12 @@ export function lowerStaticReadableStreamNew(
   ) {
     return null;
   }
-  const symbol = L.resolveValueSymbol(expr.expression);
-  if (!symbol || !L.isStdlibSymbol(symbol)) return null;
+  const symbol = lowerer.resolveValueSymbol(expr.expression);
+  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   const args = expr.arguments ?? [];
   if (args.length > 1) return null;
   const loc = locOf(expr);
-  if (L.dynamic) {
+  if (lowerer.dynamic) {
     const ctor: IrExpr = {
       kind: "jsOp",
       op: "globalGet",
@@ -2391,8 +2391,8 @@ export function lowerStaticReadableStreamNew(
     const source = args[0] === undefined
       ? null
       : ts.isObjectLiteralExpression(args[0])
-        ? lowerIslandObjectLiteral(L, args[0])
-        : L.jsvalIn(L.lowerExpr(args[0]), args[0]);
+        ? lowerIslandObjectLiteral(lowerer, args[0])
+        : lowerer.jsvalIn(lowerer.lowerExpr(args[0]), args[0]);
     return {
       kind: "jsOp",
       op: "construct",
@@ -2405,8 +2405,8 @@ export function lowerStaticReadableStreamNew(
     args.length === 0
       ? dynUndefinedExpr(loc)
       : ts.isObjectLiteralExpression(args[0]!)
-        ? lowerDynObjectLiteral(L, args[0]!)
-        : lowerLiveWebValue(L, args[0]!);
+        ? lowerDynObjectLiteral(lowerer, args[0]!)
+        : lowerLiveWebValue(lowerer, args[0]!);
   return {
     kind: "libCall",
     fn: "fetch.streamNew",
@@ -2421,7 +2421,7 @@ export function lowerStaticReadableStreamNew(
  * ResponseInit snapshot to the native fetch runtime, which returns the same
  * opaque Response handle as fetch(). */
 export function lowerResponseNew(
-  L: Lowerer,
+  lowerer: Lowerer,
   expr: ts.NewExpression,
 ): IrExpr | null {
   if (
@@ -2430,13 +2430,13 @@ export function lowerResponseNew(
   ) {
     return null;
   }
-  const symbol = L.resolveValueSymbol(expr.expression);
-  if (!symbol || !L.isStdlibSymbol(symbol)) return null;
+  const symbol = lowerer.resolveValueSymbol(expr.expression);
+  if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   const args = expr.arguments ?? [];
   if (args.some(ts.isSpreadElement)) return null;
   const loc = locOf(expr);
 
-  if (L.dynamic) {
+  if (lowerer.dynamic) {
     const ctor: IrExpr = {
       kind: "jsOp",
       op: "globalGet",
@@ -2447,8 +2447,8 @@ export function lowerResponseNew(
     };
     const lowered = args.map((arg) =>
       ts.isObjectLiteralExpression(arg)
-        ? lowerIslandObjectLiteral(L, arg)
-        : L.jsvalIn(L.lowerExpr(arg), arg)
+        ? lowerIslandObjectLiteral(lowerer, arg)
+        : lowerer.jsvalIn(lowerer.lowerExpr(arg), arg)
     );
     return {
       kind: "jsOp",
@@ -2472,16 +2472,16 @@ export function lowerResponseNew(
      * deliberately declines accessors/methods, whose observable reads
      * cannot be moved into the runtime WebIDL conversion phase. */
     if (what === "an init value" && value.type.kind === "object") {
-      const sourceType = L.typeOf(node);
+      const sourceType = lowerer.typeOf(node);
       const fields: { name: string; type: IrType }[] = [];
       for (const name of ["headers", "status", "statusText"] as const) {
-        const property = L.checker.getPropertyOfType(sourceType, name);
+        const property = lowerer.checker.getPropertyOfType(sourceType, name);
         if (!property) continue;
-        const propertyType = L.checker.getTypeOfSymbolAtLocation(property, node);
-        const mapped = L.mapTypeOf(propertyType);
+        const propertyType = lowerer.checker.getTypeOfSymbolAtLocation(property, node);
+        const mapped = lowerer.mapTypeOf(propertyType);
         if (!mapped || mapped.kind === "void") {
-          L.noLowering(
-            `new Response with ${what} of type '${L.fmt(value.type)}'`,
+          lowerer.noLowering(
+            `new Response with ${what} of type '${lowerer.fmt(value.type)}'`,
             node,
             `the '${name}' field does not have a checked-dynamic representation`,
           );
@@ -2490,15 +2490,15 @@ export function lowerResponseNew(
       }
       const recordType: IrType = {
         kind: "record",
-        shapeId: L.shapes.intern(
+        shapeId: lowerer.shapes.intern(
           fields,
           false,
           undefined,
           fields.map((field) => field.name),
         ),
       };
-      const projected = L.widthCoerce(value, recordType);
-      if (projected && L.dynConvertible(projected.type)) {
+      const projected = lowerer.widthCoerce(value, recordType);
+      if (projected && lowerer.dynConvertible(projected.type)) {
         return {
           kind: "dynFrom",
           value: projected,
@@ -2508,10 +2508,10 @@ export function lowerResponseNew(
         };
       }
     }
-    if (value.kind === "unitLit" || L.dynConvertible(value.type)) {
+    if (value.kind === "unitLit" || lowerer.dynConvertible(value.type)) {
       if (
         what === "an init value" &&
-        hasLiveWebMutableArm(L, value.type)
+        hasLiveWebMutableArm(lowerer, value.type)
       ) {
         return {
           kind: "dynFrom",
@@ -2528,8 +2528,8 @@ export function lowerResponseNew(
         loc: value.loc,
       };
     }
-    L.noLowering(
-      `new Response with ${what} of type '${L.fmt(value.type)}'`,
+    lowerer.noLowering(
+      `new Response with ${what} of type '${lowerer.fmt(value.type)}'`,
       node,
       "the static constructor accepts string, Uint8Array, ReadableStream, null, and the declared ResponseInit dictionary",
     );
@@ -2538,17 +2538,17 @@ export function lowerResponseNew(
   const bodyNode = args[0];
   const body = bodyNode === undefined
     ? { kind: "unitLit", unit: "undefined", type: { kind: "undefinedT" }, loc } satisfies IrExpr
-    : L.lowerExpr(bodyNode);
+    : lowerer.lowerExpr(bodyNode);
   const initNode = args[1];
   const init = initNode === undefined
     ? { kind: "unitLit", unit: "undefined", type: { kind: "undefinedT" }, loc } satisfies IrExpr
     : ts.isObjectLiteralExpression(initNode)
       ? lowerDynObjectLiteral(
-          L,
+          lowerer,
           initNode,
-          (node, value) => lowerLiveWebValue(L, node, value),
+          (node, value) => lowerLiveWebValue(lowerer, node, value),
         )
-      : L.lowerExpr(initNode);
+      : lowerer.lowerExpr(initNode);
 
   /* JavaScript evaluates every argument expression before WebIDL starts
    * converting either BodyInit or ResponseInit. Capture the raw values in
@@ -2572,7 +2572,7 @@ export function lowerResponseNew(
             loc: value.loc,
           };
     }
-    const local = L.declareHiddenLocal(name, value.type);
+    const local = lowerer.declareHiddenLocal(name, value.type);
     stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
     return {
       kind: "varRef",
@@ -2585,8 +2585,8 @@ export function lowerResponseNew(
   const initRef = capture(init, "%responseInit");
   for (const argument of args.slice(2)) {
     const discarded = ts.isVoidExpression(argument)
-      ? L.lowerExpr(argument.expression)
-      : L.lowerExpr(argument);
+      ? lowerer.lowerExpr(argument.expression)
+      : lowerer.lowerExpr(argument);
     stmts.push({ kind: "exprStmt", expr: discarded, loc: discarded.loc });
   }
   const result: IrExpr = {
@@ -2607,12 +2607,12 @@ export function lowerResponseNew(
  * preserves ReadableStream.from(array)'s element identity; structural
  * widening keeps the compiler's ordinary copy-based width semantics. */
 export function lowerStaticReadableStreamReaderCall(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
   const access = call.expression;
   if (
-    L.dynamic ||
+    lowerer.dynamic ||
     call.questionDotToken ||
     call.arguments.length !== 0 ||
     (!ts.isPropertyAccessExpression(access) &&
@@ -2621,30 +2621,30 @@ export function lowerStaticReadableStreamReaderCall(
   ) {
     return null;
   }
-  const member = staticResponseMemberName(L, access);
+  const member = staticResponseMemberName(lowerer, access);
   if (member !== "read") return null;
-  const receiverTs = L.typeOf(access.expression);
+  const receiverTs = lowerer.typeOf(access.expression);
   const symbol = receiverTs.getSymbol();
   if (
     symbol?.name !== "ReadableStreamDefaultReader" ||
-    !L.checker.declarationsOf(symbol).some(
+    !lowerer.checker.declarationsOf(symbol).some(
       (d) =>
         ts.isInterfaceDeclaration(d) &&
-        L.isStdlibFile(d.getSourceFile()),
+        lowerer.isStdlibFile(d.getSourceFile()),
     )
   ) {
     return null;
   }
-  const type = L.mapTypeOf(L.typeOf(call));
+  const type = lowerer.mapTypeOf(lowerer.typeOf(call));
   if (
     type?.kind !== "promise" ||
     type.inner.kind !== "record"
   ) {
     return null;
   }
-  const receiver = L.lowerExprExpecting(access.expression, DYN);
+  const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
   return lowerStaticFixedFetchMethodCall(
-    L,
+    lowerer,
     call,
     access,
     "read",
@@ -2673,13 +2673,13 @@ export function lowerStaticReadableStreamReaderCall(
    * graph is a BUILD-time artifact — a runtime-computed name has nothing
    * to embed, and the fence says so. Static builds report the per-site
    * SC2012. Null for anything that isn't `import(...)`. */
-  export function lowerDynamicImportCall(L: Lowerer, call: ts.CallExpression): IrExpr | null {
+  export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
     if (call.expression.kind !== ts.SyntaxKind.ImportKeyword) return null;
-    L.requireDynamicApi("'import()'", call);
+    lowerer.requireDynamicApi("'import()'", call);
     const loc = locOf(call);
     const arg = call.arguments[0];
     if (arg === undefined || !ts.isStringLiteralLike(arg)) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         call,
         "dynamic import() of computed specifiers (the module graph embeds at " +
@@ -2687,16 +2687,16 @@ export function lowerStaticReadableStreamReaderCall(
       );
     }
     if (call.arguments.length !== 1) {
-      L.unsupported("SC1090", call, "dynamic import() with import attributes");
+      lowerer.unsupported("SC1090", call, "dynamic import() with import attributes");
     }
-    const res = L.dynImports.get(`${call.getSourceFile().fileName}\u0000${arg.text}`);
+    const res = lowerer.dynImports.get(`${call.getSourceFile().fileName}\u0000${arg.text}`);
     if (!res) {
       // Collection walks every file before bodies lower, so a missing
       // entry is a lowerer bug, not user error.
       throw new InternalCompilerError(`lowerer bug: unresolved dynamic import '${arg.text}'`);
     }
     if (res.kind === "program-module") {
-      return lowerOwnModuleImport(L, call, arg);
+      return lowerOwnModuleImport(lowerer, call, arg);
     }
     if (res.kind !== "module") {
       throw new PoisonError(); // resolution failed — collection reported it
@@ -2727,18 +2727,18 @@ export function lowerStaticReadableStreamReaderCall(
    * signatures) cross as trap functions that throw a pointed TypeError
    * when USED — the namespace still builds, exactly like Node still
    * resolves it. */
-  function lowerOwnModuleImport(L: Lowerer, call: ts.CallExpression, arg: ts.StringLiteralLike): IrExpr {
+  function lowerOwnModuleImport(lowerer: Lowerer, call: ts.CallExpression, arg: ts.StringLiteralLike): IrExpr {
     const loc = locOf(call);
     let dep: ts.SourceFile | null = null;
-    const modSym = L.checker.getSymbolAtLocation(arg);
-    for (const d of (modSym ? L.checker.declarationsOf(modSym) : [])) {
+    const modSym = lowerer.checker.getSymbolAtLocation(arg);
+    for (const d of (modSym ? lowerer.checker.declarationsOf(modSym) : [])) {
       if (ts.isSourceFile(d) && !d.isDeclarationFile) {
         dep = d;
         break;
       }
     }
     if (dep !== null && (dep.fileName.endsWith(".cts") || isCjsJsFile(dep))) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         call,
         `dynamic import of the program's own CommonJS module '${arg.text}' ` +
@@ -2746,9 +2746,9 @@ export function lowerStaticReadableStreamReaderCall(
           "which has no compiled story — require it, or import it statically)",
       );
     }
-    const builder = dep !== null ? dynNsBuilderOf(L, dep, loc) : null;
+    const builder = dep !== null ? dynNsBuilderOf(lowerer, dep, loc) : null;
     if (builder === null) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         call,
         `dynamic import of the program's own module '${arg.text}' ` +
@@ -2757,7 +2757,7 @@ export function lowerStaticReadableStreamReaderCall(
     }
     const promiseCtor: IrExpr = { kind: "jsOp", op: "globalGet", name: "Promise", args: [], type: JSVAL, loc };
     const resolved: IrExpr = { kind: "jsOp", op: "callMethod", name: "resolve", args: [promiseCtor], type: JSVAL, loc };
-    const builderAsync = dep !== null && L.asyncInitFiles.has(dep);
+    const builderAsync = dep !== null && lowerer.asyncInitFiles.has(dep);
     const builderFn: IrType & { kind: "func" } = {
       kind: "func",
       params: [],
@@ -2780,18 +2780,18 @@ export function lowerStaticReadableStreamReaderCall(
    * then `return { <sorted exports> }` as an engine object. Null when the
    * module never joined the compiled graph (no %init exists — an empty
    * preflight order or a cycle the extension refused). */
-  function dynNsBuilderOf(L: Lowerer, dep: ts.SourceFile, loc: IrExpr["loc"]): string | null {
-    const cached = L.dynNsBuilders.get(dep);
+  function dynNsBuilderOf(lowerer: Lowerer, dep: ts.SourceFile, loc: IrExpr["loc"]): string | null {
+    const cached = lowerer.dynNsBuilders.get(dep);
     if (cached !== undefined) return cached;
-    const initName = L.initNameOf.get(dep);
+    const initName = lowerer.initNameOf.get(dep);
     if (initName === undefined) return null;
-    const rawTag = L.fileTag.get(dep) ?? "";
+    const rawTag = lowerer.fileTag.get(dep) ?? "";
     const name = `%dynns.${rawTag === "" ? "e." : rawTag.replace(/^%/, "")}`;
-    L.dynNsBuilders.set(dep, name);
-    const isAsync = L.asyncInitFiles.has(dep);
+    lowerer.dynNsBuilders.set(dep, name);
+    const isAsync = lowerer.asyncInitFiles.has(dep);
     const fnCtx = newFnCtx(true, null, null, JSVAL);
     fnCtx.isAsync = isAsync;
-    L.fnStack.push(fnCtx);
+    lowerer.fnStack.push(fnCtx);
     try {
       const body: IrStmt[] = [];
       // A synchronous entry has no run-once guard, so its historical
@@ -2800,7 +2800,7 @@ export function lowerStaticReadableStreamReaderCall(
       // promise is essential for top-level `await import("./self")`,
       // which deadlocks (and ultimately exits 13) in Node rather than
       // exposing a half-evaluated namespace.
-      if (dep !== L.entry || isAsync) {
+      if (dep !== lowerer.entry || isAsync) {
         const call: IrExpr = {
           kind: "call",
           callee: initName,
@@ -2808,7 +2808,7 @@ export function lowerStaticReadableStreamReaderCall(
           type: isAsync ? { kind: "promise", inner: VOID } : VOID,
           loc,
         };
-        const cyclePromiseId = L.asyncCyclePromiseOf.get(dep);
+        const cyclePromiseId = lowerer.asyncCyclePromiseOf.get(dep);
         if (isAsync && cyclePromiseId !== undefined) {
           // Starting the REQUESTED member matters for dynamically-only
           // cycles: build-time discovery may have encountered another
@@ -2842,7 +2842,7 @@ export function lowerStaticReadableStreamReaderCall(
       // Node sorts module-namespace keys (code-unit order); tsc erases
       // type-only exports, so only VALUE exports appear.
       const entries: [string, ts.Symbol][] = [];
-      const modSym = L.checker.getSymbolAtLocation(dep);
+      const modSym = lowerer.checker.getSymbolAtLocation(dep);
       modSym?.getExports().forEach((sym: ts.Symbol, key: ts.__String) => {
         const n = String(key);
         if (!n.startsWith("__") && n !== "export=") entries.push([n, sym]);
@@ -2850,7 +2850,7 @@ export function lowerStaticReadableStreamReaderCall(
       entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
       const args: IrExpr[] = [];
       for (const [exportName, sym] of entries) {
-        const value = exportJsvalValue(L, exportName, sym, loc);
+        const value = exportJsvalValue(lowerer, exportName, sym, loc);
         if (value === null) continue;
         args.push(
           { kind: "jsMarshal", value: { kind: "strLit", value: exportName, type: STRING, loc }, type: JSVAL, loc },
@@ -2858,8 +2858,8 @@ export function lowerStaticReadableStreamReaderCall(
         );
       }
       body.push({ kind: "return", value: { kind: "jsOp", op: "objLit", args, type: JSVAL, loc }, loc });
-      const ctx = L.ctx;
-      L.liftedFns.push({
+      const ctx = lowerer.ctx;
+      lowerer.liftedFns.push({
         name,
         params: [],
         returnType: JSVAL,
@@ -2870,7 +2870,7 @@ export function lowerStaticReadableStreamReaderCall(
         loc,
       });
     } finally {
-      L.fnStack.pop();
+      lowerer.fnStack.pop();
     }
     return name;
   }
@@ -2883,17 +2883,17 @@ export function lowerStaticReadableStreamReaderCall(
    * called or constructed — the namespace still builds (Node resolves it;
    * only the USE has no compiled story). Null for exports that do not exist
    * at runtime (type-only). */
-  function exportJsvalValue(L: Lowerer, name: string, sym: ts.Symbol, loc: IrExpr["loc"]): IrExpr | null {
+  function exportJsvalValue(lowerer: Lowerer, name: string, sym: ts.Symbol, loc: IrExpr["loc"]): IrExpr | null {
     const trap = (what: string): IrExpr =>
       islandTrapFnValue(
-        L,
+        lowerer,
         `the '${name}' export is ${what} of the compiled program, which cannot cross into dynamically-executed code yet`,
         loc,
       );
     let resolved = sym;
     if (sym.flags & ts.SymbolFlags.Alias) {
       // `export type { x }` / `export { type x }`: erased at runtime.
-      for (const d of L.checker.declarationsOf(sym)) {
+      for (const d of lowerer.checker.declarationsOf(sym)) {
         if (ts.isExportSpecifier(d)) {
           const exportDecl = d.parent.parent;
           if (d.isTypeOnly || (ts.isExportDeclaration(exportDecl) && exportDecl.isTypeOnly)) return null;
@@ -2903,10 +2903,10 @@ export function lowerStaticReadableStreamReaderCall(
           if (d.isTypeOnly || (ts.isImportClause(clause) && clause.phaseModifier === ts.SyntaxKind.TypeKeyword)) return null;
         }
       }
-      resolved = L.checker.getAliasedSymbol(sym);
+      resolved = lowerer.checker.getAliasedSymbol(sym);
     }
     if (!(resolved.flags & ts.SymbolFlags.Value)) return null; // pure type surface
-    const g = L.globalsBySymbol.get(resolved);
+    const g = lowerer.globalsBySymbol.get(resolved);
     if (g) {
       const ref: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
       if (ref.type.kind === "jsval") return ref;
@@ -2914,17 +2914,17 @@ export function lowerStaticReadableStreamReaderCall(
         return { kind: "jsOp", op: ref.type.kind === "undefinedT" ? "undefLit" : "nullLit", args: [], type: JSVAL, loc };
       }
       if (ref.type.kind === "func") {
-        return canMarshalTypedFuncIntoIsland(ref.type, (id) => L.shapes.get(id), (id) => L.unions.get(id))
+        return canMarshalTypedFuncIntoIsland(ref.type, (id) => lowerer.shapes.get(id), (id) => lowerer.unions.get(id))
           ? { kind: "jsMarshal", value: ref, type: JSVAL, loc }
-          : trap(`a function value of type '${L.fmt(ref.type)}'`);
+          : trap(`a function value of type '${lowerer.fmt(ref.type)}'`);
       }
-      if (L.boundarySafe(ref.type)) return { kind: "jsMarshal", value: ref, type: JSVAL, loc };
-      if (L.jsvalLiftable(ref.type)) return L.jsvalLiftExpr(ref, loc);
-      return trap(`a value of type '${L.fmt(ref.type)}'`);
+      if (lowerer.boundarySafe(ref.type)) return { kind: "jsMarshal", value: ref, type: JSVAL, loc };
+      if (lowerer.jsvalLiftable(ref.type)) return lowerer.jsvalLiftExpr(ref, loc);
+      return trap(`a value of type '${lowerer.fmt(ref.type)}'`);
     }
-    const sig = L.fnSigsBySymbol.get(resolved);
-    const decl0 = L.checker.declarationsOf(resolved).find(
-      (d) => ts.isFunctionDeclaration(d) && (ts.isSourceFile(d.parent) || L.nsBlocks.get(d.parent) === "flattened"),
+    const sig = lowerer.fnSigsBySymbol.get(resolved);
+    const decl0 = lowerer.checker.declarationsOf(resolved).find(
+      (d) => ts.isFunctionDeclaration(d) && (ts.isSourceFile(d.parent) || lowerer.nsBlocks.get(d.parent) === "flattened"),
     );
     if (sig && decl0) {
       if (!sig.params.every((p) => p.mode === "required")) {
@@ -2935,10 +2935,10 @@ export function lowerStaticReadableStreamReaderCall(
         params: sig.params.map((p) => p.type),
         ret: sig.returnType,
       };
-      if (!canMarshalTypedFuncIntoIsland(funcType, (id) => L.shapes.get(id), (id) => L.unions.get(id))) {
-        return trap(`a function of type '${L.fmt(funcType)}'`);
+      if (!canMarshalTypedFuncIntoIsland(funcType, (id) => lowerer.shapes.get(id), (id) => lowerer.unions.get(id))) {
+        return trap(`a function of type '${lowerer.fmt(funcType)}'`);
       }
-      L.noteEdge(sig.name);
+      lowerer.noteEdge(sig.name);
       return {
         kind: "jsMarshal",
         value: { kind: "closure", fnName: sig.name, captures: [], type: funcType, loc },
@@ -2946,7 +2946,7 @@ export function lowerStaticReadableStreamReaderCall(
         loc,
       };
     }
-    if (L.genericFnsBySymbol.has(resolved)) return trap("a generic function");
+    if (lowerer.genericFnsBySymbol.has(resolved)) return trap("a generic function");
     const flags = resolved.flags;
     if (flags & ts.SymbolFlags.Class) return trap("a class");
     if (flags & ts.SymbolFlags.Enum) return trap("an enum object");
@@ -2961,8 +2961,8 @@ export function lowerStaticReadableStreamReaderCall(
    * namespace holds the value too), property probes answer like a
    * function's, and calling or `new`-ing it runs the body, which throws
    * the pointed TypeError. */
-  function islandTrapFnValue(L: Lowerer, message: string, loc: IrExpr["loc"]): IrExpr {
-    void L;
+  function islandTrapFnValue(lowerer: Lowerer, message: string, loc: IrExpr["loc"]): IrExpr {
+    void lowerer;
     const code = `throw new TypeError(${JSON.stringify(message)})`;
     return {
       kind: "jsOp",
@@ -2986,7 +2986,7 @@ export function lowerStaticReadableStreamReaderCall(
    * are admitted; engine property names have no identifier restriction. Plain
    * spreads copy through the engine's CopyDataProperties operation in
    * source order, including nested RequestInit/header dictionaries. */
-  function lowerIslandObjectLiteral(L: Lowerer, expr: ts.ObjectLiteralExpression): IrExpr {
+  function lowerIslandObjectLiteral(lowerer: Lowerer, expr: ts.ObjectLiteralExpression): IrExpr {
     const loc = locOf(expr);
     let args: IrExpr[] = [];
     let acc: IrExpr | null = null;
@@ -3002,8 +3002,8 @@ export function lowerStaticReadableStreamReaderCall(
       if (ts.isSpreadAssignment(prop)) {
         flushFields();
         const spread = ts.isObjectLiteralExpression(prop.expression)
-          ? lowerIslandObjectLiteral(L, prop.expression)
-          : L.jsvalIn(L.lowerExpr(prop.expression), prop.expression);
+          ? lowerIslandObjectLiteral(lowerer, prop.expression)
+          : lowerer.jsvalIn(lowerer.lowerExpr(prop.expression), prop.expression);
         acc ??= { kind: "jsOp", op: "objLit", args: [], type: JSVAL, loc };
         acc = { kind: "jsOp", op: "objSpread", args: [acc, spread], type: JSVAL, loc: locOf(prop) };
         continue;
@@ -3013,15 +3013,15 @@ export function lowerStaticReadableStreamReaderCall(
         !ts.isShorthandPropertyAssignment(prop) &&
         !ts.isMethodDeclaration(prop)
       ) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           prop,
           "this property form in an island-built object literal (use a spelled or pure const-folded key with a value or method)",
         );
       }
-      const propertyName = requestInitLiteralKey(L, prop);
+      const propertyName = requestInitLiteralKey(lowerer, prop);
       if (propertyName === null) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           prop,
           "this property key in an island-built object literal (use a spelled or pure const-folded key)",
@@ -3040,18 +3040,18 @@ export function lowerStaticReadableStreamReaderCall(
             ? prop.name as ts.Identifier
             : prop;
       if (ts.isObjectLiteralExpression(valueNode)) {
-        args.push(lowerIslandObjectLiteral(L, valueNode));
+        args.push(lowerIslandObjectLiteral(lowerer, valueNode));
       } else if (
         ts.isArrayLiteralExpression(valueNode) &&
         !valueNode.elements.some(ts.isSpreadElement)
       ) {
-        const elems = valueNode.elements.map((el) => L.jsvalIn(L.lowerExpr(el), el));
+        const elems = valueNode.elements.map((el) => lowerer.jsvalIn(lowerer.lowerExpr(el), el));
         args.push({ kind: "jsOp", op: "arrLit", args: elems, type: JSVAL, loc: locOf(valueNode) });
       } else {
         const value = ts.isMethodDeclaration(valueNode)
-          ? (L.rejectThisInObjectMethod(valueNode.body ?? valueNode), L.lowerLambda(valueNode))
-          : L.lowerExpr(valueNode);
-        args.push(L.jsvalIn(value, valueNode));
+          ? (lowerer.rejectThisInObjectMethod(valueNode.body ?? valueNode), lowerer.lowerLambda(valueNode))
+          : lowerer.lowerExpr(valueNode);
+        args.push(lowerer.jsvalIn(value, valueNode));
       }
     }
     flushFields();
@@ -3068,13 +3068,13 @@ export function lowerStaticReadableStreamReaderCall(
    * receiver, arity, and argument types against ambient/scriptc.d.ts; an
    * ambient member missing from ISLAND_SURFACE returns null into the
    * existing generic rejections. */
-  export function lowerIslandMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerIslandMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
-    if (L.chainBlocked(access, call)) return null;
+    if (lowerer.chainBlocked(access, call)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     const finish = (receiver: IrExpr, entry: IslandFnEntry): IrExpr => {
-      const args = call.arguments.map((a) => L.jsvalIn(L.lowerExpr(a), a));
+      const args = call.arguments.map((a) => lowerer.jsvalIn(lowerer.lowerExpr(a), a));
       const result: IrExpr = {
         kind: "jsOp", op: "callMethod", name, args: [receiver, ...args], type: JSVAL, loc,
       };
@@ -3087,13 +3087,13 @@ export function lowerStaticReadableStreamReaderCall(
     // RequestInit literal into fetch without a JSON detour. The prelude
     // implements all three statics.
     {
-      const sigMember = L.stdlibGlobalMember(access, "AbortSignal");
+      const sigMember = lowerer.stdlibGlobalMember(access, "AbortSignal");
       if (
         (sigMember === "timeout" || sigMember === "abort" || sigMember === "any") &&
         call.arguments.every((argument) => !ts.isSpreadElement(argument))
       ) {
-        L.requireDynamicApi(`'AbortSignal.${sigMember}'`, call);
-        const args = call.arguments.map((a) => L.jsvalIn(L.lowerExpr(a), a));
+        lowerer.requireDynamicApi(`'AbortSignal.${sigMember}'`, call);
+        const args = call.arguments.map((a) => lowerer.jsvalIn(lowerer.lowerExpr(a), a));
         const signalGlobal: IrExpr = {
           kind: "jsOp", op: "globalGet", name: "AbortSignal", args: [], type: JSVAL, loc,
         };
@@ -3104,10 +3104,10 @@ export function lowerStaticReadableStreamReaderCall(
       }
     }
     if (
-      L.stdlibGlobalMember(access, "ReadableStream") === "from" &&
+      lowerer.stdlibGlobalMember(access, "ReadableStream") === "from" &&
       call.arguments.every((argument) => !ts.isSpreadElement(argument))
     ) {
-      L.requireDynamicApi("'ReadableStream.from'", call);
+      lowerer.requireDynamicApi("'ReadableStream.from'", call);
       const streamGlobal: IrExpr = {
         kind: "jsOp",
         op: "globalGet",
@@ -3123,14 +3123,14 @@ export function lowerStaticReadableStreamReaderCall(
         args: [
           streamGlobal,
           ...call.arguments.map((argument) =>
-            L.jsvalIn(L.lowerExpr(argument), argument)
+            lowerer.jsvalIn(lowerer.lowerExpr(argument), argument)
           ),
         ],
         type: JSVAL,
         loc,
       };
     }
-    const isMath = L.stdlibGlobalMember(access, "Math") !== null;
+    const isMath = lowerer.stdlibGlobalMember(access, "Math") !== null;
     // The STATIC Math members (floor/min/max/random): one C call IS the
     // JS operation — no island, no --dynamic. Only the tabled arity with
     // plain (non-spread) arguments takes this path; other forms fall
@@ -3153,7 +3153,7 @@ export function lowerStaticReadableStreamReaderCall(
         if (call.arguments.length === 0) {
           return { kind: "numLit", value: name === "max" ? -Infinity : Infinity, type: F64, loc };
         }
-        const args = call.arguments.map((a) => L.lowerExprExpecting(a, F64));
+        const args = call.arguments.map((a) => lowerer.lowerExprExpecting(a, F64));
         let acc = args[0]!;
         for (let i = 1; i < args.length; i++) {
           acc = { kind: "libCall", fn: staticMath.fn, args: [acc, args[i]!], type: F64, loc };
@@ -3161,7 +3161,7 @@ export function lowerStaticReadableStreamReaderCall(
         return acc;
       }
       if (call.arguments.length === staticMath.arity) {
-        const args = call.arguments.map((a) => L.lowerExprExpecting(a, F64));
+        const args = call.arguments.map((a) => lowerer.lowerExprExpecting(a, F64));
         return { kind: "libCall", fn: staticMath.fn, args, type: F64, loc };
       }
     }
@@ -3178,12 +3178,12 @@ export function lowerStaticReadableStreamReaderCall(
       ts.isSpreadElement(call.arguments[0]!)
     ) {
       const spread = call.arguments[0]! as ts.SpreadElement;
-      const src = L.lowerExpr(spread.expression);
+      const src = lowerer.lowerExpr(spread.expression);
       if (src.type.kind !== "array" || src.type.elem.kind !== "f64") {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           spread,
-          `spreading '${L.fmt(src.type)}' into Math.${name} (only a number[] spreads)`,
+          `spreading '${lowerer.fmt(src.type)}' into Math.${name} (only a number[] spreads)`,
         );
       }
       return {
@@ -3196,13 +3196,13 @@ export function lowerStaticReadableStreamReaderCall(
     }
     const mathFn = isMath ? own(ISLAND_SURFACE.math.fns, name) : undefined;
     if (mathFn && call.arguments.length === mathFn.args.length) {
-      L.requireDynamicApi(`'Math.${name}'`, call);
+      lowerer.requireDynamicApi(`'Math.${name}'`, call);
       return finish(
         { kind: "jsOp", op: "globalGet", name: "Math", args: [], type: JSVAL, loc },
         mathFn,
       );
     }
-    const kind = L.mapTypeOf(L.typeOf(access.expression))?.kind;
+    const kind = lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind;
     const entry =
       kind === "f64"
         ? own(ISLAND_SURFACE.number, name)
@@ -3210,25 +3210,25 @@ export function lowerStaticReadableStreamReaderCall(
           ? own(ISLAND_SURFACE.string, name)
           : undefined;
     if (!entry || call.arguments.length !== entry.args.length) return null;
-    if (!L.isStdlibMember(access)) return null;
-    L.requireDynamicApi(
+    if (!lowerer.isStdlibMember(access)) return null;
+    lowerer.requireDynamicApi(
       `'.${name}()' on ${kind === "f64" ? "numbers" : "strings"}`,
       call,
     );
-    return finish(L.jsvalIn(L.lowerExpr(access.expression), access.expression), entry);
+    return finish(lowerer.jsvalIn(lowerer.lowerExpr(access.expression), access.expression), entry);
   }
 
 /** `Math.PI` / `Math.E` property READS: getProp off globalGet("Math"),
    * exiting to the declared number type. Math methods referenced without a
    * call are rejected specifically (no value form exists, --dynamic or
    * not). Null for non-Math receivers (the property chain keeps trying). */
-  export function lowerMathProperty(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
-    const member = L.stdlibGlobalMember(expr, "Math");
+  export function lowerMathProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+    const member = lowerer.stdlibGlobalMember(expr, "Math");
     if (member === null) return null;
     const loc = locOf(expr);
     const propType = own(ISLAND_SURFACE.math.props, member);
     if (propType !== undefined) {
-      L.requireDynamicApi(`'Math.${member}'`, expr);
+      lowerer.requireDynamicApi(`'Math.${member}'`, expr);
       const math: IrExpr = { kind: "jsOp", op: "globalGet", name: "Math", args: [], type: JSVAL, loc };
       const read: IrExpr = { kind: "jsOp", op: "getProp", name: member, args: [math], type: JSVAL, loc };
       return { kind: "jsExit", value: read, type: propType, loc };
@@ -3237,7 +3237,7 @@ export function lowerStaticReadableStreamReaderCall(
       own(ISLAND_SURFACE.math.fns, member) !== undefined ||
       own(STATIC_MATH_FNS, member) !== undefined
     ) {
-      L.unsupported("SC1090", expr, `Math methods as values (call '${member}' directly)`);
+      lowerer.unsupported("SC1090", expr, `Math methods as values (call '${member}' directly)`);
     }
     return null; // declared-but-untabled members fall through generically
   }
@@ -3246,12 +3246,12 @@ export function lowerStaticReadableStreamReaderCall(
    * or null when the type isn't package-declared. Union parts are searched
    * too: `string | Command` fails mapping as a whole, but the blame (and
    * the --dynamic attribution) belongs to the package-declared part. */
-  export function npmPackageOf(L: Lowerer, type: ts.Type): string | null {
-    const pkg = L.npmPackageOfSymbol(type.getAliasSymbol() ?? type.getSymbol());
+  export function npmPackageOf(lowerer: Lowerer, type: ts.Type): string | null {
+    const pkg = lowerer.npmPackageOfSymbol(type.getAliasSymbol() ?? type.getSymbol());
     if (pkg) return pkg;
     if (type.isUnionType()) {
       for (const part of ts.constituentTypes(type)) {
-        const partPkg = L.npmPackageOf(part);
+        const partPkg = lowerer.npmPackageOf(part);
         if (partPkg) return partPkg;
       }
     }
@@ -3264,22 +3264,22 @@ export function lowerStaticReadableStreamReaderCall(
    * attribute the site to the package instead of the generic property/
    * method rejection. No-op under --dynamic (the island paths claimed
    * these) and for non-package receivers, so callers' fallbacks apply. */
-  export function npmMemberFence(L: Lowerer, access: ts.PropertyAccessExpression): void {
-    if (L.dynamic) return;
+  export function npmMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpression): void {
+    if (lowerer.dynamic) return;
     const pkg =
-      L.npmPackageOf(L.typeOf(access.expression)) ??
-      L.npmPackageOfSymbol(L.checker.getSymbolAtLocation(access.name));
+      lowerer.npmPackageOf(lowerer.typeOf(access.expression)) ??
+      lowerer.npmPackageOfSymbol(lowerer.checker.getSymbolAtLocation(access.name));
     if (!pkg) return;
-    L.pushDiag(requiresDynamicPackageDiag(pkg, locOf(access)));
+    lowerer.pushDiag(requiresDynamicPackageDiag(pkg, locOf(access)));
     throw new PoisonError();
   }
 
 /** The npm package a SYMBOL is declared by, or null. The symbol half of
    * npmPackageOf, also asked directly for import-alias bindings (whose
    * aliased symbol is the package's export). */
-  export function npmPackageOfSymbol(L: Lowerer, sym: ts.Symbol | undefined): string | null {
-    const decls = sym ? L.checker.declarationsOf(sym) : undefined;
+  export function npmPackageOfSymbol(lowerer: Lowerer, sym: ts.Symbol | undefined): string | null {
+    const decls = sym ? lowerer.checker.declarationsOf(sym) : undefined;
     if (!decls || decls.length === 0) return null;
-    if (!decls.every((d) => L.isNpmFile(d.getSourceFile()))) return null;
+    if (!decls.every((d) => lowerer.isNpmFile(d.getSourceFile()))) return null;
     return npmPackageNameOf(decls[0]!.getSourceFile().fileName);
   }

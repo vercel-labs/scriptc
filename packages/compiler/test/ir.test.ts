@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { validateModule } from "../src/ir/validate.js";
 import { deserializeModule, serializeModule } from "../src/ir/serialize.js";
 import { fibModule } from "./fixtures/fib-ir.js";
-import { BOOL, F64, type IrModule } from "../src/ir/nodes.js";
+import { BOOL, F64, type IrModule } from "../src/ir/ir.js";
 
 test("hand-built fib module validates", () => {
   expect(validateModule(fibModule)).toEqual([]);

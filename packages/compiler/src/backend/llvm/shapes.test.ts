@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { RUNTIME_EMITTER_CLASS } from "../../ir/nodes.js";
+import { RUNTIME_EMITTER_CLASS } from "../../ir/ir.js";
 import { releaseSym, type ShapeHost, vAdapters } from "./shapes.js";
 
 function declarationHost(): { host: ShapeHost; declarations: string[] } {

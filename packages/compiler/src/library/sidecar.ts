@@ -45,7 +45,7 @@ import { InternalCompilerError } from "../errors.js";
  * reach that slot proved whole-in-range. Undeclared numeric slots keep
  * spelling `f64` and the empty list stays a valid attestation that no
  * slot was integer-classed. `deterministic` is computed from the module
- * graph (ir/nodes.ts's conservative ambient-surface scan), never
+ * graph (ir/ir.ts's conservative ambient-surface scan), never
  * defaulted. */
 import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
@@ -53,8 +53,8 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { libSidecarComputedDiag, libSidecarDiag, libSidecarMergedDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { ContractFacts, ContractField, ContractTypeDecl, ContractTypeShape } from "../frontend/lib-contract.js";
-import type { SrcLoc } from "../ir/nodes.js";
-import type { LibraryProfile, LibrarySidecarConfig } from "./profile.js";
+import type { SrcLoc } from "../ir/ir.js";
+import type { LibraryProfile, LibrarySidecarConfig } from "./library-profile.js";
 import { BUILD_ID_SEED, hex16, lengthPrefixedStream, SOURCE_HASH_SEED, wyhash64 } from "./wyhash.js";
 
 /** The sidecar schema's format this emitter writes. */
@@ -560,7 +560,7 @@ class Projector {
       case "object":
         // A declared `{}` annotation is TypeScript's top non-nullish type,
         // not the inferred shape of an empty object literal. The frontend
-        // therefore lowers it to dyn (types.ts's declared-empty rule).
+        // therefore lowers it to dyn (type-mapper.ts's declared-empty rule).
         return shape.fields.length === 0
           ? { kind: "dyn" }
           : this.irRecordPattern(shape.fields);

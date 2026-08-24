@@ -79,7 +79,7 @@ import type {
   IrStmt,
   IrType,
   SrcLoc,
-} from "../ir/nodes.js";
+} from "../ir/ir.js";
 
 /* ── the abstract domain ────────────────────────────────────────────────── */
 

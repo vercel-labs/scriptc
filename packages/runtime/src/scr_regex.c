@@ -4,7 +4,7 @@
  * implementation the dynamic island uses — compiled standalone (libregexp.c
  * + libunicode.c; cutils is header-only) and linked ONLY into programs that
  * contain a regex literal. This file is likewise regex-only: it is NOT in
- * the always-compiled runtime source list (see cc.ts), so regex-free
+ * the always-compiled runtime source list (see native-toolchain.ts), so regex-free
  * programs keep a byte-identical link line.
  *
  * - Every ScrRegex today is an immortal interned literal (the compiler

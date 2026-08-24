@@ -9,7 +9,7 @@ import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError, dynUndefinedExpr, ladderFenceExpr, nodeThrowExpr, own } from "./lowerer.js";
 import { canonicalBuiltinModule, isJsSourceFile, locOf, requireSpecOf } from "../program.js";
-import { isRelativeSpecifier } from "../shared.js";
+import { isRelativeSpecifier } from "../workspace-registry.js";
 import { probeNodeRequireRefusal } from "../npm.js";
 import { isNpmStaticPackage } from "../npm-static.js";
 import { trackedReadFile } from "../input-tracker.js";
@@ -33,13 +33,13 @@ import { CRYPTO_CIPHERS, CRYPTO_CONSTANTS, CRYPTO_CURVES, CRYPTO_HASHES } from "
 import { timerStyleCallback } from "./lower-calls.js";
 import { registerHttpClientFnBinding, voidizedCallback } from "./lower-server.js";
 import { pairsSnapshotHelper } from "./pairs-snapshot.js";
-import { BOOL, BYTES_U8, CHILD_T, CHILDSTREAM_T, DYN, F64, FILEHANDLE_T, FSWATCHER_T, PROCSTREAM_T, IrExpr, IrFunction, IrLibFn, IrLocal, IrStmt, IrType, JSVAL, NULL_T, SEARCH_PARAMS_T, SPAWNRES_T, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, canBoxFuncIntoDyn, canConvertToDyn, funcOf, isUnitType, typeEquals, typeKey } from "../../ir/nodes.js";
+import { BOOL, BYTES_U8, CHILD_T, CHILDSTREAM_T, DYN, F64, FILEHANDLE_T, FSWATCHER_T, PROCSTREAM_T, IrExpr, IrFunction, IrLibFn, IrLocal, IrStmt, IrType, JSVAL, NULL_T, SEARCH_PARAMS_T, SPAWNRES_T, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, canBoxFuncIntoDyn, canConvertToDyn, funcOf, isUnitType, typeEquals, typeKey } from "../../ir/ir.js";
 import { boolLit, countedFor, numLit, strLit, varRef } from "../../ir/build.js";
 
 /** Lower an optional builtin argument whose checker type is statically
  * undefined/void. The returned expression exists only to preserve effects;
  * callers replace its value with the API default. */
-function lowerStaticallyUndefinedBuiltinArg(L: Lowerer, node: ts.Expression): IrExpr | null {
+function lowerStaticallyUndefinedBuiltinArg(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
   const peel = (value: ts.Expression): ts.Expression => {
     let expr = value;
     while (
@@ -54,14 +54,14 @@ function lowerStaticallyUndefinedBuiltinArg(L: Lowerer, node: ts.Expression): Ir
   };
   let expr = node;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
-  if ((L.typeOf(expr).flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) === 0) return null;
+  if ((lowerer.typeOf(expr).flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) === 0) return null;
   expr = peel(expr);
   let sawVoid = false;
   while (ts.isVoidExpression(expr)) {
     sawVoid = true;
     expr = peel(expr.expression);
   }
-  return L.lowerExpr(sawVoid ? expr : node);
+  return lowerer.lowerExpr(sawVoid ? expr : node);
 }
 
 function defaultAfterUndefined(value: IrExpr, dflt: IrExpr): IrExpr {
@@ -79,20 +79,20 @@ function defaultAfterUndefined(value: IrExpr, dflt: IrExpr): IrExpr {
  * preserve their effects and select the default; a runtime unit-armed union
  * uses nullish selection when every non-unit arm is the expected type. */
 function lowerBuiltinOptionalDefault(
-  L: Lowerer,
+  lowerer: Lowerer,
   node: ts.Expression,
   expected: IrType,
   dflt: IrExpr,
   nullIsDefault = false,
 ): IrExpr {
-  const undefinedArg = lowerStaticallyUndefinedBuiltinArg(L, node);
+  const undefinedArg = lowerStaticallyUndefinedBuiltinArg(lowerer, node);
   if (undefinedArg) return defaultAfterUndefined(undefinedArg, dflt);
-  if (nullIsDefault && (L.typeOf(node).flags & ts.TypeFlags.Null) !== 0) {
-    return defaultAfterUndefined(L.lowerExpr(node), dflt);
+  if (nullIsDefault && (lowerer.typeOf(node).flags & ts.TypeFlags.Null) !== 0) {
+    return defaultAfterUndefined(lowerer.lowerExpr(node), dflt);
   }
-  const value = L.lowerExpr(node);
+  const value = lowerer.lowerExpr(node);
   if (value.type.kind === "union") {
-    const def = L.unions.get(value.type.unionId);
+    const def = lowerer.unions.get(value.type.unionId);
     const allowed = def?.arms.every(
       (arm) =>
         typeEquals(arm, expected) ||
@@ -103,7 +103,7 @@ function lowerBuiltinOptionalDefault(
       return { kind: "nullish", left: value, right: dflt, type: expected, loc: value.loc };
     }
   }
-  return L.coerceInto(node, value, expected);
+  return lowerer.coerceInto(node, value, expected);
 }
 
 /** Resolves an identifier to a supported builtin-module IMPORT BINDING:
@@ -116,9 +116,9 @@ function lowerBuiltinOptionalDefault(
    * and a same-named local or user function has a different symbol whose
    * declaration is not an import specifier. Returns the CANONICAL module
    * name and the EXPORTED member name (not the local alias). */
-  export function builtinImportOf(L: Lowerer, ident: ts.Identifier): { module: string; member: string } | null {
-    const symbol = L.checker.getSymbolAtLocation(ident);
-    const decl = symbol ? L.checker.declarationsOf(symbol)[0] : undefined;
+  export function builtinImportOf(lowerer: Lowerer, ident: ts.Identifier): { module: string; member: string } | null {
+    const symbol = lowerer.checker.getSymbolAtLocation(ident);
+    const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
     if (!decl) return null;
     // The CommonJS twin of the named import: a destructured require
     // binding (`const { readFileSync } = require("fs")`, renames via
@@ -137,7 +137,7 @@ function lowerBuiltinOptionalDefault(
           // const { createSign } = crypto;` — test/common's idiom. The
           // destructure re-binds module members under local names, so the
           // bindings key the same tables as the direct-require form.
-          : builtinNamespaceDestructureModuleOf(L, varDecl);
+          : builtinNamespaceDestructureModuleOf(lowerer, varDecl);
         if (module === null) return null;
         const member = decl.propertyName && ts.isIdentifier(decl.propertyName)
           ? decl.propertyName.text
@@ -183,8 +183,8 @@ function lowerBuiltinOptionalDefault(
     // home a direct import of the builtin resolves to, so the binding
     // keys the same tables under the builtin's own member name.
     if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
-      const target = L.checker.getAliasedSymbol(symbol);
-      const tdecl = L.checker.declarationsOf(target)[0];
+      const target = lowerer.checker.getAliasedSymbol(symbol);
+      const tdecl = lowerer.checker.declarationsOf(target)[0];
       if (tdecl !== undefined && tdecl.getSourceFile().isDeclarationFile) {
         for (let p: ts.Node | undefined = tdecl.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
           if (ts.isModuleDeclaration(p) && ts.isStringLiteral(p.name)) {
@@ -221,17 +221,17 @@ function lowerBuiltinOptionalDefault(
    * default needs a missing-member probe — those keep the existing
    * namespace-as-value fence. The direct-require initializer answers null
    * here (its own arm already resolves it). */
-  export function builtinNamespaceDestructureModuleOf(L: Lowerer, decl: ts.VariableDeclaration): string | null {
+  export function builtinNamespaceDestructureModuleOf(lowerer: Lowerer, decl: ts.VariableDeclaration): string | null {
     if (decl.name === undefined || !ts.isObjectBindingPattern(decl.name) || decl.initializer === undefined) return null;
     // `const { join } = require("node:path")` through a createRequire
     // binding: the call IS the namespace — same table keying.
     let module: string | null = null;
     const init = stripTypeCasts(decl.initializer);
     if (ts.isCallExpression(init)) {
-      const cr = createRequireSpecOf(L, init);
+      const cr = createRequireSpecOf(lowerer, init);
       module = cr !== null && cr.spec !== null ? canonicalBuiltinModule(cr.spec) : null;
     } else if (ts.isIdentifier(init)) {
-      module = L.builtinNamespaceModuleOf(init);
+      module = lowerer.builtinNamespaceModuleOf(init);
     }
     if (module === null) return null;
     for (const el of decl.name.elements) {
@@ -275,11 +275,11 @@ function lowerBuiltinOptionalDefault(
    * LOWERS (import.meta has no value representation): it only names the
    * file whose directory anchors the returned require's relative
    * resolution, and every supported spelling names the call's own file. */
-  function createRequireBaseCallOf(L: Lowerer, expr: ts.Expression): ts.CallExpression | null {
+  function createRequireBaseCallOf(lowerer: Lowerer, expr: ts.Expression): ts.CallExpression | null {
     const e = stripTypeCasts(expr);
     if (!ts.isCallExpression(e) || e.questionDotToken) return null;
     if (!ts.isIdentifier(e.expression)) return null;
-    const bi = builtinImportOf(L, e.expression);
+    const bi = builtinImportOf(lowerer, e.expression);
     if (!bi || bi.module !== "module" || bi.member !== "createRequire") return null;
     if (e.arguments.length !== 1) return null;
     const base = stripTypeCasts(e.arguments[0]!);
@@ -301,9 +301,9 @@ function lowerBuiltinOptionalDefault(
    * site) with no storage and no code; both declaration walks skip by
    * this test. A reassignable (let/var) binding never matches — callers
    * gate on constness like the other alias decls. */
-  export function createRequireBindingDecl(L: Lowerer, nameNode: ts.Node, init: ts.Expression | undefined): boolean {
+  export function createRequireBindingDecl(lowerer: Lowerer, nameNode: ts.Node, init: ts.Expression | undefined): boolean {
     if (!ts.isIdentifier(nameNode) || init === undefined) return false;
-    return createRequireBaseCallOf(L, init) !== null;
+    return createRequireBaseCallOf(lowerer, init) !== null;
   }
 
 /** The declaring source file when `callee` denotes a createRequire-made
@@ -311,17 +311,17 @@ function lowerBuiltinOptionalDefault(
    * binding's own file anchors resolution) or the inline
    * `createRequire(import.meta.url)(...)` spelling (the call's file).
    * Null off the pattern, so call chains keep trying. */
-  export function createRequireCalleeFileOf(L: Lowerer, callee: ts.Expression): ts.SourceFile | null {
+  export function createRequireCalleeFileOf(lowerer: Lowerer, callee: ts.Expression): ts.SourceFile | null {
     const e = stripTypeCasts(callee);
     if (ts.isCallExpression(e)) {
-      return createRequireBaseCallOf(L, e) !== null ? e.getSourceFile() : null;
+      return createRequireBaseCallOf(lowerer, e) !== null ? e.getSourceFile() : null;
     }
     if (!ts.isIdentifier(e)) return null;
-    const symbol = L.checker.getSymbolAtLocation(e);
-    const decl = symbol ? L.checker.declarationsOf(symbol)[0] : undefined;
+    const symbol = lowerer.checker.getSymbolAtLocation(e);
+    const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
     if (!decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) return null;
     if (!ts.isVariableDeclarationList(decl.parent) || (decl.parent.flags & ts.NodeFlags.Const) === 0) return null;
-    return createRequireBaseCallOf(L, decl.initializer) !== null ? decl.getSourceFile() : null;
+    return createRequireBaseCallOf(lowerer, decl.initializer) !== null ? decl.getSourceFile() : null;
   }
 
 /** The static require of `R("spec")` through a createRequire binding:
@@ -331,11 +331,11 @@ function lowerBuiltinOptionalDefault(
    * so the call lowering fences by name instead of falling through to
    * the generic call paths. */
   export function createRequireSpecOf(
-    L: Lowerer,
+    lowerer: Lowerer,
     call: ts.CallExpression,
   ): { spec: string | null; baseFile: ts.SourceFile } | null {
     if (call.questionDotToken) return null;
-    const baseFile = createRequireCalleeFileOf(L, call.expression);
+    const baseFile = createRequireCalleeFileOf(lowerer, call.expression);
     if (baseFile === null) return null;
     if (call.arguments.length !== 1) return { spec: null, baseFile };
     const a = call.arguments[0]!;
@@ -347,11 +347,11 @@ function lowerBuiltinOptionalDefault(
    * plumbing with no storage (uses resolve through
    * builtinNamespaceModuleOf's createRequire arm); both declaration
    * walks skip by this test. */
-  export function createRequireNamespaceDecl(L: Lowerer, nameNode: ts.Node, init: ts.Expression | undefined): boolean {
+  export function createRequireNamespaceDecl(lowerer: Lowerer, nameNode: ts.Node, init: ts.Expression | undefined): boolean {
     if (!ts.isIdentifier(nameNode) || init === undefined) return false;
     const call = stripTypeCasts(init);
     if (!ts.isCallExpression(call)) return false;
-    const cr = createRequireSpecOf(L, call);
+    const cr = createRequireSpecOf(lowerer, call);
     return cr !== null && cr.spec !== null && canonicalBuiltinModule(cr.spec) !== null;
   }
 
@@ -370,11 +370,11 @@ function lowerBuiltinOptionalDefault(
    * require-condition entry under --dynamic (collectCreateRequires
    * embedded it) and reports the requires-dynamic diagnostic in a static
    * build. Null when the callee is not a createRequire require. */
-  export function lowerCreateRequireCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr | null {
-    const cr = createRequireSpecOf(L, call);
+  export function lowerCreateRequireCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr | null {
+    const cr = createRequireSpecOf(lowerer, call);
     if (cr === null) return null;
     if (cr.spec === null) {
-      L.noLowering(
+      lowerer.noLowering(
         "createRequire's require with this argument shape",
         call,
         "the compiled module graph is fixed at build time — the one lowered form is require(\"<static string literal>\")",
@@ -382,14 +382,14 @@ function lowerBuiltinOptionalDefault(
     }
     const spec = cr.spec;
     if (canonicalBuiltinModule(spec) !== null) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         call,
         `module namespace objects as values (bind it first: const m = require("${spec}"), then access members through the binding)`,
       );
     }
     if (spec.startsWith("#")) {
-      L.noLowering(
+      lowerer.noLowering(
         `createRequire's require of the '${spec}' project import`,
         call,
         "imports-field specifiers have no require lowering yet — import the target statically",
@@ -397,7 +397,7 @@ function lowerBuiltinOptionalDefault(
     }
     if (isRelativeSpecifier(spec) || spec.startsWith("/")) {
       if (!spec.endsWith(".json")) {
-        L.noLowering(
+        lowerer.noLowering(
           `createRequire's require of '${spec}'`,
           call,
           "relative requires lower for .json documents only — a program module is a static import",
@@ -408,7 +408,7 @@ function lowerBuiltinOptionalDefault(
         : resolve(dirname(cr.baseFile.fileName), spec);
       const text = trackedReadFile(abs);
       if (text === null) {
-        L.noLowering(
+        lowerer.noLowering(
           `createRequire's require of '${spec}' (no file at ${abs})`,
           call,
           "the required document resolves at build time — check the path against the requiring file",
@@ -417,7 +417,7 @@ function lowerBuiltinOptionalDefault(
       try {
         JSON.parse(text);
       } catch (e) {
-        L.pushDiag(invalidJsonModuleDiag(abs, e instanceof Error ? e.message : String(e), loc));
+        lowerer.pushDiag(invalidJsonModuleDiag(abs, e instanceof Error ? e.message : String(e), loc));
         throw new PoisonError();
       }
       return {
@@ -434,7 +434,7 @@ function lowerBuiltinOptionalDefault(
       ? spec.split("/").slice(0, 2).join("/")
       : spec.split("/")[0]!;
     if (isNpmStaticPackage(pkgName)) {
-      L.noLowering(
+      lowerer.noLowering(
         `createRequire's require of the --npm-static package '${pkgName}'`,
         call,
         "the opted-in package compiles as program modules — import it statically",
@@ -447,15 +447,15 @@ function lowerBuiltinOptionalDefault(
       // pending check's unwind).
       return nodeThrowExpr(0, "MODULE_NOT_FOUND", refusal.message, DYN, loc);
     }
-    if (!L.dynamic) {
-      L.pushDiag(requiresDynamicImportDiag(pkgName, loc));
+    if (!lowerer.dynamic) {
+      lowerer.pushDiag(requiresDynamicImportDiag(pkgName, loc));
       throw new PoisonError();
     }
-    const res = L.createRequireImports.get(`${cr.baseFile.fileName}\u0000${spec}`);
+    const res = lowerer.createRequireImports.get(`${cr.baseFile.fileName}\u0000${spec}`);
     if (res === undefined) {
       // Collection never saw the site (a shape this walk and that walk
       // disagree on) — fence rather than mis-embed.
-      L.noLowering(`createRequire's require of '${spec}'`, call, undefined);
+      lowerer.noLowering(`createRequire's require of '${spec}'`, call, undefined);
     }
     if (res === "") throw new PoisonError(); // reported at collection
     // A CJS facade's default IS module.exports (Node's require answer);
@@ -495,18 +495,18 @@ function lowerBuiltinOptionalDefault(
    * alias from the module, or `require("http2").constants` inline. The
    * object itself never materializes; each member read bakes as its
    * literal. */
-  function builtinConstantsModuleOf(L: Lowerer, node: ts.Expression): string | null {
+  function builtinConstantsModuleOf(lowerer: Lowerer, node: ts.Expression): string | null {
     let module: string | null = null;
     if (ts.isPropertyAccessExpression(node) && !node.questionDotToken) {
       if (node.name.text !== "constants") return null;
-      const bi = L.builtinMemberOf(node);
+      const bi = lowerer.builtinMemberOf(node);
       if (bi) module = bi.module;
       else {
         const spec = requireSpecOf(node.expression);
         module = spec !== null ? canonicalBuiltinModule(spec) : null;
       }
     } else if (ts.isIdentifier(node)) {
-      const bi = builtinImportOf(L, node);
+      const bi = builtinImportOf(lowerer, node);
       if (bi !== null && bi.member === "constants") module = bi.module;
     }
     return module !== null && own(BUILTIN_CONSTANTS_TABLES, module) !== undefined ? module : null;
@@ -516,14 +516,14 @@ function lowerBuiltinOptionalDefault(
    * constants spelling) → the literal; unknown members fence by name.
    * Null when the receiver is not a baked constants object (the property
    * chain keeps trying). */
-  export function lowerBuiltinConstantsProperty(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+  export function lowerBuiltinConstantsProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
     if (expr.questionDotToken) return null;
-    const module = builtinConstantsModuleOf(L, expr.expression);
+    const module = builtinConstantsModuleOf(lowerer, expr.expression);
     if (module === null) return null;
     const entry = BUILTIN_CONSTANTS_TABLES[module]!;
     const value = own(entry.table, expr.name.text);
     if (value === undefined) {
-      L.noLowering(`${module}.constants.${expr.name.text}`, expr, entry.hint);
+      lowerer.noLowering(`${module}.constants.${expr.name.text}`, expr, entry.hint);
     }
     return builtinConstLit(value, locOf(expr));
   }
@@ -535,14 +535,14 @@ function lowerBuiltinOptionalDefault(
    * value; provenance-checked like console/process, so the bare
    * identifier and the globalThis.performance member both land here and
    * a user's own `performance` binding never does). */
-  function isPerfHooksPerformanceExpr(L: Lowerer, node: ts.Expression): boolean {
-    if (L.isStdlibGlobal(node, "performance")) return true;
+  function isPerfHooksPerformanceExpr(lowerer: Lowerer, node: ts.Expression): boolean {
+    if (lowerer.isStdlibGlobal(node, "performance")) return true;
     if (ts.isIdentifier(node)) {
-      const bi = builtinImportOf(L, node);
+      const bi = builtinImportOf(lowerer, node);
       return bi !== null && bi.module === "perf_hooks" && bi.member === "performance";
     }
     if (ts.isPropertyAccessExpression(node) && !node.questionDotToken) {
-      const bi = L.builtinMemberOf(node);
+      const bi = lowerer.builtinMemberOf(node);
       return bi !== null && bi.module === "perf_hooks" && bi.member === "performance";
     }
     return false;
@@ -555,12 +555,12 @@ function lowerBuiltinOptionalDefault(
    * getTimestamp) is the same clock as a plain () => number function
    * value. Other members on the performance object fence by name; null
    * for non-perf_hooks callees (the call chain keeps trying). */
-  export function lowerPerfHooksCall(L: Lowerer, expr: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr | null {
+  export function lowerPerfHooksCall(lowerer: Lowerer, expr: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr | null {
     if (access.questionDotToken) return null;
     const loc = locOf(expr);
-    if (access.name.text === "now" && isPerfHooksPerformanceExpr(L, access.expression)) {
+    if (access.name.text === "now" && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
       if (expr.arguments.length !== 0) {
-        L.noLowering("performance.now with arguments", expr, "Node's performance.now takes none");
+        lowerer.noLowering("performance.now with arguments", expr, "Node's performance.now takes none");
       }
       return { kind: "libCall", fn: "perf.now", args: [], type: F64, loc };
     }
@@ -569,10 +569,10 @@ function lowerBuiltinOptionalDefault(
       ts.isPropertyAccessExpression(access.expression) &&
       !access.expression.questionDotToken &&
       access.expression.name.text === "now" &&
-      isPerfHooksPerformanceExpr(L, access.expression.expression)
+      isPerfHooksPerformanceExpr(lowerer, access.expression.expression)
     ) {
-      if (expr.arguments.length !== 1 || !isPerfHooksPerformanceExpr(L, expr.arguments[0]!)) {
-        L.noLowering(
+      if (expr.arguments.length !== 1 || !isPerfHooksPerformanceExpr(lowerer, expr.arguments[0]!)) {
+        lowerer.noLowering(
           "this performance.now.bind form",
           expr,
           "performance.now.bind(performance) is the lowered function-value spelling",
@@ -580,14 +580,14 @@ function lowerBuiltinOptionalDefault(
       }
       return {
         kind: "closure",
-        fnName: perfNowFnValueOf(L),
+        fnName: perfNowFnValueOf(lowerer),
         captures: [],
         type: funcOf([], F64),
         loc,
       };
     }
-    if (isPerfHooksPerformanceExpr(L, access.expression)) {
-      L.noLowering(
+    if (isPerfHooksPerformanceExpr(lowerer, access.expression)) {
+      lowerer.noLowering(
         `perf_hooks performance.${access.name.text}`,
         expr,
         "performance.now() — and its .bind(performance) function value — is the lowered surface",
@@ -599,11 +599,11 @@ function lowerBuiltinOptionalDefault(
 /** The memoized () => number lifted wrapper behind
    * performance.now.bind(performance): a plain function value over the
    * same perf.now libCall. */
-  function perfNowFnValueOf(L: Lowerer): string {
+  function perfNowFnValueOf(lowerer: Lowerer): string {
     const name = "%perf.now.value";
-    if (!L.liftedFns.some((f) => f.name === name)) {
+    if (!lowerer.liftedFns.some((f) => f.name === name)) {
       const loc: SrcLoc = { file: "<builtin>", start: 0, end: 0 };
-      L.liftedFns.push({
+      lowerer.liftedFns.push({
         name,
         params: [],
         returnType: F64,
@@ -622,9 +622,9 @@ function lowerBuiltinOptionalDefault(
    * alias plumbing with no storage (lowerVarDecl and collectGlobals both
    * skip it); each USE reads its baked literal
    * (builtinConstantBindingOf). */
-  export function builtinConstantsDestructureDecl(L: Lowerer, nameNode: ts.Node, init: ts.Expression | undefined): boolean {
+  export function builtinConstantsDestructureDecl(lowerer: Lowerer, nameNode: ts.Node, init: ts.Expression | undefined): boolean {
     if (!ts.isObjectBindingPattern(nameNode) || !init) return false;
-    const module = builtinConstantsModuleOf(L, init);
+    const module = builtinConstantsModuleOf(lowerer, init);
     if (module === null) return false;
     const table = BUILTIN_CONSTANTS_TABLES[module]!.table;
     return nameNode.elements.every(
@@ -640,14 +640,14 @@ function lowerBuiltinOptionalDefault(
 
 /** Resolves an identifier bound by a builtinConstantsDestructureDecl to
    * its baked literal value. Null for every other binding. */
-  export function builtinConstantBindingOf(L: Lowerer, ident: ts.Identifier): IrExpr | null {
-    const symbol = L.checker.getSymbolAtLocation(ident);
-    const decl = symbol ? L.checker.declarationsOf(symbol)[0] : undefined;
+  export function builtinConstantBindingOf(lowerer: Lowerer, ident: ts.Identifier): IrExpr | null {
+    const symbol = lowerer.checker.getSymbolAtLocation(ident);
+    const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
     if (!decl || !ts.isBindingElement(decl) || decl.dotDotDotToken || decl.initializer) return null;
     if (!ts.isObjectBindingPattern(decl.parent)) return null;
     const varDecl = decl.parent.parent;
     if (!ts.isVariableDeclaration(varDecl) || varDecl.initializer === undefined) return null;
-    const module = builtinConstantsModuleOf(L, varDecl.initializer);
+    const module = builtinConstantsModuleOf(lowerer, varDecl.initializer);
     if (module === null) return null;
     const key = decl.propertyName && ts.isIdentifier(decl.propertyName)
       ? decl.propertyName.text
@@ -669,12 +669,12 @@ function lowerBuiltinOptionalDefault(
  * maxRetries, lowered by the caller as ordinary expressions). Null when
  * any other member appears. */
 function literalBoolOptions(
-  L: Lowerer,
+  lowerer: Lowerer,
   node: ts.Expression,
   allowed: string[],
   exprKeys: string[] = [],
 ): { bools: Record<string, boolean>; exprs: Record<string, ts.Expression> } | null {
-  void L;
+  void lowerer;
   if (!ts.isObjectLiteralExpression(node)) return null;
   const bools: Record<string, boolean> = {};
   const exprs: Record<string, ts.Expression> = {};
@@ -720,13 +720,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * Node's exact ERR_INVALID_ARG_TYPE. The argument crosses as a dyn
    * value so the runtime renders the Received tail. Null when this is
    * not that call (the table fence stays for other shapes). */
-  export function lowerFsToUnixTimestampCall(L: Lowerer, expr: ts.CallExpression,
+  export function lowerFsToUnixTimestampCall(lowerer: Lowerer, expr: ts.CallExpression,
     bi: { module: string; member: string },
     loc: SrcLoc,): IrExpr | null {
     if (bi.module !== "fs" || bi.member !== "_toUnixTimestamp") return null;
     if (expr.arguments.length !== 1 || ts.isSpreadElement(expr.arguments[0]!)) return null;
-    const raw = L.lowerExpr(expr.arguments[0]!);
-    if (raw.type.kind === "dyn" || raw.kind === "unitLit" || L.dynConvertible(raw.type)) {
+    const raw = lowerer.lowerExpr(expr.arguments[0]!);
+    if (raw.type.kind === "dyn" || raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)) {
       const arg: IrExpr = raw.type.kind === "dyn" ? raw : { kind: "dynFrom", value: raw, type: DYN, loc };
       return { kind: "libCall", fn: "fs.toUnixTimestamp", args: [arg], type: F64, loc };
     }
@@ -742,7 +742,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * exists, the compiler-rendered SC2020 fence otherwise) runs only
    * after every validation passes, exactly Node's order. Null when this
    * is not a claimed member/shape (the table or fence path stands). */
-  export function lowerFsLadderCall(L: Lowerer, expr: ts.CallExpression,
+  export function lowerFsLadderCall(lowerer: Lowerer, expr: ts.CallExpression,
     bi: { module: string; member: string },
     loc: SrcLoc,): IrExpr | null {
     if (bi.module !== "fs" && bi.module !== "fs/promises") return null;
@@ -753,9 +753,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // cannot leaves the historical fence in place.
     const dynArg = (node: ts.Expression | undefined): IrExpr | null => {
       if (!node) return dynUndefinedExpr(loc);
-      const raw = L.lowerExpr(node);
+      const raw = lowerer.lowerExpr(node);
       if (raw.type.kind === "dyn") return raw;
-      if (raw.kind === "unitLit" || L.dynConvertible(raw.type)) {
+      if (raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)) {
         return { kind: "dynFrom", value: raw, type: DYN, loc };
       }
       return null;
@@ -769,7 +769,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       }
       return out;
     };
-    const resultT = L.mapTypeOf(L.typeOf(expr)) ?? DYN;
+    const resultT = lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? DYN;
     const chk = (fn: IrLibFn, chkArgs: IrExpr[], type: IrType): IrExpr =>
       ({ kind: "libCall", fn, args: chkArgs, type, loc });
     if (bi.module === "fs/promises") {
@@ -791,7 +791,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         let pathNode: ts.Expression | undefined = args[0];
         let pathExpr: IrExpr | null = null;
         if (pathNode && ts.isNewExpression(pathNode) && ts.isIdentifier(pathNode.expression) &&
-            pathNode.expression.text === "URL" && L.mapTypeOf(L.typeOf(pathNode))?.kind === "url" &&
+            pathNode.expression.text === "URL" && lowerer.mapTypeOf(lowerer.typeOf(pathNode))?.kind === "url" &&
             pathNode.arguments?.length === 1 && ts.isStringLiteral(pathNode.arguments[0]!)) {
           let parsed: URL | null = null;
           try {
@@ -812,38 +812,38 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         // mkdtemp(prefix[, options], callback) — the callback is the
         // LAST argument (makeCallback runs first, then the prefix).
         const a = dynArgs([args[0], args.length >= 2 ? args[args.length - 1] : undefined]);
-        return a && chk("fs.mkdtempChk", [...a, ladderFenceExpr(L, "fs.mkdtemp", expr)], resultT);
+        return a && chk("fs.mkdtempChk", [...a, ladderFenceExpr(lowerer, "fs.mkdtemp", expr)], resultT);
       }
       case "mkdtempSync": {
         // The table serves the plain string 1-arg form; the ladder takes
         // every other shape — prefix/encoding validation, then the REAL
         // mkdtemp when the options leave utf8 semantics.
-        if (args.length === 1 && L.mapTypeOf(L.typeOf(args[0]!))?.kind === "string") return null;
+        if (args.length === 1 && lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "string") return null;
         if (args.length > 2) return null;
         const a = dynArgs([args[0], args[1]]);
-        return a && chk("fs.mkdtempSyncChk", [...a, ladderFenceExpr(L, "fs.mkdtempSync with these options", expr)], STRING);
+        return a && chk("fs.mkdtempSyncChk", [...a, ladderFenceExpr(lowerer, "fs.mkdtempSync with these options", expr)], STRING);
       }
       case "readFile": {
         // readFile(path[, options], callback): callback, assertEncoding,
         // path — then the async read fences.
         const a = dynArgs([args[0], args.length >= 3 ? args[1] : undefined, args.length >= 2 ? args[args.length - 1] : undefined]);
-        return a && chk("fs.readFileChk", [...a, ladderFenceExpr(L, "fs.readFile", expr)], resultT);
+        return a && chk("fs.readFileChk", [...a, ladderFenceExpr(lowerer, "fs.readFile", expr)], resultT);
       }
       case "opendirSync": {
         const a = dynArgs([args[0], args[1]]);
-        return a && chk("fs.opendirChk", [...a, ladderFenceExpr(L, "fs.opendirSync", expr)], resultT);
+        return a && chk("fs.opendirChk", [...a, ladderFenceExpr(lowerer, "fs.opendirSync", expr)], resultT);
       }
       case "watchFile": {
         // watchFile(filename[, options], listener): the path first, the
         // listener's function contract second; real watching fences.
         const a = dynArgs([args[0], args.length >= 2 ? args[args.length - 1] : undefined]);
-        return a && chk("fs.watchFileChk", [...a, ladderFenceExpr(L, "fs.watchFile", expr)], resultT);
+        return a && chk("fs.watchFileChk", [...a, ladderFenceExpr(lowerer, "fs.watchFile", expr)], resultT);
       }
       case "lchmod": {
         // lchmod(path, mode, callback): callback, path, mode — macOS
         // shapes (non-APPLE answers Node's not-a-function TypeError).
         const a = dynArgs([args[0], args[1], args[2]]);
-        return a && chk("fs.lchmodChk", [...a, ladderFenceExpr(L, "fs.lchmod", expr)], resultT);
+        return a && chk("fs.lchmodChk", [...a, ladderFenceExpr(lowerer, "fs.lchmod", expr)], resultT);
       }
       case "lchmodSync": {
         if (args.length > 2) return null;
@@ -856,31 +856,31 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         // fence (their misuse arms are not in the target set).
         if (args.length < 4) return null;
         const a = dynArgs([args[0], args[1], args[2], args[3], args.length >= 6 ? args[4] : undefined]);
-        return a && chk("fs.readChk", [...a, ladderFenceExpr(L, "fs.read", expr)], resultT);
+        return a && chk("fs.readChk", [...a, ladderFenceExpr(lowerer, "fs.read", expr)], resultT);
       }
       case "createReadStream":
       case "createWriteStream": {
         const a = dynArgs([args[0], args[1]]);
-        return a && chk("fs.streamOptsChk", [...a, ladderFenceExpr(L, `fs.${bi.member}`, expr)], resultT);
+        return a && chk("fs.streamOptsChk", [...a, ladderFenceExpr(lowerer, `fs.${bi.member}`, expr)], resultT);
       }
       default:
         return null;
     }
   }
 
-  export function lowerBuiltinModuleCall(L: Lowerer, expr: ts.CallExpression,
+  export function lowerBuiltinModuleCall(lowerer: Lowerer, expr: ts.CallExpression,
     bi: { module: string; member: string },
     fn: BuiltinModuleFn,
     loc: SrcLoc,): IrExpr {
     const name = expr.expression.getText();
     if (bi.module === "child_process" && bi.member === "spawnSync") {
-      return L.lowerSpawnSyncCall(expr, loc);
+      return lowerer.lowerSpawnSyncCall(expr, loc);
     }
     if (bi.module === "child_process" && bi.member === "spawn") {
-      return L.lowerSpawnCall(expr, loc);
+      return lowerer.lowerSpawnCall(expr, loc);
     }
     if (bi.module === "fs" && bi.member === "watch") {
-      return lowerFsWatchCall(L, expr, loc);
+      return lowerFsWatchCall(lowerer, expr, loc);
     }
     // fs/promises.open(path[, flags[, mode]]) — string flags and numeric
     // creation mode, with Node's "r"/0o666 defaults. The runtime wraps
@@ -888,20 +888,20 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // like the existing fs/promises operations.
     if (bi.module === "fs/promises" && bi.member === "open") {
       if (expr.arguments.length < 1 || expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement)) {
-        L.noLowering(
+        lowerer.noLowering(
           `fs.promises.open with ${expr.arguments.length} arguments`,
           expr,
           "use open(path[, stringFlags[, numericMode]])",
         );
       }
-      const path = L.lowerExprExpecting(expr.arguments[0]!, STRING);
+      const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
       const defaultFlags = { kind: "strLit", value: "r", type: STRING, loc } satisfies IrExpr;
       const defaultMode = { kind: "numLit", value: 0o666, type: F64, loc } satisfies IrExpr;
       const flags = expr.arguments[1]
-        ? lowerBuiltinOptionalDefault(L, expr.arguments[1]!, STRING, defaultFlags)
+        ? lowerBuiltinOptionalDefault(lowerer, expr.arguments[1]!, STRING, defaultFlags)
         : defaultFlags;
       const mode = expr.arguments[2]
-        ? lowerBuiltinOptionalDefault(L, expr.arguments[2]!, F64, defaultMode)
+        ? lowerBuiltinOptionalDefault(lowerer, expr.arguments[2]!, F64, defaultMode)
         : defaultMode;
       return {
         kind: "libCall",
@@ -918,15 +918,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // dns.lookup instead of losing the Error arm through a dyn boundary.
     if (bi.module === "fs" && bi.member === "rename") {
       if (expr.arguments.length !== 3 || expr.arguments.some(ts.isSpreadElement)) {
-        L.noLowering(
+        lowerer.noLowering(
           `rename with ${expr.arguments.length} argument${expr.arguments.length === 1 ? "" : "s"}`,
           expr,
           "the supported form is rename(oldPath, newPath, callback)",
         );
       }
-      const oldPath = L.lowerExprExpecting(expr.arguments[0]!, STRING);
-      const newPath = L.lowerExprExpecting(expr.arguments[1]!, STRING);
-      let callback = L.lowerExpr(expr.arguments[2]!);
+      const oldPath = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+      const newPath = lowerer.lowerExprExpecting(expr.arguments[1]!, STRING);
+      let callback = lowerer.lowerExpr(expr.arguments[2]!);
       // JS/checkJs callback values may arrive as checked-dynamic callables.
       // Adapt them to the one error-first slot; the runtime passes a dyn
       // Error on failure and null on success through the emitted thunk.
@@ -944,7 +944,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         if (param.kind === "dyn") {
           callbackOk = true;
         } else if (param.kind === "union") {
-          const def = L.unions.get(param.unionId);
+          const def = lowerer.unions.get(param.unionId);
           callbackOk = !!def &&
             def.arms.some((a) => a.kind === "nullT") &&
             def.arms.some((a) => a.kind === "object" && a.className === "%Error") &&
@@ -956,7 +956,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
       }
       if (!callbackOk) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           expr.arguments[2]!,
           "fs.rename callbacks must accept at most one Error | null parameter",
@@ -966,7 +966,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // void callback is expected; Node ignores that value. Normalize the
       // closure to the runtime's void callback ABI after validating its
       // error-first parameter shape.
-      callback = voidizedCallback(L, callback, locOf(expr.arguments[2]!));
+      callback = voidizedCallback(lowerer, callback, locOf(expr.arguments[2]!));
       return { kind: "libCall", fn: "fs.renameCb", args: [oldPath, newPath, callback], type: VOID, loc };
     }
     // fs.readSync(fd, buffer, offset, length[, position]) — normalize the
@@ -982,17 +982,17 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         (expr.arguments.length !== 4 && expr.arguments.length !== 5) ||
         expr.arguments.some(ts.isSpreadElement)
       ) {
-        L.noLowering(
+        lowerer.noLowering(
           `readSync with ${expr.arguments.length} argument${expr.arguments.length === 1 ? "" : "s"}`,
           expr,
           supported,
         );
       }
       const args: IrExpr[] = [
-        L.lowerExprExpecting(expr.arguments[0]!, F64),
-        L.lowerExprExpecting(expr.arguments[1]!, BYTES_U8),
-        L.lowerExprExpecting(expr.arguments[2]!, F64),
-        L.lowerExprExpecting(expr.arguments[3]!, F64),
+        lowerer.lowerExprExpecting(expr.arguments[0]!, F64),
+        lowerer.lowerExprExpecting(expr.arguments[1]!, BYTES_U8),
+        lowerer.lowerExprExpecting(expr.arguments[2]!, F64),
+        lowerer.lowerExprExpecting(expr.arguments[3]!, F64),
       ];
       const positionNode = expr.arguments[4];
       let positionValueNode = positionNode;
@@ -1002,15 +1002,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       if (positionNode === undefined || positionValueNode!.kind === ts.SyntaxKind.NullKeyword) {
         args.push({ kind: "numLit", value: -1, type: F64, loc });
       } else {
-        const positionType = L.mapTypeOf(L.typeOf(positionNode));
+        const positionType = lowerer.mapTypeOf(lowerer.typeOf(positionNode));
         if (positionType?.kind !== "f64") {
-          L.noLowering(
-            `readSync with a '${positionType ? L.fmt(positionType) : L.checker.typeToString(L.typeOf(positionNode))}' position`,
+          lowerer.noLowering(
+            `readSync with a '${positionType ? lowerer.fmt(positionType) : lowerer.checker.typeToString(lowerer.typeOf(positionNode))}' position`,
             positionNode,
             supported,
           );
         }
-        args.push(L.lowerExprExpecting(positionNode, F64));
+        args.push(lowerer.lowerExprExpecting(positionNode, F64));
       }
       return { kind: "libCall", fn: "fs.readSync", args, type: F64, loc };
     }
@@ -1024,41 +1024,41 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       const supported =
         'use writeSync(fd, buffer, offset, length[, position]) or writeSync(fd, string[, position[, "utf8"]]); options objects, bigint positions, and other encodings have no lowering';
       if (expr.arguments.some(ts.isSpreadElement) || expr.arguments.length < 2) {
-        L.noLowering(
+        lowerer.noLowering(
           `writeSync with ${expr.arguments.length} argument${expr.arguments.length === 1 ? "" : "s"}`,
           expr,
           supported,
         );
       }
       const dataNode = expr.arguments[1]!;
-      const dataType = L.mapTypeOf(L.typeOf(dataNode));
-      const fd = L.lowerExprExpecting(expr.arguments[0]!, F64);
+      const dataType = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
+      const fd = lowerer.lowerExprExpecting(expr.arguments[0]!, F64);
       const position = (node: ts.Expression | undefined): IrExpr => {
         let valueNode = node;
         while (valueNode && ts.isParenthesizedExpression(valueNode)) valueNode = valueNode.expression;
         if (node === undefined || valueNode!.kind === ts.SyntaxKind.NullKeyword) {
           return { kind: "numLit", value: -1, type: F64, loc };
         }
-        const t = L.mapTypeOf(L.typeOf(node));
+        const t = lowerer.mapTypeOf(lowerer.typeOf(node));
         if (t?.kind !== "f64") {
-          L.noLowering(
-            `writeSync with a '${t ? L.fmt(t) : L.checker.typeToString(L.typeOf(node))}' position`,
+          lowerer.noLowering(
+            `writeSync with a '${t ? lowerer.fmt(t) : lowerer.checker.typeToString(lowerer.typeOf(node))}' position`,
             node,
             supported,
           );
         }
-        return L.lowerExprExpecting(node, F64);
+        return lowerer.lowerExprExpecting(node, F64);
       };
       if (dataType?.kind === "bytes") {
         if (dataType.elem !== "u8") {
-          L.noLowering(
-            `writeSync of '${L.fmt(dataType)}' data`,
+          lowerer.noLowering(
+            `writeSync of '${lowerer.fmt(dataType)}' data`,
             dataNode,
             "byte writes take Uint8Array/Buffer data",
           );
         }
         if (expr.arguments.length !== 4 && expr.arguments.length !== 5) {
-          L.noLowering(
+          lowerer.noLowering(
             `writeSync of Buffer data with ${expr.arguments.length} arguments`,
             expr,
             supported,
@@ -1069,9 +1069,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           fn: "fs.writeSync",
           args: [
             fd,
-            L.lowerExprExpecting(dataNode, BYTES_U8),
-            L.lowerExprExpecting(expr.arguments[2]!, F64),
-            L.lowerExprExpecting(expr.arguments[3]!, F64),
+            lowerer.lowerExprExpecting(dataNode, BYTES_U8),
+            lowerer.lowerExprExpecting(expr.arguments[2]!, F64),
+            lowerer.lowerExprExpecting(expr.arguments[3]!, F64),
             position(expr.arguments[4]),
           ],
           type: F64,
@@ -1080,7 +1080,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       }
       if (dataType?.kind === "string") {
         if (expr.arguments.length > 4) {
-          L.noLowering(
+          lowerer.noLowering(
             `writeSync of string data with ${expr.arguments.length} arguments`,
             expr,
             supported,
@@ -1089,9 +1089,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         const encNode = expr.arguments[3];
         let enc: IrExpr = { kind: "strLit", value: "utf8", type: STRING, loc };
         if (encNode !== undefined) {
-          const encType = L.typeOf(encNode);
+          const encType = lowerer.typeOf(encNode);
           if (!encType.isStringLiteralType() || (encType.value !== "utf8" && encType.value !== "utf-8")) {
-            L.noLowering(
+            lowerer.noLowering(
               "writeSync with a non-utf8 encoding",
               encNode,
               supported,
@@ -1100,18 +1100,18 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           // Even though utf8 is the runtime's only encoding, the argument
           // remains an ordinary JS argument: evaluate it in source order so
           // a call/getter whose type is the accepted literal cannot vanish.
-          enc = L.lowerExprExpecting(encNode, STRING);
+          enc = lowerer.lowerExprExpecting(encNode, STRING);
         }
         return {
           kind: "libCall",
           fn: "fs.writeStrSync",
-          args: [fd, L.lowerExprExpecting(dataNode, STRING), position(expr.arguments[2]), enc],
+          args: [fd, lowerer.lowerExprExpecting(dataNode, STRING), position(expr.arguments[2]), enc],
           type: F64,
           loc,
         };
       }
-      L.noLowering(
-        `writeSync of '${dataType ? L.fmt(dataType) : L.checker.typeToString(L.typeOf(dataNode))}' data`,
+      lowerer.noLowering(
+        `writeSync of '${dataType ? lowerer.fmt(dataType) : lowerer.checker.typeToString(lowerer.typeOf(dataNode))}' data`,
         dataNode,
         supported,
       );
@@ -1120,22 +1120,22 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       bi.module === "child_process" &&
       (bi.member === "execFileSync" || bi.member === "execSync")
     ) {
-      return L.lowerExecSyncCall(expr, bi.member === "execSync", loc);
+      return lowerer.lowerExecSyncCall(expr, bi.member === "execSync", loc);
     }
     if (bi.module === "os" && bi.member === "networkInterfaces") {
-      return lowerOsNetworkInterfacesCall(L, expr, loc);
+      return lowerOsNetworkInterfacesCall(lowerer, expr, loc);
     }
     // fs.readdirSync(path, { withFileTypes: true }) — the Dirent form:
     // routed BEFORE the 1-arg table completion. The options must be an
     // object literal with withFileTypes: true (encoding "utf8"/"utf-8" is
     // accepted as the default it is; recursive and encoding:'buffer'
     // fence), and the call site's mapped type must be the interned Dirent
-    // record array (types.ts) — the userInfo verification stance.
+    // record array (type-mapper.ts) — the userInfo verification stance.
     if (bi.module === "fs" && bi.member === "readdirSync" && expr.arguments.length === 2) {
-      return lowerFsReaddirTypesCall(L, expr, loc);
+      return lowerFsReaddirTypesCall(lowerer, expr, loc);
     }
     if (bi.module === "os" && bi.member === "userInfo") {
-      return lowerOsUserInfoCall(L, expr, loc);
+      return lowerOsUserInfoCall(lowerer, expr, loc);
     }
     // node:querystring — parse/stringify are entirely special-cased (the
     // sep/eq/options completions, parse's call-site-shaped dictionary
@@ -1145,10 +1145,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // the generic table tail below.
     if (bi.module === "querystring") {
       if (bi.member === "parse" || bi.member === "decode") {
-        return lowerQuerystringParseCall(L, expr, loc);
+        return lowerQuerystringParseCall(lowerer, expr, loc);
       }
       if (bi.member === "stringify" || bi.member === "encode") {
-        return lowerQuerystringStringifyCall(L, expr, loc);
+        return lowerQuerystringStringifyCall(lowerer, expr, loc);
       }
     }
     // node:timers/promises — setTimeout([delay]) and setImmediate(): void
@@ -1162,20 +1162,20 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       const promiseVoid: IrType = { kind: "promise", inner: VOID };
       if (bi.member === "setTimeout") {
         if (expr.arguments.length > 1) {
-          L.noLowering(
+          lowerer.noLowering(
             "timers/promises setTimeout with a resolve value or options",
             expr.arguments[1]!,
             "the lowered form is setTimeout(delay?) resolving undefined — resolve values and AbortSignal cancellation have no lowering",
           );
         }
         const ms: IrExpr = expr.arguments[0]
-          ? L.lowerExprExpecting(expr.arguments[0], F64)
+          ? lowerer.lowerExprExpecting(expr.arguments[0], F64)
           : { kind: "numLit", value: 1, type: F64, loc };
         return { kind: "libCall", fn: "tp.setTimeout", args: [ms], type: promiseVoid, loc };
       }
       if (bi.member === "setImmediate") {
         if (expr.arguments.length > 0) {
-          L.noLowering(
+          lowerer.noLowering(
             "timers/promises setImmediate with a resolve value",
             expr.arguments[0]!,
             "the lowered form is setImmediate() resolving undefined",
@@ -1191,18 +1191,18 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // lowerDcChannelMethodCall over the f64 channel handle.
     if (bi.module === "diagnostics_channel") {
       if (bi.member === "channel" && expr.arguments.length === 1) {
-        const name = dcChannelNameArg(L, expr.arguments[0]!);
+        const name = dcChannelNameArg(lowerer, expr.arguments[0]!);
         return { kind: "libCall", fn: "dc.channel", args: [name], type: F64, loc };
       }
       if ((bi.member === "subscribe" || bi.member === "unsubscribe") && expr.arguments.length === 2) {
-        const name = dcChannelNameArg(L, expr.arguments[0]!);
-        const cb = dcSubscriberArg(L, expr.arguments[1]!);
+        const name = dcChannelNameArg(lowerer, expr.arguments[0]!);
+        const cb = dcSubscriberArg(lowerer, expr.arguments[1]!);
         return bi.member === "subscribe"
           ? { kind: "libCall", fn: "dc.subscribe", args: [name, cb], type: VOID, loc }
           : { kind: "libCall", fn: "dc.unsubscribe", args: [name, cb], type: BOOL, loc };
       }
       if (bi.member === "hasSubscribers" && expr.arguments.length === 1) {
-        const name = dcChannelNameArg(L, expr.arguments[0]!);
+        const name = dcChannelNameArg(lowerer, expr.arguments[0]!);
         return { kind: "libCall", fn: "dc.hasSubscribers", args: [name], type: BOOL, loc };
       }
       // tracingChannel: the string form interns the five tracing:<name>:*
@@ -1215,16 +1215,16 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           for (const p of a.properties) {
             if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name) ||
                 !(DC_TRACE_EVENTS as readonly string[]).includes(p.name.text)) {
-              L.noLowering(
+              lowerer.noLowering(
                 "tracingChannel with this collection shape",
                 p,
                 "the supported collection form assigns each of start/end/asyncStart/asyncEnd/error a Channel value inline",
               );
             }
-            byEvent.set(p.name.text, L.lowerExprExpecting(p.initializer, F64));
+            byEvent.set(p.name.text, lowerer.lowerExprExpecting(p.initializer, F64));
           }
           if (byEvent.size !== 5) {
-            L.noLowering(
+            lowerer.noLowering(
               "tracingChannel with a partial collection",
               a,
               "the supported collection form names all five event channels",
@@ -1238,7 +1238,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             loc,
           };
         }
-        const name = dcChannelNameArg(L, a);
+        const name = dcChannelNameArg(lowerer, a);
         return { kind: "libCall", fn: "dc.tracingChannel", args: [name], type: F64, loc };
       }
     }
@@ -1250,7 +1250,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     if (bi.module === "readline" && bi.member === "createInterface") {
       const optsNode = expr.arguments.length === 1 ? expr.arguments[0] : undefined;
       if (!optsNode || !ts.isObjectLiteralExpression(optsNode)) {
-        L.noLowering(
+        lowerer.noLowering(
           "createInterface with this argument shape",
           expr,
           "the supported form is createInterface({ input: process.stdin, output: process.stdout })",
@@ -1259,7 +1259,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       let sawInput = false;
       for (const p of optsNode.properties) {
         if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name)) {
-          L.noLowering(
+          lowerer.noLowering(
             "createInterface with this options shape",
             p,
             "spreads, computed keys, and shorthand options have no lowering — write each member inline",
@@ -1267,10 +1267,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         const member = p.name.text;
         const streamOf = (node: ts.Expression): string | null =>
-          ts.isPropertyAccessExpression(node) ? L.stdlibGlobalMember(node, "process") : null;
+          ts.isPropertyAccessExpression(node) ? lowerer.stdlibGlobalMember(node, "process") : null;
         if (member === "input") {
           if (streamOf(p.initializer) !== "stdin") {
-            L.noLowering(
+            lowerer.noLowering(
               "createInterface with a non-stdin input",
               p.initializer,
               "process.stdin is the one supported input stream",
@@ -1279,16 +1279,16 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           sawInput = true;
         } else if (member === "output") {
           if (streamOf(p.initializer) !== "stdout") {
-            L.noLowering(
+            lowerer.noLowering(
               "createInterface with a non-stdout output",
               p.initializer,
               "process.stdout is the one supported output stream",
             );
           }
         } else if (member === "terminal") {
-          const t = L.typeOf(p.initializer);
-          if (!(t.flags & ts.TypeFlags.BooleanLiteral) || L.checker.typeToString(t) !== "false") {
-            L.noLowering(
+          const t = lowerer.typeOf(p.initializer);
+          if (!(t.flags & ts.TypeFlags.BooleanLiteral) || lowerer.checker.typeToString(t) !== "false") {
+            lowerer.noLowering(
               "createInterface with terminal enabled",
               p.initializer,
               "terminal line editing has no lowering — the pipe behavior is what compiles",
@@ -1300,28 +1300,28 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           // time limit (scr_readline.c) — Node's crlfDelay: Infinity.
           // Finite delays would need a timer the splitter does not have.
           if (!ts.isIdentifier(p.initializer) || p.initializer.text !== "Infinity") {
-            L.noLowering(
+            lowerer.noLowering(
               "createInterface with a finite crlfDelay",
               p.initializer,
               "the lowered splitter always joins \\r\\n across chunks (Node's crlfDelay: Infinity) — Infinity is the accepted value",
             );
           }
         } else if (member === "completer") {
-          L.noLowering(
+          lowerer.noLowering(
             "createInterface with a completer",
             p,
             "tab completion needs an interactive terminal — the lowered interface reads piped lines (terminal: false)",
           );
         } else {
           fenceOrDropOptionKey(
-            L, p, member, "createInterface", READLINE_DOCUMENTED_OPTIONS,
+            lowerer, p, member, "createInterface", READLINE_DOCUMENTED_OPTIONS,
             "input, output, terminal: false, and crlfDelay: Infinity are the supported options",
           );
           // An undocumented key, dropped like Node drops it.
         }
       }
       if (!sawInput) {
-        L.noLowering(
+        lowerer.noLowering(
           "createInterface without an input stream",
           optsNode,
           "pass { input: process.stdin, output: process.stdout }",
@@ -1338,13 +1338,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       bi.module === "fs" &&
       bi.member === "readFileSync" &&
       expr.arguments.length === 1 &&
-      L.mapTypeOf(L.typeOf(expr.arguments[0]!))?.kind !== "f64"
+      lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[0]!))?.kind !== "f64"
     ) {
-      const path = L.lowerExprExpecting(expr.arguments[0]!, STRING);
+      const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
       return { kind: "libCall", fn: "fs.readFileSyncBytes", args: [path], type: BYTES_U8, loc };
     }
     if (bi.module === "fs/promises" && bi.member === "readFile" && expr.arguments.length === 1) {
-      const path = L.lowerExprExpecting(expr.arguments[0]!, STRING);
+      const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
       return {
         kind: "libCall",
         fn: "fsp.readFileBytes",
@@ -1361,24 +1361,24 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       bi.module === "fs" &&
       bi.member === "readFileSync" &&
       expr.arguments.length >= 1 &&
-      L.mapTypeOf(L.typeOf(expr.arguments[0]!))?.kind === "f64"
+      lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[0]!))?.kind === "f64"
     ) {
-      const fd = L.lowerExprExpecting(expr.arguments[0]!, F64);
+      const fd = lowerer.lowerExprExpecting(expr.arguments[0]!, F64);
       if (expr.arguments.length === 1) {
         return { kind: "libCall", fn: "fs.readFdSyncBytes", args: [fd], type: BYTES_U8, loc };
       }
-      const encT = L.typeOf(expr.arguments[1]!);
+      const encT = lowerer.typeOf(expr.arguments[1]!);
       if (
         expr.arguments.length !== 2 ||
         !(encT.isStringLiteralType() && (encT.value === "utf8" || encT.value === "utf-8"))
       ) {
-        L.noLowering(
+        lowerer.noLowering(
           `readFileSync(fd) with a non-"utf8" encoding`,
           expr.arguments[1] ?? expr,
           'only utf8 reads are supported: readFileSync(fd, "utf8")',
         );
       }
-      const enc = L.lowerExprExpecting(expr.arguments[1]!, STRING);
+      const enc = lowerer.lowerExprExpecting(expr.arguments[1]!, STRING);
       return { kind: "libCall", fn: "fs.readFdSync", args: [fd, enc], type: STRING, loc };
     }
     // mkdirSync(p, options): the lowered options form is a literal
@@ -1407,21 +1407,21 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
       }
       if (!ok) {
-        L.noLowering(
+        lowerer.noLowering(
           "mkdirSync with an options argument beyond { recursive, mode }",
           optsNode,
           "the recursive flag must be a boolean literal and mode a number; other options have no lowering",
         );
       }
-      const path = L.lowerExprExpecting(expr.arguments[0]!, STRING);
-      const mode: IrExpr | null = modeNode ? L.lowerExprExpecting(modeNode, F64) : null;
+      const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+      const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
       if (!recursive) {
         return mode
           ? { kind: "libCall", fn: "fs.mkdirModeSync", args: [path, mode], type: VOID, loc }
           : { kind: "libCall", fn: "fs.mkdirSync", args: [path], type: VOID, loc };
       }
       if (!ts.isExpressionStatement(expr.parent)) {
-        L.noLowering(
+        lowerer.noLowering(
           "mkdirSync's return value in the recursive form",
           expr,
           "the first-created-directory result has no lowering — call it as a statement",
@@ -1454,14 +1454,14 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
       }
       if (!ok) {
-        L.noLowering(
+        lowerer.noLowering(
           "fs.promises.mkdir with an options argument beyond { recursive, mode }",
           optsNode,
           "the recursive flag must be a boolean literal and mode a number; other options have no lowering",
         );
       }
-      const path = L.lowerExprExpecting(expr.arguments[0]!, STRING);
-      const mode: IrExpr | null = modeNode ? L.lowerExprExpecting(modeNode, F64) : null;
+      const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+      const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
       const type: IrType = { kind: "promise", inner: VOID };
       if (!recursive) {
         return mode
@@ -1481,15 +1481,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM. The retry-free shape keeps the
     // historical rmOptsSync byte for byte.
     if (bi.module === "fs" && bi.member === "rmSync" && expr.arguments.length === 2) {
-      const opts = literalBoolOptions(L, expr.arguments[1]!, ["recursive", "force"], ["maxRetries", "retryDelay"]);
+      const opts = literalBoolOptions(lowerer, expr.arguments[1]!, ["recursive", "force"], ["maxRetries", "retryDelay"]);
       if (opts === null) {
-        L.noLowering(
+        lowerer.noLowering(
           "rmSync with an options argument beyond { recursive, force, maxRetries, retryDelay }",
           expr.arguments[1]!,
           "the recursive/force flags must be boolean literals; maxRetries/retryDelay are numbers; other options have no lowering",
         );
       }
-      const path = L.lowerExprExpecting(expr.arguments[0]!, STRING);
+      const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
 
       const recursive = boolLit(opts.bools["recursive"] === true, loc);
       const force = boolLit(opts.bools["force"] === true, loc);
@@ -1500,7 +1500,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // at least one of the pair is spelled — the plain form above owns
       // the both-omitted case).
       const num = (node: ts.Expression | undefined, dflt: number): IrExpr =>
-        node ? L.lowerExprExpecting(node, F64) : { kind: "numLit", value: dflt, type: F64, loc };
+        node ? lowerer.lowerExprExpecting(node, F64) : { kind: "numLit", value: dflt, type: F64, loc };
       return {
         kind: "libCall",
         fn: "fs.rmRetrySync",
@@ -1513,26 +1513,26 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // is an ordinary number — fs.constants.* reads bake to literals.
     if (bi.module === "fs" && bi.member === "accessSync") {
       if (expr.arguments.length < 1 || expr.arguments.length > 2) {
-        L.noLowering(`accessSync with ${expr.arguments.length} arguments`, expr);
+        lowerer.noLowering(`accessSync with ${expr.arguments.length} arguments`, expr);
       }
-      const path = L.lowerExprExpecting(expr.arguments[0]!, STRING);
+      const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
       const mode: IrExpr = expr.arguments[1]
-        ? L.lowerExprExpecting(expr.arguments[1], F64)
+        ? lowerer.lowerExprExpecting(expr.arguments[1], F64)
         : { kind: "numLit", value: 0, type: F64, loc };
       return { kind: "libCall", fn: "fs.accessSync", args: [path, mode], type: VOID, loc };
     }
     if (bi.module === "fs" && bi.member === "writeFileSync" && expr.arguments.length === 2) {
-      const dataIr = L.mapTypeOf(L.typeOf(expr.arguments[1]!));
+      const dataIr = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[1]!));
       if (dataIr?.kind === "bytes") {
         if (dataIr.elem !== "u8") {
-          L.noLowering(
-            `writeFileSync of '${L.fmt(dataIr)}' data`,
+          lowerer.noLowering(
+            `writeFileSync of '${lowerer.fmt(dataIr)}' data`,
             expr.arguments[1]!,
             "byte writes take Uint8Array/Buffer data",
           );
         }
-        const path = L.lowerExprExpecting(expr.arguments[0]!, STRING);
-        const data = L.lowerExprExpecting(expr.arguments[1]!, BYTES_U8);
+        const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+        const data = lowerer.lowerExprExpecting(expr.arguments[1]!, BYTES_U8);
         return { kind: "libCall", fn: "fs.writeFileSyncBytes", args: [path, data], type: VOID, loc };
       }
     }
@@ -1557,10 +1557,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // values in object-literal order before issuing the write; otherwise a
       // call/getter statically typed as the accepted utf8 literal can vanish.
       const finishWrite = (optionValues: WriteOptionValue[]): IrExpr => {
-        const path = L.lowerExprExpecting(expr.arguments[0]!, STRING);
-        const data = L.lowerExprExpecting(expr.arguments[1]!, STRING);
-        const pathLocal = L.declareHiddenLocal("%writePath", STRING);
-        const dataLocal = L.declareHiddenLocal("%writeData", STRING);
+        const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+        const data = lowerer.lowerExprExpecting(expr.arguments[1]!, STRING);
+        const pathLocal = lowerer.declareHiddenLocal("%writePath", STRING);
+        const dataLocal = lowerer.declareHiddenLocal("%writeData", STRING);
         const stmts: IrStmt[] = [
           { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
           { kind: "varDecl", localId: dataLocal.id, init: data, loc: data.loc },
@@ -1571,7 +1571,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             stmts.push({ kind: "exprStmt", expr: option.value, loc: option.value.loc });
             continue;
           }
-          const modeLocal = L.declareHiddenLocal("%writeMode", F64);
+          const modeLocal = lowerer.declareHiddenLocal("%writeMode", F64);
           stmts.push({ kind: "varDecl", localId: modeLocal.id, init: option.value, loc: option.value.loc });
           mode = varRef(modeLocal.id, modeLocal.type, loc);
         }
@@ -1589,12 +1589,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // writes anyway, so string data takes the plain write. Any OTHER
       // encoding name changes bytes and keeps the fence below.
       {
-        const t = L.typeOf(optsNode);
+        const t = lowerer.typeOf(optsNode);
         if (
           t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8") &&
-          L.mapTypeOf(L.typeOf(expr.arguments[1]!))?.kind === "string"
+          lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[1]!))?.kind === "string"
         ) {
-          return finishWrite([{ kind: "effect", value: L.lowerExprExpecting(optsNode, STRING) }]);
+          return finishWrite([{ kind: "effect", value: lowerer.lowerExprExpecting(optsNode, STRING) }]);
         }
       }
       const optionValues: WriteOptionValue[] = [];
@@ -1604,15 +1604,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           const m = optionMember(p);
           if (!m) { ok = false; break; }
           if (m.name === "mode") {
-            optionValues.push({ kind: "mode", value: L.lowerExprExpecting(m.value, F64) });
+            optionValues.push({ kind: "mode", value: lowerer.lowerExprExpecting(m.value, F64) });
           } else if (m.name === "encoding") {
-            const t = L.typeOf(m.value);
+            const t = lowerer.typeOf(m.value);
             if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) { ok = false; break; }
-            optionValues.push({ kind: "effect", value: L.lowerExprExpecting(m.value, STRING) });
+            optionValues.push({ kind: "effect", value: lowerer.lowerExprExpecting(m.value, STRING) });
           } else if (m.name === "flag") {
             // Documented, behavior-changing (open(2)'s disposition — 'a'
             // IS appendFileSync), no lowering: fence by name.
-            L.noLowering(
+            lowerer.noLowering(
               `${operation} with the flag option`,
               p,
               "the write truncates-or-creates (Node's default 'w'); other flags have no lowering",
@@ -1621,14 +1621,14 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             // The options-record stance: documented keys with no lowering
             // fence by name; undocumented keys drop like Node.
             fenceOrDropOptionKey(
-              L, p, m.name, operation, FS_WRITE_FILE_DOCUMENTED_OPTIONS,
+              lowerer, p, m.name, operation, FS_WRITE_FILE_DOCUMENTED_OPTIONS,
               'the supported options are { mode: <number>, encoding: "utf8" }',
             );
           }
         }
       }
-      if (!ok || L.mapTypeOf(L.typeOf(expr.arguments[1]!))?.kind !== "string") {
-        L.noLowering(
+      if (!ok || lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[1]!))?.kind !== "string") {
+        lowerer.noLowering(
           `${operation} with 3 arguments`,
           optsNode,
           'the supported options are { mode: <number>, encoding: "utf8" } over string data',
@@ -1639,10 +1639,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // zlib takes Buffers; a string argument (the lib admits it) gets the
     // wrap-it-first hint instead of a generic type mismatch.
     if (bi.module === "zlib" && expr.arguments.length >= 1) {
-      const dataIr = L.mapTypeOf(L.typeOf(expr.arguments[0]!));
+      const dataIr = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[0]!));
       if (!(dataIr?.kind === "bytes" && dataIr.elem === "u8")) {
-        L.noLowering(
-          `${bi.member} of '${dataIr ? L.fmt(dataIr) : L.checker.typeToString(L.typeOf(expr.arguments[0]!))}' data`,
+        lowerer.noLowering(
+          `${bi.member} of '${dataIr ? lowerer.fmt(dataIr) : lowerer.checker.typeToString(lowerer.typeOf(expr.arguments[0]!))}' data`,
           expr.arguments[0]!,
           `zlib works on Buffers: ${bi.member}(Buffer.from(s, "utf8"))`,
         );
@@ -1655,7 +1655,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       if (spread) {
         if (expr.arguments.length === 1) {
           // The whole-array form forwards the operand directly (no copy).
-          const packed = L.lowerExprExpecting(spread.expression, arrayOf(STRING));
+          const packed = lowerer.lowerExprExpecting(spread.expression, arrayOf(STRING));
           return { kind: "libCall", fn: fn.fn, args: [packed], type: fn.result, loc };
         }
         // The MIXED form — resolve(tmpPath, ...paths), test/common's
@@ -1664,13 +1664,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         // JS-exact; a dyn spread source rides the validated extraction).
         const elems = expr.arguments.map((a) =>
           ts.isSpreadElement(a)
-            ? L.lowerExprExpecting(a.expression, arrayOf(STRING))
-            : L.lowerExprExpecting(a, STRING));
+            ? lowerer.lowerExprExpecting(a.expression, arrayOf(STRING))
+            : lowerer.lowerExprExpecting(a, STRING));
         const spreads = expr.arguments.flatMap((a, i) => (ts.isSpreadElement(a) ? [i] : []));
         const packed: IrExpr = { kind: "arrayLit", elems, spreads, type: arrayOf(STRING), loc };
         return { kind: "libCall", fn: fn.fn, args: [packed], type: fn.result, loc };
       }
-      const elems = expr.arguments.map((a) => L.lowerExprExpecting(a, STRING));
+      const elems = expr.arguments.map((a) => lowerer.lowerExprExpecting(a, STRING));
       const packed: IrExpr = { kind: "arrayLit", elems, type: arrayOf(STRING), loc };
       return { kind: "libCall", fn: fn.fn, args: [packed], type: fn.result, loc };
     }
@@ -1685,7 +1685,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // non-string paths throw ERR_INVALID_ARG_TYPE where the dynCheck
       // throws its path-annotated TypeError. The fd forms (a number
       // argument) and literal-utf8 reads keep their existing lowerings.
-      const pathV = L.lowerExpr(expr.arguments[0]!);
+      const pathV = lowerer.lowerExpr(expr.arguments[0]!);
       if (pathV.type.kind === "string" || pathV.type.kind === "dyn") {
         const pathArg: IrExpr = pathV.type.kind === "dyn"
           ? { kind: "dynCheck", value: pathV, type: STRING, loc }
@@ -1698,9 +1698,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         // unknown names throw ERR_UNKNOWN_ENCODING — all at runtime. A
         // non-dyn encoding falls through to the literal-utf8 lowering
         // below (the discarded probe IR never emits).
-        const encT = L.typeOf(expr.arguments[1]!);
+        const encT = lowerer.typeOf(expr.arguments[1]!);
         if (!(encT.isStringLiteralType() && (encT.value === "utf8" || encT.value === "utf-8"))) {
-          const enc = L.lowerExpr(expr.arguments[1]!);
+          const enc = lowerer.lowerExpr(expr.arguments[1]!);
           if (enc.type.kind === "dyn") {
             return { kind: "libCall", fn: "fs.readFileSyncDyn", args: [pathArg, enc], type: DYN, loc };
           }
@@ -1709,7 +1709,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     }
     const required = fn.params.length - (fn.defaults?.length ?? 0);
     if (expr.arguments.length < required || expr.arguments.length > fn.params.length) {
-      L.noLowering(
+      lowerer.noLowering(
         `${name} with ${expr.arguments.length} argument${expr.arguments.length === 1 ? "" : "s"}`,
         expr,
         bi.member === "readFileSync" || bi.member === "readFile"
@@ -1722,15 +1722,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // form, picked by the argument's static type. Unions (URL |
       // undefined, ...) must narrow first, like everywhere else.
       const argNode = expr.arguments[0]!;
-      const arg = L.lowerExpr(argNode);
+      const arg = lowerer.lowerExpr(argNode);
       if (arg.type.kind === "url") {
         return { kind: "libCall", fn: "url.fileURLToPathUrl", args: [arg], type: STRING, loc };
       }
       if (arg.type.kind === "string") {
         return { kind: "libCall", fn: "url.fileURLToPathStr", args: [arg], type: STRING, loc };
       }
-      L.noLowering(
-        `fileURLToPath of '${L.fmt(arg.type)}' values`,
+      lowerer.noLowering(
+        `fileURLToPath of '${lowerer.fmt(arg.type)}' values`,
         argNode,
         "pass a URL value or a URL string (narrow unions first)",
       );
@@ -1742,16 +1742,16 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // "utf8" — or Node's "utf-8" alias, the same decoder (the fallback
       // declaration enforces the pair at typecheck; @types/node accepts
       // every BufferEncoding).
-      const enc = L.typeOf(expr.arguments[1]!);
+      const enc = lowerer.typeOf(expr.arguments[1]!);
       if (!(enc.isStringLiteralType() && (enc.value === "utf8" || enc.value === "utf-8"))) {
-        L.noLowering(
+        lowerer.noLowering(
           `${bi.member} with a non-"utf8" encoding`,
           expr.arguments[1]!,
           `only utf8 reads are supported: ${bi.member}(path, "utf8")`,
         );
       }
     }
-    const args = expr.arguments.map((a, i) => L.lowerExprExpecting(a, fn.params[i]));
+    const args = expr.arguments.map((a, i) => lowerer.lowerExprExpecting(a, fn.params[i]));
     for (let i = args.length; i < fn.params.length; i++) {
       const dflt = fn.defaults![i - required]!;
       args.push({ kind: "strLit", value: dflt, type: STRING, loc });
@@ -1767,21 +1767,21 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * spelling (`this`, an identifier, a unit literal) whose dropped
    * evaluation is unobservable; every other Reflect.apply keeps the
    * fence. Null when this isn't a Reflect.apply call. */
-  export function lowerReflectApplyCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerReflectApplyCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken) return null;
-    if (L.stdlibGlobalMember(access, "Reflect") !== "apply") return null;
+    if (lowerer.stdlibGlobalMember(access, "Reflect") !== "apply") return null;
     const loc = locOf(call);
     const fenceHint =
       "the lowered form is Reflect.apply(path.join | path.resolve, <effect-free this>, args) — call other functions directly (f(...args))";
     if (call.arguments.length !== 3 || call.arguments.some(ts.isSpreadElement)) {
-      L.noLowering("Reflect.apply with this argument shape", call, fenceHint);
+      lowerer.noLowering("Reflect.apply with this argument shape", call, fenceHint);
     }
     const targetNode = call.arguments[0]!;
-    const bi = ts.isPropertyAccessExpression(targetNode) ? L.builtinMemberOf(targetNode) : null;
-    const fn = bi ? builtinModuleFnOf(L, bi.module, bi.member) : null;
+    const bi = ts.isPropertyAccessExpression(targetNode) ? lowerer.builtinMemberOf(targetNode) : null;
+    const fn = bi ? builtinModuleFnOf(lowerer, bi.module, bi.member) : null;
     if (!fn || fn.variadicPack !== true) {
-      L.noLowering(
+      lowerer.noLowering(
         `Reflect.apply of '${targetNode.getText()}'`,
         targetNode,
         fenceHint,
@@ -1794,13 +1794,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       thisNode.kind === ts.SyntaxKind.NullKeyword ||
       (ts.isIdentifier(thisNode) && thisNode.text === "undefined");
     if (!effectFree) {
-      L.noLowering(
+      lowerer.noLowering(
         "Reflect.apply with a computed thisArg",
         thisNode,
         "the target ignores its receiver, so only effect-free spellings drop honestly (`this`, a binding, null, undefined)",
       );
     }
-    const packed = L.lowerExprExpecting(call.arguments[2]!, arrayOf(STRING));
+    const packed = lowerer.lowerExprExpecting(call.arguments[2]!, arrayOf(STRING));
     return { kind: "libCall", fn: fn.fn, args: [packed], type: fn.result, loc };
   }
 
@@ -1809,13 +1809,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * builds element-wise (its contextual type is the optional parameter's
    * `string[] | undefined`, which the generic literal path cannot map —
    * the Set-seed situation exactly); everything else lowers as itself. */
-  export function lowerChildArgsArg(L: Lowerer, node: ts.Expression | undefined, loc: SrcLoc): IrExpr {
+  export function lowerChildArgsArg(lowerer: Lowerer, node: ts.Expression | undefined, loc: SrcLoc): IrExpr {
     if (!node) return { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
     if (ts.isArrayLiteralExpression(node) && !node.elements.some(ts.isSpreadElement)) {
-      const elems = node.elements.map((el) => L.lowerExprExpecting(el, STRING));
+      const elems = node.elements.map((el) => lowerer.lowerExprExpecting(el, STRING));
       return { kind: "arrayLit", elems, type: arrayOf(STRING), loc: locOf(node) };
     }
-    return L.lowerExprExpecting(node, arrayOf(STRING));
+    return lowerer.lowerExprExpecting(node, arrayOf(STRING));
   }
 
 /** The signal names Node's table (and the runtime's twin) resolves —
@@ -1845,16 +1845,16 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * effects). Everything else (shell, cwd, env, input, maxBuffer, ...)
    * fences by name. The bare `{ encoding: "utf8" }` shape keeps its
    * historical cp.spawnSync lowering. */
-  export function lowerSpawnSyncCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement)) {
-      L.noLowering(
+      lowerer.noLowering(
         "spawnSync with this argument shape",
         expr,
         "the supported form is spawnSync(command, args?, options?)",
       );
     }
-    const cmd = L.lowerExprExpecting(expr.arguments[0]!, STRING);
-    const argv = L.lowerChildArgsArg(expr.arguments[1], loc);
+    const cmd = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+    const argv = lowerer.lowerChildArgsArg(expr.arguments[1], loc);
     const optsNode = expr.arguments[2];
 
     let timeout: IrExpr = numLit(0, loc);
@@ -1871,7 +1871,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
 
     if (optsNode) {
       if (!ts.isObjectLiteralExpression(optsNode)) {
-        L.noLowering(
+        lowerer.noLowering(
           "spawnSync with a non-literal options argument",
           optsNode,
           "pass the options inline so each member can be checked",
@@ -1891,13 +1891,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             if (fd === 2) errMode = 2;
             return;
           }
-          L.noLowering(
+          lowerer.noLowering(
             `spawnSync with stdio "${v}"`,
             node,
             '"pipe", "ignore", and "inherit" are the supported stdio modes',
           );
         };
-        const t = L.typeOf(node);
+        const t = lowerer.typeOf(node);
         if (t.isStringLiteralType()) {
           modeOf(t.value, 0);
           modeOf(t.value, 1);
@@ -1906,9 +1906,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         if (ts.isArrayLiteralExpression(node) && node.elements.length === 3) {
           node.elements.forEach((el, i) => {
-            const et = L.typeOf(el);
+            const et = lowerer.typeOf(el);
             if (!et.isStringLiteralType()) {
-              L.noLowering("spawnSync stdio tuple entries beyond string literals", el);
+              lowerer.noLowering("spawnSync stdio tuple entries beyond string literals", el);
             }
             modeOf(et.value, i as 0 | 1 | 2);
           });
@@ -1925,10 +1925,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               (a.value === "pipe" || a.value === "ignore" || a.value === "inherit"),
           )
         ) {
-          stdioStr = L.lowerExprExpecting(node, STRING);
+          stdioStr = lowerer.lowerExprExpecting(node, STRING);
           return;
         }
-        L.noLowering(
+        lowerer.noLowering(
           "spawnSync with this stdio option",
           node,
           'stdio takes a "pipe"/"ignore"/"inherit" literal (or a value typed as a union of those), or a 3-tuple of literals',
@@ -1937,7 +1937,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       for (const p of optsNode.properties) {
         const m = optionMember(p);
         if (!m) {
-          L.noLowering(
+          lowerer.noLowering(
             "spawnSync with this options shape",
             p,
             "spreads and computed keys have no lowering — write each member inline",
@@ -1945,9 +1945,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         switch (m.name) {
           case "encoding": {
-            const t = L.typeOf(m.value);
+            const t = lowerer.typeOf(m.value);
             if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
-              L.noLowering(
+              lowerer.noLowering(
                 "spawnSync with a non-utf8 encoding",
                 m.value,
                 'outputs are captured as utf8 — pass { encoding: "utf8" }',
@@ -1956,13 +1956,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             break;
           }
           case "timeout":
-            timeout = L.lowerExprExpecting(m.value, F64);
+            timeout = lowerer.lowerExprExpecting(m.value, F64);
             plain = false;
             break;
           case "killSignal": {
-            const t = L.typeOf(m.value);
+            const t = lowerer.typeOf(m.value);
             if (!t.isStringLiteralType() || !NODE_SIGNAL_NAMES.has(t.value)) {
-              L.noLowering(
+              lowerer.noLowering(
                 "spawnSync with this killSignal",
                 m.value,
                 'a signal-name literal from Node\'s table ("SIGTERM", "SIGKILL", ...) is the supported form',
@@ -1977,10 +1977,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             plain = false;
             break;
           case "windowsHide":
-            L.lowerExpr(m.value); // Node no-op on POSIX
+            lowerer.lowerExpr(m.value); // Node no-op on POSIX
             break;
           default:
-            L.noLowering(
+            lowerer.noLowering(
               `spawnSync option '${m.name}'`,
               p,
               "encoding, timeout, killSignal, stdio, and windowsHide are the supported options",
@@ -2024,15 +2024,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * REPLACEMENT environment, the exec-core pairs machinery), `cwd`, and
    * `windowsHide` (a POSIX no-op). The bare `{ stdio: "ignore" }` shape
    * keeps its historical cp.spawn lowering. */
-  export function lowerSpawnCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement)) {
-      L.noLowering(
+      lowerer.noLowering(
         "spawn with this argument shape",
         expr,
         'the supported form is spawn(command, args?, { stdio: "ignore" | "inherit", detached?, env?, cwd? })',
       );
     }
-    const cmd = L.lowerExprExpecting(expr.arguments[0]!, STRING);
+    const cmd = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
     const argsNode = expr.arguments.length === 3 ? expr.arguments[1] : undefined;
     const optsNode = expr.arguments[expr.arguments.length - 1];
 
@@ -2051,7 +2051,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     let plain = true; // exactly { stdio: "ignore" }: the historical libCall
 
     const pipeFence = (node: ts.Node): never =>
-      L.noLowering(
+      lowerer.noLowering(
         'spawn with stdio: "pipe"',
         node,
         'piped STDIN has no lowering — pipe stdout/stderr with the tuple form (stdio: ["ignore", "pipe", "pipe"]), or capture with spawnSync',
@@ -2072,7 +2072,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               v.kind === ts.SyntaxKind.TrueKeyword ? true :
               v.kind === ts.SyntaxKind.FalseKeyword ? false : null;
             if (lit !== null) {
-              const cond = L.lowerCondition(cs.cond);
+              const cond = lowerer.lowerCondition(cs.cond);
               detached = {
                 kind: "ternary",
                 cond,
@@ -2085,7 +2085,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               continue;
             }
           }
-          L.noLowering(
+          lowerer.noLowering(
             "spawn with this options spread",
             p,
             "the one supported spread is the conditional `...(c ? { detached: <literal> } : {})` (either orientation) — write other members inline",
@@ -2093,7 +2093,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         const m = optionMember(p);
         if (!m) {
-          L.noLowering(
+          lowerer.noLowering(
             "spawn with this options shape",
             p,
             "spreads and computed keys have no lowering — write each member inline",
@@ -2107,11 +2107,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             // openSync result — dup2'd into the child, Node's fd slots).
             if (ts.isArrayLiteralExpression(m.value) && m.value.elements.length === 3) {
               const slot = (el: ts.Expression, which: 0 | 1 | 2): void => {
-                const t = L.typeOf(el);
+                const t = lowerer.typeOf(el);
                 if (t.isStringLiteralType()) {
                   if (t.value === "pipe" && which === 0) pipeFence(el);
                   if (t.value !== "ignore" && t.value !== "inherit" && t.value !== "pipe") {
-                    L.noLowering(
+                    lowerer.noLowering(
                       `spawn with stdio "${t.value}"`,
                       el,
                       '"ignore", "inherit", "pipe" (stdout/stderr), and number fds are the supported stdio slots',
@@ -2125,20 +2125,20 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
                   return;
                 }
                 if (which === 0) {
-                  L.noLowering(
+                  lowerer.noLowering(
                     "spawn with this stdin slot",
                     el,
                     'stdin takes "ignore" or "inherit" (fd stdin has no lowering)',
                   );
                 }
-                if (L.mapTypeOf(t)?.kind !== "f64") {
-                  L.noLowering(
+                if (lowerer.mapTypeOf(t)?.kind !== "f64") {
+                  lowerer.noLowering(
                     "spawn with this stdio option",
                     el,
                     'each slot is "ignore", "inherit", or a number fd (an openSync result)',
                   );
                 }
-                const fd = L.lowerExprExpecting(el, F64);
+                const fd = lowerer.lowerExprExpecting(el, F64);
                 if (which === 1) { outMode = 2; outFd = fd; }
                 else { errMode = 2; errFd = fd; }
               };
@@ -2147,11 +2147,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               plain = false;
               break;
             }
-            const t = L.typeOf(m.value);
+            const t = lowerer.typeOf(m.value);
             const v = t.isStringLiteralType() ? t.value : null;
             if (v === "pipe") pipeFence(m.value);
             if (v !== "ignore" && v !== "inherit") {
-              L.noLowering(
+              lowerer.noLowering(
                 "spawn with this stdio option",
                 m.value,
                 '"ignore" and "inherit" are the supported stdio literals ' +
@@ -2171,7 +2171,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             } else if (m.value.kind === ts.SyntaxKind.FalseKeyword) {
               detached = boolLit(false, loc);
             } else {
-              L.noLowering(
+              lowerer.noLowering(
                 "spawn with a non-literal detached option",
                 m.value,
                 "detached must be a boolean literal",
@@ -2181,18 +2181,18 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           }
           case "env":
             hasEnv = boolLit(true, loc);
-            envPairs = L.recordToEnvPairs(m.value);
+            envPairs = lowerer.recordToEnvPairs(m.value);
             plain = false;
             break;
           case "cwd":
-            cwd = L.lowerExprExpecting(m.value, STRING);
+            cwd = lowerer.lowerExprExpecting(m.value, STRING);
             plain = false;
             break;
           case "windowsHide":
-            L.lowerExpr(m.value); // Node no-op on POSIX
+            lowerer.lowerExpr(m.value); // Node no-op on POSIX
             break;
           default:
-            L.noLowering(
+            lowerer.noLowering(
               `spawn option '${m.name}'`,
               p,
               "stdio, detached, env, cwd, and windowsHide are the supported options",
@@ -2201,13 +2201,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       }
     }
     if (!sawStdio) {
-      L.noLowering(
+      lowerer.noLowering(
         "spawn without { stdio: \"ignore\" }",
         expr,
         'Node\'s default stdio is "pipe" (streams, no lowering) — pass { stdio: "ignore" } or { stdio: "inherit" } explicitly, or capture with spawnSync',
       );
     }
-    const argv = L.lowerChildArgsArg(argsNode, loc);
+    const argv = lowerer.lowerChildArgsArg(argsNode, loc);
     if (plain) {
       return { kind: "libCall", fn: "cp.spawn", args: [cmd, argv], type: CHILD_T, loc };
     }
@@ -2243,17 +2243,17 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     return false;
   }
 
-  export function lowerExecSyncCall(L: Lowerer, expr: ts.CallExpression, shell: boolean, loc: SrcLoc): IrExpr {
+  export function lowerExecSyncCall(lowerer: Lowerer, expr: ts.CallExpression, shell: boolean, loc: SrcLoc): IrExpr {
     if (expr.arguments.some(ts.isSpreadElement)) {
-      L.noLowering(`${shell ? "execSync" : "execFileSync"} with a spread call`, expr);
+      lowerer.noLowering(`${shell ? "execSync" : "execFileSync"} with a spread call`, expr);
     }
-    const cmd = L.lowerExprExpecting(expr.arguments[0]!, STRING);
+    const cmd = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
     // execSync: /bin/sh -c <command>; execFileSync: file + its args list.
     let argvExpr: IrExpr;
     let optsNode: ts.Expression | undefined;
     if (shell) {
       if (expr.arguments.length > 2) {
-        L.noLowering("execSync with this argument shape", expr, "the supported form is execSync(command, options?)");
+        lowerer.noLowering("execSync with this argument shape", expr, "the supported form is execSync(command, options?)");
       }
       argvExpr = {
         kind: "arrayLit",
@@ -2267,9 +2267,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       optsNode = expr.arguments[1];
     } else {
       if (expr.arguments.length > 3) {
-        L.noLowering("execFileSync with this argument shape", expr, "the supported form is execFileSync(file, args?, options?)");
+        lowerer.noLowering("execFileSync with this argument shape", expr, "the supported form is execFileSync(file, args?, options?)");
       }
-      argvExpr = L.lowerChildArgsArg(expr.arguments[1], loc);
+      argvExpr = lowerer.lowerChildArgsArg(expr.arguments[1], loc);
       optsNode = expr.arguments[2];
     }
     // The shell command itself is /bin/sh; the "command" string rides as
@@ -2308,7 +2308,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         // as the literal path — anything else throws a catchable
         // TypeError, as does a non-utf8 runtime encoding: outputs are
         // captured utf8, and silently mislabeling them would be worse).
-        const runtime = lowerExecSyncRuntimeOptions(L, expr, shell, optsNode, loc);
+        const runtime = lowerExecSyncRuntimeOptions(lowerer, expr, shell, optsNode, loc);
         if (runtime) {
           return {
             kind: "libCall",
@@ -2318,7 +2318,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             loc,
           };
         }
-        L.noLowering(
+        lowerer.noLowering(
           `${shell ? "execSync" : "execFileSync"} with a non-literal options argument`,
           optsNode,
           "pass the options inline so each member can be checked",
@@ -2348,13 +2348,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             if (fd === 2) stderrMode = 3;
             return;
           }
-          L.noLowering(
+          lowerer.noLowering(
             `${shell ? "execSync" : "execFileSync"} with stdio "${v}"`,
             node,
             '"pipe", "ignore", and "inherit" are the supported stdio modes',
           );
         };
-        const t = L.typeOf(node);
+        const t = lowerer.typeOf(node);
         if (t.isStringLiteralType()) {
           modeOf(t.value, 0);
           modeOf(t.value, 1);
@@ -2363,15 +2363,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         if (ts.isArrayLiteralExpression(node) && node.elements.length === 3) {
           node.elements.forEach((el, i) => {
-            const et = L.typeOf(el);
+            const et = lowerer.typeOf(el);
             if (!et.isStringLiteralType()) {
-              L.noLowering(`${shell ? "execSync" : "execFileSync"} stdio tuple entries beyond string literals`, el);
+              lowerer.noLowering(`${shell ? "execSync" : "execFileSync"} stdio tuple entries beyond string literals`, el);
             }
             modeOf(et.value, i as 0 | 1 | 2);
           });
           return;
         }
-        L.noLowering(
+        lowerer.noLowering(
           `${shell ? "execSync" : "execFileSync"} with this stdio option`,
           node,
           'stdio takes a "pipe"/"ignore" literal or a 3-tuple of those',
@@ -2391,13 +2391,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           if (cs !== null && cs !== "unsupported" && cs.props.length === 1 &&
               cs.props[0]!.name.text === "env" && ts.isPropertyAssignment(cs.props[0]!)) {
             condEnvSpread = {
-              cond: L.lowerCondition(cs.cond),
-              pairs: L.recordToEnvPairs((cs.props[0] as ts.PropertyAssignment).initializer),
+              cond: lowerer.lowerCondition(cs.cond),
+              pairs: lowerer.recordToEnvPairs((cs.props[0] as ts.PropertyAssignment).initializer),
               whenTrue: cs.whenTrue,
             };
             continue;
           }
-          L.noLowering(
+          lowerer.noLowering(
             `${shell ? "execSync" : "execFileSync"} with this options spread`,
             p,
             "the one supported spread is the conditional `...(c ? { env: ... } : {})` (either orientation) — write other members inline",
@@ -2405,7 +2405,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         const m = optionMember(p);
         if (!m) {
-          L.noLowering(
+          lowerer.noLowering(
             `${shell ? "execSync" : "execFileSync"} with this options shape`,
             p,
             "spreads and computed keys have no lowering — write each member inline",
@@ -2414,9 +2414,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         const member = m.name;
         switch (member) {
           case "encoding": {
-            const t = L.typeOf(m.value);
+            const t = lowerer.typeOf(m.value);
             if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
-              L.noLowering(
+              lowerer.noLowering(
                 `${shell ? "execSync" : "execFileSync"} with a non-utf8 encoding`,
                 m.value,
                 'outputs are captured as utf8 — pass { encoding: "utf8" }',
@@ -2425,7 +2425,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             break;
           }
           case "cwd":
-            cwd = L.lowerExprExpecting(m.value, STRING);
+            cwd = lowerer.lowerExprExpecting(m.value, STRING);
             break;
           case "input": {
             // string | undefined, Node's exact member semantics: the
@@ -2434,22 +2434,22 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             // union-typed value re-reads for the presence test (the
             // readOpt discipline), so only pure reads qualify — the
             // `options?.input` shape verbatim.
-            if (L.typeOf(m.value).flags & ts.TypeFlags.Undefined) {
+            if (lowerer.typeOf(m.value).flags & ts.TypeFlags.Undefined) {
               // `input: undefined` — Node treats the member as absent.
               break;
             }
-            const it = L.mapTypeOf(L.typeOf(m.value));
-            const uTag = it?.kind === "union" ? L.armTag(it.unionId, UNDEFINED_T) : -1;
-            const sTag = it?.kind === "union" ? L.armTag(it.unionId, STRING) : -1;
+            const it = lowerer.mapTypeOf(lowerer.typeOf(m.value));
+            const uTag = it?.kind === "union" ? lowerer.armTag(it.unionId, UNDEFINED_T) : -1;
+            const sTag = it?.kind === "union" ? lowerer.armTag(it.unionId, STRING) : -1;
             if (it?.kind === "union" && uTag >= 0 && sTag >= 0) {
               if (!isPureReadShape(m.value)) {
-                L.noLowering(
+                lowerer.noLowering(
                   `${shell ? "execSync" : "execFileSync"} with a computed optional input`,
                   m.value,
                   "the undefined test re-reads the expression — bind the input to a const first",
                 );
               }
-              const read = L.lowerExpr(m.value);
+              const read = lowerer.lowerExpr(m.value);
               hasInput = { kind: "unionIsTag", unionId: it.unionId, tag: uTag, negated: true, value: read, type: BOOL, loc };
               input = {
                 kind: "ternary",
@@ -2461,13 +2461,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               };
               break;
             }
-            input = L.lowerExprExpecting(m.value, STRING);
+            input = lowerer.lowerExprExpecting(m.value, STRING);
             hasInput = boolLit(true, loc);
             break;
           }
           case "env": {
             hasEnv = boolLit(true, loc);
-            envPairs = L.recordToEnvPairs(m.value);
+            envPairs = lowerer.recordToEnvPairs(m.value);
             // A later inline env member overrides an earlier conditional
             // spread (JS object-literal order); an earlier member stays
             // the spread's false-arm fallback.
@@ -2475,7 +2475,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             break;
           }
           case "timeout":
-            timeout = L.lowerExprExpecting(m.value, F64);
+            timeout = lowerer.lowerExprExpecting(m.value, F64);
             break;
           case "stdio":
             applyStdio(m.value);
@@ -2483,12 +2483,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           case "maxBuffer":
             // Accepted, not enforced (the capture grows unbounded — no
             // real corpus hits the cap); evaluate for side effects.
-            L.lowerExpr(m.value);
+            lowerer.lowerExpr(m.value);
             break;
           case "killSignal": {
-            const t = L.typeOf(m.value);
+            const t = lowerer.typeOf(m.value);
             if (!t.isStringLiteralType() || t.value !== "SIGTERM") {
-              L.noLowering(
+              lowerer.noLowering(
                 `${shell ? "execSync" : "execFileSync"} with a non-default killSignal`,
                 m.value,
                 "only the SIGTERM default is implemented for the timeout kill",
@@ -2497,17 +2497,17 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             break;
           }
           case "windowsHide":
-            L.lowerExpr(m.value); // Node no-op on POSIX
+            lowerer.lowerExpr(m.value); // Node no-op on POSIX
             break;
           case "shell":
             if (shell) {
-              L.lowerExpr(m.value);
+              lowerer.lowerExpr(m.value);
             } else {
-              const t = L.typeOf(m.value);
-              if (t.flags & ts.TypeFlags.BooleanLiteral && L.checker.typeToString(t) === "false") {
+              const t = lowerer.typeOf(m.value);
+              if (t.flags & ts.TypeFlags.BooleanLiteral && lowerer.checker.typeToString(t) === "false") {
                 // execFileSync's default — a no-op.
               } else {
-                L.noLowering(
+                lowerer.noLowering(
                   "execFileSync with shell enabled",
                   m.value,
                   "use execSync for shell execution",
@@ -2516,7 +2516,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             }
             break;
           default:
-            L.noLowering(
+            lowerer.noLowering(
               `${shell ? "execSync" : "execFileSync"} option '${member}'`,
               p,
               "encoding, cwd, env, input, timeout, stdio, and maxBuffer are the supported options",
@@ -2561,17 +2561,17 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * side-effect-free reads qualify (the `in`-operator fold discipline) —
    * bind computed options to a const first. Null when the shape isn't the
    * exec-options record (the caller keeps its fence). */
-  function lowerExecSyncRuntimeOptions(L: Lowerer, expr: ts.CallExpression, shell: boolean,
+  function lowerExecSyncRuntimeOptions(lowerer: Lowerer, expr: ts.CallExpression, shell: boolean,
     optsNode: ts.Expression, loc: SrcLoc,):
     { input: IrExpr; hasInput: IrExpr; cwd: IrExpr; timeout: IrExpr; stdoutMode: IrExpr; stderrMode: IrExpr } | null {
-    const opts = L.lowerExpr(optsNode);
+    const opts = lowerer.lowerExpr(optsNode);
     if (opts.type.kind !== "record") return null;
     const shapeId = opts.type.shapeId;
-    const shape = L.shapes.get(shapeId);
+    const shape = lowerer.shapes.get(shapeId);
     const names = shape?.fields.map((f) => f.name).join(",");
     if (names !== "cwd,encoding,input,maxBuffer,stdio,timeout,windowsHide") return null;
     if (opts.kind !== "varRef" && opts.kind !== "recordGet" && opts.kind !== "fieldGet") {
-      L.noLowering(
+      lowerer.noLowering(
         `${shell ? "execSync" : "execFileSync"} with a computed options argument`,
         optsNode,
         "the member reads re-read the options — bind the object to a const first",
@@ -2582,8 +2582,8 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const readOpt = (name: string, dflt: IrExpr, armT: IrType): IrExpr => {
       const ft = fieldType(name);
       if (ft.kind !== "union") return { kind: "recordGet", obj: opts, shapeId, field: name, type: ft, loc };
-      const uTag = L.armTag(ft.unionId, UNDEFINED_T);
-      const vTag = L.armTag(ft.unionId, armT);
+      const uTag = lowerer.armTag(ft.unionId, UNDEFINED_T);
+      const vTag = lowerer.armTag(ft.unionId, armT);
       const read: IrExpr = { kind: "recordGet", obj: opts, shapeId, field: name, type: ft, loc };
       return {
         kind: "ternary",
@@ -2598,7 +2598,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const optsT: IrType = { kind: "record", shapeId };
     const modeCall = (fd: 1 | 2): IrExpr => ({
       kind: "call",
-      callee: execStdioModeHelper(L, shapeId, fieldType("stdio"), fd, loc),
+      callee: execStdioModeHelper(lowerer, shapeId, fieldType("stdio"), fd, loc),
       args: [opts],
       type: F64,
       loc,
@@ -2613,7 +2613,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         ? {
             kind: "unionIsTag",
             unionId: inputT.unionId,
-            tag: L.armTag(inputT.unionId, UNDEFINED_T),
+            tag: lowerer.armTag(inputT.unionId, UNDEFINED_T),
             negated: true,
             value: { kind: "recordGet", obj: opts, shapeId, field: "input", type: inputT, loc },
             type: BOOL,
@@ -2638,12 +2638,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * throws the catchable TypeError the literal path fences at compile
    * time; the fd-1 helper also gates the encoding (utf8/utf-8 only —
    * outputs are captured utf8). */
-  function execStdioModeHelper(L: Lowerer, shapeId: string, stdioT: IrType, fd: 1 | 2, loc: SrcLoc): string {
+  function execStdioModeHelper(lowerer: Lowerer, shapeId: string, stdioT: IrType, fd: 1 | 2, loc: SrcLoc): string {
     const key = `cp.stdiomode:${shapeId}:${fd}`;
-    const existing = L.arrHofHelpers.get(key);
+    const existing = lowerer.arrHofHelpers.get(key);
     if (existing) return existing;
-    const name = `%cp.stdioMode.${fd}.${L.arrHofHelpers.size}`;
-    L.arrHofHelpers.set(key, name);
+    const name = `%cp.stdioMode.${fd}.${lowerer.arrHofHelpers.size}`;
+    lowerer.arrHofHelpers.set(key, name);
     const optsT: IrType = { kind: "record", shapeId };
 
     const strEq = (l: IrExpr, r: string): IrExpr => ({ kind: "strEq", negated: false, left: l, right: strLit(r, loc), type: BOOL, loc });
@@ -2704,9 +2704,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       });
     }
     if (stdioT.kind !== "union") throw new InternalCompilerError("emitter bug: exec-options stdio is not a union");
-    const uTag = L.armTag(stdioT.unionId, UNDEFINED_T);
-    const sTag = L.armTag(stdioT.unionId, STRING);
-    const aTag = L.armTag(stdioT.unionId, arrayOf(STRING));
+    const uTag = lowerer.armTag(stdioT.unionId, UNDEFINED_T);
+    const sTag = lowerer.armTag(stdioT.unionId, STRING);
+    const aTag = lowerer.armTag(stdioT.unionId, arrayOf(STRING));
     const sd: IrExpr = { kind: "recordGet", obj: o, shapeId, field: "stdio", type: stdioT, loc };
     body.push({
       kind: "if",
@@ -2748,7 +2748,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       loc,
     });
     body.push(...modeStmts({ kind: "arrayGet", arr: aRef, index: numLit(fd, loc), type: STRING, loc }));
-    L.liftedFns.push({
+    lowerer.liftedFns.push({
       name,
       params: [{ localId: "o.0", name: "o", type: optsT }],
       returnType: F64,
@@ -2766,36 +2766,36 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * over anything else fences HERE with the supported-target hint (the
    * declaration is where the target is visible). False for non-promisify
    * initializers, so the ordinary declaration paths apply. */
-  export function isPromisifyCall(L: Lowerer, init: ts.Expression): ts.CallExpression | null {
+  export function isPromisifyCall(lowerer: Lowerer, init: ts.Expression): ts.CallExpression | null {
     let e: ts.Expression = init;
     while (ts.isParenthesizedExpression(e)) e = e.expression;
     if (!ts.isCallExpression(e) || e.questionDotToken) return null;
     if (!ts.isIdentifier(e.expression)) return null;
-    const bi = L.builtinImportOf(e.expression);
+    const bi = lowerer.builtinImportOf(e.expression);
     if (!bi || bi.module !== "util" || bi.member !== "promisify") return null;
     return e;
   }
 
-  export function promisifiedExecFileDecl(L: Lowerer, nameNode: ts.Node, init: ts.Expression | undefined): boolean {
+  export function promisifiedExecFileDecl(lowerer: Lowerer, nameNode: ts.Node, init: ts.Expression | undefined): boolean {
     if (!init) return false;
     // The OTHER special const-binding form this decl hook serves: the
     // `const requestFn = tls ? https.request : http.request` client
     // ternary (lower-server.ts's registry) — calls through it lower as
     // the runtime-secure http client.
-    if (registerHttpClientFnBinding(L, nameNode, init)) return true;
-    const e = isPromisifyCall(L, init);
+    if (registerHttpClientFnBinding(lowerer, nameNode, init)) return true;
+    const e = isPromisifyCall(lowerer, init);
     if (!e) return false;
     const argNode = e.arguments.length === 1 ? e.arguments[0]! : null;
-    const target = argNode && ts.isIdentifier(argNode) ? L.builtinImportOf(argNode) : null;
+    const target = argNode && ts.isIdentifier(argNode) ? lowerer.builtinImportOf(argNode) : null;
     if (!target || target.module !== "child_process" || target.member !== "execFile") {
-      L.noLowering(
+      lowerer.noLowering(
         "util.promisify of this target",
         argNode ?? e,
         "child_process.execFile is the one promisifiable target: const execFileAsync = promisify(execFile)",
       );
     }
-    const symbol = L.checker.getSymbolAtLocation(nameNode);
-    if (symbol) L.promisifiedExecFile.add(symbol);
+    const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+    if (symbol) lowerer.promisifiedExecFile.add(symbol);
     return true;
   }
 
@@ -2813,20 +2813,20 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * and "spawn <file> ENOENT" with .code); Node's numeric `.code` on a
    * Command-failed rejection (the exit status) is NOT carried —
    * SEMANTICS.md divergence 50's stance. */
-  export function lowerExecFileAsyncCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  export function lowerExecFileAsyncCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (expr.arguments.length < 1 || expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement)) {
-      L.noLowering(
+      lowerer.noLowering(
         "the promisified execFile with this argument shape",
         expr,
         "the supported form is execFileAsync(file, args?, options?)",
       );
     }
-    const cmd = L.lowerExprExpecting(expr.arguments[0]!, STRING);
-    const argv = L.lowerChildArgsArg(expr.arguments[1], loc);
+    const cmd = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+    const argv = lowerer.lowerChildArgsArg(expr.arguments[1], loc);
     const optsNode = expr.arguments[2];
 
     const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
-    const helper = execFileAsyncHelper(L, loc);
+    const helper = execFileAsyncHelper(lowerer, loc);
     const envRecT: IrType = { kind: "record", shapeId: helper.envShapeId };
     const envRec = (has: boolean, pairs: IrExpr): IrExpr => ({
       kind: "recordLit",
@@ -2843,7 +2843,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     let timeout: IrExpr = numLit(0, loc);
     if (optsNode) {
       if (!ts.isObjectLiteralExpression(optsNode)) {
-        L.noLowering(
+        lowerer.noLowering(
           "the promisified execFile with a non-literal options argument",
           optsNode,
           "pass the options inline so each member can be checked",
@@ -2860,8 +2860,8 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           const cs = conditionalSpreadOf(p.expression);
           if (cs !== null && cs !== "unsupported" && cs.props.length === 1 &&
               cs.props[0]!.name.text === "env" && ts.isPropertyAssignment(cs.props[0]!)) {
-            const cond = L.lowerCondition(cs.cond);
-            const carried = envRec(true, L.recordToEnvPairs((cs.props[0] as ts.PropertyAssignment).initializer));
+            const cond = lowerer.lowerCondition(cs.cond);
+            const carried = envRec(true, lowerer.recordToEnvPairs((cs.props[0] as ts.PropertyAssignment).initializer));
             const absent = envRec(false, emptyPairs());
             env = {
               kind: "ternary",
@@ -2873,7 +2873,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             };
             continue;
           }
-          L.noLowering(
+          lowerer.noLowering(
             "the promisified execFile with this options spread",
             p,
             "the one supported spread is the conditional `...(c ? { env: ... } : {})` (either orientation) — write other members inline",
@@ -2881,7 +2881,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         const m = optionMember(p);
         if (!m) {
-          L.noLowering(
+          lowerer.noLowering(
             "the promisified execFile with this options shape",
             p,
             "spreads and computed keys have no lowering — write each member inline",
@@ -2889,9 +2889,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         switch (m.name) {
           case "encoding": {
-            const t = L.typeOf(m.value);
+            const t = lowerer.typeOf(m.value);
             if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
-              L.noLowering(
+              lowerer.noLowering(
                 "the promisified execFile with a non-utf8 encoding",
                 m.value,
                 'outputs are captured as utf8 — pass { encoding: "utf8" } (Node\'s own default here)',
@@ -2900,24 +2900,24 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             break;
           }
           case "cwd":
-            cwd = L.lowerExprExpecting(m.value, STRING);
+            cwd = lowerer.lowerExprExpecting(m.value, STRING);
             break;
           case "env":
-            env = envRec(true, L.recordToEnvPairs(m.value));
+            env = envRec(true, lowerer.recordToEnvPairs(m.value));
             break;
           case "timeout":
-            timeout = L.lowerExprExpecting(m.value, F64);
+            timeout = lowerer.lowerExprExpecting(m.value, F64);
             break;
           case "maxBuffer":
-            L.lowerExpr(m.value); // accepted, not enforced (divergence 50)
+            lowerer.lowerExpr(m.value); // accepted, not enforced (divergence 50)
             break;
           case "windowsHide":
-            L.lowerExpr(m.value); // Node no-op on POSIX
+            lowerer.lowerExpr(m.value); // Node no-op on POSIX
             break;
           case "killSignal": {
-            const t = L.typeOf(m.value);
+            const t = lowerer.typeOf(m.value);
             if (!t.isStringLiteralType() || t.value !== "SIGTERM") {
-              L.noLowering(
+              lowerer.noLowering(
                 "the promisified execFile with a non-default killSignal",
                 m.value,
                 "only the SIGTERM default is implemented for the timeout kill",
@@ -2926,7 +2926,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             break;
           }
           default:
-            L.noLowering(
+            lowerer.noLowering(
               `the promisified execFile option '${m.name}'`,
               p,
               "encoding, cwd, env, timeout, and maxBuffer are the supported options",
@@ -2949,23 +2949,23 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * async machinery turns a throw into the rejection, Node's promisified
    * behavior — and returns the `{ stdout, stderr }` record built from the
    * capture. One helper per program (the shape is fixed). */
-  export function execFileAsyncHelper(L: Lowerer, loc: SrcLoc): { name: string; shapeId: string; envShapeId: string } {
-    const shapeId = L.shapes.intern([
+  export function execFileAsyncHelper(lowerer: Lowerer, loc: SrcLoc): { name: string; shapeId: string; envShapeId: string } {
+    const shapeId = lowerer.shapes.intern([
       { name: "stderr", type: STRING },
       { name: "stdout", type: STRING },
     ]);
     // The env choice travels as ONE {has, pairs} record so a conditional
     // env spread's condition evaluates exactly once at the call site (has
     // and pairs both derive from it).
-    const envShapeId = L.shapes.intern([
+    const envShapeId = lowerer.shapes.intern([
       { name: "has", type: BOOL },
       { name: "pairs", type: arrayOf(STRING) },
     ]);
     const key = "execFileAsync";
-    const existing = L.widthHelpers.get(key);
+    const existing = lowerer.widthHelpers.get(key);
     if (existing) return { name: existing, shapeId, envShapeId };
-    const name = `%execFileAsync.${L.widthHelpers.size}`;
-    L.widthHelpers.set(key, name);
+    const name = `%execFileAsync.${lowerer.widthHelpers.size}`;
+    lowerer.widthHelpers.set(key, name);
     const recT: IrType = { kind: "record", shapeId };
     const envRecT: IrType = { kind: "record", shapeId: envShapeId };
     const strArrT = arrayOf(STRING);
@@ -3004,7 +3004,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         loc,
       },
     ];
-    L.liftedFns.push({
+    lowerer.liftedFns.push({
       name,
       params: [
         { localId: "cmd.0", name: "cmd", type: STRING },
@@ -3036,19 +3036,19 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * flatten in JS own-key order, undefined-armed values SKIPPED (Node
    * drops undefined env entries). Reuses the interned overflow-keys/read
    * machinery. */
-  export function recordToEnvPairs(L: Lowerer, node: ts.Expression): IrExpr {
-    const v = L.lowerExpr(node);
+  export function recordToEnvPairs(lowerer: Lowerer, node: ts.Expression): IrExpr {
+    const v = lowerer.lowerExpr(node);
     if (v.type.kind !== "record") {
-      L.noLowering(
-        `an env option of '${L.fmt(v.type)}' values`,
+      lowerer.noLowering(
+        `an env option of '${lowerer.fmt(v.type)}' values`,
         node,
         "pass a string-keyed object (spread process.env or build a Record<string, string>)",
       );
     }
-    const helper = L.envToPairsHelper(v.type.shapeId, locOf(node));
+    const helper = lowerer.envToPairsHelper(v.type.shapeId, locOf(node));
     if (helper === null) {
-      L.noLowering(
-        `an env option of '${L.fmt(v.type)}' values`,
+      lowerer.noLowering(
+        `an env option of '${lowerer.fmt(v.type)}' values`,
         node,
         "env fields must be strings (or string | undefined)",
       );
@@ -3060,13 +3060,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * provenance + the enclosing "readline" ambient module — the name alone
    * is too generic). The interface maps to an f64 handle, so the IR type
    * cannot discriminate it from a plain number. */
-  function isReadlineTyped(L: Lowerer, node: ts.Expression): boolean {
-    const t = L.checker.getTypeAtLocation(node);
+  function isReadlineTyped(lowerer: Lowerer, node: ts.Expression): boolean {
+    const t = lowerer.checker.getTypeAtLocation(node);
     const sym = t.getAliasSymbol() ?? t.getSymbol();
     if (sym?.name !== "Interface") return false;
-    return L.checker.declarationsOf(sym).some((d) => {
+    return lowerer.checker.declarationsOf(sym).some((d) => {
       if (!ts.isClassDeclaration(d) && !ts.isInterfaceDeclaration(d)) return false;
-      if (!L.isStdlibFile(d.getSourceFile())) return false;
+      if (!lowerer.isStdlibFile(d.getSourceFile())) return false;
       let up: ts.Node | undefined = d.parent;
       while (up) {
         if (ts.isModuleDeclaration(up) && ts.isStringLiteral(up.name)) {
@@ -3091,73 +3091,73 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * names would throw ERR_INVALID_ARG_TYPE where the dynCheck throws its
    * annotated TypeError; symbol names have no lowering and fence through
    * the coercion's own rejection). */
-  function dcChannelNameArg(L: Lowerer, node: ts.Expression): IrExpr {
-    return L.lowerExprExpecting(node, STRING);
+  function dcChannelNameArg(lowerer: Lowerer, node: ts.Expression): IrExpr {
+    return lowerer.lowerExprExpecting(node, STRING);
   }
 
   /** A diagnostics_channel subscriber as a dyn value: dyn callables pass
    * through (test/common's mustCall wrapper — an untyped JS function
    * value), boxable typed closures ride dynFrom. Identity is preserved
    * either way, so unsubscribe(fn) finds the subscribe(fn) entry. */
-  function dcSubscriberArg(L: Lowerer, node: ts.Expression): IrExpr {
+  function dcSubscriberArg(lowerer: Lowerer, node: ts.Expression): IrExpr {
     // The stdlib GLOBAL setImmediate as a function value (the Node-suite
     // traceCallback shape): a minted native dyn callable — the identifier
     // has no other first-class story.
     if (ts.isIdentifier(node) && node.text === "setImmediate") {
-      const sym = L.checker.getSymbolAtLocation(node);
-      const decls = sym ? L.checker.declarationsOf(sym) : [];
-      if (decls.length > 0 && decls.every((d) => L.isStdlibFile(d.getSourceFile()))) {
+      const sym = lowerer.checker.getSymbolAtLocation(node);
+      const decls = sym ? lowerer.checker.declarationsOf(sym) : [];
+      if (decls.length > 0 && decls.every((d) => lowerer.isStdlibFile(d.getSourceFile()))) {
         return { kind: "libCall", fn: "timers.setImmediateFnValue", args: [], type: DYN, loc: locOf(node) };
       }
     }
-    const cb = L.lowerExpr(node);
+    const cb = lowerer.lowerExpr(node);
     if (cb.type.kind === "dyn") return cb;
     if (
       cb.type.kind === "func" &&
-      canBoxFuncIntoDyn(cb.type, (id) => L.shapes.get(id), (id) => L.unions.get(id))
+      canBoxFuncIntoDyn(cb.type, (id) => lowerer.shapes.get(id), (id) => lowerer.unions.get(id))
     ) {
       return { kind: "dynFrom", value: cb, type: DYN, loc: locOf(node) };
     }
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       node,
-      `channel subscribers of type '${L.fmt(cb.type)}' (subscribers cross as dyn functions — parameters must be dyn-representable)`,
+      `channel subscribers of type '${lowerer.fmt(cb.type)}' (subscribers cross as dyn functions — parameters must be dyn-representable)`,
     );
   }
 
   /** A published message as a dyn value: dyn passes through, everything
    * in the dynFrom domain (JSON-safe data, bytes, %Error, boxable
    * functions, handle kinds) boxes; the rest fences with the domain named. */
-  function dcMessageArg(L: Lowerer, node: ts.Expression): IrExpr {
+  function dcMessageArg(lowerer: Lowerer, node: ts.Expression): IrExpr {
     // An explicit `undefined` argument (tracePromise(fn, ctx, undefined,
     // ...args) — Node's own no-this spelling) is the undefined dyn value,
     // exactly what an omitted slot defaults to.
     if (ts.isIdentifier(node) && node.text === "undefined") {
       return dynUndefinedExpr(locOf(node));
     }
-    const msg = L.lowerExpr(node);
+    const msg = lowerer.lowerExpr(node);
     if (msg.type.kind === "dyn") return msg;
-    if (canConvertToDyn(msg.type, (id) => L.shapes.get(id), (id) => L.unions.get(id))) {
+    if (canConvertToDyn(msg.type, (id) => lowerer.shapes.get(id), (id) => lowerer.unions.get(id))) {
       return { kind: "dynFrom", value: msg, type: DYN, loc: locOf(node) };
     }
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       node,
-      `publishing '${L.fmt(msg.type)}' messages (messages cross as dyn values — JSON-safe data, Uint8Array, errors, and functions)`,
+      `publishing '${lowerer.fmt(msg.type)}' messages (messages cross as dyn values — JSON-safe data, Uint8Array, errors, and functions)`,
     );
   }
 
   /** True when `node`'s checker type is diagnostics_channel's Channel
    * (stdlib provenance plus the ambient module, the readline.Interface
-   * technique — the value itself is an f64 handle, types.ts). */
-  function isDcChannelTyped(L: Lowerer, node: ts.Expression): boolean {
-    const t = L.checker.getTypeAtLocation(node);
+   * technique — the value itself is an f64 handle, type-mapper.ts). */
+  function isDcChannelTyped(lowerer: Lowerer, node: ts.Expression): boolean {
+    const t = lowerer.checker.getTypeAtLocation(node);
     const sym = t.getAliasSymbol() ?? t.getSymbol();
     if (sym?.name !== "Channel") return false;
-    return L.checker.declarationsOf(sym).some(
+    return lowerer.checker.declarationsOf(sym).some(
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-        L.isStdlibFile(d.getSourceFile()),
+        lowerer.isStdlibFile(d.getSourceFile()),
     );
   }
 
@@ -3165,21 +3165,21 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * publish(message), subscribe(fn), unsubscribe(fn) — over the f64
    * channel handle. The rest of the declared surface (bindStore,
    * runStores) fences member-qualified. Null for non-Channel receivers. */
-  export function lowerDcChannelMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerDcChannelMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (!isDcChannelTyped(L, access.expression)) return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (!isDcChannelTyped(lowerer, access.expression)) return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     if (name === "publish" && call.arguments.length === 1) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
-      const msg = dcMessageArg(L, call.arguments[0]!);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+      const msg = dcMessageArg(lowerer, call.arguments[0]!);
       return { kind: "libCall", fn: "dc.publish", args: [receiver, msg], type: VOID, loc };
     }
     if ((name === "subscribe" || name === "unsubscribe") && call.arguments.length === 1) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
-      const cb = dcSubscriberArg(L, call.arguments[0]!);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+      const cb = dcSubscriberArg(lowerer, call.arguments[0]!);
       return name === "subscribe"
         ? { kind: "libCall", fn: "dc.chanSubscribe", args: [receiver, cb], type: VOID, loc }
         : { kind: "libCall", fn: "dc.chanUnsubscribe", args: [receiver, cb], type: BOOL, loc };
@@ -3192,52 +3192,52 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // this/arguments to fn exactly like the trace calls.
     if ((name === "bindStore" || name === "unbindStore") &&
         call.arguments.length >= 1 && call.arguments.length <= (name === "bindStore" ? 2 : 1)) {
-      if (!isAlsTyped(L, call.arguments[0]!)) {
-        L.noLowering(
+      if (!isAlsTyped(lowerer, call.arguments[0]!)) {
+        lowerer.noLowering(
           `Channel.${name} with this store argument`,
           call.arguments[0]!,
           "an AsyncLocalStorage instance (node:async_hooks) is the supported store",
         );
       }
-      const receiver = L.lowerExprExpecting(access.expression, F64);
-      const store = L.lowerExprExpecting(call.arguments[0]!, F64);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+      const store = lowerer.lowerExprExpecting(call.arguments[0]!, F64);
       if (name === "unbindStore") {
         return { kind: "libCall", fn: "dc.chanUnbindStore", args: [receiver, store], type: BOOL, loc };
       }
       const transform: IrExpr = call.arguments[1] !== undefined
-        ? dcSubscriberArg(L, call.arguments[1]!)
+        ? dcSubscriberArg(lowerer, call.arguments[1]!)
         : dynUndefinedExpr(loc);
       return { kind: "libCall", fn: "dc.chanBindStore", args: [receiver, store, transform], type: VOID, loc };
     }
     if (name === "runStores" && call.arguments.length >= 2) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
-      const data = dcMessageArg(L, call.arguments[0]!);
-      const fn = dcSubscriberArg(L, call.arguments[1]!);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+      const data = dcMessageArg(lowerer, call.arguments[0]!);
+      const fn = dcSubscriberArg(lowerer, call.arguments[1]!);
       const thisArg: IrExpr = call.arguments[2] !== undefined
-        ? dcMessageArg(L, call.arguments[2]!)
+        ? dcMessageArg(lowerer, call.arguments[2]!)
         : dynUndefinedExpr(loc);
-      const rest = dcTraceArgsArr(L, call.arguments.slice(3), loc);
+      const rest = dcTraceArgsArr(lowerer, call.arguments.slice(3), loc);
       return { kind: "libCall", fn: "dc.chanRunStores", args: [receiver, data, fn, thisArg, rest], type: DYN, loc };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `Channel.${name}`,
       call,
       "publish(message), subscribe(fn), unsubscribe(fn), bindStore/unbindStore/runStores, and the name/hasSubscribers reads are the supported Channel members",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
   /** True when `node`'s checker type is async_hooks' AsyncLocalStorage
    * (the Channel detection's shape — the value is an f64 store handle,
-   * types.ts). */
-  function isAlsTyped(L: Lowerer, node: ts.Expression): boolean {
-    const t = L.checker.getTypeAtLocation(node);
+   * type-mapper.ts). */
+  function isAlsTyped(lowerer: Lowerer, node: ts.Expression): boolean {
+    const t = lowerer.checker.getTypeAtLocation(node);
     const sym = t.getAliasSymbol() ?? t.getSymbol();
     if (sym?.name !== "AsyncLocalStorage") return false;
-    return L.checker.declarationsOf(sym).some(
+    return lowerer.checker.declarationsOf(sym).some(
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-        L.isStdlibFile(d.getSourceFile()),
+        lowerer.isStdlibFile(d.getSourceFile()),
     );
   }
 
@@ -3245,58 +3245,58 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * exit(fn, ...args), getStore(), enterWith(store), disable() — over the
    * f64 store handle (als.* libCalls; values cross as dyn values). Null
    * for non-ALS receivers. */
-  export function lowerAlsMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerAlsMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (!isAlsTyped(L, access.expression)) return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (!isAlsTyped(lowerer, access.expression)) return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     if (name === "getStore" && call.arguments.length === 0) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
       return { kind: "libCall", fn: "als.get", args: [receiver], type: DYN, loc };
     }
     if (name === "run" && call.arguments.length >= 2) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
-      const value = dcMessageArg(L, call.arguments[0]!);
-      const fn = dcSubscriberArg(L, call.arguments[1]!);
-      const rest = dcTraceArgsArr(L, call.arguments.slice(2), loc);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+      const value = dcMessageArg(lowerer, call.arguments[0]!);
+      const fn = dcSubscriberArg(lowerer, call.arguments[1]!);
+      const rest = dcTraceArgsArr(lowerer, call.arguments.slice(2), loc);
       return { kind: "libCall", fn: "als.run", args: [receiver, value, fn, rest], type: DYN, loc };
     }
     if (name === "exit" && call.arguments.length >= 1) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
-      const fn = dcSubscriberArg(L, call.arguments[0]!);
-      const rest = dcTraceArgsArr(L, call.arguments.slice(1), loc);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+      const fn = dcSubscriberArg(lowerer, call.arguments[0]!);
+      const rest = dcTraceArgsArr(lowerer, call.arguments.slice(1), loc);
       return { kind: "libCall", fn: "als.exitRun", args: [receiver, fn, rest], type: DYN, loc };
     }
     if (name === "enterWith" && call.arguments.length === 1) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
-      const value = dcMessageArg(L, call.arguments[0]!);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+      const value = dcMessageArg(lowerer, call.arguments[0]!);
       return { kind: "libCall", fn: "als.enterWith", args: [receiver, value], type: VOID, loc };
     }
     if (name === "disable" && call.arguments.length === 0) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
       return { kind: "libCall", fn: "als.disable", args: [receiver], type: VOID, loc };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `AsyncLocalStorage.${name}`,
       call,
       "run(store, fn, ...args), exit(fn, ...args), getStore(), enterWith(store), and disable() are the supported AsyncLocalStorage members",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
   /** Property reads on Channel receivers: `.name` (the registration
    * string) and `.hasSubscribers` (the publish guard). Null for
    * non-Channel receivers and other members (the method fence owns them). */
-  export function lowerDcChannelProperty(L: Lowerer, access: ts.PropertyAccessExpression): IrExpr | null {
+  export function lowerDcChannelProperty(lowerer: Lowerer, access: ts.PropertyAccessExpression): IrExpr | null {
     if (access.questionDotToken) return null;
     const name = access.name.text;
     if (name !== "name" && name !== "hasSubscribers") return null;
-    if (!isDcChannelTyped(L, access.expression)) return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (!isDcChannelTyped(lowerer, access.expression)) return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const loc = locOf(access);
-    const receiver = L.lowerExprExpecting(access.expression, F64);
+    const receiver = lowerer.lowerExprExpecting(access.expression, F64);
     return name === "name"
       ? { kind: "libCall", fn: "dc.chanName", args: [receiver], type: STRING, loc }
       : { kind: "libCall", fn: "dc.chanHasSubscribers", args: [receiver], type: BOOL, loc };
@@ -3304,15 +3304,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
 
   /** True when `node`'s checker type is diagnostics_channel's
    * TracingChannel (the Channel detection's shape — the value is an f64
-   * handle into the tracing registry, types.ts). */
-  function isDcTracingChannelTyped(L: Lowerer, node: ts.Expression): boolean {
-    const t = L.checker.getTypeAtLocation(node);
+   * handle into the tracing registry, type-mapper.ts). */
+  function isDcTracingChannelTyped(lowerer: Lowerer, node: ts.Expression): boolean {
+    const t = lowerer.checker.getTypeAtLocation(node);
     const sym = t.getAliasSymbol() ?? t.getSymbol();
     if (sym?.name !== "TracingChannel") return false;
-    return L.checker.declarationsOf(sym).some(
+    return lowerer.checker.declarationsOf(sym).some(
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
-        L.isStdlibFile(d.getSourceFile()),
+        lowerer.isStdlibFile(d.getSourceFile()),
     );
   }
 
@@ -3324,12 +3324,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * closures box by identity, so unsubscribe still matches), covering the
    * `{ start: () => {} }` spelling whose record type (function members)
    * has no whole-value conversion. Everything else rides dcMessageArg. */
-  function dcHandlersArg(L: Lowerer, node: ts.Expression): IrExpr {
+  function dcHandlersArg(lowerer: Lowerer, node: ts.Expression): IrExpr {
     let e = node;
     while (ts.isParenthesizedExpression(e)) e = e.expression;
     if (
       ts.isObjectLiteralExpression(e) &&
-      L.mapTypeOf(L.typeOf(e))?.kind === "record" &&
+      lowerer.mapTypeOf(lowerer.typeOf(e))?.kind === "record" &&
       e.properties.length > 0 &&
       e.properties.every((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name))
     ) {
@@ -3340,29 +3340,29 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           const pa = p as ts.PropertyAssignment;
           return {
             key: { kind: "strLit", value: (pa.name as ts.Identifier).text, type: STRING, loc: locOf(pa) },
-            value: dcMessageArg(L, pa.initializer),
+            value: dcMessageArg(lowerer, pa.initializer),
           };
         }),
         type: DYN,
         loc,
       };
     }
-    return dcMessageArg(L, node);
+    return dcMessageArg(lowerer, node);
   }
 
   /** A trace-call argument list's tail as ONE dyn array (dynArrLit over
    * per-element conversions). Spread arguments fence — the built array
    * must mirror the call site's argument vector exactly. */
-  function dcTraceArgsArr(L: Lowerer, args: readonly ts.Expression[], loc: SrcLoc): IrExpr {
+  function dcTraceArgsArr(lowerer: Lowerer, args: readonly ts.Expression[], loc: SrcLoc): IrExpr {
     const elems = args.map((a) => {
       if (ts.isSpreadElement(a)) {
-        L.noLowering(
+        lowerer.noLowering(
           "trace calls with spread arguments",
           a,
           "write the traced arguments positionally",
         );
       }
-      return dcMessageArg(L, a);
+      return dcMessageArg(lowerer, a);
     });
     return { kind: "dynArrLit", elems, type: DYN, loc };
   }
@@ -3376,24 +3376,24 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * (dc.tcTracePromise — the result is the reaction promise, typed
    * promise<dyn> so .then/.catch chains ride the promise lowerings).
    * Null for non-TracingChannel receivers. */
-  export function lowerDcTracingChannelMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerDcTracingChannelMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (!isDcTracingChannelTyped(L, access.expression)) return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (!isDcTracingChannelTyped(lowerer, access.expression)) return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     if ((name === "subscribe" || name === "unsubscribe") && call.arguments.length === 1) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
-      const handlers = dcHandlersArg(L, call.arguments[0]!);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+      const handlers = dcHandlersArg(lowerer, call.arguments[0]!);
       return name === "subscribe"
         ? { kind: "libCall", fn: "dc.tcSubscribe", args: [receiver, handlers], type: VOID, loc }
         : { kind: "libCall", fn: "dc.tcUnsubscribe", args: [receiver, handlers], type: BOOL, loc };
     }
     if ((name === "traceSync" || name === "traceCallback" || name === "tracePromise") &&
         call.arguments.length >= 1) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
-      const fn = dcSubscriberArg(L, call.arguments[0]!);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+      const fn = dcSubscriberArg(lowerer, call.arguments[0]!);
       // traceSync(fn, context?, thisArg?, ...args) /
       // tracePromise(fn, context?, thisArg?, ...args) /
       // traceCallback(fn, position?, context?, thisArg?, ...args)
@@ -3401,10 +3401,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       const ctxNode = call.arguments[1 + shift];
       const thisNode = call.arguments[2 + shift];
       const ctx: IrExpr = ctxNode !== undefined
-        ? dcMessageArg(L, ctxNode)
+        ? dcMessageArg(lowerer, ctxNode)
         : { kind: "dynObjLit", fields: [], type: DYN, loc };
-      const thisArg: IrExpr = thisNode !== undefined ? dcMessageArg(L, thisNode) : dynUndefinedExpr(loc);
-      const rest = dcTraceArgsArr(L, call.arguments.slice(3 + shift), loc);
+      const thisArg: IrExpr = thisNode !== undefined ? dcMessageArg(lowerer, thisNode) : dynUndefinedExpr(loc);
+      const rest = dcTraceArgsArr(lowerer, call.arguments.slice(3 + shift), loc);
       if (name === "traceSync") {
         return { kind: "libCall", fn: "dc.tcTraceSync", args: [receiver, fn, ctx, thisArg, rest], type: DYN, loc };
       }
@@ -3423,7 +3423,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         };
       }
       const pos: IrExpr = call.arguments[1] !== undefined
-        ? L.lowerExprExpecting(call.arguments[1]!, F64)
+        ? lowerer.lowerExprExpecting(call.arguments[1]!, F64)
         : { kind: "numLit", value: -1, type: F64, loc };
       return {
         kind: "libCall",
@@ -3433,11 +3433,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         loc,
       };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `TracingChannel.${name}`,
       call,
       "subscribe(handlers), unsubscribe(handlers), traceSync(fn, ...), traceCallback(fn, ...), tracePromise(fn, ...), and the per-event channel/hasSubscribers reads are the supported TracingChannel members",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -3445,15 +3445,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * (`.start` … `.error` — Channel-typed f64 handles the Channel lowerings
    * take over) and `.hasSubscribers` (the five-channel disjunction). Null
    * for other members and non-TracingChannel receivers. */
-  export function lowerDcTracingChannelProperty(L: Lowerer, access: ts.PropertyAccessExpression): IrExpr | null {
+  export function lowerDcTracingChannelProperty(lowerer: Lowerer, access: ts.PropertyAccessExpression): IrExpr | null {
     if (access.questionDotToken) return null;
     const name = access.name.text;
     const idx = (DC_TRACE_EVENTS as readonly string[]).indexOf(name);
     if (idx < 0 && name !== "hasSubscribers") return null;
-    if (!isDcTracingChannelTyped(L, access.expression)) return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (!isDcTracingChannelTyped(lowerer, access.expression)) return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const loc = locOf(access);
-    const receiver = L.lowerExprExpecting(access.expression, F64);
+    const receiver = lowerer.lowerExprExpecting(access.expression, F64);
     return idx >= 0
       ? {
           kind: "libCall",
@@ -3465,19 +3465,19 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       : { kind: "libCall", fn: "dc.tcHasSubscribers", args: [receiver], type: BOOL, loc };
   }
 
-  export function lowerReadlineMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerReadlineMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (!isReadlineTyped(L, access.expression)) return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (!isReadlineTyped(lowerer, access.expression)) return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     if (name === "question" && call.arguments.length === 2) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
-      const query = L.lowerExprExpecting(call.arguments[0]!, STRING);
-      const cb = L.lowerExpr(call.arguments[1]!);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+      const query = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
+      const cb = lowerer.lowerExpr(call.arguments[1]!);
       if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 1) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
           "question callbacks with more than one parameter or a return value",
@@ -3485,39 +3485,39 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       }
       const param = cb.type.params[0];
       if (param !== undefined && param.kind !== "string") {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
-          `question callbacks whose parameter is not 'string' (got '${L.fmt(param)}')`,
+          `question callbacks whose parameter is not 'string' (got '${lowerer.fmt(param)}')`,
         );
       }
       return { kind: "libCall", fn: "rl.question", args: [receiver, query, cb], type: VOID, loc };
     }
     if (name === "close" && call.arguments.length === 0) {
-      const receiver = L.lowerExprExpecting(access.expression, F64);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
       return { kind: "libCall", fn: "rl.close", args: [receiver], type: VOID, loc };
     }
     if (name === "on" && call.arguments.length === 2) {
-      const evT = L.typeOf(call.arguments[0]!);
+      const evT = lowerer.typeOf(call.arguments[0]!);
       const event = evT.isStringLiteralType() ? evT.value : null;
       if (event !== "close") {
-        L.noLowering(
+        lowerer.noLowering(
           `readline.Interface.on(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
           call.arguments[0]!,
           '"close" is the supported readline event (question(query, cb) is the line consumer)',
         );
       }
       if (!ts.isExpressionStatement(call.parent)) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call,
           "chaining readline listener registration (the result is void here — register each listener as its own statement)",
         );
       }
-      const receiver = L.lowerExprExpecting(access.expression, F64);
-      const cb = L.lowerExpr(call.arguments[1]!);
+      const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+      const cb = lowerer.lowerExpr(call.arguments[1]!);
       if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 0) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
           "close listeners with parameters or a return value (use ())",
@@ -3525,11 +3525,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       }
       return { kind: "libCall", fn: "rl.onClose", args: [receiver, cb], type: VOID, loc };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `readline.Interface.${name}`,
       call,
       'question(query, cb), close(), and on("close", cb) are the supported Interface members',
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -3537,14 +3537,14 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * StringDecoder (stdlib provenance, the isTimeoutTyped technique) — the
    * decoder maps to its one-field pending record, so the IR type alone
    * cannot discriminate it from a user record. */
-  function isStringDecoderTyped(L: Lowerer, node: ts.Expression): boolean {
-    const t = L.checker.getTypeAtLocation(node);
+  function isStringDecoderTyped(lowerer: Lowerer, node: ts.Expression): boolean {
+    const t = lowerer.checker.getTypeAtLocation(node);
     const sym = t.getAliasSymbol() ?? t.getSymbol();
     if (sym?.name !== "StringDecoder") return false;
-    return L.checker.declarationsOf(sym).some(
+    return lowerer.checker.declarationsOf(sym).some(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
-        L.isStdlibFile(d.getSourceFile()),
+        lowerer.isStdlibFile(d.getSourceFile()),
     );
   }
 
@@ -3555,45 +3555,45 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * interned %strdec helpers over the packed-f64 pending field. end(buf)
    * and the rest of @types/node's surface fence per member. Null for
    * non-decoder receivers. */
-  export function lowerStringDecoderMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerStringDecoderMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (!isStringDecoderTyped(L, access.expression)) return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (!isStringDecoderTyped(lowerer, access.expression)) return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     if (name === "write" && call.arguments.length === 1) {
-      const receiver = L.lowerExpr(access.expression);
-      if (receiver.type.kind !== "record") L.badType(access.expression, L.typeOf(access.expression));
-      const chunk = L.lowerExpr(call.arguments[0]!);
+      const receiver = lowerer.lowerExpr(access.expression);
+      if (receiver.type.kind !== "record") lowerer.badType(access.expression, lowerer.typeOf(access.expression));
+      const chunk = lowerer.lowerExpr(call.arguments[0]!);
       if (!(chunk.type.kind === "bytes" && chunk.type.elem === "u8")) {
-        L.noLowering(
-          `StringDecoder.write of '${L.fmt(chunk.type)}' data`,
+        lowerer.noLowering(
+          `StringDecoder.write of '${lowerer.fmt(chunk.type)}' data`,
           call.arguments[0]!,
           "Buffer/Uint8Array chunks decode (narrow unions first)",
         );
       }
-      const helper = L.strdecHelper("write", receiver.type.shapeId, loc);
+      const helper = lowerer.strdecHelper("write", receiver.type.shapeId, loc);
       return { kind: "call", callee: helper, args: [receiver, chunk], type: STRING, loc };
     }
     if (name === "end") {
       if (call.arguments.length !== 0) {
-        L.noLowering(
+        lowerer.noLowering(
           "StringDecoder.end with a buffer argument",
           call,
           "write the buffer, then end(): d.write(buf) + d.end() is Node's own equivalence",
         );
       }
-      const receiver = L.lowerExpr(access.expression);
-      if (receiver.type.kind !== "record") L.badType(access.expression, L.typeOf(access.expression));
-      const helper = L.strdecHelper("end", receiver.type.shapeId, loc);
+      const receiver = lowerer.lowerExpr(access.expression);
+      if (receiver.type.kind !== "record") lowerer.badType(access.expression, lowerer.typeOf(access.expression));
+      const helper = lowerer.strdecHelper("end", receiver.type.shapeId, loc);
       return { kind: "call", callee: helper, args: [receiver], type: STRING, loc };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `StringDecoder.${name}`,
       call,
       "write(buffer) and end() are the supported StringDecoder members",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -3601,12 +3601,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * complete prefix and re-buffers the trailing partial into the pending
    * field; end(d) flushes it. Both thread the packed-f64 state through
    * the pure strdec.* libCalls. */
-  export function strdecHelper(L: Lowerer, op: "write" | "end", shapeId: string, loc: SrcLoc): string {
+  export function strdecHelper(lowerer: Lowerer, op: "write" | "end", shapeId: string, loc: SrcLoc): string {
     const key = `strdec.${op}`;
-    const existing = L.widthHelpers.get(key);
+    const existing = lowerer.widthHelpers.get(key);
     if (existing) return existing;
-    const name = `%strdec.${op}.${L.widthHelpers.size}`;
-    L.widthHelpers.set(key, name);
+    const name = `%strdec.${op}.${lowerer.widthHelpers.size}`;
+    lowerer.widthHelpers.set(key, name);
     const recT: IrType = { kind: "record", shapeId };
 
     const pendingRead = (): IrExpr => ({
@@ -3672,7 +3672,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         { kind: "return", value: varRef("s.0", STRING, loc), loc },
       ];
     }
-    L.liftedFns.push({ name, params, returnType: STRING, locals, body, loc });
+    lowerer.liftedFns.push({ name, params, returnType: STRING, locals, body, loc });
     return name;
   }
 
@@ -3693,27 +3693,27 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    *   rides the node to the backend's re-indenter. Function replacers and
    *   non-literal spaces stay fenced.
    * Null when this isn't a JSON member call. */
-  export function lowerJsonMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerJsonMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken) return null;
-    const member = L.stdlibGlobalMember(access, "JSON");
+    const member = lowerer.stdlibGlobalMember(access, "JSON");
     if (member === null) return null;
     const loc = locOf(call);
     if (member === "parse" && call.arguments.length !== 1) {
-      L.noLowering(
+      lowerer.noLowering(
         "JSON.parse with a reviver",
         call,
         "parse to `unknown` and validate with a checked cast ('as T') instead",
       );
     }
     if (member === "parse") {
-      const text = L.lowerExprExpecting(call.arguments[0]!, STRING);
+      const text = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
       return { kind: "libCall", fn: "json.parse", args: [text], type: DYN, loc };
     }
     if (member === "stringify") {
-      const indent = stringifySpaceIndent(L, call);
+      const indent = stringifySpaceIndent(lowerer, call);
       const argNode = call.arguments[0]!;
-      const value = L.lowerExpr(argNode);
+      const value = lowerer.lowerExpr(argNode);
       // An ISLAND value (`JSON.stringify(err)` on a package handle — the
       // island error-inspection idiom): the ENGINE's own JSON.stringify
       // runs, so key order, nesting, toJSON, and getters match Node by
@@ -3746,34 +3746,34 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // types the return `string`, so no static consumer can tell), and a
       // runtime handle inside the tree throws (Node would walk its own
       // enumerable props, which the handle does not model).
-      if (!L.jsonSafe(value.type) && value.type.kind !== "dyn") {
+      if (!lowerer.jsonSafe(value.type) && value.type.kind !== "dyn") {
         // Bare undefined-armed unions get their own wording: Node's
         // stringify of bare undefined is not a string at all — per-type
         // serialization cannot match that exactly, so the fence is
         // deliberate, not a gap. (Undefined-armed RECORD FIELDS pass the
         // fence: the field drops from the output, exactly Node.)
-        if (L.bareUndefinedArmedUnion(value.type)) {
-          L.unsupported(
+        if (lowerer.bareUndefinedArmedUnion(value.type)) {
+          lowerer.unsupported(
             "SC1090",
             argNode,
-            `JSON.stringify of '${L.fmt(value.type)}' values ` +
+            `JSON.stringify of '${lowerer.fmt(value.type)}' values ` +
               `(Node's stringify of bare undefined is not a string at all — ` +
               `narrow with '!== undefined' first, model absence with a null arm, ` +
               `or use an optional record field ('{ a?: string }'), which drops ` +
               `from the output like Node's)`,
           );
         }
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           argNode,
-          `JSON.stringify of '${L.fmt(value.type)}' values ` +
+          `JSON.stringify of '${lowerer.fmt(value.type)}' values ` +
             `(only number, string, boolean, records, arrays, unions of those, and 'unknown' stringify)`,
         );
       }
       const node: IrExpr = { kind: "jsonStringify", value, type: STRING, loc };
       if (indent !== "") {
         // The compile-time-resolved indent rides as an extra property (the
-        // node shape in ir/nodes.ts is unchanged); the backend re-indents
+        // node shape in ir/ir.ts is unchanged); the backend re-indents
         // the compact serializer output with Node's gap algorithm.
         (node as { indent?: string }).indent = indent;
       }
@@ -3789,9 +3789,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * replacer/space spellings compile — the replacer must be `null` (or
    * `undefined`), the space a numeric/string literal or `null`/`undefined`;
    * everything else keeps the existing fence. */
-  function stringifySpaceIndent(L: Lowerer, call: ts.CallExpression): string {
+  function stringifySpaceIndent(lowerer: Lowerer, call: ts.CallExpression): string {
     const fence = (): never =>
-      L.noLowering(
+      lowerer.noLowering(
         "JSON.stringify with replacer/space parameters",
         call,
         "the serializer is type-directed — shape the value before stringifying",
@@ -3830,9 +3830,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * support — "child_process", "net", ... — or null. The coverage story's
    * use-site half: preflight fenced the import line; statements using the
    * binding poison with the same module-naming diagnostic. */
-  export function fencedBuiltinImportOf(L: Lowerer, ident: ts.Identifier): string | null {
-    const symbol = L.checker.getSymbolAtLocation(ident);
-    const decl = symbol ? L.checker.declarationsOf(symbol)[0] : undefined;
+  export function fencedBuiltinImportOf(lowerer: Lowerer, ident: ts.Identifier): string | null {
+    const symbol = lowerer.checker.getSymbolAtLocation(ident);
+    const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
     if (!decl) return null;
     // The CommonJS twins: `const x = require("net")` and
     // `const { createServer } = require("net")` — the require statement
@@ -3870,15 +3870,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * (the runtime implements exactly those); everything else — including a
    * bare randomBytes(n) — fences with the Buffer story. Null when this
    * isn't a toString on a crypto.randomBytes call. */
-  export function lowerCryptoComposedCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerCryptoComposedCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (access.name.text === "digest") return lowerHashDigestChain(L, call, access);
+    if (access.name.text === "digest") return lowerHashDigestChain(lowerer, call, access);
     if (access.name.text !== "toString") return null;
     const recv = access.expression;
     if (!ts.isCallExpression(recv) || recv.questionDotToken) return null;
     if (!ts.isIdentifier(recv.expression)) return null;
-    const bi = L.builtinImportOf(recv.expression);
+    const bi = lowerer.builtinImportOf(recv.expression);
     if (!bi || bi.module !== "crypto" || bi.member !== "randomBytes") return null;
     const loc = locOf(call);
     // Only the exact composed shape fuses — one size argument, one literal
@@ -3887,7 +3887,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // the .toString rides the ordinary Buffer method lowering.
     if (recv.arguments.length !== 1) return null;
     const encNode = call.arguments[0];
-    const encT = encNode ? L.typeOf(encNode) : undefined;
+    const encT = encNode ? lowerer.typeOf(encNode) : undefined;
     if (
       call.arguments.length !== 1 ||
       !encT?.isStringLiteralType() ||
@@ -3895,8 +3895,8 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     ) {
       return null;
     }
-    const size = L.lowerExprExpecting(recv.arguments[0]!, F64);
-    const enc = L.lowerExprExpecting(encNode!, STRING);
+    const size = lowerer.lowerExprExpecting(recv.arguments[0]!, F64);
+    const enc = lowerer.lowerExprExpecting(encNode!, STRING);
     return { kind: "libCall", fn: "crypto.randomBytesToString", args: [size, enc], type: STRING, loc };
   }
 
@@ -3910,7 +3910,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * one string- or Buffer-typed update, hex digests. Null when the callee
    * isn't this chain at all (other Hash-typed code lands on the ordinary
    * Hash.<member> fences). */
-  function lowerHashDigestChain(L: Lowerer, call: ts.CallExpression,
+  function lowerHashDigestChain(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     const updateCall = access.expression;
     if (!ts.isCallExpression(updateCall) || updateCall.questionDotToken) return null;
@@ -3926,15 +3926,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     if (!ts.isCallExpression(chCall) || chCall.questionDotToken) return null;
     const callee = chCall.expression;
     const bi = ts.isIdentifier(callee)
-      ? L.builtinImportOf(callee)
+      ? lowerer.builtinImportOf(callee)
       : ts.isPropertyAccessExpression(callee)
-        ? L.builtinMemberOf(callee)
+        ? lowerer.builtinMemberOf(callee)
         : null;
     if (!bi || bi.module !== "crypto" || bi.member !== "createHash") return null;
     const loc = locOf(call);
-    const algT = chCall.arguments.length === 1 ? L.typeOf(chCall.arguments[0]!) : undefined;
+    const algT = chCall.arguments.length === 1 ? lowerer.typeOf(chCall.arguments[0]!) : undefined;
     if (!algT?.isStringLiteralType() || (algT.value !== "sha256" && algT.value !== "sha1")) {
-      L.noLowering(
+      lowerer.noLowering(
         "createHash with this algorithm",
         chCall,
         'sha256 and sha1 are the lowered algorithms: createHash("sha256") ' +
@@ -3942,15 +3942,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       );
     }
     if (updateCall.arguments.length !== 1) {
-      L.noLowering(
+      lowerer.noLowering(
         `Hash.update with ${updateCall.arguments.length} arguments`,
         updateCall,
         "one string or Buffer argument is the lowered update (input encodings have no lowering)",
       );
     }
-    const encT = call.arguments.length === 1 ? L.typeOf(call.arguments[0]!) : undefined;
+    const encT = call.arguments.length === 1 ? lowerer.typeOf(call.arguments[0]!) : undefined;
     if (!encT?.isStringLiteralType() || (encT.value !== "hex" && encT.value !== "base64")) {
-      L.noLowering(
+      lowerer.noLowering(
         "Hash.digest with this encoding",
         call,
         'hex and base64 are the lowered digests: .digest("hex") (the bare Buffer digest has no lowering)',
@@ -3959,24 +3959,24 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // alg and enc are proven literals (fenced above), so lowering them
     // out of source position observes nothing; the data lowers between
     // them in its own source order.
-    const alg = L.lowerExprExpecting(chCall.arguments[0]!, STRING);
+    const alg = lowerer.lowerExprExpecting(chCall.arguments[0]!, STRING);
     // The data picks the runtime entry by its static type, the
     // fileURLToPath convention: strings hash their UTF-8 bytes (Node's
     // default input encoding), Buffers/typed arrays hash their bytes.
     const dataNode = updateCall.arguments[0]!;
-    const dataIr = L.mapTypeOf(L.typeOf(dataNode));
+    const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
     if (dataIr?.kind === "bytes") {
-      const data = L.lowerExpr(dataNode);
-      const enc = L.lowerExprExpecting(call.arguments[0]!, STRING);
+      const data = lowerer.lowerExpr(dataNode);
+      const enc = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
       return { kind: "libCall", fn: "crypto.hashDigestBytes", args: [alg, data, enc], type: STRING, loc };
     }
     if (dataIr?.kind === "string") {
-      const data = L.lowerExprExpecting(dataNode, STRING);
-      const enc = L.lowerExprExpecting(call.arguments[0]!, STRING);
+      const data = lowerer.lowerExprExpecting(dataNode, STRING);
+      const enc = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
       return { kind: "libCall", fn: "crypto.hashDigestStr", args: [alg, data, enc], type: STRING, loc };
     }
-    L.noLowering(
-      `Hash.update of '${dataIr ? L.fmt(dataIr) : L.checker.typeToString(L.typeOf(dataNode))}' values`,
+    lowerer.noLowering(
+      `Hash.update of '${dataIr ? lowerer.fmt(dataIr) : lowerer.checker.typeToString(lowerer.typeOf(dataNode))}' values`,
       dataNode,
       "string and Buffer/Uint8Array inputs are the lowered update forms",
     );
@@ -3993,7 +3993,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * that probes the list and then constructs a cipher fences at the
    * construction site, never here. Null for other members (the dispatch
    * keeps trying). */
-  export function lowerCryptoModuleCall(L: Lowerer, expr: ts.CallExpression,
+  export function lowerCryptoModuleCall(lowerer: Lowerer, expr: ts.CallExpression,
     bi: { module: string; member: string },
     loc: SrcLoc,): IrExpr | null {
     if (bi.module !== "crypto") return null;
@@ -4005,7 +4005,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const list = own(LISTS, bi.member);
     if (bi.member !== "getFips" && list === undefined) return null;
     if (expr.arguments.length !== 0) {
-      L.noLowering(`crypto.${bi.member} with ${expr.arguments.length} arguments`, expr);
+      lowerer.noLowering(`crypto.${bi.member} with ${expr.arguments.length} arguments`, expr);
     }
     if (bi.member === "getFips") {
       return { kind: "numLit", value: 0, type: F64, loc };
@@ -4021,21 +4021,21 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
 /** Method calls on URL-typed receivers: `u.toString()` is Node's href
    * serialization (the href getter's libCall). Everything else the lib
    * declares fences member-qualified. Null for non-URL receivers. */
-  export function lowerUrlMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerUrlMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (L.mapTypeOf(L.typeOf(access.expression))?.kind !== "url") return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "url") return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     if (name === "toString" && call.arguments.length === 0) {
-      const receiver = L.lowerExpr(access.expression);
+      const receiver = lowerer.lowerExpr(access.expression);
       return { kind: "libCall", fn: "url.href", args: [receiver], type: STRING, loc: locOf(call) };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `URL.${name}`,
       call,
       "protocol, pathname, href, and toString() are the supported URL members",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -4048,10 +4048,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * order — folded to a sp.with chain at compile time; keys are the
    * record-literal key forms, values coerce as strings). Tuple-typed pair
    * arrays and unions keep named fences. */
-  export function lowerSearchParamsNew(L: Lowerer, expr: ts.NewExpression, loc: SrcLoc): IrExpr {
+  export function lowerSearchParamsNew(lowerer: Lowerer, expr: ts.NewExpression, loc: SrcLoc): IrExpr {
     const args = expr.arguments ?? [];
     if (args.length > 1) {
-      L.noLowering(`new URLSearchParams with ${args.length} arguments`, expr, "one init argument is the WHATWG surface");
+      lowerer.noLowering(`new URLSearchParams with ${args.length} arguments`, expr, "one init argument is the WHATWG surface");
     }
     const arg = args[0];
     if (arg === undefined || (ts.isIdentifier(arg) && arg.text === "undefined")) {
@@ -4065,21 +4065,21 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       let acc: IrExpr = { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc };
       for (const prop of arg.properties) {
         if (!ts.isPropertyAssignment(prop) || prop.name === undefined) {
-          L.unsupported("SC1090", prop, "URLSearchParams record inits with spreads, accessors, or shorthand entries");
+          lowerer.unsupported("SC1090", prop, "URLSearchParams record inits with spreads, accessors, or shorthand entries");
         }
         let key: string;
         if (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) {
           key = prop.name.text;
         } else {
-          L.unsupported("SC1090", prop.name, "non-literal keys in a URLSearchParams record init");
+          lowerer.unsupported("SC1090", prop.name, "non-literal keys in a URLSearchParams record init");
         }
-        const value = L.lowerExprExpecting(prop.initializer, STRING);
+        const value = lowerer.lowerExprExpecting(prop.initializer, STRING);
         const keyExpr: IrExpr = { kind: "strLit", value: key, type: STRING, loc: locOf(prop.name) };
         acc = { kind: "libCall", fn: "sp.with", args: [acc, keyExpr, value], type: SEARCH_PARAMS_T, loc };
       }
       return acc;
     }
-    const init = L.lowerExpr(arg);
+    const init = lowerer.lowerExpr(arg);
     if (init.type.kind === "string") {
       return { kind: "libCall", fn: "sp.parse", args: [init], type: SEARCH_PARAMS_T, loc };
     }
@@ -4093,16 +4093,16 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       return { kind: "libCall", fn: "sp.fromPairs", args: [init], type: SEARCH_PARAMS_T, loc };
     }
     if (init.type.kind === "array" && init.type.elem.kind === "record") {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         arg,
         "URLSearchParams from tuple-typed pairs (type the pairs as string[][] — the tuple rows have a different layout)",
       );
     }
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       arg,
-      `URLSearchParams from '${L.fmt(init.type)}' inits (a string, a string[][], another URLSearchParams, or an inline { key: value } literal — narrow unions first)`,
+      `URLSearchParams from '${lowerer.fmt(init.type)}' inits (a string, a string[][], another URLSearchParams, or an inline { key: value } literal — narrow unions first)`,
     );
   }
 
@@ -4117,11 +4117,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * keys()/values()/entries() lower only in a for-of head (lower-stmts
    * routes them before this table) — stored iterator objects keep the
    * drain fence. Null for non-searchParams receivers. */
-  export function lowerSearchParamsMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerSearchParamsMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (L.mapTypeOf(L.typeOf(access.expression))?.kind !== "searchParams") return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "searchParams") return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     const args = call.arguments;
@@ -4145,7 +4145,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // probes ('a') whose evaluation is pure in every suite shape, and
       // effectful ones would land here too (statement-coarsening, the
       // runtimeFence precedent).
-      return nodeThrowExpr(1, "ERR_MISSING_ARGS", req[1], L.mapTypeOf(L.typeOf(call)) ?? VOID, loc);
+      return nodeThrowExpr(1, "ERR_MISSING_ARGS", req[1], lowerer.mapTypeOf(lowerer.typeOf(call)) ?? VOID, loc);
     }
     // One name/value slot, WHATWG USVString rules: statically-string
     // arguments lower directly; a symbol can never convert (V8's
@@ -4154,8 +4154,8 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // toString/valueOf runs and its throw propagates).
     const strArg = (i: number): IrExpr => {
       const node = args[i]!;
-      const t = L.mapTypeOf(L.typeOf(node));
-      if (t?.kind === "string") return L.lowerExprExpecting(node, STRING);
+      const t = lowerer.mapTypeOf(lowerer.typeOf(node));
+      if (t?.kind === "string") return lowerer.lowerExprExpecting(node, STRING);
       if (t?.kind === "symbol") {
         return nodeThrowExpr(1, "", "Cannot convert a Symbol value to a string", STRING, loc);
       }
@@ -4164,11 +4164,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         // Object literals take the dyn literal path directly (method
         // members box as dyn functions — the typed record fence never
         // applies to the coercion probes).
-        v = lowerDynObjectLiteral(L, node);
+        v = lowerDynObjectLiteral(lowerer, node);
       } else {
-        const raw = L.lowerExpr(node);
+        const raw = lowerer.lowerExpr(node);
         if (raw.type.kind === "dyn") v = raw;
-        else if (raw.kind === "unitLit" || L.dynConvertible(raw.type)) {
+        else if (raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)) {
           v = { kind: "dynFrom", value: raw, type: DYN, loc: raw.loc };
         } else if (raw.type.kind === "record") {
           // A RECORD-represented value that cannot cross into the checked-dynamic tree (a
@@ -4179,14 +4179,14 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           // (the always-throwing probe shape, or a bare undefined return)
           // stringifies as ToString(undefined). Other shapes keep the
           // fence — honesty over coverage.
-          const shape = L.shapes.get(raw.type.shapeId);
+          const shape = lowerer.shapes.get(raw.type.shapeId);
           const tsMember = shape?.fields.find((f) => f.name === "toString");
           if (
             shape &&
             tsMember &&
             tsMember.type.kind === "func" &&
             tsMember.type.params.length === 0 &&
-            L.dynConvertible(tsMember.type)
+            lowerer.dynConvertible(tsMember.type)
           ) {
             // Box just the toString member into a fresh dyn carrier and
             // run the protocol at runtime — the boxed call propagates its
@@ -4203,15 +4203,15 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               loc,
             };
           } else {
-            L.noLowering(
-              `URLSearchParams.${name} with a '${L.fmt(raw.type)}' argument`,
+            lowerer.noLowering(
+              `URLSearchParams.${name} with a '${lowerer.fmt(raw.type)}' argument`,
               node,
               "string arguments are the lowered shape (other values coerce through the checked-dynamic tree — narrow unions first)",
             );
           }
         } else {
-          L.noLowering(
-            `URLSearchParams.${name} with a '${L.fmt(raw.type)}' argument`,
+          lowerer.noLowering(
+            `URLSearchParams.${name} with a '${lowerer.fmt(raw.type)}' argument`,
             node,
             "string arguments are the lowered shape (other values coerce through the checked-dynamic tree — narrow unions first)",
           );
@@ -4225,31 +4225,31 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // one value — narrow first.
     const optionalValueArg = (): IrExpr | null => {
       if (args.length === 1) return null;
-      const t = L.mapTypeOf(L.typeOf(args[1]!));
+      const t = lowerer.mapTypeOf(lowerer.typeOf(args[1]!));
       if (t?.kind === "undefinedT") return null;
       if (t?.kind === "string") return strArg(1);
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         args[1]!,
-        `URLSearchParams.${name} with a '${L.checker.typeToString(L.typeOf(args[1]!))}' value argument (pass a string, or narrow '| undefined' unions to the two call forms first)`,
+        `URLSearchParams.${name} with a '${lowerer.checker.typeToString(lowerer.typeOf(args[1]!))}' value argument (pass a string, or narrow '| undefined' unions to the two call forms first)`,
       );
     };
     if (name === "get" && args.length === 1) {
-      const receiver = L.lowerExpr(access.expression);
-      const type: IrType = { kind: "union", unionId: L.unions.intern([STRING, NULL_T]) };
+      const receiver = lowerer.lowerExpr(access.expression);
+      const type: IrType = { kind: "union", unionId: lowerer.unions.intern([STRING, NULL_T]) };
       return { kind: "libCall", fn: "sp.get", args: [receiver, strArg(0)], type, loc };
     }
     if (name === "getAll" && args.length === 1) {
-      const receiver = L.lowerExpr(access.expression);
+      const receiver = lowerer.lowerExpr(access.expression);
       return { kind: "libCall", fn: "sp.getAll", args: [receiver, strArg(0)], type: arrayOf(STRING), loc };
     }
     if ((name === "append" || name === "set") && args.length === 2) {
-      const receiver = L.lowerExpr(access.expression);
+      const receiver = lowerer.lowerExpr(access.expression);
       const fn = name === "append" ? "sp.append" : "sp.set";
       return { kind: "libCall", fn, args: [receiver, strArg(0), strArg(1)], type: VOID, loc };
     }
     if (name === "delete" && (args.length === 1 || args.length === 2)) {
-      const receiver = L.lowerExpr(access.expression);
+      const receiver = lowerer.lowerExpr(access.expression);
       const nameArg = strArg(0);
       const value = optionalValueArg();
       return value === null
@@ -4257,7 +4257,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         : { kind: "libCall", fn: "sp.deleteValue", args: [receiver, nameArg, value], type: VOID, loc };
     }
     if (name === "has" && (args.length === 1 || args.length === 2)) {
-      const receiver = L.lowerExpr(access.expression);
+      const receiver = lowerer.lowerExpr(access.expression);
       const nameArg = strArg(0);
       const value = optionalValueArg();
       return value === null
@@ -4265,28 +4265,28 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         : { kind: "libCall", fn: "sp.hasValue", args: [receiver, nameArg, value], type: BOOL, loc };
     }
     if (name === "sort" && args.length === 0) {
-      const receiver = L.lowerExpr(access.expression);
+      const receiver = lowerer.lowerExpr(access.expression);
       return { kind: "libCall", fn: "sp.sort", args: [receiver], type: VOID, loc };
     }
     if (name === "toString" && args.length === 0) {
-      const receiver = L.lowerExpr(access.expression);
+      const receiver = lowerer.lowerExpr(access.expression);
       return { kind: "libCall", fn: "sp.toString", args: [receiver], type: STRING, loc };
     }
     if (name === "forEach" && args.length === 1) {
-      return lowerSpForEachCall(L, call, access);
+      return lowerSpForEachCall(lowerer, call, access);
     }
     if (name === "keys" || name === "values" || name === "entries") {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         call,
         `URLSearchParams iterator objects outside a for-of head (write \`for (const x of sp.${name}())\` directly)`,
       );
     }
-    L.noLowering(
+    lowerer.noLowering(
       `URLSearchParams.${name}`,
       call,
       "get, getAll, set, append, delete, has, sort, size, toString(), forEach, and for-of iteration are the supported URLSearchParams members",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -4300,11 +4300,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * doesn't need: deletes compact immediately). The callback receives
    * (value, name, searchParams) like the WHATWG signature; declaring
    * fewer parameters is ordinary TS. */
-  function lowerSpForEachCall(L: Lowerer, call: ts.CallExpression,
+  function lowerSpForEachCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr {
     const loc = locOf(call);
     const argNode = call.arguments[0]!;
-    const fnArg = L.lowerExpr(argNode);
+    const fnArg = lowerer.lowerExpr(argNode);
     if (
       fnArg.type.kind !== "func" ||
       fnArg.type.params.length > 3 ||
@@ -4312,17 +4312,17 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       (fnArg.type.params.length >= 2 && fnArg.type.params[1]!.kind !== "string") ||
       (fnArg.type.params.length === 3 && fnArg.type.params[2]!.kind !== "searchParams")
     ) {
-      L.badType(argNode, L.typeOf(argNode));
+      lowerer.badType(argNode, lowerer.typeOf(argNode));
     }
-    const receiver = L.lowerExpr(access.expression);
+    const receiver = lowerer.lowerExpr(access.expression);
     const arity = fnArg.type.params.length;
     const fnRet = fnArg.type.ret;
     const key = `${arity}:${typeKey(fnRet)}`;
-    let helper = L.spHofHelpers.get(key);
+    let helper = lowerer.spHofHelpers.get(key);
     if (!helper) {
-      helper = `%sp.forEach.${L.spHofHelpers.size}`;
-      L.spHofHelpers.set(key, helper);
-      L.liftedFns.push(buildSpForEachFn(helper, arity, fnRet, loc));
+      helper = `%sp.forEach.${lowerer.spHofHelpers.size}`;
+      lowerer.spHofHelpers.set(key, helper);
+      lowerer.liftedFns.push(buildSpForEachFn(helper, arity, fnRet, loc));
     }
     return { kind: "call", callee: helper, args: [receiver, fnArg], type: VOID, loc };
   }
@@ -4380,28 +4380,28 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
  * through the same synchronous descriptor primitives as fs.readSync /
  * writeSync, then settle so failures reject at await. read/write retain
  * the caller's buffer in the Node-shaped result record. */
-  export function lowerFileHandleMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerFileHandleMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (L.mapTypeOf(L.typeOf(access.expression))?.kind !== "fileHandle") return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "fileHandle") return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
-    const receiver = (): IrExpr => L.lowerExprExpecting(access.expression, FILEHANDLE_T);
+    const receiver = (): IrExpr => lowerer.lowerExprExpecting(access.expression, FILEHANDLE_T);
     const promise = (inner: IrType): IrType => ({ kind: "promise", inner });
     const num = (node: ts.Expression | undefined, dflt: number): { value: IrExpr; defaulted: IrExpr } => {
       const defaultValue = { kind: "numLit", value: dflt, type: F64, loc } satisfies IrExpr;
       if (!node) return { value: defaultValue, defaulted: boolLit(true, loc) };
-      const undefinedArg = lowerStaticallyUndefinedBuiltinArg(L, node);
+      const undefinedArg = lowerStaticallyUndefinedBuiltinArg(lowerer, node);
       if (undefinedArg) {
         return { value: defaultAfterUndefined(undefinedArg, defaultValue), defaulted: boolLit(true, loc) };
       }
-      if ((L.typeOf(node).flags & ts.TypeFlags.Null) !== 0) {
-        return { value: defaultAfterUndefined(L.lowerExpr(node), defaultValue), defaulted: boolLit(true, loc) };
+      if ((lowerer.typeOf(node).flags & ts.TypeFlags.Null) !== 0) {
+        return { value: defaultAfterUndefined(lowerer.lowerExpr(node), defaultValue), defaulted: boolLit(true, loc) };
       }
-      const value = L.lowerExpr(node);
+      const value = lowerer.lowerExpr(node);
       if (value.type.kind === "union") {
-        const def = L.unions.get(value.type.unionId);
+        const def = lowerer.unions.get(value.type.unionId);
         const units = def?.arms.filter(isUnitType) ?? [];
         if (
           units.length > 0 &&
@@ -4411,13 +4411,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           // bit must observe one evaluation of a runtime optional union.
           // Bind it in the numeric argument; the later bool argument reads
           // the same hidden local (libCall arguments evaluate left-to-right).
-          const saved = L.declareHiddenLocal("%fhOptNum", value.type);
+          const saved = lowerer.declareHiddenLocal("%fhOptNum", value.type);
           const savedRef = (): IrExpr => ({
             kind: "varRef", localId: saved.id, type: value.type, loc: value.loc,
           });
           let defaulted: IrExpr = {
             kind: "unionIsTag", unionId: value.type.unionId,
-            tag: L.armTag(value.type.unionId, units[0]!), negated: false,
+            tag: lowerer.armTag(value.type.unionId, units[0]!), negated: false,
             value: savedRef(), type: BOOL, loc: value.loc,
           };
           for (const unit of units.slice(1)) {
@@ -4425,7 +4425,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               kind: "logical", op: "||", left: defaulted,
               right: {
                 kind: "unionIsTag", unionId: value.type.unionId,
-                tag: L.armTag(value.type.unionId, unit), negated: false,
+                tag: lowerer.armTag(value.type.unionId, unit), negated: false,
                 value: savedRef(), type: BOOL, loc: value.loc,
               },
               type: BOOL,
@@ -4447,12 +4447,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           };
         }
       }
-      return { value: L.coerceInto(node, value, F64), defaulted: boolLit(false, loc) };
+      return { value: lowerer.coerceInto(node, value, F64), defaulted: boolLit(false, loc) };
     };
     const utf8 = (node: ts.Expression | undefined): IrExpr => {
       const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
       if (!node) return dflt;
-      const nodeType = L.typeOf(node);
+      const nodeType = lowerer.typeOf(node);
       const parts: readonly ts.Type[] = nodeType.isUnionType() ? ts.constituentTypes(nodeType) : [nodeType];
       const supported = parts.every(
         (t) =>
@@ -4460,17 +4460,17 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8")),
       );
       if (!supported) {
-        L.noLowering(
+        lowerer.noLowering(
           `FileHandle.${name} with a non-utf8 encoding`,
           node,
           "only utf8 data is supported",
         );
       }
-      return lowerBuiltinOptionalDefault(L, node, STRING, dflt, true);
+      return lowerBuiltinOptionalDefault(lowerer, node, STRING, dflt, true);
     };
 
     if (name === "close" || name === "stat") {
-      if (call.arguments.length !== 0) L.noLowering(`FileHandle.${name} with arguments`, call);
+      if (call.arguments.length !== 0) lowerer.noLowering(`FileHandle.${name} with arguments`, call);
       return {
         kind: "libCall",
         fn: name === "close" ? "fileHandle.close" : "fileHandle.stat",
@@ -4482,10 +4482,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
 
     if (name === "readFile") {
       if (call.arguments.length > 1) {
-        L.noLowering(`FileHandle.readFile with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`FileHandle.readFile with ${call.arguments.length} arguments`, call);
       }
-      const type = L.mapTypeOf(L.typeOf(call));
-      if (type?.kind !== "promise") L.badType(call, L.typeOf(call));
+      const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+      if (type?.kind !== "promise") lowerer.badType(call, lowerer.typeOf(call));
       const encoding = utf8(call.arguments[0]);
       if (typeEquals(type.inner, BYTES_U8)) {
         return {
@@ -4493,7 +4493,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           type, loc,
         };
       }
-      if (!typeEquals(type.inner, STRING)) L.badType(call, L.typeOf(call));
+      if (!typeEquals(type.inner, STRING)) lowerer.badType(call, lowerer.typeOf(call));
       return {
         kind: "libCall", fn: "fileHandle.readFile", args: [receiver(), encoding],
         type, loc,
@@ -4502,29 +4502,29 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
 
     if (name === "writeFile" || name === "appendFile") {
       if (call.arguments.length < 1 || call.arguments.length > 2) {
-        L.noLowering(`FileHandle.${name} with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`FileHandle.${name} with ${call.arguments.length} arguments`, call);
       }
       const dataNode = call.arguments[0]!;
-      const dataT = L.mapTypeOf(L.typeOf(dataNode));
+      const dataT = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
       // Evaluate a supplied utf8 encoding even for Buffer data, matching
       // Node's argument order; it does not affect the bytes.
       const encoding = utf8(call.arguments[1]);
       if (dataT?.kind === "string") {
         return {
           kind: "libCall", fn: "fileHandle.writeFile",
-          args: [receiver(), L.lowerExprExpecting(dataNode, STRING), encoding],
+          args: [receiver(), lowerer.lowerExprExpecting(dataNode, STRING), encoding],
           type: promise(VOID), loc,
         };
       }
       if (dataT?.kind === "bytes" && dataT.elem === "u8") {
         return {
           kind: "libCall", fn: "fileHandle.writeFileBytes",
-          args: [receiver(), L.lowerExprExpecting(dataNode, BYTES_U8), encoding],
+          args: [receiver(), lowerer.lowerExprExpecting(dataNode, BYTES_U8), encoding],
           type: promise(VOID), loc,
         };
       }
-      L.noLowering(
-        `FileHandle.${name} of '${dataT ? L.fmt(dataT) : L.checker.typeToString(L.typeOf(dataNode))}' data`,
+      lowerer.noLowering(
+        `FileHandle.${name} of '${dataT ? lowerer.fmt(dataT) : lowerer.checker.typeToString(lowerer.typeOf(dataNode))}' data`,
         dataNode,
         "string and Uint8Array data are supported",
       );
@@ -4532,16 +4532,16 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
 
     if (name === "read") {
       if (call.arguments.length < 1 || call.arguments.length > 4) {
-        L.noLowering(
+        lowerer.noLowering(
           `FileHandle.read with ${call.arguments.length} arguments`,
           call,
           "use read(buffer[, offset[, length[, position]]])",
         );
       }
-      const buffer = L.lowerExprExpecting(call.arguments[0]!, BYTES_U8);
-      const type = L.mapTypeOf(L.typeOf(call));
+      const buffer = lowerer.lowerExprExpecting(call.arguments[0]!, BYTES_U8);
+      const type = lowerer.mapTypeOf(lowerer.typeOf(call));
       if (type?.kind !== "promise" || type.inner.kind !== "record") {
-        L.badType(call, L.typeOf(call));
+        lowerer.badType(call, lowerer.typeOf(call));
       }
       const offset = num(call.arguments[1], 0);
       const length = num(call.arguments[2], -1);
@@ -4558,13 +4558,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
 
     if (name === "write") {
       if (call.arguments.length < 1 || call.arguments.length > 4) {
-        L.noLowering(`FileHandle.write with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`FileHandle.write with ${call.arguments.length} arguments`, call);
       }
       const dataNode = call.arguments[0]!;
-      const dataT = L.mapTypeOf(L.typeOf(dataNode));
-      const type = L.mapTypeOf(L.typeOf(call));
+      const dataT = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
+      const type = lowerer.mapTypeOf(lowerer.typeOf(call));
       if (type?.kind !== "promise" || type.inner.kind !== "record") {
-        L.badType(call, L.typeOf(call));
+        lowerer.badType(call, lowerer.typeOf(call));
       }
       if (dataT?.kind === "bytes" && dataT.elem === "u8") {
         const offset = num(call.arguments[1], 0);
@@ -4573,7 +4573,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         return {
           kind: "libCall", fn: "fileHandle.writeBytes",
           args: [
-            receiver(), L.lowerExprExpecting(dataNode, BYTES_U8),
+            receiver(), lowerer.lowerExprExpecting(dataNode, BYTES_U8),
             offset.value, length.value, position.value,
             length.defaulted,
           ],
@@ -4582,7 +4582,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       }
       if (dataT?.kind === "string") {
         if (call.arguments.length > 3) {
-          L.noLowering(
+          lowerer.noLowering(
             `FileHandle.write(string) with ${call.arguments.length} arguments`,
             call,
             'use write(string[, position[, "utf8"]])',
@@ -4591,22 +4591,22 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         const position = num(call.arguments[1], -1);
         return {
           kind: "libCall", fn: "fileHandle.writeStr",
-          args: [receiver(), L.lowerExprExpecting(dataNode, STRING), position.value, utf8(call.arguments[2])],
+          args: [receiver(), lowerer.lowerExprExpecting(dataNode, STRING), position.value, utf8(call.arguments[2])],
           type, loc,
         };
       }
-      L.noLowering(
-        `FileHandle.write of '${dataT ? L.fmt(dataT) : L.checker.typeToString(L.typeOf(dataNode))}' data`,
+      lowerer.noLowering(
+        `FileHandle.write of '${dataT ? lowerer.fmt(dataT) : lowerer.checker.typeToString(lowerer.typeOf(dataNode))}' data`,
         dataNode,
         "string and Uint8Array data are supported",
       );
     }
 
-    L.noLowering(
+    lowerer.noLowering(
       `FileHandle.${name}`,
       call,
       "fd, close(), read(), write(), readFile(), writeFile(), appendFile(), and stat() are the supported FileHandle members",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -4616,28 +4616,28 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * lstatSync's, Node's own split). Everything else @types/node declares
    * (mtime, mode, ...) fences member-qualified. Null for non-Stats
    * receivers. */
-  export function lowerStatsMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerStatsMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (L.mapTypeOf(L.typeOf(access.expression))?.kind !== "stats") return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "stats") return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     if (
       (name === "isFile" || name === "isDirectory" || name === "isSymbolicLink") &&
       call.arguments.length === 0
     ) {
-      const receiver = L.lowerExpr(access.expression);
+      const receiver = lowerer.lowerExpr(access.expression);
       const fn =
         name === "isFile" ? "stats.isFile"
         : name === "isDirectory" ? "stats.isDirectory"
         : "stats.isSymbolicLink";
       return { kind: "libCall", fn, args: [receiver], type: BOOL, loc: locOf(call) };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `Stats.${name}`,
       call,
       "isFile(), isDirectory(), isSymbolicLink(), size, blocks, nlink, atimeMs, and mtimeMs are the supported Stats members",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -4652,22 +4652,22 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * here — a certain deadlock, fenced with that explanation. Every other
    * Atomics member (notify has no one to wake; add/load/... — nothing
    * races) fences member-qualified. Null for non-Atomics receivers. */
-  export function lowerAtomicsCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerAtomicsCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
-    const member = L.stdlibGlobalMember(access, "Atomics");
+    const member = lowerer.stdlibGlobalMember(access, "Atomics");
     if (member === null) return null;
     const loc = locOf(call);
     if (member !== "wait") {
-      L.noLowering(
+      lowerer.noLowering(
         `Atomics.${member}`,
         call,
         "Atomics.wait(int32Array, idx, expected, timeoutMs) is the supported Atomics surface " +
           "(scriptc has no threads — wait is the synchronous-sleep idiom, and nothing else has anyone to race)",
-        L.checker.getSymbolAtLocation(access.name),
+        lowerer.checker.getSymbolAtLocation(access.name),
       );
     }
     if (call.arguments.length !== 4 || call.arguments.some(ts.isSpreadElement)) {
-      L.noLowering(
+      lowerer.noLowering(
         `Atomics.wait with ${call.arguments.length} arguments`,
         call,
         "the timeout is required: without it the wait blocks forever — scriptc has no threads, " +
@@ -4675,18 +4675,18 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       );
     }
     const arrNode = call.arguments[0]!;
-    const arrIr = L.mapTypeOf(L.typeOf(arrNode));
+    const arrIr = lowerer.mapTypeOf(lowerer.typeOf(arrNode));
     if (!(arrIr?.kind === "bytes" && arrIr.elem === "i32")) {
-      L.noLowering(
-        `Atomics.wait over '${L.checker.typeToString(L.typeOf(arrNode))}' values`,
+      lowerer.noLowering(
+        `Atomics.wait over '${lowerer.checker.typeToString(lowerer.typeOf(arrNode))}' values`,
         arrNode,
         "an Int32Array is the supported waitable array",
       );
     }
-    const arr = L.lowerExpr(arrNode);
-    const idx = L.lowerExprExpecting(call.arguments[1]!, F64);
-    const expected = L.lowerExprExpecting(call.arguments[2]!, F64);
-    const timeout = L.lowerExprExpecting(call.arguments[3]!, F64);
+    const arr = lowerer.lowerExpr(arrNode);
+    const idx = lowerer.lowerExprExpecting(call.arguments[1]!, F64);
+    const expected = lowerer.lowerExprExpecting(call.arguments[2]!, F64);
+    const timeout = lowerer.lowerExprExpecting(call.arguments[3]!, F64);
     return { kind: "libCall", fn: "atomics.wait", args: [arr, idx, expected, timeout], type: STRING, loc };
   }
 
@@ -4697,35 +4697,35 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * — null for a normal exit or spawn failure; a timeout kill reports its
    * killSignal, Node's shape). Null for everything else, so the ordinary
    * chain (and its fences) keeps going. */
-  export function lowerBuiltinExtraProperty(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
-    if (expr.questionDotToken && !L.chainHandled.has(expr)) return null;
+  export function lowerBuiltinExtraProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+    if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
     // decoder.encoding on a StringDecoder-typed receiver: the record's
     // hidden canonical-name field (construction folded the aliases —
     // exactly what Node's normalized `.encoding` answers).
-    if (expr.name.text === "encoding" && isStringDecoderTyped(L, expr.expression) && L.isStdlibMember(expr)) {
-      const receiver = L.lowerExpr(expr.expression);
-      if (receiver.type.kind !== "record") L.badType(expr.expression, L.typeOf(expr.expression));
+    if (expr.name.text === "encoding" && isStringDecoderTyped(lowerer, expr.expression) && lowerer.isStdlibMember(expr)) {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      if (receiver.type.kind !== "record") lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
       return { kind: "recordGet", obj: receiver, shapeId: receiver.type.shapeId, field: "%enc", type: STRING, loc: locOf(expr) };
     }
-    const kind = L.mapTypeOf(L.typeOf(expr.expression))?.kind;
+    const kind = lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind;
     if (kind !== "stats" && kind !== "fileHandle" && kind !== "spawnRes" && kind !== "child") return null;
-    if (kind === "child" ? !isChildSurfaceMember(L, expr) : !L.isStdlibMember(expr)) return null;
+    if (kind === "child" ? !isChildSurfaceMember(lowerer, expr) : !lowerer.isStdlibMember(expr)) return null;
     const name = expr.name.text;
     const loc = locOf(expr);
     if (kind === "fileHandle") {
       if (name === "fd") {
-        const receiver = L.lowerExprExpecting(expr.expression, FILEHANDLE_T);
+        const receiver = lowerer.lowerExprExpecting(expr.expression, FILEHANDLE_T);
         return { kind: "libCall", fn: "fileHandle.fd", args: [receiver], type: F64, loc };
       }
       const methods = new Set(["close", "read", "write", "readFile", "writeFile", "appendFile", "stat"]);
       if (methods.has(name)) {
-        L.unsupported("SC1090", expr, `FileHandle methods as values (call '${name}' directly)`);
+        lowerer.unsupported("SC1090", expr, `FileHandle methods as values (call '${name}' directly)`);
       }
-      L.noLowering(
+      lowerer.noLowering(
         `FileHandle.${name}`,
         expr,
         "fd, close(), read(), write(), readFile(), writeFile(), appendFile(), and stat() are the supported FileHandle members",
-        L.checker.getSymbolAtLocation(expr.name),
+        lowerer.checker.getSymbolAtLocation(expr.name),
       );
     }
     // child.stdout / child.stderr — the piped-output streams: the
@@ -4733,10 +4733,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // piped), constructed type-directedly in the backend over the
     // +1-or-NULL runtime pair.
     if (kind === "child" && (name === "stdout" || name === "stderr")) {
-      const receiver = L.lowerExpr(expr.expression);
+      const receiver = lowerer.lowerExpr(expr.expression);
       const type: IrType = {
         kind: "union",
-        unionId: L.unions.intern([CHILDSTREAM_T, { kind: "nullT" }]),
+        unionId: lowerer.unions.intern([CHILDSTREAM_T, { kind: "nullT" }]),
       };
       const read: IrExpr = {
         kind: "libCall",
@@ -4745,14 +4745,14 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         type,
         loc,
       };
-      return L.maybeNarrow(read, expr);
+      return lowerer.maybeNarrow(read, expr);
     }
     if (kind === "child") return null; // pid/exitCode/killed live in lowerIntrinsicProperty
     if (
       kind === "stats" &&
       (name === "blocks" || name === "nlink" || name === "atimeMs" || name === "mtimeMs")
     ) {
-      const receiver = L.lowerExpr(expr.expression);
+      const receiver = lowerer.lowerExpr(expr.expression);
       const fn = `stats.${name}` as
         | "stats.blocks"
         | "stats.nlink"
@@ -4761,13 +4761,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       return { kind: "libCall", fn, args: [receiver], type: F64, loc };
     }
     if (kind === "spawnRes" && name === "signal") {
-      const receiver = L.lowerExpr(expr.expression);
+      const receiver = lowerer.lowerExpr(expr.expression);
       const type: IrType = {
         kind: "union",
-        unionId: L.unions.intern([STRING, { kind: "nullT" }]),
+        unionId: lowerer.unions.intern([STRING, { kind: "nullT" }]),
       };
       const read: IrExpr = { kind: "libCall", fn: "spawnRes.signal", args: [receiver], type, loc };
-      return L.maybeNarrow(read, expr);
+      return lowerer.maybeNarrow(read, expr);
     }
     return null;
   }
@@ -4783,34 +4783,34 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * lowerIntrinsicProperty). Everything else @types/node declares on
    * ChildProcess (stdout, once, ...) fences member-qualified. Null for
    * non-child receivers. */
-  export function lowerChildMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerChildMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (L.mapTypeOf(L.typeOf(access.expression))?.kind !== "child") return null;
-    if (!isChildSurfaceMember(L, access)) return null;
+    if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "child") return null;
+    if (!isChildSurfaceMember(lowerer, access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     if (name === "on" && call.arguments.length === 2) {
-      const evT = L.typeOf(call.arguments[0]!);
+      const evT = lowerer.typeOf(call.arguments[0]!);
       const event = evT.isStringLiteralType() ? evT.value : null;
       if (event !== "exit" && event !== "error") {
-        L.noLowering(
+        lowerer.noLowering(
           `child.on(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
           call.arguments[0]!,
           '"exit" and "error" are the supported child events (as literals)',
         );
       }
       if (!ts.isExpressionStatement(call.parent)) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call,
           "chaining child.on(...) (the result is void here — register each listener as its own statement)",
         );
       }
-      const receiver = L.lowerExpr(access.expression);
-      const cb = L.lowerExpr(call.arguments[1]!);
+      const receiver = lowerer.lowerExpr(access.expression);
+      const cb = lowerer.lowerExpr(call.arguments[1]!);
       if (cb.type.kind !== "func" || cb.type.params.length > (event === "exit" ? 2 : 1)) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
           event === "exit"
@@ -4822,7 +4822,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         // `() => 5` IS assignable to a void-returning listener slot; the
         // registry's call ABI is void, so a value-returning closure is
         // fenced instead of silently called wrong.
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
           "listeners returning a value (make the callback body a block, or return nothing)",
@@ -4834,7 +4834,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           param === undefined ||
           (param.kind === "union" &&
             (() => {
-              const def = L.unions.get(param.unionId);
+              const def = lowerer.unions.get(param.unionId);
               return (
                 def?.arms.length === 2 &&
                 def.arms[0]!.kind === "f64" &&
@@ -4842,10 +4842,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               );
             })());
         if (!armsOk) {
-          L.unsupported(
+          lowerer.unsupported(
             "SC1090",
             call.arguments[1]!,
-            `exit listeners whose parameter is not 'number | null' (got '${L.fmt(param!)}')`,
+            `exit listeners whose parameter is not 'number | null' (got '${lowerer.fmt(param!)}')`,
           );
         }
         // The optional SECOND parameter is Node's signal: the terminating
@@ -4856,7 +4856,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           sigParam === undefined ||
           (sigParam.kind === "union" &&
             (() => {
-              const def = L.unions.get(sigParam.unionId);
+              const def = lowerer.unions.get(sigParam.unionId);
               return (
                 def?.arms.length === 2 &&
                 def.arms.some((a) => a.kind === "string") &&
@@ -4864,19 +4864,19 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               );
             })());
         if (!sigOk) {
-          L.unsupported(
+          lowerer.unsupported(
             "SC1090",
             call.arguments[1]!,
-            `exit listeners whose signal parameter is not 'Signals | null' (got '${L.fmt(sigParam!)}')`,
+            `exit listeners whose signal parameter is not 'Signals | null' (got '${lowerer.fmt(sigParam!)}')`,
           );
         }
         return { kind: "libCall", fn: "child.onExit", args: [receiver, cb], type: VOID, loc };
       }
       if (param !== undefined && !(param.kind === "object" && param.className === "%Error")) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
-          `error listeners whose parameter is not 'Error' (got '${L.fmt(param)}')`,
+          `error listeners whose parameter is not 'Error' (got '${lowerer.fmt(param)}')`,
         );
       }
       return { kind: "libCall", fn: "child.onError", args: [receiver, cb], type: VOID, loc };
@@ -4889,23 +4889,23 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // send sets `killed`.
     if (name === "kill") {
       if (call.arguments.length > 1) {
-        L.noLowering(`child.kill with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`child.kill with ${call.arguments.length} arguments`, call);
       }
-      const receiver = L.lowerExpr(access.expression);
+      const receiver = lowerer.lowerExpr(access.expression);
       const sigNode = call.arguments[0];
       if (!sigNode) {
         const dflt: IrExpr = { kind: "strLit", value: "SIGTERM", type: STRING, loc };
         return { kind: "libCall", fn: "child.kill", args: [receiver, dflt], type: BOOL, loc };
       }
-      const sig = L.lowerExpr(sigNode);
+      const sig = lowerer.lowerExpr(sigNode);
       if (sig.type.kind === "f64") {
         return { kind: "libCall", fn: "child.killNum", args: [receiver, sig], type: BOOL, loc };
       }
       if (sig.type.kind === "string") {
         return { kind: "libCall", fn: "child.kill", args: [receiver, sig], type: BOOL, loc };
       }
-      L.noLowering(
-        `child.kill with a '${L.fmt(sig.type)}' signal`,
+      lowerer.noLowering(
+        `child.kill with a '${lowerer.fmt(sig.type)}' signal`,
         sigNode,
         "pass a signal name string or number (narrow unions first)",
       );
@@ -4914,14 +4914,14 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // (the process may exit while the child runs — Node's semantics; the
     // child is still reaped while the loop runs for other reasons).
     if (name === "unref" && call.arguments.length === 0) {
-      const receiver = L.lowerExpr(access.expression);
+      const receiver = lowerer.lowerExpr(access.expression);
       return { kind: "libCall", fn: "child.unref", args: [receiver], type: VOID, loc };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `ChildProcess.${name}`,
       call,
       "on(\"exit\" | \"error\", cb), pid, exitCode, killed, kill(signal?), and unref() are the supported ChildProcess members",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -4936,36 +4936,36 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * ride the optional-chain re-dispatch (chainBlocked). Everything else
    * @types/node declares on Readable fences member-qualified. Null for
    * non-stream receivers. */
-  export function lowerChildStreamMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerChildStreamMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
-    if (L.chainBlocked(call, access)) return null;
-    if (L.mapTypeOf(L.typeOf(access.expression))?.kind !== "childStream") return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (lowerer.chainBlocked(call, access)) return null;
+    if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "childStream") return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     if ((name === "on" || name === "once") && call.arguments.length === 2) {
-      const evT = L.typeOf(call.arguments[0]!);
+      const evT = lowerer.typeOf(call.arguments[0]!);
       const event = evT.isStringLiteralType() ? evT.value : null;
       if (event !== "data" && event !== "end") {
-        L.noLowering(
+        lowerer.noLowering(
           `stream.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
           call.arguments[0]!,
           '"data" and "end" are the supported child-stream events (as literals)',
         );
       }
       if (!ts.isExpressionStatement(call.parent)) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call,
           "chaining stream listener registration (the result is void here — register each listener as its own statement)",
         );
       }
-      const receiver = L.lowerExpr(access.expression);
-      const cb = L.lowerExpr(call.arguments[1]!);
+      const receiver = lowerer.lowerExpr(access.expression);
+      const cb = lowerer.lowerExpr(call.arguments[1]!);
       const once: IrExpr = { kind: "boolLit", value: name === "once", type: BOOL, loc };
       if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" ||
           cb.type.params.length > (event === "data" ? 1 : 0)) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
           event === "data"
@@ -4979,23 +4979,23 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       const param = cb.type.params[0];
       const unionOk = (p: IrType): boolean => {
         if (p.kind !== "union") return false;
-        const def = L.unions.get(p.unionId);
+        const def = lowerer.unions.get(p.unionId);
         return !!def && def.arms.some((a) => a.kind === "bytes" && a.elem === "u8");
       };
       if (param !== undefined && !(param.kind === "bytes" && param.elem === "u8") && !unionOk(param)) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
-          `data listeners whose parameter is not 'Buffer' (or a Buffer-armed union; got '${L.fmt(param)}')`,
+          `data listeners whose parameter is not 'Buffer' (or a Buffer-armed union; got '${lowerer.fmt(param)}')`,
         );
       }
       return { kind: "libCall", fn: "stream.onData", args: [receiver, cb, once], type: VOID, loc };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `ReadableStream.${name}`,
       call,
       'on/once("data" | "end", cb) are the supported child-stream members',
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -5005,30 +5005,30 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * stdout/stderr write paths (the fd IS the value). Everything else
    * @types/node declares on WritableStream fences member-qualified.
    * Null for non-procStream receivers. */
-  export function lowerProcStreamMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerProcStreamMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
-    if (L.chainBlocked(call, access)) return null;
-    if (L.mapTypeOf(L.typeOf(access.expression))?.kind !== "procStream") return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (lowerer.chainBlocked(call, access)) return null;
+    if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "procStream") return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     if (name === "write" && call.arguments.length === 1) {
-      const receiver = L.lowerExpr(access.expression);
-      const data = L.lowerExpr(call.arguments[0]!);
+      const receiver = lowerer.lowerExpr(access.expression);
+      const data = lowerer.lowerExpr(call.arguments[0]!);
       if (data.type.kind !== "string") {
-        L.noLowering(
-          `write of '${L.fmt(data.type)}' data on a stream value`,
+        lowerer.noLowering(
+          `write of '${lowerer.fmt(data.type)}' data on a stream value`,
           call.arguments[0]!,
           "one string is the supported form here — narrow unions first",
         );
       }
       return { kind: "libCall", fn: "procStream.write", args: [receiver, data], type: BOOL, loc };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `WritableStream.${name}`,
       call,
       "write(data) with one string is the supported stream-value member",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -5045,9 +5045,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * watches one inode), signal, and non-utf8 encodings fence by name;
    * undocumented keys drop like Node. An open watcher keeps the loop
    * alive until watcher.close(). */
-  function lowerFsWatchCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (expr.arguments.length < 1 || expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement)) {
-      L.noLowering(
+      lowerer.noLowering(
         "fs.watch with this argument shape",
         expr,
         "the supported forms are watch(path[, options][, listener])",
@@ -5055,7 +5055,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     }
     const hasOptions = expr.arguments.length >= 2 && ts.isObjectLiteralExpression(expr.arguments[1]!);
     if (expr.arguments.length === 3 && !hasOptions) {
-      L.noLowering(
+      lowerer.noLowering(
         "fs.watch with a non-literal options argument",
         expr.arguments[1]!,
         "pass the options as an object literal: watch(path, { recursive?, persistent?, encoding? }, listener)",
@@ -5064,14 +5064,14 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     if (hasOptions) {
       for (const prop of (expr.arguments[1] as ts.ObjectLiteralExpression).properties) {
         if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) {
-          L.noLowering(
+          lowerer.noLowering(
             "fs.watch options with computed keys or spreads",
             prop,
             "each option must be a plain `name: value` entry with a literal key",
           );
         }
         if (!ts.isIdentifier(prop.name) && !ts.isStringLiteral(prop.name)) {
-          L.noLowering(
+          lowerer.noLowering(
             "fs.watch options with computed keys",
             prop,
             "each option must be a plain `name: value` entry with a literal key",
@@ -5083,7 +5083,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           // true IS the lowering (an open watcher holds the loop) —
           // stating the default is a no-op; false has no lowering.
           if (init !== null && init.kind === ts.SyntaxKind.TrueKeyword) continue;
-          L.noLowering(
+          lowerer.noLowering(
             "fs.watch with persistent disabled",
             prop,
             "an open watcher keeps the loop alive until close() — that IS the lowering; " +
@@ -5092,7 +5092,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         if (key === "recursive") {
           if (init !== null && init.kind === ts.SyntaxKind.FalseKeyword) continue;
-          L.noLowering(
+          lowerer.noLowering(
             "fs.watch with the recursive option",
             prop,
             "recursive watching has no lowering yet — kqueue watches the one opened path; watch each path",
@@ -5101,35 +5101,35 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         if (key === "encoding") {
           const enc = init !== null && ts.isStringLiteralLike(init) ? init.text : null;
           if (enc === "utf8" || enc === "utf-8") continue;
-          L.noLowering(
+          lowerer.noLowering(
             "fs.watch with a non-utf8 encoding",
             prop,
             "the encoding applies to the filename argument, which has no lowering — utf8 (the default) is accepted",
           );
         }
         if (key === "signal") {
-          L.noLowering(
+          lowerer.noLowering(
             "fs.watch with an abort signal",
             prop,
             "abortable watchers have no lowering — call watcher.close() instead",
           );
         }
         fenceOrDropOptionKey(
-          L, prop, key, "fs.watch", FS_WATCH_DOCUMENTED_OPTIONS,
+          lowerer, prop, key, "fs.watch", FS_WATCH_DOCUMENTED_OPTIONS,
           "persistent: true, recursive: false, and encoding: \"utf8\" are the accepted options",
         );
         // An undocumented key, dropped like Node drops it.
       }
     }
-    const path = L.lowerExprExpecting(expr.arguments[0]!, STRING);
+    const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
     const args: IrExpr[] = [path];
     const listenerArg = hasOptions
       ? (expr.arguments.length === 3 ? expr.arguments[2]! : null)
       : (expr.arguments.length === 2 ? expr.arguments[1]! : null);
     if (listenerArg !== null) {
-      const cb = L.lowerExpr(listenerArg);
+      const cb = lowerer.lowerExpr(listenerArg);
       if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 1) {
-        L.noLowering(
+        lowerer.noLowering(
           "fs.watch with this listener shape",
           listenerArg,
           "the listener takes () or (eventType: string) — the filename parameter has no lowering (you watched one path)",
@@ -5137,10 +5137,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       }
       const param = cb.type.params[0];
       if (param !== undefined && param.kind !== "string") {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           listenerArg,
-          `watch listeners whose parameter is not the eventType string (got '${L.fmt(param)}')`,
+          `watch listeners whose parameter is not the eventType string (got '${lowerer.fmt(param)}')`,
         );
       }
       args.push(cb);
@@ -5152,22 +5152,22 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * position (Node returns void there too). Everything else @types/node
    * declares (ref/unref, the EventEmitter surface) fences member-
    * qualified. Null for non-watcher receivers. */
-  export function lowerWatcherMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerWatcherMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (L.mapTypeOf(L.typeOf(access.expression))?.kind !== "fsWatcher") return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "fsWatcher") return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     if (name === "close" && call.arguments.length === 0) {
-      const receiver = L.lowerExpr(access.expression);
+      const receiver = lowerer.lowerExpr(access.expression);
       return { kind: "libCall", fn: "watcher.close", args: [receiver], type: VOID, loc };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `FSWatcher.${name}`,
       call,
       "close() is the supported FSWatcher member",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -5180,42 +5180,42 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * declaration is not stdlib). Reads only: writes keep their fence (no
    * compiled program constructs an errno error). Null for non-error
    * receivers and non-stdlib members, so the chain keeps trying. */
-  export function lowerErrorCodeProperty(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+  export function lowerErrorCodeProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
     // `?.code` re-dispatches through the optional-chain machinery (the
     // mdns `(r.error as ErrnoException | undefined)?.code` idiom): the
     // chain-handled marker means the receiver already narrowed to the
     // non-unit arm and reads as chainRecv below.
-    if (expr.questionDotToken && !L.chainHandled.has(expr)) return null;
-    const recvT = L.mapTypeOf(L.typeOf(expr.expression));
+    if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
+    const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
     if (recvT?.kind !== "object") return null;
     // %DOMException's OWN read surface first: `code` is the WebIDL legacy
     // NUMBER (never the errno string slot), and `cause` reads the options
     // form's stored value (Node's undefined when absent). Both live in
     // runtime slots beyond the ScrError prefix, reached by dedicated
     // libCalls.
-    if (recvT.className === "%DOMException" && L.isStdlibMember(expr)) {
+    if (recvT.className === "%DOMException" && lowerer.isStdlibMember(expr)) {
       if (expr.name.text === "code") {
-        const receiver = L.lowerExpr(expr.expression);
+        const receiver = lowerer.lowerExpr(expr.expression);
         return { kind: "libCall", fn: "error.domCode", args: [receiver], type: F64, loc: locOf(expr) };
       }
       if (expr.name.text === "cause") {
-        const receiver = L.lowerExpr(expr.expression);
+        const receiver = lowerer.lowerExpr(expr.expression);
         return { kind: "libCall", fn: "error.domCause", args: [receiver], type: DYN, loc: locOf(expr) };
       }
     }
     if (expr.name.text !== "code") return null;
     // Error-rooted classes only — builtin or user subclass (both embed the
     // code slot in their layout prefix).
-    let info = L.classes.get(recvT.className) ?? null;
+    let info = lowerer.classes.get(recvT.className) ?? null;
     while (info && info.base) info = info.base;
     if (!info || info.def.name !== "%Error") return null;
-    if (!L.isStdlibMember(expr)) return null;
-    const receiver = L.lowerExpr(expr.expression);
+    if (!lowerer.isStdlibMember(expr)) return null;
+    const receiver = lowerer.lowerExpr(expr.expression);
     return {
       kind: "libCall",
       fn: "error.code",
       args: [receiver],
-      type: L.envValueType(),
+      type: lowerer.envValueType(),
       loc: locOf(expr),
     };
   }
@@ -5223,25 +5223,25 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
 /** `JSON.parse` / `JSON.stringify` referenced without a call: rejected
    * specifically, like process methods as values. Null for non-JSON
    * receivers (the property chain keeps trying other lowerings). */
-  export function lowerJsonProperty(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
-    const member = L.stdlibGlobalMember(expr, "JSON");
+  export function lowerJsonProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+    const member = lowerer.stdlibGlobalMember(expr, "JSON");
     if (member === null) return null;
-    L.unsupported("SC1090", expr, `JSON methods as values (call '${member}' directly)`);
+    lowerer.unsupported("SC1090", expr, `JSON methods as values (call '${member}' directly)`);
   }
 
 /** `constants.X_OK` where `constants` is a named fs import: the access-
    * mode bits bake as number literals (POSIX values — Node's own on the
    * supported hosts). Other fs.constants members (COPYFILE_*, O_*) fence
    * by name. Null for non-fs-constants receivers. */
-  export function lowerFsConstantsProperty(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+  export function lowerFsConstantsProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
     if (expr.questionDotToken) return null;
     if (!ts.isIdentifier(expr.expression)) return null;
-    const bi = L.builtinImportOf(expr.expression);
+    const bi = lowerer.builtinImportOf(expr.expression);
     if (!bi || bi.module !== "fs" || bi.member !== "constants") return null;
     const MODES: Record<string, number | undefined> = { F_OK: 0, X_OK: 1, W_OK: 2, R_OK: 4 };
     const value = own(MODES, expr.name.text);
     if (value === undefined) {
-      L.noLowering(
+      lowerer.noLowering(
         `fs.constants.${expr.name.text}`,
         expr,
         "F_OK, R_OK, W_OK, and X_OK are the lowered constants",
@@ -5264,14 +5264,14 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * whose checker type does NOT admit undefined are fenced with that exact
    * fix instead of lowering to a lie. Null for anything else, so the
    * property chain keeps trying. */
-  export function lowerProcessStreamProperty(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+  export function lowerProcessStreamProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
     if (expr.questionDotToken) return null;
     const member = expr.name.text;
     if (member !== "isTTY" && member !== "columns") return null;
     let recv: ts.Expression = expr.expression;
     while (ts.isParenthesizedExpression(recv) || ts.isAsExpression(recv) || ts.isTypeAssertion(recv)) recv = recv.expression;
     if (!ts.isPropertyAccessExpression(recv)) return null;
-    const stream = L.stdlibGlobalMember(recv, "process");
+    const stream = lowerer.stdlibGlobalMember(recv, "process");
     if (stream !== "stdin" && stream !== "stdout" && stream !== "stderr") return null;
     const loc = locOf(expr);
     const fd: IrExpr = {
@@ -5284,13 +5284,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       return { kind: "libCall", fn: "process.isTTY", args: [fd], type: BOOL, loc };
     }
     if (stream === "stdin") return null; // no columns on a ReadStream — generic fences apply
-    const declared = L.mapTypeOf(L.typeOf(expr));
-    const want = L.withUndefinedArm(F64);
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    const want = lowerer.withUndefinedArm(F64);
     // JS files skip the annotation fence: there is no annotation to fix —
     // the read IS Node's `number | undefined` and lowers to exactly that
     // (commander's `isTTY ? columns : undefined` help-width probes).
     if ((!declared || typeKey(declared) !== typeKey(want)) && !isJsSourceFile(expr.getSourceFile())) {
-      L.noLowering(
+      lowerer.noLowering(
         `process.${stream}.columns as a plain number`,
         expr,
         "on a non-TTY stream Node's .columns is undefined — type the read to admit it: " +
@@ -5312,7 +5312,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * read in source order). Method members referenced without a call are
    * rejected specifically. Null for non-process receivers (the chain keeps
    * trying other property lowerings). */
-  export function lowerProcessProperty(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+  export function lowerProcessProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
     // process.versions.node — the ONE lowered member of process.versions:
     // there is no Node under the binary, so the honest answer is the
     // runtime's own Node compatibility target (the version whose semantics
@@ -5323,7 +5323,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       (expr.name.text === "node" || expr.name.text === "openssl") &&
       !expr.questionDotToken &&
       ts.isPropertyAccessExpression(expr.expression) &&
-      L.stdlibGlobalMember(expr.expression, "process") === "versions"
+      lowerer.stdlibGlobalMember(expr.expression, "process") === "versions"
     ) {
       // versions.openssl answers the compat target's string for the same
       // reason versions.node does: Boolean(versions.openssl) is Node's own
@@ -5341,7 +5341,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // no QUIC — and process.config.target_defaults), no feature flags
     // (process.features.* — no inspector, not a debug build).
     if (!expr.questionDotToken && ts.isPropertyAccessExpression(expr.expression)) {
-      const container = L.stdlibGlobalMember(expr.expression, "process");
+      const container = lowerer.stdlibGlobalMember(expr.expression, "process");
       if (container === "versions" && (expr.name.text === "sqlite" || expr.name.text === "bun" || expr.name.text === "deno")) {
         // versions.bun / versions.deno are the OTHER-runtime probes (a
         // formatter's config loader picks its package.json reader by
@@ -5364,12 +5364,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       if (
         ts.isPropertyAccessExpression(expr.expression.expression) &&
         expr.expression.name.text === "variables" &&
-        L.stdlibGlobalMember(expr.expression.expression, "process") === "config"
+        lowerer.stdlibGlobalMember(expr.expression.expression, "process") === "config"
       ) {
         return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) };
       }
     }
-    const member = L.stdlibGlobalMember(expr, "process");
+    const member = lowerer.stdlibGlobalMember(expr, "process");
     if (member === null) return null;
     const loc = locOf(expr);
     if (member === "argv") {
@@ -5404,21 +5404,21 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       return { kind: "libCall", fn: "process.execPath", args: [], type: STRING, loc };
     }
     if (member === "env") {
-      const mapped = L.mapTypeOf(L.typeOf(expr));
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
       if (mapped?.kind === "record") {
-        const helper = L.envSnapshotHelper(mapped.shapeId, loc);
+        const helper = lowerer.envSnapshotHelper(mapped.shapeId, loc);
         if (helper !== null) {
           return { kind: "call", callee: helper, args: [], type: mapped, loc };
         }
       }
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         expr,
         "process.env as a value of this type (read one variable: process.env.NAME or process.env[name])",
       );
     }
     if (member === "exit" || member === "cwd" || member === "getuid" || member === "kill") {
-      L.unsupported("SC1090", expr, `process methods as values (call '${member}' directly)`);
+      lowerer.unsupported("SC1090", expr, `process methods as values (call '${member}' directly)`);
     }
     // process.stdout / process.stderr as first-class VALUES (flowing into
     // a `NodeJS.WritableStream` slot — the prefixStream idiom): the
@@ -5437,16 +5437,16 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
 
 /** True iff `node` is THE ambient `process.env` object itself (the
    * receiver of an env read). */
-  export function isProcessEnv(L: Lowerer, node: ts.Expression): boolean {
-    return ts.isPropertyAccessExpression(node) && L.stdlibGlobalMember(node, "process") === "env";
+  export function isProcessEnv(lowerer: Lowerer, node: ts.Expression): boolean {
+    return ts.isPropertyAccessExpression(node) && lowerer.stdlibGlobalMember(node, "process") === "env";
   }
 
 /** The interned `string | undefined` union — the type every env read
    * produces (withUndefinedArm interns [string, undefined] in canonical
    * order, so the string arm's tag is 0 and the undefined arm's is 1,
    * program-wide). */
-  export function envValueType(L: Lowerer): IrType {
-    return L.withUndefinedArm(STRING);
+  export function envValueType(lowerer: Lowerer): IrType {
+    return lowerer.withUndefinedArm(STRING);
   }
 
 /** `os.networkInterfaces()` — getifaddrs(3) behind Node's exact result
@@ -5465,12 +5465,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * %dtype entry kind (libuv's UV_DIRENT encoding; DT_UNKNOWN falls back
    * to lstat, Node's getDirents rule). The options literal is checked
    * member-by-member; the result type must be the interned Dirent record
-   * array from types.ts — anything else (encoding: 'buffer', a user alias
+   * array from type-mapper.ts — anything else (encoding: 'buffer', a user alias
    * reshaping Dirent) fences honestly. */
-  function lowerFsReaddirTypesCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  function lowerFsReaddirTypesCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
     const optsNode = call.arguments[1]!;
     if (!ts.isObjectLiteralExpression(optsNode)) {
-      L.noLowering(
+      lowerer.noLowering(
         "readdirSync with a non-literal options argument",
         optsNode,
         "pass the options inline so each member can be checked: readdirSync(path, { withFileTypes: true })",
@@ -5480,16 +5480,16 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     for (const p of optsNode.properties) {
       const m = optionMember(p);
       if (!m) {
-        L.noLowering(
+        lowerer.noLowering(
           "readdirSync with this options shape",
           p,
           "spreads and computed keys have no lowering — write each member inline",
         );
       }
       if (m.name === "withFileTypes") {
-        const t = L.typeOf(m.value);
-        if (!(t.flags & ts.TypeFlags.BooleanLiteral) || L.checker.typeToString(t) !== "true") {
-          L.noLowering(
+        const t = lowerer.typeOf(m.value);
+        if (!(t.flags & ts.TypeFlags.BooleanLiteral) || lowerer.checker.typeToString(t) !== "true") {
+          lowerer.noLowering(
             "readdirSync with a non-literal-true withFileTypes",
             m.value,
             "withFileTypes: true is the Dirent form; omit the options for plain names",
@@ -5497,9 +5497,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         sawWithFileTypes = true;
       } else if (m.name === "encoding") {
-        const t = L.typeOf(m.value);
+        const t = lowerer.typeOf(m.value);
         if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
-          L.noLowering(
+          lowerer.noLowering(
             "readdirSync with a non-utf8 encoding",
             m.value,
             "names decode as utf8 (the default); encoding: 'buffer' has no lowering",
@@ -5509,27 +5509,27 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         // The options-record stance: recursive (a documented knob with
         // no lowering) fences by name; undocumented keys drop like Node.
         fenceOrDropOptionKey(
-          L, p, m.name, "readdirSync", FS_READDIR_DOCUMENTED_OPTIONS,
+          lowerer, p, m.name, "readdirSync", FS_READDIR_DOCUMENTED_OPTIONS,
           "withFileTypes: true (and the default encoding) is the supported options surface — recursive listings want an explicit walk",
         );
       }
     }
     if (!sawWithFileTypes) {
-      L.noLowering(
+      lowerer.noLowering(
         "readdirSync with 2 arguments",
         call,
         "readdirSync(path) lists names; readdirSync(path, { withFileTypes: true }) lists Dirents",
       );
     }
     const fence: () => never = () =>
-      L.noLowering(
+      lowerer.noLowering(
         "readdirSync(path, { withFileTypes: true }) where the result is not the Dirent array",
         call,
         "{ name, parentPath, isFile(), isDirectory(), isSymbolicLink() } rows are the supported result shape",
       );
-    const result = L.mapTypeOf(L.typeOf(call));
+    const result = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (result?.kind !== "array" || result.elem.kind !== "record") fence();
-    const shape = L.shapes.get(result.elem.shapeId);
+    const shape = lowerer.shapes.get(result.elem.shapeId);
     if (
       !shape ||
       shape.tuple ||
@@ -5539,7 +5539,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     ) {
       fence();
     }
-    const path = L.lowerExprExpecting(call.arguments[0]!, STRING);
+    const path = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
     return { kind: "libCall", fn: "fs.readdirTypesSync", args: [path], type: result, loc };
   }
 
@@ -5548,29 +5548,29 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * Dirent symbol, the StringDecoder pattern): a read of the hidden
    * %dtype field compared against libuv's UV_DIRENT code. Node's other
    * type probes (isBlockDevice, ...) fence with the supported list. */
-  export function lowerDirentMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerDirentMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
-    if (!L.isStdlibMember(access)) return null;
-    const recvSym = L.typeOf(access.expression).getSymbol();
+    if (!lowerer.isStdlibMember(access)) return null;
+    const recvSym = lowerer.typeOf(access.expression).getSymbol();
     if (recvSym?.name !== "Dirent") return null;
-    const receiver = L.lowerExpr(access.expression);
+    const receiver = lowerer.lowerExpr(access.expression);
     if (receiver.type.kind !== "record") return null;
-    const shape = L.shapes.get(receiver.type.shapeId);
+    const shape = lowerer.shapes.get(receiver.type.shapeId);
     if (!shape?.fields.some((f) => f.name === "%dtype")) return null;
     const name = access.name.text;
     const loc = locOf(call);
     // libuv's UV_DIRENT encoding (scr_fs_scandir answers it).
     const code = name === "isFile" ? 1 : name === "isDirectory" ? 2 : name === "isSymbolicLink" ? 3 : -1;
     if (code < 0) {
-      L.noLowering(
+      lowerer.noLowering(
         `Dirent.${name}`,
         call,
         "name, parentPath, isFile(), isDirectory(), and isSymbolicLink() are the supported Dirent members",
-        L.checker.getSymbolAtLocation(access.name),
+        lowerer.checker.getSymbolAtLocation(access.name),
       );
     }
-    if (call.arguments.length !== 0) L.noLowering(`Dirent.${name} with arguments`, call);
+    if (call.arguments.length !== 0) lowerer.noLowering(`Dirent.${name} with arguments`, call);
     const dtype: IrExpr = {
       kind: "recordGet",
       obj: receiver,
@@ -5597,23 +5597,23 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * NOT os.homedir's $HOME-first cascade — Node's own split). The record
    * assembles field-by-field from scalar libCalls in the shape's
    * declaration order; unknown fields and the options argument fence. */
-  function lowerOsUserInfoCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  function lowerOsUserInfoCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (call.arguments.length !== 0) {
-      L.noLowering(
+      lowerer.noLowering(
         "userInfo with options",
         call,
         "the zero-argument call is the lowered form (Node's buffer encoding option has no lowering)",
       );
     }
     const fence: () => never = () =>
-      L.noLowering(
+      lowerer.noLowering(
         "userInfo() where the result is not the UserInfo record",
         call,
         "{ username, uid, gid, shell, homedir } is the supported result shape",
       );
-    const result = L.mapTypeOf(L.typeOf(call));
+    const result = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (result?.kind !== "record") fence();
-    const shape = L.shapes.get(result.shapeId);
+    const shape = lowerer.shapes.get(result.shapeId);
     if (!shape || shape.tuple || shape.indexValue || shape.fields.length === 0) fence();
     const fields: { name: string; value: IrExpr }[] = [];
     for (const f of shape.fields) {
@@ -5632,7 +5632,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         if (f.type.kind === "string") {
           fields.push({ name: f.name, value: raw });
         } else if (f.type.kind === "union") {
-          const tag = L.armTag(f.type.unionId, STRING);
+          const tag = lowerer.armTag(f.type.unionId, STRING);
           if (tag < 0) fence();
           fields.push({
             name: f.name,
@@ -5653,7 +5653,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * rule — parse(s, null, null, opts) is the canonical maxKeys spelling);
    * a string expression passes through (the runtime applies the same
    * falsy rule to '' at runtime). Everything else fences. */
-  function qsSepEqArg(L: Lowerer, node: ts.Expression | undefined, dflt: string,
+  function qsSepEqArg(lowerer: Lowerer, node: ts.Expression | undefined, dflt: string,
     what: string, loc: SrcLoc,): IrExpr {
     if (
       !node ||
@@ -5662,10 +5662,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     ) {
       return { kind: "strLit", value: dflt, type: STRING, loc };
     }
-    const v = L.lowerExpr(node);
+    const v = lowerer.lowerExpr(node);
     if (v.type.kind !== "string") {
-      L.noLowering(
-        `${what} with a '${L.fmt(v.type)}' separator`,
+      lowerer.noLowering(
+        `${what} with a '${lowerer.fmt(v.type)}' separator`,
         node,
         "pass a string, or null/undefined for the default (narrow unions first)",
       );
@@ -5681,23 +5681,23 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * tolerated: @types/node's Dict) — the networkInterfaces verification
    * stance. The default decoder is the one lowered decoder; a custom
    * decodeURIComponent option fences by name. */
-  function lowerQuerystringParseCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  function lowerQuerystringParseCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (call.arguments.length > 4 || call.arguments.some(ts.isSpreadElement)) {
-      L.noLowering(`querystring.parse with ${call.arguments.length} arguments`, call);
+      lowerer.noLowering(`querystring.parse with ${call.arguments.length} arguments`, call);
     }
     const fence: () => never = () =>
-      L.noLowering(
+      lowerer.noLowering(
         "querystring.parse where the result is not the ParsedUrlQuery dictionary",
         call,
         "the `{ [key: string]: string | string[] }` shape is the supported result",
       );
-    const result = L.mapTypeOf(L.typeOf(call));
+    const result = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (result?.kind !== "record") fence();
-    const dictShape = L.shapes.get(result.shapeId);
+    const dictShape = lowerer.shapes.get(result.shapeId);
     if (!dictShape || dictShape.tuple || dictShape.fields.length > 0 || !dictShape.indexValue) fence();
     const iv = dictShape.indexValue;
     if (iv.kind !== "union") fence();
-    const ivDef = L.unions.get(iv.unionId);
+    const ivDef = lowerer.unions.get(iv.unionId);
     if (!ivDef) fence();
     let sawStr = false;
     let sawArr = false;
@@ -5705,7 +5705,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       if (arm.kind === "string") sawStr = true;
       else if (arm.kind === "array" && arm.elem.kind === "string") sawArr = true;
       // undefined rides @types/node's Dict; the f64 arm is the
-      // header-family canonicalization (types.ts interns every
+      // header-family canonicalization (type-mapper.ts interns every
       // `string | string[]`-slotted dictionary as the one canonical
       // header shape, whose slot adds number type-level only — parse
       // never stores one).
@@ -5713,10 +5713,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     }
     if (!sawStr || !sawArr) fence();
     const str = call.arguments[0]
-      ? L.lowerExprExpecting(call.arguments[0], STRING)
-      : L.noLowering("querystring.parse without a query string", call);
-    const sep = qsSepEqArg(L, call.arguments[1], "&", "querystring.parse", loc);
-    const eq = qsSepEqArg(L, call.arguments[2], "=", "querystring.parse", loc);
+      ? lowerer.lowerExprExpecting(call.arguments[0], STRING)
+      : lowerer.noLowering("querystring.parse without a query string", call);
+    const sep = qsSepEqArg(lowerer, call.arguments[1], "&", "querystring.parse", loc);
+    const eq = qsSepEqArg(lowerer, call.arguments[2], "=", "querystring.parse", loc);
     // The options walk: maxKeys lowers (Node's rule — > 0 caps the pair
     // count, 0 and negatives mean unlimited — lives in the runtime, so
     // any number expression works); a custom decodeURIComponent changes
@@ -5725,7 +5725,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const optsNode = call.arguments[3];
     if (optsNode) {
       if (!ts.isObjectLiteralExpression(optsNode)) {
-        L.noLowering(
+        lowerer.noLowering(
           "querystring.parse with a non-literal options argument",
           optsNode,
           "the supported form spells the options inline: parse(s, sep, eq, { maxKeys: n })",
@@ -5734,23 +5734,23 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       for (const p of optsNode.properties) {
         const m = optionMember(p);
         if (!m) {
-          L.noLowering(
+          lowerer.noLowering(
             "querystring.parse with this options shape",
             p,
             "spreads and computed keys have no lowering — write each member inline",
           );
         }
         if (m.name === "maxKeys") {
-          maxKeys = L.lowerExprExpecting(m.value, F64);
+          maxKeys = lowerer.lowerExprExpecting(m.value, F64);
         } else if (m.name === "decodeURIComponent") {
-          L.noLowering(
+          lowerer.noLowering(
             "querystring.parse with a custom decodeURIComponent",
             p,
             "the default decoder is the lowered surface (strict decodeURIComponent with Node's lenient fallback)",
           );
         } else {
           fenceOrDropOptionKey(
-            L, p, m.name, "querystring.parse", QS_PARSE_DOCUMENTED_OPTIONS,
+            lowerer, p, m.name, "querystring.parse", QS_PARSE_DOCUMENTED_OPTIONS,
             "maxKeys is the supported option",
           );
         }
@@ -5765,9 +5765,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * (scr_qs_stringify), so arrays expand to repeated keys and
    * null/undefined values are empty. The default encoder is the one
    * lowered encoder; a custom encodeURIComponent option fences by name. */
-  function lowerQuerystringStringifyCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  function lowerQuerystringStringifyCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (call.arguments.length > 4 || call.arguments.some(ts.isSpreadElement)) {
-      L.noLowering(`querystring.stringify with ${call.arguments.length} arguments`, call);
+      lowerer.noLowering(`querystring.stringify with ${call.arguments.length} arguments`, call);
     }
     const objNode = call.arguments[0];
     // stringify() / stringify(undefined) / stringify(null): Node answers
@@ -5779,25 +5779,25 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     ) {
       return { kind: "strLit", value: "", type: STRING, loc };
     }
-    const objV = L.lowerExpr(objNode);
+    const objV = lowerer.lowerExpr(objNode);
     let obj: IrExpr;
     if (objV.type.kind === "dyn") {
       obj = objV;
-    } else if (objV.type.kind === "record" && L.dynConvertible(objV.type)) {
+    } else if (objV.type.kind === "record" && lowerer.dynConvertible(objV.type)) {
       obj = { kind: "dynFrom", value: objV, type: DYN, loc };
     } else {
-      L.noLowering(
-        `querystring.stringify of '${L.fmt(objV.type)}' values`,
+      lowerer.noLowering(
+        `querystring.stringify of '${lowerer.fmt(objV.type)}' values`,
         objNode,
         "pass a record of string/number/boolean values (arrays of those expand to repeated keys; null/undefined values serialize empty)",
       );
     }
-    const sep = qsSepEqArg(L, call.arguments[1], "&", "querystring.stringify", loc);
-    const eq = qsSepEqArg(L, call.arguments[2], "=", "querystring.stringify", loc);
+    const sep = qsSepEqArg(lowerer, call.arguments[1], "&", "querystring.stringify", loc);
+    const eq = qsSepEqArg(lowerer, call.arguments[2], "=", "querystring.stringify", loc);
     const optsNode = call.arguments[3];
     if (optsNode) {
       if (!ts.isObjectLiteralExpression(optsNode)) {
-        L.noLowering(
+        lowerer.noLowering(
           "querystring.stringify with a non-literal options argument",
           optsNode,
           "the supported form spells the options inline (and the only documented option, encodeURIComponent, has no lowering)",
@@ -5806,21 +5806,21 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       for (const p of optsNode.properties) {
         const m = optionMember(p);
         if (!m) {
-          L.noLowering(
+          lowerer.noLowering(
             "querystring.stringify with this options shape",
             p,
             "spreads and computed keys have no lowering — write each member inline",
           );
         }
         if (m.name === "encodeURIComponent") {
-          L.noLowering(
+          lowerer.noLowering(
             "querystring.stringify with a custom encodeURIComponent",
             p,
             "the default encoder (querystring.escape's component set) is the lowered surface",
           );
         } else {
           fenceOrDropOptionKey(
-            L, p, m.name, "querystring.stringify", QS_STRINGIFY_DOCUMENTED_OPTIONS,
+            lowerer, p, m.name, "querystring.stringify", QS_STRINGIFY_DOCUMENTED_OPTIONS,
             "no stringify options have a lowering",
           );
         }
@@ -5829,30 +5829,30 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     return { kind: "libCall", fn: "qs.stringify", args: [obj, sep, eq], type: STRING, loc };
   }
 
-  function lowerOsNetworkInterfacesCall(L: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  function lowerOsNetworkInterfacesCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
     if (call.arguments.length !== 0) {
-      L.noLowering(`networkInterfaces with ${call.arguments.length} arguments`, call, "networkInterfaces() takes no arguments");
+      lowerer.noLowering(`networkInterfaces with ${call.arguments.length} arguments`, call, "networkInterfaces() takes no arguments");
     }
     // Annotated as a never-returning const so tsc's control flow narrows
     // through the structural checks below.
     const fence: () => never = () =>
-      L.noLowering(
+      lowerer.noLowering(
         "networkInterfaces() where the result is not the NetworkInterfaceInfo dictionary",
         call,
         "@types/node's NodeJS.Dict<NetworkInterfaceInfo[]> shape is the supported result",
       );
-    const result = L.mapTypeOf(L.typeOf(call));
+    const result = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (result?.kind !== "record") fence();
-    const dictShape = L.shapes.get(result.shapeId);
+    const dictShape = lowerer.shapes.get(result.shapeId);
     if (!dictShape || dictShape.tuple || dictShape.fields.length > 0 || !dictShape.indexValue) fence();
     const iv = dictShape.indexValue;
     if (iv.kind !== "union") fence();
-    const ivDef = L.unions.get(iv.unionId);
+    const ivDef = lowerer.unions.get(iv.unionId);
     const arrArm = ivDef?.arms.find((a) => a.kind === "array");
     if (!ivDef || ivDef.arms.length !== 2 || arrArm?.kind !== "array" || !ivDef.arms.some((a) => a.kind === "undefinedT")) fence();
     const info = arrArm.elem;
     if (info.kind !== "union") fence();
-    const infoDef = L.unions.get(info.unionId);
+    const infoDef = lowerer.unions.get(info.unionId);
     if (!infoDef || infoDef.arms.length !== 2) fence();
     // One arm per family, distinguished by scopeid: plain number = IPv6,
     // `number | undefined` = IPv4. Every other field is shared.
@@ -5860,7 +5860,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     let saw6 = false;
     for (const arm of infoDef.arms) {
       if (arm.kind !== "record") fence();
-      const shape = L.shapes.get(arm.shapeId);
+      const shape = lowerer.shapes.get(arm.shapeId);
       if (!shape || shape.tuple || shape.indexValue || shape.fields.length !== 7) fence();
       const f = (name: string): IrType | undefined => shape.fields.find((x) => x.name === name)?.type;
       for (const s of ["address", "family", "mac", "netmask"]) {
@@ -5868,7 +5868,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       }
       if (f("internal")?.kind !== "bool") fence();
       const cidr = f("cidr");
-      const cidrDef = cidr?.kind === "union" ? L.unions.get(cidr.unionId) : undefined;
+      const cidrDef = cidr?.kind === "union" ? lowerer.unions.get(cidr.unionId) : undefined;
       if (
         !cidrDef ||
         cidrDef.arms.length !== 2 ||
@@ -5881,7 +5881,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       if (scopeid?.kind === "f64") {
         saw6 = true;
       } else {
-        const sDef = scopeid?.kind === "union" ? L.unions.get(scopeid.unionId) : undefined;
+        const sDef = scopeid?.kind === "union" ? lowerer.unions.get(scopeid.unionId) : undefined;
         if (
           !sDef ||
           sDef.arms.length !== 2 ||
@@ -5901,12 +5901,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * (the element form lands in lowerElementAccess). getenv(3) at runtime:
    * present wraps the string arm, absent yields the interned
    * undefined-arm instance. Null for non-env receivers. */
-  export function lowerProcessEnvGet(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+  export function lowerProcessEnvGet(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
     if (expr.questionDotToken) return null;
-    if (!L.isProcessEnv(expr.expression)) return null;
+    if (!lowerer.isProcessEnv(expr.expression)) return null;
     const loc = locOf(expr);
     const key: IrExpr = { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) };
-    return { kind: "libCall", fn: "process.envGet", args: [key], type: L.envValueType(), loc };
+    return { kind: "libCall", fn: "process.envGet", args: [key], type: lowerer.envValueType(), loc };
   }
 
 /** `process.exit(code)` / `process.cwd()` → libCall. The fallback
@@ -5915,7 +5915,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
    * Node's behavior when process.exitCode was never set (setting exitCode
    * is fenced like every other unsupported process member, so "never set"
    * always holds in a compiled program). */
-  export function lowerProcessMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerProcessMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken) return null;
     // process.stdout.write(s[, encoding][, callback]) and stderr's twin:
@@ -5931,10 +5931,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     if (
       access.name.text === "destroy" &&
       ts.isPropertyAccessExpression(access.expression) &&
-      L.stdlibGlobalMember(access.expression, "process") === "stdin"
+      lowerer.stdlibGlobalMember(access.expression, "process") === "stdin"
     ) {
       if (call.arguments.length !== 0) {
-        L.noLowering("stdin.destroy with arguments", call);
+        lowerer.noLowering("stdin.destroy with arguments", call);
       }
       return { kind: "libCall", fn: "process.stdinDestroy", args: [], type: VOID, loc: locOf(call) };
     }
@@ -5949,27 +5949,27 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     if (
       access.name.text === "setRawMode" &&
       ts.isPropertyAccessExpression(access.expression) &&
-      L.stdlibGlobalMember(access.expression, "process") === "stdin"
+      lowerer.stdlibGlobalMember(access.expression, "process") === "stdin"
     ) {
       const loc = locOf(call);
       if (!ts.isExpressionStatement(call.parent) && !ts.isArrowFunction(call.parent)) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call,
           "using the result of stdin.setRawMode(...) (the ReadStream chain — call it as its own statement)",
         );
       }
       if (call.arguments.length !== 1) {
-        L.noLowering(
+        lowerer.noLowering(
           `stdin.setRawMode with ${call.arguments.length} arguments`,
           call,
           "the supported form is setRawMode(mode) with one boolean",
         );
       }
-      const mode = L.lowerExpr(call.arguments[0]!);
+      const mode = lowerer.lowerExpr(call.arguments[0]!);
       if (mode.type.kind !== "bool") {
-        L.noLowering(
-          `stdin.setRawMode of '${L.fmt(mode.type)}' modes`,
+        lowerer.noLowering(
+          `stdin.setRawMode of '${lowerer.fmt(mode.type)}' modes`,
           call.arguments[0]!,
           "the mode is a boolean here — narrow unions first",
         );
@@ -5984,32 +5984,32 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     if (
       (access.name.text === "on" || access.name.text === "once") &&
       ts.isPropertyAccessExpression(access.expression) &&
-      L.stdlibGlobalMember(access.expression, "process") === "stdin"
+      lowerer.stdlibGlobalMember(access.expression, "process") === "stdin"
     ) {
       const loc = locOf(call);
       const once = access.name.text === "once";
       if (call.arguments.length !== 2) {
-        L.noLowering(`stdin.${access.name.text} with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`stdin.${access.name.text} with ${call.arguments.length} arguments`, call);
       }
-      const evT = L.typeOf(call.arguments[0]!);
+      const evT = lowerer.typeOf(call.arguments[0]!);
       const event = evT.isStringLiteralType() ? evT.value : null;
       if (event !== "data" && event !== "end" && event !== "error") {
-        L.noLowering(
+        lowerer.noLowering(
           `stdin.${access.name.text}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
           call.arguments[0]!,
           '"data", "end", and "error" are the supported stdin events (as literals)',
         );
       }
       if (!ts.isExpressionStatement(call.parent)) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call,
           "chaining stdin listener registration (the result is void here — register each listener as its own statement)",
         );
       }
-      const cb = L.lowerExpr(call.arguments[1]!);
+      const cb = lowerer.lowerExpr(call.arguments[1]!);
       if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 1) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
           "stdin listeners with more than one parameter or a return value",
@@ -6019,36 +6019,36 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       const onceArg: IrExpr = { kind: "boolLit", value: once, type: BOOL, loc };
       if (event === "data") {
         if (param !== undefined && !(param.kind === "bytes" && param.elem === "u8")) {
-          L.unsupported(
+          lowerer.unsupported(
             "SC1090",
             call.arguments[1]!,
-            `data listeners whose parameter is not 'Uint8Array' (got '${L.fmt(param)}')`,
+            `data listeners whose parameter is not 'Uint8Array' (got '${lowerer.fmt(param)}')`,
           );
         }
         return { kind: "libCall", fn: "stdin.onData", args: [cb, onceArg], type: VOID, loc };
       }
       if (event === "end") {
         if (param !== undefined) {
-          L.unsupported("SC1090", call.arguments[1]!, "end listeners with parameters (use ())");
+          lowerer.unsupported("SC1090", call.arguments[1]!, "end listeners with parameters (use ())");
         }
         return { kind: "libCall", fn: "stdin.onEnd", args: [cb, onceArg], type: VOID, loc };
       }
       if (param !== undefined && !(param.kind === "object" && param.className === "%Error")) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
-          `error listeners whose parameter is not 'Error' (got '${L.fmt(param)}')`,
+          `error listeners whose parameter is not 'Error' (got '${lowerer.fmt(param)}')`,
         );
       }
       return { kind: "libCall", fn: "stdin.onError", args: [cb, onceArg], type: VOID, loc };
     }
     if (access.name.text === "write" && ts.isPropertyAccessExpression(access.expression)) {
-      const stream = L.stdlibGlobalMember(access.expression, "process");
+      const stream = lowerer.stdlibGlobalMember(access.expression, "process");
       if (stream === "stdout" || stream === "stderr") {
         const loc = locOf(call);
         const args = call.arguments;
         if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
-          L.noLowering(
+          lowerer.noLowering(
             `process.${stream}.write with ${args.length} arguments`,
             call,
             "the supported forms are write(data[, encoding][, callback]) with a static BufferEncoding and completion callback",
@@ -6057,12 +6057,12 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         const secondNode = args[1];
         const thirdNode = args[2];
         const secondUndefined = secondNode
-          ? lowerStaticallyUndefinedBuiltinArg(L, secondNode)
+          ? lowerStaticallyUndefinedBuiltinArg(lowerer, secondNode)
           : null;
         const thirdUndefined = thirdNode
-          ? lowerStaticallyUndefinedBuiltinArg(L, thirdNode)
+          ? lowerStaticallyUndefinedBuiltinArg(lowerer, thirdNode)
           : null;
-        const secondT = secondNode && !secondUndefined ? L.mapTypeOf(L.typeOf(secondNode)) : undefined;
+        const secondT = secondNode && !secondUndefined ? lowerer.mapTypeOf(lowerer.typeOf(secondNode)) : undefined;
         const callbackNode = args.length === 3 && !thirdUndefined
           ? thirdNode!
           : args.length === 2 && secondT?.kind === "func"
@@ -6089,17 +6089,17 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             base64url: "base64url", latin1: "latin1", binary: "latin1", ascii: "ascii",
             utf16le: "utf16le", "utf-16le": "utf16le", ucs2: "utf16le", "ucs-2": "utf16le",
           };
-          const t = L.typeOf(encodingNode);
+          const t = lowerer.typeOf(encodingNode);
           const raw = t.isStringLiteralType() ? t.value : undefined;
           const canonical = raw !== undefined ? own(aliases, raw) : undefined;
           if (canonical === undefined) {
-            L.noLowering(
+            lowerer.noLowering(
               `process.${stream}.write with this encoding`,
               encodingNode,
               'use a literal "utf8", "hex", "base64", "base64url", "latin1", "binary", "ascii", "utf16le", or "ucs2" encoding',
             );
           }
-          const evaluated = L.lowerExprExpecting(encodingNode, STRING);
+          const evaluated = lowerer.lowerExprExpecting(encodingNode, STRING);
           if (canonical === raw) return evaluated;
           const normalized: IrExpr = { kind: "strLit", value: canonical, type: STRING, loc: locOf(encodingNode) };
           return droppableStatic(evaluated)
@@ -6113,7 +6113,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             };
         })();
 
-        let data = L.lowerExpr(args[0]!);
+        let data = lowerer.lowerExpr(args[0]!);
         // A checked-dynamic argument in a JS file takes the validated
         // string exit (the trust-but-verify boundary: commander's
         // `writeOut: (str) => process.stdout.write(str)` — str untyped):
@@ -6124,7 +6124,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
         const isBytes = data.type.kind === "bytes" && data.type.elem === "u8";
         if (!isBytes && data.type.kind !== "string") {
-          L.noLowering(
+          lowerer.noLowering(
             `process.${stream}.write of non-string data`,
             args[0]!,
             "strings and Buffer/Uint8Array values write; narrow unions first",
@@ -6133,7 +6133,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
 
         let callback: IrExpr | undefined;
         if (callbackNode) {
-          callback = L.lowerExpr(callbackNode);
+          callback = lowerer.lowerExpr(callbackNode);
           if (callback.type.kind === "dyn" && isJsSourceFile(call.getSourceFile())) {
             callback = {
               kind: "dynCheck",
@@ -6146,7 +6146,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           if (callbackOk && callback.type.kind === "func" && callback.type.params.length === 1) {
             const param = callback.type.params[0]!;
             if (param.kind !== "dyn") {
-              const def = param.kind === "union" ? L.unions.get(param.unionId) : undefined;
+              const def = param.kind === "union" ? lowerer.unions.get(param.unionId) : undefined;
               callbackOk = !!def &&
                 def.arms.some((a) => a.kind === "nullT") &&
                 def.arms.some((a) => a.kind === "object" && a.className === "%Error") &&
@@ -6156,13 +6156,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             }
           }
           if (!callbackOk) {
-            L.unsupported(
+            lowerer.unsupported(
               "SC1090",
               callbackNode,
               "process output completion callbacks must accept at most one Error | null parameter",
             );
           }
-          callback = voidizedCallback(L, callback, locOf(callbackNode));
+          callback = voidizedCallback(lowerer, callback, locOf(callbackNode));
         }
 
         // Encoding- or callback-bearing writes use one fixed byte ABI. For
@@ -6217,7 +6217,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         };
       }
     }
-    const member = L.stdlibGlobalMember(access, "process");
+    const member = lowerer.stdlibGlobalMember(access, "process");
     if (member === null) return null;
     const loc = locOf(call);
     // process.on/once/off: the CLI event slice — the SIGINT/SIGTERM
@@ -6232,9 +6232,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const isOff = member === "off" || member === "removeListener";
     if (member === "on" || member === "once" || isOff) {
       if (call.arguments.length !== 2) {
-        L.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
       }
-      const evT = L.typeOf(call.arguments[0]!);
+      const evT = lowerer.typeOf(call.arguments[0]!);
       const event = evT.isStringLiteralType() ? evT.value : null;
       // own(), not a bare index: the key is a USER-written event name,
       // and `{ SIGINT: 2 }["__proto__"]` answers Object.prototype — an
@@ -6252,13 +6252,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // with the promise.
       if (event === "unhandledRejection" || event === "rejectionHandled") {
         if (!ts.isExpressionStatement(call.parent)) {
-          L.unsupported(
+          lowerer.unsupported(
             "SC1090",
             call,
             "chaining process listener registration (the result is void here — register each listener as its own statement)",
           );
         }
-        const cb = dcSubscriberArg(L, call.arguments[1]!);
+        const cb = dcSubscriberArg(lowerer, call.arguments[1]!);
         const onceArg: IrExpr = { kind: "boolLit", value: member === "once", type: BOOL, loc };
         const fn: IrLibFn = event === "unhandledRejection"
           ? (isOff ? "process.offUnhandledRejection" : "process.onUnhandledRejection")
@@ -6270,13 +6270,13 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // (SEMANTICS.md). off/removeListener remove by closure identity.
       if (event === "warning" && (member === "on" || isOff)) {
         if (!ts.isExpressionStatement(call.parent)) {
-          L.unsupported(
+          lowerer.unsupported(
             "SC1090",
             call,
             "chaining process listener registration (the result is void here — register each listener as its own statement)",
           );
         }
-        const cb = dcSubscriberArg(L, call.arguments[1]!);
+        const cb = dcSubscriberArg(lowerer, call.arguments[1]!);
         return {
           kind: "libCall",
           fn: isOff ? "process.offWarning" : "process.onWarning",
@@ -6286,20 +6286,20 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         };
       }
       if (signo === undefined && event !== "exit") {
-        L.noLowering(
+        lowerer.noLowering(
           `process.${member}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
           call.arguments[0]!,
           '"SIGINT", "SIGTERM", "exit", "warning", "unhandledRejection", and "rejectionHandled" are the supported process events (as literals)',
         );
       }
       if (!ts.isExpressionStatement(call.parent)) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call,
           "chaining process listener registration (the result is void here — register each listener as its own statement)",
         );
       }
-      let cb = L.lowerExpr(call.arguments[1]!);
+      let cb = lowerer.lowerExpr(call.arguments[1]!);
       // The checked-dynamic listener (test/common's `process.on('exit',
       // runCallChecks)` — an implicit-any JS function, func(dyn)=>dyn, or
       // a dyn VALUE that rode an untyped binding): adapt through the dyn
@@ -6320,7 +6320,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             cb = { kind: "dynCheck", value: cb, type: target, loc };
           } else if (
             cb.type.kind === "func" &&
-            canBoxFuncIntoDyn(cb.type, (id) => L.shapes.get(id), (id) => L.unions.get(id))
+            canBoxFuncIntoDyn(cb.type, (id) => lowerer.shapes.get(id), (id) => lowerer.unions.get(id))
           ) {
             cb = {
               kind: "dynCheck",
@@ -6332,7 +6332,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         }
       }
       if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 1) {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
           "process listeners with more than one parameter or a return value",
@@ -6342,7 +6342,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       const onceArg: IrExpr = { kind: "boolLit", value: member === "once", type: BOOL, loc };
       if (signo !== undefined) {
         if (param !== undefined) {
-          L.unsupported(
+          lowerer.unsupported(
             "SC1090",
             call.arguments[1]!,
             "signal listeners with parameters (the signal name argument has no lowering — use ())",
@@ -6355,10 +6355,10 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         return { kind: "libCall", fn: "process.onSignal", args: [sig, cb, onceArg], type: VOID, loc };
       }
       if (param !== undefined && param.kind !== "f64") {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1090",
           call.arguments[1]!,
-          `exit listeners whose parameter is not 'number' (got '${L.fmt(param)}')`,
+          `exit listeners whose parameter is not 'number' (got '${lowerer.fmt(param)}')`,
         );
       }
       if (isOff) {
@@ -6375,18 +6375,18 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     if (member === "emitWarning") {
       let argsArr: IrExpr | null = null;
       if (call.arguments.length === 1 && ts.isSpreadElement(call.arguments[0]!)) {
-        const spread = L.lowerExpr(call.arguments[0]!.expression);
+        const spread = lowerer.lowerExpr(call.arguments[0]!.expression);
         if (spread.type.kind === "dyn") {
           argsArr = spread;
         } else {
-          L.noLowering(
+          lowerer.noLowering(
             "process.emitWarning with a typed spread argument",
             call.arguments[0]!,
             "spread an untyped (checked-dynamic) array, or write the arguments positionally",
           );
         }
       } else {
-        argsArr = dcTraceArgsArr(L, call.arguments, loc);
+        argsArr = dcTraceArgsArr(lowerer, call.arguments, loc);
       }
       return { kind: "libCall", fn: "process.emitWarning", args: [argsArr], type: VOID, loc };
     }
@@ -6402,20 +6402,20 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // boundary, trailing call arguments ride the interned dyn thunk.
     if (member === "nextTick") {
       if (call.arguments.length === 0) {
-        L.noLowering(
+        lowerer.noLowering(
           "process.nextTick with 0 arguments",
           call,
           "the supported form is process.nextTick(callback, ...args)",
         );
       }
-      const cb = timerStyleCallback(L, call.arguments, "process.nextTick", loc);
+      const cb = timerStyleCallback(lowerer, call.arguments, "process.nextTick", loc);
       return { kind: "libCall", fn: "process.nextTick", args: [cb], type: VOID, loc };
     }
     // The process introspection statics — plain reads of the process's
     // own clocks and counters, Node's shapes exactly.
     if (member === "uptime" || member === "availableMemory" || member === "constrainedMemory") {
       if (call.arguments.length !== 0) {
-        L.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
       }
       const fn = member === "uptime" ? "process.uptime"
         : member === "availableMemory" ? "process.availableMemory" : "process.constrainedMemory";
@@ -6430,11 +6430,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // prevs (Node's ERR_INVALID_ARG_TYPE shapes) keep a pointed fence.
     if (member === "cpuUsage" || member === "threadCpuUsage") {
       const prefix = member === "cpuUsage" ? "cpu" : "threadCpu";
-      const t = L.mapTypeOf(L.typeOf(call));
-      if (t?.kind !== "record") L.badType(call, L.typeOf(call));
-      const shape = L.shapes.get(t.shapeId);
+      const t = lowerer.mapTypeOf(lowerer.typeOf(call));
+      if (t?.kind !== "record") lowerer.badType(call, lowerer.typeOf(call));
+      const shape = lowerer.shapes.get(t.shapeId);
       if (!shape || shape.fields.length !== 2 || !shape.fields.every((f) => f.type.kind === "f64")) {
-        L.badType(call, L.typeOf(call));
+        lowerer.badType(call, lowerer.typeOf(call));
       }
       const sampleField = (name: string): IrExpr => ({
         kind: "libCall",
@@ -6452,26 +6452,26 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         };
       }
       if (call.arguments.length !== 1) {
-        L.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
       }
-      const prev = L.lowerExpr(call.arguments[0]!);
-      const prevShape = prev.type.kind === "record" ? L.shapes.get(prev.type.shapeId) : undefined;
+      const prev = lowerer.lowerExpr(call.arguments[0]!);
+      const prevShape = prev.type.kind === "record" ? lowerer.shapes.get(prev.type.shapeId) : undefined;
       const prevOk =
         prevShape !== undefined &&
         ["user", "system"].every((n) => prevShape.fields.some((f) => f.name === n && f.type.kind === "f64"));
       if (prev.type.kind !== "record" || !prevOk) {
-        L.noLowering(
-          `process.${member} of a '${L.fmt(prev.type)}' previous value`,
+        lowerer.noLowering(
+          `process.${member} of a '${lowerer.fmt(prev.type)}' previous value`,
           call.arguments[0]!,
           "the previous value is the record a prior call answered ({ user, system } numbers) — Node's ERR_INVALID_ARG_TYPE shapes have no lowering",
         );
       }
       const prevT = prev.type;
       const key = `${prefix}usage.diff:${prevT.shapeId}:${t.shapeId}`;
-      let helper = L.widthHelpers.get(key);
+      let helper = lowerer.widthHelpers.get(key);
       if (!helper) {
-        helper = `%${prefix}usage.diff.${L.widthHelpers.size}`;
-        L.widthHelpers.set(key, helper);
+        helper = `%${prefix}usage.diff.${lowerer.widthHelpers.size}`;
+        lowerer.widthHelpers.set(key, helper);
         const pRef: IrExpr = { kind: "varRef", localId: "p.0", type: prevT, loc };
         const fieldOf = (name: string): IrExpr => ({
           kind: "recordGet", obj: pRef, shapeId: prevT.shapeId, field: name, type: F64, loc,
@@ -6483,7 +6483,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
           type: F64,
           loc,
         });
-        L.liftedFns.push({
+        lowerer.liftedFns.push({
           name: helper,
           params: [{ localId: "p.0", name: "p", type: prevT }],
           returnType: t,
@@ -6519,11 +6519,11 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // units (CPU times in microseconds, maxRSS in kilobytes).
     if (member === "resourceUsage") {
       if (call.arguments.length !== 0) {
-        L.noLowering(`process.resourceUsage with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`process.resourceUsage with ${call.arguments.length} arguments`, call);
       }
-      const t = L.mapTypeOf(L.typeOf(call));
-      if (t?.kind !== "record") L.badType(call, L.typeOf(call));
-      const shape = L.shapes.get(t.shapeId);
+      const t = lowerer.mapTypeOf(lowerer.typeOf(call));
+      if (t?.kind !== "record") lowerer.badType(call, lowerer.typeOf(call));
+      const shape = lowerer.shapes.get(t.shapeId);
       const RUSAGE_FIELDS = [
         "userCPUTime", "systemCPUTime", "maxRSS", "sharedMemorySize",
         "unsharedDataSize", "unsharedStackSize", "minorPageFault",
@@ -6532,7 +6532,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         "involuntaryContextSwitches",
       ];
       if (!shape || !shape.fields.every((f) => RUSAGE_FIELDS.includes(f.name) && f.type.kind === "f64")) {
-        L.badType(call, L.typeOf(call));
+        lowerer.badType(call, lowerer.typeOf(call));
       }
       return {
         kind: "recordLit",
@@ -6555,7 +6555,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // as loop handles (TCP wraps, FS requests) are absent from the answer.
     if (member === "getActiveResourcesInfo") {
       if (call.arguments.length !== 0) {
-        L.noLowering(`process.getActiveResourcesInfo with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`process.getActiveResourcesInfo with ${call.arguments.length} arguments`, call);
       }
       return { kind: "libCall", fn: "process.activeResources", args: [], type: arrayOf(STRING), loc };
     }
@@ -6564,25 +6564,25 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // the previous mask, Node's shape either way.
     if (member === "umask") {
       if (call.arguments.length > 1) {
-        L.noLowering(`process.umask with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`process.umask with ${call.arguments.length} arguments`, call);
       }
       const mask: IrExpr =
         call.arguments.length === 1
-          ? L.lowerExpr(call.arguments[0]!)
+          ? lowerer.lowerExpr(call.arguments[0]!)
           : { kind: "numLit", value: -1, type: F64, loc };
       if (mask.type.kind !== "f64") {
-        L.noLowering("process.umask of non-number masks", call.arguments[0]!);
+        lowerer.noLowering("process.umask of non-number masks", call.arguments[0]!);
       }
       return { kind: "libCall", fn: "process.umask", args: [mask], type: F64, loc };
     }
     // chdir(2) — throws Node's fs-shaped error on failure.
     if (member === "chdir") {
       if (call.arguments.length !== 1) {
-        L.noLowering(`process.chdir with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`process.chdir with ${call.arguments.length} arguments`, call);
       }
-      const dir = L.lowerExpr(call.arguments[0]!);
+      const dir = lowerer.lowerExpr(call.arguments[0]!);
       if (dir.type.kind !== "string") {
-        L.noLowering("process.chdir of non-string paths", call.arguments[0]!);
+        lowerer.noLowering("process.chdir of non-string paths", call.arguments[0]!);
       }
       return { kind: "libCall", fn: "process.chdir", args: [dir], type: VOID, loc };
     }
@@ -6592,7 +6592,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // spelling routes here through lowerProcessOptionalMethodCall.
     if (member === "getuid" || member === "getgid") {
       if (call.arguments.length !== 0) {
-        L.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
       }
       return { kind: "libCall", fn: member === "getuid" ? "process.getuid" : "process.getgid", args: [], type: F64, loc };
     }
@@ -6605,23 +6605,23 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     // constant true.
     if (member === "kill") {
       if (call.arguments.length < 1 || call.arguments.length > 2) {
-        L.noLowering(`process.kill with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`process.kill with ${call.arguments.length} arguments`, call);
       }
-      const pid = L.lowerExprExpecting(call.arguments[0]!, F64);
+      const pid = lowerer.lowerExprExpecting(call.arguments[0]!, F64);
       const sigNode = call.arguments[1];
       if (!sigNode) {
         const dflt: IrExpr = { kind: "strLit", value: "SIGTERM", type: STRING, loc };
         return { kind: "libCall", fn: "process.kill", args: [pid, dflt], type: BOOL, loc };
       }
-      const sig = L.lowerExpr(sigNode);
+      const sig = lowerer.lowerExpr(sigNode);
       if (sig.type.kind === "f64") {
         return { kind: "libCall", fn: "process.killNum", args: [pid, sig], type: BOOL, loc };
       }
       if (sig.type.kind === "string") {
         return { kind: "libCall", fn: "process.kill", args: [pid, sig], type: BOOL, loc };
       }
-      L.noLowering(
-        `process.kill with a '${L.fmt(sig.type)}' signal`,
+      lowerer.noLowering(
+        `process.kill with a '${lowerer.fmt(sig.type)}' signal`,
         sigNode,
         "pass a signal name string or number (narrow unions first)",
       );
@@ -6630,7 +6630,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       const arg = call.arguments[0];
       const code: IrExpr =
         arg !== undefined
-          ? L.lowerExprExpecting(arg, F64)
+          ? lowerer.lowerExprExpecting(arg, F64)
           : { kind: "numLit", value: 0, type: F64, loc };
       return { kind: "libCall", fn: "process.exit", args: [code], type: VOID, loc };
     }
@@ -6667,33 +6667,33 @@ const NUMBER_CONSTANTS: Record<string, number | undefined> = {
    * island lowering — engine execution under --dynamic, per-site SC2012
    * without it (parseInt takes an explicit radix, like the global). Null
    * for non-Number receivers. */
-  export function lowerNumberStaticCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerNumberStaticCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken) return null;
-    const member = L.stdlibGlobalMember(access, "Number");
+    const member = lowerer.stdlibGlobalMember(access, "Number");
     if (member === null) return null;
     const loc = locOf(call);
     const fn = own(NUMBER_STATIC_PREDICATES, member);
     if (fn !== undefined) {
       if (call.arguments.length !== 1) {
-        L.noLowering(`Number.${member} with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`Number.${member} with ${call.arguments.length} arguments`, call);
       }
       const argNode = call.arguments[0]!;
-      const arg = L.lowerExpr(argNode);
+      const arg = lowerer.lowerExpr(argNode);
       // An ISLAND ('any'-typed) argument evaluates the predicate in the
       // engine — the statics never coerce, so the engine's answer over the
       // real value is JS-exact where a static fence would refuse the
       // editorconfig `(value) => Number.isSafeInteger(value)` shape; the
       // boolean exits validated like every island boolean.
       if (arg.type.kind === "jsval") {
-        L.requireDynamicApi(`'Number.${member}'`, call);
+        lowerer.requireDynamicApi(`'Number.${member}'`, call);
         const numberGlobal: IrExpr = { kind: "jsOp", op: "globalGet", name: "Number", args: [], type: JSVAL, loc };
         const raw: IrExpr = { kind: "jsOp", op: "callMethod", name: member, args: [numberGlobal, arg], type: JSVAL, loc };
         return { kind: "jsExit", value: raw, type: BOOL, loc };
       }
       if (arg.type.kind !== "f64") {
-        L.noLowering(
-          `Number.${member} of '${L.fmt(arg.type)}' values`,
+        lowerer.noLowering(
+          `Number.${member} of '${lowerer.fmt(arg.type)}' values`,
           argNode,
           "the Number statics never coerce — a statically non-number argument is constantly false in JS (narrow unions first, or write the constant)",
         );
@@ -6703,15 +6703,15 @@ const NUMBER_CONSTANTS: Record<string, number | undefined> = {
     if (member === "parseFloat" || member === "parseInt") {
       const want = member === "parseFloat" ? 1 : 2;
       if (call.arguments.length !== want) {
-        L.noLowering(
+        lowerer.noLowering(
           `Number.${member} with ${call.arguments.length} argument${call.arguments.length === 1 ? "" : "s"}`,
           call,
           member === "parseInt" ? "pass an explicit radix: Number.parseInt(s, 10)" : undefined,
         );
       }
-      L.requireDynamicApi(`'Number.${member}'`, call);
+      lowerer.requireDynamicApi(`'Number.${member}'`, call);
       const callee: IrExpr = { kind: "jsOp", op: "globalGet", name: member, args: [], type: JSVAL, loc };
-      const args = call.arguments.map((a) => L.jsvalIn(L.lowerExpr(a), a));
+      const args = call.arguments.map((a) => lowerer.jsvalIn(lowerer.lowerExpr(a), a));
       const result: IrExpr = { kind: "jsOp", op: "callFn", args: [callee, ...args], type: JSVAL, loc };
       return { kind: "jsExit", value: result, type: F64, loc };
     }
@@ -6744,13 +6744,13 @@ const DATE_METHOD_HINT =
 /** The Date slice: statics plus read-only Date values backed by one
    * TimeClip'd millisecond scalar. Construction lives in lowerNew;
    * identity and mutating methods remain fenced. */
-  export function lowerDateCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerDateCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
     const loc = locOf(call);
-    if (L.stdlibGlobalMember(access, "Date") === "now") {
+    if (lowerer.stdlibGlobalMember(access, "Date") === "now") {
       if (call.arguments.length !== 0) {
-        L.noLowering(`Date.now with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`Date.now with ${call.arguments.length} arguments`, call);
       }
       return { kind: "libCall", fn: "date.now", args: [], type: F64, loc };
     }
@@ -6759,29 +6759,29 @@ const DATE_METHOD_HINT =
     // TimeClip. Omitted trailing arguments complete with the spec's
     // defaults (month 0, date 1, time parts 0); tsc pins every present
     // argument to number, so the seven-f64 ABI is exact.
-    if (L.stdlibGlobalMember(access, "Date") === "UTC") {
+    if (lowerer.stdlibGlobalMember(access, "Date") === "UTC") {
       if (call.arguments.length < 1 || call.arguments.length > 7 ||
           call.arguments.some((a) => ts.isSpreadElement(a))) {
-        L.noLowering(`Date.UTC with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`Date.UTC with ${call.arguments.length} arguments`, call);
       }
       const defaults = [0, 0, 1, 0, 0, 0, 0]; // year is always present (arity ≥ 1)
       const args: IrExpr[] = [];
       for (let i = 0; i < 7; i++) {
         const a = call.arguments[i];
         args.push(a !== undefined
-          ? L.lowerExprExpecting(a, F64)
+          ? lowerer.lowerExprExpecting(a, F64)
           : { kind: "numLit", value: defaults[i]!, type: F64, loc });
       }
       return { kind: "libCall", fn: "date.utc", args, type: F64, loc };
     }
-    if (L.mapTypeOf(L.typeOf(access.expression))?.kind !== "date") return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "date") return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     if (call.arguments.length !== 0) {
-      L.noLowering(`Date.prototype.${name} with arguments`, call, DATE_METHOD_HINT);
+      lowerer.noLowering(`Date.prototype.${name} with arguments`, call, DATE_METHOD_HINT);
     }
-    const receiver = L.lowerExpr(access.expression);
-    if (receiver.type.kind !== "date") L.badType(access.expression, L.typeOf(access.expression));
+    const receiver = lowerer.lowerExpr(access.expression);
+    if (receiver.type.kind !== "date") lowerer.badType(access.expression, lowerer.typeOf(access.expression));
     if (name === "getTime" || name === "valueOf") {
       return {
         kind: "libCall",
@@ -6798,7 +6798,7 @@ const DATE_METHOD_HINT =
     if (fn !== undefined) {
       return { kind: "libCall", fn, args: [receiver], type: F64, loc };
     }
-    L.noLowering(`Date.prototype.${name}`, call, DATE_METHOD_HINT, L.checker.getSymbolAtLocation(access.name));
+    lowerer.noLowering(`Date.prototype.${name}`, call, DATE_METHOD_HINT, lowerer.checker.getSymbolAtLocation(access.name));
   }
 
 type TextCodecCtor = {
@@ -6887,14 +6887,14 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
 /** A direct construction of THE stdlib TextEncoder/TextDecoder, through
    * type-only wrappers. Name alone is never enough: a user class with the
    * same spelling keeps the ordinary class lowering. */
-  function directTextCodecCtorOf(L: Lowerer, expr: ts.Expression): TextCodecCtor | null {
+  function directTextCodecCtorOf(lowerer: Lowerer, expr: ts.Expression): TextCodecCtor | null {
     const ctor = stripTypeCasts(expr);
     if (!ts.isNewExpression(ctor)) return null;
     const callee = stripTypeCasts(ctor.expression);
     if (!ts.isIdentifier(callee)) return null;
     if (callee.text !== "TextDecoder" && callee.text !== "TextEncoder") return null;
-    const sym = L.resolveValueSymbol(callee);
-    if (!sym || !L.isStdlibSymbol(sym)) return null;
+    const sym = lowerer.resolveValueSymbol(callee);
+    if (!sym || !lowerer.isStdlibSymbol(sym)) return null;
     if (sym.name !== "TextDecoder" && sym.name !== "TextEncoder") return null;
     return { cls: sym.name, ctor };
   }
@@ -6920,7 +6920,7 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * reached value use keeps the ordinary SC2020 representation fence. Both
    * declaration walks call this and independently gate on constness. */
   export function textCodecBindingClassOf(
-    L: Lowerer,
+    lowerer: Lowerer,
     nameNode: ts.Node,
     init: ts.Expression | undefined,
   ): TextCodecCtor["cls"] | null {
@@ -6932,16 +6932,16 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     ) {
       return null;
     }
-    const info = directTextCodecCtorOf(L, init);
+    const info = directTextCodecCtorOf(lowerer, init);
     return info !== null && erasableTextCodecCtor(info) ? info.cls : null;
   }
 
   export function textCodecBindingDecl(
-    L: Lowerer,
+    lowerer: Lowerer,
     nameNode: ts.Node,
     init: ts.Expression | undefined,
   ): boolean {
-    return textCodecBindingClassOf(L, nameNode, init) !== null;
+    return textCodecBindingClassOf(lowerer, nameNode, init) !== null;
   }
 
 /** The inline composed receiver, or a const identifier whose initializer
@@ -6950,17 +6950,17 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * materializing the value is honest for the supported slice: receiver
    * reads are pure, construction has no effects, and every non-call use
    * fences because there is deliberately no general value lowering. */
-  function textCodecReceiverOf(L: Lowerer, expr: ts.Expression): TextCodecCtor | null {
-    const direct = directTextCodecCtorOf(L, expr);
+  function textCodecReceiverOf(lowerer: Lowerer, expr: ts.Expression): TextCodecCtor | null {
+    const direct = directTextCodecCtorOf(lowerer, expr);
     if (direct !== null) return direct;
     const receiver = stripTypeCasts(expr);
     if (!ts.isIdentifier(receiver)) return null;
-    const sym = L.resolveValueSymbol(receiver);
-    const decl = sym ? L.checker.valueDeclarationOf(sym) : undefined;
+    const sym = lowerer.resolveValueSymbol(receiver);
+    const decl = sym ? lowerer.checker.valueDeclarationOf(sym) : undefined;
     if (
       !decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined ||
       !ts.isVariableDeclarationList(decl.parent) || (decl.parent.flags & ts.NodeFlags.Const) === 0 ||
-      !textCodecBindingDecl(L, decl.name, decl.initializer)
+      !textCodecBindingDecl(lowerer, decl.name, decl.initializer)
     ) {
       return null;
     }
@@ -7010,7 +7010,7 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
       }
       if (!insideDeclClause) return null;
     }
-    return directTextCodecCtorOf(L, decl.initializer);
+    return directTextCodecCtorOf(lowerer, decl.initializer);
   }
 
 /** The WHATWG encoder pair, COMPOSED or through an erasable const binding:
@@ -7024,13 +7024,13 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * storage is well-formed UTF-8, so the bytes are identical (lone
    * surrogates became U+FFFD at string construction, exactly what the
    * spec's encoder emits). Null when this is neither supported form. */
-  export function lowerTextCodecCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerTextCodecCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
     const member = access.name.text;
     if (member !== "decode" && member !== "encode") return null;
-    const info = textCodecReceiverOf(L, access.expression);
-    if (info === null || !L.isStdlibMember(access)) return null;
+    const info = textCodecReceiverOf(lowerer, access.expression);
+    if (info === null || !lowerer.isStdlibMember(access)) return null;
     const { cls, ctor: recv } = info;
     if (!(cls === "TextDecoder" && member === "decode") && !(cls === "TextEncoder" && member === "encode")) {
       return null;
@@ -7041,21 +7041,21 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
       // The label must be statically known. A literal-typed effectful inline
       // expression is accepted, but its evaluation is sequenced before the
       // decode below; stored decoder aliases admit only actual literals.
-      const labelT = ctorArgs.length >= 1 ? L.typeOf(ctorArgs[0]!) : null;
+      const labelT = ctorArgs.length >= 1 ? lowerer.typeOf(ctorArgs[0]!) : null;
       const encoding = ctorArgs.length === 0
         ? { kind: "utf8" } as const
         : labelT !== null && labelT.isStringLiteralType()
         ? staticTextDecoderEncoding(labelT.value)
         : null;
       if (ctorArgs.length > 1 || encoding === null) {
-        L.noLowering(
+        lowerer.noLowering(
           "new TextDecoder with runtime-valued options or an unknown label",
           recv,
           "a recognized literal WHATWG label with default options compiles",
         );
       }
       const labelEffect = ctorArgs.length === 1
-        ? L.lowerExprExpecting(ctorArgs[0]!, STRING)
+        ? lowerer.lowerExprExpecting(ctorArgs[0]!, STRING)
         : null;
       const afterLabel = (result: IrExpr): IrExpr =>
         labelEffect === null || labelEffect.kind === "strLit"
@@ -7072,17 +7072,17 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
         return afterLabel({ kind: "strLit", value: "", type: STRING, loc });
       }
       if (call.arguments.length !== 1) {
-        L.noLowering(
+        lowerer.noLowering(
           "decode with a stream option",
           call,
           "streaming decode has no lowering — decode whole buffers",
         );
       }
       const argNode = call.arguments[0]!;
-      const arg = L.lowerExpr(argNode);
+      const arg = lowerer.lowerExpr(argNode);
       if (!(arg.type.kind === "bytes" && arg.type.elem === "u8")) {
-        L.noLowering(
-          `TextDecoder.decode of '${L.fmt(arg.type)}' values`,
+        lowerer.noLowering(
+          `TextDecoder.decode of '${lowerer.fmt(arg.type)}' values`,
           argNode,
           "Uint8Array/Buffer input decodes (ArrayBuffer values have no representation)",
         );
@@ -7099,16 +7099,16 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
       return afterLabel(decoded);
     }
     if (ctorArgs.length > 0) {
-      L.noLowering("new TextEncoder with arguments", recv);
+      lowerer.noLowering("new TextEncoder with arguments", recv);
     }
     if (call.arguments.length !== 1) {
-      L.noLowering(
+      lowerer.noLowering(
         `TextEncoder.encode with ${call.arguments.length} arguments`,
         call,
         call.arguments.length === 0 ? "pass the string (a zero-argument encode is an empty Uint8Array)" : undefined,
       );
     }
-    const s = L.lowerExprExpecting(call.arguments[0]!, STRING);
+    const s = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
     const enc: IrExpr = { kind: "strLit", value: "utf8", type: STRING, loc };
     return { kind: "libCall", fn: "buffer.fromStr", args: [s, enc], type: BYTES_U8, loc };
   }
@@ -7118,10 +7118,10 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * (the path.join convention) — or ONE whole-array spread forwards the
    * array itself. Other String statics (fromCodePoint, raw) fall through
    * to the member fence. Null for non-String receivers. */
-  export function lowerStringStaticCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerStringStaticCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken) return null;
-    const member = L.stdlibGlobalMember(access, "String");
+    const member = lowerer.stdlibGlobalMember(access, "String");
     if (member !== "fromCharCode" && member !== "raw") return null;
     const loc = locOf(call);
     // String.raw(template, ...substitutions): the template's `raw` member
@@ -7134,37 +7134,37 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     // the spec's loop.
     if (member === "raw") {
       if (call.arguments.length < 1 || call.arguments.some((a) => ts.isSpreadElement(a))) {
-        L.noLowering(
+        lowerer.noLowering(
           `String.raw with ${call.arguments.length === 0 ? "no template" : "spread substitutions"}`,
           call,
         );
       }
       const tmplNode = call.arguments[0]!;
-      const tmpl = L.lowerExpr(tmplNode);
+      const tmpl = lowerer.lowerExpr(tmplNode);
       const rawT = arrayOf(STRING);
       let raw: IrExpr | null = null;
       if (tmpl.type.kind === "record") {
-        const shape = L.shapes.get(tmpl.type.shapeId);
+        const shape = lowerer.shapes.get(tmpl.type.shapeId);
         const rawField = shape?.fields.find((f) => f.name === "raw");
         if (rawField && typeEquals(rawField.type, rawT)) {
           raw = { kind: "recordGet", obj: tmpl, shapeId: tmpl.type.shapeId, field: "raw", type: rawT, loc };
         }
       }
       if (raw === null) {
-        L.noLowering(
+        lowerer.noLowering(
           "String.raw over this template shape",
           tmplNode,
           "the template must carry a string[] `raw` member: String.raw({ raw: [...] }, ...subs)",
         );
       }
       const subs = call.arguments.slice(1).map((a): IrExpr => {
-        const v = L.lowerExpr(a);
+        const v = lowerer.lowerExpr(a);
         if (v.type.kind === "string") return v;
         if (v.type.kind === "f64" || v.type.kind === "bool" || v.type.kind === "record") {
           return { kind: "toString", operand: v, type: STRING, loc };
         }
-        L.noLowering(
-          `String.raw substitutions of type '${L.fmt(v.type)}'`,
+        lowerer.noLowering(
+          `String.raw substitutions of type '${lowerer.fmt(v.type)}'`,
           a,
           "numbers, strings, booleans, and records stringify statically",
         );
@@ -7175,7 +7175,7 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     const spread = call.arguments.find(ts.isSpreadElement);
     if (spread) {
       if (call.arguments.length !== 1) {
-        L.noLowering(
+        lowerer.noLowering(
           "String.fromCharCode with a mixed spread call",
           call,
           "spread a whole array (String.fromCharCode(...codes)) or pass plain arguments",
@@ -7184,16 +7184,16 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
       // A typed-array/Buffer spread (String.fromCharCode(...data.slice(4, 8))
       // — the magic-number ASCII probe) passes the bytes value through; the
       // runtime reads its elements like the packed-array form.
-      const spreadT = L.mapTypeOf(L.typeOf(spread.expression));
+      const spreadT = lowerer.mapTypeOf(lowerer.typeOf(spread.expression));
       if (spreadT?.kind === "bytes") {
-        const packed = L.lowerExpr(spread.expression);
-        if (packed.type.kind !== "bytes") L.badType(spread.expression, L.typeOf(spread.expression));
+        const packed = lowerer.lowerExpr(spread.expression);
+        if (packed.type.kind !== "bytes") lowerer.badType(spread.expression, lowerer.typeOf(spread.expression));
         return { kind: "libCall", fn: "string.fromCharCode", args: [packed], type: STRING, loc };
       }
-      const packed = L.lowerExprExpecting(spread.expression, arrayOf(F64));
+      const packed = lowerer.lowerExprExpecting(spread.expression, arrayOf(F64));
       return { kind: "libCall", fn: "string.fromCharCode", args: [packed], type: STRING, loc };
     }
-    const elems = call.arguments.map((a) => L.lowerExprExpecting(a, F64));
+    const elems = call.arguments.map((a) => lowerer.lowerExprExpecting(a, F64));
     const packed: IrExpr = { kind: "arrayLit", elems, type: arrayOf(F64), loc };
     return { kind: "libCall", fn: "string.fromCharCode", args: [packed], type: STRING, loc };
   }
@@ -7203,22 +7203,22 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * indexOf. The lib's fromIndex parameter has no lowering (Node clamps
    * it with ToIntegerOrInfinity; nothing in the corpus wants it) and
    * fences per site. Null for non-string receivers / other members. */
-  export function lowerStringLastIndexOfCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerStringLastIndexOfCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
     if (access.name.text !== "lastIndexOf") return null;
-    if (L.mapTypeOf(L.typeOf(access.expression))?.kind !== "string") return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "string") return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const loc = locOf(call);
     if (call.arguments.length !== 1) {
-      L.noLowering(
+      lowerer.noLowering(
         "lastIndexOf with a fromIndex argument",
         call,
         "the one-argument form lowers",
       );
     }
-    const receiver = L.lowerExprExpecting(access.expression, STRING);
-    const needle = L.lowerExprExpecting(call.arguments[0]!, STRING);
+    const receiver = lowerer.lowerExprExpecting(access.expression, STRING);
+    const needle = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
     return { kind: "libCall", fn: "string.lastIndexOf", args: [receiver, needle], type: F64, loc };
   }
 
@@ -7232,10 +7232,10 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * Promise.all/allSettled/any fence with the sequential-await hint;
    * resolve/reject and the rest fall to the member fence. Null for
    * non-Promise receivers. */
-  export function lowerPromiseStaticCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerPromiseStaticCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken) return null;
-    const member = L.stdlibGlobalMember(access, "Promise");
+    const member = lowerer.stdlibGlobalMember(access, "Promise");
     if (member === null) return null;
     const loc = locOf(call);
     if (member === "race") {
@@ -7246,46 +7246,46 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
         argNode.elements.some(ts.isSpreadElement) ||
         argNode.elements.length === 0
       ) {
-        L.noLowering(
+        lowerer.noLowering(
           "Promise.race over this argument shape",
           call,
           "a non-empty array LITERAL of promises is the supported form: Promise.race([p, q])",
         );
       }
-      const resultT = L.mapTypeOf(L.typeOf(call));
+      const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
       if (resultT?.kind !== "promise") {
-        L.noLowering(
+        lowerer.noLowering(
           "Promise.race with this combined result type",
           call,
           "the entries' value types must combine into a representable union",
         );
       }
       const resultArms =
-        resultT.inner.kind === "union" ? (L.unions.get(resultT.inner.unionId)?.arms ?? []) : null;
+        resultT.inner.kind === "union" ? (lowerer.unions.get(resultT.inner.unionId)?.arms ?? []) : null;
       const compatible = (inner: IrType): boolean => {
         if (typeEquals(inner, resultT.inner)) return true;
         if (!resultArms) return false;
         if (inner.kind === "union") {
-          const arms = L.unions.get(inner.unionId)?.arms ?? [];
+          const arms = lowerer.unions.get(inner.unionId)?.arms ?? [];
           return arms.every((a) => resultArms.some((b) => typeEquals(a, b)));
         }
         return resultArms.some((a) => typeEquals(a, inner));
       };
       const entries = argNode.elements.map((el) => {
-        const entry = L.lowerExpr(el);
+        const entry = lowerer.lowerExpr(el);
         if (entry.type.kind !== "promise") {
-          L.noLowering(
+          lowerer.noLowering(
             "Promise.race over non-promise entries",
             el,
             "JS would resolve plain values — wrap them: new Promise((r) => r(v))",
           );
         }
         if (!compatible(entry.type.inner)) {
-          L.unsupported(
+          lowerer.unsupported(
             "SC1090",
             el,
-            `Promise.race entries of inner type '${L.fmt(entry.type.inner)}' under a ` +
-              `'${L.fmt(resultT.inner)}' result (every entry must be the result type, one ` +
+            `Promise.race entries of inner type '${lowerer.fmt(entry.type.inner)}' under a ` +
+              `'${lowerer.fmt(resultT.inner)}' result (every entry must be the result type, one ` +
               `of its arms, or a sub-union of it)`,
           );
         }
@@ -7308,7 +7308,7 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     if (member === "all") {
       const argNode = call.arguments.length === 1 ? call.arguments[0]! : null;
       if (!argNode) {
-        L.noLowering(
+        lowerer.noLowering(
           "Promise.all with this argument shape",
           call,
           "one array of promises is the supported form: Promise.all(ps) with ps: Promise<T>[]",
@@ -7326,7 +7326,7 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
         !argNode.elements.some(ts.isSpreadElement) &&
         argNode.elements.length > 0
       ) {
-        const elems = argNode.elements.map((el) => L.lowerExpr(el));
+        const elems = argNode.elements.map((el) => lowerer.lowerExpr(el));
         const first = elems[0]!.type;
         if (
           first.kind === "promise" &&
@@ -7351,9 +7351,9 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
         // typed fence hint below. --dynamic only by construction: jsval
         // entries exist only there.
         if (elems.some((e) => e.type.kind === "jsval")) {
-          const diagsBefore = L.diags.length;
+          const diagsBefore = lowerer.diags.length;
           try {
-            const marshaled = argNode.elements.map((el, i) => L.jsvalIn(elems[i]!, el));
+            const marshaled = argNode.elements.map((el, i) => lowerer.jsvalIn(elems[i]!, el));
             return {
               kind: "jsOp",
               op: "callMethod",
@@ -7369,16 +7369,16 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
             // An entry outside every crossing domain: drop the boundary
             // diagnostics and let the shape fence below name the fix.
             if (!(err instanceof PoisonError)) throw err;
-            L.diags.splice(diagsBefore);
+            lowerer.diags.splice(diagsBefore);
           }
         }
-        L.noLowering(
+        lowerer.noLowering(
           "Promise.all over this argument shape",
           argNode,
           "the entries must share ONE promise type — Promise.all([p, q]) lowers when p and q are the same Promise<T>",
         );
       }
-      const entries = L.lowerExpr(argNode);
+      const entries = lowerer.lowerExpr(argNode);
       // A NON-literal island argument (`Promise.all(plugins.map((p) =>
       // loadPlugin(p)))` — the loadPlugins shape, where the checker
       // spells `any[]`): the ENGINE's own Promise.all runs over the
@@ -7389,9 +7389,9 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
         entries.type.kind === "jsval" ||
         (entries.type.kind === "array" && entries.type.elem.kind === "jsval")
       ) {
-        const diagsBefore = L.diags.length;
+        const diagsBefore = lowerer.diags.length;
         try {
-          const arg = L.jsvalIn(entries, argNode);
+          const arg = lowerer.jsvalIn(entries, argNode);
           return {
             kind: "jsOp",
             op: "callMethod",
@@ -7402,7 +7402,7 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
           };
         } catch (err) {
           if (!(err instanceof PoisonError)) throw err;
-          L.diags.splice(diagsBefore);
+          lowerer.diags.splice(diagsBefore);
         }
       }
       if (entries.type.kind !== "array" || entries.type.elem.kind !== "promise") {
@@ -7412,16 +7412,16 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
         // elem — either way the fix is one shared promise type, so say
         // that.
         const tupleFields =
-          entries.type.kind === "record" ? L.shapes.get(entries.type.shapeId) : undefined;
+          entries.type.kind === "record" ? lowerer.shapes.get(entries.type.shapeId) : undefined;
         const mixedPromises =
           (entries.type.kind === "array" &&
             entries.type.elem.kind === "union" &&
-            (L.unions.get(entries.type.elem.unionId)?.arms ?? []).every(
+            (lowerer.unions.get(entries.type.elem.unionId)?.arms ?? []).every(
               (a) => a.kind === "promise",
             )) ||
           (tupleFields?.tuple === true &&
             tupleFields.fields.every((f) => f.type.kind === "promise"));
-        L.noLowering(
+        lowerer.noLowering(
           "Promise.all over this argument shape",
           argNode,
           mixedPromises
@@ -7434,13 +7434,13 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
       const resultT: IrType | null =
         inner.kind === "void"
           ? { kind: "promise", inner: VOID }
-          : L.mapTypeOf(L.typeOf(call));
+          : lowerer.mapTypeOf(lowerer.typeOf(call));
       if (
         resultT?.kind !== "promise" ||
         (inner.kind !== "void" &&
           (resultT.inner.kind !== "array" || !typeEquals(resultT.inner.elem, inner)))
       ) {
-        L.noLowering(
+        lowerer.noLowering(
           "Promise.all with this combined result type",
           call,
           "the entries must share ONE promise type — annotate the array (const ps: Promise<T>[] = [...]) " +
@@ -7450,7 +7450,7 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
       return { kind: "intrinsic", name: "promise.all", args: [entries], type: resultT, loc };
     }
     if (member === "allSettled" || member === "any") {
-      L.noLowering(
+      lowerer.noLowering(
         `Promise.${member}`,
         call,
         "await each element in a loop (Promise.all compiles over a Promise<T>[] array, " +
@@ -7465,14 +7465,14 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     // the record from the newPromise machinery.
     if (member === "withResolvers") {
       if (call.arguments.length !== 0) {
-        L.noLowering(`Promise.withResolvers with arguments`, call);
+        lowerer.noLowering(`Promise.withResolvers with arguments`, call);
       }
       // The type mapper owns the record shape (its withResolvers
       // special-case — the anonymous ambient literal fails the record
       // provenance gate, so the mapper interns the shape manually).
-      const resultT = L.mapTypeOf(L.typeOf(call));
+      const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
       if (resultT?.kind !== "record") {
-        L.noLowering(
+        lowerer.noLowering(
           "Promise.withResolvers at this type",
           call,
           "the promised value's type must be representable — annotate it: Promise.withResolvers<T>()",
@@ -7491,23 +7491,23 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     if (member === "try") {
       const fNode = call.arguments[0];
       if (call.arguments.length !== 1 || fNode === undefined || ts.isSpreadElement(fNode)) {
-        L.noLowering(
+        lowerer.noLowering(
           `Promise.try with ${call.arguments.length} arguments`,
           call,
           "the ...args form has no lowering — close over the values: Promise.try(() => f(a, b))",
         );
       }
-      const f = L.lowerExpr(fNode);
+      const f = lowerer.lowerExpr(fNode);
       if (f.type.kind !== "func" || f.type.params.length !== 0) {
-        L.noLowering(
-          `Promise.try over a callback of type '${L.checker.typeToString(L.typeOf(fNode))}'`,
+        lowerer.noLowering(
+          `Promise.try over a callback of type '${lowerer.checker.typeToString(lowerer.typeOf(fNode))}'`,
           fNode,
           "a zero-parameter function is the supported form",
         );
       }
-      const resultT = L.mapTypeOf(L.typeOf(call));
+      const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
       if (resultT?.kind !== "promise") {
-        L.noLowering(
+        lowerer.noLowering(
           "Promise.try at this type",
           call,
           "the promised value's type must be representable — annotate it: Promise.try<T>(f)",
@@ -7520,17 +7520,17 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
       // checker widened past that has no adapter here.
       const settled = ret.kind === "promise" ? ret.inner : ret;
       if (!typeEquals(settled, inner) && !(isUnitType(settled) && inner.kind === "void") && !(settled.kind === "void" && inner.kind === "void")) {
-        L.noLowering(
+        lowerer.noLowering(
           "Promise.try where the callback's result type differs from the promised type",
           call,
           "annotate both to one T: Promise.try<T>(f) with f returning T or Promise<T>",
         );
       }
       const key = `promise.try:${typeKey(f.type)}`;
-      let helper = L.arrHofHelpers.get(key);
+      let helper = lowerer.arrHofHelpers.get(key);
       if (!helper) {
-        helper = `%promise.try.${L.arrHofHelpers.size}`;
-        L.arrHofHelpers.set(key, helper);
+        helper = `%promise.try.${lowerer.arrHofHelpers.size}`;
+        lowerer.arrHofHelpers.set(key, helper);
         const fRef: IrExpr = { kind: "varRef", localId: "f.0", type: f.type, loc };
         const callF: IrExpr = { kind: "callValue", callee: fRef, args: [], type: ret, loc };
         const body: IrStmt[] = [];
@@ -7557,7 +7557,7 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
           loc,
           async: true,
         };
-        L.liftedFns.push(lifted);
+        lowerer.liftedFns.push(lifted);
       }
       return { kind: "call", callee: helper, args: [f], type: resultT, loc };
     }
@@ -7570,29 +7570,29 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     // unions (wrap-or-identity depends on the runtime arm) fence.
     if (member === "resolve") {
       if (call.arguments.length > 1 || call.arguments.some((a) => ts.isSpreadElement(a))) {
-        L.noLowering(`Promise.resolve with ${call.arguments.length} arguments`, call);
+        lowerer.noLowering(`Promise.resolve with ${call.arguments.length} arguments`, call);
       }
       const argNode = call.arguments[0];
       if (argNode !== undefined) {
-        const argT = L.typeOf(argNode);
-        const argIr = L.mapTypeOf(argT);
+        const argT = lowerer.typeOf(argNode);
+        const argIr = lowerer.mapTypeOf(argT);
         if (argIr?.kind === "promise") {
-          const v = L.lowerExpr(argNode);
-          if (v.type.kind !== "promise") L.badType(argNode, argT);
+          const v = lowerer.lowerExpr(argNode);
+          if (v.type.kind !== "promise") lowerer.badType(argNode, argT);
           return v;
         }
         if (argIr?.kind === "union" &&
-            (L.unions.get(argIr.unionId)?.arms ?? []).some((a) => a.kind === "promise")) {
-          L.noLowering(
+            (lowerer.unions.get(argIr.unionId)?.arms ?? []).some((a) => a.kind === "promise")) {
+          lowerer.noLowering(
             "Promise.resolve over a value that may already be a promise",
             argNode,
             "narrow first: a plain value wraps, a promise passes through identically — the union hides which",
           );
         }
         if (argIr?.kind === "record" || argIr?.kind === "object") {
-          const thenSym = L.checker.getPropertyOfType(argT, "then");
+          const thenSym = lowerer.checker.getPropertyOfType(argT, "then");
           if (thenSym !== undefined) {
-            L.noLowering(
+            lowerer.noLowering(
               "Promise.resolve of a thenable",
               argNode,
               "JS would ADOPT the then method, not wrap the object — await the thenable's settlement explicitly",
@@ -7600,9 +7600,9 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
           }
         }
       }
-      const resultT = L.mapTypeOf(L.typeOf(call));
+      const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
       if (resultT?.kind !== "promise") {
-        L.noLowering(
+        lowerer.noLowering(
           "Promise.resolve at this type",
           call,
           "the promised value's type must be representable — annotate it: Promise.resolve<T>(v)",
@@ -7616,14 +7616,14 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
         // effects must still run — no statement slot exists here for
         // them, so only effect-free spellings could drop it honestly;
         // fence rather than model that corner.
-        L.noLowering("Promise.resolve with an argument at a void-promise type", call);
+        lowerer.noLowering("Promise.resolve with an argument at a void-promise type", call);
       }
       if (isUnitType(resultT.inner)) {
         // A unit payload (Promise<undefined>/Promise<null>) has no
         // fulfill adapter — await it as the void promise instead.
-        L.noLowering("Promise.resolve at a unit-typed promise", call);
+        lowerer.noLowering("Promise.resolve at a unit-typed promise", call);
       }
-      const value = L.lowerExprExpecting(argNode, resultT.inner);
+      const value = lowerer.lowerExprExpecting(argNode, resultT.inner);
       return { kind: "intrinsic", name: "promise.resolve", args: [value], type: resultT, loc };
     }
     return null; // reject lands on lowerPromiseRejectCall / the member fence
@@ -7633,8 +7633,8 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * number literals. NaN/POSITIVE_INFINITY/NEGATIVE_INFINITY and method
    * members as values fall through to the member fence. Null for
    * non-Number receivers. */
-  export function lowerNumberStaticProperty(L: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
-    const member = L.stdlibGlobalMember(expr, "Number");
+  export function lowerNumberStaticProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+    const member = lowerer.stdlibGlobalMember(expr, "Number");
     if (member === null) return null;
     const value = own(NUMBER_CONSTANTS, member);
     if (value === undefined) return null;
@@ -7646,16 +7646,16 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * not name, so a user's own `Timeout` never matches. The handle maps to
    * f64, so the method calls below can't tell it from a plain number by IR
    * type alone; this is the discriminator. */
-  function isTimerHandleTyped(L: Lowerer, node: ts.Expression, name: "Timeout" | "Immediate"): boolean {
-    const t = L.checker.getTypeAtLocation(node);
+  function isTimerHandleTyped(lowerer: Lowerer, node: ts.Expression, name: "Timeout" | "Immediate"): boolean {
+    const t = lowerer.checker.getTypeAtLocation(node);
     const sym = t.getAliasSymbol() ?? t.getSymbol();
     if (sym?.name !== name) return false;
-    return L.checker.declarationsOf(sym).some(
-      (d) => ts.isInterfaceDeclaration(d) && L.isStdlibFile(d.getSourceFile()),
+    return lowerer.checker.declarationsOf(sym).some(
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
     );
   }
-  function isTimeoutTyped(L: Lowerer, node: ts.Expression): boolean {
-    return isTimerHandleTyped(L, node, "Timeout");
+  function isTimeoutTyped(lowerer: Lowerer, node: ts.Expression): boolean {
+    return isTimerHandleTyped(lowerer, node, "Timeout");
   }
 
 /** `t.unref()` / `t.ref()` / `t.hasRef()` on a Timeout handle — loop-
@@ -7663,21 +7663,21 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * unref/ref return the handle for chaining (Node); hasRef returns a
    * bool. `refresh` and the rest of @types/node's Timeout surface fence.
    * Null when the receiver isn't a Timeout handle. */
-  export function lowerTimeoutMethodCall(L: Lowerer, call: ts.CallExpression,
+  export function lowerTimeoutMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     // `t.unref?.()` (the defensive optional CALL — mdns's timer.unref?.())
     // is the plain call: the method always exists on a Timeout handle. A
     // `t?.unref()` receiver guard is real narrowing and stays with the
     // chain machinery.
     if (access.questionDotToken) return null;
-    const isTimeout = isTimeoutTyped(L, access.expression);
-    const isImmediate = !isTimeout && isTimerHandleTyped(L, access.expression, "Immediate");
+    const isTimeout = isTimeoutTyped(lowerer, access.expression);
+    const isImmediate = !isTimeout && isTimerHandleTyped(lowerer, access.expression, "Immediate");
     if (!isTimeout && !isImmediate) return null;
-    if (!L.isStdlibMember(access)) return null;
+    if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
     if ((name === "unref" || name === "ref") && call.arguments.length === 0) {
-      const handle = L.lowerExprExpecting(access.expression, F64);
+      const handle = lowerer.lowerExprExpecting(access.expression, F64);
       const fn = isImmediate
         ? name === "unref" ? "timers.immediateUnref" : "timers.immediateRef"
         : name === "unref" ? "timers.unref" : "timers.ref";
@@ -7686,23 +7686,23 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
       return { kind: "libCall", fn, args: [handle], type: F64, loc };
     }
     if (name === "hasRef" && call.arguments.length === 0) {
-      const handle = L.lowerExprExpecting(access.expression, F64);
+      const handle = lowerer.lowerExprExpecting(access.expression, F64);
       const fn = isImmediate ? "timers.immediateHasRef" : "timers.hasRef";
       return { kind: "libCall", fn, args: [handle], type: BOOL, loc };
     }
     if (name === "refresh" && call.arguments.length === 0 && !isImmediate) {
       // Re-arms to now + the original delay; yields the handle back for
       // chaining, like unref/ref.
-      const handle = L.lowerExprExpecting(access.expression, F64);
+      const handle = lowerer.lowerExprExpecting(access.expression, F64);
       return { kind: "libCall", fn: "timers.refresh", args: [handle], type: F64, loc };
     }
-    L.noLowering(
+    lowerer.noLowering(
       `${isImmediate ? "Immediate" : "Timeout"}.${name}`,
       call,
       isImmediate
         ? "unref(), ref(), and hasRef() are the supported Immediate methods"
         : "unref(), ref(), hasRef(), and refresh() are the supported Timeout methods",
-      L.checker.getSymbolAtLocation(access.name),
+      lowerer.checker.getSymbolAtLocation(access.name),
     );
   }
 
@@ -7712,13 +7712,13 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * not target) and the honest result is the plain number. Intercepted
    * BEFORE the optional-chain machinery: `process.getuid` has no value
    * lowering for the chain to guard. Null when this isn't that shape. */
-  export function lowerProcessOptionalMethodCall(L: Lowerer, expr: ts.CallExpression): IrExpr | null {
+  export function lowerProcessOptionalMethodCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr | null {
     if (!expr.questionDotToken) return null;
     if (!ts.isPropertyAccessExpression(expr.expression)) return null;
-    const member = L.stdlibGlobalMember(expr.expression, "process");
+    const member = lowerer.stdlibGlobalMember(expr.expression, "process");
     if (member !== "getuid" && member !== "getgid") return null;
     if (expr.arguments.length !== 0) {
-      L.noLowering(`process.${member} with ${expr.arguments.length} arguments`, expr);
+      lowerer.noLowering(`process.${member} with ${expr.arguments.length} arguments`, expr);
     }
     return { kind: "libCall", fn: member === "getuid" ? "process.getuid" : "process.getgid", args: [], type: F64, loc: locOf(expr) };
   }
@@ -7731,16 +7731,16 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
    * process.env). The target shape must be a pure index-signature record
    * whose value slot is the `string | undefined` union (what ProcessEnv
    * maps to); anything else answers null and the caller keeps its fence. */
-  export function envSnapshotHelper(L: Lowerer, shapeId: string, loc: SrcLoc): string | null {
-    return pairsSnapshotHelper(L, shapeId, loc, {
+  export function envSnapshotHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string | null {
+    return pairsSnapshotHelper(lowerer, shapeId, loc, {
       keyPrefix: "env",
       libCall: "process.envPairs",
-      indexValueOk: (indexValue) => typeEquals(indexValue, L.envValueType()),
+      indexValueOk: (indexValue) => typeEquals(indexValue, lowerer.envValueType()),
     });
   }
 
-export function isConsoleLog(L: Lowerer, call: ts.CallExpression): boolean {
-    return consoleCallMember(L, call) === "log";
+export function isConsoleLog(lowerer: Lowerer, call: ts.CallExpression): boolean {
+    return consoleCallMember(lowerer, call) === "log";
   }
 
 /** The console member of a `console.<member>(...)` call, for the lowered
@@ -7750,7 +7750,7 @@ export function isConsoleLog(L: Lowerer, call: ts.CallExpression): boolean {
    * like every stdlib global. Null for anything else (console.table, a
    * user's own console binding, ...). */
   export function consoleCallMember(
-    L: Lowerer,
+    lowerer: Lowerer,
     call: ts.CallExpression,
   ): "log" | "info" | "debug" | "error" | "warn" | null {
     if (!ts.isPropertyAccessExpression(call.expression)) return null;
@@ -7758,5 +7758,5 @@ export function isConsoleLog(L: Lowerer, call: ts.CallExpression): boolean {
     if (access.questionDotToken || call.questionDotToken) return null;
     const name = access.name.text;
     if (name !== "log" && name !== "info" && name !== "debug" && name !== "error" && name !== "warn") return null;
-    return L.isStdlibGlobal(access.expression, "console") ? name : null;
+    return lowerer.isStdlibGlobal(access.expression, "console") ? name : null;
   }

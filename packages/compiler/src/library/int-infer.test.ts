@@ -10,7 +10,7 @@
  * slots: `send(x)` is a call whose callee's first parameter the config
  * declares i64 (slot path Msg.count), `sendU64(x)` u64 (Msg.id). */
 import { describe, expect, test } from "vitest";
-import type { IrExpr, IrFunction, IrModule, IrNumBinOp, IrStmt } from "../ir/nodes.js";
+import type { IrExpr, IrFunction, IrModule, IrNumBinOp, IrStmt } from "../ir/ir.js";
 import {
   checkLibraryIntegerSlots,
   type IntSlotConfig,

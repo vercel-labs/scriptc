@@ -4,7 +4,7 @@ import { InternalCompilerError } from "../errors.js";
  * already decide support — the diagnostics registry (diagnostic.ts), the
  * unsupported-syntax dispatch tables and stdlib/builtin lowering tables
  * (lowering/surfaces.ts), and the supported-builtin-module list
- * (frontend/shared.ts). Nothing here is hand-maintained: adding a table
+ * (frontend/builtin-modules.ts). Nothing here is hand-maintained: adding a table
  * row changes the manifest on the next generation, and the staleness test
  * (tests/harness/surface-manifest.test.ts) fails until the committed file
  * is regenerated (`pnpm manifest`).
@@ -40,7 +40,7 @@ import { InternalCompilerError } from "../errors.js";
  * order, and the output carries no timestamps or absolute paths. */
 import { FENCE_CODES, UNSUPPORTED } from "../diagnostics/diagnostic.js";
 import { NODE24_FETCH_COMPAT_PROFILE } from "../compat/fetch-profile.js";
-import { SUPPORTED_BUILTIN_MODULES, SUPPORTED_NODE_MODULES } from "../frontend/shared.js";
+import { SUPPORTED_BUILTIN_MODULES, SUPPORTED_NODE_MODULES } from "../frontend/builtin-modules.js";
 import {
   AMBIENT_SURFACE_FNS,
   ARRAY_METHODS,

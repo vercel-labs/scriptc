@@ -1,11 +1,11 @@
 import { InternalCompilerError } from "../errors.js";
 import * as ts from "./ts7/adapter.js";
-import type { IrRecordShape, IrType, IrUnionDef } from "../ir/nodes.js";
-import { arrayOf, BOOL, bytesOf, canConvertToDyn, CHILD_T, DATE_T, DYN, F64, funcOf, isSupportedArrayElem, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, JSVAL, mapOf, NULL_T, PROCSTREAM_T, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, setOf, STRING, SYMBOL_T, typeEquals, typeKey, UNDEFINED_T, VOID } from "../ir/nodes.js";
+import type { IrRecordShape, IrType, IrUnionDef } from "../ir/ir.js";
+import { arrayOf, BOOL, bytesOf, canConvertToDyn, CHILD_T, DATE_T, DYN, F64, funcOf, isSupportedArrayElem, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, JSVAL, mapOf, NULL_T, PROCSTREAM_T, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, setOf, STRING, SYMBOL_T, typeEquals, typeKey, UNDEFINED_T, VOID } from "../ir/ir.js";
 
 import { isJsSourceFile, isNodeTypesPath } from "./program.js";
-import { accessorSlotProp } from "../ir/nodes.js";
-// typeKey moved to ir/nodes.ts (the backend needs it too, for per-type
+import { accessorSlotProp } from "../ir/ir.js";
+// typeKey moved to ir/ir.ts (the backend needs it too, for per-type
 // helper interning); re-exported here so frontend call sites keep their
 // import path.
 export { typeKey };
@@ -728,7 +728,7 @@ export interface TypeMapperCtx {
 }
 
 
-/** lower-calls.ts's bodyReadsArguments, duplicated here (types.ts must not
+/** lower-calls.ts's bodyReadsArguments, duplicated here (type-mapper.ts must not
  * import from lowering/ — that edge is a module cycle): does the function's
  * OWN body read `arguments`? Nested plain functions/methods own theirs
  * (skipped); arrows see the enclosing one (descended). */
@@ -3424,7 +3424,7 @@ function mapRecordTypeInner(widened: ts.Type, ctx: TypeMapperCtx): IrType | Reco
         // OBJECT-LITERAL get/set accessors (TS sources): the property has
         // no data slot — the shape carries reserved closure fields instead
         // (`%get:x` invoked per read, `%set:x` per write; see
-        // accessorSlotProp in ir/nodes.ts). Type-literal and interface
+        // accessorSlotProp in ir/ir.ts). Type-literal and interface
         // accessor MEMBERS map the same way so accessor records cross
         // annotated boundaries (`function f(p: { get x(): number })`) —
         // tsc lets a plain DATA property satisfy such a member, but the

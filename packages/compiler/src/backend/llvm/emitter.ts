@@ -40,7 +40,7 @@ import { InternalCompilerError } from "../../errors.js";
  * everything and returning a dummy value (never read: callers of a
  * may-throw function test the flag before using the result). No
  * setjmp/longjmp: longjmp would skip the emitted RC releases. try/catch
- * follows emit-stmts.ts's shape exactly — a compile-time tryStack entry
+ * follows stmts.ts's shape exactly — a compile-time tryStack entry
  * per region, the catch block taking the exception (scr_exc_take into the
  * binding's snapshot box, or scr_exc_clear for the bindingless form), the
  * finally body emitted once per path (normal, exception-with-stash,
@@ -51,7 +51,7 @@ import { InternalCompilerError } from "../../errors.js";
  * function may throw.
  *
  * The dyn surface (phase 5): ScrDyn dyn values are in the tier — dyn.ts
- * ports emit-walkers.ts's dyn slice (match/check/toDyn walkers, the
+ * ports walkers.ts's dyn slice (match/check/toDyn walkers, the
  * String(unknown)/caught→dyn/keyed-read singletons, the checked-dynamic
  * function boundary's thunk/box/adapter triple) and the emitter lowers
  * the dyn expression kinds (dynFrom/dynCall/dynInvoke/dynTest/dynKeyGet/
@@ -63,7 +63,7 @@ import { InternalCompilerError } from "../../errors.js";
  */
 import { deflateRawSync } from "node:zlib";
 import { endsWithJump, isStableBytesOperand, newValueMayThrow, streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
-import { emitLibraryIdentityLines } from "../library-identity.js";
+import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 import type {
   IrBytesElem,
   IrExpr,
@@ -81,11 +81,11 @@ import type {
   IrType,
   IrUnionDef,
   SrcLoc,
-} from "../../ir/nodes.js";
-import { canMarshalFuncIntoIsland, CAUGHT, DYN, F64, ffiCallbackType, islandCallbackRet, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesDynInvoke, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, NPM_COMPRESS_MIN, POINTER_KINDS, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, typeEquals, typeKey, VOID } from "../../ir/nodes.js";
+} from "../../ir/ir.js";
+import { canMarshalFuncIntoIsland, CAUGHT, DYN, F64, ffiCallbackType, islandCallbackRet, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesDynInvoke, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, NPM_COMPRESS_MIN, POINTER_KINDS, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, typeEquals, typeKey, VOID } from "../../ir/ir.js";
 import { matchIntegerBytesForLoop } from "../../ir/integer-loops.js";
 import { allocateFfiCallbackAdapters, collectFfiRetainedOps, hasForeignFfiCallback, hasRetainedFfiCallback, parseFfiCallbackKey, type FfiCallbackAdapter } from "../ffi-callbacks.js";
-import { computeMayThrow } from "../emission/may-throw.js";
+import { computeMayThrow } from "../c/may-throw.js";
 import { mangleArgPack, mangleAsyncSpawn, mangleClassNew, mangleClassObj, mangleClassRetain, mangleFnClosure, mangleFunction, mangleGenDrop, mangleGenResThunk, mangleGenSpawn, mangleGlobal, mangleLocal, mangleRecordClone, mangleRecordNew, mangleRecordStruct, mangleResolveThunk, mangleTrampoline, mangleVtStruct, mangleWrapper } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import {
@@ -96,7 +96,7 @@ import {
   emitClassShapes,
   type LlClassMeta,
 } from "./classes.js";
-import { DK, LlDyn } from "./dyn.js";
+import { DYN_KIND, LlDyn } from "./dyn.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 
@@ -364,7 +364,7 @@ const LIB_FN_SYMS: Record<string, string> = {
   "date.getTimezoneOffset": "scr_date_get_timezone_offset",
   "fs.existsSync": "scr_fs_exists",
   // ── the throwing slice (MAY_THROW_LIB_FNS members): the generic path
-  // emits the standard pending check after each — emit-exprs.ts's finish.
+  // emits the standard pending check after each — exprs.ts's finish.
   "process.cpuPrevValidate": "scr_cpu_prev_validate",
   "date.toISOString": "scr_date_to_iso",
   "date.toISOStringValue": "scr_date_to_iso",
@@ -877,7 +877,7 @@ const LIB_FN_SYMS: Record<string, string> = {
   "timers.immediatePromise": "scr_immediate_promise",
 };
 
-/** The canonical option-callback order per stream base — emit-exprs.ts's
+/** The canonical option-callback order per stream base — exprs.ts's
  * table: the flags literal names which are PRESENT (bit i = canonical[i]);
  * absent ones pass NULL pairs. */
 const STREAM_CANONICAL_CBS: Record<string, ("r" | "w" | "f" | "d" | "t" | "l")[]> = {
@@ -889,7 +889,7 @@ const STREAM_CANONICAL_CBS: Record<string, ("r" | "w" | "f" | "d" | "t" | "l")[]
 };
 
 /** Lib functions whose C lowering marks the loop live (E.usesTimers) —
- * the stream/emitter slice of emit-exprs.ts's markings, applied before
+ * the stream/emitter slice of exprs.ts's markings, applied before
  * dispatch so generic and special shapes share one table. */
 const USES_TIMERS_LIB_FNS = new Set<string>([
   "fetch.start",
@@ -920,7 +920,7 @@ const USES_TIMERS_LIB_FNS = new Set<string>([
   "https.request", "https.requestCb", "https.requestUrl", "https.requestUrlCb",
   "http.requestConn", "http.requestConnCb",
   "http.agentNew", "http.requestAgent", "http.requestAgentCb",
-  // The dyn-async slice (emit-exprs.ts's markings): fiber parks, the
+  // The dyn-async slice (exprs.ts's markings): fiber parks, the
   // microtask/immediate mints, the tracing-promise reaction fiber, and
   // the checkpoint unhandled-rejection report.
   "async.hop", "async.awaitDyn",
@@ -933,7 +933,7 @@ const USES_TIMERS_LIB_FNS = new Set<string>([
 const BYTES_ELEM_NUM: Record<"u8" | "u32" | "f32" | "i32", number> = { u8: 0, u32: 1, f32: 2, i32: 3 };
 
 /** ScrBytesNumKind + littleEndian per readNum/writeNum kind token —
- * emit-types.ts's BYTES_NUM_KIND_C with the enum values spelled out
+ * types.ts's BYTES_NUM_KIND_C with the enum values spelled out
  * (U8=0, I8=1, U16=2, I16=3, U32=4, I32=5, F32=6, F64=7). */
 const BYTES_NUM_KIND: Record<string, { kind: number; le: boolean } | undefined> = {
   u8: { kind: 0, le: false },
@@ -1018,7 +1018,7 @@ class LlEmitter {
    * flushed with the shape helpers. */
   private readonly walkers = new LlWalkers(this);
   /** The dyn (ScrDyn dyn) helper registry — dyn.ts's interned ports of
-   * emit-walkers.ts's dyn slice. */
+   * walkers.ts's dyn slice. */
   private readonly dyn = new LlDyn(this);
   /** External declarations, in first-use order. */
   private readonly decls = new Set<string>();
@@ -1623,16 +1623,16 @@ class LlEmitter {
     // Stream-surface programs fill the loop's stream hook (the deferred
     // next-tick emissions) and the emitter's post-registration flow kick
     // before %main — scr_stream.c links only when the line is emitted
-    // (cc.ts gates on the same predicate).
+    // (native-toolchain.ts gates on the same predicate).
     const usesStream = moduleUsesStream(this.mod);
     // Net-surface programs fill the loop's net hooks (and the netSocket
     // handle-dispatch ops for the checked-dynamic boundary); http-surface
     // programs additionally stamp the httpReq/httpRes ops — the C main's
-    // install lines, gated on the same predicates cc.ts links by.
+    // install lines, gated on the same predicates native-toolchain.ts links by.
     const usesNet = moduleUsesNet(this.mod);
     const usesHttp = moduleUsesHttpServer(this.mod);
     // Fetch-referencing programs register the native fetch bridge before
-    // any island entry (the engine's lazy boot consults it) — cc.ts
+    // any island entry (the engine's lazy boot consults it) — native-toolchain.ts
     // compiles scr_fetch.c on the same predicate.
     const usesFetch = moduleUsesFetch(this.mod);
     const embedsZlib = moduleEmbedsBuiltin(this.mod, "node:zlib");
@@ -2067,7 +2067,7 @@ class LlEmitter {
       ...stamps,
       // Event-surface programs (signal/exit listeners) fill the loop's
       // nullable event hooks before %main — scr_events.c links only when
-      // this line is emitted (cc.ts gates on the same predicate).
+      // this line is emitted (native-toolchain.ts gates on the same predicate).
       ...(usesEvents ? [`  call void @scr_events_install()`] : []),
       // fs.watch programs fill the loop's watch hooks the same way —
       // scr_watch.c links only when this line is emitted.
@@ -2628,7 +2628,7 @@ class LlEmitter {
     return { definitions, pack, lifted, fieldTys, ret, tr, spawnParams, argPackLines };
   }
 
-  /** Per-async-function machinery — emit-async.ts's scaffolding, .ll
+  /** Per-async-function machinery — async.ts's scaffolding, .ll
    * flavored: an argument-pack struct type, a fiber trampoline (unpacks,
    * frees the pack, runs the ordinary compiled body, settles the
    * promise — fulfilling on clean return, leaving a pending exception
@@ -2787,7 +2787,7 @@ class LlEmitter {
   }
 
   /** Per-generator-function machinery — the async scaffolding's lazy
-   * sibling (emit-async.ts's emitGenScaffolding): the same argument pack,
+   * sibling (async.ts's emitGenScaffolding): the same argument pack,
    * a fiber trampoline whose epilogue stores the COMPLETION value (or
    * consumes the GENRET sentinel, promoting the parked .return value), a
    * spawn wrapper that only ALLOCATES the suspended fiber, and the
@@ -3085,7 +3085,7 @@ class LlEmitter {
   }
 
   /** Moves an already-evaluated value into the runtime's exception cell —
-   * the `throw` statement's kind dispatch (emit-stmts.ts's), shared with
+   * the `throw` statement's kind dispatch (stmts.ts's), shared with
    * every synthetic thrower. Ownership of a refcounted payload must have
    * been moved off its frame by the caller. */
   private emitThrowValue(v: LlValue): void {
@@ -3487,7 +3487,7 @@ class LlEmitter {
 
   /** The TDZ-guarded read of a boxed binding: an empty payload slot is
    * the temporal dead zone — throw Node's exact catchable ReferenceError
-   * (emit-exprs.ts's varRef guard). Scalars then peek the one-element
+   * (exprs.ts's varRef guard). Scalars then peek the one-element
    * array cell; ref kinds read the box normally (+1). */
   private tdzBoxRead(box: string, t: IrType, name: string): string {
     const B = this.B;
@@ -3824,7 +3824,7 @@ class LlEmitter {
           // A SCALAR TDZ box rides an ARR-kind box: the value lives in a
           // one-element array cell, so the empty (NULL) slot stays the
           // not-yet-initialized sentinel — a raw scalar slot has no spare
-          // bit pattern to spend on it (emit-stmts.ts's varDecl).
+          // bit pattern to spend on it (stmts.ts's varDecl).
           const boxNew =
             b.local!.tdz === true && boxAccess(b.type) !== "ref"
               ? (this.declare(`declare ptr @scr_box_new(i32)`), `call ptr @scr_box_new(i32 3)`)
@@ -4036,7 +4036,7 @@ class LlEmitter {
           B.br(join);
           B.startBlock(join);
           // MAY THROW exactly when a dyn value can validate against a
-          // declared field (emit-stmts.ts's condition).
+          // declared field (stmts.ts's condition).
           if (shape.fields.length > 0) this.emitPendingCheck();
           break;
         }
@@ -4102,19 +4102,19 @@ class LlEmitter {
       }
       case "if": {
         const cond = this.emitCondition(s.cond);
-        const lt = B.newLabel("if.t");
-        const lj = B.newLabel("if.j");
-        const lf = s.else_ ? B.newLabel("if.f") : lj;
-        B.condBr(cond, lt, lf);
-        B.startBlock(lt);
+        const trueLabel = B.newLabel("if.t");
+        const joinLabel = B.newLabel("if.j");
+        const falseLabel = s.else_ ? B.newLabel("if.f") : joinLabel;
+        B.condBr(cond, trueLabel, falseLabel);
+        B.startBlock(trueLabel);
         this.emitBlock(s.then);
-        B.br(lj);
+        B.br(joinLabel);
         if (s.else_) {
-          B.startBlock(lf);
+          B.startBlock(falseLabel);
           this.emitBlock(s.else_);
-          B.br(lj);
+          B.br(joinLabel);
         }
-        B.startBlock(lj);
+        B.startBlock(joinLabel);
         break;
       }
       case "while": {
@@ -4462,7 +4462,7 @@ class LlEmitter {
     }
   }
 
-  /** try/catch/finally via pending-flag unwinding — emit-stmts.ts's
+  /** try/catch/finally via pending-flag unwinding — stmts.ts's
    * emitTryCatch, block-flavored. Entering a try emits NO code: the try
    * context is compile-time state (tryStack) redirecting unwinds inside
    * the region to a label here. Shape:
@@ -4571,7 +4571,7 @@ class LlEmitter {
       if (excHandler.used) {
         // The pending exception is STASHED across the finally body (a
         // ScrCaught snapshot, re-raised after) so the body runs with a
-        // CLEAN cell — see emit-stmts.ts's exception-path copy. The
+        // CLEAN cell — see stmts.ts's exception-path copy. The
         // stash rides an alloca slot so a throw inside the body unwinds
         // through the synthetic scope entry (replace semantics).
         B.startBlock(finExcLabel);
@@ -4845,15 +4845,15 @@ class LlEmitter {
         B.entryAllocas.push(`${slot} = alloca ${ty}`);
         B.line(`store ${ty} ${l.name}, ptr ${slot}`);
         const truthy = this.truthy(l);
-        const lr = B.newLabel("log.r");
-        const lj = B.newLabel("log.j");
-        if (e.op === "&&") B.condBr(truthy, lr, lj);
-        else B.condBr(truthy, lj, lr);
-        B.startBlock(lr);
+        const rightLabel = B.newLabel("log.r");
+        const joinLabel = B.newLabel("log.j");
+        if (e.op === "&&") B.condBr(truthy, rightLabel, joinLabel);
+        else B.condBr(truthy, joinLabel, rightLabel);
+        B.startBlock(rightLabel);
         if (isRefCounted(e.type)) this.releaseValue(l.name, e.type);
         this.emitBranchInto(slot, e.right);
-        B.br(lj);
-        B.startBlock(lj);
+        B.br(joinLabel);
+        B.startBlock(joinLabel);
         const t = B.tmp();
         B.line(`${t} = load ${ty}, ptr ${slot}`);
         return this.own({ name: t, type: e.type });
@@ -5614,8 +5614,8 @@ class LlEmitter {
           const isU = B.tmp();
           const isN = B.tmp();
           const isUnit = B.tmp();
-          B.line(`${isU} = icmp eq i32 ${kd}, ${DK.UNDEF}`);
-          B.line(`${isN} = icmp eq i32 ${kd}, ${DK.NULL}`);
+          B.line(`${isU} = icmp eq i32 ${kd}, ${DYN_KIND.UNDEF}`);
+          B.line(`${isN} = icmp eq i32 ${kd}, ${DYN_KIND.NULL}`);
           B.line(`${isUnit} = or i1 ${isU}, ${isN}`);
           const bind = B.slot();
           B.entryAllocas.push(`${bind} = alloca ptr`);
@@ -6262,7 +6262,7 @@ class LlEmitter {
         // form over a field slot. CHECKED-DYNAMIC fields validate the
         // number OUT (dynCheck — the catchable TypeError on non-numbers),
         // compute, and box the result back into the slot; unlink-then-
-        // release like fieldSet (emit-exprs.ts's shape).
+        // release like fieldSet (exprs.ts's shape).
         const obj = this.emitExpr(e.obj);
         const { ptr } = this.classFieldPtr(obj.name, e.className, e.field);
         if (e.fieldDyn) {
@@ -6785,7 +6785,7 @@ class LlEmitter {
         // exactly one microtask hop (JS: await of a non-thenable) and
         // yields itself. The union temp is borrowed; the value-carrying
         // result parks in a slot, joins the frame at the load, and the
-        // pending check runs after the join (emit-exprs.ts's shape).
+        // pending check runs after the join (exprs.ts's shape).
         if (e.value.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: awaitUnion of a non-union");
         const def = this.unionsById.get(e.value.type.unionId);
         const promiseArm = def?.arms[e.promiseTag];
@@ -7013,7 +7013,7 @@ class LlEmitter {
           return { name: "", type: e.type };
         }
         if (e.name === "promise.all") {
-          // The runtime countdown combinator (emit-exprs.ts): a pre-sized
+          // The runtime countdown combinator (exprs.ts): a pre-sized
           // values array filled per INPUT index as entries fulfill, plus
           // one subscription per entry. Entry and values arrays both stay
           // frame-owned; the combinator BORROWS them.
@@ -7405,7 +7405,7 @@ class LlEmitter {
         const lNotObj = B.newLabel("dhk.no");
         const lj = B.newLabel("dhk.j");
         const isObj = B.tmp();
-        B.line(`${isObj} = icmp eq i32 ${kd}, ${DK.OBJ}`);
+        B.line(`${isObj} = icmp eq i32 ${kd}, ${DYN_KIND.OBJ}`);
         B.condBr(isObj, lObj, lNotObj);
         B.startBlock(lObj);
         this.declare(`declare ptr @scr_dyn_obj_get(ptr, ptr, ${this.sizeType})`);
@@ -7418,7 +7418,7 @@ class LlEmitter {
         B.br(lj);
         B.startBlock(lNotObj);
         const isArr = B.tmp();
-        B.line(`${isArr} = icmp eq i32 ${kd}, ${DK.ARR}`);
+        B.line(`${isArr} = icmp eq i32 ${kd}, ${DYN_KIND.ARR}`);
         const lNotArr = B.newLabel("dhk.na");
         B.condBr(isArr, lArr, lNotArr);
         B.startBlock(lArr);
@@ -7469,7 +7469,7 @@ class LlEmitter {
         } else {
           const kd = this.dynKind(d.name);
           const kindOk = B.tmp();
-          const wantKind = st.kind === "string" ? DK.STR : st.kind === "f64" ? DK.NUM : DK.BOOL;
+          const wantKind = st.kind === "string" ? DYN_KIND.STR : st.kind === "f64" ? DYN_KIND.NUM : DYN_KIND.BOOL;
           B.line(`${kindOk} = icmp eq i32 ${kd}, ${wantKind}`);
           const slot = B.slot();
           B.entryAllocas.push(`${slot} = alloca i1`);
@@ -7526,7 +7526,7 @@ class LlEmitter {
           // every non-JSVAL kind, so the call is unconditional).
           const kd = this.dynKind(d.name);
           const isObj = B.tmp();
-          B.line(`${isObj} = icmp eq i32 ${kd}, ${DK.OBJ}`);
+          B.line(`${isObj} = icmp eq i32 ${kd}, ${DYN_KIND.OBJ}`);
           const slot = B.slot();
           B.entryAllocas.push(`${slot} = alloca i1`);
           this.declare(`declare zeroext i1 @scr_dyn_isl_is_error(ptr)`);
@@ -7576,26 +7576,26 @@ class LlEmitter {
             return o;
           };
           if (e.test === "nullish") {
-            test = oneOf([DK.UNDEF, DK.NULL]);
+            test = oneOf([DYN_KIND.UNDEF, DYN_KIND.NULL]);
           } else if (e.test === "object") {
             // `typeof v === "object"`: objects, arrays, bytes, native
             // handles, promises, AND null — engine-held objects by the
             // engine's own typeof.
-            test = orIsl(oneOf([DK.OBJ, DK.ARR, DK.BYTES, DK.HANDLE, DK.PROMISE, DK.NULL]), "scr_dyn_isl_typeof_is", this.cstr("object"));
+            test = orIsl(oneOf([DYN_KIND.OBJ, DYN_KIND.ARR, DYN_KIND.BYTES, DYN_KIND.HANDLE, DYN_KIND.PROMISE, DYN_KIND.NULL]), "scr_dyn_isl_typeof_is", this.cstr("object"));
           } else if (e.test === "array") {
             // Array.isArray: the checked-dynamic tree's array kind, or the engine's own
             // answer for an engine-held value.
-            test = orIsl(oneOf([DK.ARR]), "scr_dyn_isl_is_array");
+            test = orIsl(oneOf([DYN_KIND.ARR]), "scr_dyn_isl_is_array");
           } else if (e.test === "function") {
-            test = orIsl(oneOf([DK.FUNC]), "scr_dyn_isl_typeof_is", this.cstr("function"));
+            test = orIsl(oneOf([DYN_KIND.FUNC]), "scr_dyn_isl_typeof_is", this.cstr("function"));
           } else {
             const kindOf: Record<string, number> = {
-              string: DK.STR,
-              number: DK.NUM,
-              boolean: DK.BOOL,
-              undefined: DK.UNDEF,
-              null: DK.NULL,
-              bytes: DK.BYTES,
+              string: DYN_KIND.STR,
+              number: DYN_KIND.NUM,
+              boolean: DYN_KIND.BOOL,
+              undefined: DYN_KIND.UNDEF,
+              null: DYN_KIND.NULL,
+              bytes: DYN_KIND.BYTES,
             };
             test = oneOf([kindOf[e.test]!]);
           }
@@ -7686,7 +7686,7 @@ class LlEmitter {
     }
   }
 
-  /* ── the island surface (emit-island.ts + emit-exprs.ts, ported) ─────── */
+  /* ── the island surface (island.ts + exprs.ts, ported) ─────── */
 
   /** Static → island marshal (--dynamic only): primitives by value,
    * JSON-safe composites through the type-directed serializer and the
@@ -8159,7 +8159,7 @@ class LlEmitter {
   }
 
   /** The host-call adapter for closures of a given (arity, return kind) —
-   * emit-island.ts's islandAdapter: argv cells are BORROWED by the
+   * island.ts's islandAdapter: argv cells are BORROWED by the
    * wrapper; the closure ABI consumes (+1) each param, so the adapter
    * retains them in. A jsval-returning closure's +1 result passes
    * straight through; primitive returns marshal back by value; void
@@ -8519,7 +8519,7 @@ class LlEmitter {
     return k;
   }
 
-  /** Interned Promise.race fulfillment adapter — emit-async.ts's
+  /** Interned Promise.race fulfillment adapter — async.ts's
    * raceAdapterFor: converts a settled entry's payload (inner `from`)
    * into the result promise's inner type `to` and fulfills the
    * destination. Identical types share the runtime's raw copy; a plain
@@ -8649,7 +8649,7 @@ class LlEmitter {
     return sym;
   }
 
-  /** Interned generator-resume result builder — emit-async.ts's
+  /** Interned generator-resume result builder — async.ts's
    * genResultThunkFor: reads the post-resume state of a generator into a
    * fresh IteratorResult record `{ done, value }`. While suspended, the
    * yielded value moves out of the OUT slot into its arm of V (retagging
@@ -8854,7 +8854,7 @@ class LlEmitter {
     return sym;
   }
 
-  /** Interned per-union child exit adapter — emit-async.ts's
+  /** Interned per-union child exit adapter — async.ts's
    * childExitThunkFor: the runtime invokes adapter(cb, has_code, code,
    * signal_name); the adapter builds the `number | null` union value
    * (tags are program data) and calls the listener, which owns the union
@@ -8899,7 +8899,7 @@ class LlEmitter {
    * the code union as above plus the signal as its own `string | null`
    * union (a fresh string from the runtime's static signal name when a
    * signal killed the child, the null arm otherwise). */
-  private childExitThunkFor2(codeParam: IrType, sigParam: IrType): string {
+  private childExitSignalThunkFor(codeParam: IrType, sigParam: IrType): string {
     if (codeParam.kind !== "union" || sigParam.kind !== "union") {
       throw new InternalCompilerError("llvm emitter bug: exit listener params not unions");
     }
@@ -8961,7 +8961,7 @@ class LlEmitter {
     return sym;
   }
 
-  /** Interned per-union child-stream data adapter — emit-async.ts's
+  /** Interned per-union child-stream data adapter — async.ts's
    * childDataThunkFor: wraps a retained chunk at the union's Buffer arm
    * and calls the listener, which owns the union param. */
   private childDataThunkFor(param: IrType): string {
@@ -8993,7 +8993,7 @@ class LlEmitter {
   }
 
   /** The fixed-arity EventEmitter listener adapter for one listener func
-   * type — emit-async.ts's emitterInvokeThunkFor, split across the C/LLVM
+   * type — async.ts's emitterInvokeThunkFor, split across the C/LLVM
    * boundary: the runtime's matching scr_ee_inv_fixed{k} shim reads k
    * POINTER-SIZE slots off the emit tuple's va_list (textual LLVM IR
    * cannot va_arg portably) and calls this function behind the wrapper
@@ -9114,7 +9114,7 @@ class LlEmitter {
     return out;
   }
 
-  /** The bound server.close adapter — emit-async.ts's closeBindThunkFor:
+  /** The bound server.close adapter — async.ts's closeBindThunkFor:
    * the fn of a fresh closure whose one env slot holds the +1 server. A
    * one-param callback (declaring the `Error | undefined` slot) rides a
    * trampoline firing it with the undefined arm. */
@@ -9211,7 +9211,7 @@ class LlEmitter {
     return sym;
   }
 
-  /** The close-override zero-arg wrapper — emit-async.ts's
+  /** The close-override zero-arg wrapper — async.ts's
    * closeOverrideWrapFor: carries the user function in its one env slot
    * and fires it with the undefined-arm callback argument, releasing the
    * chaining-return server when the signature answers one. */
@@ -9251,7 +9251,7 @@ class LlEmitter {
   }
 
   /** The stream-'data' listener adapter for one listener func type —
-   * emit-async.ts's streamDataThunkFor behind the arity-2 fixed shim: the
+   * async.ts's streamDataThunkFor behind the arity-2 fixed shim: the
    * runtime's 'data' emission carries BOTH payload slots (bytes chunk,
    * string chunk — exactly one non-NULL), and this adapter unwraps the
    * listener's declared side. A listener declaring the WRONG side for the
@@ -9341,7 +9341,7 @@ class LlEmitter {
   }
 
   /** The stream completion-callback closure fn for one done func type —
-   * emit-async.ts's streamDoneFnFor: the `callback` a user's write/final/
+   * async.ts's streamDoneFnFor: the `callback` a user's write/final/
    * destroy/transform/flush receives. The closure's one capture box holds
    * the stream (+1); calling it unwraps the (optional) error/data union
    * arguments and reports completion to the runtime's *_done entry. Args
@@ -9512,7 +9512,7 @@ class LlEmitter {
   }
 
   /** The stream option-callback invoke adapter for one (kind, callback
-   * type) — emit-async.ts's streamCbThunkFor: the runtime calls the
+   * type) — async.ts's streamCbThunkFor: the runtime calls the
    * user's read/write/final/destroy/transform/flush (or the finished/
    * pipeline watcher, "e") through it. The stream rides first (the
    * leading `this` param); the user may have declared any PREFIX of the
@@ -9724,7 +9724,7 @@ class LlEmitter {
   }
 
   /** Interned per inner-type resolve thunk for ref-kind new Promise —
-   * emit-async.ts's resolveThunkFor: the fn of the runtime-minted resolve
+   * async.ts's resolveThunkFor: the fn of the runtime-minted resolve
    * closure, forwarding to scr_resolve_ref_impl with the inner type's RC
    * entry points. */
   private resolveThunkFor(inner: IrType): string {
@@ -10637,7 +10637,7 @@ class LlEmitter {
     B.line(`store i32 ${stored!}, ptr ${p}, align 1`);
   }
 
-  /** The bytesIntrinsic surface (emit-exprs.ts's switch, .ll flavored).
+  /** The bytesIntrinsic surface (exprs.ts's switch, .ll flavored).
    * Receiver and args are borrowed frame temps; string/bytes results come
    * back +1. The MAY_THROW methods get the standard pending check after
    * their temp joins its frame. The numeric families' kind token (args[0],
@@ -12265,7 +12265,7 @@ class LlEmitter {
       } else if (cbT.params.length === 1) {
         adapter = this.childExitThunkFor(cbT.params[0]!);
       } else {
-        adapter = this.childExitThunkFor2(cbT.params[0]!, cbT.params[1]!);
+        adapter = this.childExitSignalThunkFor(cbT.params[0]!, cbT.params[1]!);
       }
       this.declare(`declare void @scr_child_on_exit(ptr, ptr, ptr)`);
       B.line(`call void @scr_child_on_exit(ptr ${child.name}, ptr ${cb.name}, ptr @${adapter})`);
@@ -12402,7 +12402,7 @@ class LlEmitter {
     }
     if (e.fn === "spawnRes.status" || e.fn === "child.pid" || e.fn === "child.exitCode") {
       // `number | null` / `number | undefined`, constructed type-
-      // directedly over the runtime's has/get pairs (emit-exprs.ts).
+      // directedly over the runtime's has/get pairs (exprs.ts).
       if (e.type.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
       const def = this.unionsById.get(e.type.unionId);
       const wantUnit = e.fn === "child.pid" ? "undefinedT" : "nullT";
@@ -12622,7 +12622,7 @@ class LlEmitter {
     }
     if (e.fn === "os.networkInterfaces") {
       // The Dict<NetworkInterfaceInfo[]> record, built inline from a
-      // getifaddrs(3) snapshot — emit-exprs.ts's builder, block-lowered.
+      // getifaddrs(3) snapshot — exprs.ts's builder, block-lowered.
       // Every shape/union/tag below comes from the call's own type; the
       // frontend verified the structure, so lookups only guard against
       // emitter bugs. Rows append to their interface's bucket in snapshot
@@ -13017,7 +13017,7 @@ class LlEmitter {
       // Head args then flags then the PRESENT option callbacks in
       // canonical order (the flags literal names which; absent ones pass
       // NULL pairs). The .init forms carry the BORROWED receiver at arg 0
-      // and shift everything by one (emit-exprs.ts's shape, ported).
+      // and shift everything by one (exprs.ts's shape, ported).
       const base = e.fn.slice(0, e.fn.indexOf("."));
       const isInit = e.fn.endsWith(".init");
       const off = isInit ? 1 : 0;

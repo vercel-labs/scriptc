@@ -1,4 +1,4 @@
-/* Checked-dynamic ASYNC surfaces (gated — cc.ts links this TU only when
+/* Checked-dynamic ASYNC surfaces (gated — native-toolchain.ts links this TU only when
  * the IR carries the crossing libCalls or dyn dispatch: the scr_dc.c
  * size-class precedent). Everything here rides scr_async.c's public
  * machinery: the checked-dynamic tree-promise reaction helpers (.then/.catch/.finally

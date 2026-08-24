@@ -3090,7 +3090,7 @@ export type IrLibFn =
   | "fs.readFileSyncBytes"
   | "fs.writeFileSyncBytes"
   | "fsp.readFileBytes"
-  /** node:zlib (scr_zlib.c — cc.ts compiles/links it ONLY when these
+  /** node:zlib (scr_zlib.c — native-toolchain.ts compiles/links it ONLY when these
    * appear on the IR, the regex/libcurl gating precedent): deflateSync/
    * inflateSync over u8 bytes with Node's default options. deflate never
    * throws (OOM aborts); inflate of corrupt input THROWS Node's error
@@ -3882,7 +3882,7 @@ export type IrLibFn =
   | "tp.setImmediate"
   /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
    * the zlib gating precedent): a process-global name→channel registry;
-   * channel values are f64 handles (types.ts maps Channel to F64, the
+   * channel values are f64 handles (type-mapper.ts maps Channel to F64, the
    * readline.Interface pattern). Subscribers are dyn function values —
    * identity-compared by unsubscribe, called (message, name) by publish
    * over a SNAPSHOT of the list (a subscriber unsubscribing itself
@@ -3901,7 +3901,7 @@ export type IrLibFn =
   | "dc.chanHasSubscribers"
   | "dc.chanName"
   /** TracingChannel (dc.tracingChannel): a registry entry of the five
-   * event channels, an f64 handle like Channel (types.ts). tcSubscribe/
+   * event channels, an f64 handle like Channel (type-mapper.ts). tcSubscribe/
    * tcUnsubscribe walk a dyn handlers object's five event keys (truthy
    * non-function slots throw the per-channel ERR_INVALID_ARG_TYPE);
    * tcTraceSync/tcTraceCallback/tcTracePromise run Node's publish choreography in C over
@@ -5873,7 +5873,7 @@ export function canExitIslandToType(
 /** True when the module contains any regex construct — a regexLit /
  * regexIntrinsic node or a regex-typed slot anywhere. This is the link
  * switch that pulls scr_regex.c + the vendored libregexp into the binary
- * (cc.ts); regex-free programs keep the historical command line. A generic
+ * (native-toolchain.ts); regex-free programs keep the historical command line. A generic
  * JSON walk: `kind` discriminants live only on IR objects, so user string
  * VALUES can never false-positive. */
 export function moduleUsesRegex(mod: IrModule): boolean {
@@ -5992,7 +5992,7 @@ export function moduleUsesFileHandle(mod: IrModule): boolean {
 
 /** True when user code lowers static fetch or the embedded npm graph
  * reaches the engine's global fetch — the link switch that pulls scr_fetch.c +
- * its socket/tls/zlib dependencies into the binary (cc.ts) and has the
+ * its socket/tls/zlib dependencies into the binary (native-toolchain.ts) and has the
  * emitted main call scr_fetch_install. The npm graph records the embedded
  * source fact with a parser + binder, so comments, strings, property names,
  * and local `fetch` bindings do not change the link or target capability.
@@ -6044,7 +6044,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<string> = new Set([
 
 /** True when the module uses the process-events surface — the link switch
  * that pulls scr_events.c into the binary and has the emitted main call
- * scr_events_install (cc.ts + emitter; the scr_regex/scr_fetch/scr_zlib
+ * scr_events_install (native-toolchain.ts + emitter; the scr_regex/scr_fetch/scr_zlib
  * gating precedent). Event-free programs pay zero bytes and keep their
  * exact link line. Same generic-walk shape as moduleUsesRegex. */
 export function moduleUsesProcessEvents(mod: IrModule): boolean {
@@ -6067,7 +6067,7 @@ export function moduleUsesProcessEvents(mod: IrModule): boolean {
 }
 
 /** True when the module uses the node:events EventEmitter surface — the
- * link switch that pulls scr_events_emitter.c into the binary (cc.ts; the
+ * link switch that pulls scr_events_emitter.c into the binary (native-toolchain.ts; the
  * scr_events.c gating precedent, but pure data structure: no install, no
  * loop hooks). Two signals: the `%EventEmitter` class def rides the
  * module (any emitter-typed value or `extends EventEmitter` subclass
@@ -6141,13 +6141,13 @@ export function moduleEmbedsBuiltin(mod: IrModule, builtin: string): boolean {
 }
 
 /** Embedded module texts at least this long are DEFLATE-compressed into
- * the emitted C (emit-island.ts; each stays plain when deflate does not
+ * the emitted C (island.ts; each stays plain when deflate does not
  * shrink it) and inflated lazily by the island's module loader at first
  * load. Below it the zlib round trip cannot pay for itself. */
 export const NPM_COMPRESS_MIN = 1024;
 
 /** True when the emitted npm tables will carry compressed module text —
- * the SAME candidate test emit-island.ts compresses by, so index.ts's
+ * the SAME candidate test island.ts compresses by, so index.ts's
  * zlib link switch and emitter.ts's inflater installation stay in
  * lockstep with the emission (a candidate whose deflate happens not to
  * shrink stays plain; the installed inflater is then just unused). */
@@ -6163,7 +6163,7 @@ export function moduleEmbedsCompressedNpm(mod: IrModule): boolean {
 /** True when the module contains any zlib libCall (the static lowering)
  * OR the embedded npm graph imports node:zlib (the island shim) — the
  * link switch that pulls scr_zlib.c + the system libz into the binary
- * (cc.ts); zlib-free programs keep their exact link line. Same
+ * (native-toolchain.ts); zlib-free programs keep their exact link line. Same
  * generic-walk shape as moduleUsesRegex: `kind`/`fn` discriminants live
  * only on IR objects. */
 export function moduleUsesZlib(mod: IrModule): boolean {
@@ -6188,7 +6188,7 @@ export function moduleUsesZlib(mod: IrModule): boolean {
 
 /** True when the module contains any dc.* libCall — the link switch that
  * pulls scr_dc.c (the diagnostics_channel registry and pub/sub) into the
- * binary (cc.ts). Channel-free binaries keep their exact size class.
+ * binary (native-toolchain.ts). Channel-free binaries keep their exact size class.
  * Same walk shape as moduleUsesZlib. */
 export function moduleUsesDc(mod: IrModule): boolean {
   let found = false;
@@ -6210,7 +6210,7 @@ export function moduleUsesDc(mod: IrModule): boolean {
 }
 
 /** True when the module contains any assert libCall — the link switch
- * that pulls scr_assert.c into the binary (cc.ts). scr_regex.c calls the
+ * that pulls scr_assert.c into the binary (native-toolchain.ts). scr_regex.c calls the
  * assert throw/inspect helpers (assert.match lives there), so the regex
  * switch also pulls scr_assert.c; assert-free, regex-free binaries keep
  * the historical command line and size. Same walk shape as
@@ -6237,7 +6237,7 @@ export function moduleUsesAssert(mod: IrModule): boolean {
 /** True when the module contains any dynInvoke node or dyn.defineProps
  * libCall — the link switch that pulls scr_dyn_invoke.c (the prototype-
  * method dispatch on dyn receivers, plus scr_dyn_display and
- * scr_dyn_define_props) into the binary (cc.ts; the assert gating
+ * scr_dyn_define_props) into the binary (native-toolchain.ts; the assert gating
  * precedent — dispatch-free binaries keep their exact size class). Same
  * walk shape as moduleUsesZlib. */
 export function moduleUsesDynInvoke(mod: IrModule): boolean {
@@ -6260,14 +6260,14 @@ export function moduleUsesDynInvoke(mod: IrModule): boolean {
 }
 
 /** True when the module contains any insp libCall — the link switch that
- * pulls scr_inspect.c into the binary (cc.ts; the assert gating
+ * pulls scr_inspect.c into the binary (native-toolchain.ts; the assert gating
  * precedent — inspect-free binaries keep the historical command line and
  * size class). Same walk shape as moduleUsesZlib. */
 /** True when the module needs scr_async_dyn.c — the checked-dynamic
  * async surfaces (dyn-promise then/catch/finally reactions, await of a
  * dyn value, `new Promise(setImmediate)`, AsyncLocalStorage, the
  * unhandledRejection/warning process events). Also pulled by the
- * dynInvoke and dc gates (their TUs call into this one) — cc.ts. Same
+ * dynInvoke and dc gates (their TUs call into this one) — native-toolchain.ts. Same
  * walk shape as moduleUsesZlib. */
 export function moduleUsesDynAsync(mod: IrModule): boolean {
   const fns = new Set([
@@ -6324,7 +6324,7 @@ export function moduleUsesInspect(mod: IrModule): boolean {
 
 /** True when the module contains any net libCall — the link switch that
  * pulls scr_net.c into the binary and has the emitted main call
- * scr_net_install (cc.ts + emitter; the scr_events gating precedent).
+ * scr_net_install (native-toolchain.ts + emitter; the scr_events gating precedent).
  * Net-free programs pay zero bytes and keep their exact link line. Same
  * generic-walk shape as moduleUsesZlib. */
 export function moduleUsesNet(mod: IrModule): boolean {
@@ -6365,7 +6365,7 @@ export function moduleUsesNet(mod: IrModule): boolean {
 
 /** True when the module contains any sym.* libCall or a symbol-kind type
  * anywhere in the IR — the link switch that pulls scr_symbol.c into the
- * binary (cc.ts; the scr_net gating precedent — no install call, the
+ * binary (native-toolchain.ts; the scr_net gating precedent — no install call, the
  * Symbol.for registry initializes lazily). The TYPE check matters like
  * net's: a symbol-typed local whose initializer compiled to a runtime
  * fence still emits release calls that need the unit linked. Symbol-free
@@ -6476,7 +6476,7 @@ export function moduleUsesParseArgs(mod: IrModule): boolean {
 
 /** True when the module contains any fs.watch/watcher.* libCall — the
  * link switch that pulls scr_watch.c into the binary and has the emitted
- * main call scr_watch_install (cc.ts + emitter; the scr_net gating
+ * main call scr_watch_install (native-toolchain.ts + emitter; the scr_net gating
  * precedent). Watch-free programs pay zero bytes and keep their exact
  * link line. Same generic-walk shape as moduleUsesZlib. */
 export function moduleUsesFsWatch(mod: IrModule): boolean {
@@ -6508,7 +6508,7 @@ export function moduleUsesFsWatch(mod: IrModule): boolean {
 /** True when the module contains any test.* libCall or a testCtx handle
  * type — the link switch that pulls scr_test.c into the binary and has
  * the emitted main return scr_test_exit_code() after the loop drains
- * (cc.ts + emitter; the moduleUsesDgram shape). Test-free programs pay
+ * (native-toolchain.ts + emitter; the moduleUsesDgram shape). Test-free programs pay
  * zero bytes and keep their exact link line. */
 export function moduleUsesNodeTest(mod: IrModule): boolean {
   let found = false;
@@ -6537,7 +6537,7 @@ export function moduleUsesNodeTest(mod: IrModule): boolean {
 
 /** True when the module contains any dgram.* or dns.* libCall — the
  * link switch that pulls scr_dgram.c into the binary and has the emitted
- * main call scr_dgram_install (cc.ts + emitter; the scr_net gating
+ * main call scr_dgram_install (native-toolchain.ts + emitter; the scr_net gating
  * precedent — dns.lookup lives in the same unit, so either prefix
  * answers). Dgram-free programs pay zero bytes and keep their exact link
  * line. Same generic-walk shape as moduleUsesZlib. */
@@ -6568,7 +6568,7 @@ export function moduleUsesDgram(mod: IrModule): boolean {
 }
 
 /** True when the module contains any http.* libCall — the link switch
- * that pulls scr_http.c into the binary (cc.ts; moduleUsesNet already
+ * that pulls scr_http.c into the binary (native-toolchain.ts; moduleUsesNet already
  * answers true for these, so scr_net.c comes along). */
 export function moduleUsesHttpServer(mod: IrModule): boolean {
   let found = false;
@@ -6638,7 +6638,7 @@ export function moduleUsesHttp2(mod: IrModule): boolean {
 
 /** True when the module contains any tls.* or https.* libCall — the link
  * switch that pulls scr_tls.c and the vendored mbedTLS archive into the
- * binary (cc.ts; moduleUsesNet and moduleUsesHttpServer already answer
+ * binary (native-toolchain.ts; moduleUsesNet and moduleUsesHttpServer already answer
  * true for these, so scr_net.c and scr_http.c come along). TLS-free
  * programs keep their exact link line and never build mbedTLS. */
 export function moduleUsesTls(mod: IrModule): boolean {
@@ -6672,7 +6672,7 @@ export function moduleUsesTls(mod: IrModule): boolean {
  * for scr_tls_ca.c, the CA-store introspection unit (getCACertificates /
  * rootCertificates / setDefaultCACertificates). Deliberately SEPARATE
  * from moduleUsesTls: the unit is plain PEM-block bookkeeping, so a
- * program that only inspects the CA store never pulls mbedTLS. cc.ts
+ * program that only inspects the CA store never pulls mbedTLS. native-toolchain.ts
  * also compiles the unit whenever TLS itself links — scr_tls.c consults
  * the unit's default-set override for its trust anchors. */
 export function moduleUsesTlsCa(mod: IrModule): boolean {

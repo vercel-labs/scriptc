@@ -32,7 +32,7 @@
  * same thread, own stack); the idle sleep is nanosleep (mingw-w64 ships
  * it, over Sleep). poll(2) has no Windows arm — see the sleep seam in
  * scr_loop_run: the poller-backed units (net/dgram/watch) are not built
- * for win32 targets (cc.ts gates them), so their fds never appear; the
+ * for win32 targets (native-toolchain.ts gates them), so their fds never appear; the
  * events unit DOES cross-compile (scr_events.c's win32 arm) and is
  * served by a capped nanosleep — dispatch at the next turn's top, the
  * cap bounding signal/stdin latency instead of a pollable wake fd. */

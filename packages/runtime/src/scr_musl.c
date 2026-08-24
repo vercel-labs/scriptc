@@ -1,4 +1,4 @@
-/* musl libc shim — compiled into linux-musl target builds only (cc.ts adds
+/* musl libc shim — compiled into linux-musl target builds only (native-toolchain.ts adds
  * this TU together with -DSCR_MUSL). musl deliberately provides no libc
  * identification macro, so the target-selected project macro is the guard.
  *

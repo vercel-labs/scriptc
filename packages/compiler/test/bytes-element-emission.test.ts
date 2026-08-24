@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
-import { emitModule } from "../src/backend/emission/emitter.js";
+import { emitCModule } from "../src/backend/c/c-emitter.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
-import { BOOL, F64, VOID, bytesOf, type IrBytesElem, type IrExpr, type IrLocal, type IrModule, type IrStmt } from "../src/ir/nodes.js";
+import { BOOL, F64, VOID, bytesOf, type IrBytesElem, type IrExpr, type IrLocal, type IrModule, type IrStmt } from "../src/ir/ir.js";
 import { validateModule } from "../src/ir/validate.js";
 
 const loc = { file: "bytes-hot-loop.ts", start: 0, end: 0 };
@@ -245,7 +245,7 @@ function integerLoopFixture(mutatesIndex = false): IrModule {
 test("C emission specializes typed-array element access by static element kind", () => {
   const mod = fixture();
   expect(validateModule(mod)).toEqual([]);
-  const c = emitModule(mod);
+  const c = emitCModule(mod);
   for (const elem of elems) {
     expect(c).toContain(`sc_bytes_get_${elem}(`);
     expect(c).toContain(`sc_bytes_set_${elem}(`);
@@ -274,7 +274,7 @@ test("LLVM emission performs typed-array element access directly on the valid pa
 test("side-effecting indices retain the receiver snapshot", () => {
   const mod = sideEffectFixture();
   expect(validateModule(mod)).toEqual([]);
-  const c = emitModule(mod);
+  const c = emitCModule(mod);
   const ll = emitLlvmModule(mod);
   expect(c).toContain("scr_bytes_retain(sc_l_b_0)");
   expect(ll).toContain("call ptr @scr_bytes_retain_v");
@@ -285,7 +285,7 @@ test("side-effecting indices retain the receiver snapshot", () => {
 test("receiver assignments nested in numeric operands retain the receiver snapshot", () => {
   const mod = receiverReassignmentFixture();
   expect(validateModule(mod)).toEqual([]);
-  const c = emitModule(mod);
+  const c = emitCModule(mod);
   const ll = emitLlvmModule(mod);
   expect(c).toContain("scr_bytes_retain(sc_l_read)");
   expect(c).toContain("scr_bytes_retain(sc_l_write)");
@@ -297,7 +297,7 @@ test("receiver assignments nested in numeric operands retain the receiver snapsh
 test("canonical byte loops keep their induction variable and indices integral", () => {
   const mod = integerLoopFixture();
   expect(validateModule(mod)).toEqual([]);
-  const c = emitModule(mod);
+  const c = emitCModule(mod);
   const ll = emitLlvmModule(mod);
 
   expect(c).toContain("uint64_t sc_i");
@@ -313,7 +313,7 @@ test("canonical byte loops keep their induction variable and indices integral", 
 test("a body mutation keeps the byte loop on the general f64 path", () => {
   const mod = integerLoopFixture(true);
   expect(validateModule(mod)).toEqual([]);
-  const c = emitModule(mod);
+  const c = emitCModule(mod);
   const ll = emitLlvmModule(mod);
 
   expect(c).not.toContain("integer induction index");

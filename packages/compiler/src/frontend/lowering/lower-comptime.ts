@@ -6,7 +6,7 @@ import vm from "node:vm";
 import ts5 from "typescript5";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
-import { IrExpr, IrType } from "../../ir/nodes.js";
+import { IrExpr, IrType } from "../../ir/ir.js";
 import { comptimeFailedDiag } from "../../diagnostics/diagnostic.js";
 import { locOf } from "../program.js";
 import { PoisonError } from "./lowerer.js";
@@ -49,13 +49,13 @@ function describeComptimeValue(v: unknown): string {
    * 6. the returned VALUE is checked against T, path-annotated
    *    (dynCheck-style) — NaN/Infinity, undefined/null/functions, and shape
    *    mismatches are rejected, never miscompiled. */
-  export function lowerComptime(L: Lowerer, expr: ts.CallExpression): IrExpr {
+  export function lowerComptime(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // 1. Inline function literal only (tsc guarantees the arity/type; the
     // literal-ness is our requirement — source extraction needs the source).
     let cb: ts.Expression | undefined = expr.arguments[0];
     while (cb && ts.isParenthesizedExpression(cb)) cb = cb.expression;
     if (!cb || !(ts.isArrowFunction(cb) || ts.isFunctionExpression(cb))) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         expr.arguments[0] ?? expr,
         "comptime arguments other than inline function literals " +
@@ -67,17 +67,17 @@ function describeComptimeValue(v: unknown): string {
       ts.isFunctionExpression(cb) && cb.asteriskToken ||
       cb.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
     ) {
-      L.unsupported("SC1090", cb, "async or generator comptime callbacks");
+      lowerer.unsupported("SC1090", cb, "async or generator comptime callbacks");
     }
     // 3. Self-containment.
-    L.rejectComptimeCaptures(cb);
+    lowerer.rejectComptimeCaptures(cb);
     // 4. The checker's type for the call is the bake target.
-    const target = L.irTypeOf(expr);
-    if (!L.comptimeBakeable(target)) {
-      L.unsupported(
+    const target = lowerer.irTypeOf(expr);
+    if (!lowerer.comptimeBakeable(target)) {
+      lowerer.unsupported(
         "SC1090",
         expr,
-        `baking comptime results of type '${L.fmt(target)}' into the binary ` +
+        `baking comptime results of type '${lowerer.fmt(target)}' into the binary ` +
           `(only number, string, boolean, arrays, and records lower to literals)`,
       );
     }
@@ -108,28 +108,28 @@ function describeComptimeValue(v: unknown): string {
         err?.code === "ERR_SCRIPT_EXECUTION_TIMEOUT"
           ? `evaluation exceeded the ${COMPTIME_TIMEOUT_MS}ms compile-time budget`
           : `the callback threw: ${err && typeof err.message === "string" ? err.message : String(e)}`;
-      L.pushDiag(comptimeFailedDiag(detail, locOf(cb)));
+      lowerer.pushDiag(comptimeFailedDiag(detail, locOf(cb)));
       throw new PoisonError();
     }
     // 6. Result → literal IR, checked against T.
-    return L.comptimeValueToIr(result, target, "$", cb);
+    return lowerer.comptimeValueToIr(result, target, "$", cb);
   }
 
 /** True when a comptime result of this type can be written as a literal
    * expression: number/string/boolean, arrays and record shapes of those,
    * nested. Closures, class instances, unions, promises, dyn, and void
    * cannot be baked. */
-  export function comptimeBakeable(L: Lowerer, t: IrType): boolean {
+  export function comptimeBakeable(lowerer: Lowerer, t: IrType): boolean {
     switch (t.kind) {
       case "f64":
       case "string":
       case "bool":
         return true;
       case "array":
-        return L.comptimeBakeable(t.elem);
+        return lowerer.comptimeBakeable(t.elem);
       case "record": {
-        const shape = L.shapes.get(t.shapeId);
-        return !!shape && shape.fields.every((f) => L.comptimeBakeable(f.type));
+        const shape = lowerer.shapes.get(t.shapeId);
+        return !!shape && shape.fields.every((f) => lowerer.comptimeBakeable(f.type));
       }
       default:
         return false;
@@ -145,7 +145,7 @@ function describeComptimeValue(v: unknown): string {
    * Type-position references (annotations, `as` targets) are exempt: they
    * are erased before evaluation. Nested comptime calls are rejected up
    * front with their own message (the vm context has no `comptime`). */
-  export function rejectComptimeCaptures(L: Lowerer, cb: ts.ArrowFunction | ts.FunctionExpression): void {
+  export function rejectComptimeCaptures(lowerer: Lowerer, cb: ts.ArrowFunction | ts.FunctionExpression): void {
     const sf = cb.getSourceFile();
     const inTypePosition = (node: ts.Node): boolean => {
       for (let p: ts.Node | undefined = node.parent; p && p !== cb; p = p.parent) {
@@ -164,16 +164,16 @@ function describeComptimeValue(v: unknown): string {
           (ts.isPropertyAssignment(parent) && parent.name === node);
         if (!isPropertyName && !inTypePosition(node)) {
           const symbol = ts.isShorthandPropertyAssignment(parent)
-            ? L.checker.getShorthandAssignmentValueSymbol(parent)
-            : L.checker.getSymbolAtLocation(node);
-          const decls = symbol ? L.checker.declarationsOf(symbol) : undefined;
+            ? lowerer.checker.getShorthandAssignmentValueSymbol(parent)
+            : lowerer.checker.getSymbolAtLocation(node);
+          const decls = symbol ? lowerer.checker.declarationsOf(symbol) : undefined;
           if (symbol && decls && decls.length > 0) {
             const ownLocal = decls.every(
               (d) => d.getSourceFile() === sf && d.pos >= cb.pos && d.end <= cb.end,
             );
             if (!ownLocal) {
-              if (node.text === "comptime" && L.isStdlibSymbol(symbol)) {
-                L.unsupported(
+              if (node.text === "comptime" && lowerer.isStdlibSymbol(symbol)) {
+                lowerer.unsupported(
                   "SC1090",
                   node,
                   "comptime calls inside comptime callbacks " +
@@ -186,16 +186,16 @@ function describeComptimeValue(v: unknown): string {
               // Rejected so side effects can't silently vanish; the other
               // Node-isms (process, setTimeout) don't exist in the vm and
               // fail loudly at evaluation.
-              if (node.text === "console" && L.isStdlibSymbol(symbol)) {
-                L.unsupported(
+              if (node.text === "console" && lowerer.isStdlibSymbol(symbol)) {
+                lowerer.unsupported(
                   "SC1090",
                   node,
                   "console calls inside comptime callbacks " +
                     "(the callback computes a value at compile time — return it and log at runtime)",
                 );
               }
-              if (!L.isStdlibSymbol(symbol)) {
-                L.unsupported(
+              if (!lowerer.isStdlibSymbol(symbol)) {
+                lowerer.unsupported(
                   "SC1090",
                   node,
                   `comptime callbacks referencing outer bindings ` +
@@ -215,14 +215,14 @@ function describeComptimeValue(v: unknown): string {
 /** A JS value computed at compile time → literal IR of the expected type,
    * recursively. Mismatches are SC1110 with the offending path
    * (dynCheck-style: `$.items[2].price`) and both sides rendered. */
-  export function comptimeValueToIr(L: Lowerer, value: unknown,
+  export function comptimeValueToIr(lowerer: Lowerer, value: unknown,
     expected: IrType,
     path: string,
     blame: ts.Node,): IrExpr {
     const loc = locOf(blame);
     const fail = (got: string): never => {
-      L.pushDiag(
-        comptimeFailedDiag(`expected '${L.fmt(expected)}' at ${path}, got ${got}`, loc),
+      lowerer.pushDiag(
+        comptimeFailedDiag(`expected '${lowerer.fmt(expected)}' at ${path}, got ${got}`, loc),
       );
       throw new PoisonError();
     };
@@ -245,7 +245,7 @@ function describeComptimeValue(v: unknown): string {
       case "array": {
         if (!Array.isArray(value)) return fail(describeComptimeValue(value));
         const elems = (value as unknown[]).map((el, i) =>
-          L.comptimeValueToIr(el, expected.elem, `${path}[${i}]`, blame),
+          lowerer.comptimeValueToIr(el, expected.elem, `${path}[${i}]`, blame),
         );
         return { kind: "arrayLit", elems, type: expected, loc };
       }
@@ -253,7 +253,7 @@ function describeComptimeValue(v: unknown): string {
         if (typeof value !== "object" || value === null || Array.isArray(value)) {
           return fail(describeComptimeValue(value));
         }
-        const shape = L.shapes.get(expected.shapeId)!; // bakeable-checked
+        const shape = lowerer.shapes.get(expected.shapeId)!; // bakeable-checked
         const obj = value as Record<string, unknown>;
         const declared = new Set(shape.fields.map((f) => f.name));
         for (const key of Object.keys(obj)) {
@@ -263,7 +263,7 @@ function describeComptimeValue(v: unknown): string {
         }
         const fields = shape.fields.map((f) => ({
           name: f.name,
-          value: L.comptimeValueToIr(obj[f.name], f.type, `${path}.${f.name}`, blame),
+          value: lowerer.comptimeValueToIr(obj[f.name], f.type, `${path}.${f.name}`, blame),
         }));
         return { kind: "recordLit", fields, type: expected, loc };
       }

@@ -87,7 +87,7 @@
  */
 import { dirname, extname, join, resolve } from "node:path";
 import ts from "typescript5";
-import { packageNameOfSpecifier as packageNameOf } from "./shared.js";
+import { packageNameOfSpecifier as packageNameOf } from "./workspace-registry.js";
 import { cjsLexedExportsOf } from "./cjs-lexer.js";
 import { trackedDirectoryExists, trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { resolveExports } from "./resolve.js";

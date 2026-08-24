@@ -4,8 +4,8 @@ import { InternalCompilerError } from "../../errors.js";
  * array element kinds, map key/value kinds), plus C literal spelling. Pure
  * functions of IrType/values — every emission module leans on these, so they
  * live in ONE place with no emitter state. */
-import type { IrType } from "../../ir/nodes.js";
-import { POINTER_KINDS, type PointerKind, runtimeRcStem, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES } from "../../ir/nodes.js";
+import type { IrType } from "../../ir/ir.js";
+import { POINTER_KINDS, type PointerKind, runtimeRcStem, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES } from "../../ir/ir.js";
 import {
   mangleClassRelease,
   mangleClassRetain,

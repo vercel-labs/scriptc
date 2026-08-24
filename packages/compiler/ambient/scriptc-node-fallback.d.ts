@@ -800,7 +800,7 @@ declare module "timers/promises" {
  * the AsyncLocalStorage integration (dc.chan* libCalls).
  *
  * TracingChannel (tracingChannel) is the five-event-channel collection:
- * an f64 handle into the runtime's tracing registry (types.ts maps the
+ * an f64 handle into the runtime's tracing registry (type-mapper.ts maps the
  * name like Channel). subscribe/unsubscribe walk a handlers object;
  * traceSync/traceCallback run Node's publish choreography in the runtime
  * (context defaults to a fresh {}); tracePromise is declared (the member
@@ -992,7 +992,7 @@ declare module "node:fs" {
   export function readdirSync(path: string): string[];
   /* The withFileTypes form: Dirent rows (name + parentPath + the type
    * probes — the honest subset of Node's Dirent surface). The type is
-   * interned explicitly in types.ts (the record's hidden %dtype field
+   * interned explicitly in type-mapper.ts (the record's hidden %dtype field
    * carries the entry kind; isFile/isDirectory/isSymbolicLink lower as
    * reads of it in lower-builtins.ts). */
   export interface Dirent {
@@ -1239,7 +1239,7 @@ declare module "os" {
   /* The passwd-entry snapshot (uv_os_get_passwd): shell is `string |
    * null` to match @types/node (POSIX always answers the string arm);
    * homedir is pw_dir — NOT os.homedir()'s $HOME-first cascade. The type
-   * is interned explicitly in types.ts (the AddressInfo pattern — this
+   * is interned explicitly in type-mapper.ts (the AddressInfo pattern — this
    * concrete form and @types/node's UserInfo<string> both), and the call
    * assembles field-by-field in lowerOsUserInfoCall. */
   export interface UserInfo {
@@ -1570,7 +1570,7 @@ declare module "child_process" {
   /* The named options interface for the string-encoding exec form —
    * @types/node's ExecFileSyncOptionsWithStringEncoding, narrowed to the
    * honestly-implemented members. VALUES of this type are a real record
-   * (types.ts interns the shape), so a typed const or a runner function's
+   * (type-mapper.ts interns the shape), so a typed const or a runner function's
    * options parameter flows to execFileSync at runtime — the windows-ca
    * command-runner idiom. */
   export interface ExecFileSyncOptionsWithStringEncoding {

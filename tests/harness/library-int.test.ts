@@ -39,7 +39,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { compileLibrary, renderAll, validateSidecar } from "@scriptc/compiler";
+import { compileLibrary, renderDiagnostics, validateSidecar } from "@scriptc/compiler";
 
 const repoRoot = join(import.meta.dirname, "../..");
 const fixtureRoot = join(repoRoot, "tests/library-mode");
@@ -468,7 +468,7 @@ export function grow(a: number): void {
   expect(result.ok).toBe(false);
   if (result.ok) return;
   expect(result.diagnostics.map((d) => d.code).sort()).toEqual(["SC4021", "SC4022", "SC4023"]);
-  const rendered = renderAll(result.diagnostics, result.sourceTexts, { color: false }).replaceAll(outDir + "/", "");
+  const rendered = renderDiagnostics(result.diagnostics, result.sourceTexts, { color: false }).replaceAll(outDir + "/", "");
   await expect(rendered).toMatchFileSnapshot("__snapshots__/library-int-refusals.txt");
 });
 

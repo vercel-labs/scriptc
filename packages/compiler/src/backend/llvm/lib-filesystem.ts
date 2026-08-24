@@ -6,6 +6,17 @@ import { mangleRecordNew } from "../mangle.js";
 import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
+import { emitAlwaysThrowLibCall } from "./lib-shared.js";
+
+const FS_ALWAYS_THROW_SYMS: Readonly<Record<string, string>> = {
+  "fs.mkdtempChk": "scr_fs_mkdtemp_chk",
+  "fs.readFileChk": "scr_fs_read_file_chk",
+  "fs.opendirChk": "scr_fs_opendir_chk",
+  "fs.watchFileChk": "scr_fs_watch_file_chk",
+  "fs.lchmodChk": "scr_fs_lchmod_chk",
+  "fs.readChk": "scr_fs_read_chk",
+  "fs.streamOptsChk": "scr_fs_stream_opts_chk",
+};
 
 export function emitWebLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     const B = host.B;
@@ -117,6 +128,10 @@ export function emitDynamicLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
 
 export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     const B = host.B;
+    const alwaysThrowSym = FS_ALWAYS_THROW_SYMS[e.fn];
+    if (alwaysThrowSym !== undefined) {
+      return emitAlwaysThrowLibCall(host, e, alwaysThrowSym);
+    }
     if (e.fn === "fs.renameCb") {
       // The callback MOVES into the next-turn operation. Its emitted
       // adapter materializes the callback's Error | null union (or the

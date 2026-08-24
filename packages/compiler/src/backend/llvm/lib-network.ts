@@ -5,9 +5,13 @@ import { STRING } from "../../ir/ir.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
+import { emitAlwaysThrowLibCall } from "./lib-shared.js";
 
 export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     const B = host.B;
+    if (e.fn === "net.connectOptsChk") {
+      return emitAlwaysThrowLibCall(host, e, "scr_net_connect_opts_chk");
+    }
     if (e.fn === "net.createServer" || e.fn === "net.createServerCb") {
       const args = e.args.map((a) => host.emitExpr(a));
       let cb = "null";

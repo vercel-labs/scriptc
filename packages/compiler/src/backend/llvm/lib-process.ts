@@ -378,37 +378,6 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       host.emitPendingCheck();
       return out;
     }
-    {
-      // The fs validation-ladder Chk forms that ALWAYS throw (a
-      // validation error or the trailing compiler-rendered fence): every
-      // argument is a ptr (dyns + the fence string), and the typed dummy
-      // is abandoned by the pending check's unwind.
-      const FS_CHK_THROW_SYMS: Record<string, string | undefined> = {
-        "fs.mkdtempChk": "scr_fs_mkdtemp_chk",
-        "fs.readFileChk": "scr_fs_read_file_chk",
-        "fs.opendirChk": "scr_fs_opendir_chk",
-        "fs.watchFileChk": "scr_fs_watch_file_chk",
-        "fs.lchmodChk": "scr_fs_lchmod_chk",
-        "fs.readChk": "scr_fs_read_chk",
-        "fs.streamOptsChk": "scr_fs_stream_opts_chk",
-        "net.connectOptsChk": "scr_net_connect_opts_chk",
-      };
-      const sym = FS_CHK_THROW_SYMS[e.fn];
-      if (sym !== undefined) {
-        const args = e.args.map((a) => host.emitExpr(a));
-        host.declare(`declare void @${sym}(${args.map(() => "ptr").join(", ")})`);
-        B.line(`call void @${sym}(${args.map((a) => `ptr ${a.name}`).join(", ")})`);
-        const ty = host.llType(e.type);
-        if (ty === "void") {
-          host.emitPendingCheck();
-          return { name: "", type: e.type };
-        }
-        const dummy = ty === "double" ? f64Lit(0) : ty === "i1" ? "false" : "null";
-        const out = host.own({ name: dummy, type: e.type });
-        host.emitPendingCheck();
-        return out;
-      }
-    }
     if (e.fn === "error.nodeThrow") {
       // The compiler-resolved Node-parity throw (always throws — the
       // typed dummy is abandoned by the pending check's unwind).

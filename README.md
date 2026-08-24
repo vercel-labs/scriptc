@@ -117,3 +117,7 @@ $ pnpm test:sandbox
 ```
 
 The test corpus runs each program under Node and as a compiled native binary, then compares stdout, stderr, and exit codes byte for byte. The full gate also runs the corpus with AddressSanitizer and the runtime reference-count audit.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).

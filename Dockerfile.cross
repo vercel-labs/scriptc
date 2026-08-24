@@ -1,0 +1,76 @@
+# syntax=docker/dockerfile:1.7
+
+ARG NODE_VERSION=20
+ARG ZIG_VERSION=0.16.0
+
+FROM node:${NODE_VERSION}-bookworm-slim AS node-bin
+
+FROM snowstep/llvm:noble AS runner
+
+ARG ZIG_VERSION
+
+ENV PATH="/usr/local/bin:/usr/local/lib/node_modules/.bin:${PATH}" \
+    SCRIPTC_CC=zigcc
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends xz-utils cmake make ninja-build \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=node-bin /usr/local/bin/ /usr/local/bin/
+COPY --from=node-bin /usr/local/lib/ /usr/local/lib/
+
+RUN echo "download https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz\n"; curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+      "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+ | tar -xJ -C /opt \
+ && ln -s "/opt/zig-x86_64-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig \
+  && echo "test zig - version is:" && zig version
+
+# Snowstep/llvm:noble ships ca-certificates but not git or xz-utils.
+# Required for scriptc: nothing extra (npm install scriptc only).
+# Optional — only if compiled binaries run inside THIS container
+# (e.g. execSync('git fetch ...') from a Node script compiled here):
+#   RUN apt-get update \
+#    && apt-get install -y --no-install-recommends git \
+#    && rm -rf /var/lib/apt/lists/*
+RUN npm install -g scriptc \
+ && mkdir -p /usr/local/lib/node_modules/scriptc/node_modules/@scriptc/runtime/vendor/.cache \
+ && chmod -R 777 /usr/local/lib/node_modules/scriptc/node_modules/@scriptc/runtime/vendor
+
+WORKDIR /work
+
+ENTRYPOINT ["scriptc"]
+CMD ["--help"]
+
+#######
+# 
+# DOCS
+#
+#######
+
+## build docker image
+
+# docker build -t scriptc-runner-cross -f Dockerfile.cross . 
+
+## run scriptc for x86_64 binary target
+
+# docker run --rm \
+#     -e SCRIPTC_TARGET=x86_64-linux-musl -v "$PWD":/work \
+#     -u "$(id -u):$(id -g)" \            
+#     scriptc-runner-cross \
+#     build ./sendFailursToMatrix.js --dynamic -o ./sendFailursToMatrix 
+
+## run scriptc for wasm binary target
+
+# docker run --rm \ 
+#     -e SCRIPTC_TARGET=wasm32-wasi \                    
+#     -v "$PWD":/work \     
+#     -u "$(id -u):$(id -g)" \            
+#     scriptc-runner-cross \
+#     build ./sendFailursToMatrix.js --dynamic -o ./sendFailursToMatrix.wasm
+
+## remove useless debug_info and reduce binary weight by ~5MB
+
+# docker run --rm --entrypoint /usr/bin/strip \
+#     -v "$PWD":/work \  
+#     scriptc-runner-cross \
+#     /work/sendFailursToMatrix

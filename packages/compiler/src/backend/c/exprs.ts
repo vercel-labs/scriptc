@@ -3,7 +3,7 @@ import { InternalCompilerError } from "../../errors.js";
  * expression lands in a fresh C temp, with RC ownership tracked on the
  * emitter's frames (see the discipline comment in emitter core). */
 import type { CEmitter, Temp } from "./c-emitter.js";
-import { arrayOf, BOOL, BYTES_U8, bytesOf, canMarshalFuncIntoIsland, CHILDSTREAM_T, DYN, F64, IrExpr, IrRecordShape, IrType, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, RUNTIME_ERROR_CLASSES, STRING, typeEquals, typeKey } from "../../ir/ir.js";
+import { arrayOf, BOOL, BYTES_U8, bytesOf, canMarshalFuncIntoIsland, CHILDSTREAM_T, DYN, F64, IrExpr, IrLibFn, IrRecordShape, IrType, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isRefCounted, isUnitType, MAY_THROW_LIB_FNS, RUNTIME_ERROR_CLASSES, STRING, typeEquals, typeKey } from "../../ir/ir.js";
 import { boxAccess, BYTES_NUM_KIND_C, BYTES_NUM_VAR_C, bytesElemKindC, cDecl, cFnPtrCast, cNumberLiteral, cStringLiteral, cType, DV_GET_KIND_C, DV_SET_KIND_C, elemAccess, mapKeyAccess, mapKeyKindC, mapValKindC, releaseCallC, retainCallC, vAdapters } from "./types.js";
 import { mangleClassNew, mangleClassRetain, mangleClassStruct, mangleField, mangleFnClosure, mangleFunction, mangleGlobal, mangleLocal, mangleRecordClone, mangleRecordNew, mangleRecordStruct, mangleVtStruct } from "../mangle.js";
 import { OVERFLOW_MEMBER } from "./shapes.js";
@@ -627,8 +627,13 @@ function emitMapLikeIntrinsic(
   }
 }
 
-export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
-    switch (e.kind) {
+type ExprOf<K extends IrExpr["kind"]> = Extract<IrExpr, { kind: K }>;
+
+function emitLiteralExpr(
+  emitter: CEmitter,
+  e: ExprOf<"numLit" | "boolLit" | "strLit" | "unitLit" | "varRef">,
+): Temp {
+  switch (e.kind) {
       case "numLit":
         return emitter.newTemp(e.type, cNumberLiteral(e.value));
       case "boolLit":
@@ -683,6 +688,19 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
         }
         return emitter.newTemp(e.type, isRefCounted(e.type) ? retainCallC(e.type, name) : name);
       }
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+function emitOperatorExpr(
+  emitter: CEmitter,
+  e: ExprOf<"bin" | "unary" | "incDec" | "fieldIncDec" | "assignExpr" | "seqExpr">,
+): Temp {
+  switch (e.kind) {
       case "bin": {
         const l = emitter.emitExpr(e.left);
         const r = emitter.emitExpr(e.right);
@@ -812,6 +830,19 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
         for (const s of e.stmts) emitter.emitStmt(s);
         return emitter.emitExpr(e.result);
       }
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+function emitControlExpr(
+  emitter: CEmitter,
+  e: ExprOf<"dynDestrCheck" | "dynIterN" | "toBool" | "logical" | "ternary" | "optChain" | "chainRecv" | "orDefault" | "nullish">,
+): Temp {
+  switch (e.kind) {
       case "dynDestrCheck": {
         // RequireObjectCoercible with V8's destructuring TypeError. dyn
         // values check in the runtime helper and pass through unchanged
@@ -1168,6 +1199,19 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
         if (isRefCounted(e.type)) emitter.currentFrame().push({ name, type: e.type });
         return { name, type: e.type };
       }
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+function emitStringExpr(
+  emitter: CEmitter,
+  e: ExprOf<"strConcat" | "strEq" | "strCmp" | "toString" | "strIntrinsic" | "regexLit" | "templateStrings" | "regexIntrinsic">,
+): Temp {
+  switch (e.kind) {
       case "strConcat": {
         const l = emitter.emitExpr(e.left);
         const r = emitter.emitExpr(e.right);
@@ -1398,6 +1442,19 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
           }
         }
       }
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+function emitContainerExpr(
+  emitter: CEmitter,
+  e: ExprOf<"arrayLit" | "arrayNewLen" | "arrayGet" | "arrIntrinsic" | "bytesNew" | "bytesIntrinsic" | "mapNew" | "mapIntrinsic" | "setIntrinsic" | "setNew">,
+): Temp {
+  switch (e.kind) {
       case "arrayLit": {
         // Allocate, then push each element in order. Ownership of refcounted
         // plain elements moves into the array (interned literals are
@@ -1970,6 +2027,19 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
         }
         return s;
       }
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+function emitCallExpr(
+  emitter: CEmitter,
+  e: ExprOf<"call" | "ffiCall" | "closure" | "callValue" | "selfRef" | "new" | "classRef" | "newValue" | "instanceOfValue" | "promiseVoidWiden" | "upcast" | "downcast" | "instanceOf" | "virtualCall">,
+): Temp {
+  switch (e.kind) {
       case "call": {
         const args = e.args.map((a) => emitter.emitExpr(a));
         // Callees own their params: ownership of refcounted args moves.
@@ -2361,6 +2431,19 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
         if (emitter.mayThrowMethods.has(e.method)) emitter.emitPendingCheck();
         return t;
       }
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+function emitRecordExpr(
+  emitter: CEmitter,
+  e: ExprOf<"fieldGet" | "recordGet" | "recordLit" | "recordClone" | "recordKeyGet" | "recordOvfKeys">,
+): Temp {
+  switch (e.kind) {
       case "fieldGet":
       case "recordGet": {
         const obj = emitter.emitExpr(e.obj);
@@ -2444,6 +2527,19 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
         const obj = emitter.emitExpr(e.obj);
         return emitter.newTemp(e.type, `scr_map_keys_js_order(${obj.name}->${OVERFLOW_MEMBER})`);
       }
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+function emitDynamicExpr(
+  emitter: CEmitter,
+  e: ExprOf<"dynFrom" | "dynFromJsval" | "dynCall" | "dynInvoke" | "dynArrLit" | "dynObjLit" | "unionWrap" | "unionNarrow" | "unionDisc" | "unionKeyGet" | "unionIsTag" | "dynKeyGet" | "dynHasKey" | "dynScalarEq" | "dynTest" | "unionEq" | "unionFuncEq" | "caughtTest" | "caughtCheck" | "caughtNarrow" | "caughtToDyn">,
+): Temp {
+  switch (e.kind) {
       case "dynFrom": {
         // Static value → fresh dyn tree (+1) through the interned per-type
         // converter; the operand stays borrowed (frame-released as usual).
@@ -2909,6 +3005,19 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
         const c = emitter.emitExpr(e.value);
         return emitter.newTemp(e.type, `${emitter.caughtToDynHelper()}(${c.name})`);
       }
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+function emitIntrinsicExpr(
+  emitter: CEmitter,
+  e: ExprOf<"intrinsic">,
+): Temp {
+  switch (e.kind) {
       case "intrinsic": {
         if (e.name === "module.await") {
           // The module evaluator's dependency wait: park only while the
@@ -3060,27 +3169,740 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
         emitter.line(`${consoleFn}(${args.length}, ${arr});${emitter.srcComment(e.loc)}`);
         return { name: "", type: e.type };
       }
-      case "libCall": {
-        // Standard-library call. Args are BORROWED (owned temps of the
-        // current frame, released at statement end); refcounted results come
-        // back +1 (process.argv: +1 on the runtime's ONE interned array —
-        // JS identity — everything else fresh). Throwing members (the
-        // may-throw seed set) get the standard pending check, emitted after
-        // a result temp joins its frame so an unwind releases it.
-        const args = e.args.map((a) => emitter.emitExpr(a));
-        const arg = (i: number) => args[i]!.name;
-        const finish = (call: string): Temp => {
-          if (e.type.kind === "void") {
-            emitter.line(`${call};${emitter.srcComment(e.loc)}`);
-            if (MAY_THROW_LIB_FNS.has(e.fn)) emitter.emitPendingCheck();
+    default: {
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+function emitSerializationExpr(
+  emitter: CEmitter,
+  e: ExprOf<"jsonStringify" | "dynCheck">,
+): Temp {
+  switch (e.kind) {
+      case "jsonStringify": {
+        // Type-directed serialization: the STATIC type picks an emitted
+        // serializer (interned per type) — no dyn, no runtime dispatch. The
+        // value temp is BORROWED (released with this statement's frame);
+        // the result string is owned (+1). Throws only over CYCLE-CAPABLE
+        // types (recursive records — the circular-structure TypeError) and
+        // dyn roots; everything else keeps the throw-free path.
+        const v = emitter.emitExpr(e.value);
+        // A dyn root: the runtime's dyn walker (scr_dyn_format_j — the %j
+        // serializer IS JSON.stringify over the checked-dynamic tree: number/string/bool/
+        // null/array/object exact, dropped members omitted, a dropped ROOT
+        // becomes the text "undefined", a runtime handle inside the tree
+        // throws) — fallible, so the pending-exception check runs.
+        const compact =
+          e.value.type.kind === "dyn"
+            ? emitter.fallibleTemp(e.type, `scr_dyn_format_j(${v.name})`)
+            : (() => {
+                const helper = emitter.jsonWriteHelper(e.value.type);
+                const buf = `sc_t${emitter.tempCounter++}`;
+                emitter.line(`ScrJsonBuf ${buf}; scr_jb_init(&${buf});${emitter.srcComment(e.loc)}`);
+                emitter.line(`${helper}(&${buf}, ${v.name});`);
+                const t = emitter.newTemp(e.type, `scr_jb_finish(&${buf})`);
+                // A cycle-capable root can throw the circular-structure
+                // TypeError mid-walk: finish still runs (frees the buffer,
+                // the partial string joins the frame and releases on
+                // unwind), then the pending check unwinds.
+                if (emitter.traceAdapterC(e.value.type) !== null) emitter.emitPendingCheck();
+                return t;
+              })();
+        // A pretty-print form (`stringify(v, null, 2)`): the frontend
+        // resolved the space to a compile-time indent string (Node's
+        // clamp/truncate rules) riding as an extra property; the interned
+        // re-indenter rewrites the compact text with Node's gap algorithm.
+        // Compact temp stays frame-owned; the pretty string is a fresh +1.
+        const indent = (e as { indent?: string }).indent;
+        if (!indent) return compact;
+        const bytes = Buffer.from(indent, "utf8");
+        return emitter.newTemp(
+          e.type,
+          `${emitter.jsonIndentHelper()}(${compact.name}, ${cStringLiteral(bytes)}, ${bytes.length})`,
+        );
+      }
+      case "dynCheck": {
+        // The dynamic boundary: validate the checked-dynamic tree against the target type
+        // and BUILD the typed value (+1) — or throw a catchable
+        // TypeError-shaped, path-annotated string. The dyn temp is BORROWED;
+        // the result joins the frame BEFORE the pending check so an unwind
+        // releases the dummy (NULL for refcounted targets) harmlessly.
+        const dyn = emitter.emitExpr(e.value);
+        const helper = emitter.dynCheckHelper(e.type);
+        return emitter.fallibleTemp(e.type, `${helper}(${dyn.name}, NULL)`);
+      }
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+function emitAsyncExpr(
+  emitter: CEmitter,
+  e: ExprOf<"yieldExpr" | "genResume" | "awaitExpr" | "awaitUnionExpr" | "newPromise" | "promiseWithResolvers">,
+): Temp {
+  switch (e.kind) {
+      case "yieldExpr": {
+        // Park the operand in the generator's OUT slot (moved in, typed by
+        // the function's yield channel) and switch back to the resumer.
+        // Control returns at the next resume — possibly with an injected
+        // .throw payload or the GENRET sentinel pending, hence the check.
+        // The result is the .next(v) argument, moved out of the IN slot.
+        const gen = emitter.currentGenerator;
+        if (!gen) throw new InternalCompilerError("emitter bug: yieldExpr outside a generator body");
+        if (e.value === null) throw new InternalCompilerError("emitter bug: yieldExpr with no operand (frontend fills undefined)");
+        const v = emitter.emitExpr(e.value);
+        const yt = e.value.type;
+        if (yt.kind === "f64" || yt.kind === "date") {
+          emitter.line(`scr_gen_yield_f64(${v.name});${emitter.srcComment(e.loc)}`);
+        } else if (yt.kind === "bool") {
+          emitter.line(`scr_gen_yield_bool(${v.name});${emitter.srcComment(e.loc)}`);
+        } else {
+          emitter.moveTemp(v); // the OUT slot takes ownership
+          emitter.line(`scr_gen_yield_ref(${v.name}, ${vAdapters(yt).release});${emitter.srcComment(e.loc)}`);
+        }
+        emitter.emitPendingCheck();
+        switch (e.type.kind) {
+          case "void":
+            // An undefined next-channel: nothing to read (the frontend
+            // fences value-position yields on this channel).
+            return { name: "", type: e.type };
+          case "f64":
+          case "date":
+            return emitter.newTemp(e.type, `scr_gen_take_in_f64()`);
+          case "bool":
+            return emitter.newTemp(e.type, `scr_gen_take_in_bool()`);
+          default:
+            // Refcounted channels (dyn included): the slot's +1 moves out.
+            return emitter.newTemp(e.type, `(${cType(e.type).trim()})scr_gen_take_in_ref()`);
+        }
+      }
+      case "genResume": {
+        // One consumer resume: park the sent value (typed per mode), hop
+        // into the fiber, propagate a body exception (pending check), and
+        // build the IteratorResult record through the interned helper.
+        const genT = e.gen.type;
+        if (genT.kind !== "generator") throw new InternalCompilerError("emitter bug: genResume on a non-generator");
+        if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: genResume result is not a record");
+        const g = emitter.emitExpr(e.gen); // borrowed for the calls below
+        const sendArg = (store: (a: Temp) => string): void => {
+          const a = emitter.emitExpr(e.arg!);
+          if (isRefCounted(e.arg!.type)) emitter.moveTemp(a); // the slot takes ownership
+          emitter.line(store(a));
+        };
+        if (e.mode === "next") {
+          if (e.arg === null) {
+            // Valueless resume: dyn channels read JS's undefined; unit
+            // channels have nothing to read.
+            if (genT.nextT.kind === "dyn") {
+              emitter.line(`scr_gen_in_ref(${g.name}, scr_dyn_retain(scr_dyn_undefined()), scr_dyn_release_v);${emitter.srcComment(e.loc)}`);
+            } else {
+              emitter.line(`scr_gen_in_none(${g.name});${emitter.srcComment(e.loc)}`);
+            }
+          } else {
+            const nt = e.arg.type;
+            sendArg((a) =>
+              nt.kind === "f64" || nt.kind === "date" ? `scr_gen_in_f64(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
+              : nt.kind === "bool" ? `scr_gen_in_bool(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
+              : `scr_gen_in_ref(${g.name}, ${a.name}, ${vAdapters(nt).release});${emitter.srcComment(e.loc)}`);
+          }
+          emitter.line(`scr_gen_resume(${g.name});`);
+        } else if (e.mode === "return") {
+          if (e.arg === null) {
+            emitter.line(`scr_gen_ret_none(${g.name});${emitter.srcComment(e.loc)}`);
+          } else {
+            const rt = e.arg.type;
+            sendArg((a) =>
+              rt.kind === "f64" || rt.kind === "date" ? `scr_gen_ret_f64(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
+              : rt.kind === "bool" ? `scr_gen_ret_bool(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
+              : `scr_gen_ret_ref(${g.name}, ${a.name}, ${vAdapters(rt).release});${emitter.srcComment(e.loc)}`);
+          }
+          emitter.line(`scr_gen_resume_return(${g.name});`);
+        } else {
+          // .throw(e): park the payload in the CALLER's cell (the throw
+          // statement's exact kind dispatch), then resume — the runtime
+          // moves it into the fiber, or leaves it pending (non-suspended
+          // generators: the .throw call itself throws at the check below).
+          if (e.arg === null) throw new InternalCompilerError("emitter bug: genResume throw with no payload");
+          const a = emitter.emitExpr(e.arg);
+          const t = e.arg.type;
+          if (isRefCounted(t)) emitter.moveTemp(a); // the cell takes ownership
+          if (t.kind === "date") {
+            throw new InternalCompilerError("emitter bug: Date generator throw reached backend");
+          } else if (t.kind === "f64") {
+            emitter.line(`scr_throw_f64(${a.name});${emitter.srcComment(e.loc)}`);
+          } else if (t.kind === "bool") {
+            emitter.line(`scr_throw_bool(${a.name});${emitter.srcComment(e.loc)}`);
+          } else if (t.kind === "string") {
+            emitter.line(`scr_throw_str(${a.name});${emitter.srcComment(e.loc)}`);
+          } else if (t.kind === "object" && emitter.classMeta.get(t.className)?.hierarchy) {
+            const rc = vAdapters(t);
+            emitter.line(`scr_throw_obj(${a.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(t)});${emitter.srcComment(e.loc)}`);
+          } else {
+            const rc = vAdapters(t);
+            emitter.line(`scr_throw_ref(${a.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(t)});${emitter.srcComment(e.loc)}`);
+          }
+          emitter.line(`scr_gen_resume_throw(${g.name});`);
+        }
+        const helper = genResultThunkFor(emitter, genT, e.type);
+        // The record builds before the check so an unwind (a propagated
+        // body exception) releases it as the frame's never-read dummy.
+        return emitter.fallibleTemp(e.type, `${helper}(${g.name})`);
+      }
+      case "awaitExpr": {
+        // Parks the fiber until the promise settles; rejected promises
+        // re-throw here (hence the pending check). Promise temp borrowed;
+        // refcounted results arrive +1 and join the frame pre-check so an
+        // unwind releases the dummy (NULL) harmlessly.
+        const pr = emitter.emitExpr(e.value);
+        let read: string;
+        switch (e.type.kind) {
+          case "f64":
+          case "date":
+            read = `scr_await_f64(${pr.name})`;
+            break;
+          case "bool":
+            read = `scr_await_bool(${pr.name})`;
+            break;
+          case "string":
+            read = `scr_await_str(${pr.name})`;
+            break;
+          case "void": {
+            emitter.line(`scr_await_void(${pr.name});${emitter.srcComment(e.loc)}`);
+            emitter.emitPendingCheck();
             return { name: "", type: e.type };
           }
-          const t = emitter.newTemp(e.type, call);
-          if (MAY_THROW_LIB_FNS.has(e.fn)) emitter.emitPendingCheck();
-          return t;
+          case "dyn":
+            // The checked-dynamic tree-crossing await: void fulfillments (a boxed
+            // promise<void> that skipped its adapter) answer the
+            // undefined VALUE, never NULL.
+            read = `scr_await_dyn(${pr.name})`;
+            break;
+          default:
+            read = `(${cType(e.type).trim()})scr_await_ref(${pr.name})`;
+        }
+        return emitter.fallibleTemp(e.type, read);
+      }
+      case "awaitUnionExpr": {
+        // Await of a promise-or-absent union: the promise arm awaits like
+        // awaitExpr (parks, re-throws rejections); a unit arm takes exactly
+        // one microtask hop (JS: await of a non-thenable) and yields
+        // itself. The union temp is borrowed; a value-carrying result joins
+        // the frame BEFORE the pending check so an unwind releases the
+        // dummy (a union box holding the never-read NULL payload, or NULL)
+        // harmlessly.
+        if (e.value.type.kind !== "union") {
+          throw new InternalCompilerError("emitter bug: awaitUnion of a non-union");
+        }
+        const def = emitter.unionsById.get(e.value.type.unionId);
+        const promiseArm = def?.arms[e.promiseTag];
+        if (!def || promiseArm?.kind !== "promise") {
+          throw new InternalCompilerError("emitter bug: awaitUnion arm is not a promise");
+        }
+        const inner = promiseArm.inner;
+        const u = emitter.emitExpr(e.value);
+        const peek = `(ScrPromise *)scr_union_peek(${u.name})`;
+        if (e.type.kind === "void") {
+          emitter.line(
+            `if (${u.name}->tag == ${e.promiseTag}) scr_await_void(${peek}); else scr_await_hop();${emitter.srcComment(e.loc)}`,
+          );
+          emitter.emitPendingCheck();
+          return { name: "", type: e.type };
+        }
+        if (e.type.kind !== "union") {
+          throw new InternalCompilerError("emitter bug: awaitUnion result is neither void nor a union");
+        }
+        const resDef = emitter.unionsById.get(e.type.unionId);
+        if (!resDef) throw new InternalCompilerError("emitter bug: awaitUnion result union unknown");
+        const resTagOf = (arm: (typeof resDef.arms)[number]): number => {
+          const tag = resDef.arms.findIndex((a) => typeEquals(a, arm));
+          if (tag < 0) throw new InternalCompilerError("emitter bug: awaitUnion result arm missing");
+          return tag;
         };
-        const fn = e.fn;
-        switch (fn) {
+        const innerTag = resTagOf(inner);
+        const name = `sc_t${emitter.tempCounter++}`;
+        emitter.line(`${cDecl(e.type, name)} = NULL;${emitter.srcComment(e.loc)}`);
+        emitter.currentFrame().push({ name, type: e.type });
+        emitter.line(`if (${u.name}->tag == ${e.promiseTag}) {`);
+        emitter.indent++;
+        let wrap: string;
+        switch (inner.kind) {
+          case "f64":
+            wrap = `scr_union_new_f64(${innerTag}, scr_await_f64(${peek}))`;
+            break;
+          case "bool":
+            wrap = `scr_union_new_bool(${innerTag}, scr_await_bool(${peek}))`;
+            break;
+          case "string":
+            wrap = `scr_union_new_ref(${innerTag}, scr_await_str(${peek}), scr_str_retain_v, scr_str_release_v, NULL)`;
+            break;
+          default: {
+            const v = vAdapters(inner);
+            wrap = `scr_union_new_ref(${innerTag}, scr_await_ref(${peek}), ${v.retain}, ${v.release}, ${emitter.traceArgC(inner)})`;
+          }
+        }
+        emitter.line(`${name} = ${wrap};`);
+        emitter.indent--;
+        emitter.line(`} else {`);
+        emitter.indent++;
+        emitter.line(`scr_await_hop();`);
+        const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
+        if (unitTags.length === 1) {
+          emitter.line(`${name} = ${emitter.unitInstanceRef(e.type.unionId, resTagOf(def.arms[unitTags[0]!]!))};`);
+        } else {
+          emitter.line(`switch (${u.name}->tag) {`);
+          for (const t of unitTags) {
+            emitter.line(`case ${t}: ${name} = ${emitter.unitInstanceRef(e.type.unionId, resTagOf(def.arms[t]!))}; break;`);
+          }
+          emitter.line(`default: break;`);
+          emitter.line(`}`);
+        }
+        emitter.indent--;
+        emitter.line(`}`);
+        emitter.emitPendingCheck();
+        return { name, type: e.type };
+      }
+      case "newPromise": {
+        // Pending promise + resolve closure, executor run synchronously
+        // (its throw rejects — handled inside the runtime helper, so no
+        // pending check here). Executor/resolve temps are frame-owned.
+        if (e.type.kind !== "promise") throw new InternalCompilerError("emitter bug: newPromise type");
+        const inner = e.type.inner;
+        const p = emitter.newTemp(e.type, `scr_promise_new()`);
+        // Zero-param executor: no resolve exists — a forever-pending
+        // promise unless the executor throws (which rejects it).
+        if (e.executor.type.kind === "func" && e.executor.type.params.length === 0) {
+          const exec0 = emitter.emitExpr(e.executor);
+          emitter.line(
+            `scr_promise_run_executor0(${p.name}, ${exec0.name});${emitter.srcComment(e.loc)}`,
+          );
+          return p;
+        }
+        let mk: string;
+        switch (inner.kind) {
+          case "f64":
+          case "date":
+            mk = `scr_make_resolve(${p.name}, 0)`;
+            break;
+          case "bool":
+            mk = `scr_make_resolve(${p.name}, 1)`;
+            break;
+          case "string":
+            mk = `scr_make_resolve(${p.name}, 2)`;
+            break;
+          case "void":
+            mk = `scr_make_resolve(${p.name}, 3)`;
+            break;
+          default:
+            mk = `scr_make_resolve_fn(${p.name}, (void *)&${emitter.resolveThunkFor(inner)})`;
+        }
+        const resolve = emitter.newTemp(
+          { kind: "func", params: inner.kind === "void" ? [] : [inner], ret: { kind: "void" } },
+          mk,
+        );
+        // Two-param executor: reject is a runtime-provided closure rejecting
+        // the promise with its Error reason (OBJ payload — catch instanceof
+        // and the uncaught printer see exactly a thrown Error). First settle
+        // wins in the runtime; both closures' +1 move into the call.
+        if (e.executor.type.kind === "func" && e.executor.type.params.length === 2) {
+          const reject = emitter.newTemp(
+            { kind: "func", params: [{ kind: "object", className: "%Error" }], ret: { kind: "void" } },
+            `scr_make_reject(${p.name})`,
+          );
+          const exec2 = emitter.emitExpr(e.executor);
+          emitter.moveTemp(resolve);
+          emitter.moveTemp(reject);
+          emitter.line(
+            `scr_promise_run_executor2(${p.name}, ${exec2.name}, ${resolve.name}, ${reject.name});${emitter.srcComment(e.loc)}`,
+          );
+          return p;
+        }
+        const exec = emitter.emitExpr(e.executor);
+        // The executor is a compiled closure and OWNS its params (it
+        // releases them on exit) — resolve's +1 moves into the call. The
+        // executor closure itself is borrowed (frame-released here).
+        emitter.moveTemp(resolve);
+        emitter.line(
+          `scr_promise_run_executor(${p.name}, ${exec.name}, ${resolve.name});${emitter.srcComment(e.loc)}`,
+        );
+        return p;
+      }
+      case "promiseWithResolvers": {
+        // The newPromise pieces without an executor: a pending promise,
+        // its runtime resolve closure (typed per the inner kind), and
+        // the reject closure, written into the fresh record. Closure +1s
+        // move into the record's fields; never throws.
+        if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: promiseWithResolvers type");
+        const shape = emitter.recordsById.get(e.type.shapeId);
+        const promT = shape?.fields.find((f) => f.name === "promise")?.type;
+        const resolveT = shape?.fields.find((f) => f.name === "resolve")?.type;
+        const rejectT = shape?.fields.find((f) => f.name === "reject")?.type;
+        if (!shape || promT?.kind !== "promise" || !resolveT || !rejectT) {
+          throw new InternalCompilerError("emitter bug: promiseWithResolvers record shape");
+        }
+        const inner = promT.inner;
+        const p = emitter.newTemp(promT, `scr_promise_new()`);
+        let mk: string;
+        switch (inner.kind) {
+          case "f64":
+          case "date":
+            mk = `scr_make_resolve(${p.name}, 0)`;
+            break;
+          case "bool":
+            mk = `scr_make_resolve(${p.name}, 1)`;
+            break;
+          case "string":
+            mk = `scr_make_resolve(${p.name}, 2)`;
+            break;
+          case "void":
+            mk = `scr_make_resolve(${p.name}, 3)`;
+            break;
+          default:
+            mk = `scr_make_resolve_fn(${p.name}, (void *)&${emitter.resolveThunkFor(inner)})`;
+        }
+        const resolve = emitter.newTemp(resolveT, mk);
+        const reject = emitter.newTemp(rejectT, `scr_make_reject(${p.name})`);
+        const rec = emitter.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
+        // The promise's +1 moves into the record; the record's own read
+        // of it at the call site retains per field access as usual.
+        emitter.moveTemp(p);
+        emitter.moveTemp(resolve);
+        emitter.moveTemp(reject);
+        emitter.line(`${rec.name}->${mangleField("promise")} = ${p.name};`);
+        emitter.line(`${rec.name}->${mangleField("resolve")} = ${resolve.name};`);
+        emitter.line(`${rec.name}->${mangleField("reject")} = ${reject.name};`);
+        return rec;
+      }
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+function emitJsInteropExpr(
+  emitter: CEmitter,
+  e: ExprOf<"jsMarshal" | "jsOp" | "jsExit" | "jsBridgePromise">,
+): Temp {
+  switch (e.kind) {
+      case "jsMarshal": {
+        // Static → island (--dynamic only). Primitives by value; JSON-safe
+        // composites deep-copy through the emitted type-directed serializer
+        // and the engine's JSON parser (documented aliasing divergence).
+        // Operand borrowed; result +1. from_json cannot fail on this
+        // machine-produced JSON but reports engine surprises via NULL +
+        // pending — check like a may-throw so the dummy unwinds cleanly.
+        const v = emitter.emitExpr(e.value);
+        switch (e.value.type.kind) {
+          case "f64":
+            return emitter.newTemp(e.type, `scr_jsval_from_f64(${v.name})`);
+          case "bool":
+            return emitter.newTemp(e.type, `scr_jsval_from_bool(${v.name})`);
+          case "string":
+            return emitter.newTemp(e.type, `scr_jsval_from_str(${v.name})`);
+          case "dyn":
+            // A CHECKED-DYNAMIC (dyn) value entering the island: deep
+            // copy, data kinds only — boxed functions/handles/promises
+            // throw the catchable TypeError in the runtime.
+            return emitter.fallibleTemp(e.type, `scr_jsval_from_dyn(${v.name})`);
+          case "bytes":
+            // A typed array crossing IN: an engine typed array of the same
+            // element kind — a COPY (the boundary's copy stance).
+            return emitter.fallibleTemp(e.type, `scr_jsval_from_bytes(${v.name})`);
+          case "url":
+            // A URL crossing IN: an engine URL instance built from href.
+            return emitter.fallibleTemp(e.type, `scr_jsval_from_url(${v.name})`);
+          case "promise": {
+            // A STATIC promise crossing IN: a real engine thenable
+            // settled when the scriptc promise settles (the async-
+            // callback return bridge). from_promise takes ownership of a
+            // +1 — retain past the borrowed frame temp.
+            const tag = islandPromisePayloadTag(e.value.type.inner);
+            if (!tag) throw new InternalCompilerError("emitter bug: jsMarshal of a promise outside the bridge payload domain");
+            const tagC = {
+              void: "SCR_ISLP_VOID", f64: "SCR_ISLP_F64", bool: "SCR_ISLP_BOOL",
+              string: "SCR_ISLP_STR", jsval: "SCR_ISLP_JSVAL", jsvalArr: "SCR_ISLP_JSVAL_ARR",
+            }[tag];
+            return emitter.fallibleTemp(e.type, `scr_jsval_from_promise(scr_promise_retain(${v.name}), ${tagC})`);
+          }
+          case "func": {
+            // A closure entering the island as a host function (the
+            // package-callback pattern). from_closure retains the closure;
+            // the engine's finalizer releases it at teardown — which runs
+            // before the RC audit. The per-signature adapter gives the
+            // runtime one uniform call shape over the closure ABI: the
+            // interned (arity, return) adapters for the all-'any' shape,
+            // or a typed adapter converting each incoming argument to the
+            // param's static type through the exit machinery.
+            const fn = e.value.type;
+            const adapter = canMarshalFuncIntoIsland(fn)
+              ? emitter.islandAdapter(
+                  fn.params.length,
+                  fn.ret.kind as "void" | "jsval" | "f64" | "bool" | "string",
+                )
+              : emitter.islandTypedAdapter(fn);
+            // ISLAND-REST closures encode a NEGATIVE arity: the wrapper
+            // pads the leading declared params and hands the trailing
+            // slot the ENGINE array of the surplus arguments.
+            const arity = fn.rest === true && fn.restAbi === "jsval" ? -fn.params.length : fn.params.length;
+            return emitter.newTemp(
+              e.type,
+              `scr_jsval_from_closure(${v.name}, ${arity}, ${adapter})`,
+            );
+          }
+          default: {
+            const helper = emitter.jsonWriteHelper(e.value.type);
+            const buf = `sc_t${emitter.tempCounter++}`;
+            emitter.line(`ScrJsonBuf ${buf}; scr_jb_init(&${buf});${emitter.srcComment(e.loc)}`);
+            emitter.line(`${helper}(&${buf}, ${v.name});`);
+            const json = emitter.newTemp(STRING, `scr_jb_finish(&${buf})`);
+            return emitter.fallibleTemp(e.type, `scr_jsval_from_json(${json.name})`);
+          }
+        }
+      }
+      case "jsOp": {
+        // Island operation: JS semantics via the engine (prelude helper
+        // closures), never C reimplementations. jsval args are borrowed
+        // frame temps; jsval/string results +1. Engine exceptions bridge
+        // into the cell — pending checks after every fallible op.
+        const args = e.args.map((a) => emitter.emitExpr(a));
+        const a = (i: number) => args[i]!.name;
+        const nameSym = () => `(ScrStr *)&${emitter.internLiteral(e.name!)}`;
+        const finishFallible = (call: string): Temp => emitter.fallibleTemp(e.type, call);
+        const argPack = (list: string[]): string => {
+          if (list.length === 0) return "NULL";
+          const arr = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`ScrJsval *${arr}[] = { ${list.join(", ")} };`);
+          return arr;
+        };
+        switch (e.op) {
+          case "add": case "sub": case "mul": case "div": case "mod": case "pow": {
+            const c = `SCR_JSOP_${e.op.toUpperCase()}`;
+            return finishFallible(`scr_jsval_binop(${c}, ${a(0)}, ${a(1)})`);
+          }
+          case "lt": case "le": case "gt": case "ge": case "eq": case "neq": {
+            const c = `SCR_JSOP_${e.op.toUpperCase()}`;
+            return finishFallible(`(scr_jsval_cmp(${c}, ${a(0)}, ${a(1)}) == 1)`);
+          }
+          case "instanceOf":
+            return finishFallible(`(scr_jsval_instance_of(${a(0)}, ${a(1)}) == 1)`);
+          case "neg":
+            return finishFallible(`scr_jsval_neg(${a(0)})`);
+          case "plus":
+            return finishFallible(`scr_jsval_plus(${a(0)})`);
+          case "truthy":
+            return emitter.newTemp(e.type, `(scr_jsval_truthy(${a(0)}) != 0)`);
+          case "not":
+            return emitter.newTemp(e.type, `(scr_jsval_truthy(${a(0)}) == 0)`);
+          case "typeof":
+            return emitter.newTemp(e.type, `scr_jsval_typeof(${a(0)})`);
+          case "toStr":
+            return finishFallible(`scr_jsval_to_str(${a(0)})`);
+          case "getProp":
+            return finishFallible(`scr_jsval_get_prop(${a(0)}, ${nameSym()})`);
+          case "globalGet":
+            return finishFallible(`scr_jsval_global_get(${nameSym()})`);
+          case "setProp":
+            emitter.line(`scr_jsval_set_prop(${a(0)}, ${nameSym()}, ${a(1)});${emitter.srcComment(e.loc)}`);
+            emitter.emitPendingCheck();
+            return { name: "", type: e.type };
+          case "getIdx":
+            return finishFallible(`scr_jsval_get_idx(${a(0)}, ${a(1)})`);
+          case "iterNew":
+            return finishFallible(`scr_jsval_iter_new(${a(0)})`);
+          case "setIdx":
+            emitter.line(`scr_jsval_set_idx(${a(0)}, ${a(1)}, ${a(2)});${emitter.srcComment(e.loc)}`);
+            emitter.emitPendingCheck();
+            return { name: "", type: e.type };
+          case "optCallMethod": {
+            const pack = argPack(args.slice(1).map((x) => x.name));
+            return finishFallible(
+              `scr_jsval_opt_call_method(${a(0)}, ${nameSym()}, ${args.length - 1}, ${pack})`,
+            );
+          }
+          case "callMethod": {
+            const pack = argPack(args.slice(1).map((x) => x.name));
+            return finishFallible(
+              `scr_jsval_call_method(${a(0)}, ${nameSym()}, ${args.length - 1}, ${pack})`,
+            );
+          }
+          case "callFnThis": {
+            const pack = argPack(args.slice(2).map((x) => x.name));
+            return finishFallible(
+              `scr_jsval_call_this(${a(0)}, ${a(1)}, ${args.length - 2}, ${pack})`,
+            );
+          }
+          case "callFn": {
+            const pack = argPack(args.slice(1).map((x) => x.name));
+            return finishFallible(`scr_jsval_call(${a(0)}, ${args.length - 1}, ${pack})`);
+          }
+          case "callSpread":
+            // Spread application (`f(...pre, ...s)`): the prelude helper's
+            // real spread syntax — iterator protocols are the engine's
+            // own, the guards front-run V8's spread-call TypeError texts
+            // (the name literal is the spread expression's spelling).
+            return finishFallible(`scr_jsval_call_spread(${a(0)}, ${a(1)}, ${a(2)}, ${nameSym()})`);
+          case "construct": {
+            // `new X(...)` on an island callee: JS_CallConstructor.
+            const pack = argPack(args.slice(1).map((x) => x.name));
+            return finishFallible(`scr_jsval_construct(${a(0)}, ${args.length - 1}, ${pack})`);
+          }
+          case "objLit": {
+            const pack = argPack(args.map((x) => x.name));
+            return emitter.newTemp(e.type, `scr_jsval_obj_lit(${args.length / 2}, ${pack})`);
+          }
+          case "tplStrings": {
+            const pack = argPack(args.map((x) => x.name));
+            return emitter.newTemp(e.type, `scr_jsval_tpl_strings(${args.length / 2}, ${pack})`);
+          }
+          case "objSpread":
+            // Spread completion: engine CopyDataProperties (getters can
+            // throw — fallible); answers the target (+1).
+            return finishFallible(`scr_jsval_obj_spread(${a(0)}, ${a(1)})`);
+          case "defineGetter":
+            // Getter completion for an island literal: defines key (a(1))
+            // on obj (a(0)) as an engine getter invoking a(2); answers the
+            // object (+1) for chaining.
+            return emitter.newTemp(e.type, `scr_jsval_define_getter(${a(0)}, ${a(1)}, ${a(2)})`);
+          case "arrLit": {
+            const pack = argPack(args.map((x) => x.name));
+            return emitter.newTemp(e.type, `scr_jsval_arr_lit(${args.length}, ${pack})`);
+          }
+          case "undefLit":
+            return emitter.newTemp(e.type, `scr_jsval_undefined()`);
+          case "nullLit":
+            return emitter.newTemp(e.type, `scr_jsval_null()`);
+          default: {
+            const _exhaustive: never = e.op;
+            void _exhaustive;
+            throw new InternalCompilerError("unreachable");
+          }
+        }
+      }
+      case "jsExit": {
+        // Island → static validated exit. Primitives extract strictly (no
+        // coercion — a non-number refuses to exit as number); composites
+        // round-trip engine JSON.stringify → json.parse → the existing
+        // dynCheck walker, inheriting its width tolerance and path-annotated
+        // failures. Every step is a may-throw with the standard pending
+        // discipline; intermediate temps are frame-owned.
+        const v = emitter.emitExpr(e.value);
+        switch (e.type.kind) {
+          case "f64":
+          case "bool": {
+            const name = `sc_t${emitter.tempCounter++}`;
+            const ctype = e.type.kind === "f64" ? "double" : "bool";
+            const fn = e.type.kind === "f64" ? "scr_jsval_exit_f64" : "scr_jsval_exit_bool";
+            emitter.line(`${ctype} ${name} = 0;${emitter.srcComment(e.loc)}`);
+            emitter.line(`${fn}(${v.name}, &${name});`);
+            emitter.emitPendingCheck();
+            return { name, type: e.type };
+          }
+          case "string":
+            return emitter.fallibleTemp(e.type, `scr_jsval_exit_str(${v.name})`);
+          case "bytes":
+            // Uint8Array exit: kind-checked, copied out (+1) — engine
+            // Buffers pass (they ARE Uint8Arrays). The frontend only
+            // emits u8 targets (canExitIslandToType).
+            return emitter.fallibleTemp(e.type, `scr_jsval_exit_bytes(${v.name})`);
+          default: {
+            // `any[]`-declared slot: the engine array exits Array.isArray-
+            // gated, elements BY REFERENCE (identity crosses; the spine is
+            // a snapshot copy). JSON-safe element types keep the round
+            // trip below.
+            if (e.type.kind === "array" && e.type.elem.kind === "jsval") {
+              return emitter.fallibleTemp(e.type, `scr_jsval_exit_jsval_arr(${v.name})`);
+            }
+            // An undefined-armed union target: the engine's undefined takes
+            // the undefined arm FIRST — JSON cannot spell it (to_json would
+            // refuse the exit) — then null and data ride the round trip
+            // into the union's dynCheck like any composite (or, for the
+            // `any[] | undefined` defaulted-parameter spelling, the
+            // jsval-element array exit wrapped into the data arm).
+            const undefTag = e.type.kind === "union" ? undefinedArmTag(e.type, emitter.unionsById) : -1;
+            if (e.type.kind === "union" && undefTag >= 0) {
+              const name = `sc_t${emitter.tempCounter++}`;
+              emitter.line(`${cDecl(e.type, name)};`);
+              emitter.line(`if (scr_jsval_is_undefined(${v.name})) {`);
+              emitter.indent++;
+              emitter.line(`${name} = ${emitter.unitInstanceRef(e.type.unionId, undefTag)};`);
+              emitter.indent--;
+              emitter.line(`} else {`);
+              emitter.indent++;
+              emitter.frames.push([]);
+              const unionDef = emitter.unionsById.get(e.type.unionId);
+              const dataArms = unionDef ? unionDef.arms.flatMap((a, i) => (isUnitType(a) ? [] : [{ a, i }])) : [];
+              const jsvalArr = dataArms.length === 1 && dataArms[0]!.a.kind === "array" && dataArms[0]!.a.elem.kind === "jsval" ? dataArms[0]! : null;
+              if (jsvalArr) {
+                // The `any[] | undefined` defaulted-parameter spelling:
+                // the engine array exits BY REFERENCE into the data arm.
+                const arr = emitter.fallibleTemp(jsvalArr.a, `scr_jsval_exit_jsval_arr(${v.name})`);
+                emitter.moveTemp(arr);
+                emitter.line(`${name} = scr_union_new_ref(${jsvalArr.i}, ${arr.name}, &scr_arr_retain_v, &scr_arr_release_v, NULL);`);
+              } else {
+                const json = emitter.fallibleTemp(STRING, `scr_jsval_to_json(${v.name})`);
+                const dom = emitter.fallibleTemp(DYN, `scr_json_parse(${json.name})`);
+                const out = emitter.fallibleTemp(e.type, `${emitter.dynCheckHelper(e.type)}(${dom.name}, NULL)`);
+                emitter.moveTemp(out);
+                emitter.line(`${name} = ${out.name};`);
+              }
+              emitter.releaseFrame(emitter.frames.pop()!);
+              emitter.indent--;
+              emitter.line(`}`);
+              emitter.currentFrame().push({ name, type: e.type });
+              return { name, type: e.type };
+            }
+            const json = emitter.fallibleTemp(STRING, `scr_jsval_to_json(${v.name})`);
+            const dom = emitter.fallibleTemp(DYN, `scr_json_parse(${json.name})`);
+            return emitter.fallibleTemp(e.type, `${emitter.dynCheckHelper(e.type)}(${dom.name}, NULL)`);
+          }
+        }
+      }
+      case "jsBridgePromise": {
+        // Island → static promise bridge: a fresh pending ScrPromise the
+        // engine promise settles (fulfillment = retained jsval cell or
+        // void; rejection = the bridged reason). Operand borrowed; the +1
+        // promise joins the frame. Fails only on an engine-level surprise
+        // minting the subscription — pending check like other island ops.
+        const v = emitter.emitExpr(e.value);
+        const payload =
+          e.type.kind === "promise" && e.type.inner.kind === "void"
+            ? "SCR_ISLP_VOID"
+            : e.type.kind === "promise" && e.type.inner.kind === "array" && e.type.inner.elem.kind === "jsval"
+              ? "SCR_ISLP_JSVAL_ARR" // `any[]` fulfillment: the Array.isArray-gated by-reference exit at settle
+              : "SCR_ISLP_JSVAL";
+        return emitter.fallibleTemp(e.type, `scr_jsval_bridge_promise(${v.name}, ${payload})`);
+      }
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}
+
+type LibCallExpr = ExprOf<"libCall">;
+type LibCallPrefixOf<T extends string> = T extends `${infer Prefix}.${string}`
+  ? Prefix
+  : never;
+type LibCallPrefix = LibCallPrefixOf<IrLibFn>;
+
+interface LibCallState {
+  emitter: CEmitter;
+  e: LibCallExpr;
+  args: Temp[];
+  arg: (index: number) => string;
+  finish: (call: string) => Temp;
+}
+
+function emitWebLibCall(state: LibCallState): Temp {
+  const { e, emitter, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           case "fetch.start":
             emitter.usesTimers = true;
             return finish(`scr_fetch_static(${arg(0)}, ${arg(1)})`);
@@ -3183,6 +4005,15 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             // Borrows the text; returns +1 on a fresh dyn, or throws a
             // catchable SyntaxError-shaped string (may-throw seed set).
             return finish(`scr_json_parse(${arg(0)})`);
+    default:
+      throw new InternalCompilerError(`emitter bug: web libCall dispatch for ${fn}`);
+  }
+}
+
+function emitDynamicLibCall(state: LibCallState): Temp {
+  const { e, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           case "dyn.defineProps":
             // Object.defineProperties over dyn values: both borrowed,
             // result the target (+1); throws catchably (may-throw seed).
@@ -3218,6 +4049,78 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             // TypeError on null-prototype dictionaries (may-throw seed
             // set) — args[2] carries the call's source spelling.
             return finish(`scr_dyn_to_string_method(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "dyn.toStringCoerce":
+            // +1 string or NULL with the exception pending (user
+            // toString/valueOf throws propagate). Borrows the dyn.
+            return finish(`scr_dyn_string_coerce_js(${arg(0)})`);
+          case "global.undefRead":
+            // A declare-d const nothing defines: Node's catchable
+            // ReferenceError at the access (always throws — the typed
+            // dummy is abandoned by the pending check's unwind; releases
+            // are NULL-tolerant). Borrows the name string.
+            return finish(
+              `(scr_undef_global_read(${arg(0)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
+          case "dyn.this":
+            return finish(`scr_dyn_this_get()`);
+          case "dyn.objKeys":
+            return finish(`scr_dyn_obj_keys(${arg(0)})`);
+          case "dyn.assign":
+            // Object.assign over dyn values: own members copy, the target
+            // returns (+1); non-object receivers throw like Node.
+            return finish(`scr_dyn_assign(${arg(0)}, ${arg(1)})`);
+          case "dyn.packPush":
+            // Variadic Object.assign's source pack: a plain source
+            // retains in (both args borrowed). Never throws.
+            return finish(`scr_dyn_pack_push(${arg(0)}, ${arg(1)})`);
+          case "dyn.packPushSpread":
+            // A spread source flattens through the spread-call walk —
+            // V8's exact TypeError texts (may-throw seed set); the string
+            // spells the spread expression for the nullish form.
+            return finish(`scr_dyn_pack_push_spread(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "dyn.packPushSpreadIter":
+            // The non-last/multi-spread positions: V8's iterator-protocol
+            // failure texts describe the value (may-throw seed set).
+            return finish(`scr_dyn_pack_push_spread_iter(${arg(0)}, ${arg(1)})`);
+          case "dyn.assignAll":
+            // The flattened pack copies onto the target left to right;
+            // the target returns (+1). Nullish targets throw like Node.
+            return finish(`scr_dyn_assign_all(${arg(0)}, ${arg(1)})`);
+          case "dyn.objCreateNullProto":
+            // Object.create(null): the fresh null-prototype dictionary
+            // (+1). Never throws.
+            return finish(`scr_dyn_new_obj_null_proto()`);
+          case "dyn.hasOwn":
+            // Object.hasOwn over a dyn receiver (throws on nullish, like
+            // Node's ToObject).
+            return finish(`scr_dyn_has_own(${arg(0)}, ${arg(1)})`);
+          case "dyn.objValues":
+            return finish(`scr_dyn_obj_values(${arg(0)})`);
+          case "dyn.objEntries":
+            return finish(`scr_dyn_obj_entries(${arg(0)})`);
+          case "dyn.errInstanceof":
+            // The from_error cache resolves the dyn value to its runtime
+            // error; the class's stamped interval answers. Never throws.
+            return finish(`scr_dyn_err_instanceof(${arg(0)}, ${arg(1)})`);
+          case "dyn.structuredClone":
+            // Deep dyn clone (+1); option/DataClone/cycle errors throw
+            // (may-throw seed set). Both args borrowed.
+            return finish(`scr_structured_clone(${arg(0)}, ${arg(1)})`);
+          case "dyn.cloneMissing":
+            // Always throws ERR_MISSING_ARGS; the result never exists.
+            return finish(`scr_structured_clone_missing()`);
+          case "dyn.cloneTransferFail":
+            // Always throws DataCloneError; the result never exists.
+            return finish(`scr_structured_clone_transfer_fail()`);
+    default:
+      throw new InternalCompilerError(`emitter bug: dynamic libCall dispatch for ${fn}`);
+  }
+}
+
+function emitFilesystemLibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           case "fs.readFileSync":
             // args[1] is the (always-"utf8") encoding: evaluated for
             // JS-exact side-effect order, ignored by the runtime.
@@ -3271,6 +4174,246 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             emitter.line(`scr_fs_scandir_free(${snap});`);
             return out;
           }
+          // Stats (scr_lib.c): statSync throws like the other sync fs
+          // calls; the getters are pure reads.
+          case "fs.openSync":
+            // Throws Node-shaped fs errors (may-throw seed set); the fd
+            // comes back as f64.
+            return finish(`scr_fs_open(${arg(0)}, ${arg(1)})`);
+          case "fs.readSync":
+            return finish(`scr_fs_read_sync(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)})`);
+          case "fs.writeSync":
+            return finish(`scr_fs_write_sync(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)})`);
+          case "fs.writeStrSync":
+            return finish(`scr_fs_write_str_sync(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`);
+          case "fs.closeSync":
+            return finish(`scr_fs_close(${arg(0)})`);
+          case "fs.watch":
+            // Throws Node-shaped fs errors when the path won't open
+            // (may-throw seed set). An open watcher holds the loop:
+            // usesTimers.
+            emitter.usesTimers = true;
+            return finish(`scr_fs_watch(${arg(0)}, NULL, NULL)`);
+          case "fs.watchCb": {
+            // The callback MOVES into the watcher's registry; the adapter
+            // is runtime-provided per listener shape (zero-param, or the
+            // eventType string).
+            emitter.usesTimers = true;
+            const cbT = e.args[1]!.type;
+            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: fs.watchCb callback not a func");
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            const adapter = cbT.params.length === 0 ? "scr_watch_thunk0" : "scr_watch_thunk_event";
+            return finish(`scr_fs_watch(${arg(0)}, ${cb.name}, &${adapter})`);
+          }
+          case "watcher.close":
+            emitter.line(`scr_watcher_close(${arg(0)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "fs.statSync":
+            return finish(`scr_fs_stat(${arg(0)})`);
+          case "stats.isSymbolicLink":
+            return finish(`scr_stats_is_symlink(${arg(0)})`);
+          case "stats.blocks":
+            return finish(`scr_stats_blocks(${arg(0)})`);
+          case "stats.nlink":
+            return finish(`scr_stats_nlink(${arg(0)})`);
+          case "stats.atimeMs":
+            return finish(`scr_stats_atime_ms(${arg(0)})`);
+          case "stats.mtimeMs":
+            return finish(`scr_stats_mtime_ms(${arg(0)})`);
+          case "stats.isFile":
+            return finish(`scr_stats_is_file(${arg(0)})`);
+          case "stats.isDirectory":
+            return finish(`scr_stats_is_dir(${arg(0)})`);
+          case "stats.size":
+            return finish(`scr_stats_size(${arg(0)})`);
+          case "fs.toUnixTimestamp":
+            return finish(`scr_fs_to_unix_timestamp(${arg(0)})`);
+          // The fs argument-validation ladders: the always-throw Chk
+          // forms (validation error or the trailing fence) take the
+          // error.nodeThrow dummy pattern; mkdtempSyncChk and the lchmod
+          // pair answer real results on a validated pass.
+          case "fs.existsChk":
+            emitter.usesTimers = true; // the scheduled answer holds the loop open
+            return finish(`scr_fs_exists_async(${arg(0)}, ${arg(1)})`);
+          case "fs.renameCb": {
+            // The callback MOVES into the scheduled operation. Its
+            // adapter constructs the program-specific Error | null union
+            // (or dyn error/null for the JS lane) when the timer fires.
+            emitter.usesTimers = true;
+            const cbT = e.args[2]!.type;
+            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: fs.rename callback not a func");
+            const cb = args[2]!;
+            emitter.moveTemp(cb);
+            const adapter = emitter.fsRenameThunkFor(cbT);
+            emitter.line(`scr_fs_rename_async(${arg(0)}, ${arg(1)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
+          case "fs.mkdtempChk":
+            return finish(
+              `(scr_fs_mkdtemp_chk(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
+          case "fs.mkdtempSyncChk":
+            return finish(`scr_fs_mkdtemp_sync_chk(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "fs.readFileChk":
+            return finish(
+              `(scr_fs_read_file_chk(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
+          case "fs.opendirChk":
+            return finish(
+              `(scr_fs_opendir_chk(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
+          case "fs.watchFileChk":
+            return finish(
+              `(scr_fs_watch_file_chk(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
+          case "fs.lchmodChk":
+            return finish(
+              `(scr_fs_lchmod_chk(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
+          case "fs.lchmodSyncChk":
+            return finish(`scr_fs_lchmod_sync_chk(${arg(0)}, ${arg(1)})`);
+          case "fsp.lchmodChk":
+            return finish(`scr_fsp_lchmod_chk(${arg(0)}, ${arg(1)})`);
+          case "fs.readChk":
+            return finish(
+              `(scr_fs_read_chk(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
+          case "fs.streamOptsChk":
+            return finish(
+              `(scr_fs_stream_opts_chk(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
+          // The fs Buffer forms (scr_bytes_io.c): the sync pair throws
+          // like the utf8 forms (may-throw seed set); the promise form
+          // rejects instead.
+          case "fs.readFileSyncBytes":
+            return finish(`scr_fs_read_file_bytes(${arg(0)})`);
+          case "fs.writeFileSyncBytes":
+            return finish(`scr_fs_write_file_bytes(${arg(0)}, ${arg(1)})`);
+          case "fsp.readFileBytes":
+            return finish(`scr_fsp_read_file_bytes(${arg(0)})`);
+          // zlib (scr_zlib.c — linked only when these appear on the IR):
+          // inflate throws on corrupt input (may-throw seed set).
+          case "zlib.deflateSync":
+            return finish(`scr_zlib_deflate(${arg(0)})`);
+          case "zlib.inflateSync":
+            return finish(`scr_zlib_inflate(${arg(0)})`);
+          case "fsp.readFile":
+            return finish(`scr_fsp_read_file(${arg(0)})`);
+          case "fsp.writeFile":
+            return finish(`scr_fsp_write_file(${arg(0)}, ${arg(1)})`);
+          case "fsp.writeFileMode":
+            return finish(`scr_fsp_write_file_mode(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "fsp.mkdir":
+            return finish(`scr_fsp_mkdir(${arg(0)})`);
+          case "fsp.mkdirMode":
+            return finish(`scr_fsp_mkdir_mode(${arg(0)}, ${arg(1)})`);
+          case "fsp.mkdirRecursive":
+            return finish(`scr_fsp_mkdir_recursive(${arg(0)})`);
+          case "fsp.mkdirRecursiveMode":
+            return finish(`scr_fsp_mkdir_recursive_mode(${arg(0)}, ${arg(1)})`);
+          case "fsp.unlink":
+            return finish(`scr_fsp_unlink(${arg(0)})`);
+          case "fsp.chmod":
+            return finish(`scr_fsp_chmod(${arg(0)}, ${arg(1)})`);
+          case "fsp.rename":
+            return finish(`scr_fsp_rename(${arg(0)}, ${arg(1)})`);
+          case "fsp.readdir":
+            return finish(`scr_fsp_readdir(${arg(0)})`);
+          case "fsp.rm":
+            return finish(`scr_fsp_rm(${arg(0)})`);
+          case "fsp.stat":
+            return finish(`scr_fsp_stat(${arg(0)})`);
+          case "fsp.open":
+            return finish(`scr_fsp_open(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "fileHandle.fd":
+            return finish(`scr_file_handle_fd(${arg(0)})`);
+          case "fileHandle.close":
+            return finish(`scr_file_handle_close_promise(${arg(0)})`);
+          case "fileHandle.readFile":
+            return finish(`scr_file_handle_read_file_promise(${arg(0)}, ${arg(1)})`);
+          case "fileHandle.readFileBytes":
+            return finish(`scr_file_handle_read_file_bytes_promise(${arg(0)}, ${arg(1)})`);
+          case "fileHandle.writeFile":
+            return finish(`scr_file_handle_write_file_promise(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "fileHandle.writeFileBytes":
+            return finish(`scr_file_handle_write_file_bytes_promise(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "fileHandle.stat":
+            return finish(`scr_file_handle_stat_promise(${arg(0)})`);
+          case "fileHandle.read":
+          case "fileHandle.writeBytes":
+          case "fileHandle.writeStr": {
+            if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
+              throw new InternalCompilerError(`emitter bug: ${e.fn} result`);
+            }
+            const inner = e.type.inner;
+            const countFn = e.fn === "fileHandle.read"
+              ? `scr_file_handle_read(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)})`
+              : e.fn === "fileHandle.writeBytes"
+                ? `scr_file_handle_write_bytes(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)})`
+                : `scr_file_handle_write_str(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`;
+            const count = emitter.newTemp(F64, countFn);
+            const row = emitter.newTemp(inner, `${mangleRecordNew(inner.shapeId)}()`);
+            const countField = e.fn === "fileHandle.read" ? "bytesRead" : "bytesWritten";
+            emitter.line(`${row.name}->${mangleField(countField)} = ${count.name};`);
+            emitter.line(`${row.name}->${mangleField("buffer")} = ${retainCallC(e.args[1]!.type, arg(1))};`);
+            const rc = vAdapters(inner);
+            emitter.moveTemp(row); // promise fulfillment owns the result record
+            return finish(`scr_promise_settled_ref(${row.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(inner)})`);
+          }
+          case "fs.realpathSync":
+            return finish(`scr_fs_realpath(${arg(0)})`);
+          // The fs option forms (scr_lib.c) — all in the may-throw seed,
+          // like the rest of sync fs.
+          case "fs.mkdirRecursiveSync":
+            return finish(`scr_fs_mkdir_recursive(${arg(0)})`);
+          case "fs.rmOptsSync":
+            return finish(`scr_fs_rm_opts(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "fs.rmRetrySync":
+            return finish(`scr_fs_rm_opts_retry(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)})`);
+          case "fs.mkdtempSync":
+            return finish(`scr_fs_mkdtemp(${arg(0)})`);
+          case "fs.accessSync":
+            return finish(`scr_fs_access(${arg(0)}, ${arg(1)})`);
+          // The wider sync fs slice (scr_lib.c): syscall wrappers with
+          // Node's errno message shapes, `.code` stamped like the rest.
+          case "fs.unlinkSync":
+            return finish(`scr_fs_unlink(${arg(0)})`);
+          case "fs.chmodSync":
+            return finish(`scr_fs_chmod(${arg(0)}, ${arg(1)})`);
+          case "fs.chownSync":
+            return finish(`scr_fs_chown(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "fs.copyFileSync":
+            return finish(`scr_fs_copyfile(${arg(0)}, ${arg(1)})`);
+          case "fs.renameSync":
+            return finish(`scr_fs_rename(${arg(0)}, ${arg(1)})`);
+          case "fs.lstatSync":
+            return finish(`scr_fs_lstat(${arg(0)})`);
+          case "fs.writeFileModeSync":
+            return finish(`scr_fs_write_file_mode(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "fs.mkdirModeSync":
+            return finish(`scr_fs_mkdir_mode(${arg(0)}, ${arg(1)})`);
+          case "fs.mkdirRecursiveModeSync":
+            return finish(`scr_fs_mkdir_recursive_mode(${arg(0)}, ${arg(1)})`);
+          // Atomics.wait — the synchronous-sleep idiom (scr_lib.c): a
+          // real nanosleep; +1 string result; never throws.
+          case "atomics.wait":
+            return finish(`scr_atomics_wait(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`);
+          case "fs.readFdSync":
+            // args[1] is the (always-"utf8") encoding: evaluated for
+            // JS-exact side-effect order, ignored by the runtime.
+            return finish(`scr_fs_read_fd(${arg(0)})`);
+          case "fs.readFdSyncBytes":
+            return finish(`scr_fs_read_fd_bytes(${arg(0)})`);
+    default:
+      throw new InternalCompilerError(`emitter bug: filesystem libCall dispatch for ${fn}`);
+  }
+}
+
+function emitPathUrlLibCall(state: LibCallState): Temp {
+  const { e, emitter, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           // node:path (scr_path.c): pure string algorithms, POSIX rules.
           // join/resolve borrow ONE packed string[] (the frontend built it);
           // results are always +1 fresh strings. None of these throw.
@@ -3438,119 +4581,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             emitter.line(`scr_os_ifaddrs_free(${snap});`);
             return dict;
           }
-          // Math.max/min over one spread number[] — the JS fold in C
-          // (NaN poisons, ±0 order, empty → ∓Infinity). Borrows; no throw.
-          case "math.maxArr":
-            return finish(`scr_math_max_arr(${arg(0)})`);
-          case "math.minArr":
-            return finish(`scr_math_min_arr(${arg(0)})`);
-          // Math.floor/trunc/ceil — the C functions ARE the JS operations
-          // (math.h is always included). Borrow nothing; no throw.
-          case "math.floor":
-            return finish(`floor(${arg(0)})`);
-          case "math.trunc":
-            return finish(`trunc(${arg(0)})`);
-          case "math.ceil":
-            return finish(`ceil(${arg(0)})`);
-          // Math.abs — C fabs IS the JS operation. Math.round — the JS
-          // half-toward-+Infinity rule (scr_lib.c; C round() differs on
-          // halves and naive floor(x+0.5) drifts at the epsilon boundary).
-          case "math.abs":
-            return finish(`fabs(${arg(0)})`);
-          case "math.round":
-            return finish(`scr_math_round(${arg(0)})`);
-          // The scalar Math.min/max (scr_lib.c — fmin/fmax drop NaN, so
-          // these are the JS folds) and Math.random (arc4random-backed
-          // uniform [0,1), SEMANTICS.md 62). Borrow nothing; no throw.
-          case "math.min":
-            return finish(`scr_math_min(${arg(0)}, ${arg(1)})`);
-          case "math.max":
-            return finish(`scr_math_max(${arg(0)}, ${arg(1)})`);
-          case "math.random":
-            return finish(`scr_math_random()`);
-          // The static global parsers/tests (scr_string.c). Borrow; no throw.
-          case "num.parseInt":
-            return finish(`scr_parse_int(${arg(0)}, ${arg(1)})`);
-          case "num.parseFloat":
-            return finish(`scr_parse_float(${arg(0)})`);
-          case "num.fromString":
-            return finish(`scr_string_to_number(${arg(0)})`);
-          case "num.isNaN":
-            return finish(`(bool)isnan(${arg(0)})`);
-          // The URI codecs (scr_string.c). Borrow; results +1. decode
-          // throws the spec's catchable URIError on bad hex or invalid
-          // UTF-8 octets (may-throw seed set); the encoders never throw.
-          case "str.encodeUriComponent":
-            return finish(`scr_str_encode_uri_component(${arg(0)})`);
-          case "str.decodeUriComponent":
-            return finish(`scr_str_decode_uri_component(${arg(0)})`);
-          case "str.encodeUri":
-            return finish(`scr_encode_uri(${arg(0)})`);
-          // RegExp.escape (scr_string.c): total per-code-point escape —
-          // borrows, +1 result, never throws.
-          case "regexp.escape":
-            return finish(`scr_regexp_escape(${arg(0)})`);
-          // The WHATWG base64 globals (scr_string.c): dyn arg borrowed
-          // (WebIDL ToString in the runtime), +1 string result; malformed
-          // input throws the catchable DOMException InvalidCharacterError
-          // (may-throw seed set). The zero-argument form always throws
-          // Node's TypeError [ERR_MISSING_ARGS].
-          case "str.atob":
-            return finish(`scr_atob(${arg(0)})`);
-          case "str.btoa":
-            return finish(`scr_btoa(${arg(0)})`);
-          case "str.b64Missing":
-            return finish(`scr_b64_missing_arg()`);
-          // Number.prototype formatters (scr_lib.c). Borrow nothing;
-          // successful results +1; explicit toFixed may throw RangeError.
-          case "num.toExponential":
-            return finish(`scr_num_to_exponential(${arg(0)})`);
-          case "num.toFixed0":
-            return finish(`scr_num_to_fixed0(${arg(0)})`);
-          case "num.toFixed":
-            return finish(`scr_num_to_fixed(${arg(0)}, ${arg(1)})`);
-          // Object.is over two numbers — SameValue on doubles. No throw.
-          case "num.sameValue":
-            return finish(`scr_num_same_value(${arg(0)}, ${arg(1)})`);
-          // Intl.NumberFormat("en-US").format / toLocaleString("en-US")
-          // with default options (scr_lib.c). +1 string; no throw.
-          case "intl.numFormatEnUs":
-            return finish(`scr_intl_num_format_en_us(${arg(0)})`);
-          // The URL surface (scr_url.c): construction and the two
-          // fileURLToPath receiver forms throw catchable TypeErrors
-          // (may-throw seed set); the getters are pure reads. Receivers
-          // and string args are borrowed; every result is +1.
-          // ES symbols (scr_symbol.c — linked exactly when these appear,
-          // moduleUsesSymbol). Fresh identities (+1); Symbol.for answers
-          // +1 on the registry's interned per-key symbol. None throw.
-          case "sym.new":
-            return finish(`scr_sym_new(${arg(0)})`);
-          case "sym.newAnon":
-            return finish(`scr_sym_new(NULL)`);
-          case "sym.for":
-            return finish(`scr_sym_for(${arg(0)})`);
-          case "sym.toString":
-            return finish(`scr_sym_to_string(${arg(0)})`);
-          case "sym.desc":
-          case "sym.keyFor": {
-            // `string | undefined` — the child.stdout pattern with a
-            // string arm: the runtime answers a +1 string or NULL.
-            if (e.type.kind !== "union") {
-              throw new InternalCompilerError(`emitter bug: ${e.fn} result is not a union`);
-            }
-            const def = emitter.unionsById.get(e.type.unionId);
-            const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
-            if (strTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError(`emitter bug: ${e.fn} union lacks its arms`);
-            }
-            const get = e.fn === "sym.desc" ? "scr_sym_desc" : "scr_sym_key_for";
-            const raw = emitter.newTemp(STRING, `${get}(${arg(0)})`);
-            emitter.moveTemp(raw); // ownership passes into the union arm below
-            const present = `scr_union_new_ref(${strTag}, ${raw.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
-            return emitter.newTemp(e.type, `${raw.name} != NULL ? ${present} : ${absent}`);
-          }
           case "url.new":
             return finish(`scr_url_new(${arg(0)})`);
           case "url.protocol":
@@ -3666,42 +4696,261 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             );
             return dict;
           }
+          case "sp.finished":
+            // The stream/promises form: a +1 pending promise the terminal
+            // watcher settles — no callback, no cleanup exposure.
+            emitter.usesTimers = true;
+            return finish(`scr_sp_finished((ScrStream *)${arg(0)})`);
+          case "sp.pipeline": {
+            // pipeline(count, s1..sn) settling a void promise; the stream
+            // list rides the callback form's compound literal.
+            emitter.usesTimers = true;
+            const countArg = e.args[0]!;
+            if (countArg.kind !== "numLit") throw new InternalCompilerError(`emitter bug: ${fn} count not a literal`);
+            const n = countArg.value;
+            const list = Array.from({ length: n }, (_, i) => `(ScrStream *)${arg(1 + i)}`).join(", ");
+            return finish(`scr_sp_pipeline(${n}, (ScrStream *[]){ ${list} })`);
+          }
+    default:
+      throw new InternalCompilerError(`emitter bug: pathUrl libCall dispatch for ${fn}`);
+  }
+}
+
+function emitPrimitiveLibCall(state: LibCallState): Temp {
+  const { e, emitter, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
+          // Math.max/min over one spread number[] — the JS fold in C
+          // (NaN poisons, ±0 order, empty → ∓Infinity). Borrows; no throw.
+          case "math.maxArr":
+            return finish(`scr_math_max_arr(${arg(0)})`);
+          case "math.minArr":
+            return finish(`scr_math_min_arr(${arg(0)})`);
+          // Math.floor/trunc/ceil — the C functions ARE the JS operations
+          // (math.h is always included). Borrow nothing; no throw.
+          case "math.floor":
+            return finish(`floor(${arg(0)})`);
+          case "math.trunc":
+            return finish(`trunc(${arg(0)})`);
+          case "math.ceil":
+            return finish(`ceil(${arg(0)})`);
+          // Math.abs — C fabs IS the JS operation. Math.round — the JS
+          // half-toward-+Infinity rule (scr_lib.c; C round() differs on
+          // halves and naive floor(x+0.5) drifts at the epsilon boundary).
+          case "math.abs":
+            return finish(`fabs(${arg(0)})`);
+          case "math.round":
+            return finish(`scr_math_round(${arg(0)})`);
+          // The scalar Math.min/max (scr_lib.c — fmin/fmax drop NaN, so
+          // these are the JS folds) and Math.random (arc4random-backed
+          // uniform [0,1), SEMANTICS.md 62). Borrow nothing; no throw.
+          case "math.min":
+            return finish(`scr_math_min(${arg(0)}, ${arg(1)})`);
+          case "math.max":
+            return finish(`scr_math_max(${arg(0)}, ${arg(1)})`);
+          case "math.random":
+            return finish(`scr_math_random()`);
+          // The static global parsers/tests (scr_string.c). Borrow; no throw.
+          case "num.parseInt":
+            return finish(`scr_parse_int(${arg(0)}, ${arg(1)})`);
+          case "num.parseFloat":
+            return finish(`scr_parse_float(${arg(0)})`);
+          case "num.fromString":
+            return finish(`scr_string_to_number(${arg(0)})`);
+          case "num.isNaN":
+            return finish(`(bool)isnan(${arg(0)})`);
+          // The URI codecs (scr_string.c). Borrow; results +1. decode
+          // throws the spec's catchable URIError on bad hex or invalid
+          // UTF-8 octets (may-throw seed set); the encoders never throw.
+          case "str.encodeUriComponent":
+            return finish(`scr_str_encode_uri_component(${arg(0)})`);
+          case "str.decodeUriComponent":
+            return finish(`scr_str_decode_uri_component(${arg(0)})`);
+          case "str.encodeUri":
+            return finish(`scr_encode_uri(${arg(0)})`);
+          // RegExp.escape (scr_string.c): total per-code-point escape —
+          // borrows, +1 result, never throws.
+          case "regexp.escape":
+            return finish(`scr_regexp_escape(${arg(0)})`);
+          // The WHATWG base64 globals (scr_string.c): dyn arg borrowed
+          // (WebIDL ToString in the runtime), +1 string result; malformed
+          // input throws the catchable DOMException InvalidCharacterError
+          // (may-throw seed set). The zero-argument form always throws
+          // Node's TypeError [ERR_MISSING_ARGS].
+          case "str.atob":
+            return finish(`scr_atob(${arg(0)})`);
+          case "str.btoa":
+            return finish(`scr_btoa(${arg(0)})`);
+          case "str.b64Missing":
+            return finish(`scr_b64_missing_arg()`);
+          // Number.prototype formatters (scr_lib.c). Borrow nothing;
+          // successful results +1; explicit toFixed may throw RangeError.
+          case "num.toExponential":
+            return finish(`scr_num_to_exponential(${arg(0)})`);
+          case "num.toFixed0":
+            return finish(`scr_num_to_fixed0(${arg(0)})`);
+          case "num.toFixed":
+            return finish(`scr_num_to_fixed(${arg(0)}, ${arg(1)})`);
+          // Object.is over two numbers — SameValue on doubles. No throw.
+          case "num.sameValue":
+            return finish(`scr_num_same_value(${arg(0)}, ${arg(1)})`);
+          // Intl.NumberFormat("en-US").format / toLocaleString("en-US")
+          // with default options (scr_lib.c). +1 string; no throw.
+          case "intl.numFormatEnUs":
+            return finish(`scr_intl_num_format_en_us(${arg(0)})`);
+          // The URL surface (scr_url.c): construction and the two
+          // fileURLToPath receiver forms throw catchable TypeErrors
+          // (may-throw seed set); the getters are pure reads. Receivers
+          // and string args are borrowed; every result is +1.
+          // ES symbols (scr_symbol.c — linked exactly when these appear,
+          // moduleUsesSymbol). Fresh identities (+1); Symbol.for answers
+          // +1 on the registry's interned per-key symbol. None throw.
+          case "sym.new":
+            return finish(`scr_sym_new(${arg(0)})`);
+          case "sym.newAnon":
+            return finish(`scr_sym_new(NULL)`);
+          case "sym.for":
+            return finish(`scr_sym_for(${arg(0)})`);
+          case "sym.toString":
+            return finish(`scr_sym_to_string(${arg(0)})`);
+          case "sym.desc":
+          case "sym.keyFor": {
+            // `string | undefined` — the child.stdout pattern with a
+            // string arm: the runtime answers a +1 string or NULL.
+            if (e.type.kind !== "union") {
+              throw new InternalCompilerError(`emitter bug: ${e.fn} result is not a union`);
+            }
+            const def = emitter.unionsById.get(e.type.unionId);
+            const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
+            const undefTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
+            if (strTag < 0 || undefTag < 0) {
+              throw new InternalCompilerError(`emitter bug: ${e.fn} union lacks its arms`);
+            }
+            const get = e.fn === "sym.desc" ? "scr_sym_desc" : "scr_sym_key_for";
+            const raw = emitter.newTemp(STRING, `${get}(${arg(0)})`);
+            emitter.moveTemp(raw); // ownership passes into the union arm below
+            const present = `scr_union_new_ref(${strTag}, ${raw.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${raw.name} != NULL ? ${present} : ${absent}`);
+          }
+          case "perf.now":
+            return finish(`scr_perf_now()`);
+          // The Number statics (scr_lib.c): pure f64 → bool, never throw.
+          case "number.isFinite":
+            return finish(`scr_num_is_finite(${arg(0)})`);
+          case "number.isNaN":
+            return finish(`scr_num_is_nan(${arg(0)})`);
+          case "number.isInteger":
+            return finish(`scr_num_is_integer(${arg(0)})`);
+          case "number.isSafeInteger":
+            return finish(`scr_num_is_safe_integer(${arg(0)})`);
+          case "date.now":
+            // Node's integer milliseconds since epoch. Never throws.
+            return finish(`scr_date_now()`);
+          case "date.newNow":
+            return finish(`scr_date_now()`);
+          case "date.newMs":
+            return finish(`scr_date_new_ms(${arg(0)})`);
+          case "date.newString":
+            return finish(`scr_date_parse_get_time(${arg(0)})`);
+          case "date.getTime":
+          case "date.valueOf":
+            return finish(`${arg(0)}`);
+          case "date.toISOString":
+          case "date.toISOStringValue":
+            // +1 string, or Node's "Invalid time value" RangeError
+            // (may-throw seed set).
+            return finish(`scr_date_to_iso(${arg(0)})`);
+          case "date.parseGetTime":
+            // The bounded date-string parse (X509 validity + ECMA format);
+            // NaN elsewhere. Never throws.
+            return finish(`scr_date_parse_get_time(${arg(0)})`);
+          case "date.utc":
+            // MakeDay/MakeTime/TimeClip over seven completed number
+            // arguments; NaN outside the time range. Never throws.
+            return finish(
+              `scr_date_utc(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)})`,
+            );
+          case "date.getFullYear":
+            return finish(`scr_date_get_full_year(${arg(0)}, false)`);
+          case "date.getUTCFullYear":
+            return finish(`scr_date_get_full_year(${arg(0)}, true)`);
+          case "date.getMonth":
+            return finish(`scr_date_get_month(${arg(0)}, false)`);
+          case "date.getUTCMonth":
+            return finish(`scr_date_get_month(${arg(0)}, true)`);
+          case "date.getDate":
+            return finish(`scr_date_get_date(${arg(0)}, false)`);
+          case "date.getUTCDate":
+            return finish(`scr_date_get_date(${arg(0)}, true)`);
+          case "date.getDay":
+            return finish(`scr_date_get_day(${arg(0)}, false)`);
+          case "date.getUTCDay":
+            return finish(`scr_date_get_day(${arg(0)}, true)`);
+          case "date.getHours":
+            return finish(`scr_date_get_hours(${arg(0)}, false)`);
+          case "date.getUTCHours":
+            return finish(`scr_date_get_hours(${arg(0)}, true)`);
+          case "date.getMinutes":
+            return finish(`scr_date_get_minutes(${arg(0)}, false)`);
+          case "date.getUTCMinutes":
+            return finish(`scr_date_get_minutes(${arg(0)}, true)`);
+          case "date.getSeconds":
+            return finish(`scr_date_get_seconds(${arg(0)}, false)`);
+          case "date.getUTCSeconds":
+            return finish(`scr_date_get_seconds(${arg(0)}, true)`);
+          case "date.getMilliseconds":
+          case "date.getUTCMilliseconds":
+            return finish(`scr_date_get_milliseconds(${arg(0)})`);
+          case "date.getTimezoneOffset":
+            return finish(`scr_date_get_timezone_offset(${arg(0)})`);
+          case "text.decode":
+            // WHATWG utf-8 decode with the leading BOM stripped
+            // (scr_bytes.c). Borrowed bytes; +1 string; never throws.
+            return finish(`scr_text_decode(${arg(0)})`);
+          case "text.decodeLegacy":
+            // Compile-time-labeled WHATWG legacy decode (scr_bytes.c).
+            // Borrowed bytes + numeric encoding id; +1 string.
+            return finish(`scr_text_decode_legacy(${arg(0)}, ${arg(1)})`);
+          case "string.fromCharCode":
+            // One packed f64[] (the frontend built it) or one bytes value
+            // (the spread-typed-array form); +1 string.
+            return finish(
+              e.args[0]!.type.kind === "bytes"
+                ? `scr_str_from_char_code_bytes(${arg(0)})`
+                : `scr_str_from_char_code(${arg(0)})`,
+            );
+          case "string.lastIndexOf":
+            return finish(`scr_str_last_index_of(${arg(0)}, ${arg(1)})`);
+          case "string.raw":
+            // Raw literals + pre-stringified substitutions; +1 string.
+            return finish(`scr_str_raw(${arg(0)}, ${arg(1)})`);
+          case "class.name":
+            // `X.name` through a class value: the class object's stored
+            // .name string (+1 — a no-op retain on the interned immortal).
+            return finish(`scr_classobj_name(${arg(0)})`);
+    default:
+      throw new InternalCompilerError(`emitter bug: primitive libCall dispatch for ${fn}`);
+  }
+}
+
+function emitUtilLibCall(state: LibCallState): Temp {
+  const { e, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           // node:util.parseArgs (scr_util.c): checked-dynamic config in,
           // checked-dynamic result out; may throw a coded TypeError.
           case "util.parseArgs":
             return finish(`scr_util_parse_args(${arg(0)})`);
-          // Stats (scr_lib.c): statSync throws like the other sync fs
-          // calls; the getters are pure reads.
-          case "fs.openSync":
-            // Throws Node-shaped fs errors (may-throw seed set); the fd
-            // comes back as f64.
-            return finish(`scr_fs_open(${arg(0)}, ${arg(1)})`);
-          case "fs.readSync":
-            return finish(`scr_fs_read_sync(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)})`);
-          case "fs.writeSync":
-            return finish(`scr_fs_write_sync(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)})`);
-          case "fs.writeStrSync":
-            return finish(`scr_fs_write_str_sync(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`);
-          case "fs.closeSync":
-            return finish(`scr_fs_close(${arg(0)})`);
-          case "fs.watch":
-            // Throws Node-shaped fs errors when the path won't open
-            // (may-throw seed set). An open watcher holds the loop:
-            // usesTimers.
-            emitter.usesTimers = true;
-            return finish(`scr_fs_watch(${arg(0)}, NULL, NULL)`);
-          case "fs.watchCb": {
-            // The callback MOVES into the watcher's registry; the adapter
-            // is runtime-provided per listener shape (zero-param, or the
-            // eventType string).
-            emitter.usesTimers = true;
-            const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: fs.watchCb callback not a func");
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            const adapter = cbT.params.length === 0 ? "scr_watch_thunk0" : "scr_watch_thunk_event";
-            return finish(`scr_fs_watch(${arg(0)}, ${cb.name}, &${adapter})`);
-          }
+    default:
+      throw new InternalCompilerError(`emitter bug: util libCall dispatch for ${fn}`);
+  }
+}
+
+function emitCryptoBytesLibCall(state: LibCallState): Temp {
+  const { e, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           case "crypto.x509Fingerprint":
             // Throws Node's PEM error on unparseable input (may-throw).
             return finish(`scr_crypto_x509_fingerprint(${arg(0)})`);
@@ -3717,27 +4966,55 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return finish(`scr_crypto_x509_valid_to(${arg(0)})`);
           case "crypto.x509ValidToStr":
             return finish(`scr_crypto_x509_valid_to_str(${arg(0)})`);
-          case "watcher.close":
-            emitter.line(`scr_watcher_close(${arg(0)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "fs.statSync":
-            return finish(`scr_fs_stat(${arg(0)})`);
-          case "stats.isSymbolicLink":
-            return finish(`scr_stats_is_symlink(${arg(0)})`);
-          case "stats.blocks":
-            return finish(`scr_stats_blocks(${arg(0)})`);
-          case "stats.nlink":
-            return finish(`scr_stats_nlink(${arg(0)})`);
-          case "stats.atimeMs":
-            return finish(`scr_stats_atime_ms(${arg(0)})`);
-          case "stats.mtimeMs":
-            return finish(`scr_stats_mtime_ms(${arg(0)})`);
-          case "stats.isFile":
-            return finish(`scr_stats_is_file(${arg(0)})`);
-          case "stats.isDirectory":
-            return finish(`scr_stats_is_dir(${arg(0)})`);
-          case "stats.size":
-            return finish(`scr_stats_size(${arg(0)})`);
+          // fs/promises: already-settled promises — failures REJECT (the
+          // runtime moves the pending exception into the promise), so no
+          // pending check here; the await re-throws catchably. args[1] of
+          // readFile is the (always-"utf8") encoding, evaluated for
+          // JS-exact side-effect order and ignored by the runtime.
+          case "crypto.randomUUID":
+            return finish(`scr_crypto_random_uuid()`);
+          case "crypto.randomBytesToString":
+            // May throw Node's RangeError (may-throw seed set).
+            return finish(`scr_crypto_random_string(${arg(0)}, ${arg(1)})`);
+          case "crypto.randomBytes":
+            // A real u8 Buffer (+1); same RangeError as the composed form.
+            return finish(`scr_crypto_random_bytes(${arg(0)})`);
+          case "crypto.hashDigestStr":
+            return finish(`scr_crypto_hash_digest_str(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "crypto.hashDigestBytes":
+            return finish(`scr_crypto_hash_digest_bytes(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          // The Buffer statics (scr_bytes.c): fromStr decodes Node-
+          // leniently (never throws), concat copies its borrowed list.
+          case "buffer.fromStr":
+            return finish(`scr_bytes_from_str(${arg(0)}, ${arg(1)})`);
+          case "buffer.concat":
+            return finish(`scr_bytes_concat(${arg(0)})`);
+          case "buffer.concatLen":
+            return finish(`scr_bytes_concat_len(${arg(0)}, ${arg(1)})`);
+          case "buffer.byteLenStr":
+            return finish(`scr_bytes_byte_length_str(${arg(0)}, ${arg(1)})`);
+          case "buffer.isEncoding":
+            return finish(`scr_bytes_is_encoding(${arg(0)})`);
+          // The checked-dynamic compare/equals validators
+          // (scr_bytes_io.c): Node's argument ladders throw catchably
+          // (may-throw seed set); all dyn args borrowed.
+          case "buffer.compareChk":
+            return finish(`scr_buffer_compare_chk(${arg(0)}, ${arg(1)})`);
+          case "bytes.equalsChk":
+            return finish(`scr_bytes_equals_chk(${arg(0)}, ${arg(1)})`);
+          case "bytes.compareChk":
+            return finish(`scr_bytes_compare_chk(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)})`);
+          case "buffer.newStringFail":
+            return finish(`scr_buffer_new_string_fail(${arg(0)})`);
+    default:
+      throw new InternalCompilerError(`emitter bug: cryptoBytes libCall dispatch for ${fn}`);
+  }
+}
+
+function emitChildProcessLibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           // child_process.spawnSync (scr_child.c): blocks until the child
           // is reaped — NEVER throws (spawn failure is data: status null,
           // empty outputs). cmd and args are borrowed; the result is +1.
@@ -3881,34 +5158,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             const absent = emitter.unitInstanceRef(e.type.unionId, nullTag);
             return emitter.newTemp(e.type, `${raw.name} != NULL ? ${present} : ${absent}`);
           }
-          case "stream.onData": {
-            // The callback MOVES into the stream's listener registry; the
-            // adapter is per callback shape — runtime-provided for the
-            // zero-param and Buffer forms, emitted per union for the
-            // `Buffer | string` chunk (the chunk wraps at its Buffer arm).
-            emitter.usesTimers = true; // a flowing stream holds the loop
-            const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: stream.onData callback not a func");
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            const param = cbT.params[0];
-            const adapter =
-              param === undefined
-                ? "scr_child_stream_thunk0"
-                : param.kind === "union"
-                  ? emitter.childDataThunkFor(param)
-                  : "scr_child_stream_thunk_bytes";
-            emitter.line(
-              `scr_child_stream_on_data(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`,
-            );
-            return { name: "", type: e.type };
-          }
-          case "stream.onEnd": {
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            emitter.line(`scr_child_stream_on_end(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          }
           case "procStream.write":
             // The receiver IS the fd scalar; dispatches onto the exact
             // promptly-submitted stdout/stderr paths (ordering identical).
@@ -3956,6 +5205,29 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             );
             return { name: "", type: e.type };
           }
+          case "child.onError": {
+            // Both error-listener shapes have runtime-provided adapters
+            // (constructing the %Error instance needs no program types).
+            const cbT = e.args[1]!.type;
+            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: child.onError callback not a func");
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            const adapter =
+              cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
+            emitter.line(
+              `scr_child_on_error(${arg(0)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`,
+            );
+            return { name: "", type: e.type };
+          }
+    default:
+      throw new InternalCompilerError(`emitter bug: childProcess libCall dispatch for ${fn}`);
+  }
+}
+
+function emitNetworkLibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           // node:net (scr_net.c + the loop's net hook — linked only when
           // these appear on the IR). Receivers and data are borrowed;
           // CALLBACKS MOVE into the handle's registry (released at
@@ -4305,6 +5577,103 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             emitter.line(`scr_dns_lookup(${arg(0)}, ${arg(1)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
+          case "net.sockEncrypted": {
+            // boolean | undefined: the true arm iff the socket carries a
+            // TLS transport; plain sockets answer the undefined arm (Node
+            // types `encrypted` on TLSSocket only).
+            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockEncrypted result is not a union");
+            const def = emitter.unionsById.get(e.type.unionId);
+            const boolTag = def ? def.arms.findIndex((a) => a.kind === "bool") : -1;
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
+            if (boolTag < 0 || undefTag < 0) {
+              throw new InternalCompilerError("emitter bug: net.sockEncrypted union lacks its arms");
+            }
+            const w = emitter.newTemp(BOOL, `scr_net_sock_encrypted(${arg(0)})`);
+            const present = `scr_union_new_bool(${boolTag}, true)`;
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${w.name} ? ${present} : ${absent}`);
+          }
+          case "net.sockDestroyed":
+            return finish(`scr_net_sock_destroyed(${arg(0)})`);
+          case "net.sockWritable":
+            return finish(`scr_net_sock_writable(${arg(0)})`);
+          case "net.sockPipeRes":
+            emitter.line(`scr_http_sock_pipe_res(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "net.serverOnListening": {
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            emitter.line(`scr_net_server_on_listening(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
+          case "net.sockSetEncoding":
+            return finish(`scr_net_sock_set_encoding(${arg(0)}, ${arg(1)})`);
+          case "net.sockSetTimeout":
+            emitter.line(`scr_net_sock_set_timeout(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "net.sockOnTimeout": {
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            emitter.line(`scr_net_sock_on_timeout(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
+          case "net.sockOnReadable": {
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            emitter.line(`scr_net_sock_on_readable(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
+          case "net.sockRead": {
+            // Buffer | null, type-directed like http.reqHeader: NULL (not
+            // enough buffered) takes the null arm.
+            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockRead result is not a union");
+            const def = emitter.unionsById.get(e.type.unionId);
+            const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes" && a.elem === "u8") : -1;
+            const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
+            if (bytesTag < 0 || nullTag < 0) {
+              throw new InternalCompilerError("emitter bug: net.sockRead union lacks its arms");
+            }
+            const b = emitter.newTemp(BYTES_U8, `scr_net_sock_read_bytes(${arg(0)}, ${arg(1)})`);
+            emitter.moveTemp(b); // moves into the box when present; NULL otherwise
+            const present = `scr_union_new_ref(${bytesTag}, ${b.name}, &scr_bytes_retain_v, &scr_bytes_release_v, NULL)`;
+            const absent = emitter.unitInstanceRef(e.type.unionId, nullTag);
+            return emitter.newTemp(e.type, `${b.name} ? ${present} : ${absent}`);
+          }
+          case "net.sockUnshift":
+            emitter.line(`scr_net_sock_unshift_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "net.serverEmitConnection":
+            emitter.line(`scr_net_server_emit_connection(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "net.sockRemoteAddress": {
+            // string | undefined, type-directed like http.reqHeader: NULL
+            // (closed socket) takes the undefined arm.
+            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockRemoteAddress result is not a union");
+            const def = emitter.unionsById.get(e.type.unionId);
+            const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
+            if (strTag < 0 || undefTag < 0) {
+              throw new InternalCompilerError("emitter bug: net.sockRemoteAddress union lacks its arms");
+            }
+            const s = emitter.newTemp(STRING, `scr_net_sock_remote_address(${arg(0)})`);
+            emitter.moveTemp(s);
+            const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
+          }
+          case "net.getAutoSelTimeout":
+            return finish(`scr_net_get_autosel_timeout()`);
+          case "net.setAutoSelTimeout":
+            return finish(`scr_net_set_autosel_timeout(${arg(0)})`);
+    default:
+      throw new InternalCompilerError(`emitter bug: network libCall dispatch for ${fn}`);
+  }
+}
+
+function emitTestLibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           // node:test (scr_test.c — linked only when these appear on the
           // IR; moduleUsesNodeTest is the switch). Strings borrowed,
           // callbacks MOVE. Registrations keep the loop-run emitted
@@ -4357,6 +5726,15 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return { name: "", type: e.type };
           case "test.ctxName":
             return finish(`scr_test_ctx_name(${arg(0)})`);
+    default:
+      throw new InternalCompilerError(`emitter bug: test libCall dispatch for ${fn}`);
+  }
+}
+
+function emitHttpLibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           // node:http, the server slice (scr_http.c over scr_net.c).
           case "http.createServer": {
             emitter.usesTimers = true;
@@ -4467,22 +5845,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
             return emitter.newTemp(e.type, `${w.name} >= 0 ? ${present} : ${absent}`);
           }
-          case "net.sockEncrypted": {
-            // boolean | undefined: the true arm iff the socket carries a
-            // TLS transport; plain sockets answer the undefined arm (Node
-            // types `encrypted` on TLSSocket only).
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockEncrypted result is not a union");
-            const def = emitter.unionsById.get(e.type.unionId);
-            const boolTag = def ? def.arms.findIndex((a) => a.kind === "bool") : -1;
-            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
-            if (boolTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: net.sockEncrypted union lacks its arms");
-            }
-            const w = emitter.newTemp(BOOL, `scr_net_sock_encrypted(${arg(0)})`);
-            const present = `scr_union_new_bool(${boolTag}, true)`;
-            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
-            return emitter.newTemp(e.type, `${w.name} ? ${present} : ${absent}`);
-          }
           case "http.reqSocket":
             return finish(`scr_http_req_socket(${arg(0)})`);
           case "http.reqH2Stream": {
@@ -4519,10 +5881,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
             return emitter.newTemp(e.type, `${m.name} ? ${present} : ${absent}`);
           }
-          case "net.sockDestroyed":
-            return finish(`scr_net_sock_destroyed(${arg(0)})`);
-          case "net.sockWritable":
-            return finish(`scr_net_sock_writable(${arg(0)})`);
           case "http.serverOnUpgrade":
           case "http.clientOnUpgrade": {
             const cbT = e.args[1]!.type;
@@ -4564,9 +5922,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             emitter.line(`scr_http_server_on_connect(${arg(0)}, ${cb.name}, &${adapter}, ${h2Adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
-          case "net.sockPipeRes":
-            emitter.line(`scr_http_sock_pipe_res(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
           case "http.reqPipeRes":
             emitter.line(`scr_http_req_pipe_res(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
@@ -4625,12 +5980,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return { name: "", type: e.type };
           case "http.serverTimeoutOptionSet":
             return finish(`scr_net_server_timeout_option_set(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "net.serverOnListening": {
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            emitter.line(`scr_net_server_on_listening(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          }
           case "http.resStatusGet":
             return finish(`scr_http_res_status_get(${arg(0)})`);
           case "http.resStatusSet":
@@ -4672,63 +6021,8 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return { name: "", type: e.type };
           case "http.resWriteHeadDyn":
             return finish(`scr_http_res_write_head_dyn(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "net.sockSetEncoding":
-            return finish(`scr_net_sock_set_encoding(${arg(0)}, ${arg(1)})`);
           case "http.reqSetEncoding":
             return finish(`scr_http_req_set_encoding(${arg(0)}, ${arg(1)})`);
-          case "net.sockSetTimeout":
-            emitter.line(`scr_net_sock_set_timeout(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "net.sockOnTimeout": {
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            emitter.line(`scr_net_sock_on_timeout(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          }
-          case "net.sockOnReadable": {
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            emitter.line(`scr_net_sock_on_readable(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          }
-          case "net.sockRead": {
-            // Buffer | null, type-directed like http.reqHeader: NULL (not
-            // enough buffered) takes the null arm.
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockRead result is not a union");
-            const def = emitter.unionsById.get(e.type.unionId);
-            const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes" && a.elem === "u8") : -1;
-            const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
-            if (bytesTag < 0 || nullTag < 0) {
-              throw new InternalCompilerError("emitter bug: net.sockRead union lacks its arms");
-            }
-            const b = emitter.newTemp(BYTES_U8, `scr_net_sock_read_bytes(${arg(0)}, ${arg(1)})`);
-            emitter.moveTemp(b); // moves into the box when present; NULL otherwise
-            const present = `scr_union_new_ref(${bytesTag}, ${b.name}, &scr_bytes_retain_v, &scr_bytes_release_v, NULL)`;
-            const absent = emitter.unitInstanceRef(e.type.unionId, nullTag);
-            return emitter.newTemp(e.type, `${b.name} ? ${present} : ${absent}`);
-          }
-          case "net.sockUnshift":
-            emitter.line(`scr_net_sock_unshift_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "net.serverEmitConnection":
-            emitter.line(`scr_net_server_emit_connection(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "net.sockRemoteAddress": {
-            // string | undefined, type-directed like http.reqHeader: NULL
-            // (closed socket) takes the undefined arm.
-            if (e.type.kind !== "union") throw new InternalCompilerError("emitter bug: net.sockRemoteAddress result is not a union");
-            const def = emitter.unionsById.get(e.type.unionId);
-            const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
-            if (strTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: net.sockRemoteAddress union lacks its arms");
-            }
-            const s = emitter.newTemp(STRING, `scr_net_sock_remote_address(${arg(0)})`);
-            emitter.moveTemp(s);
-            const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
-            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
-          }
           // node:http, the client slice (scr_http.c over the net client).
           case "http.request":
           case "http.requestCb": {
@@ -4809,6 +6103,165 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
               `scr_http_request_conn(${dial.name}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${cbExpr}, ${adapter})`,
             );
           }
+          case "https.createServer": {
+            emitter.usesTimers = true;
+            const cbT = e.args[2]!.type;
+            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.createServer handler not a func");
+            const cb = args[2]!;
+            emitter.moveTemp(cb);
+            const adapter =
+              cbT.params.length === 2 ? "scr_http_handler_thunk2"
+              : cbT.params.length === 1 ? "scr_http_handler_thunk1"
+              : "scr_http_handler_thunk0";
+            return finish(
+              `scr_https_create_server((const char *)${arg(0)}->data, ${arg(0)}->len, (const char *)${arg(1)}->data, ${arg(1)}->len, ${cb.name}, &${adapter})`,
+            );
+          }
+          case "https.createServerDyn":
+            emitter.usesTimers = true;
+            return finish(`scr_https_create_server_dyn(${arg(0)}, NULL, NULL)`);
+          case "https.createServerDynCb": {
+            emitter.usesTimers = true;
+            const cbT = e.args[1]!.type;
+            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.createServerDynCb handler not a func");
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            const adapter =
+              cbT.params.length === 2 ? "scr_http_handler_thunk2"
+              : cbT.params.length === 1 ? "scr_http_handler_thunk1"
+              : "scr_http_handler_thunk0";
+            return finish(`scr_https_create_server_dyn(${arg(0)}, ${cb.name}, &${adapter})`);
+          }
+          case "http.serverOnRequest": {
+            const cbT = e.args[1]!.type;
+            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.serverOnRequest handler not a func");
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            const adapter =
+              cbT.params.length === 2 ? "scr_http_handler_thunk2"
+              : cbT.params.length === 1 ? "scr_http_handler_thunk1"
+              : "scr_http_handler_thunk0";
+            emitter.line(`scr_http_server_on_request(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
+          case "https.request":
+          case "https.requestCb": {
+            emitter.usesTimers = true; // an in-flight request holds the loop open
+            let cbExpr = "NULL";
+            let adapter = "NULL";
+            if (e.fn === "https.requestCb") {
+              const cbT = e.args[9]!.type;
+              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestCb callback not a func");
+              const cb = args[9]!;
+              emitter.moveTemp(cb);
+              cbExpr = cb.name;
+              adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
+            }
+            return finish(
+              `scr_https_request(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)}, ${arg(7)}, (const char *)${arg(8)}->data, ${arg(8)}->len, ${cbExpr}, ${adapter})`,
+            );
+          }
+          case "https.requestAgent":
+          case "https.requestAgentCb": {
+            emitter.usesTimers = true; // an in-flight request holds the loop open
+            let cbExpr = "NULL";
+            let adapter = "NULL";
+            if (e.fn === "https.requestAgentCb") {
+              const cbT = e.args[10]!.type;
+              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestAgentCb callback not a func");
+              const cb = args[10]!;
+              emitter.moveTemp(cb);
+              cbExpr = cb.name;
+              adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
+            }
+            return finish(
+              `scr_https_request_agent(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)}, ${arg(7)}, (const char *)${arg(8)}->data, ${arg(8)}->len, ${arg(9)}, ${cbExpr}, ${adapter})`,
+            );
+          }
+          case "https.requestFn":
+          case "https.requestFnCb": {
+            // The requestFn binding's runtime dial: arg 0 picks the client
+            // — a C ternary between the two real entry points over the
+            // SAME evaluated argument temps (only one side runs; the cb
+            // moves into whichever). The https row's reject/ca args are
+            // simply unused on the plain side, like Node's http.request
+            // with TLS options.
+            emitter.usesTimers = true; // an in-flight request holds the loop open
+            let cbExpr = "NULL";
+            let adapter = "NULL";
+            if (e.fn === "https.requestFnCb") {
+              const cbT = e.args[10]!.type;
+              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestFnCb callback not a func");
+              const cb = args[10]!;
+              emitter.moveTemp(cb);
+              cbExpr = cb.name;
+              adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
+            }
+            return finish(
+              `(${arg(0)} ? scr_https_request(${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)}, ${arg(7)}, ${arg(8)}, (const char *)${arg(9)}->data, ${arg(9)}->len, ${cbExpr}, ${adapter}) : scr_http_request_ex(${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)}, ${arg(7)}, ${cbExpr}, ${adapter}, 80, NULL, NULL))`,
+            );
+          }
+          case "http.clientWrite":
+            emitter.line(`scr_http_client_write_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "http.clientWriteBytes":
+            emitter.line(`scr_http_client_write_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "http.clientEnd":
+            emitter.line(`scr_http_client_end(${arg(0)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "http.clientEndStr":
+            emitter.line(`scr_http_client_end_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "http.clientEndBytes":
+            emitter.line(`scr_http_client_end_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "http.clientWriteDyn":
+            emitter.line(`scr_http_client_write_dynv(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "http.clientEndDyn":
+            emitter.line(`scr_http_client_end_dynv(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "http.clientDestroy":
+            emitter.line(`scr_http_client_destroy(${arg(0)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          case "http.clientDestroyed":
+            return finish(`scr_http_client_destroyed(${arg(0)})`);
+          case "http.clientOnResponse": {
+            const cbT = e.args[1]!.type;
+            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.clientOnResponse callback not a func");
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            const adapter = cbT.params.length === 0 ? "scr_http_resp_thunk0" : "scr_http_resp_thunk_res";
+            emitter.line(`scr_http_client_on_response(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
+          case "http.clientOnError": {
+            const cbT = e.args[1]!.type;
+            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.clientOnError callback not a func");
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
+            emitter.line(`scr_http_client_on_error(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
+          case "http.clientOnTimeout":
+          case "http.clientOnClose": {
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            const fn = e.fn === "http.clientOnTimeout" ? "scr_http_client_on_timeout" : "scr_http_client_on_close";
+            emitter.line(`${fn}(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
+    default:
+      throw new InternalCompilerError(`emitter bug: http libCall dispatch for ${fn}`);
+  }
+}
+
+function emitTlsLibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           // node:tls + node:https (scr_tls.c over scr_net.c/scr_http.c).
           // cert/key/ca PEM arguments are strings OR Buffers — both carry
           // data+len, so one emission shape serves both (the cast covers
@@ -4830,20 +6283,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
               `scr_tls_create_server((const char *)${arg(0)}->data, ${arg(0)}->len, (const char *)${arg(1)}->data, ${arg(1)}->len, ${cbExpr}, ${adapter})`,
             );
           }
-          case "https.createServer": {
-            emitter.usesTimers = true;
-            const cbT = e.args[2]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.createServer handler not a func");
-            const cb = args[2]!;
-            emitter.moveTemp(cb);
-            const adapter =
-              cbT.params.length === 2 ? "scr_http_handler_thunk2"
-              : cbT.params.length === 1 ? "scr_http_handler_thunk1"
-              : "scr_http_handler_thunk0";
-            return finish(
-              `scr_https_create_server((const char *)${arg(0)}->data, ${arg(0)}->len, (const char *)${arg(1)}->data, ${arg(1)}->len, ${cb.name}, &${adapter})`,
-            );
-          }
           // The RUNTIME options records (divergence 66's stance): the dyn
           // walks throw the catchable fence for out-of-bounds members.
           case "tls.pemDyn":
@@ -4862,21 +6301,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
               adapter = cbT.params.length === 0 ? "&scr_net_conn_thunk0" : "&scr_net_conn_thunk_sock";
             }
             return finish(`scr_tls_create_server_dyn(${arg(0)}, ${cbExpr}, ${adapter})`);
-          }
-          case "https.createServerDyn":
-            emitter.usesTimers = true;
-            return finish(`scr_https_create_server_dyn(${arg(0)}, NULL, NULL)`);
-          case "https.createServerDynCb": {
-            emitter.usesTimers = true;
-            const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.createServerDynCb handler not a func");
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            const adapter =
-              cbT.params.length === 2 ? "scr_http_handler_thunk2"
-              : cbT.params.length === 1 ? "scr_http_handler_thunk1"
-              : "scr_http_handler_thunk0";
-            return finish(`scr_https_create_server_dyn(${arg(0)}, ${cb.name}, &${adapter})`);
           }
           // The TLSSocket member surface on the socket kind.
           case "tls.sockAuthorized":
@@ -4930,6 +6354,40 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
               `scr_tls_connect_dyn(${arg(0)}, ${arg(1)}, ${arg(2)}, ${cbExpr})`,
             );
           }
+          case "tls.createSecureContext":
+            // Parses the PEM pair into the opaque SecureContext handle the
+            // SNI answer serves; bad material is the construction-time
+            // print-and-die trap, like createServer's.
+            return finish(
+              `scr_tls_create_secure_context((const char *)${arg(0)}->data, ${arg(0)}->len, (const char *)${arg(1)}->data, ${arg(1)}->len)`,
+            );
+          case "tls.createSecureContextDyn":
+            // The runtime option-bag form: Node's typed validations, then
+            // the pem walk (throws catchably on both ladders).
+            return finish(`scr_tls_create_secure_context_dyn(${arg(0)})`);
+          case "tls.caCertsChk":
+            // Always throws (validation error or the trailing fence).
+            return finish(
+              `(scr_tls_ca_certs_chk(${arg(0)}, ${arg(1)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
+          // The CA-store introspection unit (scr_tls_ca.c): cached
+          // per-type PEM string arrays (+1 retained answers), and the
+          // default-set replacement. get/set are may-throw seeds.
+          case "tlsca.get":
+            return finish(`scr_tls_ca_get(${arg(0)})`);
+          case "tlsca.root":
+            return finish(`scr_tls_ca_root()`);
+          case "tlsca.set":
+            return finish(`scr_tls_ca_set_default(${arg(0)})`);
+    default:
+      throw new InternalCompilerError(`emitter bug: tls libCall dispatch for ${fn}`);
+  }
+}
+
+function emitHttp2LibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           case "http2.createSecureServer":
             emitter.usesTimers = true;
             return finish(
@@ -5020,43 +6478,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return finish(
               `scr_http2_create_secure_server_allow_http1((const char *)${arg(0)}->data, ${arg(0)}->len, (const char *)${arg(1)}->data, ${arg(1)}->len, NULL, NULL, ${cbExpr}, (void *)&${answer}, ${arg(3)})`,
             );
-          }
-          case "tls.createSecureContext":
-            // Parses the PEM pair into the opaque SecureContext handle the
-            // SNI answer serves; bad material is the construction-time
-            // print-and-die trap, like createServer's.
-            return finish(
-              `scr_tls_create_secure_context((const char *)${arg(0)}->data, ${arg(0)}->len, (const char *)${arg(1)}->data, ${arg(1)}->len)`,
-            );
-          case "tls.createSecureContextDyn":
-            // The runtime option-bag form: Node's typed validations, then
-            // the pem walk (throws catchably on both ladders).
-            return finish(`scr_tls_create_secure_context_dyn(${arg(0)})`);
-          case "tls.caCertsChk":
-            // Always throws (validation error or the trailing fence).
-            return finish(
-              `(scr_tls_ca_certs_chk(${arg(0)}, ${arg(1)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          // The CA-store introspection unit (scr_tls_ca.c): cached
-          // per-type PEM string arrays (+1 retained answers), and the
-          // default-set replacement. get/set are may-throw seeds.
-          case "tlsca.get":
-            return finish(`scr_tls_ca_get(${arg(0)})`);
-          case "tlsca.root":
-            return finish(`scr_tls_ca_root()`);
-          case "tlsca.set":
-            return finish(`scr_tls_ca_set_default(${arg(0)})`);
-          case "http.serverOnRequest": {
-            const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.serverOnRequest handler not a func");
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            const adapter =
-              cbT.params.length === 2 ? "scr_http_handler_thunk2"
-              : cbT.params.length === 1 ? "scr_http_handler_thunk1"
-              : "scr_http_handler_thunk0";
-            emitter.line(`scr_http_server_on_request(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
           }
           case "http2.serverOnSessionError": {
             const cbT = e.args[1]!.type;
@@ -5321,293 +6742,15 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return finish(`scr_http2_stream_pending(${arg(0)})`);
           case "http2.streamSession":
             return finish(`scr_http2_stream_session(${arg(0)})`);
-          case "dyn.toStringCoerce":
-            // +1 string or NULL with the exception pending (user
-            // toString/valueOf throws propagate). Borrows the dyn.
-            return finish(`scr_dyn_string_coerce_js(${arg(0)})`);
-          case "error.nodeThrow":
-            // The compiler-resolved Node-parity throw (always throws —
-            // the typed dummy is abandoned by the pending check's
-            // unwind; releases are NULL-tolerant). Borrows both strings.
-            return finish(
-              `(scr_throw_node_coded(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          case "global.undefRead":
-            // A declare-d const nothing defines: Node's catchable
-            // ReferenceError at the access (always throws — the typed
-            // dummy is abandoned by the pending check's unwind; releases
-            // are NULL-tolerant). Borrows the name string.
-            return finish(
-              `(scr_undef_global_read(${arg(0)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          case "https.request":
-          case "https.requestCb": {
-            emitter.usesTimers = true; // an in-flight request holds the loop open
-            let cbExpr = "NULL";
-            let adapter = "NULL";
-            if (e.fn === "https.requestCb") {
-              const cbT = e.args[9]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestCb callback not a func");
-              const cb = args[9]!;
-              emitter.moveTemp(cb);
-              cbExpr = cb.name;
-              adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
-            }
-            return finish(
-              `scr_https_request(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)}, ${arg(7)}, (const char *)${arg(8)}->data, ${arg(8)}->len, ${cbExpr}, ${adapter})`,
-            );
-          }
-          case "https.requestAgent":
-          case "https.requestAgentCb": {
-            emitter.usesTimers = true; // an in-flight request holds the loop open
-            let cbExpr = "NULL";
-            let adapter = "NULL";
-            if (e.fn === "https.requestAgentCb") {
-              const cbT = e.args[10]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestAgentCb callback not a func");
-              const cb = args[10]!;
-              emitter.moveTemp(cb);
-              cbExpr = cb.name;
-              adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
-            }
-            return finish(
-              `scr_https_request_agent(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)}, ${arg(7)}, (const char *)${arg(8)}->data, ${arg(8)}->len, ${arg(9)}, ${cbExpr}, ${adapter})`,
-            );
-          }
-          case "https.requestFn":
-          case "https.requestFnCb": {
-            // The requestFn binding's runtime dial: arg 0 picks the client
-            // — a C ternary between the two real entry points over the
-            // SAME evaluated argument temps (only one side runs; the cb
-            // moves into whichever). The https row's reject/ca args are
-            // simply unused on the plain side, like Node's http.request
-            // with TLS options.
-            emitter.usesTimers = true; // an in-flight request holds the loop open
-            let cbExpr = "NULL";
-            let adapter = "NULL";
-            if (e.fn === "https.requestFnCb") {
-              const cbT = e.args[10]!.type;
-              if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: https.requestFnCb callback not a func");
-              const cb = args[10]!;
-              emitter.moveTemp(cb);
-              cbExpr = cb.name;
-              adapter = cbT.params.length === 0 ? "&scr_http_resp_thunk0" : "&scr_http_resp_thunk_res";
-            }
-            return finish(
-              `(${arg(0)} ? scr_https_request(${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)}, ${arg(7)}, ${arg(8)}, (const char *)${arg(9)}->data, ${arg(9)}->len, ${cbExpr}, ${adapter}) : scr_http_request_ex(${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)}, ${arg(7)}, ${cbExpr}, ${adapter}, 80, NULL, NULL))`,
-            );
-          }
-          case "http.clientWrite":
-            emitter.line(`scr_http_client_write_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "http.clientWriteBytes":
-            emitter.line(`scr_http_client_write_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "http.clientEnd":
-            emitter.line(`scr_http_client_end(${arg(0)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "http.clientEndStr":
-            emitter.line(`scr_http_client_end_str(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "http.clientEndBytes":
-            emitter.line(`scr_http_client_end_bytes(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "http.clientWriteDyn":
-            emitter.line(`scr_http_client_write_dynv(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "http.clientEndDyn":
-            emitter.line(`scr_http_client_end_dynv(${arg(0)}, ${arg(1)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "http.clientDestroy":
-            emitter.line(`scr_http_client_destroy(${arg(0)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          case "http.clientDestroyed":
-            return finish(`scr_http_client_destroyed(${arg(0)})`);
-          case "http.clientOnResponse": {
-            const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.clientOnResponse callback not a func");
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            const adapter = cbT.params.length === 0 ? "scr_http_resp_thunk0" : "scr_http_resp_thunk_res";
-            emitter.line(`scr_http_client_on_response(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          }
-          case "http.clientOnError": {
-            const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: http.clientOnError callback not a func");
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
-            emitter.line(`scr_http_client_on_error(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          }
-          case "http.clientOnTimeout":
-          case "http.clientOnClose": {
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            const fn = e.fn === "http.clientOnTimeout" ? "scr_http_client_on_timeout" : "scr_http_client_on_close";
-            emitter.line(`${fn}(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          }
-          case "child.onError": {
-            // Both error-listener shapes have runtime-provided adapters
-            // (constructing the %Error instance needs no program types).
-            const cbT = e.args[1]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: child.onError callback not a func");
-            const cb = args[1]!;
-            emitter.moveTemp(cb);
-            const adapter =
-              cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
-            emitter.line(
-              `scr_child_on_error(${arg(0)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`,
-            );
-            return { name: "", type: e.type };
-          }
-          // fs/promises: already-settled promises — failures REJECT (the
-          // runtime moves the pending exception into the promise), so no
-          // pending check here; the await re-throws catchably. args[1] of
-          // readFile is the (always-"utf8") encoding, evaluated for
-          // JS-exact side-effect order and ignored by the runtime.
-          case "crypto.randomUUID":
-            return finish(`scr_crypto_random_uuid()`);
-          case "crypto.randomBytesToString":
-            // May throw Node's RangeError (may-throw seed set).
-            return finish(`scr_crypto_random_string(${arg(0)}, ${arg(1)})`);
-          case "crypto.randomBytes":
-            // A real u8 Buffer (+1); same RangeError as the composed form.
-            return finish(`scr_crypto_random_bytes(${arg(0)})`);
-          case "crypto.hashDigestStr":
-            return finish(`scr_crypto_hash_digest_str(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "crypto.hashDigestBytes":
-            return finish(`scr_crypto_hash_digest_bytes(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          // The Buffer statics (scr_bytes.c): fromStr decodes Node-
-          // leniently (never throws), concat copies its borrowed list.
-          case "buffer.fromStr":
-            return finish(`scr_bytes_from_str(${arg(0)}, ${arg(1)})`);
-          case "buffer.concat":
-            return finish(`scr_bytes_concat(${arg(0)})`);
-          case "buffer.concatLen":
-            return finish(`scr_bytes_concat_len(${arg(0)}, ${arg(1)})`);
-          case "buffer.byteLenStr":
-            return finish(`scr_bytes_byte_length_str(${arg(0)}, ${arg(1)})`);
-          case "buffer.isEncoding":
-            return finish(`scr_bytes_is_encoding(${arg(0)})`);
-          // The checked-dynamic compare/equals validators
-          // (scr_bytes_io.c): Node's argument ladders throw catchably
-          // (may-throw seed set); all dyn args borrowed.
-          case "buffer.compareChk":
-            return finish(`scr_buffer_compare_chk(${arg(0)}, ${arg(1)})`);
-          case "bytes.equalsChk":
-            return finish(`scr_bytes_equals_chk(${arg(0)}, ${arg(1)})`);
-          case "bytes.compareChk":
-            return finish(`scr_bytes_compare_chk(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)})`);
-          case "buffer.newStringFail":
-            return finish(`scr_buffer_new_string_fail(${arg(0)})`);
-          case "fs.toUnixTimestamp":
-            return finish(`scr_fs_to_unix_timestamp(${arg(0)})`);
-          // The fs argument-validation ladders: the always-throw Chk
-          // forms (validation error or the trailing fence) take the
-          // error.nodeThrow dummy pattern; mkdtempSyncChk and the lchmod
-          // pair answer real results on a validated pass.
-          case "fs.existsChk":
-            emitter.usesTimers = true; // the scheduled answer holds the loop open
-            return finish(`scr_fs_exists_async(${arg(0)}, ${arg(1)})`);
-          case "fs.renameCb": {
-            // The callback MOVES into the scheduled operation. Its
-            // adapter constructs the program-specific Error | null union
-            // (or dyn error/null for the JS lane) when the timer fires.
-            emitter.usesTimers = true;
-            const cbT = e.args[2]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: fs.rename callback not a func");
-            const cb = args[2]!;
-            emitter.moveTemp(cb);
-            const adapter = emitter.fsRenameThunkFor(cbT);
-            emitter.line(`scr_fs_rename_async(${arg(0)}, ${arg(1)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`);
-            return { name: "", type: e.type };
-          }
-          case "fs.mkdtempChk":
-            return finish(
-              `(scr_fs_mkdtemp_chk(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          case "fs.mkdtempSyncChk":
-            return finish(`scr_fs_mkdtemp_sync_chk(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "fs.readFileChk":
-            return finish(
-              `(scr_fs_read_file_chk(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          case "fs.opendirChk":
-            return finish(
-              `(scr_fs_opendir_chk(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          case "fs.watchFileChk":
-            return finish(
-              `(scr_fs_watch_file_chk(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          case "fs.lchmodChk":
-            return finish(
-              `(scr_fs_lchmod_chk(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          case "fs.lchmodSyncChk":
-            return finish(`scr_fs_lchmod_sync_chk(${arg(0)}, ${arg(1)})`);
-          case "fsp.lchmodChk":
-            return finish(`scr_fsp_lchmod_chk(${arg(0)}, ${arg(1)})`);
-          case "fs.readChk":
-            return finish(
-              `(scr_fs_read_chk(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          case "fs.streamOptsChk":
-            return finish(
-              `(scr_fs_stream_opts_chk(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          case "error.argTypeThrow":
-            // Always throws with the runtime-rendered Received tail (the
-            // error.nodeThrow dummy pattern). Borrows all three.
-            return finish(
-              `(scr_throw_arg_type(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          case "error.propTypeThrow":
-            // The property flavor ("The \"options.x\" property must be
-            // ...") — same always-throw dummy pattern.
-            return finish(
-              `(scr_throw_prop_type(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
-            );
-          // The fs Buffer forms (scr_bytes_io.c): the sync pair throws
-          // like the utf8 forms (may-throw seed set); the promise form
-          // rejects instead.
-          case "fs.readFileSyncBytes":
-            return finish(`scr_fs_read_file_bytes(${arg(0)})`);
-          case "fs.writeFileSyncBytes":
-            return finish(`scr_fs_write_file_bytes(${arg(0)}, ${arg(1)})`);
-          case "fsp.readFileBytes":
-            return finish(`scr_fsp_read_file_bytes(${arg(0)})`);
-          // zlib (scr_zlib.c — linked only when these appear on the IR):
-          // inflate throws on corrupt input (may-throw seed set).
-          case "zlib.deflateSync":
-            return finish(`scr_zlib_deflate(${arg(0)})`);
-          case "zlib.inflateSync":
-            return finish(`scr_zlib_inflate(${arg(0)})`);
-          case "process.stdoutWriteBytes":
-            return finish(`scr_process_stdout_write_bytes(${arg(0)}, ${arg(1)})`);
-          case "process.stderrWriteBytes":
-            return finish(`scr_process_stderr_write_bytes(${arg(0)}, ${arg(1)})`);
-          case "process.stdoutWriteBytesCb":
-          case "process.stderrWriteBytesCb": {
-            // Submit the bytes only after every call argument evaluated,
-            // then move the completion callback onto the next-tick queue.
-            // The shared error-first adapter materializes success `null`.
-            emitter.usesTimers = true;
-            const cbT = e.args[2]!.type;
-            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: process write callback not a func");
-            const cb = args[2]!;
-            emitter.moveTemp(cb);
-            const adapter = emitter.fsRenameThunkFor(cbT);
-            const write = e.fn === "process.stdoutWriteBytesCb"
-              ? "scr_process_stdout_write_bytes"
-              : "scr_process_stderr_write_bytes";
-            const out = emitter.newTemp(e.type, `${write}(${arg(0)}, ${arg(1)})`);
-            emitter.line(`scr_process_write_callback(${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`);
-            return out;
-          }
+    default:
+      throw new InternalCompilerError(`emitter bug: http2 libCall dispatch for ${fn}`);
+  }
+}
+
+function emitAsyncContextLibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           case "tp.setTimeout":
             return finish(`scr_tp_set_timeout(${arg(0)})`);
           case "tp.setImmediate":
@@ -5654,8 +6797,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return finish(`scr_dc_tc_trace_sync(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)})`);
           case "dc.tcTraceCallback":
             return finish(`scr_dc_tc_trace_callback(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)})`);
-          case "assert.expectsErrDyn":
-            return finish(`scr_assert_expects_err_dyn(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`);
           case "async.hop":
             emitter.usesTimers = true;
             return finish(`scr_await_hop()`);
@@ -5684,198 +6825,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             // The reaction fiber needs the loop to drain it.
             emitter.usesTimers = true;
             return finish(`scr_dc_tc_trace_promise(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)})`);
-          case "process.onWarning":
-            return finish(`scr_process_on_warning(${arg(0)})`);
-          case "process.offWarning":
-            return finish(`scr_process_off_warning(${arg(0)})`);
-          case "process.emitWarning":
-            return finish(`scr_process_emit_warning(${arg(0)})`);
-          case "process.onUnhandledRejection":
-            // The completed-checkpoint report dispatches the listeners.
-            emitter.usesTimers = true;
-            return finish(`scr_process_on_unhandled_rejection(${arg(0)}, ${arg(1)})`);
-          case "process.offUnhandledRejection":
-            return finish(`scr_process_off_unhandled_rejection(${arg(0)})`);
-          case "process.onRejectionHandled":
-            // Fires after a reported promise gains a handler — the loop
-            // must be live for the checkpoint report to run.
-            emitter.usesTimers = true;
-            return finish(`scr_process_on_rejection_handled(${arg(0)}, ${arg(1)})`);
-          case "process.offRejectionHandled":
-            return finish(`scr_process_off_rejection_handled(${arg(0)})`);
-          case "fsp.readFile":
-            return finish(`scr_fsp_read_file(${arg(0)})`);
-          case "fsp.writeFile":
-            return finish(`scr_fsp_write_file(${arg(0)}, ${arg(1)})`);
-          case "fsp.writeFileMode":
-            return finish(`scr_fsp_write_file_mode(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "fsp.mkdir":
-            return finish(`scr_fsp_mkdir(${arg(0)})`);
-          case "fsp.mkdirMode":
-            return finish(`scr_fsp_mkdir_mode(${arg(0)}, ${arg(1)})`);
-          case "fsp.mkdirRecursive":
-            return finish(`scr_fsp_mkdir_recursive(${arg(0)})`);
-          case "fsp.mkdirRecursiveMode":
-            return finish(`scr_fsp_mkdir_recursive_mode(${arg(0)}, ${arg(1)})`);
-          case "fsp.unlink":
-            return finish(`scr_fsp_unlink(${arg(0)})`);
-          case "fsp.chmod":
-            return finish(`scr_fsp_chmod(${arg(0)}, ${arg(1)})`);
-          case "fsp.rename":
-            return finish(`scr_fsp_rename(${arg(0)}, ${arg(1)})`);
-          case "fsp.readdir":
-            return finish(`scr_fsp_readdir(${arg(0)})`);
-          case "fsp.rm":
-            return finish(`scr_fsp_rm(${arg(0)})`);
-          case "fsp.stat":
-            return finish(`scr_fsp_stat(${arg(0)})`);
-          case "fsp.open":
-            return finish(`scr_fsp_open(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "fileHandle.fd":
-            return finish(`scr_file_handle_fd(${arg(0)})`);
-          case "fileHandle.close":
-            return finish(`scr_file_handle_close_promise(${arg(0)})`);
-          case "fileHandle.readFile":
-            return finish(`scr_file_handle_read_file_promise(${arg(0)}, ${arg(1)})`);
-          case "fileHandle.readFileBytes":
-            return finish(`scr_file_handle_read_file_bytes_promise(${arg(0)}, ${arg(1)})`);
-          case "fileHandle.writeFile":
-            return finish(`scr_file_handle_write_file_promise(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "fileHandle.writeFileBytes":
-            return finish(`scr_file_handle_write_file_bytes_promise(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "fileHandle.stat":
-            return finish(`scr_file_handle_stat_promise(${arg(0)})`);
-          case "fileHandle.read":
-          case "fileHandle.writeBytes":
-          case "fileHandle.writeStr": {
-            if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
-              throw new InternalCompilerError(`emitter bug: ${e.fn} result`);
-            }
-            const inner = e.type.inner;
-            const countFn = e.fn === "fileHandle.read"
-              ? `scr_file_handle_read(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)})`
-              : e.fn === "fileHandle.writeBytes"
-                ? `scr_file_handle_write_bytes(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)})`
-                : `scr_file_handle_write_str(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`;
-            const count = emitter.newTemp(F64, countFn);
-            const row = emitter.newTemp(inner, `${mangleRecordNew(inner.shapeId)}()`);
-            const countField = e.fn === "fileHandle.read" ? "bytesRead" : "bytesWritten";
-            emitter.line(`${row.name}->${mangleField(countField)} = ${count.name};`);
-            emitter.line(`${row.name}->${mangleField("buffer")} = ${retainCallC(e.args[1]!.type, arg(1))};`);
-            const rc = vAdapters(inner);
-            emitter.moveTemp(row); // promise fulfillment owns the result record
-            return finish(`scr_promise_settled_ref(${row.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(inner)})`);
-          }
-          case "process.argv":
-            return finish(`scr_process_argv()`);
-          case "process.platform":
-            return finish(`scr_process_platform()`);
-          case "process.cwd":
-            return finish(`scr_process_cwd()`);
-          case "process.stdoutWrite":
-            return finish(`scr_process_stdout_write(${arg(0)})`);
-          case "process.stderrWrite":
-            return finish(`scr_process_stderr_write(${arg(0)})`);
-          case "process.envGet": {
-            // getenv(3): +1 fresh string, or NULL when unset. The union
-            // construction is type-directed HERE — the runtime knows no
-            // tags: present wraps the string arm (ownership of the fresh
-            // string MOVES into the box), absent yields the interned
-            // immortal undefined-arm instance (releases no-op on it).
-            if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: process.envGet result is not a union");
-            }
-            const def = emitter.unionsById.get(e.type.unionId);
-            const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
-            if (strTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: process.envGet union lacks its arms");
-            }
-            const s = emitter.newTemp(STRING, `scr_env_get(${arg(0)})`);
-            emitter.moveTemp(s); // moves into the box when present; NULL otherwise
-            const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
-            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
-          }
-          case "process.envSet":
-            return finish(`scr_env_set(${arg(0)}, ${arg(1)})`);
-          case "process.envUnset":
-            return finish(`scr_env_unset(${arg(0)})`);
-          case "process.envPairs":
-            return finish(`scr_env_pairs()`);
-          case "process.pid":
-            return finish(`scr_process_pid()`);
-          case "dyn.this":
-            return finish(`scr_dyn_this_get()`);
-          case "process.getuid":
-            return finish(`scr_process_getuid()`);
-          case "process.uptime":
-            return finish(`scr_process_uptime()`);
-          case "perf.now":
-            return finish(`scr_perf_now()`);
-          case "process.availableMemory":
-            return finish(`scr_available_memory()`);
-          case "process.constrainedMemory":
-            return finish(`scr_constrained_memory()`);
-          case "process.cpuUser":
-            return finish(`scr_cpu_user()`);
-          case "process.cpuSystem":
-            return finish(`scr_cpu_system()`);
-          case "process.cpuUserDiff":
-            return finish(`scr_cpu_user_diff(${arg(0)})`);
-          case "process.cpuSystemDiff":
-            return finish(`scr_cpu_system_diff(${arg(0)})`);
-          case "process.threadCpuUser":
-            return finish(`scr_thread_cpu_user()`);
-          case "process.threadCpuSystem":
-            return finish(`scr_thread_cpu_system()`);
-          case "process.threadCpuUserDiff":
-            return finish(`scr_thread_cpu_user_diff(${arg(0)})`);
-          case "process.threadCpuSystemDiff":
-            return finish(`scr_thread_cpu_system_diff(${arg(0)})`);
-          case "process.cpuPrevValidate":
-            // MAY THROW: negative/non-finite prev fields raise Node's
-            // ERR_INVALID_ARG_VALUE RangeError (finish emits the check).
-            return finish(`scr_cpu_prev_validate(${arg(0)}, ${arg(1)})`);
-          case "process.rusage":
-            return finish(`scr_process_rusage(${arg(0)})`);
-          case "process.activeResources":
-            // The loop's bookkeeping needs the loop linked.
-            emitter.usesTimers = true;
-            return finish(`scr_active_resources()`);
-          case "process.getgid":
-            return finish(`scr_process_getgid()`);
-          case "process.execPath":
-            return finish(`scr_process_exec_path()`);
-          case "process.arch":
-            return finish(`scr_process_arch()`);
-          case "process.versionsNode":
-            return finish(`scr_process_versions_node()`);
-          case "process.versionsOpenssl":
-            return finish(`scr_process_versions_openssl()`);
-          case "process.umask":
-            return finish(`scr_process_umask(${arg(0)})`);
-          case "process.chdir":
-            return finish(`scr_process_chdir(${arg(0)})`);
-          case "process.exiting":
-            return finish(`scr_process_exiting()`);
-          case "net.getAutoSelTimeout":
-            return finish(`scr_net_get_autosel_timeout()`);
-          case "net.setAutoSelTimeout":
-            return finish(`scr_net_set_autosel_timeout(${arg(0)})`);
-          case "fs.realpathSync":
-            return finish(`scr_fs_realpath(${arg(0)})`);
-          case "process.kill":
-            // Throws Node's kill errors (bad pid TypeError, unknown-signal
-            // TypeError, ESRCH/EPERM Error); the pending check comes from
-            // the may-throw set.
-            return finish(`scr_process_kill_named(${arg(0)}, ${arg(1)})`);
-          case "process.killNum":
-            return finish(`scr_process_kill(${arg(0)}, ${arg(1)})`);
-          case "process.exit":
-            // Flushes stdout and _Exit()s — never returns (exit handlers,
-            // including the RC audit, deliberately do not run).
-            return finish(`scr_process_exit(${arg(0)})`);
           case "timers.setTimeout": {
             // The loop owns the callback until it fires.
             emitter.usesTimers = true;
@@ -5932,15 +6881,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return finish(`scr_queue_microtask_dyn(${arg(0)})`);
           case "timers.clearImmediate":
             return finish(`scr_clear_immediate(${arg(0)})`);
-          case "process.nextTick": {
-            // The tick queue owns the callback until the drain fires it;
-            // ticks run before promise jobs at every loop checkpoint and
-            // keep the loop alive while queued, so main runs the loop.
-            emitter.usesTimers = true;
-            const cb = args[0]!;
-            emitter.moveTemp(cb);
-            return finish(`scr_next_tick(${cb.name})`);
-          }
           case "timers.immediateUnref":
             return emitter.newTemp(e.type, `(scr_immediate_unref(${arg(0)}), ${arg(0)})`);
           case "timers.immediateRef":
@@ -5951,6 +6891,165 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             // clearTimeout(null) and friends: Node silently ignores
             // non-handles — nothing runs.
             return { name: "", type: e.type };
+    default:
+      throw new InternalCompilerError(`emitter bug: asyncContext libCall dispatch for ${fn}`);
+  }
+}
+
+function emitProcessLibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
+          case "process.stdoutWriteBytes":
+            return finish(`scr_process_stdout_write_bytes(${arg(0)}, ${arg(1)})`);
+          case "process.stderrWriteBytes":
+            return finish(`scr_process_stderr_write_bytes(${arg(0)}, ${arg(1)})`);
+          case "process.stdoutWriteBytesCb":
+          case "process.stderrWriteBytesCb": {
+            // Submit the bytes only after every call argument evaluated,
+            // then move the completion callback onto the next-tick queue.
+            // The shared error-first adapter materializes success `null`.
+            emitter.usesTimers = true;
+            const cbT = e.args[2]!.type;
+            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: process write callback not a func");
+            const cb = args[2]!;
+            emitter.moveTemp(cb);
+            const adapter = emitter.fsRenameThunkFor(cbT);
+            const write = e.fn === "process.stdoutWriteBytesCb"
+              ? "scr_process_stdout_write_bytes"
+              : "scr_process_stderr_write_bytes";
+            const out = emitter.newTemp(e.type, `${write}(${arg(0)}, ${arg(1)})`);
+            emitter.line(`scr_process_write_callback(${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`);
+            return out;
+          }
+          case "process.onWarning":
+            return finish(`scr_process_on_warning(${arg(0)})`);
+          case "process.offWarning":
+            return finish(`scr_process_off_warning(${arg(0)})`);
+          case "process.emitWarning":
+            return finish(`scr_process_emit_warning(${arg(0)})`);
+          case "process.onUnhandledRejection":
+            // The completed-checkpoint report dispatches the listeners.
+            emitter.usesTimers = true;
+            return finish(`scr_process_on_unhandled_rejection(${arg(0)}, ${arg(1)})`);
+          case "process.offUnhandledRejection":
+            return finish(`scr_process_off_unhandled_rejection(${arg(0)})`);
+          case "process.onRejectionHandled":
+            // Fires after a reported promise gains a handler — the loop
+            // must be live for the checkpoint report to run.
+            emitter.usesTimers = true;
+            return finish(`scr_process_on_rejection_handled(${arg(0)}, ${arg(1)})`);
+          case "process.offRejectionHandled":
+            return finish(`scr_process_off_rejection_handled(${arg(0)})`);
+          case "process.argv":
+            return finish(`scr_process_argv()`);
+          case "process.platform":
+            return finish(`scr_process_platform()`);
+          case "process.cwd":
+            return finish(`scr_process_cwd()`);
+          case "process.stdoutWrite":
+            return finish(`scr_process_stdout_write(${arg(0)})`);
+          case "process.stderrWrite":
+            return finish(`scr_process_stderr_write(${arg(0)})`);
+          case "process.envGet": {
+            // getenv(3): +1 fresh string, or NULL when unset. The union
+            // construction is type-directed HERE — the runtime knows no
+            // tags: present wraps the string arm (ownership of the fresh
+            // string MOVES into the box), absent yields the interned
+            // immortal undefined-arm instance (releases no-op on it).
+            if (e.type.kind !== "union") {
+              throw new InternalCompilerError("emitter bug: process.envGet result is not a union");
+            }
+            const def = emitter.unionsById.get(e.type.unionId);
+            const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
+            if (strTag < 0 || undefTag < 0) {
+              throw new InternalCompilerError("emitter bug: process.envGet union lacks its arms");
+            }
+            const s = emitter.newTemp(STRING, `scr_env_get(${arg(0)})`);
+            emitter.moveTemp(s); // moves into the box when present; NULL otherwise
+            const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
+          }
+          case "process.envSet":
+            return finish(`scr_env_set(${arg(0)}, ${arg(1)})`);
+          case "process.envUnset":
+            return finish(`scr_env_unset(${arg(0)})`);
+          case "process.envPairs":
+            return finish(`scr_env_pairs()`);
+          case "process.pid":
+            return finish(`scr_process_pid()`);
+          case "process.getuid":
+            return finish(`scr_process_getuid()`);
+          case "process.uptime":
+            return finish(`scr_process_uptime()`);
+          case "process.availableMemory":
+            return finish(`scr_available_memory()`);
+          case "process.constrainedMemory":
+            return finish(`scr_constrained_memory()`);
+          case "process.cpuUser":
+            return finish(`scr_cpu_user()`);
+          case "process.cpuSystem":
+            return finish(`scr_cpu_system()`);
+          case "process.cpuUserDiff":
+            return finish(`scr_cpu_user_diff(${arg(0)})`);
+          case "process.cpuSystemDiff":
+            return finish(`scr_cpu_system_diff(${arg(0)})`);
+          case "process.threadCpuUser":
+            return finish(`scr_thread_cpu_user()`);
+          case "process.threadCpuSystem":
+            return finish(`scr_thread_cpu_system()`);
+          case "process.threadCpuUserDiff":
+            return finish(`scr_thread_cpu_user_diff(${arg(0)})`);
+          case "process.threadCpuSystemDiff":
+            return finish(`scr_thread_cpu_system_diff(${arg(0)})`);
+          case "process.cpuPrevValidate":
+            // MAY THROW: negative/non-finite prev fields raise Node's
+            // ERR_INVALID_ARG_VALUE RangeError (finish emits the check).
+            return finish(`scr_cpu_prev_validate(${arg(0)}, ${arg(1)})`);
+          case "process.rusage":
+            return finish(`scr_process_rusage(${arg(0)})`);
+          case "process.activeResources":
+            // The loop's bookkeeping needs the loop linked.
+            emitter.usesTimers = true;
+            return finish(`scr_active_resources()`);
+          case "process.getgid":
+            return finish(`scr_process_getgid()`);
+          case "process.execPath":
+            return finish(`scr_process_exec_path()`);
+          case "process.arch":
+            return finish(`scr_process_arch()`);
+          case "process.versionsNode":
+            return finish(`scr_process_versions_node()`);
+          case "process.versionsOpenssl":
+            return finish(`scr_process_versions_openssl()`);
+          case "process.umask":
+            return finish(`scr_process_umask(${arg(0)})`);
+          case "process.chdir":
+            return finish(`scr_process_chdir(${arg(0)})`);
+          case "process.exiting":
+            return finish(`scr_process_exiting()`);
+          case "process.kill":
+            // Throws Node's kill errors (bad pid TypeError, unknown-signal
+            // TypeError, ESRCH/EPERM Error); the pending check comes from
+            // the may-throw set.
+            return finish(`scr_process_kill_named(${arg(0)}, ${arg(1)})`);
+          case "process.killNum":
+            return finish(`scr_process_kill(${arg(0)}, ${arg(1)})`);
+          case "process.exit":
+            // Flushes stdout and _Exit()s — never returns (exit handlers,
+            // including the RC audit, deliberately do not run).
+            return finish(`scr_process_exit(${arg(0)})`);
+          case "process.nextTick": {
+            // The tick queue owns the callback until the drain fires it;
+            // ticks run before promise jobs at every loop checkpoint and
+            // keep the loop alive while queued, so main runs the loop.
+            emitter.usesTimers = true;
+            const cb = args[0]!;
+            emitter.moveTemp(cb);
+            return finish(`scr_next_tick(${cb.name})`);
+          }
           case "process.onSignal": {
             // The registry owns the callback (zero-param — frontend-pinned)
             // until off/once removes it. The loop dispatches deliveries.
@@ -6011,6 +7110,63 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             // the fiber while the loop watches fd 0.
             emitter.usesTimers = true;
             return finish(`scr_stdin_next_chunk()`);
+          case "process.isTTY":
+            return finish(`scr_process_is_tty(${arg(0)})`);
+          case "process.columns": {
+            // ioctl(TIOCGWINSZ): a non-negative width wraps the f64 arm;
+            // a non-TTY stream (or an ioctl refusal) comes back negative
+            // and yields the interned undefined-arm instance — Node's
+            // missing `.columns`. Type-directed union construction, like
+            // process.envGet.
+            if (e.type.kind !== "union") {
+              throw new InternalCompilerError("emitter bug: process.columns result is not a union");
+            }
+            const def = emitter.unionsById.get(e.type.unionId);
+            const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
+            if (f64Tag < 0 || undefTag < 0) {
+              throw new InternalCompilerError("emitter bug: process.columns union lacks its arms");
+            }
+            const w = emitter.newTemp(F64, `scr_process_columns(${arg(0)})`);
+            const present = `scr_union_new_f64(${f64Tag}, ${w.name})`;
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${w.name} >= 0 ? ${present} : ${absent}`);
+          }
+          case "process.stdinDestroy":
+            // A deliberate no-op (SEMANTICS.md).
+            return finish(`scr_process_stdin_destroy()`);
+          case "process.stdinSetRawMode":
+            // TTY: termios raw mode (libuv's UV_TTY_MODE_RAW set). Non-TTY:
+            // Node's exact catchable TypeError (the may-throw seed).
+            return finish(`scr_process_stdin_set_raw_mode(${arg(0)})`);
+    default:
+      throw new InternalCompilerError(`emitter bug: process libCall dispatch for ${fn}`);
+  }
+}
+
+function emitErrorsEventsLibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
+          case "error.nodeThrow":
+            // The compiler-resolved Node-parity throw (always throws —
+            // the typed dummy is abandoned by the pending check's
+            // unwind; releases are NULL-tolerant). Borrows both strings.
+            return finish(
+              `(scr_throw_node_coded(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
+          case "error.argTypeThrow":
+            // Always throws with the runtime-rendered Received tail (the
+            // error.nodeThrow dummy pattern). Borrows all three.
+            return finish(
+              `(scr_throw_arg_type(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
+          case "error.propTypeThrow":
+            // The property flavor ("The \"options.x\" property must be
+            // ...") — same always-throw dummy pattern.
+            return finish(
+              `(scr_throw_prop_type(${arg(0)}, ${arg(1)}, ${arg(2)}), ${isRefCounted(e.type) ? `(${cType(e.type).trim()})NULL` : "0"})`,
+            );
           case "error.new": {
             // Which builtin the runtime constructs is named by the RESULT
             // type; the message is borrowed (the runtime retains its copy).
@@ -6052,55 +7208,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             // Borrowed receiver + borrowed options; +1 %DOMException.
             // Option errors throw (may-throw seed set).
             return finish(`scr_domex_clone(${arg(0)}, ${arg(1)})`);
-          case "dyn.objKeys":
-            return finish(`scr_dyn_obj_keys(${arg(0)})`);
-          case "dyn.assign":
-            // Object.assign over dyn values: own members copy, the target
-            // returns (+1); non-object receivers throw like Node.
-            return finish(`scr_dyn_assign(${arg(0)}, ${arg(1)})`);
-          case "dyn.packPush":
-            // Variadic Object.assign's source pack: a plain source
-            // retains in (both args borrowed). Never throws.
-            return finish(`scr_dyn_pack_push(${arg(0)}, ${arg(1)})`);
-          case "dyn.packPushSpread":
-            // A spread source flattens through the spread-call walk —
-            // V8's exact TypeError texts (may-throw seed set); the string
-            // spells the spread expression for the nullish form.
-            return finish(`scr_dyn_pack_push_spread(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "dyn.packPushSpreadIter":
-            // The non-last/multi-spread positions: V8's iterator-protocol
-            // failure texts describe the value (may-throw seed set).
-            return finish(`scr_dyn_pack_push_spread_iter(${arg(0)}, ${arg(1)})`);
-          case "dyn.assignAll":
-            // The flattened pack copies onto the target left to right;
-            // the target returns (+1). Nullish targets throw like Node.
-            return finish(`scr_dyn_assign_all(${arg(0)}, ${arg(1)})`);
-          case "dyn.objCreateNullProto":
-            // Object.create(null): the fresh null-prototype dictionary
-            // (+1). Never throws.
-            return finish(`scr_dyn_new_obj_null_proto()`);
-          case "dyn.hasOwn":
-            // Object.hasOwn over a dyn receiver (throws on nullish, like
-            // Node's ToObject).
-            return finish(`scr_dyn_has_own(${arg(0)}, ${arg(1)})`);
-          case "dyn.objValues":
-            return finish(`scr_dyn_obj_values(${arg(0)})`);
-          case "dyn.objEntries":
-            return finish(`scr_dyn_obj_entries(${arg(0)})`);
-          case "dyn.errInstanceof":
-            // The from_error cache resolves the dyn value to its runtime
-            // error; the class's stamped interval answers. Never throws.
-            return finish(`scr_dyn_err_instanceof(${arg(0)}, ${arg(1)})`);
-          case "dyn.structuredClone":
-            // Deep dyn clone (+1); option/DataClone/cycle errors throw
-            // (may-throw seed set). Both args borrowed.
-            return finish(`scr_structured_clone(${arg(0)}, ${arg(1)})`);
-          case "dyn.cloneMissing":
-            // Always throws ERR_MISSING_ARGS; the result never exists.
-            return finish(`scr_structured_clone_missing()`);
-          case "dyn.cloneTransferFail":
-            // Always throws DataCloneError; the result never exists.
-            return finish(`scr_structured_clone_transfer_fail()`);
           case "regex.new":
             // Eager compile: bad patterns/flags throw catchable
             // SyntaxError (may-throw seed set). Borrowed strings; +1.
@@ -6239,6 +7346,65 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return finish(`scr_emitter_set_default_max_chk(${arg(0)}, ${arg(1)})`);
           case "emitter.getDefaultMax":
             return finish(`scr_emitter_get_default_max()`);
+          case "error.code": {
+            // `string | undefined`, constructed type-directedly like
+            // process.envGet: a stamped code wraps the string arm (+1
+            // moves into the box); absent yields the interned
+            // undefined-arm instance. The receiver may be a user subclass
+            // struct — the code slot sits in its ScrError prefix, so the
+            // cast is the ordinary upcast reinterpret.
+            if (e.type.kind !== "union") {
+              throw new InternalCompilerError("emitter bug: error.code result is not a union");
+            }
+            const def = emitter.unionsById.get(e.type.unionId);
+            const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
+            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
+            if (strTag < 0 || undefTag < 0) {
+              throw new InternalCompilerError("emitter bug: error.code union lacks its arms");
+            }
+            const s = emitter.newTemp(STRING, `scr_error_code((ScrError *)${arg(0)})`);
+            emitter.moveTemp(s); // moves into the box when present; NULL otherwise
+            const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
+            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
+            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
+          }
+    default:
+      throw new InternalCompilerError(`emitter bug: errorsEvents libCall dispatch for ${fn}`);
+  }
+}
+
+function emitStreamLibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
+          case "stream.onData": {
+            // The callback MOVES into the stream's listener registry; the
+            // adapter is per callback shape — runtime-provided for the
+            // zero-param and Buffer forms, emitted per union for the
+            // `Buffer | string` chunk (the chunk wraps at its Buffer arm).
+            emitter.usesTimers = true; // a flowing stream holds the loop
+            const cbT = e.args[1]!.type;
+            if (cbT.kind !== "func") throw new InternalCompilerError("emitter bug: stream.onData callback not a func");
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            const param = cbT.params[0];
+            const adapter =
+              param === undefined
+                ? "scr_child_stream_thunk0"
+                : param.kind === "union"
+                  ? emitter.childDataThunkFor(param)
+                  : "scr_child_stream_thunk_bytes";
+            emitter.line(
+              `scr_child_stream_on_data(${arg(0)}, ${cb.name}, &${adapter}, ${arg(2)});${emitter.srcComment(e.loc)}`,
+            );
+            return { name: "", type: e.type };
+          }
+          case "stream.onEnd": {
+            const cb = args[1]!;
+            emitter.moveTemp(cb);
+            emitter.line(`scr_child_stream_on_end(${arg(0)}, ${cb.name}, ${arg(2)});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
           // node:stream (scr_stream.c — linked exactly when these appear,
           // moduleUsesStream). Receivers reinterpret to the shared
           // ScrStream layout (the ScrEmitter prefix plus the stream-state
@@ -6355,21 +7521,6 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return finish(
               `(${cType(e.type).trim()})scr_stream_pipeline(${n}, (ScrStream *[]){ ${list} }, ${cb.name}, &${thunk})`,
             );
-          }
-          case "sp.finished":
-            // The stream/promises form: a +1 pending promise the terminal
-            // watcher settles — no callback, no cleanup exposure.
-            emitter.usesTimers = true;
-            return finish(`scr_sp_finished((ScrStream *)${arg(0)})`);
-          case "sp.pipeline": {
-            // pipeline(count, s1..sn) settling a void promise; the stream
-            // list rides the callback form's compound literal.
-            emitter.usesTimers = true;
-            const countArg = e.args[0]!;
-            if (countArg.kind !== "numLit") throw new InternalCompilerError(`emitter bug: ${fn} count not a literal`);
-            const n = countArg.value;
-            const list = Array.from({ length: n }, (_, i) => `(ScrStream *)${arg(1 + i)}`).join(", ");
-            return finish(`scr_sp_pipeline(${n}, (ScrStream *[]){ ${list} })`);
           }
           case "sc.text":
             // stream/consumers: +1 pending promises the accumulate-and-
@@ -6624,28 +7775,17 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             const present = `scr_union_new_ref(${errTag}, ${er.name}, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg())`;
             return emitter.newTemp(e.type, `${er.name} ? ${present} : scr_union_retain(${emitter.unitInstanceRef(e.type.unionId, nullTag)})`);
           }
-          case "error.code": {
-            // `string | undefined`, constructed type-directedly like
-            // process.envGet: a stamped code wraps the string arm (+1
-            // moves into the box); absent yields the interned
-            // undefined-arm instance. The receiver may be a user subclass
-            // struct — the code slot sits in its ScrError prefix, so the
-            // cast is the ordinary upcast reinterpret.
-            if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: error.code result is not a union");
-            }
-            const def = emitter.unionsById.get(e.type.unionId);
-            const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
-            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
-            if (strTag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: error.code union lacks its arms");
-            }
-            const s = emitter.newTemp(STRING, `scr_error_code((ScrError *)${arg(0)})`);
-            emitter.moveTemp(s); // moves into the box when present; NULL otherwise
-            const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
-            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
-            return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
-          }
+    default:
+      throw new InternalCompilerError(`emitter bug: stream libCall dispatch for ${fn}`);
+  }
+}
+
+function emitAssertInspectLibCall(state: LibCallState): Temp {
+  const { e, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
+          case "assert.expectsErrDyn":
+            return finish(`scr_assert_expects_err_dyn(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`);
           // node:assert (scr_assert.c; match in scr_regex.c): all args
           // borrowed; failures throw the catchable AssertionError (the
           // may-throw seed runs the pending check after each).
@@ -6770,6 +7910,15 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return finish(`scr_insp_more_items(${arg(0)})`);
           case "insp.end":
             return finish(`scr_insp_end(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)})`);
+    default:
+      throw new InternalCompilerError(`emitter bug: assertInspect libCall dispatch for ${fn}`);
+  }
+}
+
+function emitIoLibCall(state: LibCallState): Temp {
+  const { e, emitter, args, arg, finish } = state;
+  const fn = e.fn;
+  switch (fn) {
           // node:readline (scr_readline.c, the events gate): an OPEN
           // interface is a stdin consumer — the loop must run.
           case "rl.create":
@@ -6807,853 +7956,240 @@ export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
             return finish(`scr_strdec_next(${arg(0)}, ${arg(1)}, ${arg(2)})`);
           case "strdec.end":
             return finish(`scr_strdec_end(${arg(0)}, ${arg(1)})`);
-          // The Number statics (scr_lib.c): pure f64 → bool, never throw.
-          case "number.isFinite":
-            return finish(`scr_num_is_finite(${arg(0)})`);
-          case "number.isNaN":
-            return finish(`scr_num_is_nan(${arg(0)})`);
-          case "number.isInteger":
-            return finish(`scr_num_is_integer(${arg(0)})`);
-          case "number.isSafeInteger":
-            return finish(`scr_num_is_safe_integer(${arg(0)})`);
-          case "date.now":
-            // Node's integer milliseconds since epoch. Never throws.
-            return finish(`scr_date_now()`);
-          case "date.newNow":
-            return finish(`scr_date_now()`);
-          case "date.newMs":
-            return finish(`scr_date_new_ms(${arg(0)})`);
-          case "date.newString":
-            return finish(`scr_date_parse_get_time(${arg(0)})`);
-          case "date.getTime":
-          case "date.valueOf":
-            return finish(`${arg(0)}`);
-          case "date.toISOString":
-          case "date.toISOStringValue":
-            // +1 string, or Node's "Invalid time value" RangeError
-            // (may-throw seed set).
-            return finish(`scr_date_to_iso(${arg(0)})`);
-          case "date.parseGetTime":
-            // The bounded date-string parse (X509 validity + ECMA format);
-            // NaN elsewhere. Never throws.
-            return finish(`scr_date_parse_get_time(${arg(0)})`);
-          case "date.utc":
-            // MakeDay/MakeTime/TimeClip over seven completed number
-            // arguments; NaN outside the time range. Never throws.
-            return finish(
-              `scr_date_utc(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${arg(5)}, ${arg(6)})`,
-            );
-          case "date.getFullYear":
-            return finish(`scr_date_get_full_year(${arg(0)}, false)`);
-          case "date.getUTCFullYear":
-            return finish(`scr_date_get_full_year(${arg(0)}, true)`);
-          case "date.getMonth":
-            return finish(`scr_date_get_month(${arg(0)}, false)`);
-          case "date.getUTCMonth":
-            return finish(`scr_date_get_month(${arg(0)}, true)`);
-          case "date.getDate":
-            return finish(`scr_date_get_date(${arg(0)}, false)`);
-          case "date.getUTCDate":
-            return finish(`scr_date_get_date(${arg(0)}, true)`);
-          case "date.getDay":
-            return finish(`scr_date_get_day(${arg(0)}, false)`);
-          case "date.getUTCDay":
-            return finish(`scr_date_get_day(${arg(0)}, true)`);
-          case "date.getHours":
-            return finish(`scr_date_get_hours(${arg(0)}, false)`);
-          case "date.getUTCHours":
-            return finish(`scr_date_get_hours(${arg(0)}, true)`);
-          case "date.getMinutes":
-            return finish(`scr_date_get_minutes(${arg(0)}, false)`);
-          case "date.getUTCMinutes":
-            return finish(`scr_date_get_minutes(${arg(0)}, true)`);
-          case "date.getSeconds":
-            return finish(`scr_date_get_seconds(${arg(0)}, false)`);
-          case "date.getUTCSeconds":
-            return finish(`scr_date_get_seconds(${arg(0)}, true)`);
-          case "date.getMilliseconds":
-          case "date.getUTCMilliseconds":
-            return finish(`scr_date_get_milliseconds(${arg(0)})`);
-          case "date.getTimezoneOffset":
-            return finish(`scr_date_get_timezone_offset(${arg(0)})`);
-          case "text.decode":
-            // WHATWG utf-8 decode with the leading BOM stripped
-            // (scr_bytes.c). Borrowed bytes; +1 string; never throws.
-            return finish(`scr_text_decode(${arg(0)})`);
-          case "text.decodeLegacy":
-            // Compile-time-labeled WHATWG legacy decode (scr_bytes.c).
-            // Borrowed bytes + numeric encoding id; +1 string.
-            return finish(`scr_text_decode_legacy(${arg(0)}, ${arg(1)})`);
-          // The fs option forms (scr_lib.c) — all in the may-throw seed,
-          // like the rest of sync fs.
-          case "fs.mkdirRecursiveSync":
-            return finish(`scr_fs_mkdir_recursive(${arg(0)})`);
-          case "fs.rmOptsSync":
-            return finish(`scr_fs_rm_opts(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "fs.rmRetrySync":
-            return finish(`scr_fs_rm_opts_retry(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)})`);
-          case "fs.mkdtempSync":
-            return finish(`scr_fs_mkdtemp(${arg(0)})`);
-          case "fs.accessSync":
-            return finish(`scr_fs_access(${arg(0)}, ${arg(1)})`);
-          // The wider sync fs slice (scr_lib.c): syscall wrappers with
-          // Node's errno message shapes, `.code` stamped like the rest.
-          case "fs.unlinkSync":
-            return finish(`scr_fs_unlink(${arg(0)})`);
-          case "fs.chmodSync":
-            return finish(`scr_fs_chmod(${arg(0)}, ${arg(1)})`);
-          case "fs.chownSync":
-            return finish(`scr_fs_chown(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "fs.copyFileSync":
-            return finish(`scr_fs_copyfile(${arg(0)}, ${arg(1)})`);
-          case "fs.renameSync":
-            return finish(`scr_fs_rename(${arg(0)}, ${arg(1)})`);
-          case "fs.lstatSync":
-            return finish(`scr_fs_lstat(${arg(0)})`);
-          case "fs.writeFileModeSync":
-            return finish(`scr_fs_write_file_mode(${arg(0)}, ${arg(1)}, ${arg(2)})`);
-          case "fs.mkdirModeSync":
-            return finish(`scr_fs_mkdir_mode(${arg(0)}, ${arg(1)})`);
-          case "fs.mkdirRecursiveModeSync":
-            return finish(`scr_fs_mkdir_recursive_mode(${arg(0)}, ${arg(1)})`);
-          // Atomics.wait — the synchronous-sleep idiom (scr_lib.c): a
-          // real nanosleep; +1 string result; never throws.
-          case "atomics.wait":
-            return finish(`scr_atomics_wait(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)})`);
-          case "fs.readFdSync":
-            // args[1] is the (always-"utf8") encoding: evaluated for
-            // JS-exact side-effect order, ignored by the runtime.
-            return finish(`scr_fs_read_fd(${arg(0)})`);
-          case "fs.readFdSyncBytes":
-            return finish(`scr_fs_read_fd_bytes(${arg(0)})`);
-          case "process.isTTY":
-            return finish(`scr_process_is_tty(${arg(0)})`);
-          case "process.columns": {
-            // ioctl(TIOCGWINSZ): a non-negative width wraps the f64 arm;
-            // a non-TTY stream (or an ioctl refusal) comes back negative
-            // and yields the interned undefined-arm instance — Node's
-            // missing `.columns`. Type-directed union construction, like
-            // process.envGet.
-            if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: process.columns result is not a union");
-            }
-            const def = emitter.unionsById.get(e.type.unionId);
-            const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
-            const undefTag = undefinedArmTag(e.type, emitter.unionsById);
-            if (f64Tag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: process.columns union lacks its arms");
-            }
-            const w = emitter.newTemp(F64, `scr_process_columns(${arg(0)})`);
-            const present = `scr_union_new_f64(${f64Tag}, ${w.name})`;
-            const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
-            return emitter.newTemp(e.type, `${w.name} >= 0 ? ${present} : ${absent}`);
-          }
-          case "string.fromCharCode":
-            // One packed f64[] (the frontend built it) or one bytes value
-            // (the spread-typed-array form); +1 string.
-            return finish(
-              e.args[0]!.type.kind === "bytes"
-                ? `scr_str_from_char_code_bytes(${arg(0)})`
-                : `scr_str_from_char_code(${arg(0)})`,
-            );
-          case "string.lastIndexOf":
-            return finish(`scr_str_last_index_of(${arg(0)}, ${arg(1)})`);
-          case "string.raw":
-            // Raw literals + pre-stringified substitutions; +1 string.
-            return finish(`scr_str_raw(${arg(0)}, ${arg(1)})`);
-          case "process.stdinDestroy":
-            // A deliberate no-op (SEMANTICS.md).
-            return finish(`scr_process_stdin_destroy()`);
-          case "process.stdinSetRawMode":
-            // TTY: termios raw mode (libuv's UV_TTY_MODE_RAW set). Non-TTY:
-            // Node's exact catchable TypeError (the may-throw seed).
-            return finish(`scr_process_stdin_set_raw_mode(${arg(0)})`);
-          case "class.name":
-            // `X.name` through a class value: the class object's stored
-            // .name string (+1 — a no-op retain on the interned immortal).
-            return finish(`scr_classobj_name(${arg(0)})`);
-          default: {
-            const _exhaustive: never = fn;
-            void _exhaustive;
-            throw new InternalCompilerError("unreachable");
-          }
-        }
-      }
-      case "jsonStringify": {
-        // Type-directed serialization: the STATIC type picks an emitted
-        // serializer (interned per type) — no dyn, no runtime dispatch. The
-        // value temp is BORROWED (released with this statement's frame);
-        // the result string is owned (+1). Throws only over CYCLE-CAPABLE
-        // types (recursive records — the circular-structure TypeError) and
-        // dyn roots; everything else keeps the throw-free path.
-        const v = emitter.emitExpr(e.value);
-        // A dyn root: the runtime's dyn walker (scr_dyn_format_j — the %j
-        // serializer IS JSON.stringify over the checked-dynamic tree: number/string/bool/
-        // null/array/object exact, dropped members omitted, a dropped ROOT
-        // becomes the text "undefined", a runtime handle inside the tree
-        // throws) — fallible, so the pending-exception check runs.
-        const compact =
-          e.value.type.kind === "dyn"
-            ? emitter.fallibleTemp(e.type, `scr_dyn_format_j(${v.name})`)
-            : (() => {
-                const helper = emitter.jsonWriteHelper(e.value.type);
-                const buf = `sc_t${emitter.tempCounter++}`;
-                emitter.line(`ScrJsonBuf ${buf}; scr_jb_init(&${buf});${emitter.srcComment(e.loc)}`);
-                emitter.line(`${helper}(&${buf}, ${v.name});`);
-                const t = emitter.newTemp(e.type, `scr_jb_finish(&${buf})`);
-                // A cycle-capable root can throw the circular-structure
-                // TypeError mid-walk: finish still runs (frees the buffer,
-                // the partial string joins the frame and releases on
-                // unwind), then the pending check unwinds.
-                if (emitter.traceAdapterC(e.value.type) !== null) emitter.emitPendingCheck();
-                return t;
-              })();
-        // A pretty-print form (`stringify(v, null, 2)`): the frontend
-        // resolved the space to a compile-time indent string (Node's
-        // clamp/truncate rules) riding as an extra property; the interned
-        // re-indenter rewrites the compact text with Node's gap algorithm.
-        // Compact temp stays frame-owned; the pretty string is a fresh +1.
-        const indent = (e as { indent?: string }).indent;
-        if (!indent) return compact;
-        const bytes = Buffer.from(indent, "utf8");
-        return emitter.newTemp(
-          e.type,
-          `${emitter.jsonIndentHelper()}(${compact.name}, ${cStringLiteral(bytes)}, ${bytes.length})`,
-        );
-      }
-      case "dynCheck": {
-        // The dynamic boundary: validate the checked-dynamic tree against the target type
-        // and BUILD the typed value (+1) — or throw a catchable
-        // TypeError-shaped, path-annotated string. The dyn temp is BORROWED;
-        // the result joins the frame BEFORE the pending check so an unwind
-        // releases the dummy (NULL for refcounted targets) harmlessly.
-        const dyn = emitter.emitExpr(e.value);
-        const helper = emitter.dynCheckHelper(e.type);
-        return emitter.fallibleTemp(e.type, `${helper}(${dyn.name}, NULL)`);
-      }
-      case "yieldExpr": {
-        // Park the operand in the generator's OUT slot (moved in, typed by
-        // the function's yield channel) and switch back to the resumer.
-        // Control returns at the next resume — possibly with an injected
-        // .throw payload or the GENRET sentinel pending, hence the check.
-        // The result is the .next(v) argument, moved out of the IN slot.
-        const gen = emitter.currentGenerator;
-        if (!gen) throw new InternalCompilerError("emitter bug: yieldExpr outside a generator body");
-        if (e.value === null) throw new InternalCompilerError("emitter bug: yieldExpr with no operand (frontend fills undefined)");
-        const v = emitter.emitExpr(e.value);
-        const yt = e.value.type;
-        if (yt.kind === "f64" || yt.kind === "date") {
-          emitter.line(`scr_gen_yield_f64(${v.name});${emitter.srcComment(e.loc)}`);
-        } else if (yt.kind === "bool") {
-          emitter.line(`scr_gen_yield_bool(${v.name});${emitter.srcComment(e.loc)}`);
-        } else {
-          emitter.moveTemp(v); // the OUT slot takes ownership
-          emitter.line(`scr_gen_yield_ref(${v.name}, ${vAdapters(yt).release});${emitter.srcComment(e.loc)}`);
-        }
-        emitter.emitPendingCheck();
-        switch (e.type.kind) {
-          case "void":
-            // An undefined next-channel: nothing to read (the frontend
-            // fences value-position yields on this channel).
-            return { name: "", type: e.type };
-          case "f64":
-          case "date":
-            return emitter.newTemp(e.type, `scr_gen_take_in_f64()`);
-          case "bool":
-            return emitter.newTemp(e.type, `scr_gen_take_in_bool()`);
-          default:
-            // Refcounted channels (dyn included): the slot's +1 moves out.
-            return emitter.newTemp(e.type, `(${cType(e.type).trim()})scr_gen_take_in_ref()`);
-        }
-      }
-      case "genResume": {
-        // One consumer resume: park the sent value (typed per mode), hop
-        // into the fiber, propagate a body exception (pending check), and
-        // build the IteratorResult record through the interned helper.
-        const genT = e.gen.type;
-        if (genT.kind !== "generator") throw new InternalCompilerError("emitter bug: genResume on a non-generator");
-        if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: genResume result is not a record");
-        const g = emitter.emitExpr(e.gen); // borrowed for the calls below
-        const sendArg = (store: (a: Temp) => string): void => {
-          const a = emitter.emitExpr(e.arg!);
-          if (isRefCounted(e.arg!.type)) emitter.moveTemp(a); // the slot takes ownership
-          emitter.line(store(a));
-        };
-        if (e.mode === "next") {
-          if (e.arg === null) {
-            // Valueless resume: dyn channels read JS's undefined; unit
-            // channels have nothing to read.
-            if (genT.nextT.kind === "dyn") {
-              emitter.line(`scr_gen_in_ref(${g.name}, scr_dyn_retain(scr_dyn_undefined()), scr_dyn_release_v);${emitter.srcComment(e.loc)}`);
-            } else {
-              emitter.line(`scr_gen_in_none(${g.name});${emitter.srcComment(e.loc)}`);
-            }
-          } else {
-            const nt = e.arg.type;
-            sendArg((a) =>
-              nt.kind === "f64" || nt.kind === "date" ? `scr_gen_in_f64(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
-              : nt.kind === "bool" ? `scr_gen_in_bool(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
-              : `scr_gen_in_ref(${g.name}, ${a.name}, ${vAdapters(nt).release});${emitter.srcComment(e.loc)}`);
-          }
-          emitter.line(`scr_gen_resume(${g.name});`);
-        } else if (e.mode === "return") {
-          if (e.arg === null) {
-            emitter.line(`scr_gen_ret_none(${g.name});${emitter.srcComment(e.loc)}`);
-          } else {
-            const rt = e.arg.type;
-            sendArg((a) =>
-              rt.kind === "f64" || rt.kind === "date" ? `scr_gen_ret_f64(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
-              : rt.kind === "bool" ? `scr_gen_ret_bool(${g.name}, ${a.name});${emitter.srcComment(e.loc)}`
-              : `scr_gen_ret_ref(${g.name}, ${a.name}, ${vAdapters(rt).release});${emitter.srcComment(e.loc)}`);
-          }
-          emitter.line(`scr_gen_resume_return(${g.name});`);
-        } else {
-          // .throw(e): park the payload in the CALLER's cell (the throw
-          // statement's exact kind dispatch), then resume — the runtime
-          // moves it into the fiber, or leaves it pending (non-suspended
-          // generators: the .throw call itself throws at the check below).
-          if (e.arg === null) throw new InternalCompilerError("emitter bug: genResume throw with no payload");
-          const a = emitter.emitExpr(e.arg);
-          const t = e.arg.type;
-          if (isRefCounted(t)) emitter.moveTemp(a); // the cell takes ownership
-          if (t.kind === "date") {
-            throw new InternalCompilerError("emitter bug: Date generator throw reached backend");
-          } else if (t.kind === "f64") {
-            emitter.line(`scr_throw_f64(${a.name});${emitter.srcComment(e.loc)}`);
-          } else if (t.kind === "bool") {
-            emitter.line(`scr_throw_bool(${a.name});${emitter.srcComment(e.loc)}`);
-          } else if (t.kind === "string") {
-            emitter.line(`scr_throw_str(${a.name});${emitter.srcComment(e.loc)}`);
-          } else if (t.kind === "object" && emitter.classMeta.get(t.className)?.hierarchy) {
-            const rc = vAdapters(t);
-            emitter.line(`scr_throw_obj(${a.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(t)});${emitter.srcComment(e.loc)}`);
-          } else {
-            const rc = vAdapters(t);
-            emitter.line(`scr_throw_ref(${a.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(t)});${emitter.srcComment(e.loc)}`);
-          }
-          emitter.line(`scr_gen_resume_throw(${g.name});`);
-        }
-        const helper = genResultThunkFor(emitter, genT, e.type);
-        // The record builds before the check so an unwind (a propagated
-        // body exception) releases it as the frame's never-read dummy.
-        return emitter.fallibleTemp(e.type, `${helper}(${g.name})`);
-      }
-      case "awaitExpr": {
-        // Parks the fiber until the promise settles; rejected promises
-        // re-throw here (hence the pending check). Promise temp borrowed;
-        // refcounted results arrive +1 and join the frame pre-check so an
-        // unwind releases the dummy (NULL) harmlessly.
-        const pr = emitter.emitExpr(e.value);
-        let read: string;
-        switch (e.type.kind) {
-          case "f64":
-          case "date":
-            read = `scr_await_f64(${pr.name})`;
-            break;
-          case "bool":
-            read = `scr_await_bool(${pr.name})`;
-            break;
-          case "string":
-            read = `scr_await_str(${pr.name})`;
-            break;
-          case "void": {
-            emitter.line(`scr_await_void(${pr.name});${emitter.srcComment(e.loc)}`);
-            emitter.emitPendingCheck();
-            return { name: "", type: e.type };
-          }
-          case "dyn":
-            // The checked-dynamic tree-crossing await: void fulfillments (a boxed
-            // promise<void> that skipped its adapter) answer the
-            // undefined VALUE, never NULL.
-            read = `scr_await_dyn(${pr.name})`;
-            break;
-          default:
-            read = `(${cType(e.type).trim()})scr_await_ref(${pr.name})`;
-        }
-        return emitter.fallibleTemp(e.type, read);
-      }
-      case "awaitUnionExpr": {
-        // Await of a promise-or-absent union: the promise arm awaits like
-        // awaitExpr (parks, re-throws rejections); a unit arm takes exactly
-        // one microtask hop (JS: await of a non-thenable) and yields
-        // itself. The union temp is borrowed; a value-carrying result joins
-        // the frame BEFORE the pending check so an unwind releases the
-        // dummy (a union box holding the never-read NULL payload, or NULL)
-        // harmlessly.
-        if (e.value.type.kind !== "union") {
-          throw new InternalCompilerError("emitter bug: awaitUnion of a non-union");
-        }
-        const def = emitter.unionsById.get(e.value.type.unionId);
-        const promiseArm = def?.arms[e.promiseTag];
-        if (!def || promiseArm?.kind !== "promise") {
-          throw new InternalCompilerError("emitter bug: awaitUnion arm is not a promise");
-        }
-        const inner = promiseArm.inner;
-        const u = emitter.emitExpr(e.value);
-        const peek = `(ScrPromise *)scr_union_peek(${u.name})`;
-        if (e.type.kind === "void") {
-          emitter.line(
-            `if (${u.name}->tag == ${e.promiseTag}) scr_await_void(${peek}); else scr_await_hop();${emitter.srcComment(e.loc)}`,
-          );
-          emitter.emitPendingCheck();
-          return { name: "", type: e.type };
-        }
-        if (e.type.kind !== "union") {
-          throw new InternalCompilerError("emitter bug: awaitUnion result is neither void nor a union");
-        }
-        const resDef = emitter.unionsById.get(e.type.unionId);
-        if (!resDef) throw new InternalCompilerError("emitter bug: awaitUnion result union unknown");
-        const resTagOf = (arm: (typeof resDef.arms)[number]): number => {
-          const tag = resDef.arms.findIndex((a) => typeEquals(a, arm));
-          if (tag < 0) throw new InternalCompilerError("emitter bug: awaitUnion result arm missing");
-          return tag;
-        };
-        const innerTag = resTagOf(inner);
-        const name = `sc_t${emitter.tempCounter++}`;
-        emitter.line(`${cDecl(e.type, name)} = NULL;${emitter.srcComment(e.loc)}`);
-        emitter.currentFrame().push({ name, type: e.type });
-        emitter.line(`if (${u.name}->tag == ${e.promiseTag}) {`);
-        emitter.indent++;
-        let wrap: string;
-        switch (inner.kind) {
-          case "f64":
-            wrap = `scr_union_new_f64(${innerTag}, scr_await_f64(${peek}))`;
-            break;
-          case "bool":
-            wrap = `scr_union_new_bool(${innerTag}, scr_await_bool(${peek}))`;
-            break;
-          case "string":
-            wrap = `scr_union_new_ref(${innerTag}, scr_await_str(${peek}), scr_str_retain_v, scr_str_release_v, NULL)`;
-            break;
-          default: {
-            const v = vAdapters(inner);
-            wrap = `scr_union_new_ref(${innerTag}, scr_await_ref(${peek}), ${v.retain}, ${v.release}, ${emitter.traceArgC(inner)})`;
-          }
-        }
-        emitter.line(`${name} = ${wrap};`);
-        emitter.indent--;
-        emitter.line(`} else {`);
-        emitter.indent++;
-        emitter.line(`scr_await_hop();`);
-        const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
-        if (unitTags.length === 1) {
-          emitter.line(`${name} = ${emitter.unitInstanceRef(e.type.unionId, resTagOf(def.arms[unitTags[0]!]!))};`);
-        } else {
-          emitter.line(`switch (${u.name}->tag) {`);
-          for (const t of unitTags) {
-            emitter.line(`case ${t}: ${name} = ${emitter.unitInstanceRef(e.type.unionId, resTagOf(def.arms[t]!))}; break;`);
-          }
-          emitter.line(`default: break;`);
-          emitter.line(`}`);
-        }
-        emitter.indent--;
-        emitter.line(`}`);
-        emitter.emitPendingCheck();
-        return { name, type: e.type };
-      }
-      case "newPromise": {
-        // Pending promise + resolve closure, executor run synchronously
-        // (its throw rejects — handled inside the runtime helper, so no
-        // pending check here). Executor/resolve temps are frame-owned.
-        if (e.type.kind !== "promise") throw new InternalCompilerError("emitter bug: newPromise type");
-        const inner = e.type.inner;
-        const p = emitter.newTemp(e.type, `scr_promise_new()`);
-        // Zero-param executor: no resolve exists — a forever-pending
-        // promise unless the executor throws (which rejects it).
-        if (e.executor.type.kind === "func" && e.executor.type.params.length === 0) {
-          const exec0 = emitter.emitExpr(e.executor);
-          emitter.line(
-            `scr_promise_run_executor0(${p.name}, ${exec0.name});${emitter.srcComment(e.loc)}`,
-          );
-          return p;
-        }
-        let mk: string;
-        switch (inner.kind) {
-          case "f64":
-          case "date":
-            mk = `scr_make_resolve(${p.name}, 0)`;
-            break;
-          case "bool":
-            mk = `scr_make_resolve(${p.name}, 1)`;
-            break;
-          case "string":
-            mk = `scr_make_resolve(${p.name}, 2)`;
-            break;
-          case "void":
-            mk = `scr_make_resolve(${p.name}, 3)`;
-            break;
-          default:
-            mk = `scr_make_resolve_fn(${p.name}, (void *)&${emitter.resolveThunkFor(inner)})`;
-        }
-        const resolve = emitter.newTemp(
-          { kind: "func", params: inner.kind === "void" ? [] : [inner], ret: { kind: "void" } },
-          mk,
-        );
-        // Two-param executor: reject is a runtime-provided closure rejecting
-        // the promise with its Error reason (OBJ payload — catch instanceof
-        // and the uncaught printer see exactly a thrown Error). First settle
-        // wins in the runtime; both closures' +1 move into the call.
-        if (e.executor.type.kind === "func" && e.executor.type.params.length === 2) {
-          const reject = emitter.newTemp(
-            { kind: "func", params: [{ kind: "object", className: "%Error" }], ret: { kind: "void" } },
-            `scr_make_reject(${p.name})`,
-          );
-          const exec2 = emitter.emitExpr(e.executor);
-          emitter.moveTemp(resolve);
-          emitter.moveTemp(reject);
-          emitter.line(
-            `scr_promise_run_executor2(${p.name}, ${exec2.name}, ${resolve.name}, ${reject.name});${emitter.srcComment(e.loc)}`,
-          );
-          return p;
-        }
-        const exec = emitter.emitExpr(e.executor);
-        // The executor is a compiled closure and OWNS its params (it
-        // releases them on exit) — resolve's +1 moves into the call. The
-        // executor closure itself is borrowed (frame-released here).
-        emitter.moveTemp(resolve);
-        emitter.line(
-          `scr_promise_run_executor(${p.name}, ${exec.name}, ${resolve.name});${emitter.srcComment(e.loc)}`,
-        );
-        return p;
-      }
-      case "promiseWithResolvers": {
-        // The newPromise pieces without an executor: a pending promise,
-        // its runtime resolve closure (typed per the inner kind), and
-        // the reject closure, written into the fresh record. Closure +1s
-        // move into the record's fields; never throws.
-        if (e.type.kind !== "record") throw new InternalCompilerError("emitter bug: promiseWithResolvers type");
-        const shape = emitter.recordsById.get(e.type.shapeId);
-        const promT = shape?.fields.find((f) => f.name === "promise")?.type;
-        const resolveT = shape?.fields.find((f) => f.name === "resolve")?.type;
-        const rejectT = shape?.fields.find((f) => f.name === "reject")?.type;
-        if (!shape || promT?.kind !== "promise" || !resolveT || !rejectT) {
-          throw new InternalCompilerError("emitter bug: promiseWithResolvers record shape");
-        }
-        const inner = promT.inner;
-        const p = emitter.newTemp(promT, `scr_promise_new()`);
-        let mk: string;
-        switch (inner.kind) {
-          case "f64":
-          case "date":
-            mk = `scr_make_resolve(${p.name}, 0)`;
-            break;
-          case "bool":
-            mk = `scr_make_resolve(${p.name}, 1)`;
-            break;
-          case "string":
-            mk = `scr_make_resolve(${p.name}, 2)`;
-            break;
-          case "void":
-            mk = `scr_make_resolve(${p.name}, 3)`;
-            break;
-          default:
-            mk = `scr_make_resolve_fn(${p.name}, (void *)&${emitter.resolveThunkFor(inner)})`;
-        }
-        const resolve = emitter.newTemp(resolveT, mk);
-        const reject = emitter.newTemp(rejectT, `scr_make_reject(${p.name})`);
-        const rec = emitter.newTemp(e.type, `${mangleRecordNew(e.type.shapeId)}()`);
-        // The promise's +1 moves into the record; the record's own read
-        // of it at the call site retains per field access as usual.
-        emitter.moveTemp(p);
-        emitter.moveTemp(resolve);
-        emitter.moveTemp(reject);
-        emitter.line(`${rec.name}->${mangleField("promise")} = ${p.name};`);
-        emitter.line(`${rec.name}->${mangleField("resolve")} = ${resolve.name};`);
-        emitter.line(`${rec.name}->${mangleField("reject")} = ${reject.name};`);
-        return rec;
-      }
-      case "jsMarshal": {
-        // Static → island (--dynamic only). Primitives by value; JSON-safe
-        // composites deep-copy through the emitted type-directed serializer
-        // and the engine's JSON parser (documented aliasing divergence).
-        // Operand borrowed; result +1. from_json cannot fail on this
-        // machine-produced JSON but reports engine surprises via NULL +
-        // pending — check like a may-throw so the dummy unwinds cleanly.
-        const v = emitter.emitExpr(e.value);
-        switch (e.value.type.kind) {
-          case "f64":
-            return emitter.newTemp(e.type, `scr_jsval_from_f64(${v.name})`);
-          case "bool":
-            return emitter.newTemp(e.type, `scr_jsval_from_bool(${v.name})`);
-          case "string":
-            return emitter.newTemp(e.type, `scr_jsval_from_str(${v.name})`);
-          case "dyn":
-            // A CHECKED-DYNAMIC (dyn) value entering the island: deep
-            // copy, data kinds only — boxed functions/handles/promises
-            // throw the catchable TypeError in the runtime.
-            return emitter.fallibleTemp(e.type, `scr_jsval_from_dyn(${v.name})`);
-          case "bytes":
-            // A typed array crossing IN: an engine typed array of the same
-            // element kind — a COPY (the boundary's copy stance).
-            return emitter.fallibleTemp(e.type, `scr_jsval_from_bytes(${v.name})`);
-          case "url":
-            // A URL crossing IN: an engine URL instance built from href.
-            return emitter.fallibleTemp(e.type, `scr_jsval_from_url(${v.name})`);
-          case "promise": {
-            // A STATIC promise crossing IN: a real engine thenable
-            // settled when the scriptc promise settles (the async-
-            // callback return bridge). from_promise takes ownership of a
-            // +1 — retain past the borrowed frame temp.
-            const tag = islandPromisePayloadTag(e.value.type.inner);
-            if (!tag) throw new InternalCompilerError("emitter bug: jsMarshal of a promise outside the bridge payload domain");
-            const tagC = {
-              void: "SCR_ISLP_VOID", f64: "SCR_ISLP_F64", bool: "SCR_ISLP_BOOL",
-              string: "SCR_ISLP_STR", jsval: "SCR_ISLP_JSVAL", jsvalArr: "SCR_ISLP_JSVAL_ARR",
-            }[tag];
-            return emitter.fallibleTemp(e.type, `scr_jsval_from_promise(scr_promise_retain(${v.name}), ${tagC})`);
-          }
-          case "func": {
-            // A closure entering the island as a host function (the
-            // package-callback pattern). from_closure retains the closure;
-            // the engine's finalizer releases it at teardown — which runs
-            // before the RC audit. The per-signature adapter gives the
-            // runtime one uniform call shape over the closure ABI: the
-            // interned (arity, return) adapters for the all-'any' shape,
-            // or a typed adapter converting each incoming argument to the
-            // param's static type through the exit machinery.
-            const fn = e.value.type;
-            const adapter = canMarshalFuncIntoIsland(fn)
-              ? emitter.islandAdapter(
-                  fn.params.length,
-                  fn.ret.kind as "void" | "jsval" | "f64" | "bool" | "string",
-                )
-              : emitter.islandTypedAdapter(fn);
-            // ISLAND-REST closures encode a NEGATIVE arity: the wrapper
-            // pads the leading declared params and hands the trailing
-            // slot the ENGINE array of the surplus arguments.
-            const arity = fn.rest === true && fn.restAbi === "jsval" ? -fn.params.length : fn.params.length;
-            return emitter.newTemp(
-              e.type,
-              `scr_jsval_from_closure(${v.name}, ${arity}, ${adapter})`,
-            );
-          }
-          default: {
-            const helper = emitter.jsonWriteHelper(e.value.type);
-            const buf = `sc_t${emitter.tempCounter++}`;
-            emitter.line(`ScrJsonBuf ${buf}; scr_jb_init(&${buf});${emitter.srcComment(e.loc)}`);
-            emitter.line(`${helper}(&${buf}, ${v.name});`);
-            const json = emitter.newTemp(STRING, `scr_jb_finish(&${buf})`);
-            return emitter.fallibleTemp(e.type, `scr_jsval_from_json(${json.name})`);
-          }
-        }
-      }
-      case "jsOp": {
-        // Island operation: JS semantics via the engine (prelude helper
-        // closures), never C reimplementations. jsval args are borrowed
-        // frame temps; jsval/string results +1. Engine exceptions bridge
-        // into the cell — pending checks after every fallible op.
+    default:
+      throw new InternalCompilerError(`emitter bug: io libCall dispatch for ${fn}`);
+  }
+}
+
+function emitLibCallExpr(emitter: CEmitter, e: LibCallExpr): Temp {
+        // Standard-library call. Args are BORROWED (owned temps of the
+        // current frame, released at statement end); refcounted results come
+        // back +1 (process.argv: +1 on the runtime's ONE interned array —
+        // JS identity — everything else fresh). Throwing members (the
+        // may-throw seed set) get the standard pending check, emitted after
+        // a result temp joins its frame so an unwind releases it.
         const args = e.args.map((a) => emitter.emitExpr(a));
-        const a = (i: number) => args[i]!.name;
-        const nameSym = () => `(ScrStr *)&${emitter.internLiteral(e.name!)}`;
-        const finishFallible = (call: string): Temp => emitter.fallibleTemp(e.type, call);
-        const argPack = (list: string[]): string => {
-          if (list.length === 0) return "NULL";
-          const arr = `sc_t${emitter.tempCounter++}`;
-          emitter.line(`ScrJsval *${arr}[] = { ${list.join(", ")} };`);
-          return arr;
+        const arg = (i: number) => args[i]!.name;
+        const finish = (call: string): Temp => {
+          if (e.type.kind === "void") {
+            emitter.line(`${call};${emitter.srcComment(e.loc)}`);
+            if (MAY_THROW_LIB_FNS.has(e.fn)) emitter.emitPendingCheck();
+            return { name: "", type: e.type };
+          }
+          const t = emitter.newTemp(e.type, call);
+          if (MAY_THROW_LIB_FNS.has(e.fn)) emitter.emitPendingCheck();
+          return t;
         };
-        switch (e.op) {
-          case "add": case "sub": case "mul": case "div": case "mod": case "pow": {
-            const c = `SCR_JSOP_${e.op.toUpperCase()}`;
-            return finishFallible(`scr_jsval_binop(${c}, ${a(0)}, ${a(1)})`);
-          }
-          case "lt": case "le": case "gt": case "ge": case "eq": case "neq": {
-            const c = `SCR_JSOP_${e.op.toUpperCase()}`;
-            return finishFallible(`(scr_jsval_cmp(${c}, ${a(0)}, ${a(1)}) == 1)`);
-          }
-          case "instanceOf":
-            return finishFallible(`(scr_jsval_instance_of(${a(0)}, ${a(1)}) == 1)`);
-          case "neg":
-            return finishFallible(`scr_jsval_neg(${a(0)})`);
-          case "plus":
-            return finishFallible(`scr_jsval_plus(${a(0)})`);
-          case "truthy":
-            return emitter.newTemp(e.type, `(scr_jsval_truthy(${a(0)}) != 0)`);
-          case "not":
-            return emitter.newTemp(e.type, `(scr_jsval_truthy(${a(0)}) == 0)`);
-          case "typeof":
-            return emitter.newTemp(e.type, `scr_jsval_typeof(${a(0)})`);
-          case "toStr":
-            return finishFallible(`scr_jsval_to_str(${a(0)})`);
-          case "getProp":
-            return finishFallible(`scr_jsval_get_prop(${a(0)}, ${nameSym()})`);
-          case "globalGet":
-            return finishFallible(`scr_jsval_global_get(${nameSym()})`);
-          case "setProp":
-            emitter.line(`scr_jsval_set_prop(${a(0)}, ${nameSym()}, ${a(1)});${emitter.srcComment(e.loc)}`);
-            emitter.emitPendingCheck();
-            return { name: "", type: e.type };
-          case "getIdx":
-            return finishFallible(`scr_jsval_get_idx(${a(0)}, ${a(1)})`);
-          case "iterNew":
-            return finishFallible(`scr_jsval_iter_new(${a(0)})`);
-          case "setIdx":
-            emitter.line(`scr_jsval_set_idx(${a(0)}, ${a(1)}, ${a(2)});${emitter.srcComment(e.loc)}`);
-            emitter.emitPendingCheck();
-            return { name: "", type: e.type };
-          case "optCallMethod": {
-            const pack = argPack(args.slice(1).map((x) => x.name));
-            return finishFallible(
-              `scr_jsval_opt_call_method(${a(0)}, ${nameSym()}, ${args.length - 1}, ${pack})`,
-            );
-          }
-          case "callMethod": {
-            const pack = argPack(args.slice(1).map((x) => x.name));
-            return finishFallible(
-              `scr_jsval_call_method(${a(0)}, ${nameSym()}, ${args.length - 1}, ${pack})`,
-            );
-          }
-          case "callFnThis": {
-            const pack = argPack(args.slice(2).map((x) => x.name));
-            return finishFallible(
-              `scr_jsval_call_this(${a(0)}, ${a(1)}, ${args.length - 2}, ${pack})`,
-            );
-          }
-          case "callFn": {
-            const pack = argPack(args.slice(1).map((x) => x.name));
-            return finishFallible(`scr_jsval_call(${a(0)}, ${args.length - 1}, ${pack})`);
-          }
-          case "callSpread":
-            // Spread application (`f(...pre, ...s)`): the prelude helper's
-            // real spread syntax — iterator protocols are the engine's
-            // own, the guards front-run V8's spread-call TypeError texts
-            // (the name literal is the spread expression's spelling).
-            return finishFallible(`scr_jsval_call_spread(${a(0)}, ${a(1)}, ${a(2)}, ${nameSym()})`);
-          case "construct": {
-            // `new X(...)` on an island callee: JS_CallConstructor.
-            const pack = argPack(args.slice(1).map((x) => x.name));
-            return finishFallible(`scr_jsval_construct(${a(0)}, ${args.length - 1}, ${pack})`);
-          }
-          case "objLit": {
-            const pack = argPack(args.map((x) => x.name));
-            return emitter.newTemp(e.type, `scr_jsval_obj_lit(${args.length / 2}, ${pack})`);
-          }
-          case "tplStrings": {
-            const pack = argPack(args.map((x) => x.name));
-            return emitter.newTemp(e.type, `scr_jsval_tpl_strings(${args.length / 2}, ${pack})`);
-          }
-          case "objSpread":
-            // Spread completion: engine CopyDataProperties (getters can
-            // throw — fallible); answers the target (+1).
-            return finishFallible(`scr_jsval_obj_spread(${a(0)}, ${a(1)})`);
-          case "defineGetter":
-            // Getter completion for an island literal: defines key (a(1))
-            // on obj (a(0)) as an engine getter invoking a(2); answers the
-            // object (+1) for chaining.
-            return emitter.newTemp(e.type, `scr_jsval_define_getter(${a(0)}, ${a(1)}, ${a(2)})`);
-          case "arrLit": {
-            const pack = argPack(args.map((x) => x.name));
-            return emitter.newTemp(e.type, `scr_jsval_arr_lit(${args.length}, ${pack})`);
-          }
-          case "undefLit":
-            return emitter.newTemp(e.type, `scr_jsval_undefined()`);
-          case "nullLit":
-            return emitter.newTemp(e.type, `scr_jsval_null()`);
-          default: {
-            const _exhaustive: never = e;
-            void _exhaustive;
-            throw new InternalCompilerError("unreachable");
-          }
-        }
-      }
-      case "jsExit": {
-        // Island → static validated exit. Primitives extract strictly (no
-        // coercion — a non-number refuses to exit as number); composites
-        // round-trip engine JSON.stringify → json.parse → the existing
-        // dynCheck walker, inheriting its width tolerance and path-annotated
-        // failures. Every step is a may-throw with the standard pending
-        // discipline; intermediate temps are frame-owned.
-        const v = emitter.emitExpr(e.value);
-        switch (e.type.kind) {
-          case "f64":
-          case "bool": {
-            const name = `sc_t${emitter.tempCounter++}`;
-            const ctype = e.type.kind === "f64" ? "double" : "bool";
-            const fn = e.type.kind === "f64" ? "scr_jsval_exit_f64" : "scr_jsval_exit_bool";
-            emitter.line(`${ctype} ${name} = 0;${emitter.srcComment(e.loc)}`);
-            emitter.line(`${fn}(${v.name}, &${name});`);
-            emitter.emitPendingCheck();
-            return { name, type: e.type };
-          }
-          case "string":
-            return emitter.fallibleTemp(e.type, `scr_jsval_exit_str(${v.name})`);
-          case "bytes":
-            // Uint8Array exit: kind-checked, copied out (+1) — engine
-            // Buffers pass (they ARE Uint8Arrays). The frontend only
-            // emits u8 targets (canExitIslandToType).
-            return emitter.fallibleTemp(e.type, `scr_jsval_exit_bytes(${v.name})`);
-          default: {
-            // `any[]`-declared slot: the engine array exits Array.isArray-
-            // gated, elements BY REFERENCE (identity crosses; the spine is
-            // a snapshot copy). JSON-safe element types keep the round
-            // trip below.
-            if (e.type.kind === "array" && e.type.elem.kind === "jsval") {
-              return emitter.fallibleTemp(e.type, `scr_jsval_exit_jsval_arr(${v.name})`);
-            }
-            // An undefined-armed union target: the engine's undefined takes
-            // the undefined arm FIRST — JSON cannot spell it (to_json would
-            // refuse the exit) — then null and data ride the round trip
-            // into the union's dynCheck like any composite (or, for the
-            // `any[] | undefined` defaulted-parameter spelling, the
-            // jsval-element array exit wrapped into the data arm).
-            const undefTag = e.type.kind === "union" ? undefinedArmTag(e.type, emitter.unionsById) : -1;
-            if (e.type.kind === "union" && undefTag >= 0) {
-              const name = `sc_t${emitter.tempCounter++}`;
-              emitter.line(`${cDecl(e.type, name)};`);
-              emitter.line(`if (scr_jsval_is_undefined(${v.name})) {`);
-              emitter.indent++;
-              emitter.line(`${name} = ${emitter.unitInstanceRef(e.type.unionId, undefTag)};`);
-              emitter.indent--;
-              emitter.line(`} else {`);
-              emitter.indent++;
-              emitter.frames.push([]);
-              const unionDef = emitter.unionsById.get(e.type.unionId);
-              const dataArms = unionDef ? unionDef.arms.flatMap((a, i) => (isUnitType(a) ? [] : [{ a, i }])) : [];
-              const jsvalArr = dataArms.length === 1 && dataArms[0]!.a.kind === "array" && dataArms[0]!.a.elem.kind === "jsval" ? dataArms[0]! : null;
-              if (jsvalArr) {
-                // The `any[] | undefined` defaulted-parameter spelling:
-                // the engine array exits BY REFERENCE into the data arm.
-                const arr = emitter.fallibleTemp(jsvalArr.a, `scr_jsval_exit_jsval_arr(${v.name})`);
-                emitter.moveTemp(arr);
-                emitter.line(`${name} = scr_union_new_ref(${jsvalArr.i}, ${arr.name}, &scr_arr_retain_v, &scr_arr_release_v, NULL);`);
-              } else {
-                const json = emitter.fallibleTemp(STRING, `scr_jsval_to_json(${v.name})`);
-                const dom = emitter.fallibleTemp(DYN, `scr_json_parse(${json.name})`);
-                const out = emitter.fallibleTemp(e.type, `${emitter.dynCheckHelper(e.type)}(${dom.name}, NULL)`);
-                emitter.moveTemp(out);
-                emitter.line(`${name} = ${out.name};`);
-              }
-              emitter.releaseFrame(emitter.frames.pop()!);
-              emitter.indent--;
-              emitter.line(`}`);
-              emitter.currentFrame().push({ name, type: e.type });
-              return { name, type: e.type };
-            }
-            const json = emitter.fallibleTemp(STRING, `scr_jsval_to_json(${v.name})`);
-            const dom = emitter.fallibleTemp(DYN, `scr_json_parse(${json.name})`);
-            return emitter.fallibleTemp(e.type, `${emitter.dynCheckHelper(e.type)}(${dom.name}, NULL)`);
-          }
-        }
-      }
-      case "jsBridgePromise": {
-        // Island → static promise bridge: a fresh pending ScrPromise the
-        // engine promise settles (fulfillment = retained jsval cell or
-        // void; rejection = the bridged reason). Operand borrowed; the +1
-        // promise joins the frame. Fails only on an engine-level surprise
-        // minting the subscription — pending check like other island ops.
-        const v = emitter.emitExpr(e.value);
-        const payload =
-          e.type.kind === "promise" && e.type.inner.kind === "void"
-            ? "SCR_ISLP_VOID"
-            : e.type.kind === "promise" && e.type.inner.kind === "array" && e.type.inner.elem.kind === "jsval"
-              ? "SCR_ISLP_JSVAL_ARR" // `any[]` fulfillment: the Array.isArray-gated by-reference exit at settle
-              : "SCR_ISLP_JSVAL";
-        return emitter.fallibleTemp(e.type, `scr_jsval_bridge_promise(${v.name}, ${payload})`);
-      }
-      default: {
-        const _exhaustive: never = e;
-        void _exhaustive;
-        throw new InternalCompilerError("unreachable");
-      }
+        const fn = e.fn;
+  const state: LibCallState = { emitter, e, args, arg, finish };
+  const prefix = fn.slice(0, fn.indexOf(".")) as LibCallPrefix;
+  switch (prefix) {
+    case "fetch":
+    case "island":
+    case "json":
+      return emitWebLibCall(state);
+    case "dyn":
+    case "global":
+      return emitDynamicLibCall(state);
+    case "fs":
+    case "fsp":
+    case "fileHandle":
+    case "watcher":
+    case "stats":
+    case "zlib":
+    case "atomics":
+      return emitFilesystemLibCall(state);
+    case "path":
+    case "os":
+    case "url":
+    case "sp":
+    case "qs":
+      return emitPathUrlLibCall(state);
+    case "math":
+    case "num":
+    case "str":
+    case "regexp":
+    case "intl":
+    case "sym":
+    case "perf":
+    case "number":
+    case "date":
+    case "text":
+    case "string":
+    case "class":
+      return emitPrimitiveLibCall(state);
+    case "util":
+      return emitUtilLibCall(state);
+    case "crypto":
+    case "buffer":
+    case "bytes":
+      return emitCryptoBytesLibCall(state);
+    case "cp":
+    case "spawnRes":
+    case "child":
+    case "procStream":
+      return emitChildProcessLibCall(state);
+    case "net":
+    case "dgram":
+    case "dns":
+      return emitNetworkLibCall(state);
+    case "test":
+      return emitTestLibCall(state);
+    case "http":
+    case "https":
+      return emitHttpLibCall(state);
+    case "tls":
+    case "tlsca":
+      return emitTlsLibCall(state);
+    case "http2":
+      return emitHttp2LibCall(state);
+    case "tp":
+    case "dc":
+    case "timers":
+    case "async":
+    case "als":
+      return emitAsyncContextLibCall(state);
+    case "process":
+    case "stdin":
+      return emitProcessLibCall(state);
+    case "error":
+    case "regex":
+    case "emitter":
+      return emitErrorsEventsLibCall(state);
+    case "stream":
+    case "readable":
+    case "writable":
+    case "duplex":
+    case "transform":
+    case "passthrough":
+    case "sc":
+      return emitStreamLibCall(state);
+    case "assert":
+    case "insp":
+      return emitAssertInspectLibCall(state);
+    case "rl":
+    case "strdec":
+      return emitIoLibCall(state);
+    default: {
+      const _exhaustive: never = prefix;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+export function emitExpr(emitter: CEmitter, e: IrExpr): Temp {
+  switch (e.kind) {
+    case "numLit":
+    case "boolLit":
+    case "strLit":
+    case "unitLit":
+    case "varRef":
+      return emitLiteralExpr(emitter, e);
+    case "bin":
+    case "unary":
+    case "incDec":
+    case "fieldIncDec":
+    case "assignExpr":
+    case "seqExpr":
+      return emitOperatorExpr(emitter, e);
+    case "dynDestrCheck":
+    case "dynIterN":
+    case "toBool":
+    case "logical":
+    case "ternary":
+    case "optChain":
+    case "chainRecv":
+    case "orDefault":
+    case "nullish":
+      return emitControlExpr(emitter, e);
+    case "strConcat":
+    case "strEq":
+    case "strCmp":
+    case "toString":
+    case "strIntrinsic":
+    case "regexLit":
+    case "templateStrings":
+    case "regexIntrinsic":
+      return emitStringExpr(emitter, e);
+    case "arrayLit":
+    case "arrayNewLen":
+    case "arrayGet":
+    case "arrIntrinsic":
+    case "bytesNew":
+    case "bytesIntrinsic":
+    case "mapNew":
+    case "mapIntrinsic":
+    case "setIntrinsic":
+    case "setNew":
+      return emitContainerExpr(emitter, e);
+    case "call":
+    case "ffiCall":
+    case "closure":
+    case "callValue":
+    case "selfRef":
+    case "new":
+    case "classRef":
+    case "newValue":
+    case "instanceOfValue":
+    case "promiseVoidWiden":
+    case "upcast":
+    case "downcast":
+    case "instanceOf":
+    case "virtualCall":
+      return emitCallExpr(emitter, e);
+    case "fieldGet":
+    case "recordGet":
+    case "recordLit":
+    case "recordClone":
+    case "recordKeyGet":
+    case "recordOvfKeys":
+      return emitRecordExpr(emitter, e);
+    case "dynFrom":
+    case "dynFromJsval":
+    case "dynCall":
+    case "dynInvoke":
+    case "dynArrLit":
+    case "dynObjLit":
+    case "unionWrap":
+    case "unionNarrow":
+    case "unionDisc":
+    case "unionKeyGet":
+    case "unionIsTag":
+    case "dynKeyGet":
+    case "dynHasKey":
+    case "dynScalarEq":
+    case "dynTest":
+    case "unionEq":
+    case "unionFuncEq":
+    case "caughtTest":
+    case "caughtCheck":
+    case "caughtNarrow":
+    case "caughtToDyn":
+      return emitDynamicExpr(emitter, e);
+    case "intrinsic":
+      return emitIntrinsicExpr(emitter, e);
+    case "jsonStringify":
+    case "dynCheck":
+      return emitSerializationExpr(emitter, e);
+    case "yieldExpr":
+    case "genResume":
+    case "awaitExpr":
+    case "awaitUnionExpr":
+    case "newPromise":
+    case "promiseWithResolvers":
+      return emitAsyncExpr(emitter, e);
+    case "jsMarshal":
+    case "jsOp":
+    case "jsExit":
+    case "jsBridgePromise":
+      return emitJsInteropExpr(emitter, e);
+    case "libCall":
+      return emitLibCallExpr(emitter, e);
+    default: {
+      const _exhaustive: never = e;
+      void _exhaustive;
+      throw new InternalCompilerError("unreachable");
+    }
+  }
+}

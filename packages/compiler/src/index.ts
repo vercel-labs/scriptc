@@ -58,9 +58,17 @@ export {
   type WarmNativeCachesResult,
 } from "./backend/native-toolchain.js";
 export { ANDROID_MIN_API, IPHONEOS_MIN_VERSION, isAndroidTarget, isIosTarget, isMobileTarget, mobileLibraryTarget, mobileTargetRefusal } from "./backend/native-toolchain.js";
-export { emitCModule, type CEmitOptions } from "./backend/c/c-emitter.js";
+export {
+  emitCModule,
+  emitCModule as emitModule,
+  type CEmitOptions,
+} from "./backend/c/c-emitter.js";
 export type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
-export { renderDiagnostics, renderDiagnostic } from "./diagnostics/render.js";
+export {
+  renderDiagnostics,
+  renderDiagnostics as renderAll,
+  renderDiagnostic,
+} from "./diagnostics/render.js";
 export { renderCoverage, type CoverageInput } from "./coverage/report.js";
 export {
   generateSurfaceManifest,

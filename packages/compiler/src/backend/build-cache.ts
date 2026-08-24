@@ -10,15 +10,6 @@ export async function fileExists(path: string): Promise<boolean> {
   );
 }
 
-/** Vendor prerequisites are shared persistent cache entries, so they carry
- * the same adjacent content digest as runtime objects and complete artifacts.
- * Missing/invalid pairs are rebuilt. Do not remove them during validation: a
- * concurrent publisher installs data before its digest, and that temporary
- * invalid window must not let a reader unlink the publisher's data. */
-async function validVendorArtifact(path: string): Promise<boolean> {
-  return validCachedFile(path);
-}
-
 export function protectCachedArtifact(paths: Set<string> | undefined, path: string): void {
   paths?.add(path);
   paths?.add(cacheDigestPath(path));

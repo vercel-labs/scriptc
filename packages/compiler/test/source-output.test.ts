@@ -59,9 +59,29 @@ test("switching default source output kinds removes stale generated siblings", a
       outDir,
       outPath: join(outDir, name),
       outputKind: kind,
+      defaultOutputPath: true,
     });
     if (!result.ok) throw new Error(`${kind} emission failed`);
     expect(await readdir(outDir)).toEqual([name]);
+  }
+});
+
+test("an explicit source path never deletes same-stem sibling files", async () => {
+  const { entry, outDir } = await fixture();
+  await mkdir(outDir, { recursive: true });
+  const siblings = [
+    join(outDir, "main"),
+    join(outDir, "main.exe"),
+    join(outDir, "main.wasm"),
+    join(outDir, "main.c"),
+    join(outDir, "main.ll"),
+  ];
+  await Promise.all(siblings.map((path) => writeFile(path, `caller-owned ${path}\n`)));
+  const outPath = join(outDir, "main.ir.json");
+  const result = await compile(entry, { outDir, outPath, outputKind: "ir" });
+  expect(result.ok).toBe(true);
+  for (const path of siblings) {
+    await expect(readFile(path, "utf8")).resolves.toBe(`caller-owned ${path}\n`);
   }
 });
 
@@ -116,3 +136,29 @@ test("source outputs ignore invalid external compiler selection and create no ex
     else process.env["SCRIPTC_CACHE_DIR"] = oldCache;
   }
 });
+
+test.each(["wasm64-wasi", "totally-invalid"])(
+  "source output rejects unsupported target %s without writing an artifact",
+  async (target) => {
+    const { entry, outDir } = await fixture();
+    const outPath = join(outDir, "main.ll");
+    const oldTarget = process.env["SCRIPTC_TARGET"];
+    const oldCc = process.env["SCRIPTC_CC"];
+    process.env["SCRIPTC_TARGET"] = target;
+    process.env["SCRIPTC_CC"] = "trap-compiler";
+    try {
+      const result = await compile(entry, { outDir, outPath, outputKind: "llvm" });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.diagnostics).toEqual([
+        expect.objectContaining({ code: "SC3002", message: expect.stringContaining(target) }),
+      ]);
+      await expect(readFile(outPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (oldTarget === undefined) delete process.env["SCRIPTC_TARGET"];
+      else process.env["SCRIPTC_TARGET"] = oldTarget;
+      if (oldCc === undefined) delete process.env["SCRIPTC_CC"];
+      else process.env["SCRIPTC_CC"] = oldCc;
+    }
+  },
+);

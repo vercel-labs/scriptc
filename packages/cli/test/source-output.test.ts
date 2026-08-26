@@ -56,6 +56,17 @@ test("IR CLI output round-trips through the public parser and validator", async 
   expect(validateModule(deserializeModule(await readFile(path, "utf8")))).toEqual([]);
 });
 
+test("an explicit default-shaped output path preserves caller-owned siblings", async () => {
+  const { dir, entry } = await fixture();
+  const siblings = ["hello", "hello.exe", "hello.wasm", "hello.c", "hello.ll"];
+  await Promise.all(siblings.map((name) => writeFile(join(dir, name), `caller-owned ${name}\n`)));
+  const path = join(dir, "hello.ir.json");
+  await cli(["build", entry, "--emit=ir", "-o", path]);
+  for (const name of siblings) {
+    await expect(readFile(join(dir, name), "utf8")).resolves.toBe(`caller-owned ${name}\n`);
+  }
+});
+
 test("source outputs never execute compiler, archiver, or linker traps", async () => {
   const { dir, entry } = await fixture();
   const traps = join(dir, "traps");
@@ -82,6 +93,20 @@ test("source outputs never execute compiler, archiver, or linker traps", async (
   }
   await expect(readdir(env.SCRIPTC_CACHE_DIR)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(readFile(trapLog, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("source outputs reject unsupported target spellings", async () => {
+  const { dir, entry } = await fixture();
+  const out = join(dir, "main.ll");
+  await expect(cli(["build", entry, "--emit=llvm", "-o", out], {
+    ...process.env,
+    SCRIPTC_CC: "trap-compiler",
+    SCRIPTC_TARGET: "wasm64-wasi",
+  })).rejects.toMatchObject({
+    code: 1,
+    stderr: expect.stringContaining("unsupported WASI target 'wasm64-wasi'"),
+  });
+  await expect(readFile(out)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 test("--emit-ir remains additive but reports its deprecation", async () => {

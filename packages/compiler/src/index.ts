@@ -152,13 +152,15 @@ export * as ir from "./ir/ir.js";
 
 export type CompileOutputKind = "ir" | "c" | "llvm" | "exe";
 
-export interface CompileOptions {
+export interface CompileBaseOptions {
   /** Primary artifact path. The CLI supplies the output-kind default. */
   outPath: string;
   /** Where generated intermediates and compatibility side artifacts land. */
   outDir: string;
-  /** Primary artifact to produce. Unset preserves the executable default. */
-  outputKind?: CompileOutputKind;
+  /** True only when outPath was selected by scriptc's default-path policy.
+   * This authorizes cleanup of stale generated siblings; explicit paths must
+   * leave neighboring caller-owned files untouched. */
+  defaultOutputPath?: boolean;
   /** Compatibility-only additive IR side artifact for executable builds.
    * The CLI's deprecated --emit-ir flag supplies this option. */
   emitIr?: boolean;
@@ -198,6 +200,23 @@ export interface CompileOptions {
    * lower to direct C ABI calls. Source outputs retain those declarations;
    * archive/system-library inputs join only an executable link. */
   ffiProfilePath?: string;
+}
+
+/** Executable compile options. This remains the compatibility type for the
+ * historical compile() API, whose omitted output kind means executable. */
+export interface CompileOptions extends CompileBaseOptions {
+  outputKind?: "exe";
+}
+
+/** Source-artifact compile options, discriminated by the required kind. */
+export interface CompileSourceOptions extends CompileBaseOptions {
+  outputKind: Exclude<CompileOutputKind, "exe">;
+}
+
+/** Internal/dynamic request shape for callers that select the kind at runtime.
+ * Statically executable/source callers should prefer the narrower interfaces. */
+export interface CompileRequestOptions extends CompileBaseOptions {
+  outputKind?: CompileOutputKind;
 }
 
 export type CompileArtifact =
@@ -909,18 +928,32 @@ function clearCompileSessionCaches(): void {
 
 export function compile(
   entryPath: string,
-  opts: CompileOptions & { outputKind: "ir" | "c" | "llvm" },
+  opts: CompileSourceOptions,
 ): Promise<CompileSourceResult>;
 export function compile(
   entryPath: string,
-  opts: CompileOptions & { outputKind?: "exe" },
+  opts: CompileOptions,
 ): Promise<CompileExecutableResult>;
-export function compile(entryPath: string, opts: CompileOptions): Promise<CompileResult>;
-export async function compile(entryPath: string, opts: CompileOptions): Promise<CompileResult> {
+export function compile(entryPath: string, opts: CompileRequestOptions): Promise<CompileResult>;
+export async function compile(entryPath: string, opts: CompileRequestOptions): Promise<CompileResult> {
   clearCompileSessionCaches();
   const frontendInputs = new FrontendInputTracker();
   return frontendInputs.run(() => compileTracked(entryPath, opts, frontendInputs));
 }
+
+/** Build-time API compatibility fence: a caller's existing CompileOptions
+ * variable must retain the executable result aliases without narrowing. */
+async function assertCompileOptionsCompatibility(
+  entryPath: string,
+  opts: CompileOptions,
+): Promise<void> {
+  const result = await compile(entryPath, opts);
+  if (result.ok) {
+    const binaryPath: string = result.binaryPath;
+    void binaryPath;
+  }
+}
+void assertCompileOptionsCompatibility;
 
 function executableNativeFeatures(
   mod: IrModule,
@@ -1033,7 +1066,7 @@ async function compileExecutableNative(
 
 async function compileTracked(
   entryPath: string,
-  opts: CompileOptions,
+  opts: CompileRequestOptions,
   frontendInputs: FrontendInputTracker,
 ): Promise<CompileResult> {
   entryPath = resolve(entryPath);
@@ -1049,7 +1082,24 @@ async function compileTracked(
     ffi = loaded.profile;
     ffiProfileBytes = loaded.profileBytes;
   }
-  const buildPlatform = outputKind === "exe" ? buildTargetPlatform() : sourceTargetPlatform();
+  let buildPlatform: string;
+  if (outputKind === "exe") {
+    buildPlatform = buildTargetPlatform();
+  } else {
+    try {
+      buildPlatform = sourceTargetPlatform();
+    } catch (err) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "SC3002",
+          message: err instanceof Error ? err.message : String(err),
+          loc: { file: entryPath, start: 0, end: 0 },
+        }],
+        sourceTexts: new Map(),
+      };
+    }
+  }
   // Mobile triples are library-mode targets: the archive an embedding app
   // links is the artifact, and only the library-admissible runtime surface
   // is verified on those device classes. The executable lane refuses before
@@ -1271,13 +1321,11 @@ async function compileTracked(
     join(opts.outDir, `${stem}.exe`),
     join(opts.outDir, `${stem}.wasm`),
   ];
-  const usesDefaultSourcePath = Object.values(defaultSourcePaths)
-    .some((path) => resolve(path) === resolve(opts.outPath));
   const removeStaleSourceArtifacts = async (keep: readonly string[]): Promise<void> => {
     const kept = new Set(keep.map((path) => resolve(path)));
     const candidates = outputKind === "exe"
       ? Object.values(defaultSourcePaths)
-      : usesDefaultSourcePath
+      : opts.defaultOutputPath === true
         ? [...Object.values(defaultSourcePaths), ...defaultExecutablePaths]
         : [];
     await Promise.all(

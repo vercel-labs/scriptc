@@ -22,6 +22,7 @@ import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import {
   compileC,
+  configuredTargetPlatform,
   resolveCc,
   runtimeSrcDir,
   subprocessFailureDetail,
@@ -62,6 +63,15 @@ test("SCRIPTC_TARGET without zigcc is an error, never a silent clang cross build
 test("unknown SCRIPTC_CC values are rejected", () => {
   expect(() => resolveCc({ SCRIPTC_CC: "gcc" })).toThrow(/unknown SCRIPTC_CC/);
   expect(() => resolveCc({ SCRIPTC_CC: "zigcc", SCRIPTC_TARGET: "wasm64-wasi" })).toThrow(/supported: wasm32-wasi/);
+});
+
+test("pure target classification validates spellings without compiler discovery", () => {
+  expect(configuredTargetPlatform({ SCRIPTC_TARGET: "wasm32-wasi", SCRIPTC_CC: "missing" })).toBe("wasi");
+  expect(configuredTargetPlatform({ SCRIPTC_TARGET: "aarch64-linux-gnu.2.36", SCRIPTC_CC: "missing" })).toBe("linux");
+  expect(() => configuredTargetPlatform({ SCRIPTC_TARGET: "wasm64-wasi", SCRIPTC_CC: "missing" }))
+    .toThrow(/supported: wasm32-wasi/);
+  expect(() => configuredTargetPlatform({ SCRIPTC_TARGET: "totally-invalid", SCRIPTC_CC: "missing" }))
+    .toThrow(/unsupported target/);
 });
 
 test("subprocess failures retain diagnostics when stderr is empty", () => {

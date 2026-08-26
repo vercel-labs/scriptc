@@ -24,11 +24,13 @@ test("primary output selection keeps explicit paths exact", () => {
   expect(selectOutputPaths(input, "llvm", undefined, "linux")).toEqual({
     outDir: join(input, "../.scriptc"),
     outPath: join(input, "../.scriptc/main.ll"),
+    defaultOutputPath: true,
   });
   const explicit = resolve("artifacts/custom.anything");
   expect(selectOutputPaths(input, "ir", explicit, "win32")).toEqual({
     outDir: join(explicit, ".."),
     outPath: explicit,
+    defaultOutputPath: false,
   });
 });
 

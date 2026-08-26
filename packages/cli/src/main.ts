@@ -245,7 +245,7 @@ async function main(): Promise<number> {
   }
 
   if (output === null || !output.ok) throw new Error("internal output-option state");
-  const { outDir, outPath } = selectOutputPaths(input, output.cliOutputKind, values.out);
+  const { outDir, outPath, defaultOutputPath } = selectOutputPaths(input, output.cliOutputKind, values.out);
 
   const build = async (): Promise<string> => {
     if (values["from-c"]) {
@@ -265,6 +265,7 @@ async function main(): Promise<number> {
       outPath,
       outDir,
       outputKind: output.outputKind,
+      defaultOutputPath,
       emitIr: output.emitIr,
       sanitize: values.sanitize,
       dynamic: values.dynamic,

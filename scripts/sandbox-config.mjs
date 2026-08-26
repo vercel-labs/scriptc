@@ -31,20 +31,23 @@ export function sandboxRunnerConfig(env) {
 }
 
 /** Select Sandbox credentials and scope without coupling either to the image.
- * OIDC is project-scoped and takes precedence over legacy access tokens. */
+ * OIDC is project-scoped and takes precedence over legacy access tokens and
+ * their explicit environment scope. */
 export function sandboxVercelConfig(env) {
   loadLocalEnv();
   const source = env ?? process.env;
-  const team = source.VERCEL_TEAM_ID?.trim();
-  const project = source.VERCEL_PROJECT_ID?.trim();
-  if (Boolean(team) !== Boolean(project)) {
+  const oidcToken = source.VERCEL_OIDC_TOKEN?.trim();
+  const configuredTeam = source.VERCEL_TEAM_ID?.trim();
+  const configuredProject = source.VERCEL_PROJECT_ID?.trim();
+  if (!oidcToken && Boolean(configuredTeam) !== Boolean(configuredProject)) {
     throw new Error(
       "VERCEL_TEAM_ID and VERCEL_PROJECT_ID must be set together; " +
         "Sandbox scope is independent of SCRIPTC_SANDBOX_IMAGE",
     );
   }
+  const team = oidcToken ? undefined : configuredTeam;
+  const project = oidcToken ? undefined : configuredProject;
 
-  const oidcToken = source.VERCEL_OIDC_TOKEN?.trim();
   const accessToken = source.VERCEL_TOKEN?.trim() || source.VERCEL_AUTH_TOKEN?.trim();
   const accessTokenSource = source.VERCEL_TOKEN?.trim()
     ? "VERCEL_TOKEN"
@@ -70,12 +73,11 @@ export function sandboxVercelConfig(env) {
     oidc: Boolean(oidcToken),
     project,
     scopeArgs: team && project ? ["--scope", team, "--project", project] : [],
-    scopeSource:
-      team && project
+    scopeSource: oidcToken
+      ? "VERCEL_OIDC_TOKEN claims"
+      : team && project
         ? "VERCEL_TEAM_ID + VERCEL_PROJECT_ID"
-        : oidcToken
-          ? "VERCEL_OIDC_TOKEN claims"
-          : "linked/default Vercel CLI project",
+        : "linked/default Vercel CLI project",
     team,
   };
 }

@@ -116,6 +116,27 @@ test("OIDC authentication wins and supplies its own Sandbox scope", () => {
   });
 });
 
+test("OIDC scope wins over complete or partial legacy environment scope", () => {
+  for (const legacyScope of [
+    { VERCEL_PROJECT_ID: "stale-project", VERCEL_TEAM_ID: "stale-team" },
+    { VERCEL_TEAM_ID: "stale-team" },
+  ]) {
+    expect(
+      sandboxVercelConfig({
+        ...legacyScope,
+        VERCEL_OIDC_TOKEN: "header.payload.signature",
+      }),
+    ).toMatchObject({
+      authSource: "VERCEL_OIDC_TOKEN",
+      oidc: true,
+      project: undefined,
+      scopeArgs: [],
+      scopeSource: "VERCEL_OIDC_TOKEN claims",
+      team: undefined,
+    });
+  }
+});
+
 test("access-token authentication uses explicit environment scope", () => {
   expect(
     sandboxVercelConfig({
@@ -138,6 +159,8 @@ test("VCR uses an access-token fallback with scope decoded from OIDC claims", ()
   const token = oidcToken({ owner_id: "team_oidc", project_id: "prj_oidc" });
   const config = sandboxVercelConfig({
     VERCEL_OIDC_TOKEN: token,
+    VERCEL_PROJECT_ID: "stale-project",
+    VERCEL_TEAM_ID: "stale-team",
     VERCEL_TOKEN: "registryaccesstoken",
   });
 

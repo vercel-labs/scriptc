@@ -5,8 +5,8 @@ Install the CLI from npm and compile your first binary in a couple of minutes.
 ## Prerequisites
 
 - **macOS arm64** is the primary platform ([Linux and Windows](/platforms) are cross-compilation targets).
-- **clang** — preinstalled with the Xcode Command Line Tools.
-- **Node ≥ 20** — to run the compiler. The binaries it produces need no Node at all.
+- **Node ≥ 24** — to run the compiler. The binaries it produces need no Node at all.
+- **clang** — preinstalled with the Xcode Command Line Tools; required for executable builds, but not for <code>--emit=ir|c|llvm</code>.
 
 ## Install
 
@@ -89,6 +89,6 @@ The package's JS is embedded into the binary at build time — the executable ne
 
 ## Next steps
 
-- [CLI Reference](/cli) — every command and flag, including `--emit-ir`, `--backend llvm`, and `--sanitize`.
+- [CLI Reference](/cli) — every command and flag, including `--emit`, `--backend llvm`, and `--sanitize`.
 - [Platform Support](/platforms) — cross-compiling to Linux and Windows with zig.
 - [Limitations](/limitations) — what doesn't compile yet.

@@ -4,27 +4,27 @@
 
 ```
 TypeScript ──tsc: parse + typecheck──▶ lowering ──▶ typed IR ──▶ LLVM IR ──clang──▶ native executable
-                                                        └─────▶ C ────┘
+                                             │          └─────▶ C ─────────┘
+                                             └── serialized IR
 ```
 
 1. **Frontend** — the real TypeScript compiler parses and type-checks your program against `es2025` (plus `@types/node` when your project has it), honoring your `tsconfig.json` for checker strictness. The frontend then lowers the checked AST into a typed intermediate representation, using tsc's own type and narrowing answers to drive every decision. A construct with no lowering is a precise diagnostic at this stage — never a miscompile later.
-2. **Typed IR** — the only interface between the ends: a validated, serializable representation (`--emit-ir` writes it as JSON). Types are concrete here; generics have been monomorphized, unions are tagged values, closures have explicit captures.
-3. **Backends** — the LLVM backend is the production default and emits textual LLVM IR. A native program outside its tier can fall back to C transparently (one stderr note; `--backend llvm` pins it and fails with a diagnostic instead). The production <code>wasm32-wasi</code> target never falls back. The C backend is a readable inspection and debugging aid (`--backend c`), kept next to the binary by default (`--keep-c`). Both are compiled by the same clang, and differential tests require byte-identical program output wherever they overlap.
+2. **Typed IR** — the only interface between the ends: a validated, serializable representation (`--emit=ir` writes it as JSON and stops). Types are concrete here; generics have been monomorphized, unions are tagged values, closures have explicit captures.
+3. **Backends** — `--emit=c` writes readable C and stops; `--emit=llvm` writes textual LLVM IR and stops. Neither source-output command discovers or invokes a native toolchain. Executable builds default to LLVM and can fall back to C on a native program outside the LLVM tier (one stderr note; `--backend llvm` pins it and fails with a diagnostic instead). The production <code>wasm32-wasi</code> target never falls back. For executable builds, both backends are compiled by the same clang, and differential tests require byte-identical program output wherever they overlap.
 4. **Link** — the runtime is a C library of link-gated feature units: binaries pay only for what they use. A hello-world links nothing but libSystem; a regex-using program links the regex engine; an `http` server links the net stack.
 
 Inspect any stage yourself:
 
 ```console
-$ scriptc build fib.ts --emit-ir
+$ scriptc build fib.ts --emit=ir
 $ ls .scriptc/
-fib
 fib.ir.json
-fib.ll
-$ scriptc build fib.ts --backend c --emit-ir
+$ scriptc build fib.ts --emit=c
 $ ls .scriptc/
-fib
 fib.c
-fib.ir.json
+$ scriptc build fib.ts --emit=llvm
+$ ls .scriptc/
+fib.ll
 ```
 
 ## The runtime

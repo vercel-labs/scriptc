@@ -1,7 +1,7 @@
 export const USAGE = `scriptc — TypeScript/JavaScript to native and WebAssembly executables (experimental)
 
 Usage:
-  scriptc build <file.ts|.js> [options]     compile to an executable target artifact
+  scriptc build <file.ts|.js> [options]     compile to an executable or source artifact
   scriptc run <file.ts|.js> [options]       compile and run
   scriptc coverage <file.ts|.js>            how much compiles statically, and why not
   scriptc coverage <file.ts|.js> --dynamic  what a --dynamic build compiles, and what still blocks it
@@ -17,7 +17,9 @@ Usage:
                                             for the current compiler/SDK/target
 
 Options:
-  -o, --out <path>   output path (default: .scriptc/<name>[.exe|.wasm])
+  -o, --out <path>   primary output path (default: .scriptc/<name><suffix>)
+      --emit <kind>  primary output: ir, c, llvm, or exe (default: exe).
+                     asm and obj are reserved for the native-helper release
       --backend <b>  code generator. llvm is the default and the output that
                      ships; c emits readable C for inspecting what the
                      compiler produced, and program behavior is identical
@@ -36,7 +38,8 @@ Options:
                      (default; the .ll — or the .c under --backend=c or
                      when the build fell back)
       --no-keep-c    delete the generated program TU after compiling
-      --emit-ir      also write the IR as JSON next to the executable
+      --emit-ir      deprecated: also write IR beside an executable; use
+                     --emit=ir for IR as the primary output
       --sanitize     build with ASan + runtime RC audit
       --dynamic      embed the dynamic engine (adds ~620KB; static stays the default)
       --ffi <file>   bind signature-only TypeScript declarations to native
@@ -65,6 +68,7 @@ Options:
 
 export const CLI_OPTIONS = {
   out: { type: "string", short: "o" },
+  emit: { type: "string" },
   backend: { type: "string" },
   optimization: { type: "string" },
   "from-c": { type: "boolean", default: false },

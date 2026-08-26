@@ -22,7 +22,7 @@ $ scriptc build fib.ts -o fib && ./fib
 $ npm install -g scriptc
 ```
 
-Requires clang on the PATH (Xcode Command Line Tools on macOS, `clang` package on Linux).
+Requires Node.js 24. Executable builds require clang on the PATH (Xcode Command Line Tools on macOS, `clang` package on Linux); `--emit=ir|c|llvm` requires no external compiler, archiver, or linker.
 
 Builds use a bounded persistent cache by default. Exact unchanged library builds validate their recorded TypeScript/module-resolution inputs and restore the generated C/LLVM unit before starting the frontend. TypeScript comment-only edits can restore validated lowered IR instead, rebasing source locations and regenerating exact-source build identity before emission; directives, JSDoc-bearing JavaScript, token edits, configuration, package resolution, and newly appearing candidates still invalidate it. Library identity getters live in a tiny C translation unit, so build-id-only changes reuse the large compiled program object and compile only that small member before rearchiving. The native cache then applies its independent toolchain checks. Unchanged executables and library archives skip native code generation and linking after fresh compiler metadata probes, while edited builds reuse stable runtime objects. Experimental provenance-source builds bypass the early frontend tier because their fetched-source registry is process state. FFI builds with archive/object inputs or ambient `system_libraries` relink every time but still reuse runtime objects. Mutable compiler input paths such as `CPATH` and `SDKROOT`, and compiler wrappers, bypass persistent native artifacts and objects so same-path dependency edits cannot go stale. Opaque archiver wrappers rebuild library program members and archives while retaining runtime-object reuse. Direct Clang, Apple's system Clang shim, `zig cc`, trusted platform archivers, and `zig ar` retain their applicable persistent tiers. Set `SCRIPTC_NO_CACHE=1` to bypass every cache or `SCRIPTC_CACHE_DIR` to choose its location; an existing POSIX override must already be private, otherwise caching is bypassed without changing its permissions.
 
@@ -31,6 +31,8 @@ Builds use a bounded persistent cache by default. Exact unchanged library builds
 - `scriptc build <file.ts>` — compile to a native executable or selected target artifact
 - `scriptc run <file.ts>` — compile and run
 - `scriptc coverage <file.ts>` — what compiles statically, and why the rest doesn't
+
+`scriptc build app.ts --emit=ir|c|llvm` selects serialized typed IR, readable C, or textual LLVM IR as the one primary artifact and stops before native compilation. `--emit=exe` is the default.
 
 For embedder-hosted modules that are not installed npm packages, coverage can
 map an exact bare specifier to a local declaration with repeatable

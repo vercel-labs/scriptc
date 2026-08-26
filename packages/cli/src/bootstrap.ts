@@ -55,6 +55,8 @@ async function tryFastPath(): Promise<number | null> {
   const [command, inputArg] = positionals;
   if (
     (command !== "build" && command !== "run") || inputArg === undefined ||
+    (values.emit !== undefined && values.emit !== "exe") ||
+    values["emit-ir"] ||
     values.lib || values["from-c"] || values["provenance-sources"] ||
     (values["external-types"] ?? []).length > 0
   ) return null;

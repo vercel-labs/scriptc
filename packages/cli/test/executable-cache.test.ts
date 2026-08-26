@@ -50,6 +50,14 @@ test("exact executable repeats skip lowering while edits and damaged outputs sta
     expect((await stat(outPath)).mtimeMs).toBe(originalBinaryTime);
     expect((await stat(tuPath)).mtimeMs).toBe(originalTuTime);
 
+    // Output-kind cleanup is honest even on an exact early hit: an IR file
+    // left by a prior additive --emit-ir invocation is not part of a later
+    // executable-only result.
+    const irPath = join(dir, "main.ir.json");
+    await writeFile(irPath, "stale IR\n");
+    expect((await build()).stderr).not.toContain("scriptc lowering");
+    await expect(stat(irPath)).rejects.toMatchObject({ code: "ENOENT" });
+
     // Caller damage does not poison the cache: the verified cached binary is
     // atomically restored without rebuilding the frontend.
     await writeFile(outPath, "damaged\n");

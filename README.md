@@ -1,6 +1,6 @@
 # scriptc
 
-scriptc compiles TypeScript and JavaScript to native executables and WebAssembly modules. It uses the TypeScript compiler for parsing and type checking, then emits LLVM IR for clang to compile. A readable C backend remains available for debugging.
+scriptc compiles TypeScript and JavaScript to typed IR, readable C, textual LLVM IR, native executables, and WebAssembly modules. It uses the TypeScript compiler for parsing and type checking. Source outputs require only Node; executable builds currently use clang to compile and link the emitted program and runtime.
 
 Static builds include a small native runtime, but no Node or JavaScript engine. Code that cannot compile statically is reported as a diagnostic. For npm packages and `any`-typed code, `--dynamic` embeds [quickjs-ng](https://github.com/quickjs-ng/quickjs) explicitly.
 
@@ -8,7 +8,7 @@ scriptc is experimental and targets macOS, Linux, Windows, and WebAssembly via W
 
 ## Installation
 
-The compiler requires Node.js 24 or newer and clang. The executables it produces do not require Node.
+The compiler requires Node.js 24 or newer. Executable builds also require clang; `--emit=ir|c|llvm` does not. The executables it produces do not require Node.
 
 ```console
 $ npm install -g scriptc
@@ -36,6 +36,20 @@ Or write a standalone executable:
 $ scriptc build hello.ts -o hello
 $ ./hello ctate
 hello, ctate
+```
+
+Or stop at a source-level compiler artifact without invoking clang, an archiver, or a linker:
+
+```console
+$ scriptc build hello.ts --emit=ir >/dev/null
+$ ls .scriptc/
+hello.ir.json
+$ scriptc build hello.ts --emit=c >/dev/null
+$ ls .scriptc/
+hello.c
+$ scriptc build hello.ts --emit=llvm >/dev/null
+$ ls .scriptc/
+hello.ll
 ```
 
 ## Use Node APIs

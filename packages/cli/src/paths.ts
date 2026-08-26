@@ -1,12 +1,64 @@
 import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { buildTargetPlatform, wasiGuestPath } from "@scriptc/compiler";
+
+export type CliOutputKind = "ir" | "c" | "llvm" | "asm" | "obj" | "exe";
+
+const POSIX_SUFFIXES: Record<CliOutputKind, string> = {
+  ir: ".ir.json",
+  c: ".c",
+  llvm: ".ll",
+  asm: ".s",
+  obj: ".o",
+  exe: "",
+};
+
+const WINDOWS_SUFFIXES: Record<CliOutputKind, string> = {
+  ...POSIX_SUFFIXES,
+  asm: ".asm",
+  obj: ".obj",
+  exe: ".exe",
+};
+
+export function defaultOutputName(
+  stem: string,
+  kind: CliOutputKind,
+  platform?: string,
+): string {
+  const selectedPlatform = platform ?? (kind === "exe" ? buildTargetPlatform() : process.platform);
+  if (kind === "exe" && selectedPlatform === "wasi") return `${stem}.wasm`;
+  return `${stem}${(selectedPlatform === "win32" ? WINDOWS_SUFFIXES : POSIX_SUFFIXES)[kind]}`;
+}
+
+export interface OutputPaths {
+  outDir: string;
+  outPath: string;
+}
+
+/** One authority for explicit and default primary artifact paths. */
+export function selectOutputPaths(
+  input: string,
+  kind: CliOutputKind,
+  explicitOut?: string,
+  platform?: string,
+): OutputPaths {
+  const absoluteInput = resolve(input);
+  const outDir = explicitOut === undefined
+    ? join(dirname(absoluteInput), ".scriptc")
+    : dirname(resolve(explicitOut));
+  const stem = basename(absoluteInput).replace(/\.(ts|js|mjs|cjs|c|ll)$/, "");
+  return {
+    outDir,
+    outPath: explicitOut === undefined
+      ? join(outDir, defaultOutputName(stem, kind, platform))
+      : resolve(explicitOut),
+  };
+}
 
 /** Default executable filename for the build target. Explicit --out paths
  * stay exact; only scriptc's generated default needs the Windows PE suffix. */
 export function defaultExecutableName(stem: string, platform: string = buildTargetPlatform()): string {
-  if (platform === "win32") return `${stem}.exe`;
-  if (platform === "wasi") return `${stem}.wasm`;
-  return stem;
+  return defaultOutputName(stem, "exe", platform);
 }
 
 /** Host paths exposed by `scriptc run` to a WASI Preview 1 module. Guest

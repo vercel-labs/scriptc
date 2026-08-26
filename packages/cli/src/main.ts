@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { analyze, buildTargetPlatform, compile, compileC, compileLibrary, isExactExternalTypeSpecifier, renderDiagnostics, renderCoverage, resolveProvenanceSources, setProvenanceSources, warmNativeCaches, type NativeCacheWarmProfile } from "@scriptc/compiler";
-import { defaultExecutableName } from "./paths.js";
+import { resolveOutputOptions } from "./output-options.js";
+import { selectOutputPaths } from "./paths.js";
 import { CLI_OPTIONS, USAGE } from "./usage.js";
 
 /** The version of the installed package. Read from the manifest rather than
@@ -69,7 +70,7 @@ async function main(): Promise<number> {
   const [command, inputArg] = positionals;
   if (command === "cache") {
     if (inputArg !== "warm") fail(`unknown cache command "${inputArg ?? ""}" (supported: warm)\n\n${USAGE}`);
-    if (values.lib || values.dynamic || values.backend !== undefined || values["from-c"] || values.ffi !== undefined || values.profile !== undefined || (values["npm-static"] ?? []).length > 0 || values["provenance-sources"] || externalTypeArgs.length > 0 || values.out !== undefined || values["emit-ir"] || !values["keep-c"]) {
+    if (values.lib || values.dynamic || values.backend !== undefined || values.emit !== undefined || values["from-c"] || values.ffi !== undefined || values.profile !== undefined || (values["npm-static"] ?? []).length > 0 || values["provenance-sources"] || externalTypeArgs.length > 0 || values.out !== undefined || values["emit-ir"] || !values["keep-c"]) {
       fail(`scriptc cache warm takes only native optimization/sanitizer options and profile names\n\n${USAGE}`);
     }
     const optimization = values.optimization;
@@ -104,6 +105,9 @@ async function main(): Promise<number> {
   if (command !== "build" && command !== "run" && command !== "coverage") {
     fail(`unknown command "${command}"\n\n${USAGE}`);
   }
+  if (values["emit-ir"] && (command === "build" || command === "run")) {
+    process.stderr.write("scriptc: warning: --emit-ir is deprecated; use --emit=ir for IR as the primary output\n");
+  }
   if (values.lib) {
     // LIBRARY mode: the profile names the entry module and pins the
     // emission; the executable lane's mode flags have no meaning here
@@ -117,9 +121,9 @@ async function main(): Promise<number> {
     if (inputArg) {
       fail("scriptc build --lib takes no input positional: the profile names the entry module");
     }
-    if (values.dynamic || values.backend !== undefined || values.optimization !== undefined || values.ffi !== undefined || (values["npm-static"] ?? []).length > 0 || externalTypeArgs.length > 0) {
+    if (values.dynamic || values.backend !== undefined || values.emit !== undefined || values.optimization !== undefined || values.ffi !== undefined || (values["npm-static"] ?? []).length > 0 || externalTypeArgs.length > 0) {
       fail(
-        "scriptc build --lib takes no --dynamic/--backend/--optimization/--npm-static/--ffi/--external-types: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, and external type mappings belong to coverage",
+        "scriptc build --lib takes no --dynamic/--backend/--emit/--optimization/--npm-static/--ffi/--external-types: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, and external type mappings belong to coverage",
       );
     }
     const profilePath = resolve(profileArg);
@@ -147,6 +151,9 @@ async function main(): Promise<number> {
   }
   if (!inputArg) fail(`missing input file\n\n${USAGE}`);
   const input = resolve(inputArg);
+  if (command === "coverage" && values.emit !== undefined) {
+    fail(`--emit is a build/run option\n\n${USAGE}`);
+  }
   if (externalTypeArgs.length > 0 && command !== "coverage") {
     fail(`--external-types is a coverage-only option\n\n${USAGE}`);
   }
@@ -176,14 +183,27 @@ async function main(): Promise<number> {
     externalTypes[specifier] = declarationPath;
   }
   const ffiProfilePath = values.ffi !== undefined ? resolve(values.ffi) : undefined;
-  const backend = values.backend;
-  if (backend !== undefined && backend !== "c" && backend !== "llvm") {
-    fail(`unknown backend "${backend}" (supported: c, llvm)\n\n${USAGE}`);
+  if (values.backend !== undefined && values.backend !== "c" && values.backend !== "llvm") {
+    fail(`unknown backend "${values.backend}" (supported: c, llvm)\n\n${USAGE}`);
   }
   const optimization = values.optimization;
   if (optimization !== undefined && optimization !== "release" && optimization !== "dev") {
     fail(`unknown optimization "${optimization}" (supported: release, dev)\n\n${USAGE}`);
   }
+  const output = command === "coverage"
+    ? null
+    : resolveOutputOptions(command, {
+        ...(values.emit === undefined ? {} : { emit: values.emit }),
+        emitIr: values["emit-ir"],
+        ...(values.backend === undefined ? {} : { backend: values.backend }),
+        fromC: values["from-c"],
+        keepC: values["keep-c"],
+        sanitize: values.sanitize,
+        ...(values.optimization === undefined ? {} : { optimization: values.optimization }),
+        ...(values.ffi === undefined ? {} : { ffi: values.ffi }),
+      });
+  if (output !== null && !output.ok) fail(`${output.message}\n\n${USAGE}`);
+  const backend = output?.ok ? output.backend : undefined;
 
   // --npm-static: repeatable and comma-splittable; the literal "auto"
   // switches to eligibility-based detection (mixing "auto" with names
@@ -224,9 +244,8 @@ async function main(): Promise<number> {
     return coverage.preflightFailed ? 1 : 0;
   }
 
-  const outDir = values.out ? dirname(resolve(values.out)) : join(dirname(input), ".scriptc");
-  const stem = basename(input).replace(/\.(ts|js|mjs|cjs|c|ll)$/, "");
-  const outPath = values.out ? resolve(values.out) : join(outDir, defaultExecutableName(stem));
+  if (output === null || !output.ok) throw new Error("internal output-option state");
+  const { outDir, outPath } = selectOutputPaths(input, output.cliOutputKind, values.out);
 
   const build = async (): Promise<string> => {
     if (values["from-c"]) {
@@ -245,7 +264,8 @@ async function main(): Promise<number> {
     const result = await compile(input, {
       outPath,
       outDir,
-      emitIr: values["emit-ir"],
+      outputKind: output.outputKind,
+      emitIr: output.emitIr,
       sanitize: values.sanitize,
       dynamic: values.dynamic,
       ...(backend !== undefined ? { backend } : {}),
@@ -265,11 +285,13 @@ async function main(): Promise<number> {
     // names the refusal. A successful LLVM build is the documented default
     // (and the kept .ll next to the binary is the durable record), and an
     // explicit --backend was the user's own choice — neither gets a line.
-    if (result.llvmRefusal !== undefined) {
-      process.stderr.write(`scriptc: backend c (llvm refused: ${result.llvmRefusal})\n`);
+    if (result.artifact.kind === "exe") {
+      if (result.artifact.llvmRefusal !== undefined) {
+        process.stderr.write(`scriptc: backend c (llvm refused: ${result.artifact.llvmRefusal})\n`);
+      }
+      if (!values["keep-c"]) rmSync(result.artifact.translationUnitPath, { force: true });
     }
-    if (!values["keep-c"]) rmSync(result.cPath, { force: true });
-    return result.binaryPath;
+    return result.artifact.path;
   };
 
   const binary = await build();

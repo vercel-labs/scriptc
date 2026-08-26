@@ -847,16 +847,25 @@ function isMuslTarget(driver: Pick<CcDriver, "target">): boolean {
  * analyze(): the FRONTEND consults it too (path.sep / os.EOL literals and
  * the path-module binding follow the target — a win32 triple compiles
  * Node-on-Windows semantics, path.win32 backing the bare module). */
-export function targetPlatform(driver: CcDriver): string {
-  if (driver.target === null) return process.platform;
-  if (driver.target.includes("wasi")) return "wasi";
+export function configuredTargetPlatform(
+  env: NodeJS.ProcessEnv = process.env,
+  hostPlatform: NodeJS.Platform = process.platform,
+): string {
+  const target = env["SCRIPTC_TARGET"] ?? "";
+  if (target === "") return hostPlatform;
+  if (target.includes("wasi")) return "wasi";
   // iOS is a darwin-family target: Mach-O objects, ld64 localization,
   // POSIX path/EOL semantics. Android falls to the linux arm below —
   // bionic is a linux libc and its archives are ordinary ELF.
-  if (isIosTarget(driver.target)) return "darwin";
-  if (driver.target.includes("linux")) return "linux";
-  if (driver.target.includes("windows")) return "win32";
-  return driver.target.includes("macos") || driver.target.includes("darwin") ? "darwin" : "other";
+  if (isIosTarget(target)) return "darwin";
+  if (target.includes("linux")) return "linux";
+  if (target.includes("windows")) return "win32";
+  return target.includes("macos") || target.includes("darwin") ? "darwin" : "other";
+}
+
+export function targetPlatform(driver: CcDriver): string {
+  if (driver.target === null) return process.platform;
+  return configuredTargetPlatform({ SCRIPTC_TARGET: driver.target });
 }
 
 /** Architecture identity for host-native cache entries. Explicit cross targets

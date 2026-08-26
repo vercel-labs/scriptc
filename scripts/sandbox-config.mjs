@@ -85,6 +85,56 @@ export function sandboxVercelEnvironment(config, env) {
   return childEnv;
 }
 
+/** Adapt the selected Sandbox credential to the legacy VCR command surface.
+ * Unlike the Sandbox CLI, `vercel vcr` reads VERCEL_TOKEN and cannot infer
+ * registry scope from OIDC claims. */
+export function sandboxVcrConfig(config, env) {
+  const childEnv = { ...(env ?? process.env) };
+  if (config.authToken) {
+    childEnv.VERCEL_TOKEN = config.authToken;
+    delete childEnv.VERCEL_AUTH_TOKEN;
+  }
+
+  if (config.team && config.project) {
+    return {
+      env: childEnv,
+      scopeArgs: ["--scope", config.team, "--project", config.project],
+      scopeSource: "VERCEL_TEAM_ID + VERCEL_PROJECT_ID",
+    };
+  }
+  if (!config.oidc) {
+    return {
+      env: childEnv,
+      scopeArgs: [],
+      scopeSource: "linked/default Vercel CLI project",
+    };
+  }
+
+  let claims;
+  try {
+    const segments = config.authToken?.split(".") ?? [];
+    if (segments.length !== 3 || !segments[1]) throw new Error("token is not a JWT");
+    claims = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"));
+  } catch (cause) {
+    throw new Error(
+      "VERCEL_OIDC_TOKEN must be a JWT with owner_id and project_id claims for VCR access",
+      { cause },
+    );
+  }
+  const team = typeof claims.owner_id === "string" ? claims.owner_id.trim() : "";
+  const project = typeof claims.project_id === "string" ? claims.project_id.trim() : "";
+  if (!team || !project) {
+    throw new Error(
+      "VERCEL_OIDC_TOKEN must contain owner_id and project_id claims for VCR access",
+    );
+  }
+  return {
+    env: childEnv,
+    scopeArgs: ["--scope", team, "--project", project],
+    scopeSource: "VERCEL_OIDC_TOKEN claims",
+  };
+}
+
 export function sandboxBootstrapCommand(customImage) {
   if (customImage) return undefined;
   return {

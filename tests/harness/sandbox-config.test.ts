@@ -6,9 +6,13 @@ import {
   sandboxImageConfig,
   sandboxRunnerConfig,
   sandboxTestWorkerAllocation,
+  sandboxVcrConfig,
   sandboxVercelConfig,
   sandboxVercelEnvironment,
 } from "../../scripts/sandbox-config.mjs";
+
+const oidcToken = (claims: object) =>
+  ["header", Buffer.from(JSON.stringify(claims)).toString("base64url"), "signature"].join(".");
 
 test("runner settings are read after loading the sandbox environment", () => {
   expect(
@@ -127,6 +131,52 @@ test("access-token authentication uses explicit environment scope", () => {
     scopeSource: "VERCEL_TEAM_ID + VERCEL_PROJECT_ID",
     team: "team_example",
   });
+});
+
+test("VCR receives OIDC through VERCEL_TOKEN with scope decoded from its claims", () => {
+  const token = oidcToken({ owner_id: "team_oidc", project_id: "prj_oidc" });
+  const config = sandboxVercelConfig({
+    VERCEL_OIDC_TOKEN: token,
+    VERCEL_TOKEN: "stale-access-token",
+  });
+
+  expect(
+    sandboxVcrConfig(config, {
+      VERCEL_AUTH_TOKEN: "stale-auth-token",
+      VERCEL_OIDC_TOKEN: token,
+      VERCEL_TOKEN: "stale-access-token",
+    }),
+  ).toEqual({
+    env: {
+      VERCEL_OIDC_TOKEN: token,
+      VERCEL_TOKEN: token,
+    },
+    scopeArgs: ["--scope", "team_oidc", "--project", "prj_oidc"],
+    scopeSource: "VERCEL_OIDC_TOKEN claims",
+  });
+});
+
+test("VCR uses the selected access token and explicit environment scope", () => {
+  const config = sandboxVercelConfig({
+    VERCEL_AUTH_TOKEN: "access-token",
+    VERCEL_PROJECT_ID: "prj_example",
+    VERCEL_TEAM_ID: "team_example",
+  });
+
+  expect(sandboxVcrConfig(config, { VERCEL_AUTH_TOKEN: "access-token" })).toEqual({
+    env: { VERCEL_TOKEN: "access-token" },
+    scopeArgs: ["--scope", "team_example", "--project", "prj_example"],
+    scopeSource: "VERCEL_TEAM_ID + VERCEL_PROJECT_ID",
+  });
+});
+
+test("VCR rejects OIDC tokens without usable project claims", () => {
+  const token = oidcToken({ owner_id: "team_oidc" });
+  const config = sandboxVercelConfig({ VERCEL_OIDC_TOKEN: token });
+
+  expect(() => sandboxVcrConfig(config, { VERCEL_OIDC_TOKEN: token })).toThrow(
+    "owner_id and project_id claims",
+  );
 });
 
 test("access-token scope failures explain every required variable", () => {

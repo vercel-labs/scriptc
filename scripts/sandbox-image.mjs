@@ -4,23 +4,23 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import {
   requiredSandboxImageConfig,
+  sandboxVcrConfig,
   sandboxVercelConfig,
-  sandboxVercelEnvironment,
 } from "./sandbox-config.mjs";
 import { linuxAmd64ManifestDigest } from "./oci-manifest.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const { reference: image, repository, tag } = requiredSandboxImageConfig();
 const vercelConfig = sandboxVercelConfig();
-const vercelEnv = sandboxVercelEnvironment(vercelConfig);
-const scopeArgs = vercelConfig.scopeArgs;
+const vcrConfig = sandboxVcrConfig(vercelConfig);
+const scopeArgs = vcrConfig.scopeArgs;
 const nodeVersion = (await readFile(new URL("../.node-version", import.meta.url), "utf8")).trim();
 
 function run(command, args, { capture = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: root,
-      env: { ...vercelEnv, NO_UPDATE_NOTIFIER: "1" },
+      env: { ...vcrConfig.env, NO_UPDATE_NOTIFIER: "1" },
       stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
     });
     let stdout = "";
@@ -41,7 +41,7 @@ function run(command, args, { capture = false } = {}) {
 
 console.log(
   `Authenticating Docker with ${vercelConfig.authSource} ` +
-    `(scope: ${vercelConfig.scopeSource})...`,
+    `(scope: ${vcrConfig.scopeSource})...`,
 );
 await run("vercel", ["vcr", "login", "docker", ...scopeArgs]);
 

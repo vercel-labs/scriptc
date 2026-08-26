@@ -41,6 +41,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
+      - run: brew install llvm@22
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       # Separate vitest invocations because the shard axes must not mix: a file
@@ -107,6 +108,51 @@ jobs:
         run: >-
           pnpm test packages/compiler/test/cc-driver.test.ts
           --testNamePattern "host-native clang static build"
+
+  llvm_artifacts_macos_arm64:
+    name: test (macOS arm64 LLVM artifacts, no clang)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: brew install llvm@22
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @scriptc/llvm-darwin-arm64 build
+      - run: pnpm build
+      - name: No-clang assembly/object contract
+        run: pnpm test packages/cli/test/native-output.test.ts
+      - name: Helper diagnostics and object/link parity
+        run: pnpm test packages/compiler/test/native-codegen-integration.test.ts
+      - name: LLVM-tier helper object differential
+        env:
+          SCRIPTC_LLVM_HELPER_ONLY: "1"
+          SCRIPTC_TEST_WORKERS: "4"
+        run: pnpm test tests/harness/llvm-differential.test.ts
+      - name: Packaged helper contract
+        run: |
+          TARBALL=$(pnpm --dir packages/llvm-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent)
+          node scripts/verify-llvm-package.mjs "$RUNNER_TEMP/$(basename "$TARBALL")"
+      - name: Packed npm installation smoke
+        run: |
+          pnpm --dir packages/runtime pack --pack-destination "$RUNNER_TEMP" --silent
+          pnpm --dir packages/compiler pack --pack-destination "$RUNNER_TEMP" --silent
+          pnpm --dir packages/cli pack --pack-destination "$RUNNER_TEMP" --silent
+          PREFIX="$RUNNER_TEMP/installed-scriptc"
+          npm install --prefix "$PREFIX" --ignore-scripts \
+            "$RUNNER_TEMP/scriptc-runtime-$(node -p "require('./packages/runtime/package.json').version").tgz" \
+            "$RUNNER_TEMP/scriptc-llvm-darwin-arm64-$(node -p "require('./packages/llvm-darwin-arm64/package.json').version").tgz" \
+            "$RUNNER_TEMP/scriptc-compiler-$(node -p "require('./packages/compiler/package.json').version").tgz" \
+            "$RUNNER_TEMP/scriptc-$(node -p "require('./packages/cli/package.json').version").tgz"
+          "$PREFIX/node_modules/.bin/scriptc" build tests/corpus/001-hello.ts \
+            --emit=obj -o "$RUNNER_TEMP/installed.o"
+          file "$RUNNER_TEMP/installed.o" | grep 'Mach-O 64-bit object arm64'
 
   # Exercises the supported Windows GNU target and the built CLI end to end:
   # TS7 must open its synthetic project, ambient files must resolve across
@@ -183,7 +229,7 @@ jobs:
   # single "test" check (branch protection, badges) keeps resolving. Fails
   # unless every matrix shard and both platform integration jobs succeeded.
   test:
-    needs: [tests, linux_host_clang, windows_cli]
+    needs: [tests, linux_host_clang, llvm_artifacts_macos_arm64, windows_cli]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -191,4 +237,5 @@ jobs:
         run: |
           test "${{ needs.tests.result }}" = success
           test "${{ needs.linux_host_clang.result }}" = success
+          test "${{ needs.llvm_artifacts_macos_arm64.result }}" = success
           test "${{ needs.windows_cli.result }}" = success

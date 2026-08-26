@@ -112,7 +112,7 @@ async function tryFastPath(): Promise<number | null> {
     ...(optimization === "dev" ? { optimization: "dev" as const } : {}),
     npmStatic,
     ffiProfile: ffiPath === null ? null : { path: ffiPath, bytes: ffiBytes! },
-    target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${arch}`,
+    target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${arch}:driver-tu`,
     compiler: [process.env["SCRIPTC_CC"] ?? "clang"],
     nativeEnvironment,
     nodeVersion: process.version,

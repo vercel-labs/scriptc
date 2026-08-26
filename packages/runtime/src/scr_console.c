@@ -71,6 +71,8 @@ static void scr_flush_at_exit(void) { fflush(stdout); }
 
 static void scr_collect_cycles_at_exit(void) { scr_collect_cycles(); }
 
+void scr_runtime_abi_v1(void) {}
+
 void scr_init(void) {
 #ifdef _WIN32
   /* The CRT opens std streams in TEXT mode, which writes \n as \r\n. Node

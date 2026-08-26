@@ -19,7 +19,7 @@ Usage:
 
 ## scriptc build
 
-Compiles a TypeScript (or JavaScript) entry file to serialized typed IR, readable C, textual LLVM IR, a native executable, or a WebAssembly module when the <code>wasm32-wasi</code> target is selected. The program is type-checked first — by the real TypeScript compiler, honoring the nearest `tsconfig.json` — and any construct without a lowering is a compile error with an `SC`-prefixed code, a code frame, and usually a rewrite hint.
+Compiles a TypeScript (or JavaScript) entry file to serialized typed IR, readable C, textual LLVM IR, native assembly, a relocatable object, a native executable, or a WebAssembly module when the <code>wasm32-wasi</code> target is selected. The program is type-checked first — by the real TypeScript compiler, honoring the nearest `tsconfig.json` — and any construct without a lowering is a compile error with an `SC`-prefixed code, a code frame, and usually a rewrite hint.
 
 ```console
 $ scriptc build fib.ts -o fib
@@ -39,9 +39,21 @@ fib.c
 $ scriptc build fib.ts --emit=llvm >/dev/null
 $ ls .scriptc/
 fib.ll
+$ scriptc build fib.ts --emit=asm >/dev/null
+$ ls .scriptc/
+fib.s
+$ scriptc build fib.ts --emit=obj >/dev/null
+$ ls .scriptc/
+fib.o
 ```
 
-These three source outputs require only Node. They do not resolve or invoke a compiler, archiver, or linker. `--emit=exe` is the default and retains the existing executable behavior.
+The three source outputs require only Node. On macOS arm64, assembly and object
+outputs use the matching native helper installed with scriptc and do not
+invoke an external compiler, archiver, linker, or SDK. The object is a
+relocatable program object with undefined <code>scr_*</code> runtime symbols
+and a required <code>scr_runtime_abi_v1</code> marker, not a standalone library.
+<code>--emit=exe</code> is the default and retains the existing executable
+behavior.
 
 ## scriptc run
 
@@ -66,10 +78,10 @@ Prebuilds the release runtime objects and native TLS/dynamic-engine archives aga
 
 <dl>
   <dt><code>-o, --out &lt;path&gt;</code></dt>
-  <dd>Primary artifact path. An explicit path is exact. Defaults are <code>.scriptc/&lt;name&gt;.ir.json</code>, <code>.c</code>, <code>.ll</code>, or the platform executable name.</dd>
+  <dd>Primary artifact path. An explicit path is exact. Defaults are <code>.scriptc/&lt;name&gt;.ir.json</code>, <code>.c</code>, <code>.ll</code>, <code>.s</code>, <code>.o</code>, or the platform executable name.</dd>
 
-  <dt><code>--emit &lt;ir|c|llvm|exe&gt;</code></dt>
-  <dd>Select the invocation's one primary artifact. <code>ir</code>, <code>c</code>, and <code>llvm</code> stop before native compilation and need no external toolchain. <code>exe</code> is the default. <code>asm</code> and <code>obj</code> are reserved for the native-helper release and currently report an unsupported-output error.</dd>
+  <dt><code>--emit &lt;ir|c|llvm|asm|obj|exe&gt;</code></dt>
+  <dd>Select the invocation's one primary artifact. <code>ir</code>, <code>c</code>, and <code>llvm</code> need only Node. <code>asm</code> and <code>obj</code> use the bundled LLVM helper and currently support host-native macOS arm64 at a macOS 14.0 baseline. <code>exe</code> is the default.</dd>
 
   <dt><code>--dynamic</code></dt>
   <dd>Embed the dynamic engine (~620KB) so npm dependencies and <code>any</code>-typed code can run. Static stays the default — without this flag, dynamic-tier sites are per-site compile errors. See <a href="/dependencies">npm Dependencies</a>.</dd>
@@ -90,7 +102,7 @@ Prebuilds the release runtime objects and native TLS/dynamic-engine archives aga
   <dd>Coverage only. Map an exact bare module specifier to a local declaration file supplied by an embedder. Repeat the option for multiple modules. The declaration supplies checker types so application coverage can continue; runtime imports and values remain explicit <code>SC1010</code> blockers. Relative paths resolve from the current working directory. Accepted files end in <code>.d.ts</code>, <code>.d.mts</code>, or <code>.d.cts</code>.</dd>
 
   <dt><code>--sanitize</code></dt>
-  <dd>Build with AddressSanitizer plus the runtime reference-count audit — the same lane the compiler's own test corpus runs under. Useful when a program misbehaves and you want leaks or memory errors to be loud.</dd>
+  <dd>Build an executable with AddressSanitizer plus the runtime reference-count audit — the same lane the compiler's own test corpus runs under. <code>--emit=asm|obj</code> rejects this option until the helper's sanitizer pipeline has parity.</dd>
 
   <dt><code>--emit-ir</code></dt>
   <dd>Additive IR side artifact. It is deprecated for executable builds for one release cycle; prefer <code>--emit=ir</code> when IR is the primary output. Library mode retains <code>--emit-ir</code> because <code>--emit</code> does not select library artifacts.</dd>
@@ -162,6 +174,12 @@ An explicit <code>--backend llvm</code> pins the LLVM backend and fails with dia
       <td><code>coverage</code>, <code>--emit=ir|c|llvm</code></td>
       <td>Required</td>
       <td>Not used</td>
+      <td>Not used</td>
+    </tr>
+    <tr>
+      <td><code>--emit=asm|obj</code> (macOS arm64)</td>
+      <td>Required</td>
+      <td>Bundled scriptc LLVM helper</td>
       <td>Not used</td>
     </tr>
     <tr>

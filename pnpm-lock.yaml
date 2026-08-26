@@ -50,6 +50,12 @@ importers:
       typescript5:
         specifier: npm:typescript@5.9.3
         version: typescript@5.9.3
+    optionalDependencies:
+      '@scriptc/llvm-darwin-arm64':
+        specifier: workspace:*
+        version: link:../llvm-darwin-arm64
+
+  packages/llvm-darwin-arm64: {}
 
   packages/runtime: {}
 

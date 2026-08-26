@@ -24,6 +24,7 @@ export type OutputOptionResolution =
   | { ok: false; message: string };
 
 const SOURCE_KINDS = new Set<CliOutputKind>(["ir", "c", "llvm"]);
+const NATIVE_ARTIFACT_KINDS = new Set<CliOutputKind>(["asm", "obj"]);
 
 /** Pure compatibility/validation matrix for build/run output selection. */
 export function resolveOutputOptions(
@@ -41,16 +42,10 @@ export function resolveOutputOptions(
   ) {
     return {
       ok: false,
-      message: `unknown emit kind "${rawEmit}" (supported: ir, c, llvm, exe; asm and obj require the native helper)`,
+      message: `unknown emit kind "${rawEmit}" (supported: ir, c, llvm, asm, obj, exe)`,
     };
   }
   const emit = (rawEmit ?? "exe") as CliOutputKind;
-  if (emit === "asm" || emit === "obj") {
-    return {
-      ok: false,
-      message: `--emit=${emit} requires the scriptc LLVM native helper and is not supported in this release`,
-    };
-  }
   if (command === "run" && emit !== "exe") {
     return { ok: false, message: `scriptc run requires --emit=exe` };
   }
@@ -69,8 +64,8 @@ export function resolveOutputOptions(
   if (emit === "c" && backend === "llvm") {
     return { ok: false, message: `--emit=c cannot be combined with --backend=llvm` };
   }
-  if (emit === "llvm" && backend === "c") {
-    return { ok: false, message: `--emit=llvm cannot be combined with --backend=c` };
+  if ((emit === "llvm" || NATIVE_ARTIFACT_KINDS.has(emit)) && backend === "c") {
+    return { ok: false, message: `--emit=${emit} cannot be combined with --backend=c` };
   }
   if (SOURCE_KINDS.has(emit)) {
     if (!values.keepC) {
@@ -83,12 +78,19 @@ export function resolveOutputOptions(
       return { ok: false, message: `--optimization is only meaningful with --emit=exe` };
     }
   }
+  if (NATIVE_ARTIFACT_KINDS.has(emit) && !values.keepC) {
+    return { ok: false, message: `--no-keep-c is only meaningful with --emit=exe` };
+  }
   const outputKind = emit as CompileOutputKind;
   return {
     ok: true,
     outputKind,
     cliOutputKind: emit,
-    ...(emit === "c" ? { backend: "c" as const } : emit === "llvm" ? { backend: "llvm" as const } : backend === undefined ? {} : { backend }),
+    ...(emit === "c"
+      ? { backend: "c" as const }
+      : emit === "llvm" || NATIVE_ARTIFACT_KINDS.has(emit)
+        ? { backend: "llvm" as const }
+        : backend === undefined ? {} : { backend }),
     emitIr: values.emitIr && emit === "exe",
     deprecateEmitIr: values.emitIr,
   };

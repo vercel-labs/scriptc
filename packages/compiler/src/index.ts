@@ -1,12 +1,15 @@
 import { InternalCompilerError } from "./errors.js";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, configuredTargetPlatform, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/native-toolchain.js";
 import { emitCModule } from "./backend/c/c-emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
+import { emitNativeArtifact, NativeCodegenError } from "./backend/native-codegen.js";
+import { nativeCodegenTargetRefusal } from "./backend/targets.js";
 import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
 import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "./backend/library-identity-markers.js";
-import { checkerPanicDiag, ffiNativeBuildDiag, libAsyncExportDiag, libAsyncSurfaceDiag, libExportUnresolvedDiag, libGenericExportDiag, libIntBoundaryDiag, libNpmIneligibleDiag, libSidecarDiag, libUnmappableSignatureDiag, iceDiag, isCheckerPanic, LIB_INBOUND_BYTES_TRAP_CODE, LIB_RUNTIME_TRAP_CODES, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
+import { checkerPanicDiag, ffiNativeBuildDiag, libAsyncExportDiag, libAsyncSurfaceDiag, libExportUnresolvedDiag, libGenericExportDiag, libIntBoundaryDiag, libNpmIneligibleDiag, libSidecarDiag, libUnmappableSignatureDiag, iceDiag, isCheckerPanic, LIB_INBOUND_BYTES_TRAP_CODE, LIB_RUNTIME_TRAP_CODES, nativeCodegenDiag, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import { checkLibraryIntegerSlots, classSeed, hasIntSlots, numberCarrierKind, type FnIntSlots, type IntSlotConfig } from "./library/int-infer.js";
 import { loadLibraryProfile, profileRemediation, profileTeaching, type LibraryProfile } from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals, evaluateLibraryFences } from "./library/fence-eval.js";
@@ -151,7 +154,7 @@ export {
 } from "./frontend/provenance-registry.js";
 export * as ir from "./ir/ir.js";
 
-export type CompileOutputKind = "ir" | "c" | "llvm" | "exe";
+export type CompileOutputKind = "ir" | "c" | "llvm" | "asm" | "obj" | "exe";
 
 export interface CompileBaseOptions {
   /** Primary artifact path. The CLI supplies the output-kind default. */
@@ -184,6 +187,11 @@ export interface CompileBaseOptions {
    * wasm32-wasi is a production LLVM target and never takes the automatic
    * C fallback; a missing LLVM lowering there is SC3001. */
   backend?: "c" | "llvm";
+  /** Internal validation lane: executable builds still use the existing
+   * linker/runtime recipe, but the program LLVM TU is compiled to an object
+   * by the bundled helper first. Not a CLI contract; Phase 2 corpus tests use
+   * it to compare helper and clang objects under identical link inputs. */
+  nativeProgramObject?: boolean;
   /** Native optimization posture. Release is the shipped -O2 default; dev
    * uses -O0 and stable multi-TU object caching for large LLVM programs. */
   optimization?: "release" | "dev";
@@ -224,6 +232,8 @@ export type CompileArtifact =
   | { kind: "ir"; path: string }
   | { kind: "c"; path: string }
   | { kind: "llvm"; path: string }
+  | { kind: "asm"; path: string }
+  | { kind: "obj"; path: string }
   | {
       kind: "exe";
       path: string;
@@ -239,7 +249,7 @@ export type CompileFailure = {
 };
 
 export type CompileSourceResult =
-  | { ok: true; artifact: Extract<CompileArtifact, { kind: "ir" | "c" | "llvm" }> }
+  | { ok: true; artifact: Extract<CompileArtifact, { kind: "ir" | "c" | "llvm" | "asm" | "obj" }> }
   | CompileFailure;
 
 /** Historical executable result shape retained for source compatibility. */
@@ -1028,57 +1038,77 @@ async function compileExecutableNative(
   programSplit: ReturnType<typeof splitLlvmProgram> = null,
   onArtifactReady?: NonNullable<Parameters<typeof compileC>[0]["onArtifactReady"]>,
 ): Promise<void> {
+  const programIsObject = /\.(?:o|obj)$/.test(cPath);
   const effectiveProgramSplit =
     programSplit ??
-    (features.optimization === "dev" && features.backend === "llvm" && !sanitize
+    (!programIsObject && features.optimization === "dev" && features.backend === "llvm" && !sanitize
       ? splitLlvmProgram(await readFile(cPath, "utf8"))
       : null);
-  await compileC({
-    cPath,
-    outPath,
-    cacheIdentity: "scriptc-generated-v1",
-    ...(features.optimization === "dev" ? { optimization: "dev" as const } : {}),
-    ...(effectiveProgramSplit === null
-      ? {}
-      : {
-          programShards: effectiveProgramSplit.shards,
-          programPublicSymbols: effectiveProgramSplit.publicSymbols,
-        }),
-    sanitize,
-    dynamic: features.dynamic,
-    regex: features.regex,
-    copying: features.copying,
-    textDecoderLegacy: features.textDecoderLegacy,
-    fileHandle: features.fileHandle,
-    fetch: features.fetch,
-    netIsland: features.netIsland,
-    zlib: features.zlib,
-    assert: features.assert,
-    inspect: features.inspect,
-    dynInvoke: features.dynInvoke,
-    dc: features.dc,
-    dynAsync: features.dynAsync,
-    events: features.events,
-    emitter: features.emitter,
-    symbol: features.symbol,
-    searchParams: features.searchParams,
-    qs: features.qs,
-    parseArgs: features.parseArgs,
-    stream: features.stream,
-    net: features.net,
-    http: features.http,
-    http2: features.http2,
-    dgram: features.dgram,
-    watch: features.watch,
-    foreignFfi: features.foreignFfi,
-    nodeTest: features.nodeTest,
-    tls: features.tls,
-    tlsCa: features.tlsCa,
-    ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
-    ...(ffi === null
-      ? {}
-      : { linkInputs: ffi.libraries, systemLibraries: ffi.systemLibraries }),
-  });
+  const objectLinkDir = programIsObject
+    ? await mkdtemp(join(tmpdir(), "scriptc-object-link-"))
+    : null;
+  const linkDriverSource = objectLinkDir === null
+    ? cPath
+    : join(objectLinkDir, "driver.c");
+  if (objectLinkDir !== null) await writeFile(linkDriverSource, "/* scriptc object link driver */\n");
+  try {
+    await compileC({
+      cPath: linkDriverSource,
+      outPath,
+      cacheIdentity: "scriptc-generated-v1",
+      ...(features.optimization === "dev" ? { optimization: "dev" as const } : {}),
+      ...(effectiveProgramSplit === null
+        ? {}
+        : {
+            programShards: effectiveProgramSplit.shards,
+            programPublicSymbols: effectiveProgramSplit.publicSymbols,
+          }),
+      sanitize,
+      dynamic: features.dynamic,
+      regex: features.regex,
+      copying: features.copying,
+      textDecoderLegacy: features.textDecoderLegacy,
+      fileHandle: features.fileHandle,
+      fetch: features.fetch,
+      netIsland: features.netIsland,
+      zlib: features.zlib,
+      assert: features.assert,
+      inspect: features.inspect,
+      dynInvoke: features.dynInvoke,
+      dc: features.dc,
+      dynAsync: features.dynAsync,
+      events: features.events,
+      emitter: features.emitter,
+      symbol: features.symbol,
+      searchParams: features.searchParams,
+      qs: features.qs,
+      parseArgs: features.parseArgs,
+      stream: features.stream,
+      net: features.net,
+      http: features.http,
+      http2: features.http2,
+      dgram: features.dgram,
+      watch: features.watch,
+      foreignFfi: features.foreignFfi,
+      nodeTest: features.nodeTest,
+      tls: features.tls,
+      tlsCa: features.tlsCa,
+      ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
+      ...(ffi === null && !programIsObject
+        ? {}
+        : {
+            linkInputs: [
+              ...(programIsObject ? [cPath] : []),
+              ...(ffi?.libraries ?? []),
+            ],
+            ...(ffi === null ? {} : { systemLibraries: ffi.systemLibraries }),
+          }),
+    });
+  } finally {
+    if (objectLinkDir !== null) {
+      await rm(objectLinkDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
 }
 
 async function compileTracked(
@@ -1115,6 +1145,27 @@ async function compileTracked(
         }],
         sourceTexts: new Map(),
       };
+    }
+    if (outputKind === "asm" || outputKind === "obj") {
+      const refusal = nativeCodegenTargetRefusal();
+      if (refusal !== null) {
+        return {
+          ok: false,
+          diagnostics: [nativeCodegenDiag("SC3002", refusal, entryPath)],
+          sourceTexts: new Map(),
+        };
+      }
+      if (opts.sanitize === true) {
+        return {
+          ok: false,
+          diagnostics: [nativeCodegenDiag(
+            "SC3002",
+            `--sanitize is not supported with --emit=${outputKind}; AddressSanitizer instrumentation parity is not available in the LLVM native helper yet`,
+            entryPath,
+          )],
+          sourceTexts: new Map(),
+        };
+      }
     }
   }
   // Mobile triples are library-mode targets: the archive an embedding app
@@ -1167,7 +1218,7 @@ async function compileTracked(
         opts.ffiProfilePath === undefined || ffiProfileBytes === null
           ? null
           : { path: opts.ffiProfilePath, bytes: ffiProfileBytes },
-      target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}`,
+      target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${opts.nativeProgramObject === true ? "helper-object" : "driver-tu"}`,
       compiler: [process.env["SCRIPTC_CC"] ?? "clang"],
       nativeEnvironment: await executableNativeEnvironmentFingerprint(),
       nodeVersion: process.version,
@@ -1332,6 +1383,8 @@ async function compileTracked(
     ir: join(opts.outDir, `${stem}.ir.json`),
     c: join(opts.outDir, `${stem}.c`),
     llvm: join(opts.outDir, `${stem}.ll`),
+    asm: join(opts.outDir, `${stem}.s`),
+    obj: join(opts.outDir, `${stem}.o`),
   } as const;
   const defaultExecutablePaths = [
     join(opts.outDir, stem),
@@ -1366,21 +1419,42 @@ async function compileTracked(
     return { ok: true, artifact: { kind: "c", path: opts.outPath } };
   }
 
-  if (outputKind === "llvm") {
+  if (outputKind === "llvm" || outputKind === "asm" || outputKind === "obj") {
     let llvm: string;
     try {
       llvm = emitLlvmModule(lowered.module, {
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
         wasi: buildPlatform === "wasi",
+        runtimeAbiMarker: outputKind === "obj",
       });
     } catch (err) {
       if (!(err instanceof LlvmUnsupportedError)) throw err;
       return { ok: false, diagnostics: [llvmRefusalDiag(err, entryPath)], sourceTexts };
     }
-    await mkdir(dirname(opts.outPath), { recursive: true });
-    await writeFile(opts.outPath, llvm);
+    if (outputKind === "llvm") {
+      await mkdir(dirname(opts.outPath), { recursive: true });
+      await writeFile(opts.outPath, llvm);
+    } else {
+      try {
+        await emitNativeArtifact({
+          outputPath: opts.outPath,
+          llvm,
+          outputKind,
+          sourcePath: entryPath,
+          optimization: opts.optimization === "dev" ? "0" : "2",
+          ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
+        });
+      } catch (err) {
+        if (!(err instanceof NativeCodegenError)) throw err;
+        return {
+          ok: false,
+          diagnostics: [nativeCodegenDiag(err.diagnosticCode, err.message, entryPath)],
+          sourceTexts,
+        };
+      }
+    }
     await removeStaleSourceArtifacts([opts.outPath]);
-    return { ok: true, artifact: { kind: "llvm", path: opts.outPath } };
+    return { ok: true, artifact: { kind: outputKind, path: opts.outPath } };
   }
 
   await mkdir(opts.outDir, { recursive: true });
@@ -1398,6 +1472,7 @@ async function compileTracked(
       const ll = emitLlvmModule(lowered.module!, {
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
         wasi: buildPlatform === "wasi",
+        runtimeAbiMarker: opts.nativeProgramObject === true,
       });
       cPath = defaultSourcePaths.llvm;
       await writeFile(cPath, ll);
@@ -1449,9 +1524,33 @@ async function compileTracked(
   const executableCacheOptions = earlyCacheOptions;
   let publishedExecutable = false;
   try {
+    let nativeObjectPath: string | null = null;
+    if (opts.nativeProgramObject === true) {
+      if (backend !== "llvm" || llvmSource === null) {
+        throw new InternalCompilerError("native program-object validation requires the LLVM backend");
+      }
+      nativeObjectPath = join(opts.outDir, `${stem}.helper.o`);
+      try {
+        await emitNativeArtifact({
+          outputPath: nativeObjectPath,
+          llvm: llvmSource,
+          outputKind: "obj",
+          sourcePath: entryPath,
+          optimization: opts.optimization === "dev" ? "0" : "2",
+          ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
+        });
+      } catch (err) {
+        if (!(err instanceof NativeCodegenError)) throw err;
+        return {
+          ok: false,
+          diagnostics: [nativeCodegenDiag(err.diagnosticCode, err.message, entryPath)],
+          sourceTexts,
+        };
+      }
+    }
     await compileExecutableNative(
       nativeFeatures,
-      cPath,
+      nativeObjectPath ?? cPath,
       opts.outPath,
       opts.sanitize ?? false,
       ffi,

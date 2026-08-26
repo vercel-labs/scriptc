@@ -53,7 +53,7 @@ jobs:
     name: Publish to npm
     needs: check-release
     if: needs.check-release.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     timeout-minutes: 15
     environment: Release
     permissions:
@@ -74,10 +74,14 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Install pinned LLVM
+        run: brew install llvm@22
+
       # Publishing uses npm trusted publishing (OIDC): the job's id-token
       # permission lets npm mint short-lived credentials, so no npm token
-      # secret exists anywhere in this repo. All three packages —
-      # @scriptc/runtime, @scriptc/compiler, scriptc — must each be
+      # secret exists anywhere in this repo. All four packages —
+      # @scriptc/runtime, @scriptc/llvm-darwin-arm64, @scriptc/compiler,
+      # and scriptc — must each be
       # configured on npmjs.com with a GitHub Actions trusted publisher
       # pointing at repository vercel-labs/scriptc, workflow release.yml,
       # environment Release. A package missing that configuration fails
@@ -87,12 +91,13 @@ jobs:
       - name: Install and build
         run: |
           pnpm install --frozen-lockfile
+          pnpm --filter @scriptc/llvm-darwin-arm64 build
           pnpm -r build
 
       - name: Check version sync
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
-          for pkg in packages/runtime packages/compiler packages/cli; do
+          for pkg in packages/runtime packages/llvm-darwin-arm64 packages/compiler packages/cli; do
             V=$(node -p "require('./$pkg/package.json').version")
             if [ "$V" != "$VERSION" ]; then
               echo "Version mismatch: $pkg is $V, expected $VERSION"
@@ -133,6 +138,7 @@ jobs:
           }
 
           publish_dir packages/runtime
+          publish_dir packages/llvm-darwin-arm64
           publish_dir packages/compiler
           publish_dir packages/cli
         env:
@@ -142,9 +148,9 @@ jobs:
   # manifest (packages/compiler/surface-manifest.json — the machine-
   # readable listing of the surface the static tier compiles at this
   # version, regenerated here and verified against the committed file).
-  # scriptc has no platform binary assets to stage (programs compile on
-  # the user's machine), so the job runs AFTER a successful npm publish
-  # and never gates it. The body is the CHANGELOG.md block between the
+  # The platform helper ships through its npm package rather than as a GitHub
+  # release asset, so this job runs AFTER a successful npm publish and never
+  # gates it. The body is the CHANGELOG.md block between the
   # release:start/release:end markers, which RELEASING.md keeps on the
   # latest entry only.
   github-release:

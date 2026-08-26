@@ -2,7 +2,7 @@
 
 ## macOS (arm64)
 
-The primary platform. clang — preinstalled with the Xcode Command Line Tools — is the only system dependency for producing executables. Source artifacts selected with <code>--emit=ir|c|llvm</code> need only Node and do not invoke a compiler, archiver, or linker. The full executable surface is supported: the language, the stdlib, the Node API surface including the server stack, `--dynamic`, and the sanitizer lane.
+The primary platform. clang — preinstalled with the Xcode Command Line Tools — is the only system dependency for producing executables. Source artifacts selected with <code>--emit=ir|c|llvm</code> need only Node. <code>--emit=asm|obj</code> uses the version-matched <code>@scriptc/llvm-darwin-arm64</code> helper installed with scriptc, targets <code>arm64-apple-macosx14.0.0</code>, and does not invoke a compiler, archiver, linker, or SDK. Object output retains undefined runtime references and is not a library archive. The full executable surface is supported: the language, the stdlib, the Node API surface including the server stack, `--dynamic`, and the sanitizer lane.
 
 ## Cross-compilation via zig
 

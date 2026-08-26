@@ -9,7 +9,7 @@
 // The version spine: compilerVersion is the EXACT published release version
 // — the version release.yml keys on (packages/cli/package.json, the
 // `scriptc` package) — so an external version pin matches the manifest's
-// string verbatim. All three workspace packages must agree (the same check
+// string verbatim. All four published workspace packages must agree (the same check
 // the release workflow runs); a drifted tree fails generation instead of
 // stamping an ambiguous version.
 //

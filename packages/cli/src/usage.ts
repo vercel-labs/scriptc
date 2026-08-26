@@ -18,8 +18,8 @@ Usage:
 
 Options:
   -o, --out <path>   primary output path (default: .scriptc/<name><suffix>)
-      --emit <kind>  primary output: ir, c, llvm, or exe (default: exe).
-                     asm and obj are reserved for the native-helper release
+      --emit <kind>  primary output: ir, c, llvm, asm, obj, or exe
+                     (default: exe). asm/obj currently support macOS arm64
       --backend <b>  code generator. llvm is the default and the output that
                      ships; c emits readable C for inspecting what the
                      compiler produced, and program behavior is identical

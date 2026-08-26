@@ -53,6 +53,10 @@ void arc4random_buf(void *buf, size_t n);
  * flush-at-exit, RC audit registration (when built with -DSCR_RC_AUDIT).
  * JavaScript-visible writes flush before returning. */
 void scr_init(void);
+/* Program objects emitted by the bundled LLVM helper reference this symbol.
+ * Its versioned spelling makes a mismatched manual runtime link fail before
+ * the program can start. */
+void scr_runtime_abi_v1(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
  * Every unrecoverable runtime trap — OOM, semantic range traps, internal-

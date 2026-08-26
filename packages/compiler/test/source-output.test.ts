@@ -73,6 +73,8 @@ test("an explicit source path never deletes same-stem sibling files", async () =
     join(outDir, "main.wasm"),
     join(outDir, "main.c"),
     join(outDir, "main.ll"),
+    join(outDir, "main.s"),
+    join(outDir, "main.o"),
   ];
   await Promise.all(siblings.map((path) => writeFile(path, `caller-owned ${path}\n`)));
   const outPath = join(outDir, "main.ir.json");

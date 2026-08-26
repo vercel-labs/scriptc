@@ -1,0 +1,21 @@
+# scriptc LLVM code-generation helper
+
+This out-of-process helper owns LLVM assembly and object emission for
+scriptc. It is built against exactly LLVM 22.1.8 and currently contains only
+the AArch64 backend. The shipping `@scriptc/llvm-darwin-arm64` package builds
+and carries the executable; the compiler resolves that package directly and
+never searches `PATH` for this program.
+
+The protocol is intentionally small and versioned:
+
+```console
+scriptc-llvm-codegen version --format=json
+scriptc-llvm-codegen emit --input app.ll --output app.o --filetype obj \
+  --target arm64-apple-macosx14.0.0 --opt-level 2 \
+  --relocation-model pic --diagnostic-format json --source-path app.ts
+```
+
+Emission uses LLVM 22's default per-module O2 pipeline, including coroutine
+lowering, verifies before and after optimization, and publishes through a
+private sibling file so a failed or interrupted request cannot truncate the
+requested output.

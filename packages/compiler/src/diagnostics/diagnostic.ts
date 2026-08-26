@@ -12,8 +12,9 @@
  *   SC2xxx  scriptc type rules (types we cannot compile yet)
  *   SC3xxx  backend/target coverage: the program is valid, but the selected
  *            alternate backend or execution target does not include it
- *            (SC3001 — LLVM IR tier refusal; SC3002 — target refusal, both
- *            minted in index.ts)
+ *            (SC3001 — LLVM IR tier refusal; SC3002 — target/capability
+ *            refusal; SC3003 — helper installation/version failure; SC3004
+ *            — helper code-generation failure)
  *   SC4xxx  library-mode/profile refusals (the library-emission mode): profile
  *            malformed (SC4001), export unresolved (SC4002), unmappable
  *            signature (SC4003), async/generator export (SC4004), the
@@ -70,6 +71,24 @@ export interface ScrDiagnostic {
    * recognizably the profile's. Only library-mode refusals carry one —
    * the text always arrives prefixed `from the '<profile name>' profile:`. */
   note?: string;
+}
+
+/** SC3002–SC3004 — native-helper target, installation, and execution
+ * failures. These are ordinary build diagnostics: a missing optional package
+ * or malformed LLVM input must never surface as an internal compiler error. */
+export function nativeCodegenDiag(
+  code: "SC3002" | "SC3003" | "SC3004",
+  message: string,
+  file: string,
+): ScrDiagnostic {
+  return {
+    code,
+    message,
+    loc: { file, start: 0, end: 0 },
+    ...(code === "SC3003"
+      ? { hint: "reinstall scriptc with optional dependencies enabled for this host" }
+      : {}),
+  };
 }
 
 /* ── SC5xxx: native FFI ───────────────────────────────────────────────── */

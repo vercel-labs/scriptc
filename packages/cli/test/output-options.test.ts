@@ -17,6 +17,8 @@ describe("output option compatibility", () => {
     ["c", "c", "c", "c"],
     ["llvm", undefined, "llvm", "llvm"],
     ["llvm", "llvm", "llvm", "llvm"],
+    ["asm", undefined, "asm", "llvm"],
+    ["obj", "llvm", "obj", "llvm"],
   ] as const)("accepts --emit=%s --backend=%s", (emit, backend, outputKind, expectedBackend) => {
     const result = resolveOutputOptions("build", {
       ...BASE,
@@ -32,8 +34,8 @@ describe("output option compatibility", () => {
 
   test.each([
     [{ emit: "wat" }, /unknown emit kind/],
-    [{ emit: "asm" }, /native helper/],
-    [{ emit: "obj" }, /native helper/],
+    [{ emit: "asm", backend: "c" }, /cannot be combined/],
+    [{ emit: "obj", backend: "c" }, /cannot be combined/],
     [{ emit: "c", backend: "llvm" }, /cannot be combined/],
     [{ emit: "llvm", backend: "c" }, /cannot be combined/],
     [{ emit: "ir", keepC: false }, /no-keep-c/],
@@ -54,6 +56,22 @@ describe("output option compatibility", () => {
       ok: false,
       message: "scriptc run requires --emit=exe",
     });
+  });
+
+  test.each(["asm", "obj"])("run rejects --emit=%s", (emit) => {
+    expect(resolveOutputOptions("run", { ...BASE, emit })).toEqual({
+      ok: false,
+      message: "scriptc run requires --emit=exe",
+    });
+  });
+
+  test.each(["asm", "obj"])("native outputs accept optimization and sanitizer for compiler-level validation", (emit) => {
+    expect(resolveOutputOptions("build", {
+      ...BASE,
+      emit,
+      optimization: "dev",
+      sanitize: true,
+    })).toMatchObject({ ok: true, outputKind: emit, backend: "llvm" });
   });
 
   test("the deprecated alias remains additive for executable builds", () => {

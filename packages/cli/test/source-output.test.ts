@@ -70,7 +70,7 @@ test("module-flavored TypeScript extensions retain the plain entry stem", async 
 
 test("an explicit default-shaped output path preserves caller-owned siblings", async () => {
   const { dir, entry } = await fixture();
-  const siblings = ["hello", "hello.exe", "hello.wasm", "hello.c", "hello.ll"];
+  const siblings = ["hello", "hello.exe", "hello.wasm", "hello.c", "hello.ll", "hello.s", "hello.o"];
   await Promise.all(siblings.map((name) => writeFile(join(dir, name), `caller-owned ${name}\n`)));
   const path = join(dir, "hello.ir.json");
   await cli(["build", entry, "--emit=ir", "-o", path]);

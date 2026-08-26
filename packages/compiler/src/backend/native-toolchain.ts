@@ -4954,7 +4954,7 @@ async function compileCInternal(
     // between hashing and clang and publish one invocation's code under the
     // other's key. The prefix map preserves the original __FILE__/debug-file
     // spelling while clang reads this invocation-private snapshot.
-    const programPath = join(buildDir, `program${opts.cPath.endsWith(".ll") ? ".ll" : ".c"}`);
+    const programPath = join(buildDir, `program${programSourceExtension}`);
     // Preserve the caller-visible basename while keeping Darwin builds on a
     // private inode: ld uses this spelling as the embedded ad-hoc signing
     // identifier. Other targets retain the basename-independent cache key.

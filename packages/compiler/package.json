@@ -35,5 +35,8 @@
     "@scriptc/runtime": "workspace:*",
     "typescript": "7.0.2",
     "typescript5": "npm:typescript@5.9.3"
+  },
+  "optionalDependencies": {
+    "@scriptc/llvm-darwin-arm64": "workspace:*"
   }
 }

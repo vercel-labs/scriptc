@@ -3,14 +3,15 @@
 ## The pipeline
 
 ```
-TypeScript ──tsc: parse + typecheck──▶ lowering ──▶ typed IR ──▶ LLVM IR ──clang──▶ native executable
-                                             │          └─────▶ C ─────────┘
+TypeScript ──tsc: parse + typecheck──▶ lowering ──▶ typed IR ──▶ LLVM IR ──scriptc LLVM helper──▶ assembly/object
+                                             │          │             └──clang + runtime/SDK──▶ executable
+                                             │          └─────▶ C ────────────────clang───────┘
                                              └── serialized IR
 ```
 
 1. **Frontend** — the real TypeScript compiler parses and type-checks your program against `es2025` (plus `@types/node` when your project has it), honoring your `tsconfig.json` for checker strictness. The frontend then lowers the checked AST into a typed intermediate representation, using tsc's own type and narrowing answers to drive every decision. A construct with no lowering is a precise diagnostic at this stage — never a miscompile later.
 2. **Typed IR** — the only interface between the ends: a validated, serializable representation (`--emit=ir` writes it as JSON and stops). Types are concrete here; generics have been monomorphized, unions are tagged values, closures have explicit captures.
-3. **Backends** — `--emit=c` writes readable C and stops; `--emit=llvm` writes textual LLVM IR and stops. Neither source-output command discovers or invokes a native toolchain. Executable builds default to LLVM and can fall back to C on a native program outside the LLVM tier (one stderr note; `--backend llvm` pins it and fails with a diagnostic instead). The production <code>wasm32-wasi</code> target never falls back. For executable builds, both backends are compiled by the same clang, and differential tests require byte-identical program output wherever they overlap.
+3. **Backends** — `--emit=c` writes readable C and stops; `--emit=llvm` writes textual LLVM IR and stops. Neither source-output command discovers or invokes a native toolchain. On macOS arm64, `--emit=asm|obj` sends LLVM IR to a version-matched out-of-process helper linked to LLVM 22; it needs no clang or linker. Executable builds default to LLVM and can fall back to C on a native program outside the LLVM tier (one stderr note; `--backend llvm` pins it and fails with a diagnostic instead). The production <code>wasm32-wasi</code> target never falls back.
 4. **Link** — the runtime is a C library of link-gated feature units: binaries pay only for what they use. A hello-world links nothing but libSystem; a regex-using program links the regex engine; an `http` server links the net stack.
 
 Inspect any stage yourself:
@@ -25,6 +26,12 @@ fib.c
 $ scriptc build fib.ts --emit=llvm
 $ ls .scriptc/
 fib.ll
+$ scriptc build fib.ts --emit=asm
+$ ls .scriptc/
+fib.s
+$ scriptc build fib.ts --emit=obj
+$ ls .scriptc/
+fib.o
 ```
 
 ## The runtime
@@ -60,7 +67,11 @@ Where matching Node byte-for-byte is impossible or deliberately not the goal (ti
   <tbody>
     <tr>
       <td><code>packages/compiler</code></td>
-      <td>The frontend (tsc API → IR), the typed IR with validator and serializer, the C and LLVM backends, the coverage analyzer.</td>
+      <td>The frontend (tsc API → IR), the typed IR with validator and serializer, the C and LLVM backends, native-helper integration, and the coverage analyzer.</td>
+    </tr>
+    <tr>
+      <td><code>native/llvm-codegen</code></td>
+      <td>The LLVM 22 sidecar that verifies, optimizes, and emits target assembly or objects.</td>
     </tr>
     <tr>
       <td><code>packages/runtime</code></td>

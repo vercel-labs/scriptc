@@ -173,6 +173,9 @@ export interface LlvmTargetOptions {
   /** Library archive assembly may move the volatile identity getters into a
    * separate translation unit. Public/direct emission keeps them by default. */
   emitLibraryIdentity?: boolean;
+  /** Program objects carry a strong reference to the matching runtime ABI
+   * marker so manual links against an incompatible runtime fail loudly. */
+  runtimeAbiMarker?: boolean;
 }
 
 export function emitLlvmModule(mod: IrModule, options: LlvmTargetOptions = {}): string {
@@ -201,6 +204,7 @@ class LlEmitter {
   readonly cycleColorOffset: number;
   private readonly wasi: boolean;
   private readonly emitLibraryIdentity: boolean;
+  private readonly runtimeAbiMarker: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the C emitter's determinism discipline. */
   private readonly literals = new Map<string, { sym: string; len: number }>();
@@ -369,6 +373,7 @@ class LlEmitter {
     this.sizeType = options.pointerBits === 32 ? "i32" : "i64";
     this.wasi = options.wasi === true;
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
+    this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     // ScrCycHdr is { ptr trace; ptr free; i32 color; i16 buffered;
     // i16 gen; size_t buf_index }. The object follows it, so color is 12
     // bytes behind a wasm32 object and 16 bytes behind a 64-bit object.
@@ -1095,6 +1100,9 @@ class LlEmitter {
       `@scr_error_vts = external ${tl}global [5 x %ScrVt]`,
       `declare void @scr_init()`,
       `declare void @scr_lib_init(i32, ptr)`,
+      ...(this.runtimeAbiMarker && this.mod.lib === undefined
+        ? [`declare void @scr_runtime_abi_v1()`]
+        : []),
     );
     for (const d of this.decls) out.push(d);
     out.push(``);
@@ -1272,6 +1280,7 @@ class LlEmitter {
     out.push(
       `define i32 @${this.wasi ? "__main_argc_argv" : "main"}(i32 %argc, ptr %argv) ${FN_ATTRS} {`,
       `entry:`,
+      ...(this.runtimeAbiMarker ? [`  call void @scr_runtime_abi_v1()`] : []),
       `  call void @scr_init()`,
       ...stamps,
       // Event-surface programs (signal/exit listeners) fill the loop's

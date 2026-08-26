@@ -6,7 +6,7 @@ Guidance for agents (and humans) working on this repository. These conventions a
 
 ```bash
 pnpm install && pnpm -r build   # build the workspace
-pnpm test:sandbox              # default full gate: plain + sanitized lanes (~4 minutes)
+pnpm test:sandbox              # full gate: ~4m custom image, ~9m cold managed fallback
 ```
 
 Use focused local tests while iterating, then use `pnpm test:sandbox` whenever a
@@ -17,8 +17,15 @@ their supported native-clang contracts locally; other hosts retain those
 checks in the Sandboxes. Both lanes green is the bar before shipping any
 change.
 
-Only when Vercel Sandbox credentials or `SCRIPTC_SANDBOX_IMAGE` are unavailable,
-run the slower local fallback:
+`VERCEL_OIDC_TOKEN` is the preferred credential. `VERCEL_TOKEN` remains
+supported with explicit `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID`. The custom
+`SCRIPTC_SANDBOX_IMAGE` is optional: without it, the gate starts from
+`vercel/sandbox/universal` and installs the repository-pinned Node, pnpm, and
+LLVM toolchain plus workspace dependencies before building. Team/project
+selection never comes from the image reference.
+
+Only when Vercel Sandbox credentials are unavailable, run the slower local
+fallback:
 
 ```bash
 SCRIPTC_TEST_WORKERS=4 pnpm test                 # plain lane

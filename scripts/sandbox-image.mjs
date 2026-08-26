@@ -2,18 +2,25 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { sandboxImageConfig } from "./sandbox-config.mjs";
+import {
+  requiredSandboxImageConfig,
+  sandboxVercelConfig,
+  sandboxVercelEnvironment,
+} from "./sandbox-config.mjs";
 import { linuxAmd64ManifestDigest } from "./oci-manifest.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const { project, reference: image, repository, tag, team } = sandboxImageConfig();
+const { reference: image, repository, tag } = requiredSandboxImageConfig();
+const vercelConfig = sandboxVercelConfig();
+const vercelEnv = sandboxVercelEnvironment(vercelConfig);
+const scopeArgs = vercelConfig.scopeArgs;
 const nodeVersion = (await readFile(new URL("../.node-version", import.meta.url), "utf8")).trim();
 
 function run(command, args, { capture = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: root,
-      env: { ...process.env, NO_UPDATE_NOTIFIER: "1" },
+      env: { ...vercelEnv, NO_UPDATE_NOTIFIER: "1" },
       stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
     });
     let stdout = "";
@@ -32,8 +39,11 @@ function run(command, args, { capture = false } = {}) {
   });
 }
 
-console.log(`Authenticating Docker for ${team}/${project}...`);
-await run("vercel", ["vcr", "login", "docker", "--scope", team, "--project", project]);
+console.log(
+  `Authenticating Docker with ${vercelConfig.authSource} ` +
+    `(scope: ${vercelConfig.scopeSource})...`,
+);
+await run("vercel", ["vcr", "login", "docker", ...scopeArgs]);
 
 console.log(`Building and pushing ${image} for linux/amd64...`);
 await run("docker", [
@@ -72,7 +82,7 @@ while (Date.now() < deadline) {
   const listing = JSON.parse(
     await run(
       "vercel",
-      ["vcr", "image", "ls", repository, "--format", "json", "--scope", team, "--project", project],
+      ["vcr", "image", "ls", repository, "--format", "json", ...scopeArgs],
       { capture: true },
     ),
   );

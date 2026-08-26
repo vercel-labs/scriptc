@@ -113,7 +113,23 @@ See the [quickstart](https://scriptc.dev/quickstart) and [CLI reference](https:/
 
 ```console
 $ pnpm install && pnpm -r build
+$ vercel link && vercel env pull  # writes a project-scoped VERCEL_OIDC_TOKEN
 $ pnpm test:sandbox
 ```
 
-The test corpus runs each program under Node and as a compiled native binary, then compares stdout, stderr, and exit codes byte for byte. The full gate also runs the corpus with AddressSanitizer and the runtime reference-count audit.
+`pnpm test:sandbox` loads `.env.local`, preflights Vercel authentication and
+project access, and uses the managed `vercel/sandbox/universal` image by
+default. It installs the repository-pinned Node, pnpm, and LLVM toolchain plus
+ScriptC dependencies in each disposable Sandbox before building the uploaded
+worktree. Set
+`SCRIPTC_SANDBOX_IMAGE` to a fully qualified VCR reference only to use the
+optional prebuilt image from `pnpm test:sandbox:image`.
+The prebuilt image keeps the roughly four-minute fast path; cold managed-image
+runs take longer because they install the pinned toolchain in each Sandbox.
+
+`VERCEL_OIDC_TOKEN` is preferred. For access-token authentication, set
+`VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`; team and project are
+never inferred from `SCRIPTC_SANDBOX_IMAGE`. The test corpus runs each program
+under Node and as a compiled native binary, then compares stdout, stderr, and
+exit codes byte for byte. The full gate also runs the corpus with
+AddressSanitizer and the runtime reference-count audit.

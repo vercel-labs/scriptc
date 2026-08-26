@@ -2,9 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { compile } from "../src/index.js";
-import { deserializeModule } from "../src/ir/serialize.js";
-import { validateModule } from "../src/ir/validate.js";
+import { compile, deserializeModule, validateModule } from "../src/index.js";
 
 const dirs: string[] = [];
 afterEach(async () => {

@@ -105,9 +105,6 @@ async function main(): Promise<number> {
   if (command !== "build" && command !== "run" && command !== "coverage") {
     fail(`unknown command "${command}"\n\n${USAGE}`);
   }
-  if (values["emit-ir"] && (command === "build" || command === "run")) {
-    process.stderr.write("scriptc: warning: --emit-ir is deprecated; use --emit=ir for IR as the primary output\n");
-  }
   if (values.lib) {
     // LIBRARY mode: the profile names the entry module and pins the
     // emission; the executable lane's mode flags have no meaning here
@@ -148,6 +145,9 @@ async function main(): Promise<number> {
     // declares one — name it so the embedder's tooling knows where to look.
     if (result.sidecarPath !== undefined) process.stdout.write(`${result.sidecarPath}\n`);
     return 0;
+  }
+  if (values["emit-ir"] && (command === "build" || command === "run")) {
+    process.stderr.write("scriptc: warning: --emit-ir is deprecated; use --emit=ir for IR as the primary output\n");
   }
   if (!inputArg) fail(`missing input file\n\n${USAGE}`);
   const input = resolve(inputArg);

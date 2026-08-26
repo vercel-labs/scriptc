@@ -4,9 +4,8 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { deserializeModule, validateModule } from "@scriptc/compiler";
 import { afterEach, expect, test } from "vitest";
-import { deserializeModule } from "../../compiler/src/ir/serialize.js";
-import { validateModule } from "../../compiler/src/ir/validate.js";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -19,10 +18,10 @@ afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-async function fixture() {
+async function fixture(extension = ".ts") {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-cli-source-output-"));
   dirs.push(dir);
-  const entry = join(dir, "hello.ts");
+  const entry = join(dir, `hello${extension}`);
   await writeFile(entry, 'console.log("hello");\n');
   return { dir, entry };
 }
@@ -54,6 +53,19 @@ test("IR CLI output round-trips through the public parser and validator", async 
   const path = join(dir, "hello.json");
   await cli(["build", entry, "--emit=ir", "-o", path]);
   expect(validateModule(deserializeModule(await readFile(path, "utf8")))).toEqual([]);
+});
+
+test("module-flavored TypeScript extensions retain the plain entry stem", async () => {
+  for (const [extension, kind, name] of [
+    [".mts", "ir", "hello.ir.json"],
+    [".cts", "llvm", "hello.ll"],
+  ] as const) {
+    const { dir, entry } = await fixture(extension);
+    const result = await cli(["build", entry, `--emit=${kind}`]);
+    const path = join(dir, ".scriptc", name);
+    expect(result.stdout).toBe(`${path}\n`);
+    expect(await readdir(join(dir, ".scriptc"))).toEqual([name]);
+  }
 });
 
 test("an explicit default-shaped output path preserves caller-owned siblings", async () => {

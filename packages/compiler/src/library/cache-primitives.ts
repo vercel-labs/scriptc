@@ -52,7 +52,7 @@ export function outputPaths(
   backend: CacheBackend,
   stemSuffix = "",
 ): CacheOutputPaths {
-  const stem = basename(options.entryPath).replace(/\.(ts|js|mjs|cjs)$/, "") + stemSuffix;
+  const stem = basename(options.entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "") + stemSuffix;
   return {
     cPath: join(options.outDir, `${stem}.${backend === "llvm" ? "ll" : "c"}`),
     staleCPath: join(options.outDir, `${stem}.${backend === "llvm" ? "c" : "ll"}`),

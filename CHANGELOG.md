@@ -6,7 +6,7 @@ All notable changes to scriptc will be documented in this file.
 
 ### Features
 
-- **Builds can stop at typed IR, readable C, or textual LLVM IR.** `scriptc build --emit=ir|c|llvm` writes one primary source artifact with stable default suffixes and requires only Node—no external compiler, archiver, linker, or executable cache. `--emit=exe` remains the default, and the former additive `--emit-ir` flag remains for one release with a deprecation warning.
+- **Builds can stop at typed IR, readable C, or textual LLVM IR.** `scriptc build --emit=ir|c|llvm` writes one primary source artifact with stable default suffixes and requires only Node—no external compiler, archiver, linker, or executable cache. `--emit=exe` remains the default, and executable builds retain the former additive `--emit-ir` flag for one release with a deprecation warning; library mode keeps its additive `--emit-ir` option.
 
 <!-- release:start -->
 

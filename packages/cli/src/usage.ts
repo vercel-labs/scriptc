@@ -38,8 +38,8 @@ Options:
                      (default; the .ll — or the .c under --backend=c or
                      when the build fell back)
       --no-keep-c    delete the generated program TU after compiling
-      --emit-ir      deprecated: also write IR beside an executable; use
-                     --emit=ir for IR as the primary output
+      --emit-ir      also write IR beside an executable or library archive;
+                     deprecated for executables: use --emit=ir for primary IR
       --sanitize     build with ASan + runtime RC audit
       --dynamic      embed the dynamic engine (adds ~620KB; static stays the default)
       --ffi <file>   bind signature-only TypeScript declarations to native

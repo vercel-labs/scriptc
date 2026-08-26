@@ -47,7 +47,7 @@ export function selectOutputPaths(
   const outDir = explicitOut === undefined
     ? join(dirname(absoluteInput), ".scriptc")
     : dirname(resolve(explicitOut));
-  const stem = basename(absoluteInput).replace(/\.(ts|js|mjs|cjs|c|ll)$/, "");
+  const stem = basename(absoluteInput).replace(/\.(ts|mts|cts|js|mjs|cjs|c|ll)$/, "");
   return {
     outDir,
     outPath: explicitOut === undefined

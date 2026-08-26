@@ -34,6 +34,13 @@ test("primary output selection keeps explicit paths exact", () => {
   });
 });
 
+test("TypeScript module extensions do not become part of default stems", () => {
+  expect(selectOutputPaths(resolve("work/main.mts"), "ir", undefined, "linux").outPath)
+    .toBe(resolve("work/.scriptc/main.ir.json"));
+  expect(selectOutputPaths(resolve("work/main.cts"), "llvm", undefined, "linux").outPath)
+    .toBe(resolve("work/.scriptc/main.ll"));
+});
+
 test("WASI cross-builds use the WebAssembly suffix", () => {
   const platform = buildTargetPlatform({
     SCRIPTC_CC: "zigcc",

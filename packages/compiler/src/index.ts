@@ -91,6 +91,7 @@ export {
   type FetchCompatProfile,
 } from "./compat/fetch-profile.js";
 export { LIB_FN_SIGS, validateModule } from "./ir/validate.js";
+export { deserializeModule, IR_VERSION, serializeModule } from "./ir/serialize.js";
 export { resolveLibraryFences, type LibraryFenceDecl, type ResolvedLibraryFence } from "./library/fence-eval.js";
 export {
   loadLibraryProfile,
@@ -241,6 +242,18 @@ export type CompileSourceResult =
   | { ok: true; artifact: Extract<CompileArtifact, { kind: "ir" | "c" | "llvm" }> }
   | CompileFailure;
 
+/** Historical executable result shape retained for source compatibility. */
+export type CompileResult =
+  | {
+      ok: true;
+      binaryPath: string;
+      cPath: string;
+      irPath?: string;
+      backend: "c" | "llvm";
+      llvmRefusal?: string;
+    }
+  | CompileFailure;
+
 export type CompileExecutableResult =
   /** `cPath` is the generated program TU next to the binary: the .ll under
    * the LLVM backend (the default lane), the .c under the C backend (same
@@ -250,18 +263,13 @@ export type CompileExecutableResult =
    * refusal's machine-readable kind tag ("stmt:...", "libCall:...", ...).
    * These top-level fields remain as compatibility aliases for callers
    * written before the discriminated `artifact` result was introduced. */
-  | {
-      ok: true;
+  | (Extract<CompileResult, { ok: true }> & {
       artifact: Extract<CompileArtifact, { kind: "exe" }>;
-      binaryPath: string;
-      cPath: string;
-      irPath?: string;
-      backend: "c" | "llvm";
-      llvmRefusal?: string;
-    }
+    })
   | CompileFailure;
 
-export type CompileResult = CompileSourceResult | CompileExecutableResult;
+/** Result union for callers that choose outputKind dynamically. */
+export type CompileRequestResult = CompileSourceResult | CompileExecutableResult;
 
 /** The LLVM backend's tier refusal as a diagnostic. SC3xxx = backend
  * coverage (the program is fine — this backend doesn't compile it yet);
@@ -934,8 +942,8 @@ export function compile(
   entryPath: string,
   opts: CompileOptions,
 ): Promise<CompileExecutableResult>;
-export function compile(entryPath: string, opts: CompileRequestOptions): Promise<CompileResult>;
-export async function compile(entryPath: string, opts: CompileRequestOptions): Promise<CompileResult> {
+export function compile(entryPath: string, opts: CompileRequestOptions): Promise<CompileRequestResult>;
+export async function compile(entryPath: string, opts: CompileRequestOptions): Promise<CompileRequestResult> {
   clearCompileSessionCaches();
   const frontendInputs = new FrontendInputTracker();
   return frontendInputs.run(() => compileTracked(entryPath, opts, frontendInputs));
@@ -954,6 +962,15 @@ async function assertCompileOptionsCompatibility(
   }
 }
 void assertCompileOptionsCompatibility;
+
+/** The historical exported CompileResult itself remains executable-shaped. */
+function assertCompileResultCompatibility(result: CompileResult): void {
+  if (result.ok) {
+    const binaryPath: string = result.binaryPath;
+    void binaryPath;
+  }
+}
+void assertCompileResultCompatibility;
 
 function executableNativeFeatures(
   mod: IrModule,
@@ -1068,7 +1085,7 @@ async function compileTracked(
   entryPath: string,
   opts: CompileRequestOptions,
   frontendInputs: FrontendInputTracker,
-): Promise<CompileResult> {
+): Promise<CompileRequestResult> {
   entryPath = resolve(entryPath);
   const outputKind = opts.outputKind ?? "exe";
   let ffi: FfiProfile | null = null;
@@ -1167,7 +1184,7 @@ async function compileTracked(
     }
     const executableCacheOptions = earlyCacheOptions;
     if (!opts.emitIr) {
-      const stem = basename(entryPath).replace(/\.(ts|js|mjs|cjs)$/, "");
+      const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
       await rm(join(opts.outDir, `${stem}.ir.json`), { force: true });
     }
     // Route/proof metadata is independently evictable. A full-compiler
@@ -1254,7 +1271,7 @@ async function compileTracked(
   // The frontend (and its tsgo server) is released as soon as lowering
   // ends — clang and the link never hold it open.
   try {
-    const fail = (diagnostics: ScrDiagnostic[]): CompileResult => ({
+    const fail = (diagnostics: ScrDiagnostic[]): CompileFailure => ({
       ok: false,
       diagnostics,
       sourceTexts: fe.sourceTexts(),
@@ -1310,7 +1327,7 @@ async function compileTracked(
     fe.dispose();
   }
 
-  const stem = basename(entryPath).replace(/\.(ts|js|mjs|cjs)$/, "");
+  const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const defaultSourcePaths = {
     ir: join(opts.outDir, `${stem}.ir.json`),
     c: join(opts.outDir, `${stem}.c`),
@@ -2030,7 +2047,7 @@ async function emitSemanticLibraryHit(
     };
   }
   await mkdir(opts.outDir, { recursive: true });
-  const stem = basename(profile.entry).replace(/\.(ts|js|mjs|cjs)$/, "");
+  const stem = basename(profile.entry).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const cPath = join(opts.outDir, `${stem}.lib.${profile.emission === "llvm" ? "ll" : "c"}`);
   let translationUnit = hit.translationUnit;
   if (profile.sidecar !== null) {
@@ -2144,7 +2161,7 @@ async function compileLibraryTracked(
   }
   const archivePath = opts.outPath ?? join(
     opts.outDir,
-    `${basename(entryPath).replace(/\.(ts|js|mjs|cjs)$/, "")}.lib.a`,
+    `${basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "")}.lib.a`,
   );
 
   // Mobile-target admission first — a pure env/host check, so a refused
@@ -2503,7 +2520,7 @@ async function compileLibraryTracked(
   timing("ir-validate");
 
   await mkdir(opts.outDir, { recursive: true });
-  const stem = basename(entryPath).replace(/\.(ts|js|mjs|cjs)$/, "");
+  const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   let cPath: string;
   if (profile.emission === "llvm") {
     try {

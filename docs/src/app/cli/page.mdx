@@ -93,7 +93,7 @@ Prebuilds the release runtime objects and native TLS/dynamic-engine archives aga
   <dd>Build with AddressSanitizer plus the runtime reference-count audit — the same lane the compiler's own test corpus runs under. Useful when a program misbehaves and you want leaks or memory errors to be loud.</dd>
 
   <dt><code>--emit-ir</code></dt>
-  <dd>Deprecated compatibility alias. It remains additive for executable builds for one release cycle; prefer <code>--emit=ir</code> when IR is the primary output.</dd>
+  <dd>Additive IR side artifact. It is deprecated for executable builds for one release cycle; prefer <code>--emit=ir</code> when IR is the primary output. Library mode retains <code>--emit-ir</code> because <code>--emit</code> does not select library artifacts.</dd>
 
   <dt><code>--keep-c</code> / <code>--no-keep-c</code></dt>
   <dd>Keep (default) or delete the generated program translation unit next to the executable — the <code>.ll</code> file under the default LLVM backend, or the <code>.c</code> under <code>--backend c</code> (and when the default build fell back). The generated C is readable and annotated with source lines.</dd>

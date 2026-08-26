@@ -178,7 +178,7 @@ function sidecarOutputPath(options: EarlyLibraryCacheOptions, configured: string
 function archiveOutputPath(options: EarlyLibraryCacheOptions): string {
   return options.outPath ?? join(
     options.outDir,
-    `${basename(options.entryPath).replace(/\.(ts|js|mjs|cjs)$/, "")}.lib.a`,
+    `${basename(options.entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "")}.lib.a`,
   );
 }
 

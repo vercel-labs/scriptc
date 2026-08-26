@@ -88,7 +88,7 @@ async function tryFastPath(): Promise<number | null> {
   if (command === "run" && buildPlatform === "wasi") return null;
   const input = resolve(inputArg);
   const outDir = values.out ? dirname(resolve(values.out)) : join(dirname(input), ".scriptc");
-  const stem = basename(input).replace(/\.(ts|js|mjs|cjs|c|ll)$/, "");
+  const stem = basename(input).replace(/\.(ts|mts|cts|js|mjs|cjs|c|ll)$/, "");
   const defaultName = buildPlatform === "win32"
     ? `${stem}.exe`
     : buildPlatform === "wasi"
@@ -121,6 +121,10 @@ async function tryFastPath(): Promise<number | null> {
   if (hit.native.llvmRefusal !== undefined) {
     process.stderr.write(`scriptc: backend c (llvm refused: ${hit.native.llvmRefusal})\n`);
   }
+  // Source-primary invocations can replace a previously cached executable.
+  // A routed hit restores that executable without loading the full compiler,
+  // so mirror its output-kind cleanup before returning from the fast path.
+  await rm(join(outDir, `${stem}.ir.json`), { force: true });
   if (!values["keep-c"]) await rm(hit.cPath, { force: true });
   if (command === "build") {
     process.stdout.write(`${outPath}\n`);

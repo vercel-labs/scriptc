@@ -34,7 +34,8 @@ test("bootstrap exact builds use the routed cache and source edits fall through"
   const dir = await mkdtemp(join(tmpdir(), "scriptc-bootstrap-cache-"));
   const cacheRoot = join(dir, "cache");
   const entry = join(dir, "main.ts");
-  const outPath = join(dir, process.platform === "win32" ? "program.exe" : "program");
+  const outDir = join(dir, ".scriptc");
+  const outPath = join(outDir, process.platform === "win32" ? "main.exe" : "main");
   const preload = join(dir, "reject-full-compiler.mjs");
   const env = { ...process.env, SCRIPTC_CACHE_DIR: cacheRoot, SCRIPTC_TIMING: "1" };
   const build = (rejectFullCompiler = false): Promise<{ stderr: string }> =>
@@ -43,8 +44,6 @@ test("bootstrap exact builds use the routed cache and source edits fall through"
       bootstrap,
       "build",
       entry,
-      "-o",
-      outPath,
     ], {
       env,
       maxBuffer: 4 * 1024 * 1024,
@@ -66,6 +65,14 @@ test("bootstrap exact builds use the routed cache and source edits fall through"
     expect((await build()).stderr).not.toContain("scriptc lowering");
     expect((await execFileAsync(outPath)).stdout).toBe("one\n");
 
+    // A source-primary build may replace the cached executable between exact
+    // invocations. The shipped bootstrap must not leave its stale IR sibling
+    // behind, whether cache validation returns directly or falls through.
+    const staleIr = join(outDir, "main.ir.json");
+    await writeFile(staleIr, "stale source-primary IR\n");
+    await expect(build()).resolves.toBeDefined();
+    await expect(readFile(staleIr)).rejects.toMatchObject({ code: "ENOENT" });
+
     // Route metadata can be evicted independently of the executable payload.
     // One full-compiler fallback must repair it so the following invocation is
     // once again able to run with the package root import forbidden.
@@ -80,7 +87,7 @@ test("bootstrap exact builds use the routed cache and source edits fall through"
     expect((await build()).stderr).toContain("scriptc lowering");
     expect((await build()).stderr).not.toContain("scriptc lowering");
     expect((await execFileAsync(outPath)).stdout).toBe("two\n");
-    expect(await readFile(join(dir, "main.ll"), "utf8")).toContain("two");
+    expect(await readFile(join(outDir, "main.ll"), "utf8")).toContain("two");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

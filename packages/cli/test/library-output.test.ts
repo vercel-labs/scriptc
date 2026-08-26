@@ -64,12 +64,13 @@ test("library identity source stays private and cannot overwrite a sidecar", asy
         },
       }, null, 2)}\n`,
     );
-    const runBuild = async (keepC = false): Promise<void> => {
-      await execFileAsync(
+    const runBuild = async (keepC = false, emitIr = false): Promise<{ stderr: string }> => {
+      return execFileAsync(
         process.execPath,
         [
           "--import", tsxLoader, cliEntry, "build", "--lib", "--profile", profilePath,
           ...(keepC ? [] : ["--no-keep-c"]),
+          ...(emitIr ? ["--emit-ir"] : []),
         ],
         {
           env: {
@@ -148,6 +149,13 @@ test("library identity source stays private and cannot overwrite a sidecar", asy
     };
     expect(sidecar.build_id).toMatch(/^[0-9a-f]{16}$/);
     expect((await readdir(outDir)).sort()).toEqual(["lib.lib.a", "lib.lib.identity.c"]);
+
+    // Library IR remains an additive option; its guidance must not recommend
+    // --emit, which library mode deliberately rejects.
+    const additiveIr = await runBuild(false, true);
+    expect(additiveIr.stderr).not.toContain("deprecated");
+    expect(additiveIr.stderr).not.toContain("use --emit=ir");
+    expect(await readFile(join(outDir, "lib.lib.ir.json"), "utf8")).toContain('"irVersion"');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

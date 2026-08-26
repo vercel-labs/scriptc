@@ -67,6 +67,7 @@ test("the managed-image bootstrap pins the custom image's Node, pnpm, and LLVM",
   expect(bootstrap).toContain("< .node-version");
   expect(bootstrap).toContain("ARG PNPM_VERSION=");
   expect(bootstrap).toContain("llvm-toolchain-noble-18");
+  expect(bootstrap).toContain("install -D -m 0644");
   expect(bootstrap).toContain("clang-18");
   expect(bootstrap).toContain("libclang-rt-18-dev");
   expect(bootstrap).toContain("llvm-18");
@@ -133,24 +134,46 @@ test("access-token authentication uses explicit environment scope", () => {
   });
 });
 
-test("VCR receives OIDC through VERCEL_TOKEN with scope decoded from its claims", () => {
+test("VCR uses an access-token fallback with scope decoded from OIDC claims", () => {
   const token = oidcToken({ owner_id: "team_oidc", project_id: "prj_oidc" });
   const config = sandboxVercelConfig({
     VERCEL_OIDC_TOKEN: token,
-    VERCEL_TOKEN: "stale-access-token",
+    VERCEL_TOKEN: "registryaccesstoken",
   });
 
   expect(
     sandboxVcrConfig(config, {
       VERCEL_AUTH_TOKEN: "stale-auth-token",
       VERCEL_OIDC_TOKEN: token,
-      VERCEL_TOKEN: "stale-access-token",
+      VERCEL_TOKEN: "registryaccesstoken",
     }),
   ).toEqual({
+    authSource: "VERCEL_TOKEN",
     env: {
       VERCEL_OIDC_TOKEN: token,
-      VERCEL_TOKEN: token,
+      VERCEL_TOKEN: "registryaccesstoken",
     },
+    scopeArgs: ["--scope", "team_oidc", "--project", "prj_oidc"],
+    scopeSource: "VERCEL_OIDC_TOKEN claims",
+  });
+});
+
+test("VCR never passes an OIDC JWT through VERCEL_TOKEN", () => {
+  const token = oidcToken({ owner_id: "team_oidc", project_id: "prj_oidc" });
+  const config = sandboxVercelConfig({
+    VERCEL_OIDC_TOKEN: token,
+    VERCEL_TOKEN: token,
+  });
+
+  expect(
+    sandboxVcrConfig(config, {
+      VERCEL_AUTH_TOKEN: token,
+      VERCEL_OIDC_TOKEN: token,
+      VERCEL_TOKEN: token,
+    }),
+  ).toEqual({
+    authSource: "Vercel CLI login",
+    env: { VERCEL_OIDC_TOKEN: token },
     scopeArgs: ["--scope", "team_oidc", "--project", "prj_oidc"],
     scopeSource: "VERCEL_OIDC_TOKEN claims",
   });
@@ -158,16 +181,30 @@ test("VCR receives OIDC through VERCEL_TOKEN with scope decoded from its claims"
 
 test("VCR uses the selected access token and explicit environment scope", () => {
   const config = sandboxVercelConfig({
-    VERCEL_AUTH_TOKEN: "access-token",
+    VERCEL_AUTH_TOKEN: "accesstoken",
     VERCEL_PROJECT_ID: "prj_example",
     VERCEL_TEAM_ID: "team_example",
   });
 
-  expect(sandboxVcrConfig(config, { VERCEL_AUTH_TOKEN: "access-token" })).toEqual({
-    env: { VERCEL_TOKEN: "access-token" },
+  expect(sandboxVcrConfig(config, { VERCEL_AUTH_TOKEN: "accesstoken" })).toEqual({
+    authSource: "VERCEL_AUTH_TOKEN",
+    env: { VERCEL_TOKEN: "accesstoken" },
     scopeArgs: ["--scope", "team_example", "--project", "prj_example"],
     scopeSource: "VERCEL_TEAM_ID + VERCEL_PROJECT_ID",
   });
+});
+
+test("VCR rejects JWT-shaped access tokens when OIDC is not selected", () => {
+  const token = oidcToken({ owner_id: "team_example", project_id: "prj_example" });
+  const config = sandboxVercelConfig({
+    VERCEL_AUTH_TOKEN: token,
+    VERCEL_PROJECT_ID: "prj_example",
+    VERCEL_TEAM_ID: "team_example",
+  });
+
+  expect(() => sandboxVcrConfig(config, { VERCEL_AUTH_TOKEN: token })).toThrow(
+    "is not a VCR-compatible access token",
+  );
 });
 
 test("VCR rejects OIDC tokens without usable project claims", () => {

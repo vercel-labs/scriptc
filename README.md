@@ -129,7 +129,10 @@ runs take longer because they install the pinned toolchain in each Sandbox.
 
 `VERCEL_OIDC_TOKEN` is preferred. For access-token authentication, set
 `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`; team and project are
-never inferred from `SCRIPTC_SANDBOX_IMAGE`. The test corpus runs each program
+never inferred from `SCRIPTC_SANDBOX_IMAGE`. The legacy VCR command used by
+`pnpm test:sandbox:image` cannot authenticate with an OIDC JWT, so image builds
+use `VERCEL_TOKEN` when available or the existing Vercel CLI login; OIDC claims
+still select the VCR team and project. The test corpus runs each program
 under Node and as a compiled native binary, then compares stdout, stderr, and
 exit codes byte for byte. The full gate also runs the corpus with
 AddressSanitizer and the runtime reference-count audit.

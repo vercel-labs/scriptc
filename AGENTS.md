@@ -22,7 +22,9 @@ supported with explicit `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID`. The custom
 `SCRIPTC_SANDBOX_IMAGE` is optional: without it, the gate starts from
 `vercel/sandbox/universal` and installs the repository-pinned Node, pnpm, and
 LLVM toolchain plus workspace dependencies before building. Team/project
-selection never comes from the image reference.
+selection never comes from the image reference. The legacy VCR image command
+uses `VERCEL_TOKEN` or the existing Vercel CLI login for authentication; OIDC
+claims can still provide its team/project scope.
 
 Only when Vercel Sandbox credentials are unavailable, run the slower local
 fallback:

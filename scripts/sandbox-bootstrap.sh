@@ -15,7 +15,7 @@ curl --fail --silent --show-error --location \
   https://apt.llvm.org/llvm-snapshot.gpg.key \
   --output /tmp/llvm-snapshot.gpg.key
 gpg --dearmor --yes --output /tmp/llvm-snapshot.gpg /tmp/llvm-snapshot.gpg.key
-sudo install -m 0644 /tmp/llvm-snapshot.gpg /etc/apt/keyrings/llvm-snapshot.gpg
+sudo install -D -m 0644 /tmp/llvm-snapshot.gpg /etc/apt/keyrings/llvm-snapshot.gpg
 echo "deb [signed-by=/etc/apt/keyrings/llvm-snapshot.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" \
   | sudo tee /etc/apt/sources.list.d/llvm18.list >/dev/null
 

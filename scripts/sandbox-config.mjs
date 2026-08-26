@@ -46,12 +46,15 @@ export function sandboxVercelConfig(env) {
 
   const oidcToken = source.VERCEL_OIDC_TOKEN?.trim();
   const accessToken = source.VERCEL_TOKEN?.trim() || source.VERCEL_AUTH_TOKEN?.trim();
+  const accessTokenSource = source.VERCEL_TOKEN?.trim()
+    ? "VERCEL_TOKEN"
+    : source.VERCEL_AUTH_TOKEN?.trim()
+      ? "VERCEL_AUTH_TOKEN"
+      : undefined;
   const authSource = oidcToken
     ? "VERCEL_OIDC_TOKEN"
     : accessToken
-      ? source.VERCEL_TOKEN?.trim()
-        ? "VERCEL_TOKEN"
-        : "VERCEL_AUTH_TOKEN"
+      ? accessTokenSource
       : "Vercel CLI login";
   if (accessToken && !oidcToken && (!team || !project)) {
     throw new Error(
@@ -60,6 +63,8 @@ export function sandboxVercelConfig(env) {
   }
 
   return {
+    accessToken,
+    accessTokenSource,
     authSource,
     authToken: oidcToken || accessToken,
     oidc: Boolean(oidcToken),
@@ -86,17 +91,32 @@ export function sandboxVercelEnvironment(config, env) {
 }
 
 /** Adapt the selected Sandbox credential to the legacy VCR command surface.
- * Unlike the Sandbox CLI, `vercel vcr` reads VERCEL_TOKEN and cannot infer
- * registry scope from OIDC claims. */
+ * Unlike the Sandbox CLI, `vercel vcr` rejects JWTs in VERCEL_TOKEN and cannot
+ * infer registry scope from OIDC claims. OIDC therefore supplies only VCR's
+ * scope; authentication uses an explicit access token or the Vercel CLI login. */
 export function sandboxVcrConfig(config, env) {
   const childEnv = { ...(env ?? process.env) };
-  if (config.authToken) {
-    childEnv.VERCEL_TOKEN = config.authToken;
-    delete childEnv.VERCEL_AUTH_TOKEN;
+  delete childEnv.VERCEL_AUTH_TOKEN;
+  let authSource = "Vercel CLI login";
+  const vcrAccessToken = /^\w+$/.test(config.accessToken ?? "")
+    ? config.accessToken
+    : undefined;
+  if (config.accessToken && !vcrAccessToken && !config.oidc) {
+    throw new Error(
+      `${config.accessTokenSource} is not a VCR-compatible access token; ` +
+        "use VERCEL_TOKEN with a classic access token or run `vercel login`",
+    );
+  }
+  if (vcrAccessToken) {
+    childEnv.VERCEL_TOKEN = vcrAccessToken;
+    authSource = config.accessTokenSource;
+  } else {
+    delete childEnv.VERCEL_TOKEN;
   }
 
   if (config.team && config.project) {
     return {
+      authSource,
       env: childEnv,
       scopeArgs: ["--scope", config.team, "--project", config.project],
       scopeSource: "VERCEL_TEAM_ID + VERCEL_PROJECT_ID",
@@ -104,6 +124,7 @@ export function sandboxVcrConfig(config, env) {
   }
   if (!config.oidc) {
     return {
+      authSource,
       env: childEnv,
       scopeArgs: [],
       scopeSource: "linked/default Vercel CLI project",
@@ -129,6 +150,7 @@ export function sandboxVcrConfig(config, env) {
     );
   }
   return {
+    authSource,
     env: childEnv,
     scopeArgs: ["--scope", team, "--project", project],
     scopeSource: "VERCEL_OIDC_TOKEN claims",

@@ -40,7 +40,7 @@ function run(command, args, { capture = false } = {}) {
 }
 
 console.log(
-  `Authenticating Docker with ${vercelConfig.authSource} ` +
+  `Authenticating Docker with ${vcrConfig.authSource} ` +
     `(scope: ${vcrConfig.scopeSource})...`,
 );
 await run("vercel", ["vcr", "login", "docker", ...scopeArgs]);

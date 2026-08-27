@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { release as osRelease, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -13,6 +21,50 @@ const scratch = mkdtempSync(join(tmpdir(), "scriptc-native-object-example-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 describe.runIf(supported)("external native object example", () => {
+  test("rejects a stale runtime pack before invoking the toolchain", () => {
+    const runtimeRoot = join(scratch, "stale-runtime");
+    const traps = join(scratch, "stale-traps");
+    const trapLog = join(scratch, "stale-toolchain.log");
+    const linkInfo = join(scratch, "stale-link-info.json");
+    mkdirSync(runtimeRoot, { recursive: true });
+    mkdirSync(traps, { recursive: true });
+    writeFileSync(join(runtimeRoot, "package.json"), JSON.stringify({
+      name: "@scriptc/runtime",
+      version: "2.0.0",
+    }));
+    const clang = join(traps, "clang");
+    writeFileSync(clang, `#!/bin/sh\nprintf invoked > '${trapLog}'\nexit 97\n`);
+    chmodSync(clang, 0o755);
+    writeFileSync(linkInfo, JSON.stringify({
+      schema: "scriptc.native-link-info.v1",
+      runtime_pack: {
+        package: "@scriptc/runtime",
+        version: "1.0.0",
+        root: runtimeRoot,
+        source_sets: [],
+      },
+      program: { object: join(scratch, "missing.o") },
+      ffi: { libraries: [] },
+      link: { driver_flags: [], system_libraries: [], frameworks: [] },
+    }));
+
+    let failure: { stderr?: Buffer } | null = null;
+    try {
+      execFileSync(process.execPath, [
+        join(fixture, "link.mjs"), "cc", linkInfo, join(scratch, "stale-program"),
+      ], {
+        env: { ...process.env, PATH: `${traps}:${process.env["PATH"] ?? ""}` },
+        stdio: "pipe",
+      });
+    } catch (error) {
+      failure = error as { stderr?: Buffer };
+    }
+    expect(failure?.stderr?.toString("utf8")).toContain(
+      "runtime pack identity mismatch: expected @scriptc/runtime@1.0.0",
+    );
+    expect(existsSync(trapLog)).toBe(false);
+  });
+
   test("links and runs through both the C driver and Apple ld", () => {
     const nativeObject = join(scratch, "native.o");
     const programObject = join(scratch, "app.o");

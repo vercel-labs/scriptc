@@ -12,6 +12,18 @@ if ((mode !== "cc" && mode !== "ld") || !infoArg || !outputArg) {
   if (info.schema !== "scriptc.native-link-info.v1") {
     throw new Error(`unsupported native link info schema: ${info.schema}`);
   }
+  const runtimePackage = JSON.parse(
+    readFileSync(join(info.runtime_pack.root, "package.json"), "utf8"),
+  );
+  if (
+    runtimePackage.name !== info.runtime_pack.package ||
+    runtimePackage.version !== info.runtime_pack.version
+  ) {
+    throw new Error(
+      `runtime pack identity mismatch: expected ${info.runtime_pack.package}@${info.runtime_pack.version} ` +
+        `at ${info.runtime_pack.root}, found ${runtimePackage.name ?? "<unnamed>"}@${runtimePackage.version ?? "<unversioned>"}`,
+    );
+  }
   const run = (command, args, options = {}) => {
     const result = spawnSync(command, args, { stdio: "inherit", ...options });
     if (result.error) throw result.error;

@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -77,6 +77,9 @@ test("resolves a package helper, emits atomically, and caches by all native inpu
   await emitNativeArtifact(request(pkg.root, pkg.packageJson, second));
   expect(await readFile(first, "utf8")).toContain("define i32 @answer");
   expect(await readFile(second)).toEqual(await readFile(first));
+  const expectedMode = 0o666 & ~process.umask();
+  expect((await stat(first)).mode & 0o777).toBe(expectedMode);
+  expect((await stat(second)).mode & 0o777).toBe(expectedMode);
   expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
 });
 

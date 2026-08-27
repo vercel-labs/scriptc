@@ -47,7 +47,7 @@ $ ls .scriptc/
 fib.o
 ```
 
-The three source outputs require only Node. On macOS arm64, assembly and object
+The three source outputs require only Node. On macOS 15+ arm64, assembly and object
 outputs use the matching native helper installed with scriptc and do not
 invoke an external compiler, archiver, linker, or SDK. The object is a
 relocatable program object with undefined <code>scr_*</code> runtime symbols
@@ -81,7 +81,7 @@ Prebuilds the release runtime objects and native TLS/dynamic-engine archives aga
   <dd>Primary artifact path. An explicit path is exact. Defaults are <code>.scriptc/&lt;name&gt;.ir.json</code>, <code>.c</code>, <code>.ll</code>, <code>.s</code>, <code>.o</code>, or the platform executable name.</dd>
 
   <dt><code>--emit &lt;ir|c|llvm|asm|obj|exe&gt;</code></dt>
-  <dd>Select the invocation's one primary artifact. <code>ir</code>, <code>c</code>, and <code>llvm</code> need only Node. <code>asm</code> and <code>obj</code> use the bundled LLVM helper and currently support host-native macOS arm64 at a macOS 14.0 baseline. <code>exe</code> is the default.</dd>
+  <dd>Select the invocation's one primary artifact. <code>ir</code>, <code>c</code>, and <code>llvm</code> need only Node. <code>asm</code> and <code>obj</code> use the bundled LLVM helper on macOS 15+ arm64 and emit artifacts targeting macOS 14.0. <code>exe</code> is the default.</dd>
 
   <dt><code>--dynamic</code></dt>
   <dd>Embed the dynamic engine (~620KB) so npm dependencies and <code>any</code>-typed code can run. Static stays the default — without this flag, dynamic-tier sites are per-site compile errors. See <a href="/dependencies">npm Dependencies</a>.</dd>
@@ -177,7 +177,7 @@ An explicit <code>--backend llvm</code> pins the LLVM backend and fails with dia
       <td>Not used</td>
     </tr>
     <tr>
-      <td><code>--emit=asm|obj</code> (macOS arm64)</td>
+      <td><code>--emit=asm|obj</code> (macOS 15+ arm64)</td>
       <td>Required</td>
       <td>Bundled scriptc LLVM helper</td>
       <td>Not used</td>

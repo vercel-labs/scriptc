@@ -12,7 +12,6 @@ extern "C" {
 void LLVMInitializeAArch64TargetInfo();
 void LLVMInitializeAArch64Target();
 void LLVMInitializeAArch64TargetMC();
-void LLVMInitializeAArch64AsmParser();
 void LLVMInitializeAArch64AsmPrinter();
 }
 
@@ -25,7 +24,6 @@ void initializeTargets() {
   LLVMInitializeAArch64TargetInfo();
   LLVMInitializeAArch64Target();
   LLVMInitializeAArch64TargetMC();
-  LLVMInitializeAArch64AsmParser();
   LLVMInitializeAArch64AsmPrinter();
   Initialized = true;
 }

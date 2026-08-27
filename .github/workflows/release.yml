@@ -106,6 +106,13 @@ jobs:
             fi
           done
 
+      - name: Package and verify LLVM helper
+        run: |
+          TARBALL=$(pnpm --dir packages/llvm-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent)
+          HELPER_TARBALL="$RUNNER_TEMP/$(basename "$TARBALL")"
+          node scripts/verify-llvm-package.mjs "$HELPER_TARBALL"
+          echo "HELPER_TARBALL=$HELPER_TARBALL" >> "$GITHUB_ENV"
+
       - name: Publish to npm
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
@@ -128,17 +135,21 @@ jobs:
           # Re-runs skip anything already on the registry at this version.
           publish_dir() {
             dir="$1"
+            packed="${2:-}"
             name=$(node -p "require('./$dir/package.json').name")
             if npm view "$name@$VERSION" version >/dev/null 2>&1; then
               echo "$name@$VERSION already published, skipping"
               return 0
             fi
-            tarball=$(cd "$dir" && pnpm pack --silent | tail -1)
-            npm publish "$dir/$tarball" $PROVENANCE --access public
+            if [ -z "$packed" ]; then
+              tarball=$(cd "$dir" && pnpm pack --silent | tail -1)
+              packed="$dir/$tarball"
+            fi
+            npm publish "$packed" $PROVENANCE --access public
           }
 
           publish_dir packages/runtime
-          publish_dir packages/llvm-darwin-arm64
+          publish_dir packages/llvm-darwin-arm64 "$HELPER_TARBALL"
           publish_dir packages/compiler
           publish_dir packages/cli
         env:

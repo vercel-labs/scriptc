@@ -1,6 +1,6 @@
 # scriptc
 
-scriptc compiles TypeScript and JavaScript to typed IR, readable C, textual LLVM IR, native assembly and objects, native executables, and WebAssembly modules. It uses the TypeScript compiler for parsing and type checking. Source outputs require only Node; macOS arm64 assembly/object output uses scriptc's bundled LLVM helper; executable builds currently use clang to compile/link the runtime.
+scriptc compiles TypeScript and JavaScript to typed IR, readable C, textual LLVM IR, native assembly and objects, native executables, and WebAssembly modules. It uses the TypeScript compiler for parsing and type checking. Source outputs require only Node; macOS 15+ arm64 assembly/object output uses scriptc's bundled LLVM helper; executable builds currently use clang to compile/link the runtime.
 
 Static builds include a small native runtime, but no Node or JavaScript engine. Code that cannot compile statically is reported as a diagnostic. For npm packages and `any`-typed code, `--dynamic` embeds [quickjs-ng](https://github.com/quickjs-ng/quickjs) explicitly.
 
@@ -8,7 +8,7 @@ scriptc is experimental and targets macOS, Linux, Windows, and WebAssembly via W
 
 ## Installation
 
-The compiler requires Node.js 24 or newer. `--emit=ir|c|llvm` needs only Node. On macOS arm64, `--emit=asm|obj` additionally uses the optional platform helper installed with scriptc, but needs no compiler, archiver, linker, or SDK. Executable builds still require clang and the platform SDK. The executables it produces do not require Node.
+The compiler requires Node.js 24 or newer. `--emit=ir|c|llvm` needs only Node. On macOS 15+ arm64, `--emit=asm|obj` additionally uses the optional platform helper installed with scriptc, but needs no compiler, archiver, linker, or SDK. Executable builds still require clang and the platform SDK. The executables it produces do not require Node.
 
 ```console
 $ npm install -g scriptc
@@ -61,8 +61,9 @@ hello.o
 `--emit=obj` writes a relocatable program object, not a standalone library. It
 has undefined `scr_*` runtime references and a required
 `scr_runtime_abi_v1` marker; `scriptc build --lib --profile ...` remains the
-self-contained archive interface. `--emit=asm|obj` currently targets
-host-native macOS arm64 at a macOS 14.0 baseline. Sanitized assembly/object
+self-contained archive interface. The helper runs on macOS 15+ arm64 and emits
+artifacts with an `arm64-apple-macosx14.0.0` deployment target. Sanitized
+assembly/object
 emission is rejected until the helper's AddressSanitizer pipeline matches the
 executable path.
 

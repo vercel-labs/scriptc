@@ -8,6 +8,10 @@ never searches `PATH` for this program.
 
 The protocol is intentionally small and versioned:
 
+The packaged helper itself requires macOS 15 or newer because that is the
+minimum version of the pinned LLVM bottle it statically links. Its emitted
+assembly and objects separately target macOS 14 via the triple below.
+
 ```console
 scriptc-llvm-codegen version --format=json
 scriptc-llvm-codegen emit --input app.ll --output app.o --filetype obj \

@@ -19,6 +19,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { globSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { release as osRelease } from "node:os";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, describe, expect, test } from "vitest";
@@ -280,8 +281,9 @@ describe(`llvm differential corpus (${files.length} programs${sanitize ? ", sani
 
       if (helperOnly) {
         if (sanitize) throw new Error("the helper object lane does not support sanitizer mode");
-        if (process.platform !== "darwin" || process.arch !== "arm64") {
-          throw new Error("the helper object lane requires macOS arm64");
+        if (process.platform !== "darwin" || process.arch !== "arm64" ||
+            Number.parseInt(osRelease().split(".", 1)[0] ?? "", 10) < 24) {
+          throw new Error("the helper object lane requires macOS 15+ arm64");
         }
         const helperRes = await build(file, "helper");
         if (!helperRes.ok) {

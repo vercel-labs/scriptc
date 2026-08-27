@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { release as osRelease, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
@@ -9,7 +9,8 @@ import { compile, compileC } from "../src/index.js";
 import { MACOS_ARM64_TARGET } from "../src/backend/targets.js";
 
 const execFileAsync = promisify(execFile);
-const supported = process.platform === "darwin" && process.arch === "arm64";
+const supported = process.platform === "darwin" && process.arch === "arm64" &&
+  Number.parseInt(osRelease().split(".", 1)[0] ?? "", 10) >= 24;
 const repoRoot = join(import.meta.dirname, "../../..");
 const require = createRequire(import.meta.url);
 const helperPackage = supported

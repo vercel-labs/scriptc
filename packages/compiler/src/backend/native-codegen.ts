@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { buildCacheRoot, prepareBuildCacheRoot, pruneBuildCache } from "./native-toolchain.js";
@@ -220,10 +220,17 @@ function cacheKey(options: NativeCodegenOptions, target: NativeTargetSpec, helpe
     .digest("hex");
 }
 
+function artifactMode(): number {
+  return 0o666 & ~process.umask();
+}
+
 async function installVerifiedCache(source: string, destination: string): Promise<boolean> {
   const temporary = privateSiblingPath(destination, "native-cache-hit");
   try {
     if (!(await copyValidCachedFile(source, temporary))) return false;
+    // Cache entries are private (0600), but caller artifacts follow the
+    // process umask exactly like a freshly emitted object/assembly file.
+    await chmod(temporary, artifactMode());
     await rename(temporary, destination);
     return true;
   } finally {
@@ -282,6 +289,7 @@ export async function emitNativeArtifact(options: NativeCodegenOptions): Promise
         "empty_output",
       );
     }
+    await chmod(stage, artifactMode());
     // Cache publication is an optimization boundary. The helper has already
     // produced a valid caller artifact, so a read-only/full cache must not
     // discard it or turn an otherwise successful build into an exception.

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { release as osRelease, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
@@ -12,7 +12,8 @@ const require = createRequire(import.meta.url);
 const repoRoot = join(import.meta.dirname, "../../..");
 const cliEntry = join(repoRoot, "packages/cli/src/main.ts");
 const tsxLoader = join(dirname(require.resolve("tsx/package.json")), "dist/loader.mjs");
-const supported = process.platform === "darwin" && process.arch === "arm64";
+const supported = process.platform === "darwin" && process.arch === "arm64" &&
+  Number.parseInt(osRelease().split(".", 1)[0] ?? "", 10) >= 24;
 const dirs: string[] = [];
 
 afterEach(async () => {

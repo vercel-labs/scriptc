@@ -1,5 +1,18 @@
 cmake_minimum_required(VERSION 3.24)
 
+# These must be cache variables before project() enables the Apple toolchain.
+# A target property named OSX_DEPLOYMENT_TARGET is not recognized by CMake and
+# silently leaves the executable at the build host/SDK's deployment version.
+if(CMAKE_HOST_APPLE)
+  set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING
+      "Architectures for the macOS helper" FORCE)
+  # Homebrew's pinned LLVM 22 bottle is built for macOS 15. The helper must
+  # tell the truth about that host requirement; the objects it emits retain
+  # their separate arm64-apple-macosx14.0.0 deployment target.
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING
+      "Minimum macOS version for the packaged helper" FORCE)
+endif()
+
 project(scriptc_llvm_codegen LANGUAGES C CXX)
 
 find_package(LLVM 22.1.8 EXACT REQUIRED CONFIG)
@@ -38,7 +51,7 @@ target_compile_definitions(scriptc-llvm-codegen PRIVATE
 )
 
 llvm_map_components_to_libnames(SCRIPTC_LLVM_LIBS
-  AArch64
+  AArch64CodeGen
   CodeGen
   Core
   Coroutines
@@ -50,8 +63,7 @@ llvm_map_components_to_libnames(SCRIPTC_LLVM_LIBS
 target_link_libraries(scriptc-llvm-codegen PRIVATE ${SCRIPTC_LLVM_LIBS})
 
 if(APPLE)
-  set_target_properties(scriptc-llvm-codegen PROPERTIES
-    OSX_ARCHITECTURES arm64
-    OSX_DEPLOYMENT_TARGET 14.0
-  )
+  # Homebrew's static LLVM archives contain broad component object files.
+  # Discard functions/data the small helper protocol cannot reach.
+  target_link_options(scriptc-llvm-codegen PRIVATE "LINKER:-dead_strip")
 endif()

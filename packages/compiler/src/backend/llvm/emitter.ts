@@ -82,6 +82,7 @@ import type {
 import { CAUGHT, ffiCallbackType, isFfiContextParam, isRefCounted, isUnitType, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesDynInvoke, moduleUsesFetch, moduleUsesFsWatch, moduleUsesHttpServer, moduleUsesNet, moduleUsesNodeTest, moduleUsesProcessEvents, moduleUsesStream, moduleUsesTls, moduleUsesTlsCa, NPM_COMPRESS_MIN, POINTER_KINDS, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, VOID } from "../../ir/ir.js";
 import { matchIntegerBytesForLoop } from "../../ir/integer-loops.js";
 import { allocateFfiCallbackAdapters, hasForeignFfiCallback, hasRetainedFfiCallback, type FfiCallbackAdapter } from "../ffi-callbacks.js";
+import { RUNTIME_ABI_MARKER } from "../runtime-abi.js";
 import { computeMayThrow } from "../c/may-throw.js";
 import { mangleArgPack, mangleAsyncSpawn, mangleClassObj, mangleFnClosure, mangleFunction, mangleGenDrop, mangleGenSpawn, mangleGlobal, mangleLocal, mangleRecordStruct, mangleTrampoline, mangleWrapper } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
@@ -1101,7 +1102,7 @@ class LlEmitter {
       `declare void @scr_init()`,
       `declare void @scr_lib_init(i32, ptr)`,
       ...(this.runtimeAbiMarker && this.mod.lib === undefined
-        ? [`declare void @scr_runtime_abi_v1()`]
+        ? [`declare void @${RUNTIME_ABI_MARKER}()`]
         : []),
     );
     for (const d of this.decls) out.push(d);
@@ -1280,7 +1281,7 @@ class LlEmitter {
     out.push(
       `define i32 @${this.wasi ? "__main_argc_argv" : "main"}(i32 %argc, ptr %argv) ${FN_ATTRS} {`,
       `entry:`,
-      ...(this.runtimeAbiMarker ? [`  call void @scr_runtime_abi_v1()`] : []),
+      ...(this.runtimeAbiMarker ? [`  call void @${RUNTIME_ABI_MARKER}()`] : []),
       `  call void @scr_init()`,
       ...stamps,
       // Event-surface programs (signal/exit listeners) fill the loop's

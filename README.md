@@ -67,6 +67,13 @@ assembly/object
 emission is rejected until the helper's AddressSanitizer pipeline matches the
 executable path.
 
+External object consumption is experimental. Use
+`--print=native-link-info` to emit the object and print a versioned JSON recipe
+containing its target, `main` entry, exact `@scriptc/runtime` source pack,
+required system libraries, FFI inputs, and ABI marker. The recipe never uses
+hidden scriptc cache paths. See [`examples/native-object`](./examples/native-object)
+for C-driver and direct Apple-linker builds.
+
 ## Use Node APIs
 
 Supported Node APIs compile to the native runtime. For example, `server.ts`:

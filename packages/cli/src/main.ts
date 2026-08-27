@@ -70,7 +70,7 @@ async function main(): Promise<number> {
   const [command, inputArg] = positionals;
   if (command === "cache") {
     if (inputArg !== "warm") fail(`unknown cache command "${inputArg ?? ""}" (supported: warm)\n\n${USAGE}`);
-    if (values.lib || values.dynamic || values.backend !== undefined || values.emit !== undefined || values["from-c"] || values.ffi !== undefined || values.profile !== undefined || (values["npm-static"] ?? []).length > 0 || values["provenance-sources"] || externalTypeArgs.length > 0 || values.out !== undefined || values["emit-ir"] || !values["keep-c"]) {
+    if (values.lib || values.dynamic || values.backend !== undefined || values.emit !== undefined || values.print !== undefined || values["from-c"] || values.ffi !== undefined || values.profile !== undefined || (values["npm-static"] ?? []).length > 0 || values["provenance-sources"] || externalTypeArgs.length > 0 || values.out !== undefined || values["emit-ir"] || !values["keep-c"]) {
       fail(`scriptc cache warm takes only native optimization/sanitizer options and profile names\n\n${USAGE}`);
     }
     const optimization = values.optimization;
@@ -118,9 +118,9 @@ async function main(): Promise<number> {
     if (inputArg) {
       fail("scriptc build --lib takes no input positional: the profile names the entry module");
     }
-    if (values.dynamic || values.backend !== undefined || values.emit !== undefined || values.optimization !== undefined || values.ffi !== undefined || (values["npm-static"] ?? []).length > 0 || externalTypeArgs.length > 0) {
+    if (values.dynamic || values.backend !== undefined || values.emit !== undefined || values.print !== undefined || values.optimization !== undefined || values.ffi !== undefined || (values["npm-static"] ?? []).length > 0 || externalTypeArgs.length > 0) {
       fail(
-        "scriptc build --lib takes no --dynamic/--backend/--emit/--optimization/--npm-static/--ffi/--external-types: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, and external type mappings belong to coverage",
+        "scriptc build --lib takes no --dynamic/--backend/--emit/--print/--optimization/--npm-static/--ffi/--external-types: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, and external type mappings belong to coverage",
       );
     }
     const profilePath = resolve(profileArg);
@@ -153,6 +153,16 @@ async function main(): Promise<number> {
   const input = resolve(inputArg);
   if (command === "coverage" && values.emit !== undefined) {
     fail(`--emit is a build/run option\n\n${USAGE}`);
+  }
+  if (values.print !== undefined && values.print !== "native-link-info") {
+    fail(`unknown print kind "${values.print}" (supported: native-link-info)\n\n${USAGE}`);
+  }
+  const printNativeLinkInfo = values.print === "native-link-info";
+  if (printNativeLinkInfo && command !== "build") {
+    fail(`--print=native-link-info is a build option\n\n${USAGE}`);
+  }
+  if (printNativeLinkInfo && values.emit !== undefined && values.emit !== "obj") {
+    fail(`--print=native-link-info requires --emit=obj\n\n${USAGE}`);
   }
   if (externalTypeArgs.length > 0 && command !== "coverage") {
     fail(`--external-types is a coverage-only option\n\n${USAGE}`);
@@ -193,7 +203,9 @@ async function main(): Promise<number> {
   const output = command === "coverage"
     ? null
     : resolveOutputOptions(command, {
-        ...(values.emit === undefined ? {} : { emit: values.emit }),
+        ...(values.emit === undefined && !printNativeLinkInfo
+          ? {}
+          : { emit: values.emit ?? "obj" }),
         emitIr: values["emit-ir"],
         ...(values.backend === undefined ? {} : { backend: values.backend }),
         fromC: values["from-c"],
@@ -247,6 +259,7 @@ async function main(): Promise<number> {
   if (output === null || !output.ok) throw new Error("internal output-option state");
   const { outDir, outPath, defaultOutputPath } = selectOutputPaths(input, output.cliOutputKind, values.out);
 
+  let nativeLinkInfo: object | undefined;
   const build = async (): Promise<string> => {
     if (values["from-c"]) {
       if (ffiProfilePath !== undefined) {
@@ -273,6 +286,7 @@ async function main(): Promise<number> {
       ...(optimization !== undefined ? { optimization } : {}),
       ...(npmStatic !== undefined ? { npmStatic } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
+      ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),
     });
     if (!result.ok) {
       const color = process.stderr.isTTY ?? false;
@@ -291,6 +305,8 @@ async function main(): Promise<number> {
         process.stderr.write(`scriptc: backend c (llvm refused: ${result.artifact.llvmRefusal})\n`);
       }
       if (!values["keep-c"]) rmSync(result.artifact.translationUnitPath, { force: true });
+    } else if (result.artifact.kind === "obj") {
+      nativeLinkInfo = result.artifact.nativeLinkInfo;
     }
     return result.artifact.path;
   };
@@ -323,7 +339,14 @@ async function main(): Promise<number> {
       });
     });
   }
-  process.stdout.write(`${binary}\n`);
+  if (printNativeLinkInfo) {
+    if (nativeLinkInfo === undefined) throw new Error("internal native-link-info state");
+    // Keep stdout pure JSON for tooling; the ordinary artifact path is in
+    // program.object inside the document.
+    process.stdout.write(`${JSON.stringify(nativeLinkInfo, null, 2)}\n`);
+  } else {
+    process.stdout.write(`${binary}\n`);
+  }
   return 0;
 }
 

@@ -79,7 +79,7 @@ function stableTestMemo<T>(
   return pending;
 }
 
-const RUNTIME_SOURCES = ["scr_number.c", "scr_string.c", "scr_array.c", "scr_bytes.c", "scr_bytes_io.c", "scr_map.c", "scr_closure.c", "scr_ffi.c", "scr_object.c", "scr_union.c", "scr_exception.c", "scr_error.c", "scr_console.c", "scr_lib.c", "scr_path.c", "scr_url.c", "scr_json.c", "scr_async.c", "scr_child.c", "scr_cycle.c"];
+export const EXECUTABLE_RUNTIME_SOURCES = ["scr_number.c", "scr_string.c", "scr_array.c", "scr_bytes.c", "scr_bytes_io.c", "scr_map.c", "scr_closure.c", "scr_ffi.c", "scr_object.c", "scr_union.c", "scr_exception.c", "scr_error.c", "scr_console.c", "scr_lib.c", "scr_path.c", "scr_url.c", "scr_json.c", "scr_async.c", "scr_child.c", "scr_cycle.c"] as const;
 
 /** Environment variables consumed by clang, its linker/subtools, or the
  * platform SDK selection. They are implicit command-line inputs: changing one
@@ -921,7 +921,7 @@ export function cacheTargetIdentity(
 /** The library base: the executable lane's unconditional sources minus the
  * fiber/loop and child-process units, plus the library-mode TU. */
 const LIB_RUNTIME_SOURCES = [
-  ...RUNTIME_SOURCES.filter(
+  ...EXECUTABLE_RUNTIME_SOURCES.filter(
     (f) => f !== "scr_async.c" && f !== "scr_child.c" && f !== "scr_ffi.c",
   ),
   "scr_library.c",
@@ -2535,8 +2535,8 @@ async function nativeSourceFiles(
  * libregexp, mbedTLS, zlib, curl, and Ryū translation units. */
 export async function implicitDependencyProbeIncludes(rtDir: string): Promise<string[]> {
   const vendor = join(rtDir, "..", "vendor");
-  const quickjsSources = new Set([...QJS_ENGINE_SOURCES, ...LRE_SOURCES]);
-  const zlibSources = new Set(ZLIB_SOURCES);
+  const quickjsSources = new Set<string>([...QJS_ENGINE_SOURCES, ...LRE_SOURCES]);
+  const zlibSources = new Set<string>(ZLIB_SOURCES);
   const fileGroups = await Promise.all([
     nativeSourceFiles(rtDir, false),
     nativeSourceFiles(join(vendor, "ryu"), false),
@@ -3954,8 +3954,8 @@ async function compileCInternal(
     );
   }
   const runtimeSources = targetPlatform(driver) === "wasi"
-    ? RUNTIME_SOURCES.filter((source) => source !== "scr_child.c")
-    : RUNTIME_SOURCES;
+    ? EXECUTABLE_RUNTIME_SOURCES.filter((source) => source !== "scr_child.c")
+    : EXECUTABLE_RUNTIME_SOURCES;
   // scr_async.c submits callback-style filesystem work to a native worker.
   // POSIX drivers need the thread compile/link mode; win32 uses CreateThread.
   const threadArgs = targetPlatform(driver) === "win32" || targetPlatform(driver) === "wasi"

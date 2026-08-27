@@ -39,6 +39,9 @@ emission currently requires a macOS 15+ arm64 host and emits objects targeting
 macOS 14.0 (`arm64-apple-macosx14.0.0`).
 Objects retain undefined `scr_*` runtime references plus the
 `scr_runtime_abi_v1` compatibility marker; they are not library archives.
+External consumption is experimental and requires the exact matching runtime.
+`scriptc build app.ts --print=native-link-info -o app.o` prints the versioned
+JSON target/runtime/link recipe without performing a link.
 `--emit=asm|obj --sanitize` is rejected until ASan pipeline parity is
 available.
 

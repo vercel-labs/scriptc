@@ -1,0 +1,13 @@
+{
+  "ffi_format": 1,
+  "functions": [
+    {
+      "name": "nativeDouble",
+      "symbol": "native_double",
+      "params": ["f64"],
+      "returns": "f64"
+    }
+  ],
+  "libraries": ["./native.o"],
+  "system_libraries": []
+}

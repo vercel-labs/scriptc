@@ -165,6 +165,7 @@ describe.runIf(supported)("LLVM native helper integration", () => {
       .toEqual(await symbols(clangObject, ["-u"]));
     expect(await symbols(helperObject, ["-gU"]))
       .toEqual(await symbols(clangObject, ["-gU"]));
+    expect(await symbols(helperObject, ["-gU"])).toEqual(["0000000000000000 T _main"]);
     expect(await symbols(helperObject, ["-u"])).toContain("_scr_runtime_abi_v1");
 
     const clangExe = join(dir, "clang-program");
@@ -267,5 +268,56 @@ describe.runIf(supported)("LLVM native helper integration", () => {
     expect(undefinedSymbols).toContain("_sf_scale");
     expect(undefinedSymbols).toContain("_sf_callback_mix");
     expect(undefinedSymbols).toContain("_scr_runtime_abi_v1");
+  });
+
+  test("helper and clang object paths retain the same outbound FFI C ABI", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-helper-ffi-parity-"));
+    dirs.push(dir);
+    const entry = join(dir, "main.ts");
+    const profile = join(dir, "ffi.json");
+    await writeFile(entry, [
+      "declare function nativeMix(value: number, text: string, bytes: Uint8Array): number;",
+      "console.log(nativeMix(2, 'ok', new Uint8Array([1, 2])));",
+      "",
+    ].join("\n"));
+    await writeFile(profile, JSON.stringify({
+      ffi_format: 1,
+      functions: [{
+        name: "nativeMix",
+        symbol: "native_mix",
+        params: ["f64", "string", "bytes"],
+        returns: "f64",
+      }],
+      libraries: [],
+      system_libraries: [],
+    }));
+    const object = join(dir, "helper.o");
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: object,
+      outputKind: "obj",
+      ffiProfilePath: profile,
+    });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const llvm = join(dir, "main.ll");
+    const sourceResult = await compile(entry, {
+      outDir: dir,
+      outPath: llvm,
+      outputKind: "llvm",
+      ffiProfilePath: profile,
+    });
+    if (!sourceResult.ok) throw new Error(sourceResult.diagnostics.map((d) => d.message).join("\n"));
+    const clangObject = join(dir, "clang.o");
+    await execFileAsync("clang", [
+      "-O2", "-Wno-override-module", "-target", MACOS_ARM64_TARGET.llvmTriple,
+      "-c", llvm, "-o", clangObject,
+    ]);
+    const nativeMixSignature = (await readFile(llvm, "utf8"))
+      .split("\n").find((line) => line.includes("@native_mix("));
+    expect(nativeMixSignature).toBe("declare double @native_mix(double, ptr, i64, ptr, i64)");
+    for (const candidate of [object, clangObject]) {
+      const undefinedSymbols = (await execFileAsync("nm", ["-u", candidate], { encoding: "utf8" })).stdout;
+      expect(undefinedSymbols).toContain("_native_mix");
+    }
   });
 });

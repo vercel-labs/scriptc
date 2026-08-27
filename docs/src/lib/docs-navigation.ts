@@ -22,6 +22,7 @@ export const navSections: NavSection[] = [
       { name: "Coverage Reports", href: "/coverage" },
       { name: "npm Dependencies", href: "/dependencies" },
       { name: "Native FFI", href: "/ffi" },
+      { name: "Native Program Objects", href: "/native-objects" },
       { name: "Platform Support", href: "/platforms" },
     ],
   },

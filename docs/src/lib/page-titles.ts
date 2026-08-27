@@ -6,6 +6,7 @@ export const PAGE_TITLES: Record<string, string> = {
   coverage: "Coverage Reports",
   dependencies: "npm Dependencies",
   ffi: "Native FFI",
+  "native-objects": "Native Program Objects",
   platforms: "Platform Support",
   "how-it-works": "How It Works",
   limitations: "Limitations",

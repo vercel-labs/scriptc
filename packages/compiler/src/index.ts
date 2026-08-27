@@ -2,7 +2,7 @@ import { InternalCompilerError } from "./errors.js";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, configuredTargetPlatform, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/native-toolchain.js";
+import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, compilerDriverSupportsPersistentCache, configuredTargetPlatform, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform, toolchainEnvironmentCachePolicy, toolchainEnvironmentFingerprint } from "./backend/native-toolchain.js";
 import { emitCModule } from "./backend/c/c-emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
 import { emitNativeArtifact, NativeCodegenError } from "./backend/native-codegen.js";
@@ -1065,14 +1065,20 @@ async function compileExecutableNative(
       ffi,
       optimization: features.optimization ?? "release",
     });
+    const cacheableLinker =
+      onArtifactReady !== undefined && process.env["SCRIPTC_LINKER"] === undefined && ffi === null &&
+      toolchainEnvironmentCachePolicy().completeArtifacts &&
+      await compilerDriverSupportsPersistentCache(
+        resolveCc(),
+        toolchainEnvironmentFingerprint(),
+      );
     await linkRuntimePackExecutable(plan, {
       // A caller-selected linker can be a mutable wrapper with hidden inputs,
-      // while an FFI profile can name thin archives or ambient -l libraries
-      // whose transitive files are not represented by the top-level paths.
-      // Keep both postures honest by performing their final link every time.
-      ...(onArtifactReady === undefined || process.env["SCRIPTC_LINKER"] !== undefined || ffi !== null
-        ? {}
-        : { onArtifactReady }),
+      // and a PATH-selected `clang` can be one too. FFI profiles and mutable
+      // linker search environments likewise name transitive files that the
+      // top-level dependency snapshot cannot prove. Only a direct driver in a
+      // stable link environment may publish a reusable final executable.
+      ...(cacheableLinker ? { onArtifactReady } : {}),
     });
     return;
   }

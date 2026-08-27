@@ -2111,7 +2111,7 @@ function isAppleSystemClangHandoff(
  * can safely represent that behavior. Accept direct Clang/Zig drivers (plus
  * Apple's system shim) and conservatively keep wrapper-driven builds on the
  * uncached path. */
-async function compilerDriverSupportsPersistentCache(
+export async function compilerDriverSupportsPersistentCache(
   driver: Pick<CcDriver, "argv" | "targetArgs" | "target">,
   environmentFingerprint: string,
 ): Promise<boolean> {

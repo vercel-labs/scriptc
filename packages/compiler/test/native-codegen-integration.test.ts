@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { release as osRelease, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -308,6 +308,83 @@ describe.runIf(supported)("LLVM native helper integration", () => {
       else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
       if (oldLibraryPath === undefined) delete process.env["LIBRARY_PATH"];
       else process.env["LIBRARY_PATH"] = oldLibraryPath;
+    }
+  });
+
+  test("runtime-pack PATH linker wrappers cannot restore hidden link inputs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-linker-cache-"));
+    dirs.push(dir);
+    const entry = join(dir, "main.ts");
+    const wrapper = join(dir, "clang");
+    const firstSource = join(dir, "first.c");
+    const secondSource = join(dir, "second.c");
+    const firstObject = join(dir, "first.o");
+    const secondObject = join(dir, "second.o");
+    const cache = join(dir, "cache");
+    const output = join(dir, "program");
+    const oldPath = process.env["PATH"];
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const oldLinkInput = process.env["SCRIPTC_TEST_LINK_INPUT"];
+    try {
+      await Promise.all([
+        writeFile(entry, 'console.log("program");\n'),
+        writeFile(firstSource, [
+          "#include <unistd.h>",
+          '__attribute__((constructor)) static void marker(void) { write(1, "first\\n", 6); }',
+          "",
+        ].join("\n")),
+        writeFile(secondSource, [
+          "#include <unistd.h>",
+          '__attribute__((constructor)) static void marker(void) { write(1, "second\\n", 7); }',
+          "",
+        ].join("\n")),
+        writeFile(wrapper, [
+          "#!/bin/sh",
+          'for arg in "$@"; do',
+          '  if [ "$arg" = "-c" ]; then exec /usr/bin/clang "$@"; fi',
+          "done",
+          'has_output=""',
+          'for arg in "$@"; do [ "$arg" = "-o" ] && has_output=1; done',
+          'if [ -n "$has_output" ] && [ -n "$SCRIPTC_TEST_LINK_INPUT" ]; then',
+          '  exec /usr/bin/clang "$@" "$SCRIPTC_TEST_LINK_INPUT"',
+          "fi",
+          'exec /usr/bin/clang "$@"',
+          "",
+        ].join("\n")),
+      ]);
+      await chmod(wrapper, 0o755);
+      await Promise.all([
+        execFileAsync("/usr/bin/clang", [
+          "-target", MACOS_ARM64_TARGET.llvmTriple, "-c", firstSource, "-o", firstObject,
+        ]),
+        execFileAsync("/usr/bin/clang", [
+          "-target", MACOS_ARM64_TARGET.llvmTriple, "-c", secondSource, "-o", secondObject,
+        ]),
+      ]);
+      process.env["PATH"] = `${dir}:${oldPath ?? "/usr/bin:/bin"}`;
+      process.env["SCRIPTC_CACHE_DIR"] = cache;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      const options = { outDir: dir, outPath: output, backend: "llvm" as const };
+
+      process.env["SCRIPTC_TEST_LINK_INPUT"] = firstObject;
+      const first = await compile(entry, options);
+      if (!first.ok) throw new Error(first.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout).toBe("first\nprogram\n");
+
+      process.env["SCRIPTC_TEST_LINK_INPUT"] = secondObject;
+      const second = await compile(entry, options);
+      if (!second.ok) throw new Error(second.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout).toBe("second\nprogram\n");
+    } finally {
+      if (oldPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = oldPath;
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+      if (oldLinkInput === undefined) delete process.env["SCRIPTC_TEST_LINK_INPUT"];
+      else process.env["SCRIPTC_TEST_LINK_INPUT"] = oldLinkInput;
     }
   });
 

@@ -64,6 +64,12 @@ target_link_libraries(scriptc-llvm-codegen PRIVATE ${SCRIPTC_LLVM_LIBS})
 
 if(APPLE)
   # Homebrew's static LLVM archives contain broad component object files.
-  # Discard functions/data the small helper protocol cannot reach.
-  target_link_options(scriptc-llvm-codegen PRIVATE "LINKER:-dead_strip")
+  # Export only the process entry point so archive-global LLVM symbols do not
+  # become roots, then discard functions/data the small helper protocol cannot
+  # reach. This also keeps the result stable across LLVM bottle layouts whose
+  # static archives expose different sets of global symbols.
+  target_link_options(scriptc-llvm-codegen PRIVATE
+    "LINKER:-exported_symbol,_main"
+    "LINKER:-dead_strip"
+  )
 endif()

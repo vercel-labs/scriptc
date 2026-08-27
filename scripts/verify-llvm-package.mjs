@@ -6,8 +6,13 @@ import { join } from "node:path";
 
 const tarball = process.argv[2];
 if (tarball === undefined) throw new Error("usage: verify-llvm-package.mjs <tarball>");
-const installedBudget = 40 * 1024 * 1024;
-const packedBudget = 16 * 1024 * 1024;
+// Homebrew's arm64 LLVM 22 bottles are not byte-identical across supported
+// macOS runner images: clean builds have produced stripped helpers ranging
+// from roughly 26 MiB to 53 MiB despite identical protocol, LLVM version,
+// target set, and dynamic dependencies. Keep a hard package-size regression
+// fence with enough room for both observed bottle layouts.
+const installedBudget = 64 * 1024 * 1024;
+const packedBudget = 32 * 1024 * 1024;
 const work = mkdtempSync(join(tmpdir(), "scriptc-llvm-pack-"));
 try {
   execFileSync("tar", ["-xzf", tarball, "-C", work]);
@@ -26,16 +31,15 @@ try {
   accessSync(binary, constants.X_OK);
   const installedSize = statSync(binary).size;
   const packedSize = statSync(tarball).size;
-  if (installedSize > installedBudget) {
-    throw new Error(
-      `stripped helper is ${installedSize} bytes, exceeding the ${installedBudget}-byte installed-size budget`,
-    );
-  }
-  if (packedSize > packedBudget) {
-    throw new Error(
-      `helper tarball is ${packedSize} bytes, exceeding the ${packedBudget}-byte compressed-size budget`,
-    );
-  }
+  const sizeFailures = [
+    ...(installedSize > installedBudget
+      ? [`stripped helper is ${installedSize} bytes, exceeding the ${installedBudget}-byte installed-size budget`]
+      : []),
+    ...(packedSize > packedBudget
+      ? [`helper tarball is ${packedSize} bytes, exceeding the ${packedBudget}-byte compressed-size budget`]
+      : []),
+  ];
+  if (sizeFailures.length > 0) throw new Error(sizeFailures.join("; "));
   const version = JSON.parse(execFileSync(binary, ["version", "--format=json"], {
     encoding: "utf8",
   }));
@@ -48,6 +52,14 @@ try {
   const dependencies = execFileSync("otool", ["-L", binary], { encoding: "utf8" });
   if (/\/opt\/homebrew|\/usr\/local|libLLVM|libzstd/.test(dependencies)) {
     throw new Error(`packed helper has a non-system runtime dependency:\n${dependencies}`);
+  }
+  const exportedSymbols = execFileSync("nm", ["-gU", binary], { encoding: "utf8" })
+    .trim().split("\n").filter(Boolean)
+    .map((line) => line.trim().split(/\s+/).at(-1));
+  if (exportedSymbols.length !== 1 || exportedSymbols[0] !== "_main") {
+    throw new Error(
+      `packed helper must export only _main, found: ${exportedSymbols.join(", ")}`,
+    );
   }
   const loadCommands = execFileSync("otool", ["-l", binary], { encoding: "utf8" });
   if (!/LC_BUILD_VERSION[\s\S]*?platform 1[\s\S]*?minos 15\.0(?:\s|$)/.test(loadCommands)) {

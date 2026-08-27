@@ -9,6 +9,7 @@ import { emitNativeArtifact, NativeCodegenError } from "./backend/native-codegen
 import { privateSiblingPath } from "./backend/build-cache.js";
 import { nativeCodegenTarget, nativeCodegenTargetRefusal } from "./backend/targets.js";
 import { createNativeLinkInfo, type NativeLinkInfo } from "./backend/native-link-info.js";
+import { createRuntimeLinkPlan, linkRuntimePackExecutable, RuntimePackError } from "./backend/runtime-pack.js";
 import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
 import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "./backend/library-identity-markers.js";
 import { checkerPanicDiag, ffiNativeBuildDiag, libAsyncExportDiag, libAsyncSurfaceDiag, libExportUnresolvedDiag, libGenericExportDiag, libIntBoundaryDiag, libNpmIneligibleDiag, libSidecarDiag, libUnmappableSignatureDiag, iceDiag, isCheckerPanic, LIB_INBOUND_BYTES_TRAP_CODE, LIB_RUNTIME_TRAP_CODES, nativeCodegenDiag, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
@@ -183,9 +184,10 @@ export interface CompileBaseOptions {
    * changes. */
   dynamic?: boolean;
   /** Code generator for the program TU. Unset (the release default): the
-   * LLVM backend emits LLVM IR text (.ll) that rides the SAME clang
-   * command line in the program-TU seat, and a program outside the LLVM
-   * tier falls back to the debugging C backend transparently — the IR is
+   * LLVM backend emits LLVM IR text (.ll). Supported macOS arm64 builds send
+   * it through the bundled helper and link a precompiled runtime pack; other
+   * targets retain their established compiler-driver path. A program outside
+   * the LLVM tier falls back to the debugging C backend transparently — the IR is
    * backend-agnostic, so only the emit retries; CompileResult records the
    * lane (`backend`, plus `llvmRefusal` when the fallback engaged). ONLY a
    * tier refusal (LlvmUnsupportedError) falls back — every real diagnostic
@@ -222,11 +224,8 @@ export interface CompileBaseOptions {
  * historical compile() API, whose omitted output kind means executable. */
 export interface CompileOptions extends CompileBaseOptions {
   outputKind?: "exe";
-  /** Internal validation lane: executable builds still use the existing
-   * linker/runtime recipe, but the program LLVM TU is compiled to an object
-   * by the bundled helper first. Not a CLI contract; Phase 2 corpus tests use
-   * it to compare helper and clang objects under identical link inputs.
-   * Requires backend explicitly set to llvm. */
+  /** Internal validation lane retained for helper-object artifact tests.
+   * Supported ordinary LLVM executable builds select this path automatically. */
   nativeProgramObject?: boolean;
 }
 
@@ -1054,6 +1053,28 @@ async function compileExecutableNative(
   onArtifactReady?: NonNullable<Parameters<typeof compileC>[0]["onArtifactReady"]>,
 ): Promise<void> {
   const programIsObject = /\.(?:o|obj)$/.test(cPath);
+  const runtimePackTarget = programIsObject && !sanitize && process.env["SCRIPTC_RUNTIME_PACK"] !== "0"
+    ? nativeCodegenTarget()
+    : null;
+  if (runtimePackTarget !== null) {
+    const plan = await createRuntimeLinkPlan({
+      target: runtimePackTarget,
+      programObject: cPath,
+      outPath,
+      features,
+      ffi,
+      optimization: features.optimization ?? "release",
+    });
+    await linkRuntimePackExecutable(plan, {
+      // A caller-selected linker can be a mutable wrapper with hidden inputs.
+      // Keep that path honest by relinking; the default resolved driver plus
+      // selected immutable pack/FFI files carries a replayable proof.
+      ...(onArtifactReady === undefined || process.env["SCRIPTC_LINKER"] !== undefined
+        ? {}
+        : { onArtifactReady }),
+    });
+    return;
+  }
   const effectiveProgramSplit =
     programSplit ??
     (!programIsObject && features.optimization === "dev" && features.backend === "llvm" && !sanitize
@@ -1151,6 +1172,23 @@ async function emitNativeProgramObject(
     await rm(linkPath, { force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+function usesPrecompiledRuntimePack(
+  opts: CompileRequestOptions,
+  backend: "c" | "llvm",
+): boolean {
+  if (
+    backend !== "llvm" || opts.sanitize === true ||
+    process.env["SCRIPTC_RUNTIME_PACK"] === "0" ||
+    process.env["SCRIPTC_FETCH_CURL"] === "1"
+  ) return false;
+  const cc = process.env["SCRIPTC_CC"] ?? "";
+  return (cc === "" || cc === "clang") && nativeCodegenTarget() !== null;
+}
+
+function runtimePackDiagnostic(error: RuntimePackError, entryPath: string): ScrDiagnostic {
+  return nativeCodegenDiag(error.code === "unsupported" ? "SC3002" : "SC3003", error.message, entryPath);
 }
 
 async function compileTracked(
@@ -1283,8 +1321,16 @@ async function compileTracked(
         opts.ffiProfilePath === undefined || ffiProfileBytes === null
           ? null
           : { path: opts.ffiProfilePath, bytes: ffiProfileBytes },
-      target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${opts.nativeProgramObject === true ? "helper-object" : "driver-tu"}`,
-      compiler: [process.env["SCRIPTC_CC"] ?? "clang"],
+      target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${
+        opts.nativeProgramObject === true || (
+          opts.backend !== "c" && opts.sanitize !== true &&
+          process.env["SCRIPTC_RUNTIME_PACK"] !== "0" &&
+          process.env["SCRIPTC_FETCH_CURL"] !== "1" &&
+          ((process.env["SCRIPTC_CC"] ?? "") === "" || process.env["SCRIPTC_CC"] === "clang") &&
+          nativeCodegenTarget() !== null
+        ) ? "runtime-pack" : "driver-tu"
+      }`,
+      compiler: [process.env["SCRIPTC_LINKER"] ?? process.env["SCRIPTC_CC"] ?? "clang"],
       nativeEnvironment: await executableNativeEnvironmentFingerprint(),
       nodeVersion: process.version,
       implementation: implementation.digest,
@@ -1331,7 +1377,9 @@ async function compileTracked(
     }
     let nativeInputPath = earlyHit.cPath;
     let nativeProgramObject: { linkPath: string; artifactPath: string } | null = null;
-    if (opts.nativeProgramObject === true) {
+    const useRuntimePack = opts.nativeProgramObject === true ||
+      usesPrecompiledRuntimePack(opts, earlyHit.native.backend);
+    if (useRuntimePack) {
       if (earlyHit.native.backend !== "llvm") {
         throw new InternalCompilerError(
           "native program-object cache hit restored a non-LLVM translation unit",
@@ -1361,7 +1409,7 @@ async function compileTracked(
         opts.sanitize ?? false,
         ffi,
         null,
-        async ({ dependencies }) => {
+        opts.nativeProgramObject === true ? undefined : async ({ dependencies }) => {
           await publishEarlyExecutableCache(cacheRoot, executableCacheOptions, {
             ...earlyHit,
             executableRestored: true,
@@ -1370,10 +1418,13 @@ async function compileTracked(
           });
         },
       );
-      if (nativeProgramObject !== null) {
+      if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
         await rename(nativeProgramObject.linkPath, nativeProgramObject.artifactPath);
       }
     } catch (err) {
+      if (err instanceof RuntimePackError) {
+        return { ok: false, diagnostics: [runtimePackDiagnostic(err, entryPath)], sourceTexts: new Map() };
+      }
       if (ffi !== null && err instanceof CcCompileError) {
         return {
           ok: false,
@@ -1596,7 +1647,9 @@ async function compileTracked(
       const ll = emitLlvmModule(lowered.module!, {
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
         wasi: buildPlatform === "wasi",
-        runtimeAbiMarker: opts.nativeProgramObject === true,
+        runtimeAbiMarker:
+          opts.nativeProgramObject === true ||
+          usesPrecompiledRuntimePack(opts, "llvm"),
       });
       cPath = defaultSourcePaths.llvm;
       await writeFile(cPath, ll);
@@ -1649,7 +1702,9 @@ async function compileTracked(
   let publishedExecutable = false;
   let nativeProgramObject: { linkPath: string; artifactPath: string } | null = null;
   try {
-    if (opts.nativeProgramObject === true) {
+    const useRuntimePack = opts.nativeProgramObject === true ||
+      usesPrecompiledRuntimePack(opts, backend);
+    if (useRuntimePack) {
       if (backend !== "llvm" || llvmSource === null) {
         throw new InternalCompilerError("native program-object validation requires the LLVM backend");
       }
@@ -1671,7 +1726,7 @@ async function compileTracked(
       opts.sanitize ?? false,
       ffi,
       programSplit,
-      async ({ dependencies }) => {
+      opts.nativeProgramObject === true ? undefined : async ({ dependencies }) => {
         await publishEarlyExecutableCache(cacheRoot, executableCacheOptions, {
           cPath,
           native: nativeFeatures,
@@ -1683,10 +1738,13 @@ async function compileTracked(
         publishedExecutable = true;
       },
     );
-    if (nativeProgramObject !== null) {
+    if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
       await rename(nativeProgramObject.linkPath, nativeProgramObject.artifactPath);
     }
   } catch (err) {
+    if (err instanceof RuntimePackError) {
+      return { ok: false, diagnostics: [runtimePackDiagnostic(err, entryPath)], sourceTexts };
+    }
     if (ffi !== null && err instanceof CcCompileError) {
       return {
         ok: false,

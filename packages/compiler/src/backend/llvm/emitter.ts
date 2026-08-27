@@ -1,9 +1,9 @@
 import { InternalCompilerError } from "../../errors.js";
 /* IR → LLVM IR text (.ll). The LLVM backend consumes the SAME in-memory
  * IrModule the C backend does (never the JSON dump — see the -0 lesson in
- * the survey) and produces a textual module that rides compileC's
- * program-TU seat: clang compiles .ll on the exact command line that
- * compiles the .c, linking the same scr_* runtime with the same C ABI.
+ * the survey). Its textual module is either lowered by scriptc's native
+ * helper and linked with a runtime pack or occupies the legacy compiler
+ * driver's program-TU seat. Both paths use the same scr_* C ABI.
  *
  * Phase 1 was the TRIVIAL TIER: f64/bool/string locals and params, the
  * scalar operator set, structured control flow, direct calls, interned

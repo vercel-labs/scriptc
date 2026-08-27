@@ -54,10 +54,15 @@ importers:
       '@scriptc/llvm-darwin-arm64':
         specifier: workspace:*
         version: link:../llvm-darwin-arm64
+      '@scriptc/runtime-darwin-arm64':
+        specifier: workspace:*
+        version: link:../runtime-darwin-arm64
 
   packages/llvm-darwin-arm64: {}
 
   packages/runtime: {}
+
+  packages/runtime-darwin-arm64: {}
 
 packages:
 

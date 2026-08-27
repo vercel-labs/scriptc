@@ -15,6 +15,8 @@ node_modules/
 !tests/fixtures/node-types/node_modules/
 dist/
 /packages/llvm-darwin-arm64/bin/
+/packages/runtime-darwin-arm64/artifacts/
+/packages/runtime-darwin-arm64/runtime-pack.json
 !tests/fixtures/fetch/node_modules/eventsource-parser/dist/
 !tests/fixtures/npm/node_modules/*/dist/
 !tests/fixtures/npm/workspace/*/dist/

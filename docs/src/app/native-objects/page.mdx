@@ -39,9 +39,10 @@ The `scriptc.native-link-info.v1` document reports:
 
 Paths inside each source set are relative to `runtime_pack.root`. FFI library
 paths are the manifest-resolved absolute inputs. No path points into scriptc's
-private build cache. The source pack requires a C compiler; the final link
-requires the macOS SDK and linker. Precompiled runtime packs are not shipped
-yet.
+private build cache. This external recipe remains source-based for transparency
+and custom-toolchain embedding. Ordinary scriptc executables instead consume
+the installed, hashed `@scriptc/runtime-darwin-arm64` object pack and require
+only the final macOS SDK and linker.
 
 ## C compiler as linker driver
 

@@ -8,7 +8,13 @@ import { fileURLToPath } from "node:url";
 // images already manage cache warming explicitly. Published npm packages do
 // not contain src/, so only installed consumers take this best-effort path.
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-if (!existsSync(join(packageRoot, "src")) && process.env["SCRIPTC_NO_CACHE"] !== "1") {
+if (
+  !existsSync(join(packageRoot, "src")) &&
+  process.env["SCRIPTC_NO_CACHE"] !== "1" &&
+  // The macOS arm64 install already carries immutable release/dev runtime
+  // artifacts. Do not compile a second toolchain-specific copy at install.
+  !(process.platform === "darwin" && process.arch === "arm64")
+) {
   try {
     const { warmNativeCaches } = await import("@scriptc/compiler");
     await warmNativeCaches();

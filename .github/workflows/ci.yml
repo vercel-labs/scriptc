@@ -44,6 +44,7 @@ jobs:
       - run: brew install llvm@22
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @scriptc/llvm-darwin-arm64 build:native
+      - run: pnpm --filter @scriptc/runtime-darwin-arm64 build:native
       - run: pnpm build
       # Separate vitest invocations because the shard axes must not mix: a file
       # lands in exactly ONE --shard slice, so an env-sharded file behind
@@ -135,6 +136,7 @@ jobs:
       - run: brew install llvm@22
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @scriptc/llvm-darwin-arm64 build:native
+      - run: pnpm --filter @scriptc/runtime-darwin-arm64 build:native
       - run: pnpm build
       - name: No-clang assembly/object contract
         if: matrix.shard == 1
@@ -144,7 +146,9 @@ jobs:
         run: >-
           pnpm test
           packages/compiler/test/native-codegen-integration.test.ts
+          packages/compiler/src/backend/runtime-pack.test.ts
           packages/cli/test/native-link-info.test.ts
+          packages/cli/test/runtime-pack.test.ts
           tests/harness/native-object-example.test.ts
       - name: LLVM-tier helper object differential (${{ matrix.shard }}/3)
         env:
@@ -160,11 +164,13 @@ jobs:
         if: matrix.shard == 1
         run: |
           pnpm --dir packages/runtime pack --pack-destination "$RUNNER_TEMP" --silent
+          pnpm --dir packages/runtime-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent
           pnpm --dir packages/compiler pack --pack-destination "$RUNNER_TEMP" --silent
           pnpm --dir packages/cli pack --pack-destination "$RUNNER_TEMP" --silent
           PREFIX="$RUNNER_TEMP/installed-scriptc"
           npm install --prefix "$PREFIX" --ignore-scripts \
             "$RUNNER_TEMP/scriptc-runtime-$(node -p "require('./packages/runtime/package.json').version").tgz" \
+            "$RUNNER_TEMP/scriptc-runtime-darwin-arm64-$(node -p "require('./packages/runtime-darwin-arm64/package.json').version").tgz" \
             "$RUNNER_TEMP/scriptc-llvm-darwin-arm64-$(node -p "require('./packages/llvm-darwin-arm64/package.json').version").tgz" \
             "$RUNNER_TEMP/scriptc-compiler-$(node -p "require('./packages/compiler/package.json').version").tgz" \
             "$RUNNER_TEMP/scriptc-$(node -p "require('./packages/cli/package.json').version").tgz"

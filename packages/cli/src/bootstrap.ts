@@ -113,8 +113,17 @@ async function tryFastPath(): Promise<number | null> {
     ...(optimization === "dev" ? { optimization: "dev" as const } : {}),
     npmStatic,
     ffiProfile: ffiPath === null ? null : { path: ffiPath, bytes: ffiBytes! },
-    target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${arch}:driver-tu`,
-    compiler: [process.env["SCRIPTC_CC"] ?? "clang"],
+    target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${arch}:${
+      process.platform === "darwin" && arch === "arm64" &&
+      (process.env["SCRIPTC_TARGET"] ?? "") === "" &&
+      backend !== "c" && !values.sanitize &&
+      process.env["SCRIPTC_RUNTIME_PACK"] !== "0" &&
+      process.env["SCRIPTC_FETCH_CURL"] !== "1" &&
+      ((process.env["SCRIPTC_CC"] ?? "") === "" || process.env["SCRIPTC_CC"] === "clang")
+        ? "runtime-pack"
+        : "driver-tu"
+    }`,
+    compiler: [process.env["SCRIPTC_LINKER"] ?? process.env["SCRIPTC_CC"] ?? "clang"],
     nativeEnvironment,
     nodeVersion: process.version,
   });

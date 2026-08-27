@@ -63,10 +63,11 @@ describe("surface manifest generation", () => {
   test("the version spine is the exact published version string", () => {
     const parsed = JSON.parse(committed) as SurfaceManifest;
     expect(parsed.compilerVersion).toBe(releaseVersion);
-    // The four packages publish in lockstep; a drifted stamp would make
+    // The five packages publish in lockstep; a drifted stamp would make
     // the spine ambiguous for a version pin.
     expect(readJson("packages/compiler/package.json").version).toBe(releaseVersion);
     expect(readJson("packages/runtime/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/runtime-darwin-arm64/package.json").version).toBe(releaseVersion);
     expect(readJson("packages/llvm-darwin-arm64/package.json").version).toBe(releaseVersion);
   });
 

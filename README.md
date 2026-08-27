@@ -1,6 +1,6 @@
 # scriptc
 
-scriptc compiles TypeScript and JavaScript to typed IR, readable C, textual LLVM IR, native assembly and objects, native executables, and WebAssembly modules. It uses the TypeScript compiler for parsing and type checking. Source outputs require only Node; macOS 15+ arm64 assembly/object output uses scriptc's bundled LLVM helper; executable builds currently use clang to compile/link the runtime.
+scriptc compiles TypeScript and JavaScript to typed IR, readable C, textual LLVM IR, native assembly and objects, native executables, and WebAssembly modules. It uses the TypeScript compiler for parsing and type checking. Source outputs require only Node. On macOS 15+ arm64, ordinary LLVM-tier executables use scriptc's bundled helper and precompiled runtime pack; clang is only the platform linker driver and does not compile program or runtime C.
 
 Static builds include a small native runtime, but no Node or JavaScript engine. Code that cannot compile statically is reported as a diagnostic. For npm packages and `any`-typed code, `--dynamic` embeds [quickjs-ng](https://github.com/quickjs-ng/quickjs) explicitly.
 
@@ -8,7 +8,7 @@ scriptc is experimental and targets macOS, Linux, Windows, and WebAssembly via W
 
 ## Installation
 
-The compiler requires Node.js 24 or newer. `--emit=ir|c|llvm` needs only Node. On macOS 15+ arm64, `--emit=asm|obj` additionally uses the optional platform helper installed with scriptc, but needs no compiler, archiver, linker, or SDK. Executable builds still require clang and the platform SDK. The executables it produces do not require Node.
+The compiler requires Node.js 24 or newer. `--emit=ir|c|llvm` needs only Node. On macOS 15+ arm64, `--emit=asm|obj` additionally uses the optional platform helper installed with scriptc, but needs no compiler, archiver, linker, or SDK. Executable builds need a platform linker driver and SDK; explicit C builds, LLVM fallbacks, and `--sanitize` additionally need a C compiler. The executables it produces do not require Node.
 
 ```console
 $ npm install -g scriptc

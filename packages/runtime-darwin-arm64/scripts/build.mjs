@@ -9,6 +9,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { RUNTIME_PACK_MATRIX } from "../runtime-pack-matrix.mjs";
+import { createDeterministicArchive } from "./archive.mjs";
 
 const run = promisify(execFile);
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -68,7 +69,7 @@ async function archive(id, sources, sourceRoot, flags) {
   });
   const output = join(root, `libscriptc-${id}.a`);
   const objects = sources.map((source) => join(objectRoot, source.replace(/\.c$/, ".o")));
-  await run(archiver, ["rcs", output, ...objects]);
+  await createDeterministicArchive(archiver, output, objects);
   await rm(objectRoot, { recursive: true, force: true });
   return {
     id,

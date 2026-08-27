@@ -7,6 +7,7 @@ import { arch } from "node:process";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { hostSupportsRuntimePack } from "../scripts/runtime-pack-host.mjs";
 import { CLI_OPTIONS, USAGE } from "./usage.js";
 
 // Node 24 can persist V8's compiled module bytecode. scriptc's CLI imports
@@ -114,7 +115,7 @@ async function tryFastPath(): Promise<number | null> {
     npmStatic,
     ffiProfile: ffiPath === null ? null : { path: ffiPath, bytes: ffiBytes! },
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${arch}:${
-      process.platform === "darwin" && arch === "arm64" &&
+      hostSupportsRuntimePack(process.platform, arch) &&
       (process.env["SCRIPTC_TARGET"] ?? "") === "" &&
       backend !== "c" && !values.sanitize &&
       process.env["SCRIPTC_RUNTIME_PACK"] !== "0" &&

@@ -80,6 +80,23 @@ test("resolves a package helper, emits atomically, and caches by all native inpu
   expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
 });
 
+test("cache publication failures do not discard a valid requested artifact", async () => {
+  const pkg = await fakePackage();
+  const cacheRoot = join(pkg.root, "cache");
+  const output = join(pkg.root, "uncached-success.o");
+  await mkdir(cacheRoot, { mode: 0o700 });
+  // Block creation of the cache family below an otherwise valid cache root.
+  await writeFile(join(cacheRoot, "native-codegen-v1"), "not a directory\n");
+
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, output),
+    cacheRoot,
+  });
+
+  expect(await readFile(output, "utf8")).toContain("define i32 @answer");
+  expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
+});
+
 test("reports a missing platform package as an actionable installation diagnostic", async () => {
   const root = await mkdtemp(join(tmpdir(), "scriptc-native-missing-test-"));
   dirs.push(root);

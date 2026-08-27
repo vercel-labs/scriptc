@@ -39,7 +39,7 @@ const readJson = (p: string): { version: string } =>
 
 // The version spine: the release workflow keys on packages/cli (the
 // published `scriptc` package); sync-versions.mjs stamps the same string
-// into runtime and compiler.
+// into runtime, the native LLVM helper, and compiler.
 const releaseVersion = readJson("packages/cli/package.json").version;
 
 const committed = readFileSync(manifestPath, "utf8");
@@ -63,10 +63,11 @@ describe("surface manifest generation", () => {
   test("the version spine is the exact published version string", () => {
     const parsed = JSON.parse(committed) as SurfaceManifest;
     expect(parsed.compilerVersion).toBe(releaseVersion);
-    // The three packages publish in lockstep; a drifted stamp would make
+    // The four packages publish in lockstep; a drifted stamp would make
     // the spine ambiguous for a version pin.
     expect(readJson("packages/compiler/package.json").version).toBe(releaseVersion);
     expect(readJson("packages/runtime/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/llvm-darwin-arm64/package.json").version).toBe(releaseVersion);
   });
 
   test("schema: ids unique and sorted, enums valid, codes on every non-static entry", () => {

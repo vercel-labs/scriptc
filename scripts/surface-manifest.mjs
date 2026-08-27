@@ -9,9 +9,9 @@
 // The version spine: compilerVersion is the EXACT published release version
 // — the version release.yml keys on (packages/cli/package.json, the
 // `scriptc` package) — so an external version pin matches the manifest's
-// string verbatim. All four published workspace packages must agree (the same check
-// the release workflow runs); a drifted tree fails generation instead of
-// stamping an ambiguous version.
+// string verbatim. All four published workspace packages must agree (the same
+// check the release workflow runs); a drifted tree fails generation instead
+// of stamping an ambiguous version.
 //
 // Usage:
 //   pnpm manifest             regenerate packages/compiler/surface-manifest.json
@@ -28,7 +28,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const readJson = (path) => JSON.parse(readFileSync(root + path, "utf8"));
 
 const version = readJson("packages/cli/package.json").version;
-for (const pkg of ["runtime", "compiler"]) {
+for (const pkg of ["runtime", "llvm-darwin-arm64", "compiler"]) {
   const v = readJson(`packages/${pkg}/package.json`).version;
   if (v !== version) {
     console.error(

@@ -110,9 +110,18 @@ jobs:
           --testNamePattern "host-native clang static build"
 
   llvm_artifacts_macos_arm64:
-    name: test (macOS arm64 LLVM artifacts, no clang)
+    name: test (macOS arm64 LLVM artifacts, no clang, ${{ matrix.shard }}/3)
     runs-on: macos-15
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      # The helper differential uses the harness's stable per-case sharding,
+      # keeping each macOS job below its timeout while the matrix union still
+      # exercises every LLVM-tier program.
+      SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/3
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -127,19 +136,23 @@ jobs:
       - run: pnpm --filter @scriptc/llvm-darwin-arm64 build
       - run: pnpm build
       - name: No-clang assembly/object contract
+        if: matrix.shard == 1
         run: pnpm test packages/cli/test/native-output.test.ts
       - name: Helper diagnostics and object/link parity
+        if: matrix.shard == 1
         run: pnpm test packages/compiler/test/native-codegen-integration.test.ts
-      - name: LLVM-tier helper object differential
+      - name: LLVM-tier helper object differential (${{ matrix.shard }}/3)
         env:
           SCRIPTC_LLVM_HELPER_ONLY: "1"
           SCRIPTC_TEST_WORKERS: "4"
         run: pnpm test tests/harness/llvm-differential.test.ts
       - name: Packaged helper contract
+        if: matrix.shard == 1
         run: |
           TARBALL=$(pnpm --dir packages/llvm-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent)
           node scripts/verify-llvm-package.mjs "$RUNNER_TEMP/$(basename "$TARBALL")"
       - name: Packed npm installation smoke
+        if: matrix.shard == 1
         run: |
           pnpm --dir packages/runtime pack --pack-destination "$RUNNER_TEMP" --silent
           pnpm --dir packages/compiler pack --pack-destination "$RUNNER_TEMP" --silent

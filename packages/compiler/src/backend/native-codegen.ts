@@ -282,7 +282,10 @@ export async function emitNativeArtifact(options: NativeCodegenOptions): Promise
         "empty_output",
       );
     }
-    if (cached !== null) await publishCachedFile(stage, cached);
+    // Cache publication is an optimization boundary. The helper has already
+    // produced a valid caller artifact, so a read-only/full cache must not
+    // discard it or turn an otherwise successful build into an exception.
+    if (cached !== null) await publishCachedFile(stage, cached).catch(() => undefined);
     await rename(stage, options.outputPath);
     await pruneBuildCache(root);
   } finally {

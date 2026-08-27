@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { accessSync, constants, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { validateLlvmHelperExports } from "./llvm-package-symbols.mjs";
 
 const tarball = process.argv[2];
 if (tarball === undefined) throw new Error("usage: verify-llvm-package.mjs <tarball>");
@@ -63,9 +64,10 @@ try {
   const exportedSymbols = execFileSync("nm", ["-gU", binary], { encoding: "utf8" })
     .trim().split("\n").filter(Boolean)
     .map((line) => line.trim().split(/\s+/).at(-1));
-  if (exportedSymbols.length !== 1 || exportedSymbols[0] !== "_main") {
+  const exportValidation = validateLlvmHelperExports(exportedSymbols);
+  if (!exportValidation.hasMain || exportValidation.unexpected.length > 0) {
     throw new Error(
-      `packed helper must export only _main, found: ${exportedSymbols.join(", ")}`,
+      `packed helper must export _main without LLVM globals, found: ${exportedSymbols.join(", ")}`,
     );
   }
   const loadCommands = execFileSync("otool", ["-l", binary], { encoding: "utf8" });

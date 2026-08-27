@@ -54,7 +54,7 @@ ${options.emitFailure === true
       : 'cp "$input" "$output"'}
 `);
   await chmod(bin, 0o755);
-  return { packageJson, log, root };
+  return { packageJson, bin, log, root };
 }
 
 function request(root: string, packageJson: string, output = join(root, "program.o")) {
@@ -112,6 +112,35 @@ test("reports a missing platform package as an actionable installation diagnosti
     message: expect.stringContaining("optional dependencies"),
   });
 });
+
+test.skipIf(process.platform === "win32")(
+  "reports unreadable or non-executable helper binaries as installation failures",
+  async () => {
+    for (const mode of [0o111, 0o644]) {
+      const pkg = await fakePackage();
+      await chmod(pkg.bin, mode);
+      await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
+        diagnosticCode: "SC3003",
+        detailCode: "unusable_binary",
+        message: expect.stringContaining("reinstall scriptc"),
+      });
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "reports helper identity execution failures as installation failures",
+  async () => {
+    const pkg = await fakePackage();
+    await writeFile(pkg.bin, "#!/definitely/missing/scriptc-interpreter\n");
+    await chmod(pkg.bin, 0o755);
+    await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
+      diagnosticCode: "SC3003",
+      detailCode: "identity_probe_failed",
+      message: expect.stringContaining("identity check"),
+    });
+  },
+);
 
 test("rejects protocol and package-version mismatches before emission", async () => {
   for (const options of [{ protocol: "99" }, { packageVersion: "9.9.9" }]) {

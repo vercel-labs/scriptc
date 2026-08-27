@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import { createRequire } from "node:module";
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { buildCacheRoot, prepareBuildCacheRoot, pruneBuildCache } from "./native-toolchain.js";
@@ -167,12 +168,35 @@ async function resolveHelper(
       "missing_binary",
     );
   }
+  try {
+    if (
+      process.platform !== "win32" &&
+      ((binaryStat.mode & 0o444) === 0 || (binaryStat.mode & 0o111) === 0)
+    ) throw new Error("missing read or execute mode bits");
+    await access(binaryPath, constants.R_OK | constants.X_OK);
+  } catch {
+    throw new NativeCodegenError(
+      "SC3003",
+      `LLVM native helper package ${target.helperPackage} is incomplete: ${binaryPath} is not readable and executable; reinstall scriptc`,
+      "unusable_binary",
+    );
+  }
   const cacheKey = `${binaryPath}\0${binaryStat.size}\0${binaryStat.mtimeMs}`;
   const load = async (): Promise<ResolvedHelper> => {
-    const [{ stdout }, binary] = await Promise.all([
-      invoke(binaryPath, ["version", "--format=json"]),
-      readFile(binaryPath),
-    ]);
+    let stdout: string;
+    let binary: Buffer;
+    try {
+      [{ stdout }, binary] = await Promise.all([
+        invoke(binaryPath, ["version", "--format=json"]),
+        readFile(binaryPath),
+      ]);
+    } catch (error) {
+      throw new NativeCodegenError(
+        "SC3003",
+        `LLVM native helper package ${target.helperPackage} could not be read and executed for its identity check: ${error instanceof Error ? error.message : String(error)}; reinstall scriptc`,
+        "identity_probe_failed",
+      );
+    }
     const rawVersion = parseJsonObject(stdout.trim());
     if (rawVersion === null) {
       throw new NativeCodegenError(

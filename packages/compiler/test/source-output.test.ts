@@ -85,6 +85,40 @@ test("an explicit source path never deletes same-stem sibling files", async () =
   }
 });
 
+test("an executable build never deletes same-stem assembly or object artifacts", async () => {
+  const { entry, outDir } = await fixture();
+  await mkdir(outDir, { recursive: true });
+  const siblings = [join(outDir, "main.s"), join(outDir, "main.o")];
+  await Promise.all(siblings.map((path) => writeFile(path, `caller-owned ${path}\n`)));
+  const result = await compile(entry, {
+    outDir,
+    outPath: join(outDir, "custom-executable"),
+    backend: "c",
+  });
+  if (!result.ok) throw new Error("executable build failed");
+  for (const path of siblings) {
+    await expect(readFile(path, "utf8")).resolves.toBe(`caller-owned ${path}\n`);
+  }
+});
+
+test.each([undefined, "c"] as const)(
+  "native program-object validation rejects backend %s as a diagnostic",
+  async (backend) => {
+    const { entry, outDir } = await fixture();
+    const result = await compile(entry, {
+      outDir,
+      outPath: join(outDir, "program"),
+      ...(backend === undefined ? {} : { backend }),
+      nativeProgramObject: true,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      diagnostics: [{ code: "SC3002", message: expect.stringContaining("backend explicitly set to llvm") }],
+    });
+    await expect(readdir(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+
 test("explicit LLVM output refuses unsupported programs with SC3001", async () => {
   const dir = join(import.meta.dirname, "../../../tests/fixtures/server/cases/tls-connect-basic");
   const entry = join(dir, "main.ts");

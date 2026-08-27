@@ -91,7 +91,7 @@ jobs:
       - name: Install and build
         run: |
           pnpm install --frozen-lockfile
-          pnpm --filter @scriptc/llvm-darwin-arm64 build
+          pnpm --filter @scriptc/llvm-darwin-arm64 build:native
           pnpm -r build
 
       - name: Check version sync

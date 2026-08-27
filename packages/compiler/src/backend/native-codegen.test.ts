@@ -16,6 +16,7 @@ async function fakePackage(options: {
   packageVersion?: string;
   emitFailure?: boolean;
   emptyOutput?: boolean;
+  missingOutput?: boolean;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-native-helper-test-"));
   dirs.push(root);
@@ -51,7 +52,9 @@ ${options.emitFailure === true
     ? "printf '%s\\n' '{\"ok\":false,\"code\":\"verification_failed\",\"message\":\"bad module\"}' >&2; exit 1"
     : options.emptyOutput === true
       ? ': > "$output"'
-      : 'cp "$input" "$output"'}
+      : options.missingOutput === true
+        ? ":"
+        : 'cp "$input" "$output"'}
 `);
   await chmod(bin, 0o755);
   return { packageJson, bin, log, root };
@@ -169,6 +172,15 @@ test("rejects a successful helper that leaves an empty staged output", async () 
   await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
     diagnosticCode: "SC3004",
     detailCode: "empty_output",
+  });
+});
+
+test("rejects a successful helper that creates no staged output", async () => {
+  const pkg = await fakePackage({ missingOutput: true });
+  await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
+    diagnosticCode: "SC3004",
+    detailCode: "empty_output",
+    message: expect.stringContaining("non-empty regular artifact"),
   });
 });
 

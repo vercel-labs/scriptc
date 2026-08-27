@@ -43,6 +43,7 @@ jobs:
           cache: pnpm
       - run: brew install llvm@22
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @scriptc/llvm-darwin-arm64 build:native
       - run: pnpm build
       # Separate vitest invocations because the shard axes must not mix: a file
       # lands in exactly ONE --shard slice, so an env-sharded file behind
@@ -133,7 +134,7 @@ jobs:
           cache: pnpm
       - run: brew install llvm@22
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @scriptc/llvm-darwin-arm64 build
+      - run: pnpm --filter @scriptc/llvm-darwin-arm64 build:native
       - run: pnpm build
       - name: No-clang assembly/object contract
         if: matrix.shard == 1

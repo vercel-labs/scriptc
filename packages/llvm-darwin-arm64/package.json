@@ -21,7 +21,8 @@
     "THIRD_PARTY_NOTICES"
   ],
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "true",
+    "build:native": "node scripts/build.mjs",
     "prepack": "test -x bin/scriptc-llvm-codegen"
   },
   "publishConfig": {

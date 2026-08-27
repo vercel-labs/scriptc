@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { release as osRelease, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -178,6 +178,37 @@ describe.runIf(supported)("LLVM native helper integration", () => {
     ]);
     expect(helperRun).toEqual(nodeRun);
     expect(clangRun).toEqual(nodeRun);
+  });
+
+  test("helper-object validation isolates concurrent link inputs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-helper-concurrent-"));
+    dirs.push(dir);
+    const firstEntry = join(dir, "first", "main.ts");
+    const secondEntry = join(dir, "second", "main.ts");
+    await Promise.all([mkdir(dirname(firstEntry)), mkdir(dirname(secondEntry))]);
+    await Promise.all([
+      writeFile(firstEntry, 'console.log("first concurrent helper");\n'),
+      writeFile(secondEntry, 'console.log("second concurrent helper");\n'),
+    ]);
+    const build = (entry: string, output: string) => compile(entry, {
+      outDir: dir,
+      outPath: output,
+      backend: "llvm",
+      nativeProgramObject: true,
+    });
+    const firstExe = join(dir, "first-program");
+    const secondExe = join(dir, "second-program");
+    const [first, second] = await Promise.all([
+      build(firstEntry, firstExe),
+      build(secondEntry, secondExe),
+    ]);
+    if (!first.ok || !second.ok) throw new Error("concurrent helper builds failed");
+    const [firstRun, secondRun] = await Promise.all([
+      run(firstExe, []),
+      run(secondExe, []),
+    ]);
+    expect(firstRun).toMatchObject({ stdout: Buffer.from("first concurrent helper\n"), exitCode: 0 });
+    expect(secondRun).toMatchObject({ stdout: Buffer.from("second concurrent helper\n"), exitCode: 0 });
   });
 
   test("partial executable-cache hits still emit the program object through the helper", async () => {

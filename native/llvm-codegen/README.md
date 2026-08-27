@@ -6,6 +6,15 @@ the AArch64 backend. The shipping `@scriptc/llvm-darwin-arm64` package builds
 and carries the executable; the compiler resolves that package directly and
 never searches `PATH` for this program.
 
+The ordinary workspace `pnpm -r build` does not rebuild this release artifact.
+On macOS arm64, install CMake, Ninja, and Homebrew `llvm@22`, then build it
+explicitly when working on native emission or preparing a package:
+
+```console
+$ brew install cmake ninja llvm@22
+$ pnpm --filter @scriptc/llvm-darwin-arm64 build:native
+```
+
 The protocol is intentionally small and versioned:
 
 The packaged helper itself requires macOS 15 or newer because that is the

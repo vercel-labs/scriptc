@@ -305,11 +305,11 @@ export async function emitNativeArtifact(options: NativeCodegenOptions): Promise
       "--diagnostic-format", "json",
       "--source-path", options.sourcePath,
     ]);
-    const size = (await stat(stage)).size;
-    if (size === 0) {
+    const emitted = await stat(stage).catch(() => null);
+    if (emitted === null || !emitted.isFile() || emitted.size === 0) {
       throw new NativeCodegenError(
         "SC3004",
-        "LLVM native helper completed without producing a non-empty artifact",
+        "LLVM native helper completed without producing a non-empty regular artifact",
         "empty_output",
       );
     }

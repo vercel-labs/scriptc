@@ -1,11 +1,12 @@
 import { InternalCompilerError } from "./errors.js";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, configuredTargetPlatform, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform } from "./backend/native-toolchain.js";
 import { emitCModule } from "./backend/c/c-emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
 import { emitNativeArtifact, NativeCodegenError } from "./backend/native-codegen.js";
+import { privateSiblingPath } from "./backend/build-cache.js";
 import { nativeCodegenTargetRefusal } from "./backend/targets.js";
 import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
 import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "./backend/library-identity-markers.js";
@@ -187,11 +188,6 @@ export interface CompileBaseOptions {
    * wasm32-wasi is a production LLVM target and never takes the automatic
    * C fallback; a missing LLVM lowering there is SC3001. */
   backend?: "c" | "llvm";
-  /** Internal validation lane: executable builds still use the existing
-   * linker/runtime recipe, but the program LLVM TU is compiled to an object
-   * by the bundled helper first. Not a CLI contract; Phase 2 corpus tests use
-   * it to compare helper and clang objects under identical link inputs. */
-  nativeProgramObject?: boolean;
   /** Native optimization posture. Release is the shipped -O2 default; dev
    * uses -O0 and stable multi-TU object caching for large LLVM programs. */
   optimization?: "release" | "dev";
@@ -215,6 +211,12 @@ export interface CompileBaseOptions {
  * historical compile() API, whose omitted output kind means executable. */
 export interface CompileOptions extends CompileBaseOptions {
   outputKind?: "exe";
+  /** Internal validation lane: executable builds still use the existing
+   * linker/runtime recipe, but the program LLVM TU is compiled to an object
+   * by the bundled helper first. Not a CLI contract; Phase 2 corpus tests use
+   * it to compare helper and clang objects under identical link inputs.
+   * Requires backend explicitly set to llvm. */
+  nativeProgramObject?: boolean;
 }
 
 /** Source-artifact compile options, discriminated by the required kind. */
@@ -226,6 +228,8 @@ export interface CompileSourceOptions extends CompileBaseOptions {
  * Statically executable/source callers should prefer the narrower interfaces. */
 export interface CompileRequestOptions extends CompileBaseOptions {
   outputKind?: CompileOutputKind;
+  /** Internal validation lane for executable requests. */
+  nativeProgramObject?: boolean;
 }
 
 export type CompileArtifact =
@@ -1115,18 +1119,27 @@ async function emitNativeProgramObject(
   entryPath: string,
   opts: CompileRequestOptions,
   llvm: string,
-): Promise<string> {
+): Promise<{ linkPath: string; artifactPath: string }> {
   const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
-  const objectPath = join(opts.outDir, `${stem}.helper.o`);
-  await emitNativeArtifact({
-    outputPath: objectPath,
-    llvm,
-    outputKind: "obj",
-    sourcePath: entryPath,
-    optimization: opts.optimization === "dev" ? "0" : "2",
-    ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
-  });
-  return objectPath;
+  const artifactPath = join(opts.outDir, `${stem}.helper.o`);
+  // compileExecutableNative recognizes object inputs by suffix. The random
+  // private name isolates concurrent builds; retain .o so the driver links
+  // it rather than attempting to compile it as source.
+  const linkPath = `${privateSiblingPath(artifactPath, "native-program-object")}.o`;
+  try {
+    await emitNativeArtifact({
+      outputPath: linkPath,
+      llvm,
+      outputKind: "obj",
+      sourcePath: entryPath,
+      optimization: opts.optimization === "dev" ? "0" : "2",
+      ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
+    });
+    return { linkPath, artifactPath };
+  } catch (error) {
+    await rm(linkPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function compileTracked(
@@ -1136,6 +1149,18 @@ async function compileTracked(
 ): Promise<CompileRequestResult> {
   entryPath = resolve(entryPath);
   const outputKind = opts.outputKind ?? "exe";
+  if (opts.nativeProgramObject === true &&
+      (outputKind !== "exe" || opts.backend !== "llvm")) {
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag(
+        "SC3002",
+        "native program-object validation requires an executable build with backend explicitly set to llvm",
+        entryPath,
+      )],
+      sourceTexts: new Map(),
+    };
+  }
   let ffi: FfiProfile | null = null;
   let ffiProfileBytes: Uint8Array | null = null;
   if (opts.ffiProfilePath !== undefined) {
@@ -1283,6 +1308,7 @@ async function compileTracked(
       };
     }
     let nativeInputPath = earlyHit.cPath;
+    let nativeProgramObject: { linkPath: string; artifactPath: string } | null = null;
     if (opts.nativeProgramObject === true) {
       if (earlyHit.native.backend !== "llvm") {
         throw new InternalCompilerError(
@@ -1290,11 +1316,12 @@ async function compileTracked(
         );
       }
       try {
-        nativeInputPath = await emitNativeProgramObject(
+        nativeProgramObject = await emitNativeProgramObject(
           entryPath,
           opts,
           await readFile(earlyHit.cPath, "utf8"),
         );
+        nativeInputPath = nativeProgramObject.linkPath;
       } catch (err) {
         if (!(err instanceof NativeCodegenError)) throw err;
         return {
@@ -1321,6 +1348,9 @@ async function compileTracked(
           });
         },
       );
+      if (nativeProgramObject !== null) {
+        await rename(nativeProgramObject.linkPath, nativeProgramObject.artifactPath);
+      }
     } catch (err) {
       if (ffi !== null && err instanceof CcCompileError) {
         return {
@@ -1333,6 +1363,10 @@ async function compileTracked(
         };
       }
       throw err;
+    } finally {
+      if (nativeProgramObject !== null) {
+        await rm(nativeProgramObject.linkPath, { force: true }).catch(() => undefined);
+      }
     }
     await pruneBuildCache(cacheRoot);
     return {
@@ -1434,7 +1468,10 @@ async function compileTracked(
   const removeStaleSourceArtifacts = async (keep: readonly string[]): Promise<void> => {
     const kept = new Set(keep.map((path) => resolve(path)));
     const candidates = outputKind === "exe"
-      ? Object.values(defaultSourcePaths)
+      // Executable builds can generate only these compatibility/translation
+      // unit siblings. Assembly and object outputs are independent primary
+      // artifacts, so an executable build must never claim or delete them.
+      ? [defaultSourcePaths.ir, defaultSourcePaths.c, defaultSourcePaths.llvm]
       : opts.defaultOutputPath === true
         ? [...Object.values(defaultSourcePaths), ...defaultExecutablePaths]
         : [];
@@ -1563,14 +1600,14 @@ async function compileTracked(
   }
   const executableCacheOptions = earlyCacheOptions;
   let publishedExecutable = false;
+  let nativeProgramObject: { linkPath: string; artifactPath: string } | null = null;
   try {
-    let nativeObjectPath: string | null = null;
     if (opts.nativeProgramObject === true) {
       if (backend !== "llvm" || llvmSource === null) {
         throw new InternalCompilerError("native program-object validation requires the LLVM backend");
       }
       try {
-        nativeObjectPath = await emitNativeProgramObject(entryPath, opts, llvmSource);
+        nativeProgramObject = await emitNativeProgramObject(entryPath, opts, llvmSource);
       } catch (err) {
         if (!(err instanceof NativeCodegenError)) throw err;
         return {
@@ -1582,7 +1619,7 @@ async function compileTracked(
     }
     await compileExecutableNative(
       nativeFeatures,
-      nativeObjectPath ?? cPath,
+      nativeProgramObject?.linkPath ?? cPath,
       opts.outPath,
       opts.sanitize ?? false,
       ffi,
@@ -1599,6 +1636,9 @@ async function compileTracked(
         publishedExecutable = true;
       },
     );
+    if (nativeProgramObject !== null) {
+      await rename(nativeProgramObject.linkPath, nativeProgramObject.artifactPath);
+    }
   } catch (err) {
     if (ffi !== null && err instanceof CcCompileError) {
       return {
@@ -1613,6 +1653,10 @@ async function compileTracked(
       };
     }
     throw err;
+  } finally {
+    if (nativeProgramObject !== null) {
+      await rm(nativeProgramObject.linkPath, { force: true }).catch(() => undefined);
+    }
   }
   if (!publishedExecutable) {
     await publishEarlyExecutableCache(cacheRoot, executableCacheOptions, {

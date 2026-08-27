@@ -9,6 +9,12 @@ pnpm install && pnpm -r build   # build the workspace
 pnpm test:sandbox              # full gate: ~4m custom image, ~9m cold managed fallback
 ```
 
+The ordinary workspace build does not rebuild the packaged macOS LLVM helper.
+When changing native assembly/object emission, install CMake, Ninja, and
+Homebrew `llvm@22`, then run
+`pnpm --filter @scriptc/llvm-darwin-arm64 build:native` explicitly. The macOS
+full test suite also needs that generated helper.
+
 Use focused local tests while iterating, then use `pnpm test:sandbox` whenever a
 full validation gate is required. It loads Sandbox configuration from the
 shell and `.env.local`, runs portable coverage across disposable Linux

@@ -146,6 +146,12 @@ $ vercel link && vercel env pull  # writes a project-scoped VERCEL_OIDC_TOKEN
 $ pnpm test:sandbox
 ```
 
+The normal workspace build needs no local LLVM installation. To rebuild the
+optional macOS arm64 assembly/object helper, install CMake, Ninja, and
+Homebrew `llvm@22`, then run
+`pnpm --filter @scriptc/llvm-darwin-arm64 build:native`. The macOS full test
+suite also uses that generated helper.
+
 `pnpm test:sandbox` loads `.env.local`, preflights Vercel authentication and
 project access, and uses the managed `vercel/sandbox/universal` image by
 default. It installs the repository-pinned Node, pnpm, and LLVM toolchain plus

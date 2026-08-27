@@ -3,6 +3,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hostSupportsRuntimePack } from "./runtime-pack-host.mjs";
 
 // Workspace installs should stay cheap and deterministic: repository test
 // images already manage cache warming explicitly. Published npm packages do
@@ -11,9 +12,9 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 if (
   !existsSync(join(packageRoot, "src")) &&
   process.env["SCRIPTC_NO_CACHE"] !== "1" &&
-  // The macOS arm64 install already carries immutable release/dev runtime
-  // artifacts. Do not compile a second toolchain-specific copy at install.
-  !(process.platform === "darwin" && process.arch === "arm64")
+  // A supported macOS arm64 install already carries immutable release/dev
+  // runtime artifacts. Older macOS hosts retain the source-toolchain path.
+  !hostSupportsRuntimePack()
 ) {
   try {
     const { warmNativeCaches } = await import("@scriptc/compiler");

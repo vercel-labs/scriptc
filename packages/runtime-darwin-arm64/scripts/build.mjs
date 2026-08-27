@@ -18,6 +18,7 @@ const runtimeSrc = join(runtimeRoot, "src");
 const vendorRoot = join(runtimeRoot, "vendor");
 const outputRoot = join(packageRoot, "artifacts");
 const manifestPath = join(packageRoot, "runtime-pack.json");
+const sourcePathFlags = [`-ffile-prefix-map=${repoRoot}=.`];
 
 if (process.platform !== "darwin" || process.arch !== "arm64") {
   process.stdout.write("@scriptc/runtime-darwin-arm64: skipped on this host\n");
@@ -49,7 +50,7 @@ async function sha256(path) {
 
 async function compile(source, output, flags) {
   await mkdir(dirname(output), { recursive: true });
-  await run(compiler, [...flags, "-c", source, "-o", output]);
+  await run(compiler, [...sourcePathFlags, ...flags, "-c", source, "-o", output]);
 }
 
 async function parallel(items, task) {
@@ -81,8 +82,9 @@ const privateRoot = `${outputRoot}.tmp-${process.pid}`;
 await rm(privateRoot, { recursive: true, force: true });
 await rm(outputRoot, { recursive: true, force: true });
 await mkdir(privateRoot, { recursive: true });
-// Build under the final path spelling so object debug metadata remains stable;
-// artifacts contain no source checkout paths after stripping debug information.
+// Build under the final path spelling so object metadata remains stable. The
+// compiler prefix map above also keeps __FILE__ and any debug paths independent
+// of the producer's checkout location.
 await rename(privateRoot, outputRoot);
 
 try {

@@ -252,6 +252,65 @@ describe.runIf(supported)("LLVM native helper integration", () => {
     }
   });
 
+  test("runtime-pack FFI system libraries are relinked after an in-place rebuild", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-ffi-cache-"));
+    dirs.push(dir);
+    const entry = join(dir, "main.ts");
+    const profile = join(dir, "ffi.json");
+    const source = join(dir, "probe.c");
+    const object = join(dir, "probe.o");
+    const library = join(dir, "libscriptc_cache_probe.a");
+    const cache = join(dir, "cache");
+    const output = join(dir, "program");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const oldLibraryPath = process.env["LIBRARY_PATH"];
+    const rebuildLibrary = async (value: number) => {
+      await writeFile(source, `double scriptc_cache_probe(void) { return ${value}; }\n`);
+      await execFileAsync("clang", ["-c", source, "-o", object]);
+      await execFileAsync("ar", ["rcs", library, object]);
+    };
+    try {
+      await writeFile(entry, [
+        "declare function nativeValue(): number;",
+        "console.log(nativeValue());",
+        "",
+      ].join("\n"));
+      await writeFile(profile, JSON.stringify({
+        ffi_format: 1,
+        functions: [{
+          name: "nativeValue",
+          symbol: "scriptc_cache_probe",
+          params: [],
+          returns: "f64",
+        }],
+        libraries: [],
+        system_libraries: ["scriptc_cache_probe"],
+      }));
+      process.env["SCRIPTC_CACHE_DIR"] = cache;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      process.env["LIBRARY_PATH"] = dir;
+      const options = { outDir: dir, outPath: output, backend: "llvm" as const, ffiProfilePath: profile };
+
+      await rebuildLibrary(1);
+      const first = await compile(entry, options);
+      if (!first.ok) throw new Error(first.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout.trim()).toBe("1");
+
+      await rebuildLibrary(2);
+      const second = await compile(entry, options);
+      if (!second.ok) throw new Error(second.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout.trim()).toBe("2");
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+      if (oldLibraryPath === undefined) delete process.env["LIBRARY_PATH"];
+      else process.env["LIBRARY_PATH"] = oldLibraryPath;
+    }
+  });
+
   test("object emission preserves outbound FFI declarations as native C ABI references", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-helper-ffi-"));
     dirs.push(dir);

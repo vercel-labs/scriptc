@@ -1066,10 +1066,11 @@ async function compileExecutableNative(
       optimization: features.optimization ?? "release",
     });
     await linkRuntimePackExecutable(plan, {
-      // A caller-selected linker can be a mutable wrapper with hidden inputs.
-      // Keep that path honest by relinking; the default resolved driver plus
-      // selected immutable pack/FFI files carries a replayable proof.
-      ...(onArtifactReady === undefined || process.env["SCRIPTC_LINKER"] !== undefined
+      // A caller-selected linker can be a mutable wrapper with hidden inputs,
+      // while an FFI profile can name thin archives or ambient -l libraries
+      // whose transitive files are not represented by the top-level paths.
+      // Keep both postures honest by performing their final link every time.
+      ...(onArtifactReady === undefined || process.env["SCRIPTC_LINKER"] !== undefined || ffi !== null
         ? {}
         : { onArtifactReady }),
     });

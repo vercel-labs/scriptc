@@ -81,7 +81,7 @@ Analyzes the program without producing a binary and reports, statement by statem
 
 ## scriptc cache warm
 
-Prebuilds release runtime objects and native TLS/dynamic-engine archives for targets that still compile runtime C locally. macOS arm64 installations already carry the release-built runtime pack and skip automatic warming. Use this command when preparing another supported target's container image or CI runner. Pass one or more of `runtime`, `tls`, and `dynamic` to seed only those families.
+Prebuilds release runtime objects and native TLS/dynamic-engine archives for targets that still compile runtime C locally. macOS 15+ arm64 installations already carry the release-built runtime pack and skip automatic warming; older macOS hosts retain warming for the source-toolchain path. Use this command when preparing another supported target's container image or CI runner. Pass one or more of `runtime`, `tls`, and `dynamic` to seed only those families.
 
 ## Options
 

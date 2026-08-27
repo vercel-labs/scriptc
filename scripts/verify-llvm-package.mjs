@@ -50,8 +50,15 @@ try {
     version.default_target !== "arm64-apple-macosx14.0.0"
   ) throw new Error(`packed helper identity mismatch: ${JSON.stringify(version)}`);
   const dependencies = execFileSync("otool", ["-L", binary], { encoding: "utf8" });
-  if (/\/opt\/homebrew|\/usr\/local|libLLVM|libzstd/.test(dependencies)) {
-    throw new Error(`packed helper has a non-system runtime dependency:\n${dependencies}`);
+  const nonSystemDependencies = dependencies.trim().split("\n").slice(1)
+    .map((line) => line.trim().split(" (compatibility version", 1)[0])
+    .filter((path) => path !== undefined &&
+      !path.startsWith("/usr/lib/") && !path.startsWith("/System/Library/"));
+  if (nonSystemDependencies.length > 0) {
+    throw new Error(
+      `packed helper has non-system runtime dependencies: ${nonSystemDependencies.join(", ")}\n` +
+      dependencies,
+    );
   }
   const exportedSymbols = execFileSync("nm", ["-gU", binary], { encoding: "utf8" })
     .trim().split("\n").filter(Boolean)

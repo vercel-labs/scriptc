@@ -1111,6 +1111,24 @@ async function compileExecutableNative(
   }
 }
 
+async function emitNativeProgramObject(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  llvm: string,
+): Promise<string> {
+  const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
+  const objectPath = join(opts.outDir, `${stem}.helper.o`);
+  await emitNativeArtifact({
+    outputPath: objectPath,
+    llvm,
+    outputKind: "obj",
+    sourcePath: entryPath,
+    optimization: opts.optimization === "dev" ? "0" : "2",
+    ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
+  });
+  return objectPath;
+}
+
 async function compileTracked(
   entryPath: string,
   opts: CompileRequestOptions,
@@ -1264,10 +1282,32 @@ async function compileTracked(
           : { llvmRefusal: earlyHit.native.llvmRefusal }),
       };
     }
+    let nativeInputPath = earlyHit.cPath;
+    if (opts.nativeProgramObject === true) {
+      if (earlyHit.native.backend !== "llvm") {
+        throw new InternalCompilerError(
+          "native program-object cache hit restored a non-LLVM translation unit",
+        );
+      }
+      try {
+        nativeInputPath = await emitNativeProgramObject(
+          entryPath,
+          opts,
+          await readFile(earlyHit.cPath, "utf8"),
+        );
+      } catch (err) {
+        if (!(err instanceof NativeCodegenError)) throw err;
+        return {
+          ok: false,
+          diagnostics: [nativeCodegenDiag(err.diagnosticCode, err.message, entryPath)],
+          sourceTexts: new Map(),
+        };
+      }
+    }
     try {
       await compileExecutableNative(
         earlyHit.native,
-        earlyHit.cPath,
+        nativeInputPath,
         opts.outPath,
         opts.sanitize ?? false,
         ffi,
@@ -1529,16 +1569,8 @@ async function compileTracked(
       if (backend !== "llvm" || llvmSource === null) {
         throw new InternalCompilerError("native program-object validation requires the LLVM backend");
       }
-      nativeObjectPath = join(opts.outDir, `${stem}.helper.o`);
       try {
-        await emitNativeArtifact({
-          outputPath: nativeObjectPath,
-          llvm: llvmSource,
-          outputKind: "obj",
-          sourcePath: entryPath,
-          optimization: opts.optimization === "dev" ? "0" : "2",
-          ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
-        });
+        nativeObjectPath = await emitNativeProgramObject(entryPath, opts, llvmSource);
       } catch (err) {
         if (!(err instanceof NativeCodegenError)) throw err;
         return {

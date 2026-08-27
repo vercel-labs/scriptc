@@ -71,5 +71,9 @@ if(APPLE)
   target_link_options(scriptc-llvm-codegen PRIVATE
     "LINKER:-exported_symbol,_main"
     "LINKER:-dead_strip"
+    # Homebrew's unversioned LLVM 22 bottle adds Z3 as an unconditional
+    # transitive dylib even though this helper never reaches the solver. Drop
+    # unused dylibs so the npm sidecar remains runnable without Homebrew.
+    "LINKER:-dead_strip_dylibs"
   )
 endif()

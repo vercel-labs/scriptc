@@ -180,6 +180,46 @@ describe.runIf(supported)("LLVM native helper integration", () => {
     expect(clangRun).toEqual(nodeRun);
   });
 
+  test("partial executable-cache hits still emit the program object through the helper", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-helper-cache-hit-"));
+    dirs.push(dir);
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const oldFatal = process.env["SCRIPTC_LLVM_TEST_FATAL"];
+    try {
+      process.env["SCRIPTC_CACHE_DIR"] = join(dir, "cache");
+      delete process.env["SCRIPTC_NO_CACHE"];
+      delete process.env["SCRIPTC_LLVM_TEST_FATAL"];
+      const options = {
+        outDir: dir,
+        outPath: join(dir, "program"),
+        backend: "llvm" as const,
+        nativeProgramObject: true,
+      };
+      const first = await compile(join(repoRoot, "tests/corpus/001-hello.ts"), options);
+      if (!first.ok) throw new Error(first.diagnostics.map((d) => d.message).join("\n"));
+      await rm(join(dir, "cache", "native-codegen-v1"), { recursive: true, force: true });
+
+      // Helper-object links deliberately retain a partial early-cache entry
+      // because the caller-owned object disables final-binary caching. Evict
+      // the independent helper-object cache so the hit must regenerate that
+      // object rather than compiling the restored .ll directly through clang.
+      process.env["SCRIPTC_LLVM_TEST_FATAL"] = "1";
+      const second = await compile(join(repoRoot, "tests/corpus/001-hello.ts"), options);
+      expect(second).toMatchObject({
+        ok: false,
+        diagnostics: [{ code: "SC3004", message: expect.stringContaining("LLVM fatal") }],
+      });
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+      if (oldFatal === undefined) delete process.env["SCRIPTC_LLVM_TEST_FATAL"];
+      else process.env["SCRIPTC_LLVM_TEST_FATAL"] = oldFatal;
+    }
+  });
+
   test("object emission preserves outbound FFI declarations as native C ABI references", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-helper-ffi-"));
     dirs.push(dir);

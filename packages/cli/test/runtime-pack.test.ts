@@ -47,7 +47,10 @@ describe.runIf(supported)("precompiled runtime executable builds", () => {
     const args = JSON.parse(await readFile(log, "utf8")) as string[];
     expect(args).not.toContain("-c");
     expect(args.some((arg) => arg.endsWith(".c") || arg.endsWith(".ll"))).toBe(false);
-    expect(args.some((arg) => arg.includes("runtime-darwin-arm64/artifacts"))).toBe(true);
+    expect(args.some((arg) =>
+      arg.includes("scriptc-runtime-pack-link-") && arg.includes("/artifacts/")
+    )).toBe(true);
+    expect(args.some((arg) => arg.includes("runtime-darwin-arm64/artifacts"))).toBe(false);
     await expect(execFileAsync(output, [], { encoding: "utf8" }))
       .resolves.toMatchObject({ stdout: "precompiled runtime\n" });
   });

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -169,6 +169,76 @@ describe("runtime pack manifests", () => {
       resolver: () => packagePath,
     })).rejects.toThrow("hash mismatch");
     expect(await readFile(packagePath, "utf8")).toContain("runtime-darwin-arm64");
+  });
+
+  test("rejects a selected artifact replaced before private link staging", async () => {
+    const { root, packagePath } = await fixture();
+    const programObject = join(root, "program.o");
+    const output = join(root, "program");
+    const linker = join(root, "linker.mjs");
+    await Promise.all([
+      writeFile(programObject, "program object"),
+      writeFile(linker, [
+        "#!/usr/bin/env node",
+        'import { writeFileSync } from "node:fs";',
+        'const outputIndex = process.argv.indexOf("-o");',
+        'writeFileSync(process.argv[outputIndex + 1], "linked executable");',
+        "",
+      ].join("\n")),
+    ]);
+    await chmod(linker, 0o755);
+    const plan = await createRuntimeLinkPlan({
+      target: MACOS_ARM64_TARGET,
+      programObject,
+      outPath: output,
+      features: BASE,
+      ffi: null,
+      optimization: "release",
+      resolver: () => packagePath,
+    });
+    await writeFile(join(root, "artifacts/base.o"), "tampered");
+
+    await expect(linkRuntimePackExecutable(plan, { linker })).rejects.toThrow(
+      "runtime pack changed after artifact selection",
+    );
+    expect(await stat(output).then(() => true, () => false)).toBe(false);
+  });
+
+  test("links a private verified copy when the installed artifact changes during linking", async () => {
+    const { root, packagePath } = await fixture();
+    const programObject = join(root, "program.o");
+    const runtimeObject = join(root, "artifacts/base.o");
+    const output = join(root, "program");
+    const linker = join(root, "linker.mjs");
+    await Promise.all([
+      writeFile(programObject, "program object"),
+      writeFile(linker, [
+        "#!/usr/bin/env node",
+        'import { readFileSync, writeFileSync } from "node:fs";',
+        `const installed = ${JSON.stringify(runtimeObject)};`,
+        'const outputIndex = process.argv.indexOf("-o");',
+        'const staged = process.argv.find((arg) => arg.endsWith("/artifacts/base.o"));',
+        'if (staged === undefined || staged === installed) process.exit(2);',
+        'writeFileSync(installed, "tampered");',
+        'writeFileSync(process.argv[outputIndex + 1], readFileSync(staged));',
+        "",
+      ].join("\n")),
+    ]);
+    await chmod(linker, 0o755);
+    const plan = await createRuntimeLinkPlan({
+      target: MACOS_ARM64_TARGET,
+      programObject,
+      outPath: output,
+      features: BASE,
+      ffi: null,
+      optimization: "release",
+      resolver: () => packagePath,
+    });
+
+    await linkRuntimePackExecutable(plan, { linker });
+
+    expect(await readFile(output, "utf8")).toBe("base");
+    expect(await readFile(runtimeObject, "utf8")).toBe("tampered");
   });
 
   test.runIf(process.platform === "darwin")(

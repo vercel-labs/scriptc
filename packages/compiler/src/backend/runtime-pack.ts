@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { readFile, realpath, rename, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
@@ -97,6 +98,10 @@ export interface RuntimePackSelection {
   archives: string[];
   systemLibraries: string[];
   dependencyPaths: string[];
+  /** Exact installed inputs observed while the selected artifacts were verified. */
+  sourceDependencies: NativeArtifactDependency[];
+  selectedRuntimeArtifacts: RuntimePackArtifact[];
+  selectedArchiveArtifacts: RuntimePackArtifact[];
 }
 
 export interface RuntimeLinkPlan {
@@ -261,6 +266,45 @@ async function verifyArtifact(root: string, artifact: RuntimePackArtifact): Prom
   return path;
 }
 
+async function stageRuntimePackArtifacts(selection: RuntimePackSelection): Promise<{
+  root: string;
+  replacements: Map<string, string>;
+}> {
+  if (!(await nativeArtifactDependenciesStillMatch(selection.sourceDependencies).catch(() => false))) {
+    throw new RuntimePackError("runtime pack changed after artifact selection", "invalid");
+  }
+  const stageRoot = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-link-"));
+  try {
+    const replacements = new Map<string, string>();
+    await Promise.all([
+      ...selection.selectedRuntimeArtifacts,
+      ...selection.selectedArchiveArtifacts,
+    ].map(async (artifact) => {
+      const source = join(selection.root, artifact.path);
+      const destination = join(stageRoot, artifact.path);
+      const bytes = await readFile(source).catch(() => {
+        throw new RuntimePackError(`runtime pack artifact is missing: ${artifact.path}`, "invalid");
+      });
+      if (
+        bytes.length !== artifact.size ||
+        createHash("sha256").update(bytes).digest("hex") !== artifact.sha256
+      ) {
+        throw new RuntimePackError(`runtime pack artifact hash mismatch: ${artifact.path}`, "invalid");
+      }
+      await mkdir(dirname(destination), { recursive: true });
+      await writeFile(destination, bytes, { flag: "wx", mode: 0o400 });
+      replacements.set(source, destination);
+    }));
+    if (!(await nativeArtifactDependenciesStillMatch(selection.sourceDependencies).catch(() => false))) {
+      throw new RuntimePackError("runtime pack changed while staging verified artifacts", "invalid");
+    }
+    return { root: stageRoot, replacements };
+  } catch (error) {
+    await rm(stageRoot, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function loadRuntimePack(options: {
   target: NativeTargetSpec;
   features: NativeLinkFeatures;
@@ -283,6 +327,12 @@ export async function loadRuntimePack(options: {
   }
   const root = dirname(packagePath);
   const manifestPath = join(root, "runtime-pack.json");
+  let identityDependencies: NativeArtifactDependency[];
+  try {
+    identityDependencies = await snapshotDependencies([packagePath, manifestPath]);
+  } catch {
+    throw new RuntimePackError(`could not read ${packageName}/runtime-pack.json`, "invalid");
+  }
   let packageManifest: { name?: string; version?: string };
   let manifest: RuntimePackManifest;
   try {
@@ -316,6 +366,16 @@ export async function loadRuntimePack(options: {
   const selectedVariants = selectedUnits.map((unit) => selectVariant(unit, features));
   const selectedArchives = manifest.archives
     .filter((archive) => evaluateRuntimePredicate(archive.predicate, features));
+  const selectedArtifactPaths = [
+    ...selectedVariants,
+    ...selectedArchives,
+  ].map((artifact) => join(root, artifact.path));
+  let artifactDependencies: NativeArtifactDependency[];
+  try {
+    artifactDependencies = await snapshotDependencies(selectedArtifactPaths);
+  } catch {
+    throw new RuntimePackError("runtime pack artifact set changed during selection", "invalid");
+  }
   const [runtimeObjects, archives] = await Promise.all([
     Promise.all(selectedVariants.map((artifact) => verifyArtifact(root, artifact))),
     Promise.all(selectedArchives.map((artifact) => verifyArtifact(root, artifact))),
@@ -323,6 +383,10 @@ export async function loadRuntimePack(options: {
   await Promise.all(manifest.licenses.map((license) => readFile(join(root, license.path)))).catch(() => {
     throw new RuntimePackError("runtime pack license payload is incomplete", "invalid");
   });
+  const sourceDependencies = [...identityDependencies, ...artifactDependencies];
+  if (!(await nativeArtifactDependenciesStillMatch(sourceDependencies).catch(() => false))) {
+    throw new RuntimePackError("runtime pack changed while verifying selected artifacts", "invalid");
+  }
   return {
     root,
     manifestPath,
@@ -334,7 +398,10 @@ export async function loadRuntimePack(options: {
     systemLibraries: manifest.system_libraries
       .filter((entry) => evaluateRuntimePredicate(entry.predicate, features))
       .map((entry) => entry.name),
-    dependencyPaths: [manifestPath, ...runtimeObjects, ...archives],
+    dependencyPaths: [packagePath, manifestPath, ...runtimeObjects, ...archives],
+    sourceDependencies,
+    selectedRuntimeArtifacts: selectedVariants,
+    selectedArchiveArtifacts: selectedArchives,
   };
 }
 
@@ -453,21 +520,35 @@ export async function linkRuntimePackExecutable(
   const linker = options.linker ?? process.env["SCRIPTC_LINKER"] ?? "clang";
   const linkerPath = await resolveExecutable(linker);
   const privateOut = privateSiblingPath(plan.outputPath, "runtime-pack-link");
-  const args = [
-    ...plan.driverFlags,
-    ...plan.inputs,
-    ...plan.systemLibraries.map((name) => `-l${name}`),
-    "-o", privateOut,
-  ];
-  // Snapshot every cache-bearing input before the linker can consume it. A
-  // package update or SDK/toolchain replacement during the subprocess must
-  // not let output built from one state ride a proof captured from the next.
-  const preLinkDependencies = options.onArtifactReady === undefined
-    ? null
-    : await linkToolchainDependencies(linkerPath)
-      .then((toolchain) => snapshotDependencies([...toolchain, ...plan.dependencyPaths]))
-      .catch(() => null);
+  let stagedRoot: string | null = null;
   try {
+    const staged = await stageRuntimePackArtifacts(plan.runtimePack);
+    stagedRoot = staged.root;
+    const args = [
+      ...plan.driverFlags,
+      ...plan.inputs.map((input) => staged.replacements.get(input) ?? input),
+      ...plan.systemLibraries.map((name) => `-l${name}`),
+      "-o", privateOut,
+    ];
+    // The pack dependency snapshots bracket both verification passes and the
+    // private staging copy. Snapshot the remaining cache-bearing inputs before
+    // the linker consumes them, then require the complete set to remain stable
+    // through publication.
+    const packDependencyPaths = new Set(
+      plan.runtimePack.sourceDependencies.map((dependency) => resolve(dependency.path)),
+    );
+    const additionalDependencyPaths = plan.dependencyPaths.filter(
+      (path) => !packDependencyPaths.has(resolve(path)),
+    );
+    const preLinkDependencies = options.onArtifactReady === undefined ||
+        !(await nativeArtifactDependenciesStillMatch(plan.runtimePack.sourceDependencies).catch(() => false))
+      ? null
+      : await linkToolchainDependencies(linkerPath)
+        .then(async (toolchain) => [
+          ...plan.runtimePack.sourceDependencies,
+          ...await snapshotDependencies([...toolchain, ...additionalDependencyPaths]),
+        ])
+        .catch(() => null);
     await execFileAsync(linker, args);
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
@@ -487,7 +568,7 @@ export async function linkRuntimePackExecutable(
       await options.onArtifactReady({ dependencies: preLinkDependencies }).catch(() => undefined);
     }
   } catch (error) {
-    if (error instanceof CcCompileError) throw error;
+    if (error instanceof CcCompileError || error instanceof RuntimePackError) throw error;
     const detail = subprocessFailureDetail(error);
     throw new CcCompileError(
       linker,
@@ -495,6 +576,11 @@ export async function linkRuntimePackExecutable(
       `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}`,
     );
   } finally {
-    await rm(privateOut, { force: true }).catch(() => undefined);
+    await Promise.all([
+      rm(privateOut, { force: true }).catch(() => undefined),
+      stagedRoot === null
+        ? Promise.resolve()
+        : rm(stagedRoot, { recursive: true, force: true }).catch(() => undefined),
+    ]);
   }
 }

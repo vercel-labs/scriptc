@@ -27,6 +27,7 @@ test("closure/box runtime: RC cascades clean under ASan + audit", async () => {
     join(srcDir, "scr_error.c"),
     join(srcDir, "scr_exception.c"),
     join(srcDir, "scr_object.c"),
+    ...(process.platform === "linux" ? ["-D_GNU_SOURCE", "-lm"] : []),
   ]);
   const { stderr } = await execFileAsync(bin);
   expect(stderr.trim()).toBe("all closure tests passed");

@@ -29,7 +29,7 @@
  *   export const envMsgs       = [{ env: "NAME", msg: "arm" }, ...] as const;
  */
 import * as ts from "./ts7/adapter.js";
-import type { SrcLoc } from "../ir/nodes.js";
+import type { SrcLoc } from "../ir/ir.js";
 
 /** A syntactic type shape — exactly what the source spells, no checker. */
 export type ContractTypeShape =
@@ -38,7 +38,7 @@ export type ContractTypeShape =
   | { k: "text" }
   | { k: "bytes" }
   | { k: "void" }
-  | { k: "absent" } // `null` / `undefined` type constituents
+  | { k: "absent"; unit: "null" | "undefined" }
   | { k: "ref"; name: string }
   | { k: "array"; elem: ContractTypeShape }
   | { k: "tuple"; elems: ContractTypeShape[] }
@@ -105,6 +105,8 @@ export interface ContractFacts {
 }
 
 const CONVENTION_CONSTS = new Set(["modelUnbound", "msgUnbound", "appearanceMsg", "chromeMsg", "envMsgs"]);
+const CONTRACT_GLOBAL_TYPES = new Set(["Array", "ReadonlyArray", "Uint8Array"]);
+const moduleTypeBindings = new WeakMap<ts.SourceFile, Set<string>>();
 
 function locOf(file: ts.SourceFile, node: ts.Node): SrcLoc {
   return { file: file.fileName, start: node.getStart(), end: node.end };
@@ -119,6 +121,54 @@ function propName(name: ts.Node): string | null {
   if (ts.isIdentifier(name)) return name.text;
   if (ts.isStringLiteral(name)) return name.text;
   return null;
+}
+
+/** Module-local type bindings which hide same-spelled globals. The contract
+ * reader deliberately has no checker, but blindly recognizing `Array`,
+ * `ReadonlyArray`, or `Uint8Array` by text can publish a slice/bytes contract
+ * for a user-declared record. Imports and declarations are module-scoped
+ * regardless of statement order, so one syntax-tree pass is sufficient. */
+function localTypeBindings(file: ts.SourceFile): Set<string> {
+  const cached = moduleTypeBindings.get(file);
+  if (cached !== undefined) return cached;
+  const names = new Set<string>();
+  const add = (name: ts.Identifier | undefined): void => {
+    if (name !== undefined && CONTRACT_GLOBAL_TYPES.has(name.text)) names.add(name.text);
+  };
+  for (const stmt of file.statements) {
+    if (
+      ts.isInterfaceDeclaration(stmt) ||
+      ts.isTypeAliasDeclaration(stmt) ||
+      ts.isClassDeclaration(stmt) ||
+      ts.isEnumDeclaration(stmt)
+    ) {
+      add(stmt.name);
+      continue;
+    }
+    if (ts.isImportEqualsDeclaration(stmt)) {
+      add(stmt.name);
+      continue;
+    }
+    if (!ts.isImportDeclaration(stmt) || stmt.importClause === undefined) continue;
+    const clause = stmt.importClause;
+    add(clause.name);
+    if (clause.namedBindings === undefined) continue;
+    if (ts.isNamespaceImport(clause.namedBindings)) add(clause.namedBindings.name);
+    else for (const el of clause.namedBindings.elements) add(el.name);
+  }
+  moduleTypeBindings.set(file, names);
+  return names;
+}
+
+/** Whether a bare type name reaches the ambient global rather than a local
+ * declaration/import or a type parameter in an enclosing declaration. */
+function isUnshadowedGlobalType(file: ts.SourceFile, node: ts.TypeNode, name: string): boolean {
+  if (localTypeBindings(file).has(name)) return false;
+  for (let scope = node.parent; scope !== undefined && scope !== file; scope = scope.parent) {
+    const params = (scope as ts.Node & { typeParameters?: readonly ts.TypeParameterDeclaration[] }).typeParameters;
+    if (params?.some((p) => p.name.text === name) === true) return false;
+  }
+  return true;
 }
 
 function shapeOfMembers(file: ts.SourceFile, members: readonly ts.Node[], onBad: (text: string) => void): ContractField[] {
@@ -142,7 +192,7 @@ function shapeOfMembers(file: ts.SourceFile, members: readonly ts.Node[], onBad:
 /** The syntactic shape of a type node, over the closed vocabulary the
  * sidecar schema can express. Anything else lands as `unsupported` with
  * the source text preserved for the refusal message. */
-export function typeShape(file: ts.SourceFile, node: ts.TypeNode): ContractTypeShape {
+function typeShape(file: ts.SourceFile, node: ts.TypeNode): ContractTypeShape {
   switch (node.kind) {
     case ts.SyntaxKind.BooleanKeyword:
       return { k: "bool" };
@@ -153,15 +203,22 @@ export function typeShape(file: ts.SourceFile, node: ts.TypeNode): ContractTypeS
     case ts.SyntaxKind.VoidKeyword:
       return { k: "void" };
     case ts.SyntaxKind.UndefinedKeyword:
-      return { k: "absent" };
+      return { k: "absent", unit: "undefined" };
     default:
       break;
   }
   if (ts.isParenthesizedTypeNode(node)) return typeShape(file, node.type);
+  // `readonly T[]` is the same contract shape as `T[]`: readonly is a
+  // checker-only view, and format 1 has one mutability-neutral slice
+  // spelling. Preserve the wrapped shape so readonly tuples still reach
+  // the projector's explicit tuple refusal.
+  if (ts.isTypeOperatorNode(node) && node.operator === ts.SyntaxKind.ReadonlyKeyword) {
+    return typeShape(file, node.type);
+  }
   if (ts.isLiteralTypeNode(node)) {
     const lit = node.literal;
     if (ts.isStringLiteral(lit)) return { k: "stringLit", text: lit.text };
-    if (lit.kind === ts.SyntaxKind.NullKeyword) return { k: "absent" };
+    if (lit.kind === ts.SyntaxKind.NullKeyword) return { k: "absent", unit: "null" };
     return { k: "unsupported", text: node.getText(file) };
   }
   if (ts.isArrayTypeNode(node)) return { k: "array", elem: typeShape(file, node.elementType) };
@@ -194,8 +251,9 @@ export function typeShape(file: ts.SourceFile, node: ts.TypeNode): ContractTypeS
   if (ts.isTypeReferenceNode(node)) {
     if (!ts.isIdentifier(node.typeName)) return { k: "unsupported", text: node.getText(file) };
     const name = node.typeName.text;
-    if (name === "Uint8Array" && (node.typeArguments?.length ?? 0) === 0) return { k: "bytes" };
-    if (name === "Array" && node.typeArguments?.length === 1) {
+    const global = CONTRACT_GLOBAL_TYPES.has(name) && isUnshadowedGlobalType(file, node, name);
+    if (global && name === "Uint8Array" && (node.typeArguments?.length ?? 0) === 0) return { k: "bytes" };
+    if (global && (name === "Array" || name === "ReadonlyArray") && node.typeArguments?.length === 1) {
       return { k: "array", elem: typeShape(file, node.typeArguments[0]!) };
     }
     if ((node.typeArguments?.length ?? 0) > 0) return { k: "unsupported", text: node.getText(file) };

@@ -28,11 +28,10 @@
  *    in tsc codes at all: cjsExportDiscardReason (lowering) names every
  *    genuinely discarded export, so relaxing the checker's stricter
  *    modeling loses nothing.
- *  - isNodeEsmFile: 5.9.3 under bundler sets impliedNodeFormat ONLY for
- *    .mjs/.cjs-family files (probed) and falls back to syntactic module
- *    detection for .js/.ts; 7's client SourceFile has no impliedNodeFormat,
- *    so this lane spells exactly that observed behavior: extensions first,
- *    then externalModuleIndicator.
+ *  - isNodeEsmFile: 7's client SourceFile has no impliedNodeFormat, so this
+ *    lane spells Node's format decision directly: fixed extensions first,
+ *    then an explicit nearest-package `type`, then syntax detection for
+ *    ambiguous .js/.ts files.
  *  - Malformed tsconfig.json: tsgo's parseConfigFile swallows JSONC syntax
  *    errors (recovers to empty options) where 5.9.3 reported a passthrough
  *    diagnostic, so this lane validates the config's JSONC syntax itself
@@ -45,34 +44,44 @@ import { dirname, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
+  commonJsModuleSyntaxDiag,
+  invalidPackageConfigDiag,
   strictNullChecksFloorDiag,
   tscPassthroughDiag,
   unsupportedDiag,
 } from "../diagnostics/diagnostic.js";
-import { isNodeModulesPath, nearestPkgJsonPath, projectDtsRuntimeSibling, resolveBareModule, resolveProjectImport, resolveRelativeModule, resolveTypeDirective, setProjectRealm } from "./resolve.js";
+import { isNodeModulesPath, nearestInvalidPackageJsonPath, nearestPackageType, nearestPkgJsonPath, projectDtsRuntimeSibling, resolveBareModule, resolveProjectImport, resolveRelativeModule, resolveTypeDirective, setProjectRealm } from "./resolve.js";
 import { probeNodeImportRefusal, probeNodeRequireRefusal } from "./npm.js";
 import { isNpmStaticPackage, npmStaticActive, npmStaticFsShadow, npmStaticPackageOfPath, reportNpmStaticOffender, setNpmStaticPackages } from "./npm-static.js";
 import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
 import { cjsLexerVisibleNames } from "./cjs-lexer.js";
 import {
-  ADOPTED_OPTIONS,
   ambientDtsPath,
+  fallbackDtsPath,
+  isNodeTypesPath,
+  overridesDtsPath,
+  tsgoPath,
+} from "./dts-paths.js";
+import {
   builtinDefaultImportModule,
   canonicalBuiltinModule,
-  clearWorkspacePackages,
-  fallbackDtsPath,
-  isJsSourceFileName,
-  isNodeTypesPath,
-  isRelativeSpecifier,
-  isWorkspacePackageName,
-  JS_ANY_OPERATOR_CODES,
-  JS_RELAXED_TSC_CODES,
-  overridesDtsPath,
-  registerWorkspacePackage,
   SUPPORTED_NODE_MODULES,
   unsupportedModuleFeatureOf,
+} from "./builtin-modules.js";
+import {
+  clearWorkspacePackages,
+  isRelativeSpecifier,
+  isWorkspacePackageName,
+  registerWorkspacePackage,
   workspacePackageOfPath,
-} from "./shared.js";
+} from "./workspace-registry.js";
+import {
+  ADOPTED_OPTIONS,
+  isJsSourceFileName,
+  JS_ANY_OPERATOR_CODES,
+  JS_RELAXED_TSC_CODES,
+} from "./tsc-codes.js";
+import { trackedFileExists } from "./input-tracker.js";
 
 const BASE_OPTIONS: ts.Ts7CompilerOptions = {
   strict: true,
@@ -82,6 +91,14 @@ const FORCED_OPTIONS: ts.Ts7CompilerOptions = {
   target: ts.ScriptTarget.ESNext as number,
   module: ts.ModuleKind.ESNext as number,
   moduleResolution: ts.ModuleResolutionKind.Bundler,
+  // Every file Node executes has its own lexical module wrapper: ESM has a
+  // module environment and CommonJS has the per-file function wrapper. In
+  // particular, an ambiguous file whose ONLY ESM marker is top-level await
+  // must not remain a TypeScript global script (otherwise declarations in
+  // sibling files merge and reads cross module boundaries). Runtime format
+  // classification is intentionally independent below; this option is only
+  // the binder's scope decision.
+  moduleDetection: ts.ModuleDetectionKind.Force,
   lib: ["lib.es2025.d.ts"],
   types: [],
   allowImportingTsExtensions: true,
@@ -195,6 +212,15 @@ export interface LoadResult {
    * checkPreflight. */
   startupCrash?: StartupCrash | null;
   configDiags: ScrDiagnostic[];
+  /** Coverage-only external host modules: exact bare specifier → local
+   * declaration file. These participate in checker resolution but never
+   * become runtime module edges. */
+  externalTypes: ReadonlyMap<string, string>;
+  /** The mapped declarations plus their relative declaration-file closure,
+   * keyed by normalized file name and attributed to every owning external
+   * specifier. Multiple exact module names may deliberately share one
+   * declaration surface. */
+  externalTypeSpecifiersByFile: ReadonlyMap<string, readonly string[]>;
   projectWorld: () => ts.Program;
 }
 
@@ -209,7 +235,97 @@ export interface StartupCrash {
   loc: { file: string; start: number; end: number };
 }
 
-function loadProgram7(host: ts.Ts7Host, entryPath: string): LoadResult & { disposeAll: () => void } {
+/** True when a coverage mapping names one exact bare host module. TypeScript
+ * gives `paths` keys containing `*` pattern semantics, so accepting one here
+ * would silently broaden the mapping beyond the specifier the caller named. */
+export function isExactExternalTypeSpecifier(specifier: string): boolean {
+  return (
+    specifier !== "" &&
+    !specifier.startsWith(".") &&
+    !specifier.startsWith("/") &&
+    !specifier.startsWith("#") &&
+    !specifier.startsWith("node:") &&
+    !specifier.includes("*")
+  );
+}
+
+function externalHostModuleDiag7(specifier: string, node: ts.Node): ScrDiagnostic {
+  return unsupportedDiag(
+    "SC1010",
+    locOf7(node),
+    `the '${specifier}' external host module (types supplied by --external-types, but no runtime implementation or scriptc lowering was provided)`,
+    "the declaration mapping is analysis-only: coverage continues through project code, while executing this module requires an embedder integration with explicit runtime semantics",
+  );
+}
+
+/** Expand each mapped declaration entry through RELATIVE declaration
+ * dependencies. Declaration packages commonly expose a barrel index.d.ts;
+ * the structural types declared in its sibling files are part of the same
+ * checker-only host surface. Bare imports deliberately do not inherit this
+ * trust: they name a separate package/surface and need their own mapping. */
+function externalTypeFileClosure7(
+  program: ts.Program,
+  externalTypes: ReadonlyMap<string, string>,
+): ReadonlyMap<string, readonly string[]> {
+  const ownersByFile = new Map<string, Set<string>>();
+  const addOwner = (file: string, specifier: string): boolean => {
+    let owners = ownersByFile.get(file);
+    if (owners === undefined) {
+      owners = new Set();
+      ownersByFile.set(file, owners);
+    }
+    if (owners.has(specifier)) return false;
+    owners.add(specifier);
+    return true;
+  };
+  for (const [specifier, file] of externalTypes) {
+    addOwner(tsgoPath(resolve(file)), specifier);
+  }
+
+  const queue: { sf: ts.SourceFile; owner: string }[] = [];
+  for (const [owner, entry] of externalTypes) {
+    const file = tsgoPath(resolve(entry));
+    const sf = program.getSourceFile(file);
+    if (sf?.isDeclarationFile) queue.push({ sf, owner });
+  }
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    const { sf, owner } = queue.shift()!;
+    const file = tsgoPath(resolve(sf.fileName));
+    const visitKey = `${file}\0${owner}`;
+    if (visited.has(visitKey)) continue;
+    visited.add(visitKey);
+
+    const admit = (dep: ts.SourceFile | null): void => {
+      if (dep === null || !dep.isDeclarationFile) return;
+      const depFile = tsgoPath(resolve(dep.fileName));
+      if (!addOwner(depFile, owner)) return;
+      queue.push({ sf: dep, owner });
+    };
+    // SourceFile.imports includes import/export declarations, import =
+    // require(), and import("…") type nodes. Only relative edges inherit
+    // the mapped entry's ownership.
+    for (const node of sf.imports) {
+      if (ts.isStringLiteralLike(node) && isRelativeSpecifier(node.text)) {
+        admit(resolveImport7(program, sf, node.text));
+      }
+    }
+    // Triple-slash path references are the other declaration-local edge.
+    for (const ref of sf.referencedFiles) {
+      const depPath = tsgoPath(resolve(dirname(sf.fileName), ref.fileName));
+      admit(program.getSourceFile(depPath) ?? null);
+    }
+  }
+  return new Map(
+    [...ownersByFile].map(([file, owners]) => [file, [...owners]] as const),
+  );
+}
+
+function loadProgram7(
+  host: ts.Ts7Host,
+  entryPath: string,
+  externalTypes: ReadonlyMap<string, string> = new Map(),
+): LoadResult & { disposeAll: () => void } {
   const config = adoptProjectConfig7(host, entryPath);
   const nodeTypes = config.configFile ? resolveNodeTypes7(entryPath) : null;
   // skipLibCheck is FORCED with @types/node in the program: checking a
@@ -227,18 +343,27 @@ function loadProgram7(host: ts.Ts7Host, entryPath: string): LoadResult & { dispo
   // so tsgo's OWN resolution of the bare specifiers lands on the same
   // source files the preflight resolver answers — the checker types the
   // driver against the package's real TypeScript, not its shipped .d.ts.
-  const paths = provenancePaths();
-  if (paths !== null) options = { ...options, paths };
+  const provenance = provenancePaths();
+  if (provenance !== null || externalTypes.size > 0) {
+    const paths: Record<string, string[]> = { ...(provenance ?? {}) };
+    for (const [specifier, declarationPath] of externalTypes) {
+      paths[specifier] = [declarationPath];
+    }
+    options = { ...options, paths };
+  }
   const coreRoots = [entryPath, ambientDtsPath(), nodeTypes ?? fallbackDtsPath()];
   const program = ts.createProgram([...coreRoots, overridesDtsPath()], options, host);
   const entry = program.getSourceFile(entryPath);
   if (!entry) throw new Error(`could not load ${entryPath}`);
+  const externalTypeSpecifiersByFile = externalTypeFileClosure7(program, externalTypes);
   let projectWorld: ts.Program | null = null;
   return {
     program,
     entry,
     moduleOrder: [],
     configDiags: config.diags,
+    externalTypes,
+    externalTypeSpecifiersByFile,
     projectWorld: () => (projectWorld ??= ts.createProgram(coreRoots, options, host)),
     disposeAll: () => {
       projectWorld?.dispose();
@@ -258,11 +383,37 @@ export function loadProgram(
      * modules this load (npm-static.ts owns the doctrine). Every load
      * RESETS the module state, so flagless loads always start clean. */
     npmStatic?: Iterable<string>;
+    /** Coverage-only type surfaces for modules supplied by an embedder.
+     * Exact bare specifiers only; values never become runtime edges. */
+    externalTypes?: ReadonlyMap<string, string> | Readonly<Record<string, string>> | undefined;
   },
 ): LoadResult & { dispose: () => void } {
   // Absolute from the start: tsgo's world is absolute-path-keyed (the CLI
   // resolves before calling; this covers direct API callers too).
   entryPath = resolve(entryPath);
+  const externalTypeEntries = opts?.externalTypes instanceof Map
+    ? [...opts.externalTypes]
+    : Object.entries(opts?.externalTypes ?? {});
+  const externalTypes = new Map<string, string>();
+  for (const [specifier, file] of externalTypeEntries) {
+    if (!isExactExternalTypeSpecifier(specifier)) {
+      throw new TypeError(
+        `invalid external type specifier ${JSON.stringify(specifier)} (expected an exact bare package specifier)`,
+      );
+    }
+    if (!/\.d\.(?:ts|mts|cts)$/.test(file)) {
+      throw new TypeError(
+        `invalid external type declaration ${JSON.stringify(file)} for ${JSON.stringify(specifier)} (expected a .d.ts, .d.mts, or .d.cts file)`,
+      );
+    }
+    const declarationPath = resolve(file);
+    if (!trackedFileExists(declarationPath)) {
+      throw new TypeError(
+        `external type declaration for ${JSON.stringify(specifier)} does not name a readable file: ${declarationPath}`,
+      );
+    }
+    externalTypes.set(specifier, declarationPath);
+  }
   setNpmStaticPackages(opts?.npmStatic ?? []);
   // Workspace-package registrations reset per load (same discipline as the
   // npm-static set), then the opted-in names are probed UP FRONT: a
@@ -293,7 +444,7 @@ export function loadProgram(
       (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
   };
   const host = new ts.Ts7Host({ cwd: dirname(entryPath), fsShadow });
-  const load = loadProgram7(host, entryPath);
+  const load = loadProgram7(host, entryPath, externalTypes);
   return {
     ...load,
     dispose: () => {
@@ -476,12 +627,22 @@ function requireTdzRisk7(
       return undefined;
     });
   };
+  // These are the exact roots the TDZ analysis scans eagerly. Their files
+  // are phase-managed already, so warm their deferred identifiers as one
+  // symbol-only batch instead of paying one IPC query per occurrence.
+  checker.prefetchSymbolRoots(
+    stmts.slice(0, k).filter((stmt) => !ts.isFunctionDeclaration(stmt)),
+  );
   for (let i = 0; i < k && hit === null; i++) {
     const s = stmts[i]!;
     if (ts.isFunctionDeclaration(s)) continue;
     scan(s);
   }
   while (hit === null && work.length > 0) {
+    // A scanned reference can make a hoisted declaration's body reachable
+    // to this analysis. Batch every currently discovered root before
+    // retaining the historical LIFO traversal order.
+    checker.prefetchSymbolRoots(work);
     scan(work.pop()!);
   }
   return hit;
@@ -508,15 +669,213 @@ function nestedBareRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
   return out;
 }
 
+type RequireCallBindingKind7 = "ambient" | "createRequire" | "source";
+
+function stripRequireCasts7(expr: ts.Expression): ts.Expression {
+  let cur = expr;
+  while (
+    ts.isParenthesizedExpression(cur) ||
+    ts.isAsExpression(cur) ||
+    ts.isTypeAssertion(cur) ||
+    ts.isNonNullExpression(cur)
+  ) {
+    cur = cur.expression;
+  }
+  return cur;
+}
+
+/** The supported-builtin provenance of an imported identifier, narrowed to
+ * the one member this preflight distinction needs. Mirrors the lowering's
+ * builtinImportOf alias handling so a re-export facade remains supported. */
+function isCreateRequireImport7(program: ts.Program, ident: ts.Identifier): boolean {
+  const checker = program.getTypeChecker();
+  const symbol = checker.getSymbolAtLocation(ident);
+  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  if (decl === undefined || !ts.isImportSpecifier(decl)) return false;
+  const importDecl = decl.parent.parent.parent;
+  if (ts.isImportDeclaration(importDecl) && ts.isStringLiteral(importDecl.moduleSpecifier)) {
+    const module = canonicalBuiltinModule(importDecl.moduleSpecifier.text);
+    const member = decl.propertyName?.text ?? decl.name.text;
+    if (module === "module" && member === "createRequire") return true;
+  }
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+    const target = checker.getAliasedSymbol(symbol);
+    const targetDecl = checker.declarationsOf(target)[0];
+    if (targetDecl !== undefined && targetDecl.getSourceFile().isDeclarationFile) {
+      for (let p: ts.Node | undefined = targetDecl.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
+        if (ts.isModuleDeclaration(p) && ts.isStringLiteral(p.name)) {
+          return canonicalBuiltinModule(p.name.text) === "module" && target.name === "createRequire";
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/** True only for the createRequire binding shape the lowering recognizes:
+ * a const initialized from node:module's createRequire with a base naming
+ * the current file. Arbitrary source declarations named `require` must not
+ * ride the module-edge lowering, which would erase their calls. */
+function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifier): boolean {
+  const checker = program.getTypeChecker();
+  const symbol = checker.getSymbolAtLocation(callee);
+  const decl = symbol
+    ? checker.declarationsOf(symbol).find((d): d is ts.VariableDeclaration => ts.isVariableDeclaration(d))
+    : undefined;
+  if (
+    decl === undefined ||
+    decl.initializer === undefined ||
+    !ts.isVariableDeclarationList(decl.parent) ||
+    (decl.parent.flags & ts.NodeFlags.Const) === 0
+  ) {
+    return false;
+  }
+  const init = stripRequireCasts7(decl.initializer);
+  if (
+    !ts.isCallExpression(init) ||
+    init.questionDotToken !== undefined ||
+    !ts.isIdentifier(init.expression) ||
+    !isCreateRequireImport7(program, init.expression) ||
+    init.arguments.length !== 1
+  ) {
+    return false;
+  }
+  const base = stripRequireCasts7(init.arguments[0]!);
+  if (ts.isIdentifier(base) && base.text === "__filename") return true;
+  return (
+    ts.isPropertyAccessExpression(base) &&
+    base.questionDotToken === undefined &&
+    ts.isMetaProperty(base.expression) &&
+    base.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+    (base.name.text === "url" || base.name.text === "filename")
+  );
+}
+
+/** Classifies a require-shaped call as Node's ambient CommonJS global, the
+ * one supported createRequire source binding, or another source binding.
+ * The scanners still collect createRequire calls because they carry static
+ * module edges; other source bindings get a pointed fence before lowering
+ * can mistake them for module syntax. */
+function requireCallBindingKind7(program: ts.Program, node: ts.Node): RequireCallBindingKind7 {
+  const call = ts.isVariableDeclaration(node) ? node.initializer : node;
+  if (!call || !ts.isCallExpression(call) || !ts.isIdentifier(call.expression)) return "ambient";
+  const checker = program.getTypeChecker();
+  const symbol = checker.getSymbolAtLocation(call.expression);
+  if (symbol === undefined) return "ambient";
+  const decls = checker.declarationsOf(symbol);
+  if (decls.length === 0 || decls.every((d) => d.getSourceFile().isDeclarationFile)) return "ambient";
+  return isCreateRequireBinding7(program, call.expression) ? "createRequire" : "source";
+}
+
+function esmRequireFeature7(kind: Exclude<RequireCallBindingKind7, "createRequire">): string {
+  return kind === "ambient"
+    ? "require() in an ES module (Node throws ReferenceError — use import)"
+    : "calls through a source binding named 'require' (this spelling is reserved for CommonJS/createRequire module edges — rename the binding)";
+}
+
+const CJS_WRAPPER_NAMES = new Set(["require", "module", "exports", "__dirname", "__filename"]);
+
+function bindingDeclaresCjsWrapper7(name: ts.BindingName): ts.Identifier | null {
+  if (ts.isIdentifier(name)) return CJS_WRAPPER_NAMES.has(name.text) ? name : null;
+  for (const el of name.elements) {
+    if (el.name === undefined) continue;
+    const hit = bindingDeclaresCjsWrapper7(el.name);
+    if (hit !== null) return hit;
+  }
+  return null;
+}
+
+function insideFunctionLike7(node: ts.Node): boolean {
+  for (let p = node.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
+    if (ts.isFunctionLike(p)) return true;
+  }
+  return false;
+}
+
+/** The first syntax marker Node's ambiguous-file detector recognizes. This
+ * cannot use ts.isExternalModule: moduleDetection=force deliberately gives
+ * EVERY executable file module-local checker scope, including CommonJS.
+ * Runtime classification remains Node's own narrower question: value-level
+ * import/export forms, import.meta, top-level await/for-await, or a top-level
+ * lexical declaration that would redeclare a CommonJS wrapper binding. */
+function nodeEsmSyntaxMarker7(sf: ts.SourceFile): ts.Node | null {
+  for (const stmt of sf.statements) {
+    if (ts.isImportDeclaration(stmt) && !erasedTypeOnlyImport(stmt)) return stmt;
+    if (
+      ts.isExportDeclaration(stmt) &&
+      !stmt.isTypeOnly &&
+      !erasedTypeOnlyReexport(stmt)
+    ) {
+      return stmt;
+    }
+    if (ts.isExportAssignment(stmt)) return stmt;
+    if (
+      ts.canHaveModifiers(stmt) &&
+      ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true
+    ) {
+      return stmt;
+    }
+    if (
+      ts.isVariableStatement(stmt) &&
+      (stmt.declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0
+    ) {
+      for (const decl of stmt.declarationList.declarations) {
+        const hit = bindingDeclaresCjsWrapper7(decl.name);
+        if (hit !== null) return hit;
+      }
+    }
+    if (ts.isClassDeclaration(stmt) && stmt.name !== undefined && CJS_WRAPPER_NAMES.has(stmt.name.text)) {
+      return stmt.name;
+    }
+  }
+
+  let found: ts.Node | null = null;
+  ts.walkPreorder(sf, (node) => {
+    if (
+      ts.isMetaProperty(node) &&
+      node.keywordToken === ts.SyntaxKind.ImportKeyword
+    ) {
+      found = node;
+      return "stop";
+    }
+    if (
+      !insideFunctionLike7(node) &&
+      (ts.isAwaitExpression(node) ||
+        (ts.isForOfStatement(node) && node.awaitModifier !== undefined))
+    ) {
+      found = node;
+      return "stop";
+    }
+    return undefined;
+  });
+  return found;
+}
+
+const nodeEsmFileCache7 = new WeakMap<ts.SourceFile, boolean>();
+
 /** True when Node would treat this file as an ES MODULE (never defining
- * require/__dirname there): .mjs always, .cjs never, and .js/.ts by
- * syntactic module detection — spelled to 5.9.3's OBSERVED bundler-mode
- * behavior (it set impliedNodeFormat only for the mjs/cjs families; 7's
- * client SourceFile has no impliedNodeFormat at all). */
+ * require/__dirname there): fixed extensions first, then an explicit
+ * nearest-package type, then Node's syntax markers for ambiguous .js/.ts
+ * files. TypeScript's external-module bit is forced for checker scoping and
+ * therefore intentionally plays no part in this runtime decision. */
 function isNodeEsmFile7(sf: ts.SourceFile): boolean {
-  if (sf.fileName.endsWith(".cjs") || sf.fileName.endsWith(".cts")) return false;
-  if (sf.fileName.endsWith(".mjs") || sf.fileName.endsWith(".mts")) return true;
-  return ts.isExternalModule(sf);
+  const cached = nodeEsmFileCache7.get(sf);
+  if (cached !== undefined) return cached;
+  let result: boolean;
+  if (sf.fileName.endsWith(".cjs") || sf.fileName.endsWith(".cts")) {
+    result = false;
+  } else if (sf.fileName.endsWith(".mjs") || sf.fileName.endsWith(".mts")) {
+    result = true;
+  } else {
+    const packageType = nearestPackageType(sf.fileName);
+    result = packageType === "module"
+      ? true
+      : packageType === "commonjs"
+        ? false
+        : nodeEsmSyntaxMarker7(sf) !== null;
+  }
+  nodeEsmFileCache7.set(sf, result);
+  return result;
 }
 
 /** A JavaScript source file Node treats as CommonJS (not an ES module):
@@ -577,6 +936,7 @@ function selfImportTdzFences7(
   const checkNamed = (bindingName: ts.Identifier): void => {
     const sym = checker.getSymbolAtLocation(bindingName);
     if (sym === undefined || !(sym.flags & ts.SymbolFlags.Alias)) return;
+    checker.prefetchSymbolNodesExact(identifierOccurrences7(sf, bindingName.text));
     const end = tdzEndOf(checker.getAliasedSymbol(sym));
     if (end === null) return;
     const visit = (node: ts.Node): void => {
@@ -604,6 +964,7 @@ function selfImportTdzFences7(
     const nsName = clause.namedBindings.name;
     const nsSym = checker.getSymbolAtLocation(nsName);
     if (nsSym === undefined) return;
+    checker.prefetchSymbolNodesExact(identifierOccurrences7(sf, nsName.text));
     const visit = (node: ts.Node): void => {
       if (
         ts.isPropertyAccessExpression(node) &&
@@ -638,6 +999,7 @@ function nsBindingUsesAreBareStatements7(
   const checker = program.getTypeChecker();
   const bindingSym = checker.getSymbolAtLocation(nsName);
   if (bindingSym === undefined) return false;
+  checker.prefetchSymbolNodesExact(identifierOccurrences7(sf, nsName.text));
   let bareOnly = true;
   const visit = (node: ts.Node): void => {
     if (!bareOnly) return;
@@ -764,7 +1126,7 @@ function nonInertTopLevel7(program: ts.Program, sf: ts.SourceFile): ts.Node | nu
    * ToString/ToNumber/ToPrimitive can never reach a user valueOf. */
   const primitiveTyped = (e: ts.Expression): boolean => {
     const t = checker.getTypeAtLocation(e);
-    const parts = t.isUnionType() ? t.getTypes() : [t];
+    const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
     return parts.every((p) => (p.flags & PRIM) !== 0);
   };
   /** The identifier's symbol lives entirely in declaration files — a
@@ -951,6 +1313,18 @@ function chainRoot7(e: ts.Expression): ts.Expression {
   return root;
 }
 
+/** Identifier occurrences a binding-identity preflight scan will query.
+ * Gathered without checker traffic so managed deferred bodies can be
+ * warmed in one exact symbol batch before the semantic walk. */
+function identifierOccurrences7(root: ts.Node, text: string): ts.Identifier[] {
+  const out: ts.Identifier[] = [];
+  ts.walkPreorder(root, (node) => {
+    if (ts.isIdentifier(node) && node.text === text) out.push(node);
+    return undefined;
+  });
+  return out;
+}
+
 /** The first use of a binding this cycle-closing import introduces that
  * sits OUTSIDE a deferred position (a read there can observe the
  * partially-initialized exporter), or null when every use defers.
@@ -974,6 +1348,7 @@ function backEdgeUseOffence7(
   for (const bindingName of bindingNames) {
     const sym = checker.getSymbolAtLocation(bindingName);
     if (sym === undefined) continue;
+    checker.prefetchSymbolNodesExact(identifierOccurrences7(sf, bindingName.text));
     let offence: { name: string; node: ts.Node } | null = null;
     const visit = (node: ts.Node): void => {
       if (offence !== null || ts.isImportDeclaration(node)) return;
@@ -1141,7 +1516,7 @@ function resolveNpmImport7(
     // resolves and runs it exactly like any installed package, so it IS an
     // npm import; the realpath'd answer escaping node_modules must not
     // refuse the edge. Registered so path-keyed package attribution
-    // (shared.ts) recognizes the package's real files. Anything else
+    // (workspace-registry.ts) recognizes the package's real files. Anything else
     // whose answer left node_modules stays refused.
     if (resolved.workspaceDir === undefined) return null;
     registerWorkspacePackage(resolved.packageName, resolved.workspaceDir);
@@ -1451,13 +1826,14 @@ function preflight7(load: LoadResult): {
     for (const d of errorsOf(load.projectWorld())) diags.push(toPassthrough(d));
   }
 
+  // Preflight and lowering share this CheckerFacade. Claim executable
+  // source files after workspace discovery and the tsc gate but before
+  // structural preflight checker queries, so a miss cannot trigger the old
+  // whole-file sweep (and eagerly fetch every dead body's answers). The
+  // structure wave includes declaration headers and top-level code;
+  // reachable bodies are added by lowering's worklists.
   const ambient = ambientDtsPath();
-  // node_modules JS that no --npm-static opt-in claims is NOT program
-  // source even when maxNodeModuleJsDepth pulled it into the checker's
-  // program (see nodeModulesJsSuppressed above): its execution home is the
-  // island, so preflight's statement walks skip it — no import fences, no
-  // module edges, no statement counts from files the lowering never lowers.
-  const userFiles = program
+  const programFiles = program
     .getSourceFiles()
     .filter(
       (sf) =>
@@ -1465,13 +1841,38 @@ function preflight7(load: LoadResult): {
         !sf.isDeclarationFile &&
         !sf.fileName.endsWith(".json") &&
         (!isNodeModulesPath(sf.fileName) || npmStaticPackageOfPath(sf.fileName) !== null) &&
-        // Workspace-linked shipped JS (see islandJsFile): its execution
-        // home is the island exactly like node_modules JS, so no import
-        // fences, no module edges, no statement counts from it. Its .ts
-        // files (a workspace package imported bare AND reached relatively)
-        // stay program source — only the island-bound JS steps out.
         !islandJsFile(sf.fileName),
     );
+  program.getTypeChecker().prefetchSourceFileStructures(programFiles);
+
+  // node_modules JS that no --npm-static opt-in claims is NOT program
+  // source even when maxNodeModuleJsDepth pulled it into the checker's
+  // program (see nodeModulesJsSuppressed above): its execution home is the
+  // island, so preflight's statement walks skip it — no import fences, no
+  // module edges, no statement counts from files the lowering never lowers.
+  const userFiles = programFiles;
+
+  // Node stops at the nearest package.json even when it is malformed, and
+  // an explicit CommonJS scope (or .cjs/.cts extension) disables ambiguous-
+  // file syntax detection entirely. TypeScript's bundler checker models
+  // neither loader rule, so restore them before any module-edge analysis:
+  // one malformed-scope diagnostic per package file, and one pointed syntax
+  // diagnostic per CommonJS source file.
+  const invalidPackageConfigs = new Set<string>();
+  for (const sf of userFiles) {
+    const invalidConfig = nearestInvalidPackageJsonPath(sf.fileName);
+    if (invalidConfig !== null) {
+      if (!invalidPackageConfigs.has(invalidConfig)) {
+        invalidPackageConfigs.add(invalidConfig);
+        diags.push(invalidPackageConfigDiag(invalidConfig, { file: sf.fileName, start: 0, end: 0 }));
+      }
+      continue;
+    }
+    if (!isNodeEsmFile7(sf)) {
+      const marker = nodeEsmSyntaxMarker7(sf);
+      if (marker !== null) diags.push(commonJsModuleSyntaxDiag(locOf7(marker)));
+    }
+  }
 
   const ambientModules = new Set<string>(SUPPORTED_NODE_MODULES);
 
@@ -1548,7 +1949,12 @@ function preflight7(load: LoadResult): {
         // fence); `import type x = require(...)` is pure type surface and
         // lowers to nothing.
         if (ts.isExternalModuleReference(stmt.moduleReference) && !stmt.isTypeOnly) {
-          diags.push(unsupportedDiag("SC1013", locOf7(stmt), "import = require(...) assignments"));
+          const spec = stmt.moduleReference.expression;
+          if (spec !== undefined && ts.isStringLiteralLike(spec) && load.externalTypes.has(spec.text)) {
+            diags.push(externalHostModuleDiag7(spec.text, stmt));
+          } else {
+            diags.push(unsupportedDiag("SC1013", locOf7(stmt), "import = require(...) assignments"));
+          }
         }
         continue;
       }
@@ -1562,6 +1968,10 @@ function preflight7(load: LoadResult): {
         if (stmt.isTypeOnly || erasedTypeOnlyReexport(stmt)) continue;
         if (!stmt.moduleSpecifier) continue;
         const fromSpec = ts.isStringLiteral(stmt.moduleSpecifier) ? stmt.moduleSpecifier.text : "";
+        if (load.externalTypes.has(fromSpec)) {
+          diags.push(externalHostModuleDiag7(fromSpec, stmt));
+          continue;
+        }
         if (!isRelativeSpecifier(fromSpec)) {
           // NAMED re-exports from a SUPPORTED builtin pass (`export { ok }
           // from "node:assert"` — a universal re-export facade facade): the
@@ -1630,6 +2040,10 @@ function preflight7(load: LoadResult): {
       const specNode: ts.Expression | undefined = stmt.moduleSpecifier;
       if (specNode === undefined || !ts.isStringLiteral(specNode)) continue;
       const spec = specNode.text;
+      if (load.externalTypes.has(spec)) {
+        diags.push(externalHostModuleDiag7(spec, stmt));
+        continue;
+      }
       const isRelative = isRelativeSpecifier(spec);
       const isBare = !isRelative && !ambientModules.has(spec);
       // --npm-static: an opted-in package importing node:module admits
@@ -1857,9 +2271,13 @@ function preflight7(load: LoadResult): {
         for (const req of requiresOf7(stmt)) {
           const loc = { file: sf.fileName, start: req.node.getStart(sf), end: req.node.getEnd() };
           if (isNodeEsmFile7(sf)) {
-            diags.push(
-              unsupportedDiag("SC1013", loc, "require() in an ES module (Node throws ReferenceError — use import)"),
-            );
+            const bindingKind = requireCallBindingKind7(program, req.node);
+            if (bindingKind !== "createRequire") {
+              diags.push(unsupportedDiag("SC1013", loc, esmRequireFeature7(bindingKind)));
+              continue;
+            }
+          }
+          if (load.externalTypes.has(req.spec)) {
             continue;
           }
           if (req.decl && ts.isArrayBindingPattern(req.decl.name)) {
@@ -1930,35 +2348,47 @@ function preflight7(load: LoadResult): {
           if (dep) deps.push({ dep });
         }
       }
-      if (!ts.isExternalModule(sf)) {
-        for (const call of nestedBareRequiresOf7(sf)) {
-          const spec = requireSpecOf7(call)!;
-          const loc = { file: sf.fileName, start: call.getStart(sf), end: call.getEnd() };
-          if (!isRelativeSpecifier(spec)) {
-            // --npm-static: opted-in packages ride the program-module edge
-            // (the statement-level require branch above).
-            const npmReq = !spec.startsWith("#") ? resolveNpmImport7(sf.fileName, spec) : null;
-            if (npmReq !== null && isNpmStaticPackage(npmReq.packageName)) {
-              const nDep = npmStaticProgramDep(program, npmReq.packageName, npmReq.typesFile);
-              if (nDep !== null) deps.push({ dep: nDep });
-              continue;
-            }
-            if (canonicalBuiltinModule(spec) === null && !processModuleAliasRequire7(spec, null)) {
-              // Binding-less by construction — same require-site throw
-              // channel as the statement-level form above.
-              if (probeNodeRequireRefusal(sf.fileName, spec) === null) {
-                diags.push(unsupportedDiag("SC1010", loc, unsupportedModuleFeatureOf(spec)));
-              }
-            }
+      const nestedBareRequires = nestedBareRequiresOf7(sf);
+      program.getTypeChecker().prefetchSymbolNodesExact(
+        nestedBareRequires.flatMap((call) => ts.isIdentifier(call.expression) ? [call.expression] : []),
+      );
+      for (const call of nestedBareRequires) {
+        const spec = requireSpecOf7(call)!;
+        const loc = { file: sf.fileName, start: call.getStart(sf), end: call.getEnd() };
+        if (isNodeEsmFile7(sf)) {
+          const bindingKind = requireCallBindingKind7(program, call);
+          if (bindingKind !== "createRequire") {
+            diags.push(unsupportedDiag("SC1013", loc, esmRequireFeature7(bindingKind)));
             continue;
           }
-          const dep = resolveImport7(program, sf, spec);
-          if (dep && dep.fileName.endsWith(".json")) {
-            diags.push(unsupportedDiag("SC1012", loc, "require() of JSON modules"));
-            continue;
-          }
-          if (dep) deps.push({ dep });
         }
+        if (load.externalTypes.has(spec)) {
+          continue;
+        }
+        if (!isRelativeSpecifier(spec)) {
+          // --npm-static: opted-in packages ride the program-module edge
+          // (the statement-level require branch above).
+          const npmReq = !spec.startsWith("#") ? resolveNpmImport7(sf.fileName, spec) : null;
+          if (npmReq !== null && isNpmStaticPackage(npmReq.packageName)) {
+            const nDep = npmStaticProgramDep(program, npmReq.packageName, npmReq.typesFile);
+            if (nDep !== null) deps.push({ dep: nDep });
+            continue;
+          }
+          if (canonicalBuiltinModule(spec) === null && !processModuleAliasRequire7(spec, null)) {
+            // Binding-less by construction — same require-site throw
+            // channel as the statement-level form above.
+            if (probeNodeRequireRefusal(sf.fileName, spec) === null) {
+              diags.push(unsupportedDiag("SC1010", loc, unsupportedModuleFeatureOf(spec)));
+            }
+          }
+          continue;
+        }
+        const dep = resolveImport7(program, sf, spec);
+        if (dep && dep.fileName.endsWith(".json")) {
+          diags.push(unsupportedDiag("SC1012", loc, "require() of JSON modules"));
+          continue;
+        }
+        if (dep) deps.push({ dep });
       }
     }
   }
@@ -2269,19 +2699,25 @@ const nodeBuiltinNames: ReadonlySet<string> = new Set(builtinModules);
  * recognizers, the CJS export-identity analysis, ordered imports,
  * resolution, locations), exported under the names the 5.9.3 program.ts
  * established (the phase-2 port kept every spelling); the world-neutral
- * helpers re-export from shared.ts. */
+ * helpers re-export from their focused modules. */
 
 export {
   ambientDtsPath,
-  builtinDefaultImportModule,
-  canonicalBuiltinModule,
   fallbackDtsPath,
   isNodeTypesPath,
-  npmPackageNameOf,
   overridesDtsPath,
+} from "./dts-paths.js";
+
+export {
+  builtinDefaultImportModule,
+  canonicalBuiltinModule,
   SUPPORTED_BUILTIN_MODULES,
+} from "./builtin-modules.js";
+
+export {
+  npmPackageNameOf,
   workspacePackageOfPath,
-} from "./shared.js";
+} from "./workspace-registry.js";
 
 export {
   requireSpecOf7 as requireSpecOf,

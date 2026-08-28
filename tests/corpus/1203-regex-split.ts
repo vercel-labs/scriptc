@@ -32,3 +32,16 @@ console.log(show("a1b2c".split(/\d/g)));
 const csv = "name;age;city";
 const cols = csv.split(/;/);
 console.log(show(cols), cols[1].replace(/a/, "A"));
+
+// The optional limit shares split's ToUint32 rules with string separators.
+console.log(show("a1b2c3".split(/\d/, 0)));
+console.log(show("a1b2c3".split(/\d/, 1)), show("a1b2c3".split(/\d/, 3)));
+console.log(show("abc".split(/(?:)/, 2)));
+console.log(show("a1b2c3".split(/\d/, 4294967298)));
+console.log(show("a1b2c3".split(/\d/, -1)));
+
+function optionalLimit(limit?: number): string {
+  return show("a1b2c3".split(/\d/, limit));
+}
+console.log(show("a1b2c3".split(/\d/, undefined)));
+console.log(optionalLimit(), optionalLimit(undefined), optionalLimit(2));

@@ -7,7 +7,7 @@
  * backend "llvm" surfaces it as diagnostic SC3001 instead — the
  * fail-loudly pin. Its own module so the emitter and the shape/RC tables
  * can both throw it without an import cycle. */
-import type { SrcLoc } from "../../ir/nodes.js";
+import type { SrcLoc } from "../../ir/ir.js";
 
 export class LlvmUnsupportedError extends Error {
   constructor(
@@ -16,7 +16,7 @@ export class LlvmUnsupportedError extends Error {
   ) {
     super(
       `the LLVM backend does not support this construct yet (${kind}); ` +
-        `build with the reference C backend (--backend c, or the default's transparent fallback)`,
+        `build with the debugging C backend (--backend c, or the native default's transparent fallback)`,
     );
     this.name = "LlvmUnsupportedError";
   }

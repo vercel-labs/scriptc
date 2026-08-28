@@ -10,7 +10,7 @@
  * leaks nothing and frees nothing twice (double-free shows up as ASan
  * use-after-free on the rc field or a negative count here). */
 #ifdef SCR_RC_AUDIT
-static long scr_live_strings = 0;
+static SCR_TL long scr_live_strings = 0;
 long scr_str_live_count(void) { return scr_live_strings; }
 #endif
 
@@ -41,8 +41,8 @@ typedef struct {
   size_t u16len;   /* SCR_U16_UNKNOWN until computed */
   size_t cu, cb;   /* cursor: byte offset cb starts the char at unit cu */
 } ScrSidx;
-static ScrSidx scr_sidx_tab[SCR_SIDX_N];
-static unsigned scr_sidx_clock;
+static SCR_TL ScrSidx scr_sidx_tab[SCR_SIDX_N];
+static SCR_TL unsigned scr_sidx_clock;
 
 static void scr_sidx_purge(const ScrStr *s) {
   for (int i = 0; i < SCR_SIDX_N; i++) {
@@ -90,7 +90,7 @@ ScrStr *scr_str_new(const char *bytes, size_t len) {
  * blocks instead of paging in fresh zero-filled memory 40k times. Disabled
  * in the audit lane so ASan sees every logical free as a real free. */
 #ifndef SCR_RC_AUDIT
-static ScrStr *scr_str_spare;
+static SCR_TL ScrStr *scr_str_spare;
 #endif
 
 /* A spare-block reuse must not waste grossly (cap <= 4x the need) and only
@@ -196,6 +196,64 @@ int scr_str_cmp(ScrStr *a, ScrStr *b) {
   int c = memcmp(a->data, b->data, min);
   if (c != 0) return c;
   return a->len < b->len ? -1 : (a->len > b->len ? 1 : 0);
+}
+
+/* UTF-16 code-unit comparison over well-formed UTF-8 (the default
+ * Array.sort/toSorted and URLSearchParams.sort order). Byte order ALMOST
+ * matches — the exception is U+E000..U+FFFF (3-byte UTF-8, single high code
+ * units) vs supplementary code points (4-byte UTF-8, surrogate pairs
+ * 0xD800..0xDFFF): bytes put the 4-byte form last, code units put it first.
+ * Decode code points and compare their leading UTF-16 units. */
+static uint32_t scr_str_lead_u16(const unsigned char *s, size_t len,
+                                size_t *adv) {
+  unsigned char b = s[0];
+  uint32_t cp;
+  size_t n;
+  if (b < 0x80) {
+    cp = b; n = 1;
+  } else if ((b & 0xe0) == 0xc0) {
+    cp = b & 0x1fu; n = 2;
+  } else if ((b & 0xf0) == 0xe0) {
+    cp = b & 0x0fu; n = 3;
+  } else {
+    cp = b & 0x07u; n = 4;
+  }
+  if (n > len) n = len; /* defensive: strings are well-formed by contract */
+  for (size_t i = 1; i < n; i++) cp = (cp << 6) | (s[i] & 0x3fu);
+  *adv = n;
+  if (cp >= 0x10000) return 0xd800 + ((cp - 0x10000) >> 10);
+  return cp;
+}
+
+int scr_str_cmp_u16(ScrStr *a, ScrStr *b) {
+  size_t ia = 0, ib = 0;
+  while (ia < a->len && ib < b->len) {
+    size_t na, nb;
+    uint32_t ua = scr_str_lead_u16(
+        (const unsigned char *)a->data + ia, a->len - ia, &na);
+    uint32_t ub = scr_str_lead_u16(
+        (const unsigned char *)b->data + ib, b->len - ib, &nb);
+    if (ua != ub) return ua < ub ? -1 : 1;
+    /* Equal leading units: equal whole code points (both single units or
+     * both pairs with equal highs — lows only differ if cps differ). */
+    if (na == 4 && nb == 4) {
+      uint32_t cpa = 0, cpb = 0;
+      for (size_t i = 0; i < 4; i++) {
+        cpa = (cpa << 6) |
+              (i == 0 ? (unsigned char)a->data[ia] & 0x07u
+                      : (unsigned char)a->data[ia + i] & 0x3fu);
+        cpb = (cpb << 6) |
+              (i == 0 ? (unsigned char)b->data[ib] & 0x07u
+                      : (unsigned char)b->data[ib + i] & 0x3fu);
+      }
+      if (cpa != cpb) return cpa < cpb ? -1 : 1;
+    }
+    ia += na;
+    ib += nb;
+  }
+  if (ia < a->len) return 1;
+  if (ib < b->len) return -1;
+  return 0;
 }
 
 /* ── interned strings ─────────────────────────────────────────────────
@@ -620,7 +678,9 @@ ScrStr *scr_str_trim_end(ScrStr *s) {
 static const struct { size_t rc; size_t len; size_t cap; char data[4]; }
     scr_lit_fffd = {SIZE_MAX, 3, 3, "\xEF\xBF\xBD"};
 
-/* split(separator) with a STRING separator, no limit (ECMA-262 22.1.3.23):
+/* split(separator, limit) with a STRING separator (ECMA-262 22.1.3.23):
+ * limit is ToUint32'd; zero returns [] and reaching the limit stops before
+ * any later separator probes. The no-limit wrapper supplies 2^32-1.
  * an empty separator splits into single UTF-16 code units ("".split("") is
  * [] — no probe matches nothing); a non-empty separator splits on every
  * byte-level occurrence (well-formed UTF-8 is self-synchronizing, so byte
@@ -630,8 +690,10 @@ static const struct { size_t rc; size_t len; size_t cap; char data[4]; }
  * yield the two lone surrogate halves, each half is U+FFFD here
  * (divergence 2 — the same substitution the island's boundary marshal
  * applied). Borrows both; returns a +1 string[]. */
-ScrArr *scr_str_split(ScrStr *s, ScrStr *sep) {
+ScrArr *scr_str_split_limit(ScrStr *s, ScrStr *sep, double limit_num) {
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+  uint32_t limit = scr_to_uint32(limit_num);
+  if (limit == 0) return out;
   if (sep->len == 0) {
     size_t i = 0;
     while (i < s->len) {
@@ -639,10 +701,12 @@ ScrArr *scr_str_split(ScrStr *s, ScrStr *sep) {
       uint32_t cp = scr_utf8_decode(s->data + i, &adv);
       if (cp >= 0x10000) { /* two units in JS: both halves become U+FFFD */
         scr_arr_push_ref(out, scr_str_retain((ScrStr *)&scr_lit_fffd));
+        if (out->len == limit) return out;
         scr_arr_push_ref(out, scr_str_retain((ScrStr *)&scr_lit_fffd));
       } else {
         scr_arr_push_ref(out, scr_str_from_span(s->data + i, adv));
       }
+      if (out->len == limit) return out;
       i += adv;
     }
     return out;
@@ -654,10 +718,15 @@ ScrArr *scr_str_split(ScrStr *s, ScrStr *sep) {
     if (!found) break;
     size_t at = (size_t)(found - s->data);
     scr_arr_push_ref(out, scr_str_from_span(s->data + start, at - start));
+    if (out->len == limit) return out;
     start = at + sep->len;
   }
   scr_arr_push_ref(out, scr_str_from_span(s->data + start, s->len - start));
   return out;
+}
+
+ScrArr *scr_str_split(ScrStr *s, ScrStr *sep) {
+  return scr_str_split_limit(s, sep, 4294967295.0);
 }
 
 /* StringPad (ECMA-262 22.1.3.16/17): target length in UTF-16 units, the
@@ -1272,4 +1341,3 @@ ScrStr *scr_str_decode_uri_component(ScrStr *s) {
   }
   return out;
 }
-

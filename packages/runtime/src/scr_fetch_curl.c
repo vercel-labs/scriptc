@@ -2,7 +2,7 @@
  * REFERENCE implementation. The default fetch is scr_fetch.c (scriptc's
  * own net stack: scr_net + scr_tls + scr_http's client parser + zlib);
  * this file stays compilable for one release behind SCRIPTC_FETCH_CURL=1
- * (cc.ts selects exactly one of the two — same scr_fetch_install symbol,
+ * (native-toolchain.ts selects exactly one of the two — same scr_fetch_install symbol,
  * same island surface, same fixture contract) as the flip's reference,
  * the C-backend-vs-LLVM precedent. Compiled and linked ONLY into
  * --dynamic builds whose embedded npm graph references fetch (emit gates
@@ -360,14 +360,17 @@ static JSValue fx_host_start(JSContext *ctx, JSValueConst this_val, int argc,
   curl_easy_setopt(e, CURLOPT_ACCEPT_ENCODING, ""); /* gzip in, transparent out */
   curl_easy_setopt(e, CURLOPT_PROTOCOLS_STR, "http,https");
   curl_easy_setopt(e, CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
-  /* Node parity: undici's global fetch IGNORES http_proxy/https_proxy/
-   * all_proxy environment variables unless NODE_USE_ENV_PROXY=1 opts in
-   * (Node 24's EnvHttpProxyAgent). libcurl's default is the opposite —
-   * honor them — so an empty CURLOPT_PROXY switches the env lookup off;
-   * with the opt-in set, libcurl's own env handling stands in for
-   * undici's agent (same variables, same no_proxy exclusions). */
-  const char *env_proxy = getenv("NODE_USE_ENV_PROXY");
-  if (env_proxy == NULL || strcmp(env_proxy, "1") != 0) {
+  /* Node's global opt-in and Vercel's request-local EnvProxyDispatcher both
+   * activate libcurl's environment proxy lookup. Otherwise explicitly turn
+   * it off, because libcurl enables proxy variables by default. */
+  JSValue envproxyv = JS_GetPropertyStr(ctx, req, "useEnvProxy");
+  bool use_env_proxy = JS_ToBool(ctx, envproxyv) > 0;
+  JS_FreeValue(ctx, envproxyv);
+  const char *global_env_proxy = getenv("NODE_USE_ENV_PROXY");
+  use_env_proxy = use_env_proxy ||
+                  (global_env_proxy != NULL &&
+                   strcmp(global_env_proxy, "1") == 0);
+  if (!use_env_proxy) {
     curl_easy_setopt(e, CURLOPT_PROXY, "");
   }
 
@@ -486,6 +489,15 @@ static const char fx_glue[] =
     "        url = String(input);\n"
     "      }\n"
     "      init = init === undefined || init === null ? {} : init;\n"
+    "      let useEnvProxy = g.process?.env?.NODE_USE_ENV_PROXY === '1';\n"
+    "      const initDispatcher = init.dispatcher;\n"
+    "      if (initDispatcher !== undefined) {\n"
+    "        const dispatcher = initDispatcher;\n"
+    "        const methods = ['dispatch', 'close', 'destroy', 'agents', 'getAgent', 'shouldProxy', 'parseNoProxy'];\n"
+    "        const known = dispatcher !== null && typeof dispatcher === 'object' && dispatcher.constructor?.name === 'EnvProxyDispatcher' && methods.every((member) => typeof dispatcher[member] === 'function');\n"
+    "        if (!known) throw new TypeError('unsupported RequestInit option: dispatcher');\n"
+    "        useEnvProxy = true;\n"
+    "      }\n"
     "      // An explicit init.signal overrides the Request's, null included.\n"
     "      if (init.signal !== undefined) {\n"
     "        if (init.signal !== null && !(init.signal instanceof g.AbortSignal)) {\n"
@@ -546,7 +558,7 @@ static const char fx_glue[] =
     "      const flat = [];\n"
     "      for (const pair of headers) { flat.push(pair[0], pair[1]); }\n"
     "      id = host.start(\n"
-    "        { url, method, headers: flat, body: body === null ? undefined : body },\n"
+    "        { url, method, headers: flat, body: body === null ? undefined : body, useEnvProxy },\n"
     "        {\n"
     "          onResponse(status, statusText, raw, finalUrl, redirected) {\n"
     "            resolved = true;\n"

@@ -10,10 +10,11 @@
  *            surfaced as source-anchored diagnostics (SC0004)
  *   SC1xxx  supported-TypeScript-not-yet: valid TS outside the current subset
  *   SC2xxx  scriptc type rules (types we cannot compile yet)
- *   SC3xxx  backend coverage: the program is compilable (the C backend
- *            builds it) but the selected alternate backend's tier does not
- *            include some IR construct yet (SC3001 — the LLVM backend's
- *            refusal, minted in index.ts from LlvmUnsupportedError)
+ *   SC3xxx  backend/target coverage: the program is valid, but the selected
+ *            alternate backend or execution target does not include it
+ *            (SC3001 — LLVM IR tier refusal; SC3002 — target/capability
+ *            refusal; SC3003 — helper installation/version failure; SC3004
+ *            — helper code-generation failure)
  *   SC4xxx  library-mode/profile refusals (the library-emission mode): profile
  *            malformed (SC4001), export unresolved (SC4002), unmappable
  *            signature (SC4003), async/generator export (SC4004), the
@@ -38,7 +39,12 @@
  *            source spelling does not round-trip f64), wholeness
  *            (SC4022 — may-be-NaN or may-be-fractional at a declared
  *            i64/u64 slot), and range (SC4023 — the proven interval does
- *            not fit ±(2^53 − 1), or is negative at a u64 slot)
+ *            not fit ±(2^53 − 1), or is negative at a u64 slot), the
+ *            host-callback surface (SC4024 — a signature-only ambient
+ *            function reference the profile's callbacks section cannot
+ *            serve), and the unregistered-callback runtime trap (SC4025 —
+ *            a structured trap-teaching code in the funnel-classified
+ *            family, not a refusal)
  *   SC5xxx  native FFI: malformed manifests (SC5001), a configured
  *            binding that is not an ambient function declaration
  *            (SC5002), and a TypeScript signature that does not match its
@@ -46,7 +52,7 @@
  *            failures while applying a valid profile (SC5004)
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
-import type { SrcLoc } from "../ir/nodes.js";
+import type { SrcLoc } from "../ir/ir.js";
 
 /* Internal prioritization buckets. NEVER rendered to users — user-facing
  * output says only what is and isn't supported (plus hints); scheduling is
@@ -65,6 +71,24 @@ export interface ScrDiagnostic {
    * recognizably the profile's. Only library-mode refusals carry one —
    * the text always arrives prefixed `from the '<profile name>' profile:`. */
   note?: string;
+}
+
+/** SC3002–SC3004 — native-helper target, installation, and execution
+ * failures. These are ordinary build diagnostics: a missing optional package
+ * or malformed LLVM input must never surface as an internal compiler error. */
+export function nativeCodegenDiag(
+  code: "SC3002" | "SC3003" | "SC3004",
+  message: string,
+  file: string,
+): ScrDiagnostic {
+  return {
+    code,
+    message,
+    loc: { file, start: 0, end: 0 },
+    ...(code === "SC3003"
+      ? { hint: "reinstall scriptc with optional dependencies enabled for this host" }
+      : {}),
+  };
 }
 
 /* ── SC5xxx: native FFI ───────────────────────────────────────────────── */
@@ -100,7 +124,10 @@ export function ffiSignatureDiag(name: string, detail: string, loc: SrcLoc): Scr
     loc,
     hint:
       "FFI parameter classes: f64/u8/u32/i32 (TypeScript number), bool, string, and bytes " +
-      "(Uint8Array/Buffer); return classes: f64/u8/u32/i32, bool, and void",
+      "(Uint8Array/Buffer); format 2 also accepts call-scoped callback descriptors with explicit context slots; " +
+      "format 3 callback parameters additionally accept cstring/string (TypeScript string) and bytes (Uint8Array); " +
+      "format 4 adds retained callback descriptors and explicit release references; " +
+      "return classes: f64/u8/u32/i32, bool, and void",
   };
 }
 
@@ -280,7 +307,7 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
  * SC2010/SC2011/SC2012/SC2013); "unsupported" codes mark constructs with
  * no lowering on either tier. Process-level codes are deliberately absent:
  * preflight gates (SC0001–SC0004), comptime evaluation failures (SC1110),
- * the alternate-backend tier refusal (SC3001), and internal errors
+ * backend/target refusals (SC3001/SC3002), and internal errors
  * (SC9001/SC9002) report problems or engine tiers, not language/stdlib
  * surface. */
 export const FENCE_CODES: Record<string, { name: string; status: "unsupported" | "dynamic-only" }> = {
@@ -332,6 +359,34 @@ function plural(feature: string): boolean {
 
 export function tscPassthroughDiag(message: string, loc: SrcLoc): ScrDiagnostic {
   return { code: "SC0001", message, loc };
+}
+
+/** Node's package scope forces CommonJS, but the source contains a marker
+ * that is legal only when the file is parsed as ESM (static import/export,
+ * import.meta, top-level await, or a lexical CommonJS-wrapper redeclaration).
+ * TypeScript's bundler-mode checker does not model this Node loader rule. */
+export function commonJsModuleSyntaxDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC1013",
+    message: "Node classifies this file as CommonJS, where this ES-module syntax marker is a SyntaxError",
+    loc,
+    milestone: "later",
+    hint: "use a .mjs/.mts extension or set the nearest package.json's \"type\" to \"module\"",
+  };
+}
+
+/** Node stops package-scope lookup at the nearest package.json even when it
+ * is malformed, then refuses the module with ERR_INVALID_PACKAGE_CONFIG.
+ * The compiler must fail before lowering instead of inheriting a parent
+ * package's type and producing a runnable binary. */
+export function invalidPackageConfigDiag(packageJsonPath: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC1013",
+    message: `Node cannot load this module because '${packageJsonPath}' is an invalid package configuration (ERR_INVALID_PACKAGE_CONFIG)`,
+    loc,
+    milestone: "later",
+    hint: "fix the nearest package.json so it contains valid JSON",
+  };
 }
 
 /** The project's tsconfig disables strictNullChecks, which scriptc cannot
@@ -420,7 +475,7 @@ export function unsupportedTypeDiag(typeText: string, loc: SrcLoc): ScrDiagnosti
     code: "SC2001",
     message:
       `values of type '${typeText}' cannot be compiled yet ` +
-      `(supported: number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')`,
+      `(supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')`,
     loc,
     milestone: "M2",
   };
@@ -516,7 +571,7 @@ export function intersectionTypeDiag(typeText: string, loc: SrcLoc): ScrDiagnost
  * key-value domains, array and tuple elements, union arms, function
  * parameters/returns, and record members. The container is not the blocker
  * — `detail` (computed by describeComponentBlocker/
- * describeRecordMemberBlocker in frontend/types.ts, which mirror mapType's
+ * describeRecordMemberBlocker in frontend/type-mapper.ts, which mirror mapType's
  * own rules) names the component and the slot it cannot fill. */
 export function componentTypeDiag(typeText: string, detail: string, loc: SrcLoc): ScrDiagnostic {
   return {
@@ -842,19 +897,6 @@ export function libFenceDiag(
   return diag;
 }
 
-/** SC4006 — island/dynamic machinery on the library path: --dynamic,
- * --npm-static as a FLAG, `any`-typed island surface. Bare npm imports
- * themselves are not this code: an eligible package compiles statically
- * as part of the library graph, an ineligible one refuses SC4013. */
-export function libDynamicDiag(what: string, loc: SrcLoc): ScrDiagnostic {
-  return {
-    code: "SC4006",
-    message: `${what} is not available in library mode — the island engine and embedded npm graphs are executable-lane machinery`,
-    loc,
-    hint: "library artifacts are provable only for the static tier: no engine, no hidden init, no threads",
-  };
-}
-
 /** SC4007 — a mapped export whose signature keeps type parameters: every
  * compiled function is one concrete signature (the SC2005 monomorphization
  * rule, re-anchored at the profile entry). */
@@ -953,6 +995,13 @@ export const LIB_INBOUND_BYTES_TRAP_CODE = "SC4012";
  *   SC4019  other detected trap (the family's residual: environment
  *           failures like getcwd/os lookups, unsupported regex
  *           operations, circular-structure conversion, the RC audit)
+ *   SC4025  host callback invoked before registration ("scriptc: library
+ *           callback ...": compiled code reached a profile-declared
+ *           callback channel the host never registered through the
+ *           profile's callback_register_symbol — a host-contract story
+ *           like SC4012, but the trap site is inside compiled code, so
+ *           the funnel assembles it and field 2 names the entry the
+ *           host called)
  *
  * There is no arithmetic/div-by-zero kind: JS division never traps, so the
  * runtime has no such site. The list here is the compile-time face of the
@@ -966,7 +1015,32 @@ export const LIB_RUNTIME_TRAP_CODES = [
   "SC4017",
   "SC4018",
   "SC4019",
+  "SC4025",
 ] as const;
+
+/** SC4024 — a host-callback reference the profile cannot serve. Library
+ * mode maps signature-only ambient function declarations onto the
+ * profile's declared callback channels (the outbound seam: compiled code
+ * delivers bytes and scalars to the embedder synchronously). When the
+ * profile declares ANY callback, a call of a program-authored
+ * signature-only declaration that names no channel — or whose TypeScript
+ * signature does not fit the channel's declared classes — is a refusal,
+ * never an inert ReferenceError lowering: the author reached for the
+ * host seam and the profile does not provide it. Decorated with the
+ * profile's SC4024 teaching text like every library refusal. */
+export function libCallbackDiag(name: string, detail: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC4024",
+    message: `library callback '${name}' cannot be compiled: ${detail}`,
+    loc,
+    hint:
+      "profile-declared callbacks are the library's outbound seam: declare the channel in the profile's " +
+      "'callbacks' array (name, params, returns) and keep the ambient TypeScript signature on the callback " +
+      "marshalling classes — params f64/bool/string/bytes and the u8/u32/i32 plumbing classes, " +
+      "returns f64/bool/u8/u32/i32/void; the host registers an implementation through the profile's " +
+      "abi.callback_register_symbol before calling any entry that can reach the channel",
+  };
+}
 /** SC4020 — a bare npm specifier in a library graph naming a package that
  * fails the npm-static eligibility bar (own .d.ts, unminified shipped JS,
  * no build-transform markers) or whose static compilation the preflight

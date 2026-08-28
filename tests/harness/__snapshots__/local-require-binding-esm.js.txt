@@ -1,0 +1,6 @@
+local-require-binding-esm.js:7:1 - error SC1013: calls through a source binding named 'require' (this spelling is reserved for CommonJS/createRequire module edges — rename the binding) is not supported yet
+
+  6 | 
+  7 | require("node:path");
+    | ^~~~~~~~~~~~~~~~~~~~
+  8 | 

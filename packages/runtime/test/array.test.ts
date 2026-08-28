@@ -26,6 +26,7 @@ beforeAll(async () => {
     join(testDir, "../src/scr_exception.c"),
     join(testDir, "../src/scr_object.c"),
     join(testDir, "../src/scr_cycle.c"),
+    ...(process.platform === "linux" ? ["-D_GNU_SOURCE", "-lm"] : []),
   ]);
 });
 

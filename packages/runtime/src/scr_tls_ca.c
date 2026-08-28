@@ -2,28 +2,33 @@
  * rootCertificates, and setDefaultCACertificates (scr_runtime.h has the
  * contracts). Its own link gate ("tlsca." libCalls), deliberately free
  * of mbedTLS: everything here is PEM-BLOCK bookkeeping over the host
- * bundle, so a program that only inspects the CA store keeps the lean
- * link line. scr_tls.c (when it links — cc.ts compiles this unit
- * alongside it) consults scr_tls_ca_default_override for its client
- * trust anchors, which is what makes setDefaultCACertificates LIVE
- * semantics: the next https/tls dial verifies against the replaced set.
+ * roots (plus crypt32 store access on Windows), so a program that only
+ * inspects the CA store never builds the TLS archive. scr_tls.c (when it
+ * links — native-toolchain.ts compiles this unit alongside it) consults
+ * scr_tls_ca_default_override for its client trust anchors, which is what
+ * makes setDefaultCACertificates LIVE semantics: the next https/tls dial
+ * verifies against the replaced set.
  *
  * Divergences, documented: the host bundle stands in for Node's
  * compiled-in Mozilla roots ('bundled' and rootCertificates) AND for the
- * platform store ('system') — the same /etc/ssl/cert.pem stance
- * scr_tls.c's anchors established; and set-time validation is PEM-BLOCK
- * shaped (a well-formed block with corrupt DER inside is kept here where
- * Node's X509 parse would drop it — such a cert then fails verification
- * instead, the same observable outcome one step later). Deduplication is
- * byte-exact over the extracted block where Node compares parsed X509
- * identities; re-encoded duplicates of one certificate stay distinct
- * entries, which no equality the tests observe can distinguish without a
- * parser. */
+ * platform store ('system') — Windows' system certificate stores and the POSIX
+ * bundle probe are the same sources scr_tls.c's anchors use; and set-time
+ * validation is PEM-BLOCK shaped (a well-formed block with corrupt DER
+ * inside is kept here where Node's X509 parse would drop it — such a cert
+ * then fails verification instead, the same observable outcome one step
+ * later). Deduplication is byte-exact over the extracted block where Node
+ * compares parsed X509 identities; re-encoded duplicates of one certificate
+ * stay distinct entries, which no equality the tests observe can distinguish
+ * without a parser. */
 #include "scr_runtime.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <wincrypt.h>
+#endif
 
 /* The per-type caches: +1 held here for the process lifetime (an atexit
  * teardown releases them so the RC audit stays clean). 'default' also
@@ -32,6 +37,9 @@ static ScrArr *scr_ca_bundled = NULL;
 static ScrArr *scr_ca_system = NULL;
 static ScrArr *scr_ca_extra = NULL;
 static ScrArr *scr_ca_default = NULL;
+static char *scr_ca_extra_buf = NULL;
+static size_t scr_ca_extra_len = 0;
+static bool scr_ca_installed = false;
 static char *scr_ca_override_buf = NULL;
 static size_t scr_ca_override_len = 0;
 static uint64_t scr_ca_override_gen = 0; /* 0 = never set */
@@ -47,6 +55,9 @@ static void scr_ca_teardown(void) {
   if (scr_ca_extra != NULL) scr_arr_release(scr_ca_extra);
   if (scr_ca_default != NULL) scr_arr_release(scr_ca_default);
   scr_ca_bundled = scr_ca_system = scr_ca_extra = scr_ca_default = NULL;
+  free(scr_ca_extra_buf);
+  scr_ca_extra_buf = NULL;
+  scr_ca_extra_len = 0;
   free(scr_ca_override_buf);
   scr_ca_override_buf = NULL;
 }
@@ -123,9 +134,146 @@ static char *scr_ca_read_file(const char *path, size_t *out_len) {
   return buf;
 }
 
-/* The host bundle, probed in scr_tls.c's documented order. */
+/*
+ * Node consumes NODE_EXTRA_CA_CERTS while the process is initialized:
+ * changing process.env or replacing the referenced file later does not
+ * alter either TLS trust or getCACertificates("extra"). Generated main
+ * calls this install hook before user code; the lazy fallback only serves
+ * library/direct-runtime callers that have no executable startup hook.
+ */
+void scr_tls_ca_install(void) {
+  if (scr_ca_installed) return;
+  scr_ca_installed = true;
+  scr_ca_arm_teardown();
+  const char *path = getenv("NODE_EXTRA_CA_CERTS");
+  if (path != NULL && path[0] != '\0') {
+    scr_ca_extra_buf = scr_ca_read_file(path, &scr_ca_extra_len);
+  }
+}
+
+bool scr_tls_ca_extra_pem(const char **pem, size_t *len) {
+  scr_tls_ca_install();
+  if (scr_ca_extra_buf == NULL) return false;
+  *pem = scr_ca_extra_buf;
+  *len = scr_ca_extra_len;
+  return true;
+}
+
+#ifdef _WIN32
+/* Windows can restrict a certificate's purposes in a store property that is
+ * not part of its DER. CertGetEnhancedKeyUsage with flags 0 intersects that
+ * property with the encoded EKU extension. An empty result means either all
+ * purposes (CRYPT_E_NOT_FOUND) or no purposes (ERROR_SUCCESS); every other
+ * API failure is fail-closed too. */
+bool scr_tls_ca_windows_cert_server_auth(const void *cert_context) {
+  PCCERT_CONTEXT cert = (PCCERT_CONTEXT)cert_context;
+  DWORD usage_len = 0;
+  if (!CertGetEnhancedKeyUsage(cert, 0, NULL, &usage_len) || usage_len == 0) {
+    return false;
+  }
+  CERT_ENHKEY_USAGE *usage = malloc((size_t)usage_len);
+  if (usage == NULL) scr_ca_oom();
+  if (!CertGetEnhancedKeyUsage(cert, 0, usage, &usage_len)) {
+    free(usage);
+    return false;
+  }
+  DWORD usage_error = GetLastError();
+  bool allowed = usage->cUsageIdentifier == 0 &&
+      usage_error == CRYPT_E_NOT_FOUND;
+  for (DWORD i = 0; !allowed && usage->rgpszUsageIdentifier != NULL &&
+       i < usage->cUsageIdentifier; i++) {
+    const char *oid = usage->rgpszUsageIdentifier[i];
+    allowed = oid != NULL &&
+        (strcmp(oid, szOID_PKIX_KP_SERVER_AUTH) == 0 ||
+         strcmp(oid, szOID_ANY_ENHANCED_KEY_USAGE) == 0);
+  }
+  free(usage);
+  return allowed;
+}
+
+static void scr_tls_ca_windows_certs_at(
+    DWORD location, const char *store_name, HCERTSTORE seen,
+    ScrTlsCaWindowsCertFn fn, void *ctx) {
+  HCERTSTORE store = CertOpenStore(
+      CERT_STORE_PROV_SYSTEM_A, 0, 0,
+      location | CERT_STORE_OPEN_EXISTING_FLAG | CERT_STORE_READONLY_FLAG,
+      store_name);
+  if (store == NULL) return;
+  PCCERT_CONTEXT cert = NULL;
+  /* CertEnumCertificatesInStore frees the previous context on every call,
+   * including the final NULL result. Each callback must copy DER it keeps. */
+  while ((cert = CertEnumCertificatesInStore(store, cert)) != NULL) {
+    /* The logical stores overlap (notably CurrentUser inherits machine
+     * roots). CERT_STORE_ADD_NEW turns the memory store into a process-local
+     * identity set: only the first allowed context reaches the consumer. */
+    if (scr_tls_ca_windows_cert_server_auth(cert) &&
+        CertAddCertificateContextToStore(
+            seen, cert, CERT_STORE_ADD_NEW, NULL)) {
+      fn(ctx, cert->pbCertEncoded, (size_t)cert->cbCertEncoded);
+    }
+  }
+  (void)CertCloseStore(store, 0);
+}
+
+void scr_tls_ca_windows_certs(ScrTlsCaWindowsCertFn fn, void *ctx) {
+  /* Match Node's Windows system-certificate sources: roots and intermediate
+   * CAs from all five applicable locations, plus explicitly trusted server
+   * certificates from the three local-machine TrustedPeople locations.
+   * A memory store deduplicates their overlapping contents. */
+  typedef struct ScrTlsCaWindowsStore {
+    DWORD location;
+    const char *name;
+  } ScrTlsCaWindowsStore;
+  static const ScrTlsCaWindowsStore stores[] = {
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE, "ROOT"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_GROUP_POLICY, "ROOT"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_ENTERPRISE, "ROOT"},
+      {CERT_SYSTEM_STORE_CURRENT_USER, "ROOT"},
+      {CERT_SYSTEM_STORE_CURRENT_USER_GROUP_POLICY, "ROOT"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE, "CA"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_GROUP_POLICY, "CA"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_ENTERPRISE, "CA"},
+      {CERT_SYSTEM_STORE_CURRENT_USER, "CA"},
+      {CERT_SYSTEM_STORE_CURRENT_USER_GROUP_POLICY, "CA"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE, "TrustedPeople"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_GROUP_POLICY, "TrustedPeople"},
+      {CERT_SYSTEM_STORE_LOCAL_MACHINE_ENTERPRISE, "TrustedPeople"},
+  };
+  HCERTSTORE seen = CertOpenStore(
+      CERT_STORE_PROV_MEMORY, 0, 0, CERT_STORE_CREATE_NEW_FLAG, NULL);
+  if (seen == NULL) return;
+  for (size_t i = 0; i < sizeof stores / sizeof stores[0]; i++) {
+    scr_tls_ca_windows_certs_at(
+        stores[i].location, stores[i].name, seen, fn, ctx);
+  }
+  (void)CertCloseStore(seen, 0);
+}
+
+static void scr_ca_push_windows_cert(void *ctx, const unsigned char *der, size_t len) {
+  if (len > UINT32_MAX) return;
+  DWORD pem_cap = 0;
+  DWORD flags = CRYPT_STRING_BASE64HEADER | CRYPT_STRING_NOCR;
+  if (!CryptBinaryToStringA(der, (DWORD)len, flags, NULL, &pem_cap) ||
+      pem_cap == 0) {
+    return;
+  }
+  char *pem = malloc((size_t)pem_cap);
+  if (pem == NULL) scr_ca_oom();
+  DWORD pem_len = pem_cap;
+  if (CryptBinaryToStringA(der, (DWORD)len, flags, pem, &pem_len)) {
+    scr_arr_push_ref((ScrArr *)ctx, scr_str_new(pem, (size_t)pem_len));
+  }
+  free(pem);
+}
+#endif
+
+/* The host roots, from the Windows logical store or the POSIX bundle probe
+ * shared with scr_tls.c. */
 static ScrArr *scr_ca_load_host_bundle(void) {
   ScrArr *arr = scr_arr_new(SCR_ELEM_STR, 128);
+#ifdef _WIN32
+  scr_tls_ca_windows_certs(scr_ca_push_windows_cert, arr);
+#else
   static const char *const bundles[] = {
       "/etc/ssl/cert.pem",                  /* macOS, Alpine */
       "/etc/ssl/certs/ca-certificates.crt", /* Debian/Ubuntu */
@@ -140,6 +288,7 @@ static ScrArr *scr_ca_load_host_bundle(void) {
     free(text);
     break; /* first bundle wins, like the anchor probe */
   }
+#endif
   return arr;
 }
 
@@ -163,14 +312,10 @@ static ScrArr *scr_ca_extra_arr(void) {
   if (scr_ca_extra == NULL) {
     scr_ca_arm_teardown();
     scr_ca_extra = scr_arr_new(SCR_ELEM_STR, 4);
-    const char *path = getenv("NODE_EXTRA_CA_CERTS");
-    if (path != NULL && path[0] != '\0') {
-      size_t len = 0;
-      char *text = scr_ca_read_file(path, &len);
-      if (text != NULL) {
-        scr_ca_push_pem_blocks(scr_ca_extra, text, len);
-        free(text);
-      }
+    const char *pem = NULL;
+    size_t len = 0;
+    if (scr_tls_ca_extra_pem(&pem, &len)) {
+      scr_ca_push_pem_blocks(scr_ca_extra, pem, len);
     }
   }
   return scr_ca_extra;

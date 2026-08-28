@@ -7,6 +7,9 @@
  * encoding conversions (utf8 with WHATWG replacement, hex, base64) match
  * Node byte-for-byte — the differential corpus holds them to it. */
 #include "scr_runtime.h"
+#ifdef SCR_TEXT_DECODER_LEGACY
+#include "scr_text_decoder_data.h"
+#endif
 
 #include <math.h>
 #include <stdio.h>
@@ -14,7 +17,7 @@
 #include <string.h>
 
 #ifdef SCR_RC_AUDIT
-static long scr_live_bytes = 0;
+static SCR_TL long scr_live_bytes = 0;
 long scr_bytes_live_count(void) { return scr_live_bytes; }
 #endif
 
@@ -60,6 +63,15 @@ ScrBytes *scr_bytes_new(ScrBytesElem elem, double n) {
   return scr_bytes_alloc(elem, (size_t)t);
 }
 
+ScrBytes *scr_bytes_from_data(const uint8_t *data, size_t len) {
+  if (data == NULL && len != 0) {
+    scr_trap("scriptc: native callback passed a NULL span with nonzero length\n");
+  }
+  ScrBytes *b = scr_bytes_alloc(SCR_BYTES_U8, len);
+  if (len != 0) memcpy(b->data, data, len);
+  return b;
+}
+
 ScrBytes *scr_bytes_copy(const ScrBytes *src) {
   ScrBytes *b = scr_bytes_alloc(src->elem, src->len);
   memcpy(b->data, src->data, src->len * scr_bytes_elem_size(src->elem));
@@ -85,6 +97,13 @@ void *scr_bytes_retain_v(void *b) { return scr_bytes_retain((ScrBytes *)b); }
 void scr_bytes_release_v(void *b) { scr_bytes_release((ScrBytes *)b); }
 
 double scr_bytes_len(const ScrBytes *b) { return (double)b->len; }
+
+void scr_bytes_copy_contents(ScrBytes *dst, const ScrBytes *src) {
+  if (dst->elem != src->elem || dst->len != src->len) {
+    scr_trap("scriptc: typed array snapshot shape changed\n");
+  }
+  memcpy(dst->data, src->data, dst->len * scr_bytes_elem_size(dst->elem));
+}
 
 double scr_bytes_byte_len(const ScrBytes *b) {
   return (double)(b->len * scr_bytes_elem_size(b->elem));
@@ -400,6 +419,10 @@ static const char scr_hex_digits[] = "0123456789abcdef";
  * — what Buffer.prototype.toString("utf8") does. Output re-encodes as
  * (now valid) UTF-8: worst case 3 bytes per input byte. */
 static ScrStr *scr_bytes_decode_utf8(const uint8_t *in, size_t n) {
+  if (in == NULL && n != 0) {
+    scr_trap("scriptc: native callback passed a NULL span with nonzero length\n");
+  }
+  if (n > (SIZE_MAX - 1) / 3) scr_bytes_oom();
   char *out = malloc(n * 3 + 1);
   if (!out) scr_bytes_oom();
   size_t o = 0;
@@ -466,6 +489,10 @@ static ScrStr *scr_bytes_decode_utf8(const uint8_t *in, size_t n) {
   ScrStr *s = scr_str_new(out, o);
   free(out);
   return s;
+}
+
+ScrStr *scr_str_from_utf8_lossy(const uint8_t *bytes, size_t len) {
+  return scr_bytes_decode_utf8(bytes, len);
 }
 
 /* WHATWG TextDecoder.decode (utf-8, default options): the SAME maximal-
@@ -662,6 +689,16 @@ ScrStr *scr_strdec_end(const ScrStr *enc, double pending) {
   return scr_bytes_decode_utf8(pend, np);
 }
 
+static void scr_bytes_to_str_bounds(const ScrBytes *b, double start, double end,
+                                    size_t *s0_out, size_t *e0_out) {
+  size_t len = b->len;
+  size_t s0 = start <= 0 ? 0 : ((size_t)start > len ? len : (size_t)start);
+  size_t e0 = end <= 0 ? 0 : ((size_t)end > len ? len : (size_t)end);
+  if (e0 < s0) e0 = s0;
+  *s0_out = s0;
+  *e0_out = e0;
+}
+
 /* toString(enc, start, end): Node slices then decodes — start/end clamp
  * to [0, len] with start > end collapsing to empty and negative ends
  * clamping to 0 (Node's slice-then-decode; an OMITTED end never reaches
@@ -669,10 +706,8 @@ ScrStr *scr_strdec_end(const ScrStr *enc, double pending) {
  * form). Delegates to the whole-buffer decoder
  * through a stack view — no allocation, no rc traffic. */
 ScrStr *scr_bytes_to_str_range(const ScrBytes *b, const ScrStr *enc, double start, double end) {
-  size_t len = b->len;
-  size_t s0 = start <= 0 ? 0 : ((size_t)start > len ? len : (size_t)start);
-  size_t e0 = end <= 0 ? 0 : ((size_t)end > len ? len : (size_t)end);
-  if (e0 < s0) e0 = s0;
+  size_t s0, e0;
+  scr_bytes_to_str_bounds(b, start, end, &s0, &e0);
   ScrBytes view = { .rc = 1, .len = e0 - s0, .elem = b->elem, .data = b->data + s0, .backing = NULL };
   return scr_bytes_to_str(&view, enc);
 }
@@ -725,6 +760,559 @@ static size_t scr_bytes_put_cp(char *out, size_t o, uint32_t cp) {
   }
   return o;
 }
+
+/* ── WHATWG/Node TextDecoder legacy encodings ──────────────────────────
+ *
+ * The frontend only calls this entry with a compile-time encoding id. The
+ * lookup data is generated from the repository's pinned Node 24 oracle, so
+ * the resulting binary has no ICU/iconv dependency and behaves identically
+ * on Darwin, Linux, and Windows. UTF-8 keeps its older dedicated entry above:
+ * programs using only the default decoder do not retain these legacy tables.
+ */
+#ifdef SCR_TEXT_DECODER_LEGACY
+
+enum {
+  SCR_TD_X_USER_DEFINED = SCR_TD_SINGLE_COUNT,
+  SCR_TD_UTF16LE,
+  SCR_TD_UTF16BE,
+  SCR_TD_GB18030,
+  SCR_TD_BIG5,
+  SCR_TD_EUC_JP,
+  SCR_TD_ISO_2022_JP,
+  SCR_TD_SHIFT_JIS,
+  SCR_TD_EUC_KR,
+};
+
+typedef struct {
+  char *data;
+  size_t len;
+} ScrTdOut;
+
+static ScrTdOut scr_td_out_new(size_t input_len) {
+  if (input_len > (SIZE_MAX - 8) / 3) scr_bytes_oom();
+  ScrTdOut out = { malloc(input_len * 3 + 8), 0 };
+  if (!out.data) scr_bytes_oom();
+  return out;
+}
+
+static void scr_td_put(ScrTdOut *out, uint32_t cp) {
+  out->len = scr_bytes_put_cp(out->data, out->len, cp);
+}
+
+static void scr_td_error(ScrTdOut *out) {
+  scr_td_put(out, 0xfffd);
+}
+
+static ScrStr *scr_td_finish(ScrTdOut *out) {
+  ScrStr *str = scr_str_new(out->data, out->len);
+  free(out->data);
+  return str;
+}
+
+static ScrStr *scr_td_single_byte(const ScrBytes *b, unsigned encoding) {
+  ScrTdOut out = scr_td_out_new(b->len);
+  for (size_t i = 0; i < b->len; i++) {
+    uint8_t byte = b->data[i];
+    scr_td_put(&out, byte < 0x80 ? byte : scr_td_single[encoding][byte - 0x80]);
+  }
+  return scr_td_finish(&out);
+}
+
+static ScrStr *scr_td_x_user_defined(const ScrBytes *b) {
+  ScrTdOut out = scr_td_out_new(b->len);
+  for (size_t i = 0; i < b->len; i++) {
+    uint8_t byte = b->data[i];
+    scr_td_put(&out, byte < 0x80 ? byte : 0xf780 + byte - 0x80);
+  }
+  return scr_td_finish(&out);
+}
+
+static ScrStr *scr_td_utf16(const ScrBytes *b, bool be) {
+  const uint8_t *in = b->data;
+  size_t n = b->len;
+  /* TextDecoder's BOM handling strips only the BOM matching the selected
+   * endian decoder. The opposite BOM decodes to U+FFFE and remains. */
+  if (n >= 2 && ((!be && in[0] == 0xff && in[1] == 0xfe) ||
+                 (be && in[0] == 0xfe && in[1] == 0xff))) {
+    in += 2;
+    n -= 2;
+  }
+  ScrTdOut out = scr_td_out_new(n);
+  size_t i = 0;
+  while (i + 1 < n) {
+    uint32_t cu = be ? ((uint32_t)in[i] << 8) | in[i + 1]
+                     : (uint32_t)in[i] | ((uint32_t)in[i + 1] << 8);
+    i += 2;
+    if (cu >= 0xd800 && cu <= 0xdbff) {
+      if (i + 1 < n) {
+        uint32_t lo = be ? ((uint32_t)in[i] << 8) | in[i + 1]
+                         : (uint32_t)in[i] | ((uint32_t)in[i + 1] << 8);
+        if (lo >= 0xdc00 && lo <= 0xdfff) {
+          i += 2;
+          scr_td_put(&out, 0x10000 + ((cu - 0xd800) << 10) + (lo - 0xdc00));
+          continue;
+        }
+      } else if (i < n) {
+        /* ICU treats a lead surrogate plus one final byte as one malformed
+         * UTF-16 subsequence. Consume that byte here so the odd-tail path
+         * below does not emit a second replacement. */
+        i++;
+      }
+      scr_td_error(&out);
+      continue;
+    }
+    if (cu >= 0xdc00 && cu <= 0xdfff) scr_td_error(&out);
+    else scr_td_put(&out, cu);
+  }
+  if (i < n) scr_td_error(&out); /* odd trailing byte */
+  return scr_td_finish(&out);
+}
+
+static uint32_t scr_td_gb_range(uint32_t pointer) {
+  size_t lo = 0;
+  size_t hi = sizeof scr_td_gb_ranges / sizeof scr_td_gb_ranges[0];
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    const ScrTdGbRange *range = &scr_td_gb_ranges[mid];
+    if (pointer < range->start) hi = mid;
+    else if (pointer > range->end) lo = mid + 1;
+    else return range->code_point + pointer - range->start;
+  }
+  return 0;
+}
+
+/* A tiny prepend stack models the Encoding Standard's I/O queue restore.
+ * The gb18030 decoder is the only legacy decoder which can restore three
+ * bytes after discovering a malformed four-byte sequence. */
+static ScrStr *scr_td_gb18030_decode(const ScrBytes *b) {
+  ScrTdOut out = scr_td_out_new(b->len);
+  uint8_t first = 0, second = 0, third = 0;
+  uint8_t replay[3];
+  size_t replay_len = 0;
+  size_t i = 0;
+  while (i < b->len || replay_len > 0) {
+    uint8_t byte = replay_len ? replay[--replay_len] : b->data[i++];
+    if (third) {
+      uint32_t cp = 0;
+      bool valid_fourth = byte >= 0x30 && byte <= 0x39;
+      if (valid_fourth) {
+        uint32_t pointer = (((uint32_t)(first - 0x81) * 10 + second - 0x30) * 126 +
+                            third - 0x81) * 10 + byte - 0x30;
+        cp = scr_td_gb_range(pointer);
+      }
+      uint8_t old_second = second, old_third = third;
+      first = second = third = 0;
+      if (cp) {
+        scr_td_put(&out, cp);
+      } else {
+        scr_td_error(&out);
+        /* A structurally valid four-byte sequence with an unmapped pointer
+         * is consumed as one error. Only a malformed fourth byte restores
+         * the preceding payload bytes to Node's input queue. */
+        if (!valid_fourth) {
+          replay[replay_len++] = byte;
+          replay[replay_len++] = old_third;
+          replay[replay_len++] = old_second;
+        }
+      }
+      continue;
+    }
+    if (second) {
+      if (byte >= 0x81 && byte <= 0xfe) {
+        third = byte;
+      } else {
+        uint8_t old_second = second;
+        first = second = 0;
+        scr_td_error(&out);
+        replay[replay_len++] = byte;
+        replay[replay_len++] = old_second;
+      }
+      continue;
+    }
+    if (first) {
+      if (byte >= 0x30 && byte <= 0x39) {
+        second = byte;
+        continue;
+      }
+      uint8_t lead = first;
+      first = 0;
+      uint32_t cp = 0;
+      bool valid_trail = (byte >= 0x40 && byte <= 0x7e) ||
+                         (byte >= 0x80 && byte <= 0xfe);
+      if (valid_trail) {
+        unsigned offset = byte < 0x7f ? 0x40 : 0x41;
+        cp = scr_td_gb18030[(lead - 0x81) * 190 + byte - offset];
+      }
+      if (cp) scr_td_put(&out, cp);
+      else {
+        scr_td_error(&out);
+        /* Non-ASCII invalid trails are consumed; ASCII is restored. */
+        if (!valid_trail && byte < 0x80) replay[replay_len++] = byte;
+      }
+      continue;
+    }
+    if (byte < 0x80) scr_td_put(&out, byte);
+    else if (byte == 0x80) scr_td_put(&out, 0x20ac);
+    else if (byte >= 0x81 && byte <= 0xfe) first = byte;
+    else scr_td_error(&out);
+  }
+  if (first || second || third) scr_td_error(&out);
+  return scr_td_finish(&out);
+}
+
+static ScrStr *scr_td_big5_decode(const ScrBytes *b) {
+  ScrTdOut out = scr_td_out_new(b->len);
+  uint8_t lead = 0;
+  for (size_t i = 0; i < b->len; i++) {
+    uint8_t byte = b->data[i];
+    if (lead) {
+      uint32_t cp = 0;
+      if ((byte >= 0x40 && byte <= 0x7e) || (byte >= 0xa1 && byte <= 0xfe)) {
+        unsigned offset = byte < 0x7f ? 0x40 : 0x62;
+        cp = scr_td_big5[(lead - 0x81) * 157 + byte - offset];
+      }
+      lead = 0;
+      if (cp) scr_td_put(&out, cp);
+      else {
+        scr_td_error(&out);
+        /* 0xff has a standalone ICU/Node mapping and is restored too. */
+        if (byte < 0x80 || byte == 0xff) i--;
+      }
+      continue;
+    }
+    if (byte < 0x80 || byte == 0x80) scr_td_put(&out, byte);
+    else if (byte >= 0x81 && byte <= 0xfe) lead = byte;
+    else if (byte == 0xff) scr_td_put(&out, 0xf8f8); /* ICU/Node mapping */
+    else scr_td_error(&out);
+  }
+  if (lead) scr_td_error(&out);
+  return scr_td_finish(&out);
+}
+
+static ScrStr *scr_td_euc_jp_decode(const ScrBytes *b) {
+  ScrTdOut out = scr_td_out_new(b->len);
+  uint8_t lead = 0;
+  bool jis0212 = false;
+  for (size_t i = 0; i < b->len; i++) {
+    uint8_t byte = b->data[i];
+    if (lead == 0x8e && byte >= 0xa1 && byte <= 0xdf) {
+      lead = 0;
+      scr_td_put(&out, 0xff61 + byte - 0xa1);
+      continue;
+    }
+    /* Node's pinned ICU EUC-JP converter exposes three NEC extensions just
+     * above the half-width katakana trail range. */
+    if (lead == 0x8e && byte >= 0xe0 && byte <= 0xe2) {
+      static const uint16_t extensions[] = { 0x00a2, 0x00a3, 0x00ac };
+      lead = 0;
+      scr_td_put(&out, extensions[byte - 0xe0]);
+      continue;
+    }
+    if (lead == 0x8f && byte >= 0xa1 && byte <= 0xfe) {
+      jis0212 = true;
+      lead = byte;
+      continue;
+    }
+    if (lead) {
+      uint8_t old_lead = lead;
+      lead = 0;
+      uint32_t cp = 0;
+      bool valid_trail = old_lead >= 0xa1 && old_lead <= 0xfe &&
+                         byte >= 0xa1 && byte <= 0xfe;
+      if (valid_trail) {
+        unsigned pointer = (old_lead - 0xa1) * 94 + byte - 0xa1;
+        cp = jis0212 ? scr_td_jis0212[pointer] : scr_td_jis0208[pointer];
+      }
+      /* When the third byte of an 0x8f JIS-0212 sequence is malformed,
+       * ICU reports the prefix and restores both following bytes. Model the
+       * saved second byte as the next ordinary EUC-JP lead. */
+      if (jis0212 && !valid_trail) {
+        jis0212 = false;
+        lead = old_lead;
+        scr_td_error(&out);
+        i--;
+        continue;
+      }
+      jis0212 = false;
+      if (cp) scr_td_put(&out, cp);
+      else {
+        scr_td_error(&out);
+        /* C0/C1 bytes are restored; 0xa0 and 0xff are consumed with the
+         * malformed sequence rather than producing a second error. The
+         * 0x8e extension converter additionally restores 0xe5..0xfe. */
+        if (byte < 0xa0 || (old_lead == 0x8e && byte >= 0xe5 && byte <= 0xfe)) i--;
+      }
+      continue;
+    }
+    if (byte < 0xa0 && byte != 0x8e && byte != 0x8f) scr_td_put(&out, byte);
+    else if (byte == 0x8e || byte == 0x8f || (byte >= 0xa1 && byte <= 0xfe)) lead = byte;
+    else scr_td_error(&out);
+  }
+  if (lead) scr_td_error(&out);
+  return scr_td_finish(&out);
+}
+
+static ScrStr *scr_td_shift_jis_decode(const ScrBytes *b) {
+  ScrTdOut out = scr_td_out_new(b->len);
+  uint8_t lead = 0;
+  for (size_t i = 0; i < b->len; i++) {
+    uint8_t byte = b->data[i];
+    if (lead) {
+      uint32_t cp = 0;
+      bool valid_trail = (byte >= 0x40 && byte <= 0x7e) ||
+                         (byte >= 0x80 && byte <= 0xfc);
+      if (valid_trail) {
+        unsigned offset = byte < 0x7f ? 0x40 : 0x41;
+        unsigned lead_offset = lead < 0xa0 ? 0x81 : 0xc1;
+        unsigned pointer = (lead - lead_offset) * 188 + byte - offset;
+        cp = scr_td_shift_jis[pointer];
+      }
+      lead = 0;
+      if (cp) scr_td_put(&out, cp);
+      else {
+        scr_td_error(&out);
+        if (!valid_trail) i--;
+      }
+      continue;
+    }
+    /* ICU's ibm-943_P15A-2003 converter (Node's Shift_JIS backend) has
+     * three historical C0/DEL swaps which its TextDecoder exposes. */
+    if (byte == 0x1a) scr_td_put(&out, 0x1c);
+    else if (byte == 0x1c) scr_td_put(&out, 0x7f);
+    else if (byte == 0x7f) scr_td_put(&out, 0x1a);
+    else if (byte < 0x80) scr_td_put(&out, byte);
+    else if (byte >= 0xa1 && byte <= 0xdf) scr_td_put(&out, 0xff61 + byte - 0xa1);
+    else if ((byte >= 0x81 && byte <= 0x9f) || (byte >= 0xe0 && byte <= 0xfc)) lead = byte;
+    else scr_td_error(&out);
+  }
+  if (lead) scr_td_error(&out);
+  return scr_td_finish(&out);
+}
+
+static ScrStr *scr_td_euc_kr_decode(const ScrBytes *b) {
+  ScrTdOut out = scr_td_out_new(b->len);
+  uint8_t lead = 0;
+  for (size_t i = 0; i < b->len; i++) {
+    uint8_t byte = b->data[i];
+    if (lead) {
+      uint32_t cp = 0;
+      if (lead >= 0xa1 && lead <= 0xfe && byte >= 0xa1 && byte <= 0xfe) {
+        cp = scr_td_euc_kr[(lead - 0xa1) * 94 + byte - 0xa1];
+      }
+      lead = 0;
+      if (cp) scr_td_put(&out, cp);
+      else {
+        scr_td_error(&out);
+        if (byte < 0xa0) i--;
+      }
+      continue;
+    }
+    if (byte < 0xa0 && byte != 0x8e && byte != 0x8f) scr_td_put(&out, byte);
+    else if (byte >= 0xa1 && byte <= 0xfe) lead = byte;
+    else scr_td_error(&out);
+  }
+  if (lead) scr_td_error(&out);
+  return scr_td_finish(&out);
+}
+
+enum ScrTdIsoState {
+  SCR_TD_ISO_ASCII,
+  SCR_TD_ISO_ROMAN,
+  SCR_TD_ISO_KATAKANA,
+  SCR_TD_ISO_LEAD,
+  SCR_TD_ISO_TRAIL,
+  SCR_TD_ISO_ESCAPE_START,
+  SCR_TD_ISO_ESCAPE,
+};
+
+static ScrStr *scr_td_iso_2022_jp_decode(const ScrBytes *b) {
+  ScrTdOut out = scr_td_out_new(b->len);
+  enum ScrTdIsoState state = SCR_TD_ISO_ASCII;
+  enum ScrTdIsoState output_state = SCR_TD_ISO_ASCII;
+  uint8_t lead = 0;
+  int replay = -1;
+  bool output_flag = false;
+  size_t i = 0;
+  bool at_eof = false;
+  while (!at_eof) {
+    int item;
+    if (replay >= 0) {
+      item = replay;
+      replay = -1;
+    } else {
+      item = i < b->len ? b->data[i++] : -1;
+    }
+    uint8_t byte = item < 0 ? 0 : (uint8_t)item;
+    /* ICU treats CR/LF as line boundaries while a non-ASCII designation is
+     * active: emit the separator and resume in ASCII. A pending JIS lead is
+     * different (TRAIL state below) — there the line break completes an
+     * ill-formed pair and remains a replacement, matching Node. */
+    if (item >= 0 && (byte == 0x0a || byte == 0x0d) &&
+        (state == SCR_TD_ISO_KATAKANA || state == SCR_TD_ISO_LEAD)) {
+      output_flag = false;
+      state = output_state = SCR_TD_ISO_ASCII;
+      scr_td_put(&out, byte);
+      continue;
+    }
+    switch (state) {
+      case SCR_TD_ISO_ASCII:
+      case SCR_TD_ISO_ROMAN:
+      case SCR_TD_ISO_KATAKANA:
+        if (item < 0) { at_eof = true; break; }
+        if (byte == 0x1b) { state = SCR_TD_ISO_ESCAPE_START; break; }
+        if (state == SCR_TD_ISO_ROMAN && byte == 0x5c) {
+          output_flag = false; scr_td_put(&out, 0x00a5); break;
+        }
+        if (state == SCR_TD_ISO_ROMAN && byte == 0x7e) {
+          output_flag = false; scr_td_put(&out, 0x203e); break;
+        }
+        if (state == SCR_TD_ISO_KATAKANA && byte >= 0x21 && byte <= 0x5f) {
+          output_flag = false; scr_td_put(&out, 0xff61 + byte - 0x21); break;
+        }
+        if (state != SCR_TD_ISO_KATAKANA && byte < 0x80 && byte != 0x0e && byte != 0x0f) {
+          output_flag = false; scr_td_put(&out, byte); break;
+        }
+        output_flag = false; scr_td_error(&out); break;
+
+      case SCR_TD_ISO_LEAD:
+        if (item < 0) { at_eof = true; break; }
+        if (byte == 0x1b) { state = SCR_TD_ISO_ESCAPE_START; break; }
+        if (byte >= 0x21 && byte <= 0x7e) {
+          output_flag = false; lead = byte; state = SCR_TD_ISO_TRAIL; break;
+        }
+        /* ICU's fixed-width JIS converter folds two adjacent non-starter
+         * bytes into one malformed subsequence. A valid lead, ESC, and the
+         * SO/SI controls begin their own item and must remain queued; CR/LF
+         * following an invalid byte is payload here rather than the line
+         * reset handled above. */
+        if (byte != 0x0e && byte != 0x0f && i < b->len) {
+          uint8_t next = b->data[i];
+          bool starts_item = next == 0x0e || next == 0x0f || next == 0x1b ||
+                             (next >= 0x21 && next <= 0x7e);
+          if (!starts_item) i++;
+        }
+        output_flag = false; scr_td_error(&out); break;
+
+      case SCR_TD_ISO_TRAIL:
+        if (item < 0) { state = SCR_TD_ISO_LEAD; scr_td_error(&out); at_eof = true; break; }
+        if (byte == 0x1b) { state = SCR_TD_ISO_ESCAPE_START; scr_td_error(&out); break; }
+        state = SCR_TD_ISO_LEAD;
+        if (byte >= 0x21 && byte <= 0x7e) {
+          uint32_t cp = scr_td_jis0208[(lead - 0x21) * 94 + byte - 0x21];
+          if (cp) scr_td_put(&out, cp); else scr_td_error(&out);
+        } else {
+          scr_td_error(&out);
+          /* SO/SI are standalone illegal items in ICU's JIS state rather
+           * than trails consumed with the pending lead. Replay them so they
+           * each contribute their own replacement. */
+          if (byte == 0x0e || byte == 0x0f) i--;
+        }
+        break;
+
+      case SCR_TD_ISO_ESCAPE_START:
+        if (item >= 0 && (byte == 0x24 || byte == 0x25 || byte == 0x26 ||
+                          byte == 0x28 || byte == 0x2e)) {
+          lead = byte; state = SCR_TD_ISO_ESCAPE; break;
+        }
+        /* ICU recognizes ESC O as a complete but unsupported single-shift
+         * escape, consuming the O with the replacement. */
+        if (item >= 0 && byte == 0x4f) {
+          output_flag = false; state = output_state; scr_td_error(&out); break;
+        }
+        if (item >= 0) i--;
+        output_flag = false; state = output_state; scr_td_error(&out);
+        if (item < 0) at_eof = true;
+        break;
+
+      case SCR_TD_ISO_ESCAPE: {
+        enum ScrTdIsoState next = (enum ScrTdIsoState)-1;
+        if (item >= 0 && lead == 0x28 && byte == 0x42) next = SCR_TD_ISO_ASCII;
+        else if (item >= 0 && lead == 0x28 && (byte == 0x48 || byte == 0x4a)) next = SCR_TD_ISO_ROMAN;
+        else if (item >= 0 && lead == 0x28 && byte == 0x49) next = SCR_TD_ISO_KATAKANA;
+        else if (item >= 0 && lead == 0x24 && (byte == 0x40 || byte == 0x42)) next = SCR_TD_ISO_LEAD;
+        if ((int)next >= 0) {
+          state = output_state = next;
+          bool repeated = output_flag;
+          output_flag = !repeated;
+          if (repeated) scr_td_error(&out);
+          break;
+        }
+        /* Some ICU designation families need one more final byte. A known
+         * final consumes the whole four-byte escape as one error; an unknown
+         * final restores both payload bytes and leaves that final queued. */
+        bool extended_prefix =
+          (lead == 0x24 && (byte == 0x28 || byte == 0x29 || byte == 0x2a || byte == 0x2b)) ||
+          (lead == 0x25 && byte == 0x2f);
+        if (extended_prefix) {
+          if (i == b->len) {
+            output_flag = false; state = output_state; scr_td_error(&out);
+            break;
+          }
+          uint8_t final = b->data[i];
+          bool known_final =
+            (lead == 0x24 && byte == 0x28 &&
+              ((final >= 0x40 && final <= 0x45) || (final >= 0x47 && final <= 0x4d))) ||
+            (lead == 0x24 && byte == 0x29 &&
+              (final == 0x41 || final == 0x43 || final == 0x45 || final == 0x47)) ||
+            (lead == 0x24 && byte == 0x2a && final == 0x48) ||
+            (lead == 0x24 && byte == 0x2b && final >= 0x49 && final <= 0x4d) ||
+            (lead == 0x25 && byte == 0x2f &&
+              ((final >= 0x40 && final <= 0x41) || (final >= 0x43 && final <= 0x46)));
+          if (known_final) {
+            i++;
+            output_flag = false; state = output_state; scr_td_error(&out);
+            break;
+          }
+        }
+        /* ICU consumes the complete unsupported designations it recognizes,
+         * while other malformed payloads are restored to the input queue. */
+        bool consume_error =
+          (lead == 0x24 && byte == 0x41) ||
+          (lead == 0x28 && ((byte >= 0x40 && byte <= 0x47) || byte == 0x4b || byte == 0x52)) ||
+          (lead == 0x25 && byte == 0x42) ||
+          (lead == 0x2e && (byte == 0x41 || byte == 0x46));
+        if (item >= 0 && lead == 0x26 && byte == 0x40) {
+          state = output_state = SCR_TD_ISO_LEAD;
+          bool repeated = output_flag;
+          output_flag = !repeated;
+          if (repeated) scr_td_error(&out);
+          break;
+        }
+        if (item < 0 || consume_error) {
+          output_flag = false; state = output_state; scr_td_error(&out);
+          if (item < 0) at_eof = true;
+          break;
+        }
+        i--;
+        /* The first escape payload byte is restored before the current
+         * byte. Replay it through the full prior state machine: in JIS
+         * mode it can become the lead paired with the current byte. */
+        replay = lead;
+        output_flag = false; state = output_state; scr_td_error(&out);
+        break;
+      }
+    }
+  }
+  return scr_td_finish(&out);
+}
+
+ScrStr *scr_text_decode_legacy(const ScrBytes *b, double encoding_value) {
+  unsigned encoding = (unsigned)encoding_value;
+  if (encoding < SCR_TD_SINGLE_COUNT) return scr_td_single_byte(b, encoding);
+  switch (encoding) {
+    case SCR_TD_X_USER_DEFINED: return scr_td_x_user_defined(b);
+    case SCR_TD_UTF16LE: return scr_td_utf16(b, false);
+    case SCR_TD_UTF16BE: return scr_td_utf16(b, true);
+    case SCR_TD_GB18030: return scr_td_gb18030_decode(b);
+    case SCR_TD_BIG5: return scr_td_big5_decode(b);
+    case SCR_TD_EUC_JP: return scr_td_euc_jp_decode(b);
+    case SCR_TD_ISO_2022_JP: return scr_td_iso_2022_jp_decode(b);
+    case SCR_TD_SHIFT_JIS: return scr_td_shift_jis_decode(b);
+    case SCR_TD_EUC_KR: return scr_td_euc_kr_decode(b);
+    default: return scr_str_new("", 0); /* compiler invariant */
+  }
+}
+#endif /* SCR_TEXT_DECODER_LEGACY */
 
 /* Decode the next code point from an ScrStr's storage — ALWAYS valid
  * UTF-8 (the string runtime never stores ill-formed sequences), so no
@@ -822,6 +1410,72 @@ ScrStr *scr_bytes_to_str(const ScrBytes *b, const ScrStr *enc) {
   if (scr_enc_is(enc, "utf16le")) return scr_bytes_decode_utf16le(in, n);
   /* utf8 (the compiler completes an omitted encoding to "utf8") */
   return scr_bytes_decode_utf8(in, n);
+}
+
+/* Buffer.toString with a runtime-valued encoding. Literal call sites fold
+ * this same alias table in the frontend; variables arrive here, where Node
+ * also accepts ASCII case variants and rejects unknown names catchably. */
+static bool scr_enc_eq_ci(const ScrStr *raw, const char *name) {
+  size_t n = strlen(name);
+  if (raw->len != n) return false;
+  for (size_t i = 0; i < n; i++) {
+    char c = raw->data[i];
+    if (c >= 'A' && c <= 'Z') c = (char)(c + ('a' - 'A'));
+    if (c != name[i]) return false;
+  }
+  return true;
+}
+
+static ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw) {
+  static const struct { const char *from; const char *to; } map[] = {
+    {"utf8", "utf8"}, {"utf-8", "utf8"}, {"hex", "hex"},
+    {"base64", "base64"}, {"base64url", "base64url"},
+    {"latin1", "latin1"}, {"binary", "latin1"}, {"ascii", "ascii"},
+    {"utf16le", "utf16le"}, {"utf-16le", "utf16le"},
+    {"ucs2", "utf16le"}, {"ucs-2", "utf16le"},
+  };
+  for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) {
+    if (scr_enc_eq_ci(raw, map[i].from)) {
+      return scr_str_new(map[i].to, strlen(map[i].to));
+    }
+  }
+  static const char prefix[] = "Unknown encoding: ";
+  const size_t prefix_len = sizeof prefix - 1;
+  if (raw->len > SIZE_MAX - prefix_len) scr_bytes_oom();
+  const size_t msg_len = prefix_len + raw->len;
+  char *msg = malloc(msg_len);
+  if (!msg) scr_bytes_oom();
+  memcpy(msg, prefix, prefix_len);
+  memcpy(msg + prefix_len, raw->data, raw->len);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, msg_len,
+                           "ERR_UNKNOWN_ENCODING");
+  free(msg);
+  return NULL;
+}
+
+ScrStr *scr_bytes_to_str_checked(const ScrBytes *b, const ScrStr *enc) {
+  /* Node returns before resolving the encoding when there are no bytes
+   * to decode, so even an unknown runtime name answers the empty string. */
+  if (b->len == 0) return scr_str_new("", 0);
+  ScrStr *normalized = scr_bytes_normalize_encoding(enc);
+  if (!normalized) return NULL;
+  ScrStr *out = scr_bytes_to_str(b, normalized);
+  scr_str_release(normalized);
+  return out;
+}
+
+ScrStr *scr_bytes_to_str_checked_range(const ScrBytes *b, const ScrStr *enc,
+                                       double start, double end) {
+  /* The range is selected before Node resolves the encoding. A clamped
+   * empty window therefore answers "" even for an unknown name. */
+  size_t s0, e0;
+  scr_bytes_to_str_bounds(b, start, end, &s0, &e0);
+  if (s0 == e0) return scr_str_new("", 0);
+  ScrStr *normalized = scr_bytes_normalize_encoding(enc);
+  if (!normalized) return NULL;
+  ScrStr *out = scr_bytes_to_str_range(b, normalized, start, end);
+  scr_str_release(normalized);
+  return out;
 }
 
 static int scr_hex_val(uint8_t c) {
@@ -1503,4 +2157,3 @@ double scr_bytes_write_var(ScrBytes *b, double value, double offset, double byte
   }
   return offset + (double)width;
 }
-

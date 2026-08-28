@@ -1,0 +1,6 @@
+top-level-await-module-leak/b.ts:2:13 - error SC0001: Cannot find name 'shared'.
+
+  1 | await Promise.resolve();
+  2 | console.log(shared);
+    |             ^~~~~~
+  3 | console.log("SHOULD NOT RUN");

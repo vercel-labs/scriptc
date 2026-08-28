@@ -1,12 +1,13 @@
 /* The Linux differential lane — env-gated (SCRIPTC_LINUX=1), skipped everywhere
  * else so the macOS lanes never see it. The workflow (docs/linux-port.md):
  * corpus programs are CROSS-COMPILED on the host via `zig cc`
- * (SCRIPTC_CC=zigcc, SCRIPTC_TARGET=aarch64-linux-gnu.<glibc>) and both sides run
- * inside one Linux container — the binary, and a LINUX Node as the oracle
- * (node:<.node-version>-bookworm, so the oracle version matches the macOS
- * lanes' and bookworm's glibc matches the triple's pin). Same contract as
- * differential.test.ts: stdout byte-equal, stderr byte-equal for exit-0
- * programs, exit codes agree with the `// @exit:` directive.
+ * (SCRIPTC_CC=zigcc, SCRIPTC_TARGET=<linux triple>) and both sides run
+ * inside one Linux container — the binary, and a LINUX Node as the oracle.
+ * GNU targets use node:<.node-version>-bookworm (whose glibc matches the
+ * triple's pin); <arch>-linux-musl uses the matching Alpine Node image.
+ * Same contract as differential.test.ts: stdout byte-equal, stderr
+ * byte-equal for exit-0 programs, exit codes agree with the `// @exit:`
+ * directive.
  *
  * Scope: the whole corpus plus the LISTENING harnesses — `// @dynamic`
  * programs included (the engine archive cross-builds per target). NO
@@ -53,6 +54,7 @@ const repoRoot = join(import.meta.dirname, "../..");
 const corpusDir = join(repoRoot, "tests/corpus");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const target = process.env["SCRIPTC_LINUX_TARGET"] ?? "aarch64-linux-gnu.2.36";
+const muslTarget = target.includes("linux-musl");
 // The repo mounts at its OWN absolute path inside the container: compiled
 // binaries bake build-host paths (module URLs in dynamic-import errors,
 // __dirname/__filename), and the oracle must see the SAME strings — a
@@ -122,8 +124,8 @@ function nodeOracleFile(file: string): string {
 /* Programs whose expected output depends on spawn EXEC-FAILURE errno
  * reporting — child_process must see ENOENT through posix_spawn(p)'s
  * return (Node's shape: error event / error property, never an exit).
- * Rosetta's amd64 emulation does not preserve glibc's CLONE_VM errno
- * relay: posix_spawn returns 0 and the doomed child exits 127, so under
+ * Rosetta's amd64 emulation does not preserve libc's spawn errno relay:
+ * posix_spawn returns 0 and the doomed child exits 127, so under
  * an EMULATED x86_64 container the runtime diverges from Node (whose
  * fork+CLOEXEC-pipe relay survives translation). Verified NOT a Linux
  * gap, twice over: the same programs pass byte-equal in the NATIVE
@@ -133,7 +135,7 @@ function nodeOracleFile(file: string): string {
  * when the x86_64 container is emulated (arm64-mac host); a real x86_64
  * host runs them. */
 const ROSETTA_SPAWN_SKIP_REASON =
-  "spawn exec-failure errno: Rosetta drops glibc posix_spawn's CLONE_VM errno relay (rc 0, child exits 127); passes on native aarch64 and real x86_64";
+  "spawn exec-failure errno: Rosetta drops posix_spawn's libc errno relay (rc 0, child exits 127); passes on native aarch64 and real x86_64";
 const ROSETTA_SPAWN_SKIPS = new Set([
   "1360-spawn-sync.ts",
   "1361-spawn-events.ts",
@@ -511,15 +513,14 @@ describe.skipIf(!enabled)(`linux differential (${target})`, () => {
       throw new Error("SCRIPTC_LINUX=1 needs the Docker daemon running (`open -a Docker`).");
     });
     const nodeVersion = readFileSync(join(repoRoot, ".node-version"), "utf8").trim();
-    const image = `node:${nodeVersion}-bookworm`;
+    const image = `node:${nodeVersion}-${muslTarget ? "alpine" : "bookworm"}`;
     await execFileAsync("docker", [
       "run", "-d", "--rm",
       // The container's CPU arch follows the TARGET triple, so
-      // SCRIPTC_LINUX_TARGET=x86_64-linux-gnu.2.36 runs the whole lane —
-      // oracle Node and cross binaries both — under linux/amd64 (Rosetta /
-      // qemu on Apple-silicon Docker; the CI/server arch that motivates
-      // the Linux lane in the first place). Default stays the host arch's
-      // image via the aarch64 default target.
+      // SCRIPTC_LINUX_TARGET selects the container architecture from the
+      // triple: x86_64 targets run the whole lane under linux/amd64
+      // (Rosetta/qemu on Apple-silicon Docker), while AArch64 targets use
+      // linux/arm64. The oracle Node and cross binaries always share it.
       "--platform", target.startsWith("x86_64") ? "linux/amd64" : "linux/arm64",
       "--name", containerName,
       "-v", `${repoRoot}:${mountPoint}`,
@@ -545,7 +546,7 @@ describe.skipIf(!enabled)(`linux differential (${target})`, () => {
           results = await Promise.all([runLinuxNode(file), crossCompileAndRun(file)]);
         } catch (err) {
           // Programs whose IR needs a cross-gated feature (tls/zlib/... —
-          // see cc.ts) SKIP with the gate's reason: they are follow-up
+          // see native-toolchain.ts) SKIP with the gate's reason: they are follow-up
           // scope, not Linux failures. Everything else is a real failure.
           if (err instanceof Error && err.message.includes("not supported under a cross target")) {
             ctx.skip(err.message.split("\n").find((l) => l.includes("not supported")) ?? err.message);
@@ -671,13 +672,23 @@ describe.skipIf(!enabled)(`linux differential (${target})`, () => {
     }
 
     /** One case, both lanes, byte-compared (fetch.test.ts's contract). */
-    async function runFetchCase(entry: string, env: Record<string, string>): Promise<void> {
-      const binary = await crossCompileFetchFixture(entry);
+    async function runFetchCase(
+      c: { name: string; entry: string },
+      env: Record<string, string>,
+    ): Promise<void> {
+      const binary = await crossCompileFetchFixture(c.entry);
       const argv = [base, refused];
+      // redirect-resolution's server keeps one-hop fragment state by key.
+      // The lanes run sequentially, so give each a distinct key just like
+      // fetch.test.ts or the native lane would consume Node's state.
+      const nodeArgv =
+        c.name === "redirect-resolution" ? [...argv, "redirect-resolution-node"] : argv;
+      const nativeArgv =
+        c.name === "redirect-resolution" ? [...argv, "redirect-resolution-native"] : argv;
       // Sequential, not parallel (the server-fixture stance): both lanes
       // drive real sockets against the same in-container servers.
-      const nodeRes = await runInContainer(["node", inContainer(entry), ...argv], env);
-      const nativeRes = await runInContainer([inContainer(binary), ...argv], env);
+      const nodeRes = await runInContainer(["node", inContainer(c.entry), ...nodeArgv], env);
+      const nativeRes = await runInContainer([inContainer(binary), ...nativeArgv], env);
       if (!nodeRes.stdout.equals(nativeRes.stdout)) {
         expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
         expect.unreachable("stdout differed at byte level but not after utf8 decode");
@@ -690,7 +701,7 @@ describe.skipIf(!enabled)(`linux differential (${target})`, () => {
     test.for(fetchCases.map((c) => [c.name, c] as const))(
       "%s",
       async ([, c]) => {
-        await runFetchCase(c.entry, poison());
+        await runFetchCase(c, poison());
       },
       120_000,
     );
@@ -701,9 +712,9 @@ describe.skipIf(!enabled)(`linux differential (${target})`, () => {
     test.skipIf(fetchCases.every((c) => c.name !== "proxy-optin"))(
       "proxy-optin routes through http_proxy when opted in",
       async () => {
-        const entry = fetchCases.find((c) => c.name === "proxy-optin")!.entry;
+        const c = fetchCases.find((candidate) => candidate.name === "proxy-optin")!;
         const before = await proxiedCount();
-        await runFetchCase(entry, {
+        await runFetchCase(c, {
           ...poison(),
           NODE_USE_ENV_PROXY: "1",
           http_proxy: proxyBase,

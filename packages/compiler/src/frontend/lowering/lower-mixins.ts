@@ -37,7 +37,7 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError } from "./lowerer.js";
-import { IrType } from "../../ir/nodes.js";
+import { IrType } from "../../ir/ir.js";
 import { ClassInfo, builtinStreamInfoOf, exactClassOfReceiver, propertyAssignedClassInfoOf } from "./lower-classes.js";
 
 /** A recognized mixin function: one base-class parameter, a body that
@@ -95,18 +95,18 @@ function unparen(e: ts.Expression): ts.Expression {
  * diagnostics, no registration), so a null answer simply leaves the call
  * to the generic/direct machinery and ITS fences. */
 export function mixinFnShapeOf(
-  L: Lowerer,
+  lowerer: Lowerer,
   fn: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression,
 ): MixinFnShape | null {
-  const cached = L.mixinFnShapes.get(fn);
+  const cached = lowerer.mixinFnShapes.get(fn);
   if (cached !== undefined) return cached;
-  const shape = mixinFnShapeInner(L, fn);
-  L.mixinFnShapes.set(fn, shape);
+  const shape = mixinFnShapeInner(lowerer, fn);
+  lowerer.mixinFnShapes.set(fn, shape);
   return shape;
 }
 
 function mixinFnShapeInner(
-  L: Lowerer,
+  lowerer: Lowerer,
   fn: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression,
 ): MixinFnShape | null {
   if (fn.asteriskToken) return null;
@@ -114,7 +114,7 @@ function mixinFnShapeInner(
   if (fn.parameters.length !== 1) return null;
   const p = fn.parameters[0]!;
   if (!ts.isIdentifier(p.name) || p.dotDotDotToken || p.questionToken || p.initializer) return null;
-  const paramSym = L.checker.getSymbolAtLocation(p.name);
+  const paramSym = lowerer.checker.getSymbolAtLocation(p.name);
   if (!paramSym || !fn.body) return null;
 
   // The body must define-and-return exactly one class: an arrow whose
@@ -139,8 +139,8 @@ function mixinFnShapeInner(
     ) {
       const ret = unparen(stmts[1]!.expression!);
       if (ts.isIdentifier(ret)) {
-        const clsSym = L.checker.getSymbolAtLocation(stmts[0]!.name!);
-        if (clsSym && L.checker.getSymbolAtLocation(ret) === clsSym) classNode = stmts[0]!;
+        const clsSym = lowerer.checker.getSymbolAtLocation(stmts[0]!.name!);
+        if (clsSym && lowerer.checker.getSymbolAtLocation(ret) === clsSym) classNode = stmts[0]!;
       }
     }
   }
@@ -159,7 +159,7 @@ function mixinFnShapeInner(
   if (types.length !== 1) return null;
   const t = types[0]!;
   if (t.typeArguments || !ts.isIdentifier(t.expression)) return null;
-  if (L.checker.getSymbolAtLocation(t.expression) !== paramSym) return null;
+  if (lowerer.checker.getSymbolAtLocation(t.expression) !== paramSym) return null;
 
   // The parameter's flow must be fully traceable: the extends clause is
   // its ONE reference (a parameter that is stored, compared, reassigned,
@@ -167,7 +167,7 @@ function mixinFnShapeInner(
   let extraRef = false;
   ts.walkPreorder(fn.body, (n) => {
     if (n === t.expression) return undefined;
-    if (ts.isIdentifier(n) && n.text === p.name.getText() && L.checker.getSymbolAtLocation(n) === paramSym) {
+    if (ts.isIdentifier(n) && n.text === p.name.getText() && lowerer.checker.getSymbolAtLocation(n) === paramSym) {
       extraRef = true;
       return "stop";
     }
@@ -179,10 +179,10 @@ function mixinFnShapeInner(
   // Ctor>(Base: T)`): instantiations bind it to the argument's classval.
   let paramTypeParam: ts.Symbol | null = null;
   if (p.type && ts.isTypeReferenceNode(p.type) && ts.isIdentifier(p.type.typeName)) {
-    const refSym = L.checker.getSymbolAtLocation(p.type.typeName);
+    const refSym = lowerer.checker.getSymbolAtLocation(p.type.typeName);
     if (
       refSym &&
-      fn.typeParameters?.some((tp) => L.checker.getSymbolAtLocation(tp.name) === refSym)
+      fn.typeParameters?.some((tp) => lowerer.checker.getSymbolAtLocation(tp.name) === refSym)
     ) {
       paramTypeParam = refSym;
     }
@@ -199,34 +199,34 @@ function mixinFnShapeInner(
  * resolving to a single function declaration or a const binding holding
  * an arrow/function expression (never-reassigned by constness), whose
  * shape qualifies. */
-export function mixinFnOfCallee(L: Lowerer, callee: ts.Expression): MixinFnShape | null {
+export function mixinFnOfCallee(lowerer: Lowerer, callee: ts.Expression): MixinFnShape | null {
   if (!ts.isIdentifier(callee)) return null;
   // A shadowing local owns the name (heritage-time demands have no
   // function context — nothing can shadow at collection). peekLocal: this
   // is a probe, and probes must not thread capture state (resolveLocal's
   // side effect — an ICE through a non-lifted enclosing function).
-  if (L.fnStack.length > 0 && L.peekLocal(callee)) return null;
+  if (lowerer.fnStack.length > 0 && lowerer.peekLocal(callee)) return null;
   // Recognition is a side-effect-free PROBE (it runs on every candidate
   // call/binding/reference): resolve without resolveValueSymbol's
   // deferred-diagnostic flush — a non-mixin callee's own paths flush when
   // THEY resolve it.
-  let sym = L.checker.getSymbolAtLocation(callee) ?? null;
-  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = L.checker.getAliasedSymbol(sym);
+  let sym = lowerer.checker.getSymbolAtLocation(callee) ?? null;
+  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = lowerer.checker.getAliasedSymbol(sym);
   if (!sym) return null;
-  const decls = L.checker.declarationsOf(sym);
+  const decls = lowerer.checker.declarationsOf(sym);
   if (decls.length !== 1 || decls[0] === undefined) return null; // overloads / merged declarations
   const d = decls[0];
-  if (ts.isFunctionDeclaration(d)) return mixinFnShapeOf(L, d);
+  if (ts.isFunctionDeclaration(d)) return mixinFnShapeOf(lowerer, d);
   if (ts.isVariableDeclaration(d)) {
     const fn = mixinFnNodeOfBinding(d);
-    return fn ? mixinFnShapeOf(L, fn) : null;
+    return fn ? mixinFnShapeOf(lowerer, fn) : null;
   }
   return null;
 }
 
 /** The arrow/function-expression initializer of a CONST binding — the
  * value-binding spelling of a mixin function declaration. */
-export function mixinFnNodeOfBinding(
+function mixinFnNodeOfBinding(
   decl: ts.VariableDeclaration,
 ): ts.ArrowFunction | ts.FunctionExpression | null {
   if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return null;
@@ -245,24 +245,24 @@ export function mixinFnNodeOfBinding(
  * exists (the binding is never read as a value; calls instantiate per
  * site), and both collectGlobals and the statement lowering skip it by
  * this test. */
-export function isMixinFnBinding(L: Lowerer, decl: ts.VariableDeclaration): boolean {
+export function isMixinFnBinding(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
   const fn = mixinFnNodeOfBinding(decl);
-  return fn !== null && mixinFnShapeOf(L, fn) !== null;
+  return fn !== null && mixinFnShapeOf(lowerer, fn) !== null;
 }
 
 /** The class a mixin ARGUMENT statically names, with every unsupported
  * argument shape a named fence (recognition already established the call
  * is a mixin call — from here failures are honest diagnostics, never a
  * fallthrough to a wronger message). */
-function mixinBaseClassOf(L: Lowerer, arg: ts.Expression): ClassInfo {
+function mixinBaseClassOf(lowerer: Lowerer, arg: ts.Expression): ClassInfo {
   const e = unparen(arg);
   // A nested mixin call: `Tagged(Printable(Derived))` — the inner
   // instantiation is the outer's base (instantiated first, exactly JS's
   // argument-before-call order).
   if (ts.isCallExpression(e)) {
-    const inner = mixinCallClassInfoOf(L, e);
+    const inner = mixinCallClassInfoOf(lowerer, e);
     if (inner) return inner;
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       arg,
       "mixin arguments that are calls of anything but another mixin function (the base class must be statically known)",
@@ -270,28 +270,28 @@ function mixinBaseClassOf(L: Lowerer, arg: ts.Expression): ClassInfo {
   }
   // A class expression argument: `Tagged(class { … })` — collected like
   // any expression class (its own position fences apply).
-  if (ts.isClassExpression(e)) return checkedMixinBase(L, arg, L.lowerClassExpressionInfo(e));
+  if (ts.isClassExpression(e)) return checkedMixinBase(lowerer, arg, lowerer.lowerClassExpressionInfo(e));
   if (ts.isIdentifier(e)) {
-    const sym = L.resolveValueSymbol(e);
-    const builtin = L.builtinErrorInfoOf(sym) ?? L.builtinEmitterInfoOf(sym) ?? builtinStreamInfoOf(L, sym);
+    const sym = lowerer.resolveValueSymbol(e);
+    const builtin = lowerer.builtinErrorInfoOf(sym) ?? lowerer.builtinEmitterInfoOf(sym) ?? builtinStreamInfoOf(lowerer, sym);
     if (builtin) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         arg,
         `mixins over the builtin class '${e.text}' (its construction is libCall-shaped — only program classes compose)`,
       );
     }
-    const direct = (sym ? L.classBySymbol.get(sym) : undefined) ??
-      propertyAssignedClassInfoOf(L, sym) ??
-      exactClassOfReceiver(L, e) ??
+    const direct = (sym ? lowerer.classBySymbol.get(sym) : undefined) ??
+      propertyAssignedClassInfoOf(lowerer, sym) ??
+      exactClassOfReceiver(lowerer, e) ??
       // A const holding a mixin RESULT declared earlier (`const A = M(B);
       // class D extends M2(A) {}`): the binding pins that call's
       // instantiation — collected on demand, registered so every later
       // path answers like a declaration (collectGlobals does the same).
-      mixinResultBindingClassOf(L, sym);
-    if (direct) return checkedMixinBase(L, arg, direct);
+      mixinResultBindingClassOf(lowerer, sym);
+    if (direct) return checkedMixinBase(lowerer, arg, direct);
   }
-  L.unsupported(
+  lowerer.unsupported(
     "SC1090",
     arg,
     "mixin arguments that are not statically one program class (the compiled mixin monomorphizes per concrete base)",
@@ -299,23 +299,23 @@ function mixinBaseClassOf(L: Lowerer, arg: ts.Expression): ClassInfo {
 }
 
 /** Argument classes the classval story cannot carry compose-fences. */
-function checkedMixinBase(L: Lowerer, blame: ts.Node, info: ClassInfo): ClassInfo {
+function checkedMixinBase(lowerer: Lowerer, blame: ts.Node, info: ClassInfo): ClassInfo {
   if (info.builtinError || info.builtinEmitter || info.builtinStream) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       blame,
       `mixins over the builtin class '${info.def.jsName || info.def.name}' (its construction is libCall-shaped — only program classes compose)`,
     );
   }
   if (info.generic) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       blame,
       "mixins over a generic class family (pass a concrete class)",
     );
   }
   if (info.classDecorators?.valueGlobalId !== undefined) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       blame,
       "mixins over a decorated class (its decorators may replace it — the runtime base would be the decoration result)",
@@ -329,11 +329,11 @@ function checkedMixinBase(L: Lowerer, blame: ts.Node, info: ClassInfo): ClassInf
  * downstream path (construction, statics, extends, instanceof, reads)
  * answers like a declaration from then on. */
 export function mixinResultBindingClassOf(
-  L: Lowerer,
+  lowerer: Lowerer,
   sym: ts.Symbol | null | undefined,
 ): ClassInfo | null {
   if (!sym) return null;
-  const decls = L.checker.declarationsOf(sym);
+  const decls = lowerer.checker.declarationsOf(sym);
   if (decls.length !== 1 || decls[0] === undefined || !ts.isVariableDeclaration(decls[0])) return null;
   const decl = decls[0];
   if (
@@ -345,8 +345,8 @@ export function mixinResultBindingClassOf(
   }
   const init = unparen(decl.initializer);
   if (!ts.isCallExpression(init)) return null;
-  const info = mixinCallClassInfoOf(L, init);
-  if (info) L.classBySymbol.set(sym, info);
+  const info = mixinCallClassInfoOf(lowerer, init);
+  if (info) lowerer.classBySymbol.set(sym, info);
   return info;
 }
 
@@ -356,13 +356,13 @@ export function mixinResultBindingClassOf(
  * expression's own lowering). Null when the callee is NOT a mixin
  * function (the caller's own machinery and fences answer); every failure
  * PAST recognition is a named diagnostic + poison. */
-export function mixinCallClassInfoOf(L: Lowerer, call: ts.CallExpression): ClassInfo | null {
-  const cached = L.mixinInstanceByCall.get(call);
+export function mixinCallClassInfoOf(lowerer: Lowerer, call: ts.CallExpression): ClassInfo | null {
+  const cached = lowerer.mixinInstanceByCall.get(call);
   if (cached !== undefined) {
     if (cached === null) {
       // The first demand's diagnostics may have deferred under a class
       // symbol nothing flushed — this site still needs a hard answer.
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         call,
         "this mixin call (its instantiation failed to collect — see the instantiation's own diagnostics)",
@@ -370,28 +370,28 @@ export function mixinCallClassInfoOf(L: Lowerer, call: ts.CallExpression): Class
     }
     return cached;
   }
-  const shape = mixinFnOfCallee(L, call.expression);
+  const shape = mixinFnOfCallee(lowerer, call.expression);
   if (!shape) return null;
   try {
-    const info = instantiateMixinCall(L, call, shape);
-    L.mixinInstanceByCall.set(call, info);
+    const info = instantiateMixinCall(lowerer, call, shape);
+    lowerer.mixinInstanceByCall.set(call, info);
     return info;
   } catch (e) {
-    if (e instanceof PoisonError) L.mixinInstanceByCall.set(call, null);
+    if (e instanceof PoisonError) lowerer.mixinInstanceByCall.set(call, null);
     throw e;
   }
 }
 
-function instantiateMixinCall(L: Lowerer, call: ts.CallExpression, shape: MixinFnShape): ClassInfo {
+function instantiateMixinCall(lowerer: Lowerer, call: ts.CallExpression, shape: MixinFnShape): ClassInfo {
   // Reentrancy backstop: a cyclic base chain through const bindings would
   // re-enter its own instantiation (the tsc gate rejects the cycles it
   // sees; this turns anything it misses into a diagnostic, the
   // class-expression rule).
-  if (L.mixinCollectingCalls.has(call)) {
-    L.unsupported("SC1090", call, "mixin calls whose base chain re-enters their own instantiation (a cyclic extends)");
+  if (lowerer.mixinCollectingCalls.has(call)) {
+    lowerer.unsupported("SC1090", call, "mixin calls whose base chain re-enters their own instantiation (a cyclic extends)");
   }
   if (call.arguments.length !== 1 || ts.isSpreadElement(call.arguments[0]!)) {
-    L.unsupported("SC1090", call, "mixin calls with anything but exactly one direct class argument");
+    lowerer.unsupported("SC1090", call, "mixin calls with anything but exactly one direct class argument");
   }
   // Evaluation-position fence: one immortal class object is exact only
   // for once-evaluated calls. Function bodies (and class members) may run
@@ -401,14 +401,14 @@ function instantiateMixinCall(L: Lowerer, call: ts.CallExpression, shape: MixinF
   let prev: ts.Node = call;
   for (let p: ts.Node = call.parent; !ts.isSourceFile(p); prev = p, p = p.parent) {
     if (ts.isFunctionLike(p) || ts.isClassStaticBlockDeclaration(p)) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         call,
         "mixin calls inside functions (each call mints a DISTINCT class in JS — call the mixin at top level and bind or extend the result)",
       );
     }
     if ((ts.isClassDeclaration(p) || ts.isClassExpression(p)) && !ts.isHeritageClause(prev)) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         call,
         "mixin calls inside class members (they evaluate per instance/access — call the mixin at top level)",
@@ -416,27 +416,27 @@ function instantiateMixinCall(L: Lowerer, call: ts.CallExpression, shape: MixinF
     }
   }
 
-  const base = mixinBaseClassOf(L, call.arguments[0]!);
-  const instName = L.qualify(
+  const base = mixinBaseClassOf(lowerer, call.arguments[0]!);
+  const instName = lowerer.qualify(
     call.getSourceFile(),
     `%mx${call.getStart()}.${shape.classNode.name?.text ?? ""}`,
   );
-  const ordinal = L.mixinOrdinals.get(shape.classNode) ?? 0;
-  L.mixinOrdinals.set(shape.classNode, ordinal + 1);
+  const ordinal = lowerer.mixinOrdinals.get(shape.classNode) ?? 0;
+  lowerer.mixinOrdinals.set(shape.classNode, ordinal + 1);
   const bindings = new Map<ts.Symbol, IrType>();
   if (shape.paramTypeParam) {
     bindings.set(shape.paramTypeParam, { kind: "classval", className: base.def.name });
   }
   const context = `instantiating mixin '${shape.name}' over '${base.def.jsName || base.def.name}'`;
-  const prevBindings = L.typeParamBindings;
-  const prevContext = L.instantiationContext;
-  const prevMixinCtx = L.mixinTypeContext;
-  L.typeParamBindings = bindings;
-  L.instantiationContext = context;
-  L.mixinTypeContext = { classNode: shape.classNode, className: instName };
-  L.mixinCollectingCalls.add(call);
+  const prevBindings = lowerer.typeParamBindings;
+  const prevContext = lowerer.instantiationContext;
+  const prevMixinCtx = lowerer.mixinTypeContext;
+  lowerer.typeParamBindings = bindings;
+  lowerer.instantiationContext = context;
+  lowerer.mixinTypeContext = { classNode: shape.classNode, className: instName };
+  lowerer.mixinCollectingCalls.add(call);
   try {
-    L.collectClassShapeInner(shape.classNode, undefined, undefined, {
+    lowerer.collectClassShapeInner(shape.classNode, undefined, undefined, {
       base,
       name: instName,
       call,
@@ -445,23 +445,23 @@ function instantiateMixinCall(L: Lowerer, call: ts.CallExpression, shape: MixinF
       ordinal,
     });
   } finally {
-    L.typeParamBindings = prevBindings;
-    L.instantiationContext = prevContext;
-    L.mixinTypeContext = prevMixinCtx;
-    L.mixinCollectingCalls.delete(call);
+    lowerer.typeParamBindings = prevBindings;
+    lowerer.instantiationContext = prevContext;
+    lowerer.mixinTypeContext = prevMixinCtx;
+    lowerer.mixinCollectingCalls.delete(call);
   }
-  const info = L.classes.get(instName);
+  const info = lowerer.classes.get(instName);
   if (!info) throw new PoisonError(); // collection poisoned and reported
   // Members lower in the shared monomorphization fixpoint (demand-driven,
   // like generic-class instantiations — never wantBody-gated).
-  L.genericClassInstances.push(info);
-  L.onLateClassCollected?.(info);
+  lowerer.genericClassInstances.push(info);
+  lowerer.onLateClassCollected?.(info);
   // Pinned-position instantiations join the intersection resolver's
   // registry (mixinIntersectionInstanceType).
   if (pinnedMixinCallPosition(call)) {
-    const list = L.mixinInstancesByClassNode.get(shape.classNode) ?? [];
+    const list = lowerer.mixinInstancesByClassNode.get(shape.classNode) ?? [];
     list.push(info);
-    L.mixinInstancesByClassNode.set(shape.classNode, list);
+    lowerer.mixinInstancesByClassNode.set(shape.classNode, list);
   }
 
   // Statics are declaration-time code: they run when THIS call evaluates.
@@ -473,7 +473,7 @@ function instantiateMixinCall(L: Lowerer, call: ts.CallExpression, shape: MixinF
   if (info.staticFields.length > 0 || (info.staticBlocks?.length ?? 0) > 0) {
     const holder = staticsEvalStatementOf(call);
     if (!holder) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         call,
         "mixin classes with static members outside a plain top-level position (their declaration-time code must run exactly where the call evaluates — bind the result in its own top-level `const X = M(Base)` statement, or extend the call directly in a top-level class declaration)",
@@ -501,27 +501,27 @@ function instantiateMixinCall(L: Lowerer, call: ts.CallExpression, shape: MixinF
  * names the type. Only instantiations from PINNED positions (const
  * bindings, heritage clauses) participate: they are registered before
  * any body lowers in BOTH passes, so discovery and emit answer alike. */
-export function mixinIntersectionInstanceType(L: Lowerer, widened: ts.Type): IrType | null {
-  const parts = widened.isIntersectionType() ? widened.getTypes() : null;
-  if (!parts || L.mixinInstancesByClassNode.size === 0) return null;
+export function mixinIntersectionInstanceType(lowerer: Lowerer, widened: ts.Type): IrType | null {
+  const parts = widened.isIntersectionType() ? ts.constituentTypes(widened) : null;
+  if (!parts || lowerer.mixinInstancesByClassNode.size === 0) return null;
   const mixinParts: ts.ClassLikeDeclaration[] = [];
   const plainParts: string[] = [];
   for (const part of parts) {
     const sym = part.getSymbol();
-    const decl = sym ? L.checker.valueDeclarationOf(sym) : undefined;
+    const decl = sym ? lowerer.checker.valueDeclarationOf(sym) : undefined;
     const node =
       decl && (ts.isClassDeclaration(decl) || ts.isClassExpression(decl)) &&
-      L.mixinInstancesByClassNode.has(decl)
+      lowerer.mixinInstancesByClassNode.has(decl)
         ? decl
         : null;
     if (node) {
       // The STATIC side of a mixin class in an intersection (a construct
       // signature) is not an instance part — decline the whole shape.
-      if (L.checker.getConstructSignatures(part).length > 0) return null;
+      if (lowerer.checker.getConstructSignatures(part).length > 0) return null;
       mixinParts.push(node);
       continue;
     }
-    const mapped = L.mapTypeOf(part);
+    const mapped = lowerer.mapTypeOf(part);
     if (mapped?.kind !== "object") return null;
     plainParts.push(mapped.className);
   }
@@ -533,7 +533,7 @@ export function mixinIntersectionInstanceType(L: Lowerer, widened: ts.Type): IrT
   const matches: ClassInfo[] = [];
   for (let h = 0; h < mixinParts.length; h++) {
     const restNodes = mixinParts.filter((_, i) => i !== h);
-    for (const cand of L.mixinInstancesByClassNode.get(mixinParts[h]!) ?? []) {
+    for (const cand of lowerer.mixinInstancesByClassNode.get(mixinParts[h]!) ?? []) {
       // The candidate's structure: its mixin ancestors' class NODES, and
       // the plain classes ANCHORING each mixin layer (the direct base
       // where a layer sits on a named class) — exactly what the checker

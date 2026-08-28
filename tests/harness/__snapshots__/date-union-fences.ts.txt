@@ -1,0 +1,54 @@
+date-union-fences.ts:5:22 - error SC1090: parameter default values on 'Date'-typed parameters are not supported yet
+
+  4 | 
+  5 | function defaultDate(value: Date = new Date(0)): number {
+    |                      ^~~~~~~~~~~~~~~~~~~~~~~~~
+  6 |   return value.getTime();
+
+date-union-fences.ts:8:1 - error SC2004: uses of 'defaultDate' inherit the blocker on its declaration
+
+  7 | }
+  8 | defaultDate();
+    | ^~~~~~~~~~~
+  9 | 
+
+  hint: the declaration of 'defaultDate' did not compile — fix the diagnostic reported there and these sites clear with it
+
+date-union-fences.ts:10:11 - error SC2009: values of type 'Generator<Date, void, unknown>' cannot be compiled: the Generator shape is supported, but this instantiation's type arguments are outside the supported set
+
+   9 | 
+  10 | function* dates(): Generator<Date, void, unknown> {
+     |           ^~~~~
+  11 |   yield new Date(0);
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+date-union-fences.ts:13:21 - error SC2004: uses of 'dates' inherit the blocker on its declaration
+
+  12 | }
+  13 | for (const value of dates()) console.log(value.getTime());
+     |                     ^~~~~
+  14 | 
+
+  hint: the declaration of 'dates' did not compile — fix the diagnostic reported there and these sites clear with it
+
+date-union-fences.ts:16:3 - error SC1090: definite assignment assertions on fields not assigned at the constructor's top level ('value!' defers the first assignment past construction — the field would hold garbage, not undefined, until it runs; assign it in the constructor or include undefined in its type) is not supported yet
+
+  15 | class DeferredDate {
+  16 |   value!: Date;
+     |   ^~~~~
+  17 |   initialize(): void {
+
+date-union-fences.ts:21:18 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  20 | }
+  21 | const deferred = new DeferredDate();
+     |                  ^~~~~~~~~~~~~~~~~~
+  22 | deferred.initialize();
+
+date-union-fences.ts:22:1 - error SC1090: method calls like 'deferred.initialize' is not supported yet
+
+  21 | const deferred = new DeferredDate();
+  22 | deferred.initialize();
+     | ^~~~~~~~~~~~~~~~~~~~~
+  23 | 

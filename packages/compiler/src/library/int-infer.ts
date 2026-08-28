@@ -43,6 +43,12 @@
  * short threshold list ONLY at loop headers, after a few plain joins;
  * precision lost to widening is recovered by the body-edge refinement,
  * so `for (let n = 0; n < 10; n = n + 1) send(n)` proves exactly [0, 9].
+ * Static numeric field reads rooted at one binding carry the same guard
+ * facts as locals through a straight-line dominated region, whether or
+ * not the field is itself a declared integer slot. Those facts are proof
+ * state only (the emitted program still performs every source read), and
+ * are discarded at calls/suspensions, heap writes, receiver rebindings,
+ * and control-flow joins. This is deliberately not alias analysis.
  *
  * INTERPROCEDURAL STRATEGY (v1, deliberate): intraprocedural with
  * declared-slot summaries at the boundaries. Every declared slot is both
@@ -71,8 +77,9 @@ import type {
   IrModule,
   IrNumBinOp,
   IrStmt,
+  IrType,
   SrcLoc,
-} from "../ir/nodes.js";
+} from "../ir/ir.js";
 
 /* ── the abstract domain ────────────────────────────────────────────────── */
 
@@ -99,7 +106,7 @@ export interface AbsVal {
 
 const normZero = (x: number): number => (Object.is(x, -0) ? 0 : x);
 
-export function absVal(lo: number, hi: number, whole: boolean, maybeNaN: boolean, spelling?: string): AbsVal {
+function absVal(lo: number, hi: number, whole: boolean, maybeNaN: boolean, spelling?: string): AbsVal {
   lo = normZero(lo);
   hi = normZero(hi);
   // Infinities are not integers: a set with a non-finite bound may
@@ -111,22 +118,22 @@ export function absVal(lo: number, hi: number, whole: boolean, maybeNaN: boolean
 }
 
 /** Any f64 a caller could pass — unbounded, not whole, NaN included. */
-export const TOP: AbsVal = { lo: -Infinity, hi: Infinity, whole: false, maybeNaN: true };
+const TOP: AbsVal = { lo: -Infinity, hi: Infinity, whole: false, maybeNaN: true };
 /** The empty set (unreachable): lo > hi and no NaN. */
-export const BOTTOM: AbsVal = { lo: Infinity, hi: -Infinity, whole: true, maybeNaN: false };
+const BOTTOM: AbsVal = { lo: Infinity, hi: -Infinity, whole: true, maybeNaN: false };
 
-export const isBottom = (v: AbsVal): boolean => v.lo > v.hi && !v.maybeNaN;
-export const isSingleton = (v: AbsVal): boolean => v.lo === v.hi && !v.maybeNaN;
+const isBottom = (v: AbsVal): boolean => v.lo > v.hi && !v.maybeNaN;
+const isSingleton = (v: AbsVal): boolean => v.lo === v.hi && !v.maybeNaN;
 const hasNumeric = (v: AbsVal): boolean => v.lo <= v.hi;
 
-export function constVal(value: number, spelling?: string): AbsVal {
+function constVal(value: number, spelling?: string): AbsVal {
   if (Number.isNaN(value)) return { lo: Infinity, hi: -Infinity, whole: false, maybeNaN: true };
   return absVal(value, value, Number.isInteger(value), false, spelling);
 }
 
 /** Least upper bound: interval hull, wholeness/NaN pessimism, spelling
  * kept only when both sides carry the same one. */
-export function join(a: AbsVal, b: AbsVal): AbsVal {
+function join(a: AbsVal, b: AbsVal): AbsVal {
   if (isBottom(a)) return b;
   if (isBottom(b)) return a;
   const numA = hasNumeric(a);
@@ -138,7 +145,7 @@ export function join(a: AbsVal, b: AbsVal): AbsVal {
   return absVal(lo, hi, whole, a.maybeNaN || b.maybeNaN, spelling);
 }
 
-export function sameVal(a: AbsVal, b: AbsVal): boolean {
+function sameVal(a: AbsVal, b: AbsVal): boolean {
   return a.lo === b.lo && a.hi === b.hi && a.whole === b.whole && a.maybeNaN === b.maybeNaN && a.spelling === b.spelling;
 }
 
@@ -150,7 +157,7 @@ export function sameVal(a: AbsVal, b: AbsVal): boolean {
 const WIDEN_THRESHOLDS = [0, 2 ** 31 - 1, 2 ** 32 - 1, SAFE_MAX, Infinity];
 const WIDEN_THRESHOLDS_NEG = [0, -(2 ** 31), SAFE_MIN, -Infinity];
 
-export function widen(prev: AbsVal, next: AbsVal): AbsVal {
+function widen(prev: AbsVal, next: AbsVal): AbsVal {
   if (isBottom(prev)) return next;
   let lo = next.lo;
   let hi = next.hi;
@@ -270,17 +277,17 @@ function transferBitwise(op: IrNumBinOp, a: AbsVal, b: AbsVal): AbsVal {
 }
 
 /** JS `~`: ToInt32, complement — whole, int32 range, whatever the input. */
-export function transferBitNot(a: AbsVal): AbsVal {
+function transferBitNot(a: AbsVal): AbsVal {
   if (isSingleton(a)) return constVal(~a.lo);
   return absVal(-(2 ** 31), 2 ** 31 - 1, true, false);
 }
 
-export function transferNeg(a: AbsVal): AbsVal {
+function transferNeg(a: AbsVal): AbsVal {
   if (!hasNumeric(a)) return { ...BOTTOM, maybeNaN: a.maybeNaN };
   return absVal(-a.hi, -a.lo, a.whole, a.maybeNaN);
 }
 
-export function transferBin(op: IrNumBinOp, a: AbsVal, b: AbsVal): AbsVal {
+function transferBin(op: IrNumBinOp, a: AbsVal, b: AbsVal): AbsVal {
   switch (op) {
     case "+": return transferAdd(a, b);
     case "-": return transferSub(a, b);
@@ -300,20 +307,20 @@ export function transferBin(op: IrNumBinOp, a: AbsVal, b: AbsVal): AbsVal {
  * input maps to a whole output, so these discharge the WHOLENESS
  * obligation. They do not discharge range (an unbounded input stays
  * unbounded) or NaN (Math.trunc(NaN) is NaN — maybeNaN propagates). */
-export function transferMathRound(fn: "trunc" | "floor" | "ceil" | "round", a: AbsVal): AbsVal {
+function transferMathRound(fn: "trunc" | "floor" | "ceil" | "round", a: AbsVal): AbsVal {
   if (!hasNumeric(a)) return { ...BOTTOM, maybeNaN: a.maybeNaN };
   const f = fn === "trunc" ? Math.trunc : fn === "floor" ? Math.floor : fn === "ceil" ? Math.ceil : Math.round;
   return absVal(f(a.lo), f(a.hi), true, a.maybeNaN);
 }
 
-export function transferAbs(a: AbsVal): AbsVal {
+function transferAbs(a: AbsVal): AbsVal {
   if (!hasNumeric(a)) return { ...BOTTOM, maybeNaN: a.maybeNaN };
   const lo = a.lo <= 0 && a.hi >= 0 ? 0 : Math.min(Math.abs(a.lo), Math.abs(a.hi));
   return absVal(lo, Math.max(Math.abs(a.lo), Math.abs(a.hi)), a.whole, a.maybeNaN);
 }
 
 /** Math.min/max propagate NaN from ANY argument, exactly as JS does. */
-export function transferMinMax(fn: "min" | "max", args: AbsVal[]): AbsVal {
+function transferMinMax(fn: "min" | "max", args: AbsVal[]): AbsVal {
   const maybeNaN = args.some((v) => v.maybeNaN);
   if (args.some((v) => !hasNumeric(v))) return { ...BOTTOM, maybeNaN };
   const lo = fn === "min" ? Math.min(...args.map((v) => v.lo)) : Math.max(...args.map((v) => v.lo));
@@ -347,7 +354,7 @@ export interface IntVerdict {
 /** Does an integer literal's source spelling survive the trip through
  * f64? Parse, convert, format back, compare (numeric separators were
  * stripped by the frontend — they are spelling sugar, not value). */
-export function spellingRoundTrips(spelling: string): boolean {
+function spellingRoundTrips(spelling: string): boolean {
   return String(Number(spelling)) === spelling;
 }
 
@@ -356,7 +363,7 @@ export function spellingRoundTrips(spelling: string): boolean {
  * fractional wholeness — the FIRST failure names the refusal (a value
  * both fractional and out of range hears about the more fundamental
  * problem). */
-export function checkBoundary(v: AbsVal, path: string, cls: IntClass, loc: SrcLoc): IntVerdict {
+function checkBoundary(v: AbsVal, path: string, cls: IntClass, loc: SrcLoc): IntVerdict {
   // Representability first: the author wrote a number the program never held.
   if (v.spelling !== undefined && !spellingRoundTrips(v.spelling)) {
     return {
@@ -412,23 +419,40 @@ export interface FnIntSlots {
   paramSeeds: (AbsVal | null)[];
 }
 
-/** One record-field slot, resolved to an interned IR record shape: every
- * program-side construction (recordLit) or write (recordSet) of `field`
- * on shape `shapeId` must discharge the obligations. Shapes are interned
- * STRUCTURALLY, so a second type with the identical field list shares the
- * shape — and inherits the obligation, a sound over-approximation. */
+/** One lowered record-field obligation. Every program-side construction
+ * (recordLit) or write (recordSet) of the field must discharge `cls` for
+ * EVERY source contract path in `paths`. Shapes are interned STRUCTURALLY,
+ * so same-shaped source slots with the same declared class coalesce here:
+ * one proof fact, all attestation/diagnostic identities retained. */
 export interface RecordIntSlot {
-  shapeId: string;
-  field: string;
   cls: IntClass;
-  path: string;
+  paths: string[];
 }
 
 export interface IntSlotConfig {
   /** Keyed by IR function name. */
   fns: Map<string, FnIntSlots>;
   /** shapeId → field → slot. */
-  records: Map<string, Map<string, { cls: IntClass; path: string }>>;
+  records: Map<string, Map<string, RecordIntSlot>>;
+}
+
+/** The IR representations whose PRESENT values can carry one number slot.
+ * A bare f64 is plain; a union of exactly one f64 arm and one or more
+ * null/undefined arms is optional. The abstract interpreter tracks the
+ * possible f64 arm values and treats unit arms as the empty numeric set. */
+export function numberCarrierKind(t: IrType, mod: IrModule): "plain" | "optional" | null {
+  if (t.kind === "f64") return "plain";
+  if (t.kind !== "union") return null;
+  const def = mod.unions?.find((u) => u.id === t.unionId);
+  if (def === undefined) return null;
+  let numbers = 0;
+  let units = 0;
+  for (const arm of def.arms) {
+    if (arm.kind === "f64") numbers++;
+    else if (arm.kind === "nullT" || arm.kind === "undefinedT") units++;
+    else return null;
+  }
+  return numbers === 1 && units > 0 ? "optional" : null;
 }
 
 export function hasIntSlots(cfg: IntSlotConfig): boolean {
@@ -455,17 +479,47 @@ export function classSeed(cls: string): AbsVal {
 }
 
 /* ── the environment ───────────────────────────────────────────────────────
- * Abstract state per program point: binding id → AbsVal, for f64-typed
- * locals AND module globals ("%g." ids). A missing LOCAL is bottom (not
- * yet bound on this path — tsc's definite-assignment analysis guarantees
- * no read precedes a binding); a missing GLOBAL is TOP (any prior entry
- * may have written it). `null` in place of an Env is the unreachable
- * state. */
+ * Abstract state per program point: binding/access key → AbsVal. Binding
+ * keys cover f64-typed locals and module globals ("%g." ids); reserved path
+ * keys carry temporary facts for static numeric fields. A missing LOCAL is
+ * bottom (not yet bound on this path — tsc's definite-assignment analysis
+ * guarantees no read precedes a binding); a missing GLOBAL or ordinary
+ * field path is TOP (any value, including NaN). `null` in place of an Env
+ * is unreachable. */
 
 type Env = Map<string, AbsVal>;
 
+/** Static-access facts share Env's join/clone machinery but have their own
+ * missing-key value: TOP for an ordinary numeric field, or the declared
+ * slot seed for a declared integer field. A killed declared-field fact
+ * therefore falls back to the same whole-in-class-range assumption its read
+ * had before access-path refinement, preserving SC4023 rather than
+ * degrading to a spurious SC4022. */
+const PATH_TOP_PREFIX = "%path.top:";
+const PATH_I64_PREFIX = "%path.i64:";
+const PATH_U64_PREFIX = "%path.u64:";
+
+type PathSeed = IntClass | "top";
+
+function pathSeedOfKey(id: string): PathSeed | null {
+  if (id.startsWith(PATH_TOP_PREFIX)) return "top";
+  if (id.startsWith(PATH_I64_PREFIX)) return "i64";
+  if (id.startsWith(PATH_U64_PREFIX)) return "u64";
+  return null;
+}
+
+function clearPathFacts(env: Env): void {
+  for (const k of [...env.keys()]) {
+    if (pathSeedOfKey(k) !== null) env.delete(k);
+  }
+}
+
 const isGlobalId = (id: string): boolean => id.startsWith("%g.");
-const defaultVal = (id: string): AbsVal => (isGlobalId(id) ? TOP : BOTTOM);
+const defaultVal = (id: string): AbsVal => {
+  const pathSeed = pathSeedOfKey(id);
+  if (pathSeed !== null) return pathSeed === "top" ? { ...TOP } : classSeed(pathSeed);
+  return isGlobalId(id) ? TOP : BOTTOM;
+};
 
 function envGet(env: Env, id: string): AbsVal {
   return env.get(id) ?? defaultVal(id);
@@ -479,6 +533,10 @@ function joinEnv(a: Env | null, b: Env | null): Env | null {
   for (const k of keys) {
     out.set(k, join(a.get(k) ?? defaultVal(k), b.get(k) ?? defaultVal(k)));
   }
+  // A real flow join ends the cheap straight-line access-path proof even
+  // when both incoming facts happen to agree. A sole reachable edge
+  // (early return/throw on the other edge) retains its dominated fact.
+  clearPathFacts(out);
   return out;
 }
 
@@ -496,6 +554,7 @@ function widenEnv(prev: Env, next: Env): Env {
   for (const k of keys) {
     out.set(k, widen(prev.get(k) ?? defaultVal(k), next.get(k) ?? defaultVal(k)));
   }
+  clearPathFacts(out);
   return out;
 }
 
@@ -660,6 +719,7 @@ interface LoopFrame {
 const NEGATE: Record<string, string> = { "<": ">=", "<=": ">", ">": "<=", ">=": "<", "===": "!==", "!==": "===" };
 const FLIP: Record<string, string> = { "<": ">", "<=": ">=", ">": "<", ">=": "<=", "===": "===", "!==": "!==" };
 const CMP_OPS = new Set(["<", "<=", ">", ">=", "===", "!=="]);
+const ORDERED_CMP_OPS = new Set(["<", "<=", ">", ">="]);
 
 /** Meet a value with an interval; `clearNaN` when the comparison's truth
  * on this edge excludes NaN operands. */
@@ -678,6 +738,10 @@ function meetInterval(v: AbsVal, lo: number, hi: number, clearNaN: boolean): Abs
  * ordinary counter loop prove a precise bound. */
 function refineLhs(op: string, a: AbsVal, b: AbsVal, clearNaN: boolean): AbsVal {
   if (!hasNumeric(b) || !hasNumeric(a)) return clearNaN ? { ...a, maybeNaN: false } : a;
+  // On a failed ordered comparison, a NaN in `b` satisfies the failed edge
+  // regardless of `a`'s numeric value. Preserve every numeric member of `a`
+  // in that case; the caller applies the same rule in the other direction.
+  if (!clearNaN && b.maybeNaN && ORDERED_CMP_OPS.has(op)) return a;
   switch (op) {
     case "<":
       return meetInterval(a, -Infinity, a.whole ? Math.ceil(b.hi) - 1 : b.hi, clearNaN);
@@ -718,7 +782,7 @@ class FnAnalyzer {
     const env: Env = new Map();
     const slots = this.cfg.fns.get(fn.name);
     fn.params.forEach((p, i) => {
-      if (p.type.kind !== "f64") return;
+      if (!this.bindingCarriesNumber(p.localId)) return;
       const declared = slots?.params[i] ?? null;
       const seed = slots?.paramSeeds[i] ?? null;
       if (declared !== null) env.set(p.localId, classSeed(declared));
@@ -737,6 +801,14 @@ class FnAnalyzer {
     this.verdicts.push(checkBoundary(v, path, cls, loc));
   }
 
+  /** One lowered write can conservatively cover several same-class source
+   * contract slots. Check once per path so every attestation identity
+   * survives into a refusal instead of inheriting the first declarer's
+   * label. */
+  private emitRecordSlot(v: AbsVal, slot: RecordIntSlot, loc: SrcLoc): void {
+    for (const path of slot.paths) this.emit(v, path, slot.cls, loc);
+  }
+
   /* ── statements ─────────────────────────────────────────────────────── */
 
   private execStmts(stmts: IrStmt[], env: Env | null): Env | null {
@@ -752,12 +824,14 @@ class FnAnalyzer {
       case "varDecl": {
         if (s.init === null) return env;
         const v = this.evalExpr(s.init, env);
-        if (this.bindingIsF64(s.localId)) env.set(s.localId, v);
+        this.clearPathsRootedAt(env, s.localId);
+        if (this.bindingCarriesNumber(s.localId)) env.set(s.localId, v);
         return env;
       }
       case "assign": {
         const v = this.evalExpr(s.value, env);
-        if (this.bindingIsF64(s.localId)) env.set(s.localId, v);
+        this.clearPathsRootedAt(env, s.localId);
+        if (this.bindingCarriesNumber(s.localId)) env.set(s.localId, v);
         return env;
       }
       case "exprStmt":
@@ -765,8 +839,9 @@ class FnAnalyzer {
         return env;
       case "if": {
         this.evalExpr(s.cond, env);
-        const thenEnv = this.refine(cloneEnv(env), s.cond, true);
-        const elseEnv = this.refine(cloneEnv(env), s.cond, false);
+        const allowPaths = this.stablePathGuard(s.cond);
+        const thenEnv = this.refine(cloneEnv(env), s.cond, true, allowPaths);
+        const elseEnv = this.refine(cloneEnv(env), s.cond, false, allowPaths);
         const a = thenEnv === null ? null : this.execStmts(s.then, thenEnv);
         const b = s.else_ === null ? elseEnv : elseEnv === null ? null : this.execStmts(s.else_, elseEnv);
         return joinEnv(a, b);
@@ -788,7 +863,7 @@ class FnAnalyzer {
         return this.execLoop(env, { cond: s.cond, body: s.body, labels: s.labels ?? [], doWhile: true });
       case "forOf": {
         this.evalExpr(s.iterable, env);
-        const elemF64 = this.bindingIsF64(s.localId);
+        const elemF64 = this.bindingCarriesNumber(s.localId);
         return this.execLoop(env, {
           body: s.body,
           labels: s.labels ?? [],
@@ -822,26 +897,45 @@ class FnAnalyzer {
         this.evalExpr(s.arr, env);
         this.evalExpr(s.index, env);
         this.evalExpr(s.value, env);
+        clearPathFacts(env);
         return env;
       case "fieldSet":
         this.evalExpr(s.obj, env);
         this.evalExpr(s.value, env);
+        clearPathFacts(env);
         return env;
       case "recordSet": {
         this.evalExpr(s.obj, env);
         const v = this.evalExpr(s.value, env);
         const slot = this.cfg.records.get(s.shapeId)?.get(s.field);
-        if (slot !== undefined) this.emit(v, slot.path, slot.cls, s.loc);
+        if (slot !== undefined) this.emitRecordSlot(v, slot, s.loc);
+        // The RHS and its boundary obligation observe the pre-write value;
+        // only the completed heap write invalidates paths (JS evaluation
+        // order, and what lets `m.count = m.count + 1` prove).
+        clearPathFacts(env);
         return env;
       }
-      case "recordKeySet":
+      case "recordKeySet": {
         this.evalExpr(s.obj, env);
         this.evalExpr(s.key, env);
-        this.evalExpr(s.value, env);
+        const v = this.evalExpr(s.value, env);
+        // A runtime key can dispatch to any declared field of the shape.
+        // overflowOnly proves a literal key names no declared field; every
+        // other keyed write must therefore discharge every integer slot it
+        // could select. Multiple classified fields intentionally emit
+        // independent obligations (their classes and paths may differ).
+        if (s.overflowOnly !== true) {
+          for (const slot of this.cfg.records.get(s.shapeId)?.values() ?? []) {
+            this.emitRecordSlot(v, slot, s.loc);
+          }
+        }
+        clearPathFacts(env);
         return env;
+      }
       case "recordKeyDelete":
         this.evalExpr(s.obj, env);
         this.evalExpr(s.key, env);
+        clearPathFacts(env);
         return env;
       case "return": {
         if (s.value !== null) {
@@ -955,12 +1049,13 @@ class FnAnalyzer {
     };
     tryBody.forEach(visitStmt);
     for (const id of assigned) {
-      if (this.bindingIsF64(id)) out.set(id, { ...TOP });
+      if (this.bindingCarriesNumber(id)) out.set(id, { ...TOP });
     }
     // Globals: any callee may have written before the throw.
     for (const k of [...out.keys()]) {
       if (isGlobalId(k)) out.delete(k); // absent global = TOP
     }
+    clearPathFacts(out);
     return out;
   }
 
@@ -978,6 +1073,9 @@ class FnAnalyzer {
       alwaysExits?: boolean;
     },
   ): Env | null {
+    // Loop headers/backedges are outside the deliberately straight-line
+    // access-path scope. Guards inside the body can establish fresh facts.
+    clearPathFacts(env);
     const savedCollect = this.collect;
     this.collect = false;
     let head = cloneEnv(env);
@@ -1013,9 +1111,9 @@ class FnAnalyzer {
     // (`for (;;)`) exits only through breaks.
     let exit: Env | null = null;
     if (opts.doWhile ?? false) {
-      exit = opts.cond !== undefined && final.postBody !== null ? this.refine(final.postBody, opts.cond, false) : null;
+      exit = opts.cond !== undefined && final.postBody !== null ? this.refine(final.postBody, opts.cond, false, false) : null;
     } else if (opts.cond !== undefined) {
-      exit = this.refine(cloneEnv(head), opts.cond, false);
+      exit = this.refine(cloneEnv(head), opts.cond, false, false);
     } else if (opts.alwaysExits ?? false) {
       exit = cloneEnv(head); // for-of ends when the array runs out
     }
@@ -1039,7 +1137,7 @@ class FnAnalyzer {
     let bodyIn: Env | null = cloneEnv(head);
     if (opts.cond !== undefined && !(opts.doWhile ?? false)) {
       this.evalExpr(opts.cond, bodyIn);
-      bodyIn = this.refine(bodyIn, opts.cond, true);
+      bodyIn = this.refine(bodyIn, opts.cond, true, false);
     }
     if (bodyIn !== null && opts.seedEachIteration !== undefined) {
       bodyIn.set(opts.seedEachIteration, { ...TOP });
@@ -1057,7 +1155,7 @@ class FnAnalyzer {
     if ((opts.doWhile ?? false) && opts.cond !== undefined && out !== null) {
       this.evalExpr(opts.cond, out);
       postBody = cloneEnv(out);
-      out = this.refine(out, opts.cond, true);
+      out = this.refine(out, opts.cond, true, false);
     }
     return { back: out, postBody };
   }
@@ -1069,24 +1167,47 @@ class FnAnalyzer {
    * false when either side is NaN, so the edge where one HELD proves both
    * operands NaN-free; on the failed edge NaN survives while the negated
    * comparison still refines the numeric members. */
-  private refine(env: Env | null, cond: IrExpr, branch: boolean): Env | null {
+  private refine(env: Env | null, cond: IrExpr, branch: boolean, allowPaths = false): Env | null {
     if (env === null) return null;
     switch (cond.kind) {
       case "boolLit":
         return cond.value === branch ? env : null;
       case "unary":
-        if (cond.op === "!") return this.refine(env, cond.operand, !branch);
+        if (cond.op === "!") return this.refine(env, cond.operand, !branch, allowPaths);
         return env;
       case "logical": {
         const isAnd = cond.op === "&&";
         if (isAnd === branch) {
           // (a && b) true  — both held; (a || b) false — both failed.
-          return this.refine(this.refine(env, cond.left, branch), cond.right, branch);
+          return this.refine(this.refine(env, cond.left, branch, allowPaths), cond.right, branch, allowPaths);
         }
         // (a && b) false — a failed, or a held and b failed; dually for ||.
-        const viaLeft = this.refine(cloneEnv(env), cond.left, branch);
-        const viaRight = this.refine(this.refine(cloneEnv(env), cond.left, !branch), cond.right, branch);
+        const viaLeft = this.refine(cloneEnv(env), cond.left, branch, allowPaths);
+        const viaRight = this.refine(
+          this.refine(cloneEnv(env), cond.left, !branch, allowPaths),
+          cond.right,
+          branch,
+          allowPaths,
+        );
         return joinEnv(viaLeft, viaRight);
+      }
+      case "unionIsTag": {
+        const unionType: IrType = { kind: "union", unionId: cond.unionId };
+        if (numberCarrierKind(unionType, this.mod) !== "optional") return env;
+        const def = this.mod.unions?.find((u) => u.id === cond.unionId);
+        const arm = def?.arms[cond.tag];
+        const key = this.refinementKey(cond.value, allowPaths);
+        if (arm === undefined || key === null) return env;
+        const tagMatches = cond.negated ? !branch : branch;
+        // The abstract value describes only PRESENT f64 inhabitants. A
+        // branch selecting a unit arm has no numeric inhabitants; likewise
+        // a branch excluding the optional carrier's sole f64 arm.
+        if ((tagMatches && arm.kind !== "f64") || (!tagMatches && arm.kind === "f64")) {
+          const out = cloneEnv(env);
+          out.set(key, { ...BOTTOM });
+          return out;
+        }
+        return env;
       }
       case "bin": {
         if (!CMP_OPS.has(cond.op)) return env;
@@ -1096,28 +1217,32 @@ class FnAnalyzer {
         // NaN makes < <= > >= === evaluate false, so the edge where one of
         // those was TRUE proves both operands NaN-free (!== held excludes
         // nothing — NaN !== x is true).
-        const clearNaN = op !== "!==";
+        const clearNaN = branch ? cond.op !== "!==" : cond.op === "!==";
         const a = this.evalPure(cond.left, env);
         const b = this.evalPure(cond.right, env);
         const out = cloneEnv(env);
-        if (cond.left.kind === "varRef") out.set(cond.left.localId, refineLhs(op, a, b, clearNaN));
-        if (cond.right.kind === "varRef") out.set(cond.right.localId, refineLhs(FLIP[op]!, b, a, clearNaN));
+        const leftKey = this.refinementKey(cond.left, allowPaths);
+        const rightKey = this.refinementKey(cond.right, allowPaths);
+        if (leftKey !== null) out.set(leftKey, refineLhs(op, a, b, clearNaN));
+        if (rightKey !== null) out.set(rightKey, refineLhs(FLIP[op]!, b, a, clearNaN));
         return out;
       }
       case "toBool": {
         const inner = cond.operand;
-        if (inner.type.kind !== "f64" || inner.kind !== "varRef" || !this.isPure(inner)) return env;
-        const v = envGet(env, inner.localId);
+        if (inner.type.kind !== "f64" || !this.isPure(inner)) return env;
+        const key = this.refinementKey(inner, allowPaths);
+        if (key === null) return env;
+        const v = this.evalPure(inner, env);
         const out = cloneEnv(env);
         if (branch) {
           // Truthy: not NaN, not zero — endpoint exclusion when whole.
           let r: AbsVal = { ...v, maybeNaN: false };
           if (r.whole && r.lo === 0 && r.hi >= 1) r = absVal(1, r.hi, r.whole, false, r.spelling);
           else if (r.whole && r.hi === 0 && r.lo <= -1) r = absVal(r.lo, -1, r.whole, false, r.spelling);
-          out.set(inner.localId, r);
+          out.set(key, r);
         } else {
           // Falsy: 0, -0, or NaN.
-          out.set(inner.localId, meetInterval(v, 0, 0, false));
+          out.set(key, meetInterval(v, 0, 0, false));
         }
         return out;
       }
@@ -1153,10 +1278,22 @@ class FnAnalyzer {
       case "boolLit":
       case "varRef":
       case "unitLit":
+      case "selfRef":
         return true;
+      case "recordGet":
+      case "fieldGet":
+        return this.staticAccessPath(e) !== null;
+      case "unionNarrow":
+        return this.isPure(e.value);
       case "bin":
+      case "strEq":
+      case "strCmp":
         return this.isPure(e.left) && this.isPure(e.right);
       case "unary":
+        return this.isPure(e.operand);
+      case "logical":
+        return this.isPure(e.left) && this.isPure(e.right);
+      case "toBool":
         return this.isPure(e.operand);
       default:
         return false;
@@ -1169,7 +1306,22 @@ class FnAnalyzer {
       case "numLit":
         return constVal(e.value, e.spelling);
       case "varRef":
-        return e.type.kind === "f64" ? envGet(env, e.localId) : { ...TOP };
+        return this.bindingCarriesNumber(e.localId) ? envGet(env, e.localId) : { ...TOP };
+      case "recordGet": {
+        const slot = this.cfg.records.get(e.shapeId)?.get(e.field);
+        if (numberCarrierKind(e.type, this.mod) === null) return { ...TOP };
+        const key = this.pathKey(e, slot?.cls ?? null);
+        return key === null ? (slot === undefined ? { ...TOP } : classSeed(slot.cls)) : envGet(env, key);
+      }
+      case "fieldGet": {
+        if (numberCarrierKind(e.type, this.mod) === null) return { ...TOP };
+        const key = this.pathKey(e, null);
+        return key === null ? { ...TOP } : envGet(env, key);
+      }
+      case "unionNarrow":
+        return e.type.kind === "f64" && numberCarrierKind(e.value.type, this.mod) === "optional"
+          ? this.evalPure(e.value, env)
+          : { ...TOP };
       case "unary":
         if (e.op === "-") return transferNeg(this.evalPure(e.operand, env));
         if (e.op === "~") return transferBitNot(this.evalPure(e.operand, env));
@@ -1180,6 +1332,99 @@ class FnAnalyzer {
         return this.evalMath(e, env, false) ?? { ...TOP };
       default:
         return { ...TOP };
+    }
+  }
+
+  /** A canonical static data path. Source spellings that lower to the same
+   * IR access (`m.total`, `m["total"]`) intentionally share a key; distinct
+   * receiver bindings never do. Accessors/dynamic keys/computed receivers
+   * have different IR nodes and are excluded. */
+  private staticAccessPath(
+    e: IrExpr,
+  ): { rootId: string | null; steps: string[][] } | null {
+    switch (e.kind) {
+      case "varRef":
+        return { rootId: e.localId, steps: [["var", e.localId]] };
+      case "selfRef":
+        return { rootId: null, steps: [["self"]] };
+      case "recordGet": {
+        const base = this.staticAccessPath(e.obj);
+        if (base === null) return null;
+        return { rootId: base.rootId, steps: [...base.steps, ["record", e.shapeId, e.field]] };
+      }
+      case "unionNarrow":
+        return this.staticAccessPath(e.value);
+      case "fieldGet": {
+        const base = this.staticAccessPath(e.obj);
+        if (base === null) return null;
+        return { rootId: base.rootId, steps: [...base.steps, ["field", e.className, e.field]] };
+      }
+      default:
+        return null;
+    }
+  }
+
+  private readonly pathRoots = new Map<string, string | null>();
+
+  private pathKey(e: IrExpr, cls: IntClass | null): string | null {
+    const path = this.staticAccessPath(e);
+    if (path === null) return null;
+    const prefix = cls === null ? PATH_TOP_PREFIX : cls === "i64" ? PATH_I64_PREFIX : PATH_U64_PREFIX;
+    const key = `${prefix}${JSON.stringify(path.steps)}`;
+    this.pathRoots.set(key, path.rootId);
+    return key;
+  }
+
+  private refinementKey(e: IrExpr, allowPaths: boolean): string | null {
+    if (e.kind === "varRef") return e.localId;
+    if (e.kind === "unionNarrow" && e.type.kind === "f64") {
+      return this.refinementKey(e.value, allowPaths);
+    }
+    if (!allowPaths || numberCarrierKind(e.type, this.mod) === null) return null;
+    if (e.kind === "recordGet") {
+      const slot = this.cfg.records.get(e.shapeId)?.get(e.field);
+      return this.pathKey(e, slot?.cls ?? null);
+    }
+    return e.kind === "fieldGet" ? this.pathKey(e, null) : null;
+  }
+
+  /** Path facts are admitted only when the entire guard is synchronous,
+   * call-free, assignment-free static data access. This prevents a later
+   * subexpression from mutating a field and `refine` subsequently
+   * reconstructing a stale fact from the guard syntax. */
+  private stablePathGuard(e: IrExpr): boolean {
+    switch (e.kind) {
+      case "numLit":
+      case "strLit":
+      case "boolLit":
+      case "unitLit":
+      case "varRef":
+      case "selfRef":
+        return true;
+      case "recordGet":
+      case "fieldGet":
+        return this.staticAccessPath(e) !== null;
+      case "unionIsTag":
+      case "unionDisc":
+        return this.stablePathGuard(e.value);
+      case "unionNarrow":
+        return this.stablePathGuard(e.value);
+      case "bin":
+      case "strEq":
+      case "strCmp":
+      case "logical":
+        return this.stablePathGuard(e.left) && this.stablePathGuard(e.right);
+      case "unary":
+      case "toBool":
+        return this.stablePathGuard(e.operand);
+      default:
+        return false;
+    }
+  }
+
+  private clearPathsRootedAt(env: Env, localId: string): void {
+    for (const k of [...env.keys()]) {
+      if (pathSeedOfKey(k) !== null && this.pathRoots.get(k) === localId) env.delete(k);
     }
   }
 
@@ -1200,15 +1445,19 @@ class FnAnalyzer {
     }
   }
 
-  private bindingIsF64(id: string): boolean {
-    return this.f64Bindings.has(id);
+  private bindingCarriesNumber(id: string): boolean {
+    return this.numberBindings.has(id);
   }
-  private f64Bindings = new Set<string>();
+  private numberBindings = new Set<string>();
 
   seedBindings(fn: IrFunction, mod: IrModule): void {
-    this.f64Bindings = new Set();
-    for (const l of fn.locals) if (l.type.kind === "f64" && l.boxed !== true) this.f64Bindings.add(l.id);
-    for (const g of mod.globals ?? []) if (g.type.kind === "f64") this.f64Bindings.add(g.id);
+    this.numberBindings = new Set();
+    for (const l of fn.locals) {
+      if (numberCarrierKind(l.type, mod) !== null && l.boxed !== true) this.numberBindings.add(l.id);
+    }
+    for (const g of mod.globals ?? []) {
+      if (numberCarrierKind(g.type, mod) !== null) this.numberBindings.add(g.id);
+    }
   }
 
   /** Evaluate an expression over the environment, applying the side
@@ -1230,7 +1479,7 @@ class FnAnalyzer {
       case "chainRecv":
         return { ...TOP };
       case "varRef":
-        return e.type.kind === "f64" && this.bindingIsF64(e.localId) ? envGet(env, e.localId) : { ...TOP };
+        return this.bindingCarriesNumber(e.localId) ? envGet(env, e.localId) : { ...TOP };
       case "bin": {
         const a = this.evalExpr(e.left, env);
         const b = this.evalExpr(e.right, env);
@@ -1238,6 +1487,15 @@ class FnAnalyzer {
         if (e.left.type.kind !== "f64" || e.right.type.kind !== "f64") return { ...TOP };
         return transferBin(e.op, a, b);
       }
+      case "strEq":
+      case "strCmp":
+        this.evalExpr(e.left, env);
+        this.evalExpr(e.right, env);
+        return { ...TOP };
+      case "unionIsTag":
+      case "unionDisc":
+        this.evalExpr(e.value, env);
+        return { ...TOP };
       case "unary": {
         const v = this.evalExpr(e.operand, env);
         if (e.op === "-") return transferNeg(v);
@@ -1245,20 +1503,22 @@ class FnAnalyzer {
         return { ...TOP };
       }
       case "incDec": {
-        const old = this.bindingIsF64(e.localId) ? envGet(env, e.localId) : { ...TOP };
+        const old = this.bindingCarriesNumber(e.localId) ? envGet(env, e.localId) : { ...TOP };
         const next = transferAdd(old, constVal(e.op === "+" ? 1 : -1));
-        if (this.bindingIsF64(e.localId)) env.set(e.localId, next);
+        if (this.bindingCarriesNumber(e.localId)) env.set(e.localId, next);
         return e.prefix ? next : old;
       }
       case "assignExpr": {
         const v = this.evalExpr(e.value, env);
-        if (this.bindingIsF64(e.localId)) env.set(e.localId, v);
+        this.clearPathsRootedAt(env, e.localId);
+        if (this.bindingCarriesNumber(e.localId)) env.set(e.localId, v);
         return v;
       }
       case "ternary": {
         this.evalExpr(e.cond, env);
-        const thenEnv = this.refine(cloneEnv(env), e.cond, true);
-        const elseEnv = this.refine(cloneEnv(env), e.cond, false);
+        const allowPaths = this.stablePathGuard(e.cond);
+        const thenEnv = this.refine(cloneEnv(env), e.cond, true, allowPaths);
+        const elseEnv = this.refine(cloneEnv(env), e.cond, false, allowPaths);
         const a = thenEnv === null ? BOTTOM : this.evalExpr(e.then, thenEnv);
         const b = elseEnv === null ? BOTTOM : this.evalExpr(e.else_, elseEnv);
         mergeInto(env, joinEnv(thenEnv, elseEnv));
@@ -1267,18 +1527,21 @@ class FnAnalyzer {
       case "logical":
       case "nullish":
       case "orDefault": {
-        this.evalExpr(e.left, env);
+        const left = this.evalExpr(e.left, env);
         const rightEnv = cloneEnv(env);
-        this.evalExpr(e.right, rightEnv);
-        mergeInto(env, joinEnv(env, rightEnv));
-        return { ...TOP };
+        const right = this.evalExpr(e.right, rightEnv);
+        // A stable logical tree cannot change the environment, so its
+        // short-circuit join must not discard an access-path fact merely
+        // because the RHS may not execute.
+        if (!this.stablePathGuard(e)) mergeInto(env, joinEnv(env, rightEnv));
+        return numberCarrierKind(e.type, this.mod) !== null ? join(left, right) : { ...TOP };
       }
       case "optChain": {
         this.evalExpr(e.receiver, env);
         const bodyEnv = cloneEnv(env);
-        this.evalExpr(e.body, bodyEnv);
+        const body = this.evalExpr(e.body, bodyEnv);
         mergeInto(env, joinEnv(env, bodyEnv));
-        return { ...TOP };
+        return numberCarrierKind(e.type, this.mod) !== null ? body : { ...TOP };
       }
       case "seqExpr": {
         // Expression-position statements: no jumps can escape them.
@@ -1308,11 +1571,28 @@ class FnAnalyzer {
         if (slots?.ret != null) return classSeed(slots.ret);
         return { ...TOP };
       }
+      case "unionWrap": {
+        const value = this.evalExpr(e.value, env);
+        if (numberCarrierKind(e.type, this.mod) !== "optional") return { ...TOP };
+        // Unit arms are absence, not an integer crossing. The one f64 arm
+        // contributes its abstract value unchanged.
+        return e.value.type.kind === "f64" ? value : BOTTOM;
+      }
+      case "unionNarrow": {
+        const value = this.evalExpr(e.value, env);
+        return e.type.kind === "f64" && numberCarrierKind(e.value.type, this.mod) === "optional"
+          ? value
+          : { ...TOP };
+      }
       case "libCall": {
         const math = this.evalMath(e, env, true);
-        if (math !== null) return math;
+        if (math !== null) {
+          clearPathFacts(env);
+          return math;
+        }
         for (const a of e.args) this.evalExpr(a, env);
         if (e.args.some((a) => typeContainsFunc(a.type))) this.havocAllGlobals(env);
+        clearPathFacts(env);
         return { ...TOP };
       }
       case "callValue":
@@ -1326,35 +1606,72 @@ class FnAnalyzer {
         this.havocAllGlobals(env);
         return { ...TOP };
       }
+      case "ffiCall":
+      case "yieldExpr":
+      case "awaitExpr":
+      case "awaitUnionExpr": {
+        for (const v of childExprs(e)) this.evalExpr(v, env);
+        clearPathFacts(env);
+        return { ...TOP };
+      }
       case "recordLit": {
         const slotMap = this.cfg.records.get((e.type as { kind: "record"; shapeId: string }).shapeId);
         for (const f of e.fields) {
           const v = this.evalExpr(f.value, env);
           const slot = slotMap?.get(f.name);
-          if (slot !== undefined && f.value.type.kind === "f64") this.emit(v, slot.path, slot.cls, f.value.loc);
+          if (slot !== undefined && numberCarrierKind(f.value.type, this.mod) !== null) {
+            this.emitRecordSlot(v, slot, f.value.loc);
+          }
+        }
+        return { ...TOP };
+      }
+      case "recordClone": {
+        // The clone copies already-proven field values. Only explicit
+        // overrides create new writes that must discharge integer slots.
+        this.evalExpr(e.source, env);
+        const slotMap = this.cfg.records.get((e.type as { kind: "record"; shapeId: string }).shapeId);
+        for (const f of e.overrides) {
+          const v = this.evalExpr(f.value, env);
+          const slot = slotMap?.get(f.name);
+          if (slot !== undefined && numberCarrierKind(f.value.type, this.mod) !== null) {
+            this.emitRecordSlot(v, slot, f.value.loc);
+          }
         }
         return { ...TOP };
       }
       case "recordGet": {
         // A declared record-field slot is an assumption on the read side,
         // exactly like a declared parameter inside its callee: every write
-        // into the field discharged the class's obligations, so the value
-        // read back is whole and in class range (the read that lets
-        // `model.count + 1` refuse RANGE — the unbounded-counter teaching
-        // — instead of a spurious may-be-NaN wholeness refusal).
+        // into the field discharged the class's obligations, so its path
+        // starts at the class seed. An ordinary numeric field starts at TOP
+        // but can acquire the same straight-line guard facts as a local.
         this.evalExpr(e.obj, env);
         const slot = this.cfg.records.get(e.shapeId)?.get(e.field);
-        if (slot !== undefined && e.type.kind === "f64") return classSeed(slot.cls);
+        if (numberCarrierKind(e.type, this.mod) !== null) {
+          const key = this.pathKey(e, slot?.cls ?? null);
+          return key === null ? (slot === undefined ? { ...TOP } : classSeed(slot.cls)) : envGet(env, key);
+        }
         return { ...TOP };
+      }
+      case "fieldGet": {
+        this.evalExpr(e.obj, env);
+        if (numberCarrierKind(e.type, this.mod) === null) return { ...TOP };
+        const key = this.pathKey(e, null);
+        return key === null ? { ...TOP } : envGet(env, key);
       }
       default: {
         for (const v of childExprs(e)) this.evalExpr(v, env);
+        // Unmodeled expressions do not participate in the cheap
+        // straight-line proof. Some can invoke runtime/user machinery;
+        // refusing to carry a field fact through them is the safe verdict.
+        clearPathFacts(env);
         return { ...TOP };
       }
     }
   }
 
   private havocCall(callee: string, env: Env): void {
+    clearPathFacts(env);
     if (this.effects.havocAll.has(callee) || !this.effects.perFn.has(callee)) {
       this.havocAllGlobals(env);
       return;
@@ -1363,6 +1680,7 @@ class FnAnalyzer {
   }
 
   private havocAllGlobals(env: Env): void {
+    clearPathFacts(env);
     for (const k of [...env.keys()]) {
       if (isGlobalId(k)) env.delete(k);
     }

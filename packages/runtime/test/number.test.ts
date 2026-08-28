@@ -16,9 +16,11 @@ test("scr_f64_to_str matches Node String(x) on committed oracle cases", async ()
   const bin = join(buildDir, "test_number");
   await execFileAsync("clang", [
     "-std=c11", "-O2", "-Wall", "-Wextra",
+    ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
     "-o", bin,
     join(testDir, "test_number.c"),
     join(testDir, "../src/scr_number.c"),
+    ...(process.platform === "linux" ? ["-lm"] : []),
   ]);
   const { stderr } = await execFileAsync(bin, [join(testDir, "number-cases.txt")]);
   expect(stderr.trim()).toMatch(/^(\d+)\/\1 cases passed$/);

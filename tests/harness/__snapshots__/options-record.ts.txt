@@ -123,3 +123,21 @@ options-record.ts:52:74 - error SC2020: 'createInterface with a completer' is pa
   53 | 
 
   hint: tab completion needs an interactive terminal — the lowered interface reads piped lines (terminal: false)
+
+options-record.ts:57:44 - error SC2020: 'writeFileSync option '__proto__'' is part of the standard library types but has no scriptc lowering yet
+
+  56 | // These must fence instead of silently dropping an inherited flag or mode.
+  57 | fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
+     |                                            ^~~~~~~~~~~~~~~~~~~~~~~~
+  58 | void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });
+
+  hint: a bare __proto__: value entry changes the options object's prototype, so inherited options cannot be lowered
+
+options-record.ts:58:57 - error SC2020: 'fs.promises.writeFile option '__proto__'' is part of the standard library types but has no scriptc lowering yet
+
+  57 | fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
+  58 | void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });
+     |                                                         ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  59 | // Both calls must terminate in the explicit prototype-options fence.
+
+  hint: a bare __proto__: value entry changes the options object's prototype, so inherited options cannot be lowered

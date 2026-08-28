@@ -1,6 +1,6 @@
 /* win32 libc shims — the POSIX/BSD functions the runtime calls that
  * mingw-w64's CRT does not provide (declared in scr_runtime.h's _WIN32
- * block). Compiled into win32-target builds only (cc.ts adds this TU and
+ * block). Compiled into win32-target builds only (native-toolchain.ts adds this TU and
  * -ladvapi32 for windows triples); an empty TU anywhere else, so POSIX
  * builds cannot change by a byte. */
 #ifdef _WIN32
@@ -69,7 +69,7 @@ char *strcasestr(const char *hay, const char *needle) {
 
 #else /* !_WIN32 */
 
-/* Empty TU off-Windows: cc.ts only compiles this file for windows triples,
+/* Empty TU off-Windows: native-toolchain.ts only compiles this file for windows triples,
  * but an accidental link elsewhere must stay harmless. */
 typedef int scr_win_unused;
 

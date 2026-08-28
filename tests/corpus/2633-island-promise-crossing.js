@@ -38,6 +38,10 @@ function loadAll(xs = []) {
 
 /** @returns {Promise<any[]>} */
 async function loadOthers(xs = []) {
+  // Keep the promise pending when it crosses into the island. WASI's
+  // stackless scheduler must resume the runtime bridge after this timer,
+  // not try to suspend the bridge's ordinary C stack.
+  await new Promise((resolve) => setTimeout(resolve, 5));
   return xs.map((x) => ({ name: `${x}` }));
 }
 

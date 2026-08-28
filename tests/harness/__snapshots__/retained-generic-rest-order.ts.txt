@@ -1,0 +1,15 @@
+retained-generic-rest-order.ts:22:11 - error SC1031: rest bindings over class instances whose packed key order cannot match Node's (Object.keys/JSON.stringify would enumerate the copied fields in a different order) are not supported yet (instantiating 'laterGeneric' with <number>)
+
+  21 |   // sees rest as a blocked binding just like the historical emit pass.
+  22 |   const { ...rest } = new Pair(), blocked = new WeakMap<object, number>();
+     |           ^~~~~~~
+  23 |   console.log(Object.keys(rest).join(","), blocked);
+
+retained-generic-rest-order.ts:23:27 - error SC2004: uses of 'rest' inherit the blocker on its declaration (instantiating 'laterGeneric' with <number>)
+
+  22 |   const { ...rest } = new Pair(), blocked = new WeakMap<object, number>();
+  23 |   console.log(Object.keys(rest).join(","), blocked);
+     |                           ^~~~
+  24 | }
+
+  hint: the declaration of 'rest' did not compile — fix the diagnostic reported there and these sites clear with it

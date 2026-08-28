@@ -1,7 +1,8 @@
 // The surface-tail sweep trio: string.substring (clamp-and-swap, the
 // port-suffix idiom), array findIndex (first match or -1, index-aware
 // callbacks), and the comparator-less sort() on string[] (JS's default
-// UTF-16 ordering — for strings, the relational operator).
+// UTF-16 ordering — a dedicated comparator because relational operators use
+// scriptc's documented code-point order).
 const localAddr = "127.0.0.1.51823";
 const lastColon = localAddr.lastIndexOf(".");
 console.log(localAddr.substring(lastColon + 1));

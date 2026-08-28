@@ -18,6 +18,7 @@ beforeAll(async () => {
   await execFileAsync("clang", [
     "-std=c11", "-O1", "-Wall", "-Wextra",
     "-fsanitize=address", "-DSCR_RC_AUDIT",
+    ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
     "-I", join(testDir, "../src"),
     "-o", bin,
     join(testDir, "test_lib.c"),
@@ -35,6 +36,7 @@ beforeAll(async () => {
     join(testDir, "../src/scr_cycle.c"),
     join(testDir, "../src/scr_json.c"),
     join(testDir, "../src/scr_bytes.c"),
+    ...(process.platform === "linux" ? ["-lm"] : []),
   ]);
   scratch = await mkdtemp(join(tmpdir(), "scriptc-lib-"));
 });

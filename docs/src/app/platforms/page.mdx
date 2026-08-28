@@ -2,7 +2,7 @@
 
 ## macOS (arm64)
 
-The primary platform. clang — preinstalled with the Xcode Command Line Tools — is the only system dependency for producing binaries. The full surface is supported: the language, the stdlib, the Node API surface including the server stack, `--dynamic`, and the sanitizer lane.
+The primary platform. clang — preinstalled with the Xcode Command Line Tools — is the only system dependency for producing executables. Source artifacts selected with <code>--emit=ir|c|llvm</code> need only Node. On macOS 15+ arm64, <code>--emit=asm|obj</code> uses the version-matched <code>@scriptc/llvm-darwin-arm64</code> helper installed with scriptc, emits <code>arm64-apple-macosx14.0.0</code> artifacts, and does not invoke a compiler, archiver, linker, or SDK. Object output retains undefined runtime references and is not a library archive. The full executable surface is supported: the language, the stdlib, the Node API surface including the server stack, `--dynamic`, and the sanitizer lane.
 
 ## Cross-compilation via zig
 
@@ -12,7 +12,7 @@ scriptc cross-compiles from macOS using zig's bundled clang and sysroots. Instal
   <dt><code>SCRIPTC_CC=zigcc</code></dt>
   <dd>Use zig's clang as the C compiler.</dd>
   <dt><code>SCRIPTC_TARGET=&lt;triple&gt;</code></dt>
-  <dd>The target triple, including a glibc version for Linux targets.</dd>
+  <dd>The target triple; GNU/Linux targets include a glibc version.</dd>
 </dl>
 
 ### Linux (arm64, x86_64)
@@ -23,7 +23,7 @@ $ file fib-linux
 fib-linux: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, for GNU/Linux 2.0.0, with debug_info, not stripped
 ```
 
-The runtime has native Linux backends throughout: the event loop is epoll (kqueue on macOS), the server stack and TLS (with distro CA-bundle probing) and `fs.watch` all have Linux implementations, verified against Linux Node in a container-based differential lane. `x86_64-linux-gnu.2.36` works the same way.
+The runtime has native Linux backends throughout: the event loop is epoll (kqueue on macOS), the server stack and TLS (with distro CA-bundle probing) and `fs.watch` all have Linux implementations, verified against Linux Node in a container-based differential lane. `x86_64-linux-gnu.2.36` works the same way. For Alpine containers, use `<arch>-linux-musl`; Zig produces a statically linked executable for either AArch64 or x86_64, and the same static runtime surface is verified against Node on Alpine.
 
 ### Windows (x86_64)
 
@@ -33,12 +33,43 @@ $ file fib.exe
 fib.exe: PE32+ executable (console) x86-64, for MS Windows
 ```
 
-The language, stdlib, `fs`, and async surfaces pass a differential lane against Windows Node. **Not ported yet:** the socket/server stack (`net`/`http`/`https`/`tls`/`dgram`) and `child_process`.
+The full corpus runs in a differential lane against Windows Node, including `--dynamic` programs and `child_process`. The Windows fixture lanes also exercise real loopback traffic through `net`, `http`, `https`, `tls`, `http2`, `dgram`, and `dns`, plus the native `fetch` implementation (including redirects, streaming bodies, compression, cancellation, and proxy handling).
 
-## What doesn't cross-compile yet
+### iOS and Android (arm64, library mode)
 
-- **`--dynamic` binaries are host-native only.** The embedded engine archive is built per target; cross-compiling a `--dynamic` build is not supported today. Static programs cross-compile fully.
+Three mobile triples build **library-mode static archives** for an embedding app to link — a mobile app is the executable, so `scriptc build` without `--lib` rejects these targets with `SC3002`:
+
+<dl>
+  <dt><code>SCRIPTC_TARGET=aarch64-apple-ios</code></dt>
+  <dd>iOS device archives (Mach-O, arm64). Requires a macOS host with Xcode's iPhoneOS SDK. Every object carries <code>LC_BUILD_VERSION</code> with minimum OS 15.0.</dd>
+  <dt><code>SCRIPTC_TARGET=aarch64-apple-ios-simulator</code></dt>
+  <dd>iOS simulator archives (Mach-O, arm64, simulator platform). Requires a macOS host with Xcode's iPhoneSimulator SDK. Same iOS 15.0 minimum.</dd>
+  <dt><code>SCRIPTC_TARGET=aarch64-linux-android</code></dt>
+  <dd>Android archives (ELF, arm64) compiled against the NDK's bionic headers at API level 26 — the embedder's <code>minSdkVersion</code> must be 26 or higher. Requires an Android NDK: <code>ANDROID_NDK_ROOT</code>, or the newest <code>ndk/&lt;version&gt;</code> under <code>ANDROID_HOME</code> or the default SDK location.</dd>
+</dl>
+
+```console
+$ SCRIPTC_CC=zigcc SCRIPTC_TARGET=aarch64-apple-ios scriptc build --lib --profile app.profile.json
+$ SCRIPTC_CC=zigcc SCRIPTC_TARGET=aarch64-linux-android scriptc build --lib --profile app.profile.json
+```
+
+The full library-mode feature set applies: profile-declared exports and ABI entry points, host-callback channels (`callbacks` + `abi.callback_register_symbol`), contract sidecars, determinism fences, `abi.localize_runtime` (multi-instance archives — Mach-O localization runs the macOS host linker for both iOS platforms; Android rides the same in-process ELF localization as the Linux cross targets), and `abi.instance_per_thread` (thread-instanced state). The archive's external-symbol contract is unchanged: undefined references only to the target's C/math runtime and system APIs, resolved by Xcode's link against the selected SDK or the NDK clang link at API 26+. Simulator and emulator execution of the archive probes is part of the test matrix; device-architecture archives are build- and link-verified.
+
+### WebAssembly (WASI Preview 1)
+
+Set <code>SCRIPTC_CC=zigcc</code> and <code>SCRIPTC_TARGET=wasm32-wasi</code> to produce a standalone <code>.wasm</code> module. Without <code>-o</code>, <code>scriptc build hello.ts</code> writes <code>.scriptc/hello.wasm</code>. <code>scriptc run</code> hosts the module with Node's WASI implementation, inherits stdio and environment, preopens the current working directory as <code>/</code>, and maps the host platform's temporary directory to the guest's <code>/tmp</code>. A built module can run in another WASI Preview 1 host instead.
+
+WASI is a production LLVM target with the same language tiers as the native targets. Its 32-bit LLVM ABI supports collections, closures, exceptions, classes, checked dynamic values, async/await, promises, synchronous and asynchronous generators, timers, stdin/readline events, process-exit listeners, filesystem callbacks and promises, and the <code>--dynamic</code> QuickJS island. The debugging C backend remains available for async-free inspection only through an explicit <code>--backend c</code>; coroutine-dependent programs report <code>SC3001</code>, and WASI never silently falls back to C.
+
+The remaining executable boundary is host capability, not language coverage. WASI Preview 1 has no portable socket, process-spawn, OS-signal, network-interface, or filesystem-notification APIs. Networking/fetch, child processes, signal APIs, <code>os.networkInterfaces()</code>, and <code>fs.watch</code> therefore fail before linking with diagnostic <code>SC3002</code>. <code>--sanitize</code>, native FFI, and library-mode archive builds are unavailable too. Filesystem behavior is bounded by the host's preopens, and process/OS introspection follows WASI's reduced model.
+
+## Cross-target limits
+
 - `--sanitize` is a host-build lane.
+- Library-mode static archives are native embedder artifacts; <code>wasm32-wasi</code> rejects <code>scriptc build --lib</code> with <code>SC3002</code>.
+- Mobile triples are library-mode-only: standalone executable builds reject with <code>SC3002</code>, and only the library-admissible surface (the async-free static tier a library archive links) is supported there.
+- iOS targets build on macOS hosts only (the Apple SDK sysroot and Mach-O localization); Android targets build from any host with an NDK.
+- WASI cannot host APIs for capabilities missing from Preview 1, as described above.
 
 ## Summary
 
@@ -58,13 +89,28 @@ The language, stdlib, `fs`, and async surfaces pass a differential lane against 
     </tr>
     <tr>
       <td>Linux arm64 / x86_64</td>
-      <td><code>SCRIPTC_CC=zigcc SCRIPTC_TARGET=&lt;arch&gt;-linux-gnu.2.36</code></td>
-      <td>Static surface incl. servers, TLS, fs.watch; verified against Linux Node</td>
+      <td><code>SCRIPTC_CC=zigcc SCRIPTC_TARGET=&lt;arch&gt;-linux-gnu.2.36</code> or <code>&lt;arch&gt;-linux-musl</code></td>
+      <td>Static and dynamic surfaces incl. servers, TLS, fetch, fs.watch, and child_process; verified against Linux Node on Bookworm and Alpine</td>
     </tr>
     <tr>
       <td>Windows x86_64</td>
       <td><code>SCRIPTC_CC=zigcc SCRIPTC_TARGET=x86_64-windows-gnu</code></td>
-      <td>Language, stdlib, fs, async; no servers or child_process yet</td>
+      <td>Static and dynamic surfaces incl. servers, TLS, fetch, and child_process; verified against Windows Node</td>
+    </tr>
+    <tr>
+      <td>iOS arm64 (device and simulator)</td>
+      <td><code>SCRIPTC_CC=zigcc SCRIPTC_TARGET=aarch64-apple-ios</code> or <code>aarch64-apple-ios-simulator</code>, macOS host with Xcode</td>
+      <td>Library mode only (<code>--lib</code>): static archives for Xcode projects, iOS 15.0 minimum; multi-instance and thread-instanced profiles; simulator-executed test matrix</td>
+    </tr>
+    <tr>
+      <td>Android arm64</td>
+      <td><code>SCRIPTC_CC=zigcc SCRIPTC_TARGET=aarch64-linux-android</code>, any host with an NDK</td>
+      <td>Library mode only (<code>--lib</code>): static archives for Gradle/NDK projects, API level 26 minimum; multi-instance and thread-instanced profiles; emulator-executed test matrix</td>
+    </tr>
+    <tr>
+      <td>WebAssembly / WASI Preview 1</td>
+      <td><code>SCRIPTC_CC=zigcc SCRIPTC_TARGET=wasm32-wasi</code></td>
+      <td>Production LLVM target; full language and dynamic tiers, bounded by WASI P1 host capabilities</td>
     </tr>
   </tbody>
 </table>

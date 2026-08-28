@@ -1,4 +1,4 @@
-/* Checked-dynamic ASYNC surfaces (gated — cc.ts links this TU only when
+/* Checked-dynamic ASYNC surfaces (gated — native-toolchain.ts links this TU only when
  * the IR carries the crossing libCalls or dyn dispatch: the scr_dc.c
  * size-class precedent). Everything here rides scr_async.c's public
  * machinery: the checked-dynamic tree-promise reaction helpers (.then/.catch/.finally
@@ -403,7 +403,7 @@ ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *
   /* A rejection HANDLER marks the source handled at attach (Node's
    * moment; the reaction fiber's await re-marks harmlessly) — this is
    * also what lets a .catch inside an 'unhandledRejection' listener fire
-   * 'rejectionHandled' when no fiber turn remains. */
+   * 'rejectionHandled' immediately at the attach point. */
   if (onr != NULL) scr_promise_mark_handled(src);
   ScrDynThenPack *a = malloc(sizeof *a);
   if (!a) scr_ad_oom();
@@ -720,4 +720,3 @@ ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
 ScrPromise *scr_dyn_promise_of(const ScrDyn *d) {
   return d->kind == SCR_DYN_PROMISE ? d->v.promise : NULL;
 }
-

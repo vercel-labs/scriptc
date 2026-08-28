@@ -12,7 +12,10 @@ function publish(name: string): void {
   // Two same-instant children's exit ORDER is kernel-scheduling-dependent
   // on both sides, so the observation is collected and printed sorted at
   // the barrier (the bounded-margin rule's order-independent sibling).
-  const child = spawn("/usr/bin/true", [], { stdio: "ignore" });
+  // /bin/sh is present on macOS, Debian, and Alpine; the true binary itself
+  // lives under different prefixes, so run the shell builtin for this
+  // success-path fixture.
+  const child = spawn("/bin/sh", ["-c", "true"], { stdio: "ignore" });
   registry.set(name, child);
   running.push(child);
   child.on("exit", () => {

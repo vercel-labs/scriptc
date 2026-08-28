@@ -108,7 +108,6 @@ const WINDOWS_SKIPS: Record<string, string> = {
   "1578-exec-input-optional.ts": "posix-shaped: the uncaught cat ENOENT throw crashes both sides, rendered differently (1645 covers input here)",
   "1580-exec-env-conditional-spread.ts": "posix-shaped: the uncaught sh ENOENT throw crashes both sides, rendered differently (1645 covers env here)",
   "1464-env-writes.ts": "posix-shaped: the observing child is ENOENT on Windows, exposing the documented spawn-failure \"\"-vs-null stance",
-  "1521-fs-lstat-lock.ts": "posix-shaped: the uncaught `ln` ENOENT throw crashes both sides, rendered differently",
   // Two programs the events unit's win32 arm surfaced (they compiled for
   // the first time once the events gate lifted): both drive their signal
   // listeners through a /bin/sh child, ENOENT on Windows Node too.
@@ -522,7 +521,12 @@ describe.skipIf(!enabled)(`windows differential (${target})`, () => {
       // the tls fixtures read certs cwd-relative from the lane dir and the
       // drivers resolve ../../certs from their own shipped location.
       const trees = [
-        ...(serverCases.length > 0 ? [join(repoRoot, "tests/fixtures/server")] : []),
+        // Fetch's shared server reads the loopback HTTPS proxy certificate
+        // from the server fixture tree. Keep that dependency staged even
+        // when SCRIPTC_WIN_FILTER narrows the run to fetch cases only.
+        ...(serverCases.length > 0 || fetchCases.length > 0
+          ? [join(repoRoot, "tests/fixtures/server")]
+          : []),
         ...(dgramCases.length > 0 ? [join(repoRoot, "tests/fixtures/dgram")] : []),
         // The fetch tree ships whole too: the box's Node runs the case
         // sources (their imports resolve into the shipped node_modules)
@@ -730,9 +734,24 @@ describe.skipIf(!enabled)(`windows differential (${target})`, () => {
      * parallel: both lanes drive real sockets against the same servers. */
     async function runFetchCase(c: { name: string; entry: string }, env: Record<string, string>): Promise<void> {
       await shipFetchFixture(c);
-      const argv = `${base} ${refused}`;
-      const nodeRes = await runOnBox(`node ${boxRel(c.entry)} ${argv}`, env);
-      const nativeRes = await runOnBox(`${c.name}.exe ${argv}`, env);
+      const argv = [base, refused];
+      // The fragment redirect route remembers a caller-provided key. Node
+      // and native must use distinct keys so the second lane also observes
+      // the redirect instead of inheriting the first lane's server state.
+      const nodeArgv = c.name === "redirect-resolution"
+        ? [...argv, "redirect-resolution-node"]
+        : argv;
+      const nativeArgv = c.name === "redirect-resolution"
+        ? [...argv, "redirect-resolution-native"]
+        : argv;
+      const nodeRes = await runOnBox(
+        `node ${boxRel(c.entry)} ${nodeArgv.join(" ")}`,
+        env,
+      );
+      const nativeRes = await runOnBox(
+        `${c.name}.exe ${nativeArgv.join(" ")}`,
+        env,
+      );
       if (!nodeRes.stdout.equals(nativeRes.stdout)) {
         expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
         expect.unreachable("stdout differed at byte level but not after utf8 decode");

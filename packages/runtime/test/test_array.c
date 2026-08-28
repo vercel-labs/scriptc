@@ -76,6 +76,69 @@ static void test_bool(void) {
   scr_arr_release(a);
 }
 
+static void test_unshift_reverse(void) {
+#ifdef SCR_RC_AUDIT
+  long strings0 = scr_str_live_count();
+  long arrays0 = scr_arr_live_count();
+#endif
+
+  /* The emitter applies variadic unshift arguments right-to-left. */
+  ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(a, 3);
+  scr_arr_push_f64(a, 4);
+  check_f64(scr_arr_unshift_f64(a, 2), 3, "unshift f64 grows");
+  check_f64(scr_arr_unshift_f64(a, 1), 4, "variadic-style unshift length");
+  check_f64(scr_arr_get_f64(a, 0), 1, "unshift preserves arg order [0]");
+  check_f64(scr_arr_get_f64(a, 1), 2, "unshift preserves arg order [1]");
+
+  ScrArr *same = scr_arr_reverse(a);
+  check(same == a, "reverse returns receiver identity");
+  check_f64(scr_arr_get_f64(a, 0), 4, "reverse mutates first slot");
+  check_f64(scr_arr_get_f64(a, 3), 1, "reverse mutates last slot");
+  scr_arr_release(same); /* reverse's returned +1 */
+
+  ScrArr *front = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(front, 8);
+  scr_arr_push_f64(front, 9);
+  check_f64(scr_arr_unshift_spread(a, front), 6, "unshift spread length");
+  check_f64(scr_arr_get_f64(a, 0), 8, "unshift spread first");
+  check_f64(scr_arr_get_f64(a, 1), 9, "unshift spread second");
+  scr_arr_release(front);
+  scr_arr_release(a);
+
+  /* Self-spread snapshots the original block before front insertion. */
+  ScrArr *self = scr_arr_new(SCR_ELEM_BOOL, 0);
+  scr_arr_push_bool(self, true);
+  scr_arr_push_bool(self, false);
+  check_f64(scr_arr_unshift_spread(self, self), 4, "unshift self-spread length");
+  check(scr_arr_get_bool(self, 0) && !scr_arr_get_bool(self, 1),
+        "unshift self-spread copied prefix");
+  check(scr_arr_get_bool(self, 2) && !scr_arr_get_bool(self, 3),
+        "unshift self-spread kept original tail");
+  scr_arr_release(self);
+
+  /* Spread retains ref elements; either array may then die first. */
+  ScrArr *src = scr_arr_new(SCR_ELEM_STR, 0);
+  scr_arr_push_ref(src, scr_str_new("front", 5));
+  ScrArr *dst = scr_arr_new(SCR_ELEM_STR, 0);
+  scr_arr_push_ref(dst, scr_str_new("back", 4));
+  scr_arr_unshift_spread(dst, src);
+  ScrStr *copied = (ScrStr *)scr_arr_get_ref(dst, 0);
+  check(copied->rc == 3, "unshift spread retained ref element");
+  scr_str_release(copied);
+  scr_arr_release(src);
+  ScrStr *still = (ScrStr *)scr_arr_get_ref(dst, 0);
+  check(strcmp(still->data, "front") == 0,
+        "unshift spread ref survives source release");
+  scr_str_release(still);
+  scr_arr_release(dst);
+
+#ifdef SCR_RC_AUDIT
+  check(scr_str_live_count() == strings0, "unshift/reverse: no strings leaked");
+  check(scr_arr_live_count() == arrays0, "unshift/reverse: no arrays leaked");
+#endif
+}
+
 static void test_str_rc(void) {
 #ifdef SCR_RC_AUDIT
   long strings0 = scr_str_live_count();
@@ -401,6 +464,7 @@ int main(int argc, char **argv) {
 
   test_f64_basics();
   test_bool();
+  test_unshift_reverse();
   test_str_rc();
   test_nested_rc();
   test_index_of_includes();

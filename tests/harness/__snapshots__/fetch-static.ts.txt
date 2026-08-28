@@ -1,53 +1,35 @@
-fetch-static.ts:6:19 - error SC2012: 'fetch' runs in the embedded dynamic engine, which this build does not include
+fetch-static.ts:20:9 - error SC2020: 'Response.arrayBuffer() in a static build' is part of the standard library types but has no scriptc lowering yet
 
-  5 | async function probe(url: string): Promise<number> {
-  6 |   const r = await fetch(url);
-    |                   ^~~~~~~~~~
-  7 |   return r.status;
+  19 | async function arrayBufferBody(url: string): Promise<void> {
+  20 |   await (await fetch(url)).arrayBuffer();
+     |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  21 | }
 
-  hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
+  hint: use Response.bytes() for the native Uint8Array body; free-standing ArrayBuffer values have no static representation
 
-fetch-static.ts:7:10 - error SC2020: 'Response.status' is part of the standard library types but has no scriptc lowering yet
+fetch-static.ts:24:9 - error SC2020: 'Response.arrayBuffer() in a static build' is part of the standard library types but has no scriptc lowering yet
 
-  6 |   const r = await fetch(url);
-  7 |   return r.status;
-    |          ^~~~~~~~
-  8 | }
+  23 | async function bracketArrayBufferBody(url: string): Promise<void> {
+  24 |   await (await fetch(url))["arrayBuffer"]();
+     |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  25 | }
 
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+  hint: use Response.bytes() for the native Uint8Array body; free-standing ArrayBuffer values have no static representation
 
-fetch-static.ts:12:7 - error SC2012: a value of type 'AbortSignal' runs in the embedded dynamic engine, which this build does not include
+fetch-static.ts:28:23 - error SC2020: 'Response.arrayBuffer in a static build' is part of the standard library types but has no scriptc lowering yet
 
-  11 | }
-  12 | const sig = AbortSignal.timeout(100);
-     |       ^~~
-  13 | async function timed(url: string): Promise<string> {
+  27 | async function bracketArrayBufferRead(url: string): Promise<void> {
+  28 |   const unsupported = (await fetch(url))["arrayBuffer"];
+     |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  29 | }
 
-  hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
+  hint: the native static Response surface is status/ok/statusText/url/redirected/headers/body/bodyUsed plus json(), text(), and bytes(); use --dynamic for the wider Web API
 
-fetch-static.ts:12:13 - error SC2012: 'AbortSignal.timeout' runs in the embedded dynamic engine, which this build does not include
+fetch-static.ts:31:17 - error SC2020: 'new Headers' is part of the standard library types but has no scriptc lowering yet
 
-  11 | }
-  12 | const sig = AbortSignal.timeout(100);
-     |             ^~~~~~~~~~~~~~~~~~~~~~~~
-  13 | async function timed(url: string): Promise<string> {
-
-  hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
-
-fetch-static.ts:14:19 - error SC2012: 'fetch' runs in the embedded dynamic engine, which this build does not include
-
-  13 | async function timed(url: string): Promise<string> {
-  14 |   const r = await fetch(url, { signal: AbortSignal.timeout(100) });
-     |                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  15 |   return r.text();
-
-  hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
-
-fetch-static.ts:15:10 - error SC2020: 'Response.text' is part of the standard library types but has no scriptc lowering yet
-
-  14 |   const r = await fetch(url, { signal: AbortSignal.timeout(100) });
-  15 |   return r.text();
-     |          ^~~~~~
-  16 | }
+  30 | bracketArrayBufferRead("http://localhost/e");
+  31 | const headers = new Headers();
+     |                 ^~~~~~~~~~~~~
+  32 | // The Headers constructor remains fenced even though response.headers is native.
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)

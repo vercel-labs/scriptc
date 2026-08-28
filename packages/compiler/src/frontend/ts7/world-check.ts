@@ -20,7 +20,7 @@
 import type ts5 from "typescript5";
 import type * as ts7 from "./adapter.js";
 
-export function assertWorldsAreDisjoint(
+function assertWorldsAreDisjoint(
   node5: ts5.Node,
   node7: ts7.Node,
   file5: ts5.SourceFile,
@@ -42,3 +42,5 @@ export function assertWorldsAreDisjoint(
   const _f: ts5.SyntaxKind = kind7;
   void [_a, _b, _c, _d, _e, _f];
 }
+
+void assertWorldsAreDisjoint;

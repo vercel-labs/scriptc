@@ -17,7 +17,19 @@ for (const v of vals) {
 
 const u = new Uint32Array(2);
 console.log("ulen", u.length, u.byteLength);
-const uvals = [-1, 4294967296, 4294967301, 4.9, nan];
+const uvals = [
+  -1,
+  4294967296,
+  4294967301,
+  4.9,
+  nan,
+  inf,
+  -inf,
+  9007199254740992,
+  9007199254740994,
+  1e100,
+  -1e100,
+];
 for (const v of uvals) {
   u[1] = v;
   console.log("u32", u[1]);
@@ -54,3 +66,35 @@ console.log("copy", seeded[0], copy[0]);
 
 const useed = new Uint32Array([4294967295, 7]);
 console.log("useed", useed[0], useed[1]);
+
+// Receiver evaluation snapshots the old bytes before a later index/value
+// expression overwrites its only binding. The optimized direct-binding
+// borrow is intentionally disabled for these side-effecting operands.
+let readOrder = new Uint8Array([11]);
+function replaceReadOrder(): number {
+  readOrder = new Uint8Array([22]);
+  return 0;
+}
+const readBeforeReplace = readOrder[replaceReadOrder()];
+console.log("read-order", readBeforeReplace, readOrder[0]);
+
+let writeOrder = new Uint8Array([33]);
+function replaceWriteOrder(): number {
+  writeOrder = new Uint8Array([44]);
+  return 55;
+}
+writeOrder[0] = replaceWriteOrder();
+console.log("write-order", writeOrder[0]);
+
+// Assignment expressions can hide the receiver overwrite beneath a boolean
+// condition while the enclosing ternary still produces a numeric operand.
+let nestedReadOrder = new Uint8Array([66]);
+const nestedReadReplacement = new Uint8Array([77]);
+const nestedReadBeforeReplace =
+  nestedReadOrder[(nestedReadOrder = nestedReadReplacement) ? 0 : 0];
+console.log("nested-read-order", nestedReadBeforeReplace, nestedReadOrder[0]);
+
+let nestedWriteOrder = new Uint8Array([88]);
+const nestedWriteReplacement = new Uint8Array([99]);
+nestedWriteOrder[0] = (nestedWriteOrder = nestedWriteReplacement) ? 55 : 66;
+console.log("nested-write-order", nestedWriteOrder[0]);

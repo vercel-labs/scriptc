@@ -9,3 +9,8 @@ console.log(Date.UTC(1000000, 0), Date.UTC(-271821, 3, 20), Date.UTC(-271821, 3,
 console.log(Date.UTC(2017, 0, 1, 23, 59, 59, 999), Date.UTC(2017, 0, 1, 24, 0, 0, 0), Date.UTC(2017, 0, 0), Date.UTC(2017, -1, 31), Date.UTC(2017.9, 0.9, 1.9, 0.9, 0.9, 0.9, 0.9));
 console.log(Date.UTC(1970), Date.UTC(1970, 0, 1, 0, 0, 0, 1), Date.UTC(1969, 11, 31, 23, 59, 59, 999));
 console.log(Date.UTC(2 ** 31, 0), Date.UTC(-(2 ** 31), 0), Date.UTC(1e6 + 1, 0), Date.UTC(2017, 1e21));
+// V8 applies its MakeDay bounds to the individual year/month inputs before
+// month normalization. These pairs straddle both limits while normalization
+// would otherwise leave a TimeClip-valid result.
+console.log(Date.UTC(-833333, 10000000), Date.UTC(-833333, 10000001), Date.UTC(833334, -10000000), Date.UTC(833334, -10000001));
+console.log(Date.UTC(1000000, -8700000), Date.UTC(1000001, -8700000), Date.UTC(-1000000, 8748000), Date.UTC(-1000001, 8748000));

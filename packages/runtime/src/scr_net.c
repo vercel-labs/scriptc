@@ -283,6 +283,27 @@ static const char *scr_net_errname(int err) {
  * The types live in scr_runtime.h: scr_http.c reuses the whole family
  * for its request-body listener lists. */
 
+struct ScrNetOnce {
+  size_t rc;
+  bool fired;
+};
+
+ScrNetOnce *scr_net_once_new(void) {
+  ScrNetOnce *once = calloc(1, sizeof *once);
+  if (!once) scr_net_oom();
+  once->rc = 1;
+  return once;
+}
+
+ScrNetOnce *scr_net_once_retain(ScrNetOnce *once) {
+  once->rc++;
+  return once;
+}
+
+void scr_net_once_release(ScrNetOnce *once) {
+  if (once != NULL && --once->rc == 0) free(once);
+}
+
 void scr_net_ls_add(ScrNetLs *l, ScrClosure *cb, void *fn, bool once) {
   if (l->n == l->cap) {
     l->cap = l->cap ? l->cap * 2 : 2;
@@ -292,11 +313,28 @@ void scr_net_ls_add(ScrNetLs *l, ScrClosure *cb, void *fn, bool once) {
   l->ls[l->n].cb = cb;
   l->ls[l->n].fn = fn;
   l->ls[l->n].once = once;
+  l->ls[l->n].shared_once = NULL;
   l->n++;
 }
 
+void scr_net_ls_add_shared_once(ScrNetLs *l, ScrClosure *cb, void *fn,
+                                ScrNetOnce *once /*moves*/) {
+  scr_net_ls_add(l, cb, fn, true);
+  l->ls[l->n - 1].shared_once = once;
+}
+
+bool scr_net_ls_has_live(const ScrNetLs *l) {
+  for (size_t i = 0; i < l->n; i++) {
+    if (l->ls[i].shared_once == NULL || !l->ls[i].shared_once->fired) return true;
+  }
+  return false;
+}
+
 void scr_net_ls_drop(ScrNetLs *l) {
-  for (size_t i = 0; i < l->n; i++) scr_closure_release(l->ls[i].cb);
+  for (size_t i = 0; i < l->n; i++) {
+    scr_closure_release(l->ls[i].cb);
+    scr_net_once_release(l->ls[i].shared_once);
+  }
   free(l->ls);
   l->ls = NULL;
   l->n = l->cap = 0;
@@ -314,22 +352,32 @@ size_t scr_net_ls_snapshot(ScrNetLs *l, ScrNetL **out) {
   }
   ScrNetL *snap = malloc(n * sizeof *snap);
   if (!snap) scr_net_oom();
-  for (size_t i = 0; i < n; i++) {
-    snap[i] = l->ls[i];
-    scr_closure_retain(snap[i].cb);
-  }
-  /* remove the once entries from the live list */
+  size_t nsnap = 0;
   size_t w = 0;
   for (size_t i = 0; i < l->n; i++) {
+    ScrNetL entry = l->ls[i];
+    bool emit = entry.shared_once == NULL || !entry.shared_once->fired;
+    if (emit) {
+      if (entry.shared_once != NULL) entry.shared_once->fired = true;
+      snap[nsnap] = entry;
+      snap[nsnap].shared_once = NULL;
+      scr_closure_retain(snap[nsnap].cb);
+      nsnap++;
+    }
     if (l->ls[i].once) {
       scr_closure_release(l->ls[i].cb);
+      scr_net_once_release(l->ls[i].shared_once);
     } else {
       l->ls[w++] = l->ls[i];
     }
   }
   l->n = w;
+  if (nsnap == 0) {
+    free(snap);
+    snap = NULL;
+  }
   *out = snap;
-  return n;
+  return nsnap;
 }
 
 /* Fire a zero-payload event list (end/close/connect/listening) with the
@@ -389,6 +437,16 @@ struct ScrNetServer {
   bool closing;       /* close() called; 'close' fires when conns drain */
   bool close_emitted; /* settled: off the registry, listeners dropped */
   bool emit_listening;
+  /* The writable http.Server timeout property values. Kept on the shared
+   * server handle because http/https servers retain that handle identity;
+   * plain net servers never expose these fields through the static type
+   * surface. Indices match lower-server.ts's selector ABI. */
+  double http_timeouts[5];
+  /* A dynamic write may store any JS value on these ordinary writable
+   * properties. Numeric writes stay in http_timeouts; every other value
+   * is retained here so dynamic reads preserve kind and identity. */
+  ScrDyn *http_timeout_dyn[5];
+  bool http_timeout_surface; /* true only for HTTP/1 and HTTPS servers */
   bool defer_conn; /* TLS: 'connection' fires post-handshake, not at accept */
   bool bound_v6;       /* the bound family (address()'s 'IPv6'/'IPv4' split) */
   ScrStr *bound_host;  /* the explicit bind host (NULL = the host-less any:
@@ -556,6 +614,7 @@ void scr_net_server_release(ScrNetServer *s) {
     scr_net_ls_drop(&s->close_ls);
     scr_net_ls_drop(&s->listening_cbs);
     scr_closure_release(s->close_override);
+    for (size_t i = 0; i < 5; i++) scr_dyn_release(s->http_timeout_dyn[i]);
     scr_str_release(s->bound_host);
     scr_str_release(s->pending_err);
     if (s->fd >= 0) scr_net_close_fd_raw(s->fd);
@@ -987,15 +1046,21 @@ static bool scr_net_sock_deliver(ScrNetSocket *s, const char *buf, size_t n) {
   return true;
 }
 
-/* One readable wake: read until EAGAIN/EOF, one 'data' emit per read(2)
- * chunk (Node's chunking is arrival-driven too — only the reassembled
- * bytes are contractual, the stdin stance). Peeked/unshifted bytes in
- * the receive buffer deliver first — they precede the kernel's in the
- * stream. A TLS socket drains those through the engine's bio instead. */
+/* One readable wake: read until EAGAIN/EOF OR a bounded batch, one 'data'
+ * emit per read(2) chunk (Node's chunking is arrival-driven too — only the
+ * reassembled bytes are contractual, the stdin stance). The batch bound is
+ * the loop's fairness fence: a continuously writing peer can otherwise keep
+ * every nonblocking read successful forever and strand timers plus every
+ * other fd inside this function. All poller arms are level-triggered, so
+ * unread kernel bytes make the socket ready again on the next loop turn.
+ * Peeked/unshifted bytes in the receive buffer deliver first — they precede
+ * the kernel's in the stream. A TLS socket drains those through the engine's
+ * bio instead. */
 static void scr_net_sock_append_rbuf(ScrNetSocket *s, const char *data, size_t len);
 static void scr_net_sock_transport_pump(ScrNetSocket *s);
 
 static void scr_net_sock_read(ScrNetSocket *s) {
+  size_t reads_left = 32; /* at most 2 MiB with the 64 KiB read buffer */
   if (s->tops && !s->t_est) return; /* readiness feeds the handshake pump instead */
   for (;;) {
     if (s->fd < 0 || s->user_paused) return;
@@ -1061,6 +1126,7 @@ static void scr_net_sock_read(ScrNetSocket *s) {
       }
     }
     scr_net_sock_update_read(s); /* a once-listener may have been the last consumer */
+    if (--reads_left == 0) return;
   }
 }
 
@@ -1193,6 +1259,11 @@ static ScrNetServer *scr_net_server_new(void) {
   s->kind = SCR_NET_K_SERVER;
   s->rc = 1;
   s->fd = -1;
+  s->http_timeouts[0] = 0;      /* timeout */
+  s->http_timeouts[1] = 5000;   /* keepAliveTimeout */
+  s->http_timeouts[2] = 60000;  /* headersTimeout */
+  s->http_timeouts[3] = 300000; /* requestTimeout */
+  s->http_timeouts[4] = 1000;   /* keepAliveTimeoutBuffer */
 #ifdef SCR_RC_AUDIT
   scr_net_live++;
 #endif
@@ -1370,6 +1441,79 @@ void scr_net_listen_opts(ScrNetServer *s, double port, ScrStr *host /*borrowed*/
 }
 
 double scr_net_server_port(ScrNetServer *s) { return (double)s->port; }
+
+double scr_net_server_timeout_get(ScrNetServer *s, double field) {
+  static const char *const names[] = {
+    "timeout", "keepAliveTimeout", "headersTimeout", "requestTimeout",
+    "keepAliveTimeoutBuffer",
+  };
+  int i = (int)field;
+  if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */
+  if (s->http_timeout_dyn[i] != NULL) {
+    scr_dyn_arg_type_fail(names[i], "of type number", s->http_timeout_dyn[i]);
+    return 0; /* pending exception; typed reads validate an any-written value */
+  }
+  return s->http_timeouts[i];
+}
+
+void scr_net_server_timeout_set(ScrNetServer *s, double field, double value) {
+  int i = (int)field;
+  if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */
+  scr_dyn_release(s->http_timeout_dyn[i]);
+  s->http_timeout_dyn[i] = NULL;
+  s->http_timeouts[i] = value;
+}
+
+void scr_net_server_enable_http_timeout_surface(ScrNetServer *s) {
+  s->http_timeout_surface = true;
+}
+
+/* Constructor-option validation is intentionally separate from the plain
+ * writable-property setter above. Node validates these option values as
+ * non-negative safe integers, while later property assignments store the
+ * number directly. */
+bool scr_net_server_timeout_option_check(double field, double value) {
+  static const char *const names[] = {
+    "timeout", "keepAliveTimeout", "headersTimeout", "requestTimeout",
+    "keepAliveTimeoutBuffer",
+  };
+  int i = (int)field;
+  if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */
+  char recv[48], msg[224];
+  if (!(isfinite(value) && trunc(value) == value)) {
+    scr_num_received(value, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"%s\" is out of range. It must be an integer. Received %s",
+                       names[i], recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (value < 0 || value > 9007199254740991.0) {
+    scr_num_received(value, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"%s\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s",
+                       names[i], recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  return true;
+}
+
+void scr_net_server_timeout_option_set(ScrNetServer *s, double field, const ScrDyn *value) {
+  int i = (int)field;
+  if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */
+  if (value->kind == SCR_DYN_UNDEF) return; /* optional field is absent */
+  if (value->kind != SCR_DYN_NUM) {
+    static const char *const names[] = {
+      "timeout", "keepAliveTimeout", "headersTimeout", "requestTimeout",
+      "keepAliveTimeoutBuffer",
+    };
+    scr_dyn_arg_type_fail(names[i], "of type number", value);
+    return;
+  }
+  if (!scr_net_server_timeout_option_check(field, value->v.num)) return;
+  scr_net_server_timeout_set(s, field, value->v.num);
+}
 
 /* address()'s other two fields — the bound host ('::'/'0.0.0.0' for the
  * host-less any, the normalized explicit host otherwise) and the family
@@ -3292,13 +3436,28 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
   return NULL;
 }
 
+static int scr_net_dynh_srv_timeout_field(const char *key) {
+  if (strcmp(key, "timeout") == 0) return 0;
+  if (strcmp(key, "keepAliveTimeout") == 0) return 1;
+  if (strcmp(key, "headersTimeout") == 0) return 2;
+  if (strcmp(key, "requestTimeout") == 0) return 3;
+  if (strcmp(key, "keepAliveTimeoutBuffer") == 0) return 4;
+  return -1;
+}
+
 static ScrDyn *scr_net_dynh_srv_get(void *h, const char *key, size_t key_len) {
   ScrNetServer *s = (ScrNetServer *)h;
   (void)key_len;
   if (strcmp(key, "listening") == 0) return scr_dyn_new_bool(s->listening);
+  int timeout_field = scr_net_dynh_srv_timeout_field(key);
+  if (timeout_field >= 0 && s->http_timeout_surface) {
+    if (s->http_timeout_dyn[timeout_field] != NULL) {
+      return scr_dyn_retain(s->http_timeout_dyn[timeout_field]);
+    }
+    return scr_dyn_new_num(scr_net_server_timeout_get(s, (double)timeout_field));
+  }
   {
-    static const char *const known[] = { "maxConnections", "connections", "maxHeadersCount",
-      "timeout", "keepAliveTimeout", "headersTimeout", "requestTimeout", NULL };
+    static const char *const known[] = { "maxConnections", "connections", "maxHeadersCount", NULL };
     for (size_t i = 0; known[i]; i++) {
       if (strcmp(key, known[i]) == 0) {
         scr_net_dynh_srv_unsupported(key, NULL);
@@ -3310,7 +3469,18 @@ static ScrDyn *scr_net_dynh_srv_get(void *h, const char *key, size_t key_len) {
 }
 
 static bool scr_net_dynh_srv_set(void *h, const char *key, size_t key_len, const ScrDyn *value) {
-  (void)h; (void)key; (void)key_len; (void)value;
+  ScrNetServer *s = (ScrNetServer *)h;
+  (void)key_len;
+  int timeout_field = scr_net_dynh_srv_timeout_field(key);
+  if (timeout_field >= 0 && s->http_timeout_surface) {
+    if (value->kind == SCR_DYN_NUM) {
+      scr_net_server_timeout_set(s, (double)timeout_field, value->v.num);
+    } else {
+      scr_dyn_release(s->http_timeout_dyn[timeout_field]);
+      s->http_timeout_dyn[timeout_field] = scr_dyn_retain((ScrDyn *)value);
+    }
+    return true;
+  }
   return false;
 }
 

@@ -24,12 +24,12 @@
  * What fences: computed members (their initializers are runtime
  * expressions Node evaluates when the declaration executes), reverse
  * lookups through runtime indices, and the enum object as a value.
- * The TYPE side lives in types.ts (enum types map to their underlying
+ * The TYPE side lives in type-mapper.ts (enum types map to their underlying
  * primitives) — see mapType's EnumLike branch. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { locOf } from "../program.js";
-import { F64, IrExpr, STRING } from "../../ir/nodes.js";
+import { F64, IrExpr, STRING } from "../../ir/ir.js";
 
 /** The member's source-name text (identifiers and string-literal names —
  * the only name forms tsc allows on enum members). */
@@ -67,15 +67,15 @@ function effectFreeReceiver(e: ts.Expression): boolean {
  * and enum reverse-mapping reads. Null when the access is not enum-shaped
  * at all — the caller's ordinary paths apply. */
 export function lowerEnumAccess(
-  L: Lowerer,
+  lowerer: Lowerer,
   expr: ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): IrExpr | null {
   if (ts.isPropertyAccessExpression(expr)) {
-    const sym = L.checker.getSymbolAtLocation(expr.name);
+    const sym = lowerer.checker.getSymbolAtLocation(expr.name);
     if (sym && sym.flags & ts.SymbolFlags.EnumMember) {
-      const decl = L.checker.valueDeclarationOf(sym);
+      const decl = lowerer.checker.valueDeclarationOf(sym);
       if (decl && ts.isEnumMember(decl) && effectFreeReceiver(expr.expression)) {
-        return lowerEnumMemberRead(L, expr, decl);
+        return lowerEnumMemberRead(lowerer, expr, decl);
       }
     }
     return null;
@@ -84,9 +84,9 @@ export function lowerEnumAccess(
   // both key forms resolve through the RECEIVER's enum symbol.
   const recv = expr.expression;
   if (!ts.isIdentifier(recv)) return null;
-  const recvSym = L.resolveValueSymbol(recv);
+  const recvSym = lowerer.resolveValueSymbol(recv);
   if (!recvSym || !(recvSym.flags & ts.SymbolFlags.Enum)) return null;
-  const decls = L.checker.declarationsOf(recvSym).filter((d): d is ts.EnumDeclaration => ts.isEnumDeclaration(d));
+  const decls = lowerer.checker.declarationsOf(recvSym).filter((d): d is ts.EnumDeclaration => ts.isEnumDeclaration(d));
   if (decls.length === 0) return null;
   let key = expr.argumentExpression;
   while (ts.isParenthesizedExpression(key)) key = key.expression;
@@ -95,20 +95,20 @@ export function lowerEnumAccess(
   if (ts.isStringLiteralLike(key)) {
     for (const d of decls) {
       for (const member of d.members) {
-        if (memberNameText(member) === key.text) return lowerEnumMemberRead(L, expr, member);
+        if (memberNameText(member) === key.text) return lowerEnumMemberRead(lowerer, expr, member);
       }
     }
     // tsc resolved the name (or rejected the program); nothing to claim.
     return null;
   }
-  return lowerEnumReverseRead(L, expr, recvSym, decls, key);
+  return lowerEnumReverseRead(lowerer, expr, recvSym, decls, key);
 }
 
 /** One member read, folded to its constant — or the ambient/computed
  * stories (see the module comment). `expr` is the access carrying the
  * source span; `member` the resolved member declaration. */
 function lowerEnumMemberRead(
-  L: Lowerer,
+  lowerer: Lowerer,
   expr: ts.PropertyAccessExpression | ts.ElementAccessExpression,
   member: ts.EnumMember,
 ): IrExpr | null {
@@ -126,8 +126,8 @@ function lowerEnumMemberRead(
     // them). What remains is the user's own `declare enum` — the
     // `declare const __VERSION__` stance: ReferenceError at the access.
     const sf = enumDecl.getSourceFile();
-    if (L.isStdlibFile(sf) || (L.dynamic && L.isNpmFile(sf))) return null;
-    const declared = L.mapTypeOf(L.typeOf(expr));
+    if (lowerer.isStdlibFile(sf) || (lowerer.dynamic && lowerer.isNpmFile(sf))) return null;
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
     if (!declared || declared.kind === "void") return null;
     return {
       kind: "libCall",
@@ -137,9 +137,9 @@ function lowerEnumMemberRead(
       loc,
     };
   }
-  const value = L.checker.getConstantValue(member);
+  const value = lowerer.checker.getConstantValue(member);
   if (value === undefined || (typeof value === "number" && Number.isNaN(value))) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       expr,
       `the enum member '${enumDecl.name.text}.${memberNameText(member)}' (its value is not a compile-time constant — the initializer runs when the declaration executes)`,
@@ -157,7 +157,7 @@ function lowerEnumMemberRead(
  * Node's undefined, which the read's `string` type cannot carry — both
  * fence by name. */
 function lowerEnumReverseRead(
-  L: Lowerer,
+  lowerer: Lowerer,
   expr: ts.ElementAccessExpression,
   recvSym: ts.Symbol,
   decls: readonly ts.EnumDeclaration[],
@@ -167,7 +167,7 @@ function lowerEnumReverseRead(
   const enumName = recvSym.name;
   // Ambient: no object exists — the member-read stance.
   if (decls.every((d) => isAmbientEnumDecl(d))) {
-    if (decls.some((d) => L.isStdlibFile(d.getSourceFile()) || (L.dynamic && L.isNpmFile(d.getSourceFile())))) {
+    if (decls.some((d) => lowerer.isStdlibFile(d.getSourceFile()) || (lowerer.dynamic && lowerer.isNpmFile(d.getSourceFile())))) {
       return null;
     }
     return {
@@ -181,9 +181,9 @@ function lowerEnumReverseRead(
   // A mix of ambient and runtime declarations would need per-member
   // existence tracking; nothing needs it — fence through the generic path.
   if (decls.some((d) => isAmbientEnumDecl(d))) return null;
-  const idx = foldConstIndex(L, key);
+  const idx = foldConstIndex(lowerer, key);
   if (idx === null) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       expr,
       `enum reverse lookups ('${enumName}[i]' where the index is a runtime value — only compile-time-constant indices lower)`,
@@ -192,12 +192,12 @@ function lowerEnumReverseRead(
   let name: string | null = null;
   for (const d of decls) {
     for (const member of d.members) {
-      const v = L.checker.getConstantValue(member);
+      const v = lowerer.checker.getConstantValue(member);
       if (typeof v === "number" && v === idx) name = memberNameText(member);
     }
   }
   if (name === null) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       expr,
       `'${enumName}[${idx}]' (no member of '${enumName}' has this value — Node answers undefined, which the reverse mapping's 'string' type cannot carry)`,
@@ -208,7 +208,7 @@ function lowerEnumReverseRead(
 
 /** A compile-time-constant NUMERIC index: a numeric literal, its negation,
  * or an enum member read whose constant is a number. */
-function foldConstIndex(L: Lowerer, e: ts.Expression): number | null {
+function foldConstIndex(lowerer: Lowerer, e: ts.Expression): number | null {
   let x = e;
   while (ts.isParenthesizedExpression(x)) x = x.expression;
   if (ts.isNumericLiteral(x)) return Number(x.text);
@@ -220,11 +220,11 @@ function foldConstIndex(L: Lowerer, e: ts.Expression): number | null {
     return -Number(x.operand.text);
   }
   if (ts.isPropertyAccessExpression(x)) {
-    const sym = L.checker.getSymbolAtLocation(x.name);
+    const sym = lowerer.checker.getSymbolAtLocation(x.name);
     if (sym && sym.flags & ts.SymbolFlags.EnumMember) {
-      const decl = L.checker.valueDeclarationOf(sym);
+      const decl = lowerer.checker.valueDeclarationOf(sym);
       if (decl && ts.isEnumMember(decl)) {
-        const v = L.checker.getConstantValue(decl);
+        const v = lowerer.checker.getConstantValue(decl);
         if (typeof v === "number") return v;
       }
     }
@@ -240,11 +240,11 @@ function foldConstIndex(L: Lowerer, e: ts.Expression): number | null {
  * fence per site. A computed member's initializer is a runtime expression
  * Node evaluates at the declaration — dropping it would be observable, so
  * the declaration fences on that member. */
-export function lowerEnumDeclaration(L: Lowerer, stmt: ts.EnumDeclaration): null {
+export function lowerEnumDeclaration(lowerer: Lowerer, stmt: ts.EnumDeclaration): null {
   if (isAmbientEnumDecl(stmt)) return null;
   for (const member of stmt.members) {
-    if (L.checker.getConstantValue(member) === undefined) {
-      L.unsupported(
+    if (lowerer.checker.getConstantValue(member) === undefined) {
+      lowerer.unsupported(
         "SC1090",
         member,
         `enums with computed members ('${memberNameText(member)}' — the initializer is a runtime expression evaluated when the declaration executes; only compile-time-constant enum members lower)`,
@@ -258,9 +258,9 @@ export function lowerEnumDeclaration(L: Lowerer, stmt: ts.EnumDeclaration): null
  * (passed around, iterated, stored). Member reads never reach here (the
  * access hook claims them); everything else is the object itself, which
  * has no lowering. Returns false when the symbol is not an enum. */
-export function fenceEnumObjectValue(L: Lowerer, expr: ts.Identifier, sym: ts.Symbol): void {
+export function fenceEnumObjectValue(lowerer: Lowerer, expr: ts.Identifier, sym: ts.Symbol): void {
   if (!(sym.flags & ts.SymbolFlags.Enum)) return;
-  L.unsupported(
+  lowerer.unsupported(
     "SC1090",
     expr,
     `enum objects as values ('${expr.text}' — member reads like '${expr.text}.A' compile to constants; the object itself has no runtime representation)`,

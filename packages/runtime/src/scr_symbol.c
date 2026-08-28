@@ -55,7 +55,7 @@ ScrSym *scr_sym_new(ScrStr *desc) {
 
 /* ── the Symbol.for global registry ──────────────────────────────────── */
 
-static ScrSym *g_sym_registry = NULL;
+static SCR_TL ScrSym *g_sym_registry = NULL;
 
 static void scr_sym_registry_cleanup(void) {
   ScrSym *s = g_sym_registry;

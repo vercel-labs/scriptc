@@ -19,7 +19,14 @@ console.log(platform() === process.platform, EOL === "\n");
 // under tmpdir keeps the fixture cwd-independent.
 const scratch = join(tmpdir(), "scr-fixture-path-os.txt");
 writeFileSync(scratch, "stat me");
-console.log(statSync(scratch).isFile(), statSync(tmpdir()).isDirectory());
+const scratchStats = statSync(scratch);
+console.log(
+  scratchStats.isFile(),
+  scratchStats.blocks >= 0,
+  scratchStats.nlink >= 1,
+  scratchStats.atimeMs > 0,
+  statSync(tmpdir()).isDirectory(),
+);
 async function main(): Promise<void> {
   const text = await readFile(scratch, "utf8");
   console.log(text === "stat me");

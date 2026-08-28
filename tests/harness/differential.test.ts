@@ -227,7 +227,7 @@ function programInputs(file: string): string[] {
 // and the cwd). Only the SPAWN is skipped: the native side always runs live
 // and the comparison itself never changes. SCRIPTC_NO_CACHE=1 (or an unset
 // SCRIPTC_CACHE_DIR) disables the cache in both directions — no reads, no writes.
-// Storage shares the compile cache's root and its LRU sweep (see cc.ts).
+// Storage shares the compile cache's root and its LRU sweep (see native-toolchain.ts).
 const oracleDir =
   process.env["SCRIPTC_NO_CACHE"] !== "1" && process.env["SCRIPTC_CACHE_DIR"]
     ? join(process.env["SCRIPTC_CACHE_DIR"], "oracle")
@@ -264,16 +264,20 @@ function oracleKeyBase(): Promise<string> {
  * spawn Node live. VOLATILE-HOST programs ride the same exclusion:
  * os.networkInterfaces output changes under the harness's feet (macOS
  * rotates the awdl0/llw0 link-local address), so a cached Node verdict
- * goes stale against a live native read (observed with 1480). */
-function usesRealTime(inputs: string[]): boolean {
+ * goes stale against a live native read (observed with 1480). The platform
+ * certificate store is mutable host state too: a cached system-CA predicate
+ * must not outlive an administrator or keychain change. */
+function usesVolatileHostState(inputs: string[]): boolean {
   return inputs.some((f) =>
-    /set(Timeout|Interval)|Promise\.(race|any)|networkInterfaces/.test(readFileSync(f, "utf8")),
+    /set(Timeout|Interval)|Promise\.(race|any)|networkInterfaces|getCACertificates\s*\(\s*["']system["']/.test(
+      readFileSync(f, "utf8"),
+    ),
   );
 }
 
 async function runNode(file: string): Promise<RunResult> {
   let cachePath: string | null = null;
-  if (oracleDir !== null && !usesRealTime(programInputs(file))) {
+  if (oracleDir !== null && !usesVolatileHostState(programInputs(file))) {
     const h = createHash("sha256").update(await oracleKeyBase());
     for (const f of programInputs(file)) {
       h.update(f.slice(repoRoot.length)).update("\0").update(readFileSync(f)).update("\0");

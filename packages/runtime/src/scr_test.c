@@ -1,5 +1,5 @@
 /* node:test — the in-process test runner (linked only when the program
- * imports node:test; cc.ts gates on moduleUsesNodeTest like dgram/net).
+ * imports node:test; native-toolchain.ts gates on moduleUsesNodeTest like dgram/net).
  *
  * Registration (test/it/describe/suite/hooks) builds a tree under an
  * implicit root while the module bodies run: describe callbacks execute

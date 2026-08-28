@@ -1,6 +1,6 @@
 /* util.inspect over island `any` values — the one translation unit that
  * references BOTH the inspect engine (scr_inspect.c) and the island
- * (scr_island.c), so cc.ts links it exactly when a --dynamic build's IR
+ * (scr_island.c), so native-toolchain.ts links it exactly when a --dynamic build's IR
  * carries insp.* libCalls (each half alone stays independent: static
  * inspect builds never pull engine symbols, inspect-free dynamic builds
  * never pull the renderer).

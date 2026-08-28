@@ -41,13 +41,13 @@ import type { Lowerer } from "./lowerer.js";
 import { boundIdentifiersOf } from "./lowerer.js";
 import type { FileParts } from "./lower-modules.js";
 import { locOf, resolveImport } from "../program.js";
-import { F64, IrExpr, IrStmt, IrType, STRING } from "../../ir/nodes.js";
+import { F64, IrExpr, IrStmt, IrType, STRING } from "../../ir/ir.js";
 
 /** True when this module declaration produces NO runtime construct at all:
  * ambient (`declare namespace/module`, `declare global`, string-named
  * modules — .d.ts surface or user-file declares) or a non-instantiated
  * body (only type-world statements inside). */
-export function nsZeroRuntime(decl: ts.ModuleDeclaration): boolean {
+function nsZeroRuntime(decl: ts.ModuleDeclaration): boolean {
   if (isAmbientModuleDecl(decl)) return true;
   if (!ts.isIdentifier(decl.name)) return true; // string-named: ambient by grammar
   return nsTypeOnlyBody(decl);
@@ -55,7 +55,7 @@ export function nsZeroRuntime(decl: ts.ModuleDeclaration): boolean {
 
 /** Ambient module declaration: carries `declare` itself, sits in an
  * ambient ancestor, or is the `declare global` augmentation. */
-export function isAmbientModuleDecl(decl: ts.ModuleDeclaration): boolean {
+function isAmbientModuleDecl(decl: ts.ModuleDeclaration): boolean {
   if (decl.flags & ts.NodeFlags.Ambient) return true;
   for (let p: ts.Node | undefined = decl; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
     if (ts.isModuleDeclaration(p)) {
@@ -89,16 +89,16 @@ function nsTypeOnlyBody(decl: ts.ModuleDeclaration): boolean {
  * declaration's block flattened (the object exists once a block ran;
  * merged ambient declarations don't subtract), "typeOnly"/"ambient" when
  * none did. Null for non-namespace symbols. */
-export function nsSymbolRuntimeKind(L: Lowerer, sym: ts.Symbol): "instantiated" | "typeOnly" | "ambient" | null {
+function nsSymbolRuntimeKind(lowerer: Lowerer, sym: ts.Symbol): "instantiated" | "typeOnly" | "ambient" | null {
   if (!(sym.flags & (ts.SymbolFlags.ValueModule | ts.SymbolFlags.NamespaceModule))) return null;
   let sawTypeOnly = false;
   let sawNamespace = false;
-  for (const d of L.checker.declarationsOf(sym)) {
+  for (const d of lowerer.checker.declarationsOf(sym)) {
     if (!ts.isModuleDeclaration(d)) continue;
     sawNamespace = true;
     let body = d.body;
     while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
-    const kind = body !== undefined ? L.nsBlocks.get(body) : undefined;
+    const kind = body !== undefined ? lowerer.nsBlocks.get(body) : undefined;
     if (kind === "flattened") return "instantiated";
     if (kind === "typeOnly") sawTypeOnly = true;
   }
@@ -113,20 +113,20 @@ export function nsSymbolRuntimeKind(L: Lowerer, sym: ts.Symbol): "instantiated" 
  * collection lists, everything else joins the init body in source order.
  * Nested namespaces recurse; dotted declarations (`namespace A.B.C`)
  * descend to the innermost block. */
-export function collectNamespaceStmt(L: Lowerer, decl: ts.ModuleDeclaration, fp: FileParts): void {
+export function collectNamespaceStmt(lowerer: Lowerer, decl: ts.ModuleDeclaration, fp: FileParts): void {
   if (nsZeroRuntime(decl)) {
-    if (!isAmbientModuleDecl(decl)) registerTypeOnlyBlocks(L, decl);
+    if (!isAmbientModuleDecl(decl)) registerTypeOnlyBlocks(lowerer, decl);
     return;
   }
   let body = decl.body;
   while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
   if (body === undefined || !ts.isModuleBlock(body)) return; // bodyless non-ambient: tsc-rejected
-  L.nsBlocks.set(body, "flattened");
+  lowerer.nsBlocks.set(body, "flattened");
   for (const s of body.statements) {
     if (ts.isFunctionDeclaration(s)) fp.fnDecls.push(s);
     else if (ts.isClassDeclaration(s)) fp.classDecls.push(s);
     else if (ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s)) continue;
-    else if (ts.isModuleDeclaration(s)) collectNamespaceStmt(L, s, fp);
+    else if (ts.isModuleDeclaration(s)) collectNamespaceStmt(lowerer, s, fp);
     // Everything else — member variables, side-effecting statements,
     // import= aliases (lowerStmt handles them), enums (their own fence) —
     // runs in the init body at its source position.
@@ -134,13 +134,13 @@ export function collectNamespaceStmt(L: Lowerer, decl: ts.ModuleDeclaration, fp:
   }
 }
 
-function registerTypeOnlyBlocks(L: Lowerer, decl: ts.ModuleDeclaration): void {
+function registerTypeOnlyBlocks(lowerer: Lowerer, decl: ts.ModuleDeclaration): void {
   let body = decl.body;
   while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
   if (body === undefined || !ts.isModuleBlock(body)) return;
-  L.nsBlocks.set(body, "typeOnly");
+  lowerer.nsBlocks.set(body, "typeOnly");
   for (const s of body.statements) {
-    if (ts.isModuleDeclaration(s)) registerTypeOnlyBlocks(L, s);
+    if (ts.isModuleDeclaration(s)) registerTypeOnlyBlocks(lowerer, s);
   }
 }
 
@@ -181,8 +181,8 @@ export function nsPathPrefix(node: ts.Node, modifierDecl?: ts.Node): string {
  * non-instantiated one, whose only value members are import= aliases), or
  * null. The walk stops at class/function boundaries: a static member of a
  * class INSIDE a namespace is the class's business, not the namespace's. */
-export function nsBlockKindOfSymbol(L: Lowerer, sym: ts.Symbol): "flattened" | "typeOnly" | null {
-  for (const d of L.checker.declarationsOf(sym)) {
+function nsBlockKindOfSymbol(lowerer: Lowerer, sym: ts.Symbol): "flattened" | "typeOnly" | null {
+  for (const d of lowerer.checker.declarationsOf(sym)) {
     // TYPE declarations don't make a member a namespace VALUE: a class
     // static `C.B` whose name also carries `namespace C { export
     // interface B }` is the static's business — value references consult
@@ -194,7 +194,7 @@ export function nsBlockKindOfSymbol(L: Lowerer, sym: ts.Symbol): "flattened" | "
     if (ts.getCombinedModifierFlags(d as ts.Declaration) & ts.ModifierFlags.Ambient) continue;
     let blocked = false;
     for (let p: ts.Node | undefined = d.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
-      const kind = L.nsBlocks.get(p);
+      const kind = lowerer.nsBlocks.get(p);
       if (kind !== undefined) {
         if (!blocked) return kind;
         break;
@@ -219,23 +219,23 @@ export function nsBlockKindOfSymbol(L: Lowerer, sym: ts.Symbol): "flattened" | "
  * Builtin/stdlib module namespaces (string-named ambient modules in
  * .d.ts files) and npm packages answer null — their own chokepoints and
  * fences keep ownership. */
-export function moduleNsSourceFileOf(L: Lowerer, e: ts.Expression): ts.SourceFile | null {
+function moduleNsSourceFileOf(lowerer: Lowerer, e: ts.Expression): ts.SourceFile | null {
   let sym: ts.Symbol | undefined;
   if (ts.isIdentifier(e)) {
-    sym = L.checker.getSymbolAtLocation(e);
+    sym = lowerer.checker.getSymbolAtLocation(e);
   } else if (
     ts.isPropertyAccessExpression(e) &&
     e.questionDotToken === undefined &&
     ts.isIdentifier(e.name)
   ) {
-    sym = L.checker.getSymbolAtLocation(e.name);
+    sym = lowerer.checker.getSymbolAtLocation(e.name);
   }
   if (!sym) return null;
-  if (sym.flags & ts.SymbolFlags.Alias) sym = L.checker.getAliasedSymbol(sym);
-  for (const d of L.checker.declarationsOf(sym)) {
+  if (sym.flags & ts.SymbolFlags.Alias) sym = lowerer.checker.getAliasedSymbol(sym);
+  for (const d of lowerer.checker.declarationsOf(sym)) {
     if (
       sym.flags & ts.SymbolFlags.ValueModule &&
-      ts.isSourceFile(d) && !d.isDeclarationFile && L.fileTag.has(d)
+      ts.isSourceFile(d) && !d.isDeclarationFile && lowerer.fileTag.has(d)
     ) {
       return d;
     }
@@ -251,8 +251,8 @@ export function moduleNsSourceFileOf(L: Lowerer, e: ts.Expression): ts.SourceFil
         stmt.moduleSpecifier !== undefined &&
         ts.isStringLiteral(stmt.moduleSpecifier)
       ) {
-        const dep = resolveImport(L.program, d.getSourceFile(), stmt.moduleSpecifier.text);
-        if (dep && !dep.isDeclarationFile && L.fileTag.has(dep)) return dep;
+        const dep = resolveImport(lowerer.program, d.getSourceFile(), stmt.moduleSpecifier.text);
+        if (dep && !dep.isDeclarationFile && lowerer.fileTag.has(dep)) return dep;
       }
     }
   }
@@ -270,13 +270,13 @@ export function moduleNsSourceFileOf(L: Lowerer, e: ts.Expression): ts.SourceFil
  * reads are LIVE bindings in Node (the namespace object's properties
  * alias the exporter's storage), which is exactly what resolving to the
  * exporter's module global gives. */
-export function nsMemberIdentOf(L: Lowerer, access: ts.PropertyAccessExpression): ts.Identifier | null {
+export function nsMemberIdentOf(lowerer: Lowerer, access: ts.PropertyAccessExpression): ts.Identifier | null {
   if (access.questionDotToken !== undefined) return null;
   if (!ts.isIdentifier(access.name)) return null;
-  const memberSym = L.checker.getSymbolAtLocation(access.name);
+  const memberSym = lowerer.checker.getSymbolAtLocation(access.name);
   if (!memberSym) return null;
-  if (nsBlockKindOfSymbol(L, memberSym) !== null) return access.name;
-  if (moduleNsSourceFileOf(L, access.expression) !== null) return access.name;
+  if (nsBlockKindOfSymbol(lowerer, memberSym) !== null) return access.name;
+  if (moduleNsSourceFileOf(lowerer, access.expression) !== null) return access.name;
   return null;
 }
 
@@ -285,17 +285,17 @@ export function nsMemberIdentOf(L: Lowerer, access: ts.PropertyAccessExpression)
  * ModuleDeclaration outside the stdlib/@types surface), or null. Reads
  * through it compile to Node's ReferenceError naming the root — the
  * ambient namespace object never exists at runtime. */
-export function ambientNsRootOf(L: Lowerer, e: ts.Expression): ts.Identifier | null {
+export function ambientNsRootOf(lowerer: Lowerer, e: ts.Expression): ts.Identifier | null {
   let root: ts.Expression = e;
   while (ts.isPropertyAccessExpression(root) && root.questionDotToken === undefined) {
     root = root.expression;
   }
   if (!ts.isIdentifier(root)) return null;
-  let sym = L.checker.getSymbolAtLocation(root);
-  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = L.checker.getAliasedSymbol(sym);
+  let sym = lowerer.checker.getSymbolAtLocation(root);
+  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = lowerer.checker.getAliasedSymbol(sym);
   if (!sym || !(sym.flags & (ts.SymbolFlags.ValueModule | ts.SymbolFlags.NamespaceModule))) return null;
-  if (L.isStdlibSymbol(sym)) return null;
-  const decls = L.checker.declarationsOf(sym);
+  if (lowerer.isStdlibSymbol(sym)) return null;
+  const decls = lowerer.checker.declarationsOf(sym);
   if (decls.length === 0) return null;
   for (const d of decls) {
     // A namespace declaration, or the fundule/clazzdule merge partners
@@ -325,7 +325,7 @@ export function ambientNsRootOf(L: Lowerer, e: ts.Expression): ts.Identifier | n
  *     defined";
  *   - an ambient `declare function` nothing defines (the same erasure,
  *     ambientUndefinedFnSymbolOf);
- *   - a TRAP BINDING (L.trapBindings) — a binding whose own initializer
+ *   - a TRAP BINDING (lowerer.trapBindings) — a binding whose own initializer
  *     provably threw before producing a value, so module init unwound and
  *     no reference to it can ever execute (any lowering is sound there;
  *     the trap keeps the shape honest if reachability analysis is wrong).
@@ -339,7 +339,7 @@ export function ambientNsRootOf(L: Lowerer, e: ts.Expression): ts.Identifier | n
  * throw, typed by the use site — and never lower the arguments, exactly
  * the order Node dies in. Null for stdlib/@types roots (their own
  * chokepoints stand) and anything declared with a value. */
-export function ambientUndefVarRootOf(L: Lowerer, e: ts.Expression): ts.Identifier | null {
+export function ambientUndefVarRootOf(lowerer: Lowerer, e: ts.Expression): ts.Identifier | null {
   // PROBE resolution: every caller asks "is this chain ambient-rooted?"
   // and proceeds to its ordinary lowering on a null answer — so the
   // question must not carry resolution's side effects. Bare
@@ -351,8 +351,8 @@ export function ambientUndefVarRootOf(L: Lowerer, e: ts.Expression): ts.Identifi
   // covers exact FFI ownership checks encountered while walking the chain;
   // the ordinary lowering that follows a null answer re-resolves with full
   // effects at its own site.
-  const wasCollecting = L.collecting;
-  L.collecting = true;
+  const wasCollecting = lowerer.collecting;
+  lowerer.collecting = true;
   try {
     let root: ts.Expression = e;
     for (;;) {
@@ -374,10 +374,10 @@ export function ambientUndefVarRootOf(L: Lowerer, e: ts.Expression): ts.Identifi
         if (
           ts.isCallExpression(root) &&
           ts.isIdentifier(root.expression) &&
-          L.ffiImportsByName.has(root.expression.text)
+          lowerer.ffiImportsByName.has(root.expression.text)
         ) {
-          const symbol = L.resolveValueSymbol(root.expression);
-          if (symbol && L.ownsValidatedFfiSymbol(root.expression.text, symbol)) {
+          const symbol = lowerer.resolveValueSymbol(root.expression);
+          if (symbol && lowerer.ownsValidatedFfiSymbol(root.expression.text, symbol)) {
             // The manifest supplies this exact ambient declaration. Stop at
             // the call boundary so normal lowering can emit the native call
             // or its existing call-shape diagnostic.
@@ -398,12 +398,12 @@ export function ambientUndefVarRootOf(L: Lowerer, e: ts.Expression): ts.Identifi
       break;
     }
     if (!ts.isIdentifier(root)) return null;
-    const sym = L.resolveValueSymbol(root);
+    const sym = lowerer.resolveValueSymbol(root);
     if (!sym) return null;
-    if (L.trapBindings.has(sym)) return root;
-    if (L.isStdlibSymbol(sym)) return null;
-    if (ambientUndefinedFnSymbolOf(L, root) !== null) return root;
-    const decls = L.checker.declarationsOf(sym);
+    if (lowerer.trapBindings.has(sym)) return root;
+    if (lowerer.isStdlibSymbol(sym)) return null;
+    if (ambientUndefinedFnSymbolOf(lowerer, root) !== null) return root;
+    const decls = lowerer.checker.declarationsOf(sym);
     if (decls.length === 0) return null;
     for (const d of decls) {
       if (!ts.isVariableDeclaration(d) || d.initializer !== undefined) return null;
@@ -412,7 +412,7 @@ export function ambientUndefVarRootOf(L: Lowerer, e: ts.Expression): ts.Identifi
     }
     return root;
   } finally {
-    L.collecting = wasCollecting;
+    lowerer.collecting = wasCollecting;
   }
 }
 
@@ -439,14 +439,14 @@ export function ambientUndefVarRootOf(L: Lowerer, e: ts.Expression): ts.Identifi
  * skips the write forms the no-storage lowering already compiles (a
  * statement-position `x = <ambient-rooted chain>` IS the RHS root's
  * throw — lowerExprStatement never touches the target's storage). */
-export function trapDeclRootOf(L: Lowerer, decl: ts.VariableDeclaration): ts.Identifier | null {
+export function trapDeclRootOf(lowerer: Lowerer, decl: ts.VariableDeclaration): ts.Identifier | null {
   if (decl.initializer === undefined) return null;
-  const root = ambientUndefVarRootOf(L, decl.initializer);
+  const root = ambientUndefVarRootOf(lowerer, decl.initializer);
   if (root === null) return null;
   for (const nameNode of boundIdentifiersOf(decl.name)) {
-    const sym = L.checker.getSymbolAtLocation(nameNode);
-    if (sym && bindingEverWritten(L, sym, decl.getSourceFile())) {
-      const mapped = L.mapTypeOf(L.checker.getTypeOfSymbol(sym));
+    const sym = lowerer.checker.getSymbolAtLocation(nameNode);
+    if (sym && bindingEverWritten(lowerer, sym, decl.getSourceFile())) {
+      const mapped = lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(sym));
       if (mapped !== null && mapped.kind !== "void") return null;
     }
   }
@@ -469,10 +469,10 @@ export function trapDeclRootOf(L: Lowerer, decl: ts.VariableDeclaration): ts.Ide
  * taggedTemplatesWithTypeArguments1 shape, where the decline pushed the
  * initializer into an ordinary lowering that fences). ambientUndefVarRootOf
  * carries its own collect-guard, so the extra question stays a probe. */
-function bindingEverWritten(L: Lowerer, sym: ts.Symbol, sf: ts.SourceFile): boolean {
+function bindingEverWritten(lowerer: Lowerer, sym: ts.Symbol, sf: ts.SourceFile): boolean {
   const symText = sym.name;
   const namesSym = (e: ts.Node): boolean =>
-    ts.isIdentifier(e) && e.text === symText && L.checker.getSymbolAtLocation(e) === sym;
+    ts.isIdentifier(e) && e.text === symText && lowerer.checker.getSymbolAtLocation(e) === sym;
   const patternWrites = (target: ts.Node): boolean => {
     if (namesSym(target)) return true;
     let hit = false;
@@ -497,7 +497,7 @@ function bindingEverWritten(L: Lowerer, sym: ts.Symbol, sf: ts.SourceFile): bool
           let p: ts.Node = n.parent;
           while (ts.isParenthesizedExpression(p)) p = p.parent;
           if (!ts.isExpressionStatement(p)) return false;
-          return ambientUndefVarRootOf(L, n.right) !== null;
+          return ambientUndefVarRootOf(lowerer, n.right) !== null;
         };
         if (namesSym(lhs)) {
           if (!throwsBeforeTheWrite()) written = true;
@@ -529,10 +529,10 @@ function bindingEverWritten(L: Lowerer, sym: ts.Symbol, sf: ts.SourceFile): bool
  * type has no mapping (an `any`-typed member off a narrowed ambient), the
  * type the value flows INTO types the throw instead — sound because the
  * read never returns, so the typed dummy is never observed. */
-export function contextualUndefReadType(L: Lowerer, node: ts.Expression): IrType | null {
-  const ctx = L.checker.getContextualType(node);
-  const mapped = ctx ? L.mapTypeOf(ctx) : null;
-  if (mapped && mapped.kind !== "void" && !L.typeNamesUnregisteredClass(mapped)) return mapped;
+export function contextualUndefReadType(lowerer: Lowerer, node: ts.Expression): IrType | null {
+  const ctx = lowerer.checker.getContextualType(node);
+  const mapped = ctx ? lowerer.mapTypeOf(ctx) : null;
+  if (mapped && mapped.kind !== "void" && !lowerer.typeNamesUnregisteredClass(mapped)) return mapped;
   return null;
 }
 
@@ -542,12 +542,12 @@ export function contextualUndefReadType(L: Lowerer, node: ts.Expression): IrType
  * reads conformance tests are full of), null otherwise (the callers fall
  * through to their ordinary fences). The read always throws, so the typed
  * dummy is never observed. */
-export function ambientUndefReadType(L: Lowerer, node: ts.Node): IrType | null {
-  const declared = L.mapTypeOf(L.typeOf(node));
+export function ambientUndefReadType(lowerer: Lowerer, node: ts.Node): IrType | null {
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(node));
   // A type naming an UNREGISTERED class (an ambient class's instance —
   // nothing collected a shape) would make the emitter name a struct that
   // does not exist; the F64 dummy serves discarded positions instead.
-  if (declared && declared.kind !== "void" && !L.typeNamesUnregisteredClass(declared)) {
+  if (declared && declared.kind !== "void" && !lowerer.typeNamesUnregisteredClass(declared)) {
     return declared;
   }
   const p = node.parent;
@@ -565,12 +565,12 @@ export function ambientUndefReadType(L: Lowerer, node: ts.Node): IrType | null {
  * stance. Null for stdlib/@types surfaces (their own chokepoints stand),
  * for overload signatures (an implementation exists), and for anything
  * declared in a .d.ts. */
-export function ambientUndefinedFnSymbolOf(L: Lowerer, ident: ts.Identifier): ts.Symbol | null {
-  const sym = L.resolveValueSymbol(ident);
+export function ambientUndefinedFnSymbolOf(lowerer: Lowerer, ident: ts.Identifier): ts.Symbol | null {
+  const sym = lowerer.resolveValueSymbol(ident);
   if (!sym || !(sym.flags & ts.SymbolFlags.Function)) return null;
-  if (L.isStdlibSymbol(sym)) return null;
+  if (lowerer.isStdlibSymbol(sym)) return null;
   let sawFn = false;
-  for (const d of L.checker.declarationsOf(sym)) {
+  for (const d of lowerer.checker.declarationsOf(sym)) {
     if (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d)) continue; // type-world merge partners
     if (ts.isFunctionDeclaration(d)) {
       if (d.body) return null; // an implementation exists — not ambient-undefined
@@ -587,7 +587,7 @@ export function ambientUndefinedFnSymbolOf(L: Lowerer, ident: ts.Identifier): ts
 /** Node's ReferenceError at an ambient namespace access — the undefRead
  * libCall the ambient `declare const` path already uses, typed by the use
  * site (it always throws; the typed dummy is abandoned by the unwind). */
-export function nsUndefRead(L: Lowerer, rootName: string, node: ts.Node, type: IrType): IrExpr {
+export function nsUndefRead(lowerer: Lowerer, rootName: string, node: ts.Node, type: IrType): IrExpr {
   const loc = locOf(node);
   return {
     kind: "libCall",
@@ -611,9 +611,9 @@ function initExecutingPosition(node: ts.Node): boolean {
   return true;
 }
 
-function earliestSameFileDeclStart(L: Lowerer, sym: ts.Symbol, sf: ts.SourceFile): number {
+function earliestSameFileDeclStart(lowerer: Lowerer, sym: ts.Symbol, sf: ts.SourceFile): number {
   let earliest = Infinity;
-  for (const d of L.checker.declarationsOf(sym)) {
+  for (const d of lowerer.checker.declarationsOf(sym)) {
     if (d.getSourceFile() === sf) earliest = Math.min(earliest, d.getStart());
   }
   return earliest;
@@ -623,17 +623,17 @@ function earliestSameFileDeclStart(L: Lowerer, sym: ts.Symbol, sf: ts.SourceFile
  * use): the alias statement captures its target's CURRENT value, so an
  * init-position use above the alias — or an alias above its target — would
  * observe what Node leaves uninitialized. Fences instead of diverging. */
-export function fenceEarlyAliasUse(L: Lowerer, ident: ts.Identifier, refNode: ts.Node): void {
-  const sym = L.checker.getSymbolAtLocation(ident);
+export function fenceEarlyAliasUse(lowerer: Lowerer, ident: ts.Identifier, refNode: ts.Node): void {
+  const sym = lowerer.checker.getSymbolAtLocation(ident);
   if (!sym || !(sym.flags & ts.SymbolFlags.Alias)) return;
-  const aliasDecl = L.checker.declarationsOf(sym).find(ts.isImportEqualsDeclaration);
+  const aliasDecl = lowerer.checker.declarationsOf(sym).find(ts.isImportEqualsDeclaration);
   if (!aliasDecl || ts.isExternalModuleReference(aliasDecl.moduleReference)) return;
   if (!initExecutingPosition(refNode)) return;
   const sf = refNode.getSourceFile();
   if (aliasDecl.getSourceFile() !== sf) return; // cross-file: module init order applies
   const aliasStart = aliasDecl.getStart();
   if (refNode.getStart() < aliasStart) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       refNode,
       `reading '${ident.text}' above its \`import ${ident.text} = ...\` alias (Node binds the alias at its statement — this read would observe an uninitialized binding; move it below the alias)`,
@@ -642,10 +642,10 @@ export function fenceEarlyAliasUse(L: Lowerer, ident: ts.Identifier, refNode: ts
   // The alias itself must run AFTER its target exists: a namespace target
   // needs a contributing block above the alias, a value target its
   // declaration.
-  const target = L.checker.getAliasedSymbol(sym);
-  const targetStart = earliestSameFileDeclStart(L, target, sf);
+  const target = lowerer.checker.getAliasedSymbol(sym);
+  const targetStart = earliestSameFileDeclStart(lowerer, target, sf);
   if (targetStart !== Infinity && aliasStart < targetStart) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       refNode,
       `the \`import ${ident.text} = ...\` alias above its target's declaration (Node binds the alias at its statement, when the target is still uninitialized; move the alias below the target)`,
@@ -663,16 +663,16 @@ export function fenceEarlyAliasUse(L: Lowerer, ident: ts.Identifier, refNode: ts
  * the compiler already takes for top-level consts read through early
  * calls. */
 export function fenceEarlyNsMemberRef(
-  L: Lowerer,
+  lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
   memberSym: ts.Symbol,
 ): void {
   if (!initExecutingPosition(access)) return;
   const sf = access.getSourceFile();
   const refStart = access.getStart();
-  const memberStart = earliestSameFileDeclStart(L, memberSym, sf);
+  const memberStart = earliestSameFileDeclStart(lowerer, memberSym, sf);
   if (memberStart !== Infinity && refStart < memberStart) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       access,
       `reading namespace member '${access.name.text}' above its declaration (Node evaluates namespace bodies in source order — this read would observe an uninitialized binding; move it below the declaring block)`,
@@ -682,11 +682,11 @@ export function fenceEarlyNsMemberRef(
   // `import a = A`): each captures its target at ITS statement.
   for (let e: ts.Expression = access.expression; ; ) {
     if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) {
-      fenceEarlyAliasUse(L, e.name, access);
+      fenceEarlyAliasUse(lowerer, e.name, access);
       e = e.expression;
       continue;
     }
-    if (ts.isIdentifier(e)) fenceEarlyAliasUse(L, e, access);
+    if (ts.isIdentifier(e)) fenceEarlyAliasUse(lowerer, e, access);
     break;
   }
 }
@@ -705,19 +705,19 @@ export function fenceEarlyNsMemberRef(
  * machinery carries its own guards. Called from resolveValueSymbol with
  * the PRE-alias symbol; property NAMES (qualified reads — runtime
  * property lookups, always fine) never reach it. */
-export function fenceCrossBlockNsRef(L: Lowerer, ident: ts.Identifier, symbol: ts.Symbol): void {
-  if (L.nsBlocks.size === 0 || L.collecting) return;
+export function fenceCrossBlockNsRef(lowerer: Lowerer, ident: ts.Identifier, symbol: ts.Symbol): void {
+  if (lowerer.nsBlocks.size === 0 || lowerer.collecting) return;
   if (symbol.flags & ts.SymbolFlags.Alias) return;
   const p = ident.parent;
   if (p !== undefined && ts.isPropertyAccessExpression(p) && p.name === ident) return;
   // The registered blocks enclosing the REFERENCE, innermost first.
   const refBlocks: ts.Node[] = [];
   for (let q: ts.Node | undefined = ident.parent; q !== undefined && !ts.isSourceFile(q); q = q.parent) {
-    if (L.nsBlocks.has(q)) refBlocks.push(q);
+    if (lowerer.nsBlocks.has(q)) refBlocks.push(q);
   }
-  for (const d of L.checker.declarationsOf(symbol)) {
+  for (const d of lowerer.checker.declarationsOf(symbol)) {
     for (let q: ts.Node | undefined = d.parent; q !== undefined && !ts.isSourceFile(q); q = q.parent) {
-      if (!L.nsBlocks.has(q)) continue;
+      if (!lowerer.nsBlocks.has(q)) continue;
       // Declared in a registered block: fine when that block encloses the
       // reference too (same block, or an enclosing namespace's block).
       if (refBlocks.includes(q)) return;
@@ -725,7 +725,7 @@ export function fenceCrossBlockNsRef(L: Lowerer, ident: ts.Identifier, symbol: t
         const m = q.parent;
         return m !== undefined && ts.isModuleDeclaration(m) && ts.isIdentifier(m.name) ? m.name.text : "N";
       })();
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         ident,
         `the bare reference to '${ident.text}' from a different block of the merged namespace (Node's TypeScript transform does not bind exported members across namespace blocks — it throws ReferenceError where tsc's emit would qualify; write ${nsName}.${ident.text})`,
@@ -740,15 +740,15 @@ export function fenceCrossBlockNsRef(L: Lowerer, ident: ts.Identifier, symbol: t
  * to consts/functions/classes through the qualifier). Null when `access`
  * is not a lowered-namespace member at all; a member whose declaration
  * never registered storage takes the blocked-binding cascade. */
-export function nsWritableTarget(L: Lowerer, access: ts.PropertyAccessExpression): { id: string; type: IrType } | null {
-  const nsMember = nsMemberIdentOf(L, access);
+export function nsWritableTarget(lowerer: Lowerer, access: ts.PropertyAccessExpression): { id: string; type: IrType } | null {
+  const nsMember = nsMemberIdentOf(lowerer, access);
   if (!nsMember) return null;
-  const memberSym = L.checker.getSymbolAtLocation(nsMember);
-  if (memberSym) fenceEarlyNsMemberRef(L, access, memberSym);
-  const resolved = L.resolveValueSymbol(nsMember);
-  const g = resolved ? L.globalsBySymbol.get(resolved) : undefined;
+  const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
+  if (memberSym) fenceEarlyNsMemberRef(lowerer, access, memberSym);
+  const resolved = lowerer.resolveValueSymbol(nsMember);
+  const g = resolved ? lowerer.globalsBySymbol.get(resolved) : undefined;
   if (!g) {
-    L.rejectUnresolved(nsMember, `assignment to namespace member '${nsMember.text}' (not a writable module global)`);
+    lowerer.rejectUnresolved(nsMember, `assignment to namespace member '${nsMember.text}' (not a writable module global)`);
   }
   return { id: g.id, type: g.type };
 }
@@ -763,17 +763,17 @@ export function nsWritableTarget(L: Lowerer, access: ts.PropertyAccessExpression
  * collection registered the alias its own const global (keyed by the
  * pre-alias symbol — resolveValueSymbol stops there) and this statement
  * assigns it from the target's storage, exactly when Node does. */
-export function lowerImportEquals(L: Lowerer, stmt: ts.ImportEqualsDeclaration): IrStmt | null {
+export function lowerImportEquals(lowerer: Lowerer, stmt: ts.ImportEqualsDeclaration): IrStmt | null {
   if (stmt.isTypeOnly) return null;
   if (ts.isExternalModuleReference(stmt.moduleReference)) {
-    L.unsupported("SC1013", stmt, "import = require(...) assignments");
+    lowerer.unsupported("SC1013", stmt, "import = require(...) assignments");
   }
   // A BARE-identifier entity target (`import g = f` inside a block):
   // Node emits `var g = f` — the same cross-block bare-reference hole as
   // any other bare use; the shared fence applies at the alias statement.
   if (ts.isIdentifier(stmt.moduleReference)) {
-    const refSym = L.checker.getSymbolAtLocation(stmt.moduleReference);
-    if (refSym) fenceCrossBlockNsRef(L, stmt.moduleReference, refSym);
+    const refSym = lowerer.checker.getSymbolAtLocation(stmt.moduleReference);
+    if (refSym) fenceCrossBlockNsRef(lowerer, stmt.moduleReference, refSym);
   }
   // Node's transform ALWAYS emits `var x = <entity>` — it never elides
   // type-only aliases the way tsc's emit does — so an alias whose entity
@@ -785,32 +785,32 @@ export function lowerImportEquals(L: Lowerer, stmt: ts.ImportEqualsDeclaration):
     let root: ts.Node = stmt.moduleReference;
     while (ts.isQualifiedName(root)) root = root.left;
     if (ts.isIdentifier(root)) {
-      let rootSym = L.checker.getSymbolAtLocation(root);
+      let rootSym = lowerer.checker.getSymbolAtLocation(root);
       if (rootSym && rootSym.flags & ts.SymbolFlags.Alias) {
-        rootSym = L.checker.getAliasedSymbol(rootSym);
+        rootSym = lowerer.checker.getAliasedSymbol(rootSym);
       }
-      const kind = rootSym ? nsSymbolRuntimeKind(L, rootSym) : null;
+      const kind = rootSym ? nsSymbolRuntimeKind(lowerer, rootSym) : null;
       if (kind === "typeOnly" || kind === "ambient") {
         const loc = locOf(stmt);
         return {
           kind: "exprStmt",
-          expr: nsUndefRead(L, root.text, stmt, F64),
+          expr: nsUndefRead(lowerer, root.text, stmt, F64),
           loc,
         };
       }
     }
   }
-  const nameSym = L.checker.getSymbolAtLocation(stmt.name);
-  const aliasG = nameSym ? L.globalsBySymbol.get(nameSym) : undefined;
+  const nameSym = lowerer.checker.getSymbolAtLocation(stmt.name);
+  const aliasG = nameSym ? lowerer.globalsBySymbol.get(nameSym) : undefined;
   if (nameSym && aliasG) {
     // The snapshot assignment. The target is a mutable binding with its
     // own module global (a namespace `export var` member, a top-level
     // var reached through an alias chain); a target whose declaration
     // never registered storage takes the blocked-binding cascade.
-    const target = L.checker.getAliasedSymbol(nameSym);
-    const targetG = L.globalsBySymbol.get(target);
+    const target = lowerer.checker.getAliasedSymbol(nameSym);
+    const targetG = lowerer.globalsBySymbol.get(target);
     if (!targetG) {
-      L.rejectUnresolvedSymbol(
+      lowerer.rejectUnresolvedSymbol(
         target,
         stmt.name.text,
         stmt.name,
@@ -834,33 +834,33 @@ export function lowerImportEquals(L: Lowerer, stmt: ts.ImportEqualsDeclaration):
  * ReferenceError instead when the use site's type maps (the object never
  * exists at runtime). Returns null when `ident` is not a namespace
  * reference at all. */
-export function lowerNsIdentifierValue(L: Lowerer, ident: ts.Identifier): IrExpr | null {
-  const sym = L.resolveValueSymbol(ident);
+export function lowerNsIdentifierValue(lowerer: Lowerer, ident: ts.Identifier): IrExpr | null {
+  const sym = lowerer.resolveValueSymbol(ident);
   if (!sym || !(sym.flags & (ts.SymbolFlags.ValueModule | ts.SymbolFlags.NamespaceModule))) {
     return null;
   }
   if (sym.flags & (ts.SymbolFlags.Class | ts.SymbolFlags.Function | ts.SymbolFlags.RegularEnum | ts.SymbolFlags.ConstEnum | ts.SymbolFlags.Variable)) {
     return null; // merged with a value declaration — its own paths and fences apply
   }
-  const ambientRoot = ambientNsRootOf(L, ident);
+  const ambientRoot = ambientNsRootOf(lowerer, ident);
   if (ambientRoot !== null) {
-    const t = ambientUndefReadType(L, ident);
-    if (t) return nsUndefRead(L, ambientRoot.text, ident, t);
+    const t = ambientUndefReadType(lowerer, ident);
+    if (t) return nsUndefRead(lowerer, ambientRoot.text, ident, t);
   }
-  if (L.isStdlibSymbol(sym)) return null; // stdlib namespaces keep their chokepoints
+  if (lowerer.isStdlibSymbol(sym)) return null; // stdlib namespaces keep their chokepoints
   // A MODULE namespace object as a first-class value (`import * as ns`
   // passed/stored/iterated): member accesses resolve statically, but the
   // object itself has no runtime representation — Node's frozen,
   // alphabetically-keyed namespace object is not materialized. Named
   // residual of the SC1013 lowering.
-  if (moduleNsSourceFileOf(L, ident) !== null) {
-    L.unsupported(
+  if (moduleNsSourceFileOf(lowerer, ident) !== null) {
+    lowerer.unsupported(
       "SC1013",
       ident,
       `module namespace objects as first-class values (access '${ident.text}' members directly: ${ident.text}.<member>)`,
     );
   }
-  L.unsupported(
+  lowerer.unsupported(
     "SC1090",
     ident,
     `namespace objects as first-class values (access '${ident.text}' members directly: ${ident.text}.<member>)`,

@@ -24,6 +24,12 @@ console.log(c1.inner.keep);
 const a2: A = { ...extra1, b: "override" };
 console.log(a2.a, a2.b);
 
+// A shape-changing static cast is erased in IR. The same-shape clone
+// optimization must inspect that lowered value and decline to this width
+// copy instead of cloning it as the asserted narrower shape.
+const a3: A = { ...(extra1 as A), b: "cast override" };
+console.log(a3.a, a3.b);
+
 // The optional-source merge idiom keeps its present-test semantics next
 // to the new lifts.
 type Opts = { mode?: string };

@@ -1,0 +1,578 @@
+import { createHash } from "node:crypto";
+import { chmod, copyFile, mkdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import type { FrontendInputSnapshot } from "../frontend/input-tracker.js";
+import { frontendInputsStillMatch, validFrontendInputSnapshot } from "../frontend/input-tracker.js";
+import { compilerReleaseVersion } from "../library/sidecar.js";
+import { nativeArtifactDependenciesStillMatch, type NativeArtifactDependency } from "../backend/native-toolchain.js";
+import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
+import { compilerImplementationDependenciesStillMatch, compilerImplementationRoot } from "../library/compiler-self-identity.js";
+import {
+  cacheKey as sharedCacheKey,
+  digest,
+  frontendOutputExclusions,
+  installBytes,
+  outputPaths,
+  readCachedFile,
+  stampIntegrity as sharedStampIntegrity,
+  stampPath as sharedStampPath,
+  validNativeFeatures as validSharedNativeFeatures,
+} from "../library/cache-primitives.js";
+
+interface CachedExecutableFile {
+  name: string;
+  digest: string;
+}
+
+export interface EarlyExecutableNativeFeatures {
+  backend: "c" | "llvm";
+  /** Omitted is the historical release posture. */
+  optimization?: "dev";
+  llvmRefusal?: string;
+  dynamic: boolean;
+  regex: boolean;
+  copying: boolean;
+  textDecoderLegacy: boolean;
+  fileHandle: boolean;
+  fetch: boolean;
+  netIsland: boolean;
+  zlib: boolean;
+  assert: boolean;
+  inspect: boolean;
+  dynInvoke: boolean;
+  dc: boolean;
+  dynAsync: boolean;
+  events: boolean;
+  emitter: boolean;
+  symbol: boolean;
+  searchParams: boolean;
+  qs: boolean;
+  parseArgs: boolean;
+  stream: boolean;
+  net: boolean;
+  http: boolean;
+  http2: boolean;
+  dgram: boolean;
+  watch: boolean;
+  foreignFfi: boolean;
+  nodeTest: boolean;
+  tls: boolean;
+  tlsCa: boolean;
+}
+
+interface EarlyExecutableCacheStamp {
+  version: 1;
+  key: string;
+  frontend: FrontendInputSnapshot;
+  files: {
+    translationUnit: CachedExecutableFile;
+    ir: CachedExecutableFile | null;
+    executable: CachedExecutableFile | null;
+  };
+  nativeDependencies: NativeArtifactDependency[] | null;
+  native: EarlyExecutableNativeFeatures;
+  integrity: string;
+}
+
+export interface EarlyExecutableCacheOptions {
+  entryPath: string;
+  outDir: string;
+  outPath: string;
+  emitIr: boolean;
+  sanitize: boolean;
+  dynamic: boolean;
+  backend: "auto" | "c" | "llvm";
+  /** Omitted is the historical release posture and preserves v1 keys. */
+  optimization?: "dev";
+  npmStatic: readonly string[] | "auto" | null;
+  /** Raw manifest identity: path and bytes. Native archives remain under the
+   * stricter native cache's independent dependency validation. */
+  ffiProfile: { path: string; bytes: Uint8Array } | null;
+  target: string;
+  compiler: string[];
+  nativeEnvironment: string;
+  nodeVersion: string;
+  implementation: string;
+  implementationDependencies: CompilerImplementationDependency[];
+}
+
+export type EarlyExecutableRouteOptions = Omit<
+  EarlyExecutableCacheOptions,
+  "implementation" | "implementationDependencies"
+>;
+
+interface EarlyExecutableRouteStamp {
+  version: 1;
+  key: string;
+  implementation: string;
+  integrity: string;
+}
+
+interface EarlyExecutableImplementationProof {
+  version: 1;
+  implementation: string;
+  dependencies: CompilerImplementationDependency[];
+  integrity: string;
+}
+
+export interface EarlyExecutableCacheHit {
+  cPath: string;
+  irPath?: string;
+  /** True when the final executable was restored after native dependencies
+   * validated. False restores only frontend artifacts and must call compileC. */
+  executableRestored: boolean;
+  native: EarlyExecutableNativeFeatures;
+  frontend: FrontendInputSnapshot;
+}
+
+export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
+  nativeDependencies?: NativeArtifactDependency[];
+}
+
+const BOOLEAN_NATIVE_KEYS = [
+  "dynamic",
+  "regex",
+  "copying",
+  "textDecoderLegacy",
+  "fileHandle",
+  "fetch",
+  "netIsland",
+  "zlib",
+  "assert",
+  "inspect",
+  "dynInvoke",
+  "dc",
+  "dynAsync",
+  "events",
+  "emitter",
+  "symbol",
+  "searchParams",
+  "qs",
+  "parseArgs",
+  "stream",
+  "net",
+  "http",
+  "http2",
+  "dgram",
+  "watch",
+  "foreignFfi",
+  "nodeTest",
+  "tls",
+  "tlsCa",
+] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
+
+function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {
+  return validSharedNativeFeatures<EarlyExecutableNativeFeatures>(
+    value,
+    BOOLEAN_NATIVE_KEYS,
+    (native) =>
+      (native.optimization === undefined || native.optimization === "dev") &&
+      (native.llvmRefusal === undefined || typeof native.llvmRefusal === "string"),
+  );
+}
+
+function cacheKey(options: EarlyExecutableCacheOptions): string {
+  const ffiParts: (string | Uint8Array)[] = options.ffiProfile === null
+    ? ["<ffi-off>"]
+    : [resolve(options.ffiProfile.path), options.ffiProfile.bytes];
+  return sharedCacheKey("early-executable-v1", [
+    resolve(options.entryPath),
+    resolve(options.outDir),
+    resolve(options.outPath),
+    options.emitIr ? "emit-ir" : "no-ir",
+    options.sanitize ? "sanitize" : "plain",
+    options.dynamic ? "dynamic" : "static",
+    options.backend,
+    ...(options.optimization === "dev" ? ["optimization-dev"] : []),
+    options.npmStatic === null
+      ? "<npm-static-off>"
+      : options.npmStatic === "auto"
+        ? "<npm-static-auto>"
+        : JSON.stringify(options.npmStatic),
+    options.target,
+    options.compiler.join("\x1f"),
+    options.nativeEnvironment,
+    options.nodeVersion,
+    options.implementation,
+    ...ffiParts,
+  ]);
+}
+
+function routeKey(options: EarlyExecutableRouteOptions): string {
+  const hash = createHash("sha256")
+    .update("early-executable-route-v1\0")
+    .update(compilerReleaseVersion()).update("\0")
+    .update(compilerImplementationRoot()).update("\0")
+    .update(resolve(options.entryPath)).update("\0")
+    .update(resolve(options.outDir)).update("\0")
+    .update(resolve(options.outPath)).update("\0")
+    .update(options.emitIr ? "emit-ir" : "no-ir").update("\0")
+    .update(options.sanitize ? "sanitize" : "plain").update("\0")
+    .update(options.dynamic ? "dynamic" : "static").update("\0")
+    .update(options.backend).update("\0");
+  if (options.optimization === "dev") hash.update("optimization-dev\0");
+  hash
+    .update(options.npmStatic === null
+      ? "<npm-static-off>"
+      : options.npmStatic === "auto"
+        ? "<npm-static-auto>"
+        : JSON.stringify(options.npmStatic)).update("\0")
+    .update(options.target).update("\0")
+    .update(options.compiler.join("\x1f")).update("\0")
+    .update(options.nativeEnvironment).update("\0")
+    .update(options.nodeVersion).update("\0");
+  if (options.ffiProfile === null) {
+    hash.update("<ffi-off>");
+  } else {
+    hash
+      .update(resolve(options.ffiProfile.path)).update("\0")
+      .update(options.ffiProfile.bytes);
+  }
+  return hash.digest("hex");
+}
+
+function routePath(root: string, options: EarlyExecutableRouteOptions): string {
+  return join(root, "early-exe-route", routeKey(options));
+}
+
+function routeIntegrity(stamp: Omit<EarlyExecutableRouteStamp, "integrity">): string {
+  return createHash("sha256")
+    .update("early-executable-route-stamp-v1\0")
+    .update(JSON.stringify(stamp))
+    .digest("hex");
+}
+
+function implementationProofPath(root: string, implementation: string): string {
+  const install = createHash("sha256")
+    .update("early-executable-install-v1\0")
+    .update(compilerImplementationRoot())
+    .digest("hex");
+  return join(root, "early-exe-implementation", install, implementation);
+}
+
+function implementationProofIntegrity(
+  proof: Omit<EarlyExecutableImplementationProof, "integrity">,
+): string {
+  return createHash("sha256")
+    .update("early-executable-implementation-proof-v1\0")
+    .update(JSON.stringify(proof))
+    .digest("hex");
+}
+
+async function installCacheMetadata(source: string, destination: string): Promise<void> {
+  await rename(source, destination).catch(async () => {
+    // Windows does not replace an existing destination with rename(). Route
+    // and implementation-proof files are republished on every full compile,
+    // so use the same replacement fallback as the payload cache below.
+    await rm(destination, { force: true });
+    await rename(source, destination);
+  });
+}
+
+function stampPath(root: string, options: EarlyExecutableCacheOptions): string {
+  return sharedStampPath(root, "early-exe", cacheKey(options));
+}
+
+function stampIntegrity(stamp: Omit<EarlyExecutableCacheStamp, "integrity">): string {
+  return sharedStampIntegrity("early-executable-stamp-v1", stamp);
+}
+
+function executableFrontendOutputExclusions(
+  options: EarlyExecutableCacheOptions,
+  backend: "c" | "llvm",
+): ReturnType<typeof frontendOutputExclusions> {
+  return frontendOutputExclusions(options, backend, "", [options.outPath]);
+}
+
+async function fileMatches(
+  destination: string,
+  expectedDigest: string,
+  expectedMode?: number,
+): Promise<boolean> {
+  try {
+    if (expectedMode !== undefined) {
+      const info = await stat(destination);
+      if (!info.isFile() || (info.mode & 0o777) !== expectedMode) return false;
+    }
+    return digest(await readFile(destination)) === expectedDigest;
+  } catch {
+    return false;
+  }
+}
+
+async function installExecutable(bytes: Uint8Array, destination: string): Promise<void> {
+  await mkdir(dirname(destination), { recursive: true });
+  const tmp = join(
+    dirname(destination),
+    `.scriptc-exe-bin-${process.pid}-${Math.random().toString(36).slice(2)}`,
+  );
+  try {
+    await writeFile(tmp, bytes, { mode: 0o600 });
+    await chmod(tmp, 0o777 & ~process.umask());
+    await rename(tmp, destination);
+  } finally {
+    await rm(tmp, { force: true }).catch(() => undefined);
+  }
+}
+
+export async function readEarlyExecutableCache(
+  root: string | null,
+  options: EarlyExecutableCacheOptions,
+): Promise<EarlyExecutableCacheHit | null> {
+  if (root === null) return null;
+  const path = stampPath(root, options);
+  try {
+    const stamp = JSON.parse(await readFile(path, "utf8")) as EarlyExecutableCacheStamp;
+    const { integrity, ...unsigned } = stamp;
+    if (
+      stamp.version !== 1 || stamp.key !== cacheKey(options) ||
+      !validFrontendInputSnapshot(stamp.frontend) || !validNativeFeatures(stamp.native) ||
+      stamp.files?.translationUnit?.name !== "program.tu" ||
+      !/^[0-9a-f]{64}$/.test(stamp.files.translationUnit.digest) ||
+      (stamp.files.ir !== null && (
+        stamp.files.ir?.name !== "program.ir.json" ||
+        !/^[0-9a-f]{64}$/.test(stamp.files.ir.digest)
+      )) ||
+      (stamp.files.executable !== null && (
+        stamp.files.executable?.name !== "program.bin" ||
+        !/^[0-9a-f]{64}$/.test(stamp.files.executable.digest)
+      )) ||
+      (stamp.files.executable === null) !== (stamp.nativeDependencies === null) ||
+      (stamp.nativeDependencies !== null && !Array.isArray(stamp.nativeDependencies)) ||
+      (stamp.files.ir !== null) !== options.emitIr ||
+      stampIntegrity(unsigned) !== integrity ||
+      !frontendInputsStillMatch(
+        stamp.frontend,
+        executableFrontendOutputExclusions(options, stamp.native.backend),
+      )
+    ) return null;
+
+    const directory = dirname(path);
+    const [translationUnit, ir, executable] = await Promise.all([
+      readCachedFile(
+        join(directory, stamp.files.translationUnit.name),
+        stamp.files.translationUnit.digest,
+      ),
+      stamp.files.ir === null
+        ? Promise.resolve(null)
+        : readCachedFile(join(directory, stamp.files.ir.name), stamp.files.ir.digest),
+      stamp.files.executable === null
+        ? Promise.resolve(null)
+        : readCachedFile(
+            join(directory, stamp.files.executable.name),
+            stamp.files.executable.digest,
+          ),
+    ]);
+    if (
+      translationUnit === null ||
+      stamp.files.ir !== null && ir === null ||
+      stamp.files.executable !== null && executable === null
+    ) return null;
+
+    // Validate the native proof before restoring frontend artifacts: replacing
+    // a TU can update its output directory metadata, which is itself part of
+    // compileC's same-output dependency snapshot.
+    let executableRestored =
+      executable !== null && stamp.nativeDependencies !== null &&
+      await nativeArtifactDependenciesStillMatch(stamp.nativeDependencies) &&
+      // Recheck after hashing every dependency: a concurrent tool/runtime
+      // update must not win the window immediately before installation.
+      await nativeArtifactDependenciesStillMatch(stamp.nativeDependencies);
+    const paths = outputPaths(options, stamp.native.backend);
+    if (!(await fileMatches(paths.cPath, stamp.files.translationUnit.digest))) {
+      await installBytes(translationUnit, paths.cPath);
+    }
+    await rm(paths.staleCPath, { force: true });
+    if (
+      ir !== null && stamp.files.ir !== null &&
+      !(await fileMatches(paths.irPath, stamp.files.ir.digest))
+    ) await installBytes(ir, paths.irPath);
+    if (executableRestored) {
+      try {
+        const expectedMode = 0o777 & ~process.umask();
+        if (!(await fileMatches(options.outPath, stamp.files.executable!.digest, expectedMode))) {
+          await installExecutable(executable!, options.outPath);
+        }
+      } catch {
+        executableRestored = false;
+      }
+    }
+    const now = new Date();
+    await Promise.all([
+      path,
+      join(directory, stamp.files.translationUnit.name),
+      ...(stamp.files.ir === null ? [] : [join(directory, stamp.files.ir.name)]),
+      ...(stamp.files.executable === null ? [] : [join(directory, stamp.files.executable.name)]),
+    ].map((cachePath) => utimes(cachePath, now, now).catch(() => undefined)));
+    return {
+      cPath: paths.cPath,
+      native: stamp.native,
+      executableRestored,
+      frontend: stamp.frontend,
+      ...(ir === null ? {} : { irPath: paths.irPath }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Follow the exact-invocation route without hashing/importing the complete
+ * compiler package. The full compiler publishes a content digest plus a
+ * metadata replay proof; any implementation change turns this into a miss. */
+export async function readRoutedExecutableCache(
+  root: string | null,
+  options: EarlyExecutableRouteOptions,
+): Promise<EarlyExecutableCacheHit | null> {
+  if (root === null) return null;
+  try {
+    const routeFile = routePath(root, options);
+    const route = JSON.parse(
+      await readFile(routeFile, "utf8"),
+    ) as EarlyExecutableRouteStamp;
+    const { integrity, ...unsigned } = route;
+    if (
+      route.version !== 1 ||
+      !/^[0-9a-f]{64}$/.test(route.key) ||
+      !/^[0-9a-f]{64}$/.test(route.implementation) ||
+      routeIntegrity(unsigned) !== integrity
+    ) return null;
+    const proofFile = implementationProofPath(root, route.implementation);
+    const proof = JSON.parse(await readFile(proofFile, "utf8")) as EarlyExecutableImplementationProof;
+    const { integrity: proofIntegrity, ...proofUnsigned } = proof;
+    if (
+      proof.version !== 1 || proof.implementation !== route.implementation ||
+      !Array.isArray(proof.dependencies) ||
+      implementationProofIntegrity(proofUnsigned) !== proofIntegrity ||
+      !(await compilerImplementationDependenciesStillMatch(proof.dependencies))
+    ) return null;
+    const complete: EarlyExecutableCacheOptions = {
+      ...options,
+      implementation: route.implementation,
+      implementationDependencies: proof.dependencies,
+    };
+    if (cacheKey(complete) !== route.key) return null;
+    const hit = await readEarlyExecutableCache(root, complete);
+    if (hit?.executableRestored !== true) return null;
+    const now = new Date();
+    await Promise.all([
+      routeFile,
+      proofFile,
+    ].map((cachePath) => utimes(cachePath, now, now).catch(() => undefined)));
+    return hit;
+  } catch {
+    return null;
+  }
+}
+
+/** Publish the lightweight lookup metadata for an already-validated payload.
+ * Full-compiler cache hits call this as a repair path: route/proof files can be
+ * evicted independently of the larger executable entry, and one fallback
+ * lookup should make later CLI invocations lightweight again. */
+export async function publishEarlyExecutableRoute(
+  root: string | null,
+  options: EarlyExecutableCacheOptions,
+): Promise<void> {
+  if (root === null) return;
+  const proofDestination = implementationProofPath(root, options.implementation);
+  const proofUnsigned: Omit<EarlyExecutableImplementationProof, "integrity"> = {
+    version: 1,
+    implementation: options.implementation,
+    dependencies: options.implementationDependencies,
+  };
+  const proof: EarlyExecutableImplementationProof = {
+    ...proofUnsigned,
+    integrity: implementationProofIntegrity(proofUnsigned),
+  };
+  await mkdir(dirname(proofDestination), { recursive: true, mode: 0o700 });
+  const proofTmp = `${proofDestination}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    await writeFile(proofTmp, `${JSON.stringify(proof)}\n`, { mode: 0o600 });
+    await installCacheMetadata(proofTmp, proofDestination);
+  } finally {
+    await rm(proofTmp, { force: true }).catch(() => undefined);
+  }
+
+  const routeOptions: EarlyExecutableRouteOptions = options;
+  const routeDestination = routePath(root, routeOptions);
+  const routeUnsigned: Omit<EarlyExecutableRouteStamp, "integrity"> = {
+    version: 1,
+    key: cacheKey(options),
+    implementation: options.implementation,
+  };
+  const route: EarlyExecutableRouteStamp = {
+    ...routeUnsigned,
+    integrity: routeIntegrity(routeUnsigned),
+  };
+  await mkdir(dirname(routeDestination), { recursive: true, mode: 0o700 });
+  const routeTmp = `${routeDestination}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    await writeFile(routeTmp, `${JSON.stringify(route)}\n`, { mode: 0o600 });
+    await installCacheMetadata(routeTmp, routeDestination);
+  } finally {
+    await rm(routeTmp, { force: true }).catch(() => undefined);
+  }
+}
+
+export async function publishEarlyExecutableCache(
+  root: string | null,
+  options: EarlyExecutableCacheOptions,
+  result: EarlyExecutableCachePublish,
+): Promise<void> {
+  if (root === null || !result.frontend.stable) return;
+  const destination = dirname(stampPath(root, options));
+  const parent = dirname(destination);
+  const stage = join(
+    parent,
+    `.tmp-${basename(destination).slice(0, 12)}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+  );
+  try {
+    await mkdir(stage, { recursive: true, mode: 0o700 });
+    const publishFile = async (source: string, name: string): Promise<CachedExecutableFile> => {
+      const target = join(stage, name);
+      await copyFile(source, target);
+      await chmod(target, 0o600);
+      return { name, digest: digest(await readFile(target)) };
+    };
+    const publishExecutable =
+      result.nativeDependencies === undefined || !result.executableRestored
+        ? Promise.resolve(null)
+        : publishFile(options.outPath, "program.bin");
+    const [translationUnit, ir, executable] = await Promise.all([
+      publishFile(result.cPath, "program.tu"),
+      result.irPath === undefined
+        ? Promise.resolve(null)
+        : publishFile(result.irPath, "program.ir.json"),
+      publishExecutable,
+    ]);
+    if (!frontendInputsStillMatch(
+      result.frontend,
+      executableFrontendOutputExclusions(options, result.native.backend),
+    )) return;
+    const unsigned: Omit<EarlyExecutableCacheStamp, "integrity"> = {
+      version: 1,
+      key: cacheKey(options),
+      frontend: result.frontend,
+      files: { translationUnit, ir, executable },
+      nativeDependencies: executable === null ? null : result.nativeDependencies!,
+      native: result.native,
+    };
+    const stamp: EarlyExecutableCacheStamp = { ...unsigned, integrity: stampIntegrity(unsigned) };
+    await writeFile(join(stage, "stamp.json"), `${JSON.stringify(stamp)}\n`, { mode: 0o600 });
+    await mkdir(destination, { recursive: true, mode: 0o700 });
+    const install = async (name: string): Promise<void> => {
+      const source = join(stage, name);
+      const target = join(destination, name);
+      await rename(source, target).catch(async () => {
+        await rm(target, { force: true });
+        await rename(source, target);
+      });
+    };
+    await install(translationUnit.name);
+    if (ir !== null) await install(ir.name);
+    if (executable !== null) await install(executable.name);
+    await install("stamp.json");
+    await publishEarlyExecutableRoute(root, options);
+  } finally {
+    await rm(stage, { recursive: true, force: true }).catch(() => undefined);
+  }
+}

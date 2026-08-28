@@ -1,0 +1,21 @@
+{
+  "profile_format": 1,
+  "name": "conformance-callback-narrow-returns",
+  "entry": "lib_narrow_returns.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "cbn_",
+    "init_symbol": "cbn_init",
+    "sink_register_symbol": "cbn_set_panic_sink",
+    "collect_symbol": null,
+    "result_reset_symbol": null,
+    "callback_register_symbol": "cbn_set_callback"
+  },
+  "callbacks": [
+    { "name": "answerBool", "params": [], "returns": "bool" },
+    { "name": "answerNumber", "params": [], "returns": "i32" }
+  ],
+  "exports": [
+    { "export": "run", "symbol": "cbn_run", "params": [], "returns": "f64" }
+  ]
+}

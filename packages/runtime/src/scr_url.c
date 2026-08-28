@@ -7,6 +7,7 @@
  *   - scheme lowercasing; "Invalid URL" TypeError on schemeless input
  *   - special schemes (http/https/ws/wss/ftp/file): authority parsing with
  *     host lowercasing, default-port removal (leading zeros stripped),
+ *     canonical bracketed IPv6 literals,
  *     backslash-as-slash, and any run of leading slashes tolerated
  *     (http:foo.com works); file: takes an authority only after exactly
  *     "//" (file:/x and file:x are host-less absolute paths, like Node)
@@ -21,8 +22,8 @@
  *     path kept verbatim (data:text/plain,hi there)
  *
  * DOCUMENTED DIVERGENCES (SEMANTICS.md): non-ASCII and %-escaped hosts are
- * rejected with "Invalid URL" (no IDNA/punycode), IPv6 hosts are rejected,
- * and opaque paths skip the spec's C0-encode pass (kept verbatim).
+ * rejected with "Invalid URL" (no IDNA/punycode), and opaque paths skip
+ * the spec's C0-encode pass (kept verbatim).
  *
  * Failures THROW catchable TypeErrors through the exception cell with
  * Node's messages; callers are compiler-emitted pending checks. */
@@ -33,6 +34,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#endif
 
 ScrUrl *scr_url_retain(ScrUrl *u) {
   if (u->rc != SIZE_MAX) u->rc++;
@@ -92,6 +99,65 @@ static ScrStr *ub_take(UrlBuf *b) {
   ScrStr *s = scr_str_new(b->data, b->len);
   free(b->data);
   return s;
+}
+
+/* WHATWG's IPv6 serializer: lowercase hexadecimal with the first longest
+ * run of two-or-more zero pieces compressed. inet_pton supplies the parser,
+ * while serializing the eight pieces here also avoids the platform-specific
+ * dotted-decimal spelling inet_ntop uses for IPv4-mapped addresses. */
+static bool ub_append_ipv6(UrlBuf *out, const char *raw, size_t len) {
+  char *text = malloc(len + 1);
+  if (!text) scr_trap("scriptc: out of memory\n");
+  memcpy(text, raw, len);
+  text[len] = '\0';
+  struct in6_addr address;
+  bool valid = inet_pton(AF_INET6, text, &address) == 1;
+  free(text);
+  if (!valid) return false;
+
+  const unsigned char *bytes = (const unsigned char *)&address;
+  uint16_t pieces[8];
+  for (size_t i = 0; i < 8; i++) {
+    pieces[i] = (uint16_t)(((uint16_t)bytes[i * 2] << 8) |
+                           bytes[i * 2 + 1]);
+  }
+  size_t best_start = 0;
+  size_t best_len = 0;
+  for (size_t i = 0; i < 8;) {
+    if (pieces[i] != 0) {
+      i++;
+      continue;
+    }
+    size_t start = i;
+    while (i < 8 && pieces[i] == 0) i++;
+    size_t run = i - start;
+    if (run > best_len) {
+      best_start = start;
+      best_len = run;
+    }
+  }
+  if (best_len < 2) best_len = 0;
+
+  ub_push(out, '[');
+  bool first = true;
+  size_t compressed_end = best_start + best_len;
+  for (size_t i = 0; i < 8;) {
+    if (best_len > 0 && i == best_start) {
+      ub_append(out, "::", 2);
+      first = false;
+      i = compressed_end;
+      continue;
+    }
+    if (!first && (best_len == 0 || i != compressed_end)) ub_push(out, ':');
+    char hex[5];
+    int hex_len = snprintf(hex, sizeof hex, "%x", pieces[i]);
+    if (hex_len <= 0 || (size_t)hex_len >= sizeof hex) return false;
+    ub_append(out, hex, (size_t)hex_len);
+    first = false;
+    i++;
+  }
+  ub_push(out, ']');
+  return true;
 }
 
 /* ── percent-encode sets (WHATWG) ────────────────────────────────────── */
@@ -273,25 +339,48 @@ static bool parse_authority(const char *raw, size_t len, bool special, bool is_f
   *userinfo = ub_take(&ub);
   const char *hp = at >= 0 ? raw + at + 1 : raw;
   size_t hp_len = at >= 0 ? len - (size_t)at - 1 : len;
-  /* host[:port] — no IPv6 ('[' rejected below). */
+  /* host[:port], with IPv6 literals bracketed per WHATWG. */
   long colon = -1;
-  for (size_t i = 0; i < hp_len; i++) {
-    if (hp[i] == ':') colon = (long)i;
+  size_t host_len = hp_len;
+  bool ipv6 = hp_len > 0 && hp[0] == '[';
+  size_t ipv6_end = 0;
+  if (ipv6) {
+    while (ipv6_end < hp_len && hp[ipv6_end] != ']') ipv6_end++;
+    if (ipv6_end == hp_len || ipv6_end == 1) return false;
+    host_len = ipv6_end + 1;
+    if (host_len < hp_len) {
+      if (hp[host_len] != ':') return false;
+      colon = (long)host_len;
+    }
+  } else {
+    for (size_t i = 0; i < hp_len; i++) {
+      if (hp[i] == ':') colon = (long)i;
+    }
+    host_len = colon >= 0 ? (size_t)colon : hp_len;
   }
-  size_t host_len = colon >= 0 ? (size_t)colon : hp_len;
   /* Validate + lowercase (special) the host. Divergence: non-ASCII and
-   * %-escapes (IDNA territory) and IPv6 are rejected outright. */
+   * %-escapes (IDNA territory) are rejected outright. */
   UrlBuf hb;
   ub_init(&hb);
-  for (size_t i = 0; i < host_len; i++) {
-    unsigned char c = (unsigned char)hp[i];
-    if (c >= 0x80 || c == '%' || c == '[' || c == ']' || c <= 0x20 || c == '#' || c == '/' ||
-        c == '<' || c == '>' || c == '?' || c == '@' || c == '\\' || c == '^' || c == '|') {
+  if (ipv6) {
+    if (!ub_append_ipv6(&hb, hp + 1, ipv6_end - 1)) {
       free(hb.data);
       return false;
     }
-    if (special && c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
-    ub_push(&hb, (char)c);
+  } else {
+    for (size_t i = 0; i < host_len; i++) {
+      unsigned char c = (unsigned char)hp[i];
+      if (c >= 0x80 || c == '%' || c == ':' || c == '[' || c == ']' ||
+          c <= 0x20 || c == '#' || c == '/' || c == '<' || c == '>' ||
+          c == '?' || c == '@' || c == '\\' || c == '^' || c == '|') {
+        free(hb.data);
+        return false;
+      }
+      if (special && c >= 'A' && c <= 'Z') {
+        c = (unsigned char)(c - 'A' + 'a');
+      }
+      ub_push(&hb, (char)c);
+    }
   }
   /* file: "localhost" normalizes to "" at parse time (Node). */
   if (is_file && hb.len == 9 && memcmp(hb.data, "localhost", 9) == 0) hb.len = 0;
@@ -561,8 +650,7 @@ ScrStr *scr_url_host(ScrUrl *u) {
 }
 
 /* WHATWG hostname getter: the stored port-less host verbatim ("" for
- * authority-less URLs). Node would keep IPv6 brackets here; the parser
- * rejects IPv6 hosts (documented divergence), so none reach this getter. */
+ * authority-less URLs); IPv6 literals retain their brackets. */
 ScrStr *scr_url_hostname(ScrUrl *u) { return scr_str_retain(u->host); }
 
 ScrStr *scr_url_href(ScrUrl *u) {

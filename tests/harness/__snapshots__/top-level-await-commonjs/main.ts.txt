@@ -1,0 +1,7 @@
+top-level-await-commonjs/main.ts:1:16 - error SC1013: Node classifies this file as CommonJS, where this ES-module syntax marker is a SyntaxError
+
+  1 | const answer = await Promise.resolve(42);
+    |                ^~~~~~~~~~~~~~~~~~~~~~~~~
+  2 | console.log(answer);
+
+  hint: use a .mjs/.mts extension or set the nearest package.json's "type" to "module"

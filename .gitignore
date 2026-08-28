@@ -14,6 +14,7 @@ node_modules/
 !tests/fixtures/gateway-e2e/node_modules/
 !tests/fixtures/node-types/node_modules/
 dist/
+/packages/llvm-darwin-arm64/bin/
 !tests/fixtures/fetch/node_modules/eventsource-parser/dist/
 !tests/fixtures/npm/node_modules/*/dist/
 !tests/fixtures/npm/workspace/*/dist/
@@ -29,3 +30,6 @@ packages/runtime/vendor/.cache/
 # fs corpus scratch directories (created in the test cwd, removed on clean runs)
 tmp-*/
 .claude/
+.vercel/
+.env.local
+.env*

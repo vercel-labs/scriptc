@@ -73,37 +73,14 @@
  * untouched (null): its import-site errors stay, and the frontend's
  * offender attribution degrades the PACKAGE to the island with a note. */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import ts from "typescript5";
-import { cjsLexedExportsOf, cjsLexerVisibleNames } from "./cjs-lexer.js";
-import { resolveExports } from "./npm.js";
+import { bareRequireSpecOf, cjsLexedExportsOf, cjsLexerVisibleNames, isExportsIdent, isModuleExports } from "./cjs-lexer.js";
+import { trackedDirectoryExists, trackedFileExists, trackedReadFile } from "./input-tracker.js";
+import { resolveExports } from "./resolve.js";
+import { packageNameOfSpecifier } from "./workspace-registry.js";
 
-/** True when `e` is exactly the `exports` identifier. */
-function isExportsIdent(e: ts.Expression): boolean {
-  return ts.isIdentifier(e) && e.text === "exports";
-}
-
-/** True when `e` is exactly `module.exports`. */
-function isModuleExports(e: ts.Expression): boolean {
-  return (
-    ts.isPropertyAccessExpression(e) &&
-    e.questionDotToken === undefined &&
-    ts.isIdentifier(e.expression) &&
-    e.expression.text === "module" &&
-    ts.isIdentifier(e.name) &&
-    e.name.text === "exports"
-  );
-}
-
-/** The bare `require('spec')` call (identifier callee, one string arg). */
-function bareRequireSpecOf(e: ts.Expression): string | null {
-  if (!ts.isCallExpression(e) || e.questionDotToken !== undefined) return null;
-  if (!ts.isIdentifier(e.expression) || e.expression.text !== "require") return null;
-  if (e.arguments.length !== 1) return null;
-  const arg = e.arguments[0]!;
-  return ts.isStringLiteral(arg) ? arg.text : null;
-}
+const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default"]);
 
 /** The last NAME of a callee: bare identifier or any member chain's final
  * name (`tslib_1.__exportStar` → "__exportStar"). */
@@ -233,26 +210,23 @@ function definePropertyExportOf(
 function resolveCjsBase(base: string): string | null {
   const candidates = [base, `${base}.js`, `${base}.cjs`];
   for (const c of candidates) {
-    try {
-      if (existsSync(c) && statSync(c).isFile() && /\.(js|cjs)$/.test(c)) return c;
-    } catch {
-      /* keep probing */
-    }
+    if (trackedFileExists(c) && /\.(js|cjs)$/.test(c)) return c;
   }
   try {
-    if (existsSync(base) && statSync(base).isDirectory()) {
+    if (trackedDirectoryExists(base)) {
       const pkgPath = resolvePath(base, "package.json");
-      if (existsSync(pkgPath)) {
-        const main = (JSON.parse(readFileSync(pkgPath, "utf8")) as { main?: unknown }).main;
+      const pkgText = trackedReadFile(pkgPath);
+      if (pkgText !== null) {
+        const main = (JSON.parse(pkgText) as { main?: unknown }).main;
         if (typeof main === "string") {
           const m = resolvePath(base, main);
           for (const c of [m, `${m}.js`, `${m}.cjs`, resolvePath(m, "index.js")]) {
-            if (existsSync(c) && statSync(c).isFile() && /\.(js|cjs)$/.test(c)) return c;
+            if (trackedFileExists(c) && /\.(js|cjs)$/.test(c)) return c;
           }
         }
       }
       const idx = resolvePath(base, "index.js");
-      if (existsSync(idx)) return idx;
+      if (trackedFileExists(idx)) return idx;
     }
   } catch {
     /* unresolved */
@@ -275,24 +249,25 @@ function resolveRelativeCjs(fromFile: string, spec: string): string | null {
 function resolveBareRequireCjs(fromFile: string, spec: string): string | null {
   if (spec.startsWith("#") || spec.startsWith("node:")) return null;
   const parts = spec.split("/");
-  const name = spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
+  const name = packageNameOfSpecifier(spec);
   const subparts = spec.startsWith("@") ? parts.slice(2) : parts.slice(1);
   const subpath = subparts.length > 0 ? `./${subparts.join("/")}` : ".";
   for (let dir = dirname(fromFile); ; ) {
     const pkgDir = join(dir, "node_modules", name);
     try {
-      if (existsSync(pkgDir) && statSync(pkgDir).isDirectory()) {
+      if (trackedDirectoryExists(pkgDir)) {
         const pkgPath = join(pkgDir, "package.json");
         let exports: unknown;
         try {
-          exports = existsSync(pkgPath)
-            ? (JSON.parse(readFileSync(pkgPath, "utf8")) as { exports?: unknown }).exports
-            : undefined;
+          const pkgText = trackedReadFile(pkgPath);
+          exports = pkgText === null
+            ? undefined
+            : (JSON.parse(pkgText) as { exports?: unknown }).exports;
         } catch {
           return null;
         }
         if (exports !== undefined) {
-          const target = resolveExports(exports, subpath, "require");
+          const target = resolveExports(exports, subpath, NODE_REQUIRE_CONDITIONS);
           return target === null ? null : resolveCjsBase(join(pkgDir, target));
         }
         return resolveCjsBase(subpath === "." ? pkgDir : join(pkgDir, subpath));
@@ -329,9 +304,10 @@ function requireTargetEsModuleStamped(fromFile: string, spec: string, depth = 0)
     // the nearest package.json "type" decides the .js format
     for (let dir = dirname(file); ; ) {
       const pkgPath = join(dir, "package.json");
-      if (existsSync(pkgPath)) {
+      const pkgText = trackedReadFile(pkgPath);
+      if (pkgText !== null) {
         try {
-          if ((JSON.parse(readFileSync(pkgPath, "utf8")) as { type?: unknown }).type === "module") return true;
+          if ((JSON.parse(pkgText) as { type?: unknown }).type === "module") return true;
         } catch {
           /* unreadable — treat as CJS */
         }
@@ -342,12 +318,8 @@ function requireTargetEsModuleStamped(fromFile: string, spec: string, depth = 0)
       dir = parent;
     }
   }
-  let src: string;
-  try {
-    src = readFileSync(file, "utf8");
-  } catch {
-    return false;
-  }
+  const src = trackedReadFile(file);
+  if (src === null) return false;
   try {
     if (cjsLexedExportsOf(src, file).exports.has("__esModule")) return true;
   } catch {
@@ -366,7 +338,11 @@ function starTargetNames(file: string): Set<string> {
   try {
     return cjsLexerVisibleNames(
       file,
-      (f) => readFileSync(f, "utf8"),
+      (f) => {
+        const source = trackedReadFile(f);
+        if (source === null) throw new Error(`cannot read ${f}`);
+        return source;
+      },
       (from, spec) => resolveRelativeCjs(from, spec),
     );
   } catch {

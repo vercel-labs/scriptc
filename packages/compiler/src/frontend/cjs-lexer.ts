@@ -144,15 +144,30 @@ function identPrefixOf(node: ts.Node, sf: ts.SourceFile): string {
   return sf.text.slice(start, identRunEnd(sf.text, start));
 }
 
-/** The bare `require('spec')` call merve recognizes: callee is exactly the
- * identifier `require` (no optional chaining), one string-literal argument
- * (quotes only — templates never match). */
-function bareRequireSpecOf(e: ts.Node): string | null {
+/** The bare `require('spec')` call merve recognizes. */
+export function bareRequireSpecOf(e: ts.Node): string | null {
   if (!ts.isCallExpression(e) || e.questionDotToken !== undefined) return null;
   if (!ts.isIdentifier(e.expression) || e.expression.text !== "require") return null;
   if (e.arguments.length !== 1) return null;
   const arg = e.arguments[0]!;
   return ts.isStringLiteral(arg) ? arg.text : null;
+}
+
+/** True when `e` is exactly the `exports` identifier. */
+export function isExportsIdent(e: ts.Expression): boolean {
+  return ts.isIdentifier(e) && e.text === "exports";
+}
+
+/** True when `e` is exactly `module.exports`. */
+export function isModuleExports(e: ts.Expression): boolean {
+  return (
+    ts.isPropertyAccessExpression(e) &&
+    e.questionDotToken === undefined &&
+    ts.isIdentifier(e.expression) &&
+    e.expression.text === "module" &&
+    ts.isIdentifier(e.name) &&
+    e.name.text === "exports"
+  );
 }
 
 /** The `require(...)` call at the very START of `e`'s source span, if any:
@@ -174,23 +189,6 @@ function leadingRequireOf(e: ts.Expression, sf: ts.SourceFile): { spec: string; 
     if (first === undefined || first.getStart(sf) !== start) return null;
     cur = first;
   }
-}
-
-/** True when `e` is exactly the `exports` identifier. */
-function isExportsIdent(e: ts.Expression): boolean {
-  return ts.isIdentifier(e) && e.text === "exports";
-}
-
-/** True when `e` is exactly `module.exports`. */
-function isModuleExports(e: ts.Expression): boolean {
-  return (
-    ts.isPropertyAccessExpression(e) &&
-    e.questionDotToken === undefined &&
-    ts.isIdentifier(e.expression) &&
-    e.expression.text === "module" &&
-    ts.isIdentifier(e.name) &&
-    e.name.text === "exports"
-  );
 }
 
 /** Skips ECMA whitespace and comments forward from `pos` (merve's

@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* Generator lowering: yield / yield* expressions, the consumer surface
  * (.next/.return/.throw → genResume), and the for-of-over-generator
  * desugar. The design: a generator body is an ordinary
@@ -8,25 +9,25 @@
  * g.next()` binds and reads flow. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
-import { BOOL, DYN, IrExpr, IrStmt, IrType, SrcLoc, UNDEFINED_T, VOID, isUnitType, typeEquals } from "../../ir/nodes.js";
+import { BOOL, DYN, IrExpr, IrStmt, IrType, SrcLoc, UNDEFINED_T, VOID, isUnitType, typeEquals } from "../../ir/ir.js";
 import { locOf } from "../program.js";
-import { genResultRecord } from "../types.js";
+import { genResultRecord } from "../type-mapper.js";
 import { forOfVarTarget } from "./lower-stmts.js";
 
 type GenType = IrType & { kind: "generator" };
 
 /** The interned IteratorResult record of a generator type (never null for
  * a MAPPED generator — mapType required it to intern). */
-function resultRecordOf(L: Lowerer, genT: GenType): IrType & { kind: "record" } {
-  const rec = genResultRecord(genT.yieldT, genT.retT, L.shapes, L.unions);
-  if (!rec) throw new Error("lowerer bug: mapped generator without a result record");
+function resultRecordOf(lowerer: Lowerer, genT: GenType): IrType & { kind: "record" } {
+  const rec = genResultRecord(genT.yieldT, genT.retT, lowerer.shapes, lowerer.unions);
+  if (!rec) throw new InternalCompilerError("lowerer bug: mapped generator without a result record");
   return rec;
 }
 
 /** The undefined value coerced into a yield/return channel — `yield;`,
  * `.return()`'s absent argument evaluated as a value. Null when the
  * channel cannot hold undefined. */
-function channelUndefined(L: Lowerer, channel: IrType, loc: SrcLoc): IrExpr | null {
+function channelUndefined(lowerer: Lowerer, channel: IrType, loc: SrcLoc): IrExpr | null {
   if (channel.kind === "dyn") {
     return {
       kind: "dynFrom",
@@ -35,25 +36,25 @@ function channelUndefined(L: Lowerer, channel: IrType, loc: SrcLoc): IrExpr | nu
       loc,
     };
   }
-  if (channel.kind === "union") return L.wrappedUndefined(channel, loc);
+  if (channel.kind === "union") return lowerer.wrappedUndefined(channel, loc);
   return null;
 }
 
 /** `yield e` / `yield;` — only inside a generator body the signature
- * collection accepted (L.ctx.generator carries the channels). `yield*`
+ * collection accepted (lowerer.ctx.generator carries the channels). `yield*`
  * lowers in STATEMENT position only (lowerYieldStarStatement — the value
  * of a delegation needs the whole forwarding loop in expression position,
  * which has no lowering yet). */
-export function lowerYield(L: Lowerer, expr: ts.YieldExpression): IrExpr {
+export function lowerYield(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
   const loc = locOf(expr);
-  const gen = L.ctx.generator;
+  const gen = lowerer.ctx.generator;
   if (!gen) {
     // A yield in a body this compiler did not lower as a generator (an
     // async generator's, a comptime callback's) — the blanket fence.
-    L.unsupported("SC1071", expr);
+    lowerer.unsupported("SC1071", expr);
   }
   if (expr.asteriskToken) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1071",
       expr,
       "the value of 'yield*' (statement-position delegation compiles: 'yield* inner();' — bind the delegate's return value through its .next() protocol instead)",
@@ -61,14 +62,14 @@ export function lowerYield(L: Lowerer, expr: ts.YieldExpression): IrExpr {
   }
   let value: IrExpr;
   if (expr.expression) {
-    value = L.lowerExprExpecting(expr.expression, gen.yieldT);
+    value = lowerer.lowerExprExpecting(expr.expression, gen.yieldT);
   } else {
-    const u = channelUndefined(L, gen.yieldT, loc);
+    const u = channelUndefined(lowerer, gen.yieldT, loc);
     if (!u) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1071",
         expr,
-        `a bare 'yield;' on a '${L.fmt(gen.yieldT)}' yield channel (it would yield undefined — yield a value)`,
+        `a bare 'yield;' on a '${lowerer.fmt(gen.yieldT)}' yield channel (it would yield undefined — yield a value)`,
       );
     }
     value = u;
@@ -84,40 +85,40 @@ export function lowerYield(L: Lowerer, expr: ts.YieldExpression): IrExpr {
  * receiver → genResume. Null when this is not that call (the dispatch
  * chain moves on). */
 export function lowerGenMethodCall(
-  L: Lowerer,
+  lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (L.chainBlocked(access, call)) return null;
+  if (lowerer.chainBlocked(access, call)) return null;
   const name = access.name.text;
   if (name !== "next" && name !== "return" && name !== "throw") return null;
-  if (L.mapTypeOf(L.typeOf(access.expression))?.kind !== "generator") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "generator") return null;
   if (call.arguments.some(ts.isSpreadElement)) {
-    L.unsupported("SC1090", call, "spread arguments");
+    lowerer.unsupported("SC1090", call, "spread arguments");
   }
   const loc = locOf(call);
-  const gen = L.lowerExpr(access.expression);
+  const gen = lowerer.lowerExpr(access.expression);
   if (gen.type.kind !== "generator") return null;
   const genT = gen.type;
-  const recT = resultRecordOf(L, genT);
+  const recT = resultRecordOf(lowerer, genT);
   const argNode = call.arguments[0];
   let arg: IrExpr | null = null;
   if (name === "next") {
     if (argNode === undefined) {
       if (genT.nextT.kind !== "undefinedT" && genT.nextT.kind !== "dyn") {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1071",
           call,
-          `a valueless .next() on a '${L.fmt(genT.nextT)}' next channel (it would deliver undefined into a typed yield — pass .next(value))`,
+          `a valueless .next() on a '${lowerer.fmt(genT.nextT)}' next channel (it would deliver undefined into a typed yield — pass .next(value))`,
         );
       }
       arg = null; // the runtime sends undefined
     } else if (genT.nextT.kind === "undefinedT") {
       // `.next(undefined)` on a valueless channel: the literal is a no-op;
       // anything effectful has no evaluate-then-drop slot here.
-      const lowered = L.lowerExpr(argNode);
+      const lowered = lowerer.lowerExpr(argNode);
       if (lowered.kind !== "unitLit") {
-        L.unsupported(
+        lowerer.unsupported(
           "SC1071",
           call,
           ".next(value) on a generator that never reads resumed values (call .next() with no argument)",
@@ -125,34 +126,46 @@ export function lowerGenMethodCall(
       }
       arg = null;
     } else {
-      arg = L.lowerExprExpecting(argNode, genT.nextT);
+      arg = lowerer.lowerExprExpecting(argNode, genT.nextT);
     }
   } else if (name === "return") {
     if (argNode === undefined) {
       arg = null; // undefined done-value
     } else if (genT.retT.kind === "void") {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1071",
         call,
         ".return(value) on a generator whose return type carries no value (call .return() with no argument)",
       );
     } else {
-      arg = L.lowerExprExpecting(argNode, genT.retT);
+      arg = lowerer.lowerExprExpecting(argNode, genT.retT);
     }
   } else {
     if (argNode === undefined) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1071",
         call,
         ".throw() with no argument (Node would throw undefined into the generator — pass the error)",
       );
     }
-    arg = L.lowerExpr(argNode);
-    if (arg.type.kind === "void" || arg.type.kind === "dyn" || arg.type.kind === "caught" || isUnitType(arg.type)) {
-      L.unsupported(
+    arg = lowerer.lowerExpr(argNode);
+    if (arg.type.kind === "date") {
+      lowerer.unsupported(
         "SC1090",
         argNode,
-        `.throw() of a '${L.fmt(arg.type)}' value (throw numbers, strings, booleans, or Error instances)`,
+        ".throw() with a Date value (the exception channel cannot preserve Date's object kind; throw an Error or primitive instead)",
+      );
+    }
+    if (
+      arg.type.kind === "void" ||
+      arg.type.kind === "dyn" ||
+      arg.type.kind === "caught" ||
+      isUnitType(arg.type)
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        argNode,
+        `.throw() of a '${lowerer.fmt(arg.type)}' value (throw numbers, strings, booleans, or Error instances)`,
       );
     }
   }
@@ -168,7 +181,7 @@ export function lowerGenMethodCall(
  * trappable (the same proved-away contract, proved here by the desugar's
  * own done test). Null when no extraction exists. */
 function extractYieldValue(
-  L: Lowerer,
+  lowerer: Lowerer,
   genT: GenType,
   valueT: IrType,
   read: IrExpr,
@@ -179,17 +192,17 @@ function extractYieldValue(
   if (valueT.kind !== "union") return null;
   if (typeEquals(valueT, yt)) return read;
   if (yt.kind !== "union") {
-    const tag = L.armTag(valueT.unionId, yt);
+    const tag = lowerer.armTag(valueT.unionId, yt);
     if (tag < 0) return null;
     return { kind: "unionNarrow", unionId: valueT.unionId, tag, value: read, type: yt, loc };
   }
-  const vDef = L.unions.get(valueT.unionId);
+  const vDef = lowerer.unions.get(valueT.unionId);
   if (!vDef) return null;
   const trappable = new Set<number>();
   vDef.arms.forEach((arm, i) => {
-    if (L.armTag(yt.unionId, arm) < 0) trappable.add(i);
+    if (lowerer.armTag(yt.unionId, arm) < 0) trappable.add(i);
   });
-  const helper = L.unionRetagHelper(valueT.unionId, yt.unionId, loc, trappable);
+  const helper = lowerer.unionRetagHelper(valueT.unionId, yt.unionId, loc, trappable);
   if (!helper) return null;
   return { kind: "call", callee: helper, args: [read], type: yt, loc };
 }
@@ -213,13 +226,13 @@ function extractYieldValue(
  * divergence — the desugar cannot ride a finally, whose regions reject
  * the loop's own break). */
 export function lowerForOfGenerator(
-  L: Lowerer,
+  lowerer: Lowerer,
   stmt: ts.ForOfStatement,
   iterable: IrExpr & { type: GenType },
   labels?: string[],
 ): IrStmt {
   if (!ts.isVariableDeclarationList(stmt.initializer)) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       stmt.initializer,
       "for-of over a pre-declared variable (declare the loop variable in the loop: for (const x of ...))",
@@ -227,53 +240,53 @@ export function lowerForOfGenerator(
   }
   const list = stmt.initializer;
   if ((list.flags & ts.NodeFlags.Using) !== 0) {
-    L.unsupported("SC1090", list, "'using' declarations (dispose-at-scope-exit semantics)");
+    lowerer.unsupported("SC1090", list, "'using' declarations (dispose-at-scope-exit semantics)");
   }
   const isLet = (list.flags & ts.NodeFlags.Let) !== 0;
   const decl = list.declarations[0]!;
-  if (!ts.isIdentifier(decl.name)) L.unsupported("SC1031", decl.name);
+  if (!ts.isIdentifier(decl.name)) lowerer.unsupported("SC1031", decl.name);
   const genT = iterable.type;
   if (genT.yieldT.kind === "void") {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       stmt.expression,
       "for-of over a generator that never yields (its element type is never)",
     );
   }
   if (genT.nextT.kind !== "undefinedT" && genT.nextT.kind !== "dyn") {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       stmt.expression,
-      `for-of over a generator whose yields expect .next(value) ('${L.fmt(genT.nextT)}' — drive it with .next() calls instead)`,
+      `for-of over a generator whose yields expect .next(value) ('${lowerer.fmt(genT.nextT)}' — drive it with .next() calls instead)`,
     );
   }
   const loc = locOf(stmt);
-  const recT = resultRecordOf(L, genT);
-  const shape = L.shapes.get(recT.shapeId)!;
+  const recT = resultRecordOf(lowerer, genT);
+  const shape = lowerer.shapes.get(recT.shapeId)!;
   const valueT = shape.fields.find((f) => f.name === "value")!.type;
-  L.scopes.push(new Map());
+  lowerer.scopes.push(new Map());
   try {
-    const g = L.declareHiddenLocal("%gof", genT);
-    const done = L.declareHiddenLocal("%gdone", BOOL);
+    const g = lowerer.declareHiddenLocal("%gof", genT);
+    const done = lowerer.declareHiddenLocal("%gdone", BOOL);
     done.mutable = true;
-    const r = L.declareHiddenLocal("%gres", recT);
+    const r = lowerer.declareHiddenLocal("%gres", recT);
     const gRef = (): IrExpr => ({ kind: "varRef", localId: g.id, type: genT, loc });
     const rRef = (): IrExpr => ({ kind: "varRef", localId: r.id, type: recT, loc });
     const valueRead: IrExpr = { kind: "recordGet", obj: rRef(), shapeId: recT.shapeId, field: "value", type: valueT, loc };
-    const extracted = extractYieldValue(L, genT, valueT, valueRead, loc);
+    const extracted = extractYieldValue(lowerer, genT, valueT, valueRead, loc);
     if (!extracted) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         stmt.expression,
-        `for-of over a generator yielding '${L.fmt(genT.yieldT)}' (no per-element extraction exists — drive it with .next() and narrow r.value)`,
+        `for-of over a generator yielding '${lowerer.fmt(genT.yieldT)}' (no per-element extraction exists — drive it with .next() and narrow r.value)`,
       );
     }
     // `for (var x of gen)`: the mechanics stay on a hidden per-iteration
     // local; the body opens by assigning into the hoisted var binding.
-    const varTarget = forOfVarTarget(L, decl);
+    const varTarget = forOfVarTarget(lowerer, decl);
     const x = varTarget
-      ? L.declareHiddenLocal("%vof", genT.yieldT)
-      : L.declareLocal(decl.name, decl.name.text, genT.yieldT, isLet);
+      ? lowerer.declareHiddenLocal("%vof", genT.yieldT)
+      : lowerer.declareLocal(decl.name, decl.name.text, genT.yieldT, isLet);
     const xRef: IrExpr = { kind: "varRef", localId: x.id, type: genT.yieldT, loc };
     const head: IrStmt[] = [
       {
@@ -301,10 +314,10 @@ export function lowerForOfGenerator(
       },
       { kind: "varDecl", localId: x.id, init: extracted, loc },
       ...(varTarget
-        ? [{ kind: "assign", localId: varTarget.id, value: L.coerceInto(decl.name, xRef, varTarget.type), loc } satisfies IrStmt]
+        ? [{ kind: "assign", localId: varTarget.id, value: lowerer.coerceInto(decl.name, xRef, varTarget.type), loc } satisfies IrStmt]
         : []),
     ];
-    const body = L.inCtl("loop", () => L.lowerScopedBlock(stmt.statement), labels);
+    const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement), labels);
     return {
       kind: "block",
       body: [
@@ -342,7 +355,7 @@ export function lowerForOfGenerator(
       loc,
     };
   } finally {
-    L.scopes.pop();
+    lowerer.scopes.pop();
   }
 }
 
@@ -357,45 +370,45 @@ export function lowerForOfGenerator(
  * result. Consumer `.return()`/`.throw()` while suspended here unwinds
  * the OUTER generator without forwarding to the delegate (numbered
  * divergence). Null when this is not a yield* statement. */
-export function lowerYieldStarStatement(L: Lowerer, expr: ts.Expression): IrStmt | null {
+export function lowerYieldStarStatement(lowerer: Lowerer, expr: ts.Expression): IrStmt | null {
   if (!ts.isYieldExpression(expr) || expr.asteriskToken === undefined) return null;
-  const gen = L.ctx.generator;
-  if (!gen) L.unsupported("SC1071", expr);
-  if (!expr.expression) L.unsupported("SC1071", expr, "'yield*' with no operand");
+  const gen = lowerer.ctx.generator;
+  if (!gen) lowerer.unsupported("SC1071", expr);
+  if (!expr.expression) lowerer.unsupported("SC1071", expr, "'yield*' with no operand");
   const loc = locOf(expr);
-  const delegate = L.lowerExpr(expr.expression);
+  const delegate = lowerer.lowerExpr(expr.expression);
   if (delegate.type.kind !== "generator") {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1071",
       expr,
-      `'yield*' over '${L.fmt(delegate.type)}' (only generator delegates have a lowering — spell out the loop for other iterables)`,
+      `'yield*' over '${lowerer.fmt(delegate.type)}' (only generator delegates have a lowering — spell out the loop for other iterables)`,
     );
   }
   const dT = delegate.type;
   if (dT.nextT.kind !== "undefinedT" && dT.nextT.kind !== "dyn" && !typeEquals(dT.nextT, gen.nextT)) {
-    L.unsupported(
+    lowerer.unsupported(
       "SC1071",
       expr,
-      `'yield*' into a '${L.fmt(dT.nextT)}' next channel from a '${gen.nextT.kind === "undefinedT" ? "undefined" : L.fmt(gen.nextT)}' one (the consumer's .next(v) cannot forward across these channels)`,
+      `'yield*' into a '${lowerer.fmt(dT.nextT)}' next channel from a '${gen.nextT.kind === "undefinedT" ? "undefined" : lowerer.fmt(gen.nextT)}' one (the consumer's .next(v) cannot forward across these channels)`,
     );
   }
-  const recT = resultRecordOf(L, dT);
-  const shape = L.shapes.get(recT.shapeId)!;
+  const recT = resultRecordOf(lowerer, dT);
+  const shape = lowerer.shapes.get(recT.shapeId)!;
   const valueT = shape.fields.find((f) => f.name === "value")!.type;
-  L.scopes.push(new Map());
+  lowerer.scopes.push(new Map());
   try {
-    const d = L.declareHiddenLocal("%dele", dT);
-    const r = L.declareHiddenLocal("%dres", recT);
+    const d = lowerer.declareHiddenLocal("%dele", dT);
+    const r = lowerer.declareHiddenLocal("%dres", recT);
     r.mutable = true;
     const dRef = (): IrExpr => ({ kind: "varRef", localId: d.id, type: dT, loc });
     const rRef = (): IrExpr => ({ kind: "varRef", localId: r.id, type: recT, loc });
     const valueRead: IrExpr = { kind: "recordGet", obj: rRef(), shapeId: recT.shapeId, field: "value", type: valueT, loc };
-    const inner = extractYieldValue(L, dT, valueT, valueRead, loc);
+    const inner = extractYieldValue(lowerer, dT, valueT, valueRead, loc);
     if (!inner) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1071",
         expr,
-        `'yield*' over a generator yielding '${L.fmt(dT.yieldT)}' (no per-element extraction exists)`,
+        `'yield*' over a generator yielding '${lowerer.fmt(dT.yieldT)}' (no per-element extraction exists)`,
       );
     }
     // The re-yield: the delegate's value coerced into the outer yield
@@ -405,7 +418,7 @@ export function lowerYieldStarStatement(L: Lowerer, expr: ts.Expression): IrStmt
       kind: "yieldExpr",
       value: typeEquals(dT.yieldT, gen.yieldT) && typeEquals(inner.type, gen.yieldT)
         ? inner
-        : L.coerceInto(expr.expression!, inner, gen.yieldT),
+        : lowerer.coerceInto(expr.expression!, inner, gen.yieldT),
       type: gen.nextT.kind === "undefinedT" ? VOID : gen.nextT,
       loc,
     };
@@ -468,6 +481,6 @@ export function lowerYieldStarStatement(L: Lowerer, expr: ts.Expression): IrStmt
       loc,
     };
   } finally {
-    L.scopes.pop();
+    lowerer.scopes.pop();
   }
 }

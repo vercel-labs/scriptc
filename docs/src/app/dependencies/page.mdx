@@ -62,6 +62,5 @@ The design goal is unmodified real-world packages. The measuring stick used duri
 
 ## Current limits
 
-- **Cross-compiled `--dynamic` binaries are not there yet** — the engine archive is built per target; today `--dynamic` is host-native. See [Platform Support](/platforms).
 - Packages without shipped or installed type declarations fail the typecheck gate (the standard `Could not find a declaration file` error) — add `@types/<pkg>` or a local declaration, as you would in any strict TypeScript project.
 - Class instances and promises can't flow *into* `any` slots (no island representation); closures cross as host functions in specific shapes. Each refusal is a compile error naming the fix.

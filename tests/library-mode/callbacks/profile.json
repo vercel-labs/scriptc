@@ -1,0 +1,26 @@
+{
+  "profile_format": 1,
+  "name": "conformance-callbacks",
+  "entry": "lib.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "cb_",
+    "init_symbol": "cb_init",
+    "sink_register_symbol": "cb_set_panic_sink",
+    "collect_symbol": "cb_collect",
+    "result_reset_symbol": null,
+    "callback_register_symbol": "cb_set_callback"
+  },
+  "callbacks": [
+    { "name": "emitChunk", "params": ["bytes", "u32"], "returns": "void" },
+    { "name": "progress", "params": ["f64", "f64"], "returns": "i32" },
+    { "name": "note", "params": ["string", "bool"], "returns": "void" },
+    { "name": "mix", "params": ["u8", "i32"], "returns": "u32" },
+    { "name": "orphan", "params": ["f64"], "returns": "void" }
+  ],
+  "exports": [
+    { "export": "stream", "symbol": "cb_stream", "params": ["f64", "f64"], "returns": "f64" },
+    { "export": "askHost", "symbol": "cb_ask_host", "params": ["f64"], "returns": "f64" },
+    { "export": "pokeOrphan", "symbol": "cb_poke_orphan", "params": [], "returns": "f64" }
+  ]
+}

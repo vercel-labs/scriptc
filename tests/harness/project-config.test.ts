@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
-import { analyze, compile, renderAll } from "@scriptc/compiler";
+import { analyze, compile, renderDiagnostics } from "@scriptc/compiler";
 
 /* Every compile below deliberately carries NO backend pin: this suite is
  * the user-adoption path, so it must see exactly what a flagless
@@ -99,7 +99,17 @@ test("node-types: path and os lower statically under @types/node's shapes", asyn
   expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
   if (!result.ok) return;
   const { stdout } = await execFileAsync(result.binaryPath);
-  expect(stdout).toBe("b/c.txt\n/x/y z .gz\ntrue /\ntrue true\ntrue true\ntrue\n");
+  expect(stdout).toBe("b/c.txt\n/x/y z .gz\ntrue /\ntrue true\ntrue true true true true\ntrue\n");
+});
+
+test("node-types: fetch AbortSignal and readable bodies lower statically", async () => {
+  const outDir = outDirFor("node-fetch-static");
+  const result = await compile(join(nodeTypesDir, "fetch-static.ts"), {
+    outPath: join(outDir, "fetch-static"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
 });
 
 test("node-types: declared-but-not-lowered surface fences, naming @types/node", async () => {
@@ -111,7 +121,7 @@ test("node-types: declared-but-not-lowered surface fences, naming @types/node", 
   });
   expect(result.ok).toBe(false);
   if (result.ok) return;
-  const rendered = renderAll(result.diagnostics, result.sourceTexts, { color: false })
+  const rendered = renderDiagnostics(result.diagnostics, result.sourceTexts, { color: false })
     .replaceAll(nodeTypesDir + "/", "");
   await expect(rendered).toMatchFileSnapshot("__snapshots__/node-types-fenced.txt");
 });

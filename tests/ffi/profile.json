@@ -1,5 +1,5 @@
 {
-  "ffi_format": 1,
+  "ffi_format": 5,
   "functions": [
     { "name": "nativeScale", "symbol": "sf_scale", "params": ["f64"], "returns": "f64" },
     { "name": "nativeInvert", "symbol": "sf_invert", "params": ["bool"], "returns": "bool" },
@@ -9,7 +9,298 @@
     { "name": "nativeTextSum", "symbol": "sf_text_sum", "params": ["string"], "returns": "f64" },
     { "name": "nativeBytesSum", "symbol": "sf_bytes_sum", "params": ["bytes"], "returns": "f64" },
     { "name": "nativeNote", "symbol": "sf_note", "params": ["f64"], "returns": "void" },
-    { "name": "nativeLastNote", "symbol": "sf_last_note", "params": [], "returns": "f64" }
+    { "name": "nativeLastNote", "symbol": "sf_last_note", "params": [], "returns": "f64" },
+    {
+      "name": "nativeApply",
+      "symbol": "sf_apply",
+      "params": [
+        {
+          "callback": {
+            "id": "apply",
+            "params": ["f64", { "context": "apply" }],
+            "returns": "f64",
+            "lifetime": "call"
+          }
+        },
+        "f64",
+        { "context": "apply" }
+      ],
+      "returns": "f64"
+    },
+    {
+      "name": "nativeCombineRaw",
+      "symbol": "sf_combine_raw",
+      "params": [
+        {
+          "callback": {
+            "id": "left",
+            "params": ["f64"],
+            "returns": "f64",
+            "lifetime": "call"
+          }
+        },
+        {
+          "callback": {
+            "id": "right",
+            "params": ["f64"],
+            "returns": "f64",
+            "lifetime": "call"
+          }
+        },
+        "f64"
+      ],
+      "returns": "f64"
+    },
+    {
+      "name": "nativeCallbackSymbolCollision",
+      "symbol": "sc_ffi_cb_0",
+      "params": [
+        {
+          "callback": {
+            "id": "collision",
+            "params": ["f64"],
+            "returns": "f64",
+            "lifetime": "call"
+          }
+        }
+      ],
+      "returns": "f64"
+    },
+    {
+      "name": "nativeCallbackTlsCollision",
+      "symbol": "sc_ffi_cb_ctx_2",
+      "params": ["f64"],
+      "returns": "f64"
+    },
+    {
+      "name": "nativeCallbackMix",
+      "symbol": "sf_callback_mix",
+      "params": [
+        {
+          "callback": {
+            "id": "mix",
+            "params": ["bool", "u8", "u32", "i32", "f64", { "context": "mix" }],
+            "returns": "u32",
+            "lifetime": "call"
+          }
+        },
+        { "context": "mix" }
+      ],
+      "returns": "u32"
+    },
+    {
+      "name": "nativeEach",
+      "symbol": "sf_each",
+      "params": [
+        {
+          "callback": {
+            "id": "each",
+            "params": ["f64", { "context": "each" }],
+            "returns": "void",
+            "lifetime": "call"
+          }
+        },
+        { "context": "each" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativePropVisit",
+      "symbol": "sf_prop_visit",
+      "params": [
+        {
+          "callback": {
+            "id": "prop",
+            "params": [{ "context": "prop" }, "i32", "cstring"],
+            "returns": "void",
+            "lifetime": "call"
+          }
+        },
+        { "context": "prop" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeCallbackSpans",
+      "symbol": "sf_callback_spans",
+      "params": [
+        {
+          "callback": {
+            "id": "spans",
+            "params": ["string", "bytes", { "context": "spans" }],
+            "returns": "void",
+            "lifetime": "call"
+          }
+        },
+        { "context": "spans" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeCallbackStringThrow",
+      "symbol": "sf_callback_string_throw",
+      "params": [
+        {
+          "callback": {
+            "id": "stringThrow",
+            "params": ["cstring", { "context": "stringThrow" }],
+            "returns": "void",
+            "lifetime": "call"
+          }
+        },
+        { "context": "stringThrow" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeNullCString",
+      "symbol": "sf_null_cstring",
+      "params": [
+        {
+          "callback": {
+            "id": "nullCString",
+            "params": ["cstring", { "context": "nullCString" }],
+            "returns": "void",
+            "lifetime": "call"
+          }
+        },
+        { "context": "nullCString" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedAdd",
+      "symbol": "sf_retained_add",
+      "params": [
+        {
+          "callback": {
+            "id": "tick",
+            "params": ["f64", { "context": "tick" }],
+            "returns": "void",
+            "lifetime": "retained"
+          }
+        },
+        { "context": "tick" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedRemove",
+      "symbol": "sf_retained_remove",
+      "params": [
+        { "callback": { "release": "nativeRetainedAdd:tick" } },
+        { "context": "nativeRetainedAdd:tick" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedPump",
+      "symbol": "sf_retained_pump",
+      "params": ["f64"],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedFireFirst",
+      "symbol": "sf_retained_fire_first",
+      "params": ["f64"],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedRawSet",
+      "symbol": "sf_retained_raw_set",
+      "params": [
+        {
+          "callback": {
+            "id": "raw",
+            "params": ["f64"],
+            "returns": "void",
+            "lifetime": "retained"
+          }
+        }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedRawRemove",
+      "symbol": "sf_retained_raw_remove",
+      "params": [
+        { "callback": { "release": "nativeRetainedRawSet:raw" } }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedRawSetFlush",
+      "symbol": "sf_retained_raw_set_flush",
+      "params": [
+        {
+          "callback": {
+            "id": "raw",
+            "params": ["f64"],
+            "returns": "void",
+            "lifetime": "retained"
+          }
+        }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeRetainedRawPump",
+      "symbol": "sf_retained_raw_pump",
+      "params": ["f64"],
+      "returns": "void"
+    },
+    {
+      "name": "nativeForeignStart",
+      "symbol": "sf_foreign_start",
+      "params": [
+        {
+          "callback": {
+            "id": "tick",
+            "params": ["f64", "cstring", { "context": "tick" }],
+            "returns": "void",
+            "lifetime": "retained",
+            "invoke": "foreign"
+          }
+        },
+        { "context": "tick" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeForeignStop",
+      "symbol": "sf_foreign_stop",
+      "params": [
+        { "callback": { "release": "nativeForeignStart:tick" } },
+        { "context": "nativeForeignStart:tick" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeForeignBurstStart",
+      "symbol": "sf_foreign_burst_start",
+      "params": [
+        {
+          "callback": {
+            "id": "tick",
+            "params": ["f64", "f64", { "context": "tick" }],
+            "returns": "void",
+            "lifetime": "retained",
+            "invoke": "foreign"
+          }
+        },
+        { "context": "tick" }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeForeignBurstStop",
+      "symbol": "sf_foreign_burst_stop",
+      "params": [
+        { "callback": { "release": "nativeForeignBurstStart:tick" } },
+        { "context": "nativeForeignBurstStart:tick" }
+      ],
+      "returns": "void"
+    }
   ],
   "libraries": [],
   "system_libraries": []

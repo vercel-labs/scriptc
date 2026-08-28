@@ -1,0 +1,18 @@
+{
+  "profile_format": 1,
+  "name": "conformance-multi-b",
+  "entry": "lib_b.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "mb_",
+    "init_symbol": "mb_init",
+    "sink_register_symbol": "mb_set_panic_sink",
+    "collect_symbol": "mb_collect",
+    "result_reset_symbol": null,
+    "localize_runtime": true
+  },
+  "exports": [
+    { "export": "sumTo", "symbol": "mb_sum_to", "params": ["f64"], "returns": "f64" },
+    { "export": "add", "symbol": "mb_add", "params": ["f64"], "returns": "f64" }
+  ]
+}

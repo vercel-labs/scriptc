@@ -85,10 +85,19 @@
  * lives under its key (requireHelperOriginOf follows the import and
  * re-export hops).
  */
-import { readFileSync, realpathSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import ts from "typescript5";
+import { packageNameOfSpecifier as packageNameOf } from "./workspace-registry.js";
 import { cjsLexedExportsOf } from "./cjs-lexer.js";
+import { trackedDirectoryExists, trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import { resolveExports } from "./resolve.js";
+
+const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default"]);
+const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default"]);
+
+function nodeExportConditions(mode: "import" | "require"): ReadonlySet<string> {
+  return mode === "import" ? NODE_IMPORT_CONDITIONS : NODE_REQUIRE_CONDITIONS;
+}
 
 export type EmbeddedFormat = "esm" | "cjs" | "json";
 
@@ -97,6 +106,11 @@ export interface EmbeddedModule {
   key: string;
   source: string;
   format: EmbeddedFormat;
+  /** The parsed source reaches Node's global fetch binding. This is a
+   * semantic capability fact, unlike the old whole-source word scan: comments,
+   * strings, property names, and locally-bound `fetch` identifiers do not set
+   * it. The IR/link gates consume this bit without reparsing embedded text. */
+  usesFetch?: true;
   /** CommonJS only: the synthesized ESM facade the island's module loader
    * evaluates when an ES module imports this file — default plus the LEXED
    * named exports (cjsEsmFacadeSource). ESM sources compile natively and
@@ -130,7 +144,7 @@ export interface EmbeddedModule {
  * guard). Export names that aren't identifiers ("dash-name") use string
  * ModuleExportNames — every name does, uniformly; the locals are e0, e1, …
  * temps. */
-export function cjsEsmFacadeSource(key: string, names: readonly string[]): string {
+function cjsEsmFacadeSource(key: string, names: readonly string[]): string {
   const uniq = [...new Set(names)].filter((n) => n !== "default" && n !== "module.exports");
   const parts = [
     `const m=globalThis.__scr_require(${JSON.stringify(key)});`,
@@ -232,6 +246,299 @@ export interface NpmRuntimeGraph {
   /** Unresolvable lazily-reached specifiers embedded as runtime traps. */
   lazyTraps: NpmLazyTrap[];
   errors: NpmGraphError[];
+}
+
+/** Embedded modules whose executable syntax reads Node's global fetch.
+ *
+ * The npm graph already owns every source string, so bind them together in a
+ * no-lib TypeScript program once and ask the checker whether a `fetch`
+ * identifier resolves locally. With no ambient library, an unresolved read is
+ * exactly the engine global; declarations/imports/parameters retain symbols.
+ * `globalThis.fetch` and `global.fetch` are recognized explicitly when their
+ * receiver is likewise unshadowed, including const aliases of those global
+ * objects. Parsing is recovery-capable, matching the module-specifier sweep's
+ * treatment of shipped JavaScript. */
+export function embeddedModulesUsingGlobalFetch(
+  modules: readonly EmbeddedModule[],
+): ReadonlySet<string> {
+  const sourceFiles = new Map<string, ts.SourceFile>();
+  for (const mod of modules) {
+    if (mod.format === "json") continue;
+    sourceFiles.set(
+      mod.key,
+      ts.createSourceFile(mod.key, mod.source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS),
+    );
+  }
+  if (sourceFiles.size === 0) return new Set();
+
+  const options: ts.CompilerOptions = {
+    allowJs: true,
+    checkJs: false,
+    noLib: true,
+    target: ts.ScriptTarget.Latest,
+    module: ts.ModuleKind.ESNext,
+    moduleDetection: ts.ModuleDetectionKind.Force,
+  };
+  const canonical = (fileName: string): string => {
+    const normalized = fileName.replace(/\\/g, "/");
+    return ts.sys.useCaseSensitiveFileNames ? normalized : normalized.toLowerCase();
+  };
+  const byCanonical = new Map(
+    [...sourceFiles].map(([fileName, sourceFile]) => [canonical(fileName), sourceFile] as const),
+  );
+  const originalKeyByCanonical = new Map(
+    [...sourceFiles.keys()].map((fileName) => [canonical(fileName), fileName] as const),
+  );
+  const host: ts.CompilerHost = {
+    getSourceFile: (fileName) => byCanonical.get(canonical(fileName)),
+    getDefaultLibFileName: () => "",
+    writeFile: () => {},
+    getCurrentDirectory: () => "/",
+    getDirectories: () => [],
+    fileExists: (fileName) => byCanonical.has(canonical(fileName)),
+    readFile: (fileName) => byCanonical.get(canonical(fileName))?.text,
+    getCanonicalFileName: canonical,
+    useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
+    getNewLine: () => "\n",
+    directoryExists: () => true,
+    realpath: (fileName) => fileName,
+  };
+  const program = ts.createProgram({ rootNames: [...sourceFiles.keys()], options, host });
+  const checker = program.getTypeChecker();
+  const found = new Set<string>();
+
+  const unwrapParentheses = (node: ts.Expression): ts.Expression => {
+    let current = node;
+    while (ts.isParenthesizedExpression(current)) current = current.expression;
+    return current;
+  };
+
+  const unboundGlobalObject = (candidate: ts.Expression): boolean => {
+    const node = unwrapParentheses(candidate);
+    if (
+      !ts.isIdentifier(node) ||
+      (node.text !== "globalThis" && node.text !== "global")
+    ) {
+      return false;
+    }
+    const symbol = checker.getSymbolAtLocation(node);
+    // TypeScript synthesizes a declaration-less globalThis symbol even in a
+    // no-lib program. A source shadow (parameter/local/import) always carries
+    // at least one declaration; the Node `global` alias remains unresolved.
+    return (
+      symbol === undefined ||
+      symbol.declarations === undefined ||
+      symbol.declarations.length === 0
+    );
+  };
+
+  const globalObjectExpression = (
+    candidate: ts.Expression,
+    aliases: ReadonlySet<ts.Symbol>,
+  ): boolean => {
+    const node = unwrapParentheses(candidate);
+    if (unboundGlobalObject(node)) return true;
+    if (ts.isIdentifier(node)) {
+      const symbol = checker.getSymbolAtLocation(node);
+      if (symbol === undefined) return false;
+      if (aliases.has(symbol)) return true;
+      return (
+        (symbol.flags & ts.SymbolFlags.Alias) !== 0 &&
+        aliases.has(checker.getAliasedSymbol(symbol))
+      );
+    }
+    if (ts.isConditionalExpression(node)) {
+      return (
+        globalObjectExpression(node.whenTrue, aliases) ||
+        globalObjectExpression(node.whenFalse, aliases)
+      );
+    }
+    if (ts.isBinaryExpression(node)) {
+      switch (node.operatorToken.kind) {
+        case ts.SyntaxKind.BarBarToken:
+        case ts.SyntaxKind.QuestionQuestionToken:
+        case ts.SyntaxKind.AmpersandAmpersandToken:
+          // A platform selector can yield either operand. Treat either
+          // global-object arm as capability provenance; over-linking a
+          // dead arm is safer than silently omitting fetch at runtime.
+          return (
+            globalObjectExpression(node.left, aliases) ||
+            globalObjectExpression(node.right, aliases)
+          );
+        case ts.SyntaxKind.CommaToken:
+          return globalObjectExpression(node.right, aliases);
+      }
+    }
+    return false;
+  };
+
+  const staticPropertyName = (name: ts.PropertyName | ts.BindingName): string | null => {
+    if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
+    if (
+      ts.isComputedPropertyName(name) &&
+      ts.isStringLiteralLike(name.expression)
+    ) {
+      return name.expression.text;
+    }
+    return null;
+  };
+
+  /** `const { fetch } = globalThis` binds a local identifier, so the
+   * checker quite correctly resolves every later `fetch` read to that local.
+   * The capability read happens at the binding pattern itself. The same is
+   * true for aliases, computed literal keys, and defaulted parameters. */
+  const bindingReadsGlobalFetch = (
+    node: ts.BindingElement,
+    aliases: ReadonlySet<ts.Symbol>,
+  ): boolean => {
+    const pattern = node.parent;
+    if (!ts.isObjectBindingPattern(pattern)) return false;
+    const key = node.propertyName ?? (ts.isIdentifier(node.name) ? node.name : null);
+    if (key === null || staticPropertyName(key) !== "fetch") return false;
+
+    const owner = pattern.parent;
+    if (
+      (ts.isVariableDeclaration(owner) || ts.isParameter(owner) || ts.isBindingElement(owner)) &&
+      owner.name === pattern &&
+      owner.initializer !== undefined
+    ) {
+      return globalObjectExpression(owner.initializer, aliases);
+    }
+    return false;
+  };
+
+  /** Assignment destructuring is represented as an object-literal-shaped
+   * assignment target rather than an ObjectBindingPattern. */
+  const assignmentReadsGlobalFetch = (
+    node: ts.BinaryExpression,
+    aliases: ReadonlySet<ts.Symbol>,
+  ): boolean => {
+    if (
+      node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+      !globalObjectExpression(node.right, aliases)
+    ) {
+      return false;
+    }
+    const target = unwrapParentheses(node.left);
+    if (!ts.isObjectLiteralExpression(target)) return false;
+    return target.properties.some((property) => {
+      if (ts.isShorthandPropertyAssignment(property)) return property.name.text === "fetch";
+      return ts.isPropertyAssignment(property) && staticPropertyName(property.name) === "fetch";
+    });
+  };
+
+  const bareIdentifierRead = (node: ts.Identifier): boolean => {
+    const parent = node.parent;
+    // Binding-element names and aliases are declarations/property keys; the
+    // global-object destructuring case is handled explicitly above.
+    if (ts.isBindingElement(parent)) return false;
+    if (
+      (ts.isLabeledStatement(parent) ||
+        ts.isBreakStatement(parent) ||
+        ts.isContinueStatement(parent)) &&
+      parent.label === node
+    ) {
+      return false;
+    }
+    if (ts.isQualifiedName(parent) && parent.right === node) return false;
+    // Imported/exported names are module member names or declarations,
+    // never reads of Node's global binding. This matters when the custom
+    // no-lib program cannot resolve the referenced package and therefore
+    // has no checker symbol for an ImportSpecifier.propertyName.
+    if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) return false;
+
+    // Named declarations and object/class property names are not reads.
+    // A shorthand property is the exception: `{ fetch }` evaluates the
+    // identifier and therefore needs the global when it is unbound.
+    const namedParent = parent as ts.Node & { name?: ts.Node };
+    if (namedParent.name === node && !ts.isShorthandPropertyAssignment(parent)) return false;
+    return true;
+  };
+
+  const bareIdentifierIsUnbound = (node: ts.Identifier): boolean => {
+    const parent = node.parent;
+    // The binder gives `{ fetch }` a symbol for the PROPERTY it creates;
+    // the value-side symbol is the one that answers whether the shorthand
+    // reads a local binding or Node's global.
+    if (ts.isShorthandPropertyAssignment(parent) && parent.name === node) {
+      return checker.getShorthandAssignmentValueSymbol(parent) === undefined;
+    }
+    return checker.getSymbolAtLocation(node) === undefined;
+  };
+
+  for (const sourceFile of program.getSourceFiles()) {
+    // Package bootstraps commonly snapshot or select the global object before
+    // reading capabilities (`const root = globalThis || global; root.fetch`).
+    // Resolve alias chains by symbol, so a same-named parameter/local in
+    // another scope cannot inherit the classification. Mutable declarations
+    // are conservative: a global initializer means some executable path can
+    // retain that value. Iterate to a fixed point so declaration order does
+    // not matter.
+    const globalObjectAliases = new Set<ts.Symbol>();
+    let addedAlias = true;
+    while (addedAlias) {
+      addedAlias = false;
+      const collectAliases = (node: ts.Node): void => {
+        if (
+          ts.isVariableDeclaration(node) &&
+          ts.isIdentifier(node.name) &&
+          node.initializer !== undefined &&
+          globalObjectExpression(node.initializer, globalObjectAliases)
+        ) {
+          const symbol = checker.getSymbolAtLocation(node.name);
+          if (symbol !== undefined && !globalObjectAliases.has(symbol)) {
+            globalObjectAliases.add(symbol);
+            addedAlias = true;
+          }
+        }
+        ts.forEachChild(node, collectAliases);
+      };
+      collectAliases(sourceFile);
+    }
+
+    let usesFetch = false;
+    const visit = (node: ts.Node): void => {
+      if (usesFetch) return;
+      if (
+        (ts.isBindingElement(node) && bindingReadsGlobalFetch(node, globalObjectAliases)) ||
+        (ts.isBinaryExpression(node) && assignmentReadsGlobalFetch(node, globalObjectAliases))
+      ) {
+        usesFetch = true;
+        return;
+      }
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        node.name.text === "fetch" &&
+        globalObjectExpression(node.expression, globalObjectAliases)
+      ) {
+        usesFetch = true;
+        return;
+      }
+      if (
+        ts.isElementAccessExpression(node) &&
+        ts.isStringLiteralLike(node.argumentExpression) &&
+        node.argumentExpression.text === "fetch" &&
+        globalObjectExpression(node.expression, globalObjectAliases)
+      ) {
+        usesFetch = true;
+        return;
+      }
+      if (ts.isIdentifier(node) && node.text === "fetch") {
+        // Every real bare read has no symbol in this no-lib program unless
+        // source syntax binds it. Syntactic names without symbols (labels,
+        // destructuring keys) are filtered separately.
+        if (bareIdentifierRead(node) && bareIdentifierIsUnbound(node)) {
+          usesFetch = true;
+          return;
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    const originalKey = originalKeyByCanonical.get(canonical(sourceFile.fileName));
+    if (usesFetch && originalKey !== undefined) found.add(originalKey);
+  }
+  return found;
 }
 
 /** Builtins the island provides shims for (scr_island.c). Both spellings
@@ -434,21 +741,11 @@ interface Host {
 
 const realHost: Host = {
   readFile: (path) => {
-    try {
-      return readFileSync(path, "utf8");
-    } catch {
-      return null;
-    }
+    return trackedReadFile(path);
   },
-  isFile: (path) => ts.sys.fileExists(path),
-  isDirectory: (path) => ts.sys.directoryExists(path),
-  realpath: (path) => {
-    try {
-      return realpathSync(path);
-    } catch {
-      return path;
-    }
-  },
+  isFile: (path) => trackedFileExists(path),
+  isDirectory: (path) => trackedDirectoryExists(path),
+  realpath: (path) => trackedRealpath(path) ?? path,
 };
 
 interface PkgJson {
@@ -457,12 +754,6 @@ interface PkgJson {
   module?: string;
   type?: string;
   exports?: unknown;
-}
-
-/** Package name from a specifier ("@scope/pkg/sub" → "@scope/pkg"). */
-function packageNameOf(specifier: string): string {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
 }
 
 /** Package name from a PATH into node_modules ("…/node_modules/@s/p/d/x.js"
@@ -474,77 +765,6 @@ export function packageNameOfPath(path: string): string | null {
   if (idx === -1) return null;
   const rest = norm.slice(idx + "/node_modules/".length);
   return rest === "" ? null : packageNameOf(rest);
-}
-
-/** package.json "exports" resolution, per Node: subpath map with exact
- * keys first, then '*' patterns (longest literal prefix wins, the matched
- * text substitutes into the target), condition objects matched in OBJECT
- * KEY order against the enabled set ("import" or "require", plus "node"
- * and "default"), string targets, arrays taking the first resolvable
- * entry. Returns a path relative to the package dir, or null. */
-export function resolveExports(
-  exports: unknown,
-  subpath: string,
-  mode: "import" | "require",
-): string | null {
-  const enabled = new Set([mode, "node", "default"]);
-  const resolveTarget = (target: unknown, wildcard: string | null): string | null => {
-    if (typeof target === "string") {
-      return wildcard === null ? target : target.split("*").join(wildcard);
-    }
-    if (Array.isArray(target)) {
-      for (const t of target) {
-        const r = resolveTarget(t, wildcard);
-        if (r) return r;
-      }
-      return null;
-    }
-    if (target && typeof target === "object") {
-      for (const [key, value] of Object.entries(target)) {
-        if (key.startsWith(".")) continue; // a subpath map, not conditions
-        if (enabled.has(key)) {
-          const r = resolveTarget(value, wildcard);
-          if (r) return r;
-        }
-      }
-    }
-    return null;
-  };
-  if (typeof exports === "string" || Array.isArray(exports)) {
-    return subpath === "." ? resolveTarget(exports, null) : null;
-  }
-  if (exports && typeof exports === "object") {
-    const map = exports as Record<string, unknown>;
-    const keys = Object.keys(map);
-    const isSubpathMap = keys.every((k) => k.startsWith("."));
-    if (!isSubpathMap) {
-      // A bare condition object applies to the root subpath only.
-      return subpath === "." ? resolveTarget(exports, null) : null;
-    }
-    if (Object.prototype.hasOwnProperty.call(map, subpath)) {
-      return resolveTarget(map[subpath], null);
-    }
-    // Pattern keys: "./v4/locales/*" etc. Longest literal prefix wins.
-    let best: { key: string; prefix: string; suffix: string } | null = null;
-    for (const key of keys) {
-      const star = key.indexOf("*");
-      if (star < 0) continue;
-      const prefix = key.slice(0, star);
-      const suffix = key.slice(star + 1);
-      if (
-        subpath.startsWith(prefix) &&
-        subpath.length >= prefix.length + suffix.length &&
-        subpath.endsWith(suffix) &&
-        (!best || prefix.length > best.prefix.length)
-      ) {
-        best = { key, prefix, suffix };
-      }
-    }
-    if (!best) return null;
-    const wildcard = subpath.slice(best.prefix.length, subpath.length - best.suffix.length);
-    return resolveTarget(map[best.key], wildcard);
-  }
-  return null;
 }
 
 /** A bare-specifier import edge Node's ESM resolution REFUSES, with Node's
@@ -598,7 +818,7 @@ export function probeNodeImportRefusal(
   // Node's PACKAGE_EXPORTS_RESOLVE outcome for the subpath.
   const withinScope = (pkgDir: string, pkg: PkgJson): NodeImportRefusal | null => {
     if (pkg.exports === undefined) return null; // legacy resolution — conservative
-    const target = resolveExports(pkg.exports, subpath, "import");
+    const target = resolveExports(pkg.exports, subpath, NODE_IMPORT_CONDITIONS);
     if (target === null) {
       return {
         code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
@@ -958,6 +1178,10 @@ export class NpmGraphBuilder {
 
   finish(): NpmRuntimeGraph {
     this.synthesizeCjsFacades();
+    for (const key of embeddedModulesUsingGlobalFetch([...this.modules.values()])) {
+      const mod = this.modules.get(key);
+      if (mod !== undefined) mod.usesFetch = true;
+    }
     return {
       modules: [...this.modules.values()],
       edges: this.edges,
@@ -1144,7 +1368,7 @@ export class NpmGraphBuilder {
       const selfPkg = this.pkgJsonOf(dir);
       if (selfPkg) {
         if (selfPkg.name === name && selfPkg.exports !== undefined) {
-          const fromExports = resolveExports(selfPkg.exports, subpath, mode);
+          const fromExports = resolveExports(selfPkg.exports, subpath, nodeExportConditions(mode));
           if (fromExports === null) {
             this.errors.push({
               message:
@@ -1178,7 +1402,7 @@ export class NpmGraphBuilder {
         let target: string;
         let forceEsm = false;
         if (pkg.exports !== undefined) {
-          const fromExports = resolveExports(pkg.exports, subpath, mode);
+          const fromExports = resolveExports(pkg.exports, subpath, nodeExportConditions(mode));
           if (fromExports === null) {
             this.errors.push({
               message:
@@ -1504,13 +1728,4 @@ export class NpmGraphBuilder {
       }
     }
   }
-}
-
-/** One-call convenience over NpmGraphBuilder. */
-export function buildNpmRuntimeGraph(
-  imports: readonly { fromFile: string; specifier: string }[],
-): NpmRuntimeGraph {
-  const b = new NpmGraphBuilder();
-  for (const i of imports) b.addImport(i.fromFile, i.specifier);
-  return b.finish();
 }

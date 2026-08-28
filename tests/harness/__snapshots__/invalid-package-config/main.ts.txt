@@ -1,0 +1,7 @@
+invalid-package-config/main.ts:1:1 - error SC1013: Node cannot load this module because 'invalid-package-config/package.json' is an invalid package configuration (ERR_INVALID_PACKAGE_CONFIG)
+
+  1 | await Promise.resolve();
+    | ^
+  2 | console.log("SHOULD NOT RUN");
+
+  hint: fix the nearest package.json so it contains valid JSON

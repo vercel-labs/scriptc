@@ -1,6 +1,6 @@
 /* Type-directed RC/trace/box dispatch tables of the LLVM backend, the
  * cycle-capability fixpoint, and per-record-shape emission — the .ll
- * mirror of the C emitter's emit-types.ts + emit-shapes.ts slice that the
+ * mirror of the C emitter's types.ts + shapes.ts slice that the
  * phase-2 tier needs. Everything here follows the SAME contracts the C
  * backend compiled into the runtime: `_v` adapters where a container
  * stores RC entry points as data, per-shape retain/release/new (and
@@ -10,13 +10,14 @@
  *
  * Anything outside the tier refuses loudly (LlvmUnsupportedError naming
  * the type kind) — the tables never guess. */
-import type { IrModule, IrRecordShape, IrType } from "../../ir/nodes.js";
-import { funcOf, isRefCounted, mapOf, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, VOID } from "../../ir/nodes.js";
+import type { IrModule, IrRecordShape, IrType } from "../../ir/ir.js";
+import { funcOf, isRefCounted, mapOf, POINTER_KINDS, runtimeRcStem, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, STRING, VOID } from "../../ir/ir.js";
 import {
   mangleClassRelease,
   mangleClassRetain,
   mangleClassTrace,
   mangleRecordGcFree,
+  mangleRecordClone,
   mangleRecordNew,
   mangleRecordRelease,
   mangleRecordRetain,
@@ -31,9 +32,14 @@ export interface ShapeHost {
   declare(decl: string): void;
   /** Request the shared OOM abort helper (@sc_oom) — emitted once. */
   needOom(): void;
+  /** The target C ABI's `size_t` / refcount integer type. */
+  readonly sizeType: "i32" | "i64";
+  /** Byte offset from an object pointer back to ScrCycHdr.color. */
+  readonly cycleColorOffset: number;
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
   readonly recordsById: Map<string, IrRecordShape>;
+  readonly recordCloneShapes: ReadonlySet<string>;
 }
 
 /** Every emitted function/helper carries #0 = { sanitize_address } — see
@@ -146,162 +152,24 @@ export function computeTraced(mod: IrModule): { shapes: Set<string>; unions: Set
  * use their emitted per-shape helpers, whose signatures are already
  * `_v`-shaped. */
 export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release: string } {
+  const stem = runtimeRcStem(t);
+  if (stem !== null) {
+    // Catch-binding snapshots have typed ptr-shaped entry points but no
+    // separate `_v` wrappers; every other runtime family is uniform.
+    const suffix = t.kind === "caught" ? "" : "_v";
+    const retain = `@${stem}_retain${suffix}`;
+    const release = `@${stem}_release${suffix}`;
+    host.declare(`declare ptr ${retain}(ptr)`);
+    host.declare(`declare void ${release}(ptr)`);
+    return { retain, release };
+  }
   switch (t.kind) {
-    case "caught":
-      // Catch-binding snapshot boxes (ScrCaught): the runtime pair is
-      // already `_v`-shaped. Caught values never enter containers — these
-      // arms serve retainSym/releaseSym only.
-      host.declare(`declare ptr @scr_caught_retain(ptr)`);
-      host.declare(`declare void @scr_caught_release(ptr)`);
-      return { retain: "@scr_caught_retain", release: "@scr_caught_release" };
-    case "string":
-      host.declare(`declare ptr @scr_str_retain_v(ptr)`);
-      host.declare(`declare void @scr_str_release_v(ptr)`);
-      return { retain: "@scr_str_retain_v", release: "@scr_str_release_v" };
-    case "array":
-      host.declare(`declare ptr @scr_arr_retain_v(ptr)`);
-      host.declare(`declare void @scr_arr_release_v(ptr)`);
-      return { retain: "@scr_arr_retain_v", release: "@scr_arr_release_v" };
-    case "map":
-    case "set":
-      host.declare(`declare ptr @scr_map_retain_v(ptr)`);
-      host.declare(`declare void @scr_map_release_v(ptr)`);
-      return { retain: "@scr_map_retain_v", release: "@scr_map_release_v" };
-    case "union":
-      host.declare(`declare ptr @scr_union_retain_v(ptr)`);
-      host.declare(`declare void @scr_union_release_v(ptr)`);
-      return { retain: "@scr_union_retain_v", release: "@scr_union_release_v" };
-    case "promise":
-      host.declare(`declare ptr @scr_promise_retain_v(ptr)`);
-      host.declare(`declare void @scr_promise_release_v(ptr)`);
-      return { retain: "@scr_promise_retain_v", release: "@scr_promise_release_v" };
-    case "bytes":
-      host.declare(`declare ptr @scr_bytes_retain_v(ptr)`);
-      host.declare(`declare void @scr_bytes_release_v(ptr)`);
-      return { retain: "@scr_bytes_retain_v", release: "@scr_bytes_release_v" };
-    case "url":
-      host.declare(`declare ptr @scr_url_retain_v(ptr)`);
-      host.declare(`declare void @scr_url_release_v(ptr)`);
-      return { retain: "@scr_url_retain_v", release: "@scr_url_release_v" };
-    case "searchParams":
-      host.declare(`declare ptr @scr_sp_retain_v(ptr)`);
-      host.declare(`declare void @scr_sp_release_v(ptr)`);
-      return { retain: "@scr_sp_retain_v", release: "@scr_sp_release_v" };
-    case "stats":
-      host.declare(`declare ptr @scr_stats_retain_v(ptr)`);
-      host.declare(`declare void @scr_stats_release_v(ptr)`);
-      return { retain: "@scr_stats_retain_v", release: "@scr_stats_release_v" };
-    case "spawnRes":
-      host.declare(`declare ptr @scr_spawn_res_retain_v(ptr)`);
-      host.declare(`declare void @scr_spawn_res_release_v(ptr)`);
-      return { retain: "@scr_spawn_res_retain_v", release: "@scr_spawn_res_release_v" };
-    case "child":
-      host.declare(`declare ptr @scr_child_retain_v(ptr)`);
-      host.declare(`declare void @scr_child_release_v(ptr)`);
-      return { retain: "@scr_child_retain_v", release: "@scr_child_release_v" };
-    case "childStream":
-      host.declare(`declare ptr @scr_child_stream_retain_v(ptr)`);
-      host.declare(`declare void @scr_child_stream_release_v(ptr)`);
-      return { retain: "@scr_child_stream_retain_v", release: "@scr_child_stream_release_v" };
-    case "generator":
-      host.declare(`declare ptr @scr_gen_retain_v(ptr)`);
-      host.declare(`declare void @scr_gen_release_v(ptr)`);
-      return { retain: "@scr_gen_retain_v", release: "@scr_gen_release_v" };
-    case "func":
-      host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
-      host.declare(`declare void @scr_closure_release_v(ptr)`);
-      return { retain: "@scr_closure_retain_v", release: "@scr_closure_release_v" };
-    case "symbol":
-      host.declare(`declare ptr @scr_sym_retain_v(ptr)`);
-      host.declare(`declare void @scr_sym_release_v(ptr)`);
-      return { retain: "@scr_sym_retain_v", release: "@scr_sym_release_v" };
-    case "regex":
-      host.declare(`declare ptr @scr_regex_retain_v(ptr)`);
-      host.declare(`declare void @scr_regex_release_v(ptr)`);
-      return { retain: "@scr_regex_retain_v", release: "@scr_regex_release_v" };
     case "record":
       return { retain: `@${mangleRecordRetain(t.shapeId)}`, release: `@${mangleRecordRelease(t.shapeId)}` };
     case "object":
-      if (RUNTIME_ERROR_CLASSES.has(t.className)) {
-        host.declare(`declare ptr @scr_error_retain_v(ptr)`);
-        host.declare(`declare void @scr_error_release_v(ptr)`);
-        return { retain: "@scr_error_retain_v", release: "@scr_error_release_v" };
-      }
-      if (t.className === RUNTIME_EMITTER_CLASS) {
-        // Bare EventEmitter instances: the runtime's `_v` pair (release
-        // dispatches through the stamped vtable, so a base-typed release
-        // tears down a user subclass too).
-        host.declare(`declare ptr @scr_emitter_retain_v(ptr)`);
-        host.declare(`declare void @scr_emitter_release_v(ptr)`);
-        return { retain: "@scr_emitter_retain_v", release: "@scr_emitter_release_v" };
-      }
-      if (RUNTIME_STREAM_CLASSES.has(t.className)) {
-        // The five runtime stream classes share ONE runtime layout; the
-        // `_v` pair dispatches teardown through the stamped vtable.
-        host.declare(`declare ptr @scr_stream_retain_v(ptr)`);
-        host.declare(`declare void @scr_stream_release_v(ptr)`);
-        return { retain: "@scr_stream_retain_v", release: "@scr_stream_release_v" };
-      }
       // Emitted per-class helpers are already `_v`-shaped (ptr → ptr /
       // ptr → void), so the same symbols serve as container entry points.
       return { retain: `@${mangleClassRetain(t.className)}`, release: `@${mangleClassRelease(t.className)}` };
-    case "classval":
-      // No-ops on the immortal class object; container machinery uniform.
-      host.declare(`declare ptr @scr_classobj_retain_v(ptr)`);
-      host.declare(`declare void @scr_classobj_release_v(ptr)`);
-      return { retain: "@scr_classobj_retain_v", release: "@scr_classobj_release_v" };
-    case "fsWatcher":
-      // fs.watch handles (ScrWatcher): the runtime's `_v` pair; no trace
-      // (listeners drop at close — never part of a lasting cycle).
-      host.declare(`declare ptr @scr_watcher_retain_v(ptr)`);
-      host.declare(`declare void @scr_watcher_release_v(ptr)`);
-      return { retain: "@scr_watcher_retain_v", release: "@scr_watcher_release_v" };
-    case "netServer":
-      host.declare(`declare ptr @scr_net_server_retain_v(ptr)`);
-      host.declare(`declare void @scr_net_server_release_v(ptr)`);
-      return { retain: "@scr_net_server_retain_v", release: "@scr_net_server_release_v" };
-    case "netSocket":
-      host.declare(`declare ptr @scr_net_sock_retain_v(ptr)`);
-      host.declare(`declare void @scr_net_sock_release_v(ptr)`);
-      return { retain: "@scr_net_sock_retain_v", release: "@scr_net_sock_release_v" };
-    case "dgramSocket":
-      host.declare(`declare ptr @scr_dgram_retain_v(ptr)`);
-      host.declare(`declare void @scr_dgram_release_v(ptr)`);
-      return { retain: "@scr_dgram_retain_v", release: "@scr_dgram_release_v" };
-    case "httpReq":
-      host.declare(`declare ptr @scr_http_req_retain_v(ptr)`);
-      host.declare(`declare void @scr_http_req_release_v(ptr)`);
-      return { retain: "@scr_http_req_retain_v", release: "@scr_http_req_release_v" };
-    case "httpRes":
-      host.declare(`declare ptr @scr_http_res_retain_v(ptr)`);
-      host.declare(`declare void @scr_http_res_release_v(ptr)`);
-      return { retain: "@scr_http_res_retain_v", release: "@scr_http_res_release_v" };
-    case "httpClientReq":
-      host.declare(`declare ptr @scr_http_client_retain_v(ptr)`);
-      host.declare(`declare void @scr_http_client_release_v(ptr)`);
-      return { retain: "@scr_http_client_retain_v", release: "@scr_http_client_release_v" };
-    case "secureCtx":
-      host.declare(`declare ptr @scr_secure_ctx_retain_v(ptr)`);
-      host.declare(`declare void @scr_secure_ctx_release_v(ptr)`);
-      return { retain: "@scr_secure_ctx_retain_v", release: "@scr_secure_ctx_release_v" };
-    case "testCtx":
-      host.declare(`declare ptr @scr_testctx_retain_v(ptr)`);
-      host.declare(`declare void @scr_testctx_release_v(ptr)`);
-      return { retain: "@scr_testctx_retain_v", release: "@scr_testctx_release_v" };
-    case "jsval":
-      // Island handles (the --dynamic engine boundary): the runtime's
-      // `_v` pair; UNTRACED (engine values never join static cycles).
-      host.declare(`declare ptr @scr_jsval_retain_v(ptr)`);
-      host.declare(`declare void @scr_jsval_release_v(ptr)`);
-      return { retain: "@scr_jsval_retain_v", release: "@scr_jsval_release_v" };
-    case "dyn":
-      // dyn values (the `unknown` boundary): the runtime's `_v` pair —
-      // scr_dyn_retain is a header inline, so the `_v` symbols serve both
-      // roles. UNTRACED (the dyn→closure stance: cycles through dyn are
-      // never collected, SEMANTICS.md) — traceAdapter answers null.
-      host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
-      host.declare(`declare void @scr_dyn_release_v(ptr)`);
-      return { retain: "@scr_dyn_retain_v", release: "@scr_dyn_release_v" };
     default:
       throw new LlvmUnsupportedError(`rc:${t.kind}`);
   }
@@ -317,98 +185,20 @@ export function retainSym(host: ShapeHost, t: IrType): string {
  * typed releases are external symbols, so the direct (non-`_v`) entry
  * points serve where one exists; records use their emitted helper. */
 export function releaseSym(host: ShapeHost, t: IrType): string {
+  const stem = runtimeRcStem(t);
+  if (stem !== null) {
+    // scr_classobj_release is header-inline only; LLVM calls its exported
+    // `_v` wrapper. Every other runtime family exports the typed release.
+    const suffix = t.kind === "classval" ? "_release_v" : "_release";
+    const release = `@${stem}${suffix}`;
+    host.declare(`declare void ${release}(ptr)`);
+    return release;
+  }
   switch (t.kind) {
-    case "caught":
-      host.declare(`declare void @scr_caught_release(ptr)`);
-      return "@scr_caught_release";
-    case "string":
-      host.declare(`declare void @scr_str_release(ptr)`);
-      return "@scr_str_release";
-    case "array":
-      host.declare(`declare void @scr_arr_release(ptr)`);
-      return "@scr_arr_release";
-    case "map":
-    case "set":
-      host.declare(`declare void @scr_map_release(ptr)`);
-      return "@scr_map_release";
-    case "union":
-      host.declare(`declare void @scr_union_release(ptr)`);
-      return "@scr_union_release";
-    case "promise":
-      host.declare(`declare void @scr_promise_release(ptr)`);
-      return "@scr_promise_release";
-    case "bytes":
-      host.declare(`declare void @scr_bytes_release(ptr)`);
-      return "@scr_bytes_release";
-    case "url":
-      host.declare(`declare void @scr_url_release_v(ptr)`);
-      return "@scr_url_release_v";
-    case "searchParams":
-      host.declare(`declare void @scr_sp_release_v(ptr)`);
-      return "@scr_sp_release_v";
-    case "stats":
-      host.declare(`declare void @scr_stats_release_v(ptr)`);
-      return "@scr_stats_release_v";
-    case "spawnRes":
-      host.declare(`declare void @scr_spawn_res_release_v(ptr)`);
-      return "@scr_spawn_res_release_v";
-    case "child":
-      host.declare(`declare void @scr_child_release_v(ptr)`);
-      return "@scr_child_release_v";
-    case "childStream":
-      host.declare(`declare void @scr_child_stream_release_v(ptr)`);
-      return "@scr_child_stream_release_v";
-    case "generator":
-      host.declare(`declare void @scr_gen_release(ptr)`);
-      return "@scr_gen_release";
-    case "func":
-      host.declare(`declare void @scr_closure_release(ptr)`);
-      return "@scr_closure_release";
-    case "symbol":
-      host.declare(`declare void @scr_sym_release(ptr)`);
-      return "@scr_sym_release";
-    case "regex":
-      host.declare(`declare void @scr_regex_release(ptr)`);
-      return "@scr_regex_release";
     case "record":
       return `@${mangleRecordRelease(t.shapeId)}`;
     case "object":
-      if (RUNTIME_ERROR_CLASSES.has(t.className)) {
-        host.declare(`declare void @scr_error_release_v(ptr)`);
-        return "@scr_error_release_v";
-      }
-      if (t.className === RUNTIME_EMITTER_CLASS) {
-        host.declare(`declare void @scr_emitter_release_v(ptr)`);
-        return "@scr_emitter_release_v";
-      }
-      if (RUNTIME_STREAM_CLASSES.has(t.className)) {
-        host.declare(`declare void @scr_stream_release_v(ptr)`);
-        return "@scr_stream_release_v";
-      }
       return `@${mangleClassRelease(t.className)}`;
-    case "classval":
-      host.declare(`declare void @scr_classobj_release_v(ptr)`);
-      return "@scr_classobj_release_v";
-    case "fsWatcher":
-      host.declare(`declare void @scr_watcher_release_v(ptr)`);
-      return "@scr_watcher_release_v";
-    case "netServer":
-    case "netSocket":
-    case "dgramSocket":
-    case "httpReq":
-    case "httpRes":
-    case "httpClientReq":
-    case "secureCtx":
-    case "testCtx":
-      // The handle kinds share their `_v` pair for both roles.
-      return vAdapters(host, t).release;
-    case "jsval":
-      host.declare(`declare void @scr_jsval_release_v(ptr)`);
-      return "@scr_jsval_release_v";
-    case "dyn":
-      // scr_dyn_release releases the tree recursively; NULL-tolerant.
-      host.declare(`declare void @scr_dyn_release(ptr)`);
-      return "@scr_dyn_release";
     default:
       throw new LlvmUnsupportedError(`rc:${t.kind}`);
   }
@@ -425,7 +215,7 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
       return "@scr_closure_trace_v";
     case "promise":
       // Promises are unconditionally cycle-capable (a rejection payload
-      // is an arbitrary thrown value) — emit-shapes.ts's row.
+      // is an arbitrary thrown value) — shapes.ts's row.
       host.declare(`declare void @scr_promise_trace_v(ptr, ptr, ptr)`);
       return "@scr_promise_trace_v";
     case "union":
@@ -472,7 +262,7 @@ export function traceArg(host: ShapeHost, t: IrType): string {
 
 /* ── arrays ───────────────────────────────────────────────────────────── */
 
-/** Runtime accessor suffix for an element type (matches emit-types.ts:
+/** Runtime accessor suffix for an element type (matches types.ts:
  * f64 and bool unboxed, everything refcounted through the `_ref` family). */
 export function elemAccess(elem: IrType): "f64" | "bool" | "ref" {
   return elem.kind === "f64" ? "f64" : elem.kind === "bool" ? "bool" : "ref";
@@ -513,12 +303,12 @@ export function arrNewCall(host: ShapeHost, elem: IrType, capText: string): stri
     elem.kind === "regex" || // RegExp values: scr_regex_* adapters, no trace (no refs inside)
     (elem.kind === "array" && traceAdapter(host, elem) !== null);
   if (!useRef) {
-    host.declare(`declare ptr @scr_arr_new(i32, i64)`);
-    return `call ptr @scr_arr_new(i32 ${elemKindNum(elem)}, i64 ${capText})`;
+    host.declare(`declare ptr @scr_arr_new(i32, ${host.sizeType})`);
+    return `call ptr @scr_arr_new(i32 ${elemKindNum(elem)}, ${host.sizeType} ${capText})`;
   }
   const v = vAdapters(host, elem);
-  host.declare(`declare ptr @scr_arr_new_ref(ptr, ptr, ptr, i64)`);
-  return `call ptr @scr_arr_new_ref(ptr ${v.retain}, ptr ${v.release}, ptr ${traceArg(host, elem)}, i64 ${capText})`;
+  host.declare(`declare ptr @scr_arr_new_ref(ptr, ptr, ptr, ${host.sizeType})`);
+  return `call ptr @scr_arr_new_ref(ptr ${v.retain}, ptr ${v.release}, ptr ${traceArg(host, elem)}, ${host.sizeType} ${capText})`;
 }
 
 /* ── capture boxes ────────────────────────────────────────────────────── */
@@ -528,7 +318,7 @@ export function arrNewCall(host: ShapeHost, elem: IrType, capText: string): stri
  * data) for per-shape payloads and cycle-capable arrays. SCR_BOX_* tags
  * from scr_runtime.h. */
 export function boxNewCall(host: ShapeHost, t: IrType): string {
-  const plain: Partial<Record<IrType["kind"], number>> = { f64: 0, bool: 1, string: 2, func: 4 };
+  const plain: Partial<Record<IrType["kind"], number>> = { f64: 0, date: 0, bool: 1, string: 2, func: 4 };
   const kind = plain[t.kind];
   if (kind !== undefined) {
     host.declare(`declare ptr @scr_box_new(i32)`);
@@ -542,7 +332,7 @@ export function boxNewCall(host: ShapeHost, t: IrType): string {
     t.kind === "record" || t.kind === "object" || t.kind === "classval" || t.kind === "union" ||
     t.kind === "array" || t.kind === "map" || t.kind === "set" || t.kind === "symbol" || t.kind === "regex" ||
     t.kind === "promise" || t.kind === "bytes" || t.kind === "url" || t.kind === "searchParams" ||
-    t.kind === "stats" || t.kind === "spawnRes" || t.kind === "child" || t.kind === "childStream" ||
+    t.kind === "stats" || t.kind === "fileHandle" || t.kind === "spawnRes" || t.kind === "child" || t.kind === "childStream" ||
     t.kind === "generator" ||
     t.kind === "netServer" || t.kind === "netSocket" || t.kind === "dgramSocket" ||
     t.kind === "httpReq" || t.kind === "httpRes" || t.kind === "httpClientReq" ||
@@ -565,7 +355,7 @@ export function boxNewCall(host: ShapeHost, t: IrType): string {
 
 /** Box accessor suffix (boxAccess): scalars unboxed, ref kinds pointers. */
 export function boxAccess(t: IrType): "f64" | "bool" | "ref" {
-  return t.kind === "f64" ? "f64" : t.kind === "bool" ? "bool" : "ref";
+  return t.kind === "f64" || t.kind === "date" ? "f64" : t.kind === "bool" ? "bool" : "ref";
 }
 
 /* ── record shapes ────────────────────────────────────────────────────── */
@@ -573,43 +363,13 @@ export function boxAccess(t: IrType): "f64" | "bool" | "ref" {
 /** A record field's in-struct LLVM type. bool fields store as i8 (the C
  * _Bool layout); loads/stores convert at the access site. */
 export function llFieldType(t: IrType): "double" | "i8" | "ptr" {
+  if (POINTER_KINDS.has(t.kind) && t.kind !== "http2Session" && t.kind !== "http2Stream") return "ptr";
   switch (t.kind) {
     case "f64":
+    case "date":
       return "double";
     case "bool":
       return "i8";
-    case "string":
-    case "array":
-    case "record":
-    case "object":
-    case "classval":
-    case "union":
-    case "func":
-    case "map":
-    case "set":
-    case "symbol":
-    case "regex":
-    case "promise":
-    case "bytes":
-    case "url":
-    case "searchParams":
-    case "stats":
-    case "spawnRes":
-    case "child":
-    case "childStream":
-    case "generator":
-    case "dyn":
-    case "jsval":
-    case "fsWatcher":
-    case "netServer":
-    case "netSocket":
-    case "dgramSocket":
-    case "httpReq":
-    case "httpRes":
-    case "httpClientReq":
-    case "secureCtx":
-    case "testCtx":
-      return "ptr";
     default:
       throw new LlvmUnsupportedError(`type:${t.kind}`);
   }
@@ -650,30 +410,73 @@ function rcMembers(shape: IrRecordShape): { index: number; type: IrType; name: s
 }
 
 /** The immortal-skip + mark-live retain body shared by every shape. The
- * cycle header sits 32 bytes before the object; `color` is at header+16,
+ * cycle header sits before the object; `color` is at obj-16 on 64-bit
+ * targets and obj-12 on wasm32,
  * so mark-live is one i32 store at obj-16 (scr_cyc_mark_live inlined —
  * the runtime's is a static inline with no external symbol). */
-function retainBody(fnName: string, traced: boolean): string[] {
+export function retainBody(host: ShapeHost, fnName: string, traced: boolean, comment = ""): string[] {
+  const S = host.sizeType;
   return [
-    `define internal ptr @${fnName}(ptr %o) ${FN_ATTRS} {`,
+    `define internal ptr @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment}` : ""}`,
     `entry:`,
     `  %isnull = icmp eq ptr %o, null`,
     `  br i1 %isnull, label %done, label %check`,
     `check:`,
-    `  %rc = load i64, ptr %o`,
-    `  %imm = icmp eq i64 %rc, -1`,
+    `  %rc = load ${S}, ptr %o`,
+    `  %imm = icmp eq ${S} %rc, -1`,
     `  br i1 %imm, label %done, label %inc`,
     `inc:`,
-    `  %n = add i64 %rc, 1`,
-    `  store i64 %n, ptr %o`,
+    `  %n = add ${S} %rc, 1`,
+    `  store ${S} %n, ptr %o`,
     ...(traced
-      ? [`  %colorp = getelementptr i8, ptr %o, i64 -16`, `  store i32 0, ptr %colorp ; mark live`]
+      ? [`  %colorp = getelementptr i8, ptr %o, ${S} -${host.cycleColorOffset}`, `  store i32 0, ptr %colorp ; mark live`]
       : []),
     `  br label %done`,
     `done:`,
     `  ret ptr %o`,
     `}`,
   ];
+}
+
+/** Common NULL/immortal/decrement skeleton for ordinary object releases.
+ * `freeBody` owns the zero-ref teardown and must leave the current block at
+ * its end; traced objects also get the possible-cycle-root branch. */
+export function releaseBody(
+  host: ShapeHost,
+  fnName: string,
+  traced: boolean,
+  freeBody: string[],
+  comment = "",
+): string[] {
+  const S = host.sizeType;
+  const lines = [
+    `define internal void @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment}` : ""}`,
+    `entry:`,
+    `  %isnull = icmp eq ptr %o, null`,
+    `  br i1 %isnull, label %done, label %check`,
+    `check:`,
+    `  %rc = load ${S}, ptr %o`,
+    `  %imm = icmp eq ${S} %rc, -1`,
+    `  br i1 %imm, label %done, label %dec`,
+    `dec:`,
+    `  %n = sub ${S} %rc, 1`,
+    `  store ${S} %n, ptr %o`,
+    `  %dead = icmp eq ${S} %n, 0`,
+    `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
+    `free:`,
+    ...freeBody,
+    `  br label %done`,
+  ];
+  if (traced) {
+    host.declare(`declare void @scr_cyc_on_release(ptr)`);
+    lines.push(
+      `root:`,
+      `  call void @scr_cyc_on_release(ptr %o) ; possible cycle root; may collect`,
+      `  br label %done`,
+    );
+  }
+  lines.push(`done:`, `  ret void`, `}`);
+  return lines;
 }
 
 /** Per-record-shape LLVM emission: the named struct types (returned as
@@ -695,7 +498,7 @@ export function emitRecordShapes(host: ShapeHost, mod: IrModule): { typeDefs: st
     const fieldTys = shape.fields.map((f) => llFieldType(f.type));
     if (shape.indexValue) fieldTys.push("ptr"); // the overflow ScrMap *
     typeDefs.push(
-      `%${struct} = type { i64${fieldTys.length ? ", " + fieldTys.join(", ") : ""} } ` +
+      `%${struct} = type { ${host.sizeType}${fieldTys.length ? ", " + fieldTys.join(", ") : ""} } ` +
         `; record ${shape.id} { ${shape.fields.map((f) => f.name).join("; ")}${shape.indexValue ? "; [key: string]" : ""} }`,
     );
   }
@@ -705,60 +508,37 @@ export function emitRecordShapes(host: ShapeHost, mod: IrModule): { typeDefs: st
     const traced = host.tracedShapes.has(`record:${shape.id}`);
     const members = rcMembers(shape);
     const refMembers = members.filter((m) => isRefCounted(m.type));
-    const sizeOf = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 1) to i64)`;
+    const sizeOf = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 1) to ${host.sizeType})`;
 
-    defs.push(...retainBody(mangleRecordRetain(shape.id), traced), ``);
+    defs.push(...retainBody(host, mangleRecordRetain(shape.id), traced), ``);
 
     // release: NULL-tolerant, immortal-skip; at rc == 0 release every
     // refcounted member (runtime releases are NULL-tolerant) and free —
     // traced shapes route through the collector (on_dead/on_release,
-    // scr_cyc_free) exactly like emit-shapes.ts.
-    const rel: string[] = [
-      `define internal void @${mangleRecordRelease(shape.id)}(ptr %o) ${FN_ATTRS} {`,
-      `entry:`,
-      `  %isnull = icmp eq ptr %o, null`,
-      `  br i1 %isnull, label %done, label %check`,
-      `check:`,
-      `  %rc = load i64, ptr %o`,
-      `  %imm = icmp eq i64 %rc, -1`,
-      `  br i1 %imm, label %done, label %dec`,
-      `dec:`,
-      `  %n = sub i64 %rc, 1`,
-      `  store i64 %n, ptr %o`,
-      `  %dead = icmp eq i64 %n, 0`,
-      `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
-      `free:`,
-    ];
+    // scr_cyc_free) exactly like shapes.ts.
+    const freeBody: string[] = [];
     if (traced) {
       host.declare(`declare void @scr_cyc_on_dead(ptr)`);
-      rel.push(`  call void @scr_cyc_on_dead(ptr %o)`);
+      freeBody.push(`  call void @scr_cyc_on_dead(ptr %o)`);
     }
     let t = 0;
     for (const m of refMembers) {
-      rel.push(
+      freeBody.push(
         `  %f${t} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${m.index}`,
         `  %v${t} = load ptr, ptr %f${t}`,
         `  call void ${releaseSym(host, m.type)}(ptr %v${t}) ; ${m.name}`,
       );
       t++;
     }
-    rel.push(`  call void @scr_obj_free_note()`);
+    freeBody.push(`  call void @scr_obj_free_note()`);
     if (traced) {
       host.declare(`declare void @scr_cyc_free(ptr)`);
-      host.declare(`declare void @scr_cyc_on_release(ptr)`);
-      rel.push(
-        `  call void @scr_cyc_free(ptr %o)`,
-        `  br label %done`,
-        `root:`,
-        `  call void @scr_cyc_on_release(ptr %o) ; possible cycle root; may collect`,
-        `  br label %done`,
-      );
+      freeBody.push(`  call void @scr_cyc_free(ptr %o)`);
     } else {
       host.declare(`declare void @free(ptr)`);
-      rel.push(`  call void @free(ptr %o)`, `  br label %done`);
+      freeBody.push(`  call void @free(ptr %o)`);
     }
-    rel.push(`done:`, `  ret void`, `}`, ``);
-    defs.push(...rel);
+    defs.push(...releaseBody(host, mangleRecordRelease(shape.id), traced, freeBody), ``);
 
     // new: zeroed allocation (+ the overflow map on index-signature
     // shapes), rc = 1, alloc note. Traced shapes allocate with the
@@ -768,15 +548,15 @@ export function emitRecordShapes(host: ShapeHost, mod: IrModule): { typeDefs: st
       `entry:`,
     ];
     if (traced) {
-      host.declare(`declare ptr @scr_cyc_alloc(i64, ptr, ptr)`);
+      host.declare(`declare ptr @scr_cyc_alloc(${host.sizeType}, ptr, ptr)`);
       nw.push(
-        `  %o = call ptr @scr_cyc_alloc(i64 ${sizeOf}, ptr @${mangleRecordTrace(shape.id)}, ptr @${mangleRecordGcFree(shape.id)})`,
+        `  %o = call ptr @scr_cyc_alloc(${host.sizeType} ${sizeOf}, ptr @${mangleRecordTrace(shape.id)}, ptr @${mangleRecordGcFree(shape.id)})`,
       );
     } else {
-      host.declare(`declare ptr @calloc(i64, i64)`);
+      host.declare(`declare ptr @calloc(${host.sizeType}, ${host.sizeType})`);
       host.needOom();
       nw.push(
-        `  %o = call ptr @calloc(i64 1, i64 ${sizeOf})`,
+        `  %o = call ptr @calloc(${host.sizeType} 1, ${host.sizeType} ${sizeOf})`,
         `  %isnull = icmp eq ptr %o, null`,
         `  br i1 %isnull, label %oom, label %ok`,
         `oom:`,
@@ -785,10 +565,10 @@ export function emitRecordShapes(host: ShapeHost, mod: IrModule): { typeDefs: st
         `ok:`,
       );
     }
-    nw.push(`  store i64 1, ptr %o`);
+    nw.push(`  store ${host.sizeType} 1, ptr %o`);
     if (shape.indexValue) {
       // The overflow map (string-keyed): value handling is type-directed
-      // exactly like emit-shapes.ts's overflowNewC.
+      // exactly like shapes.ts's overflowNewC.
       host.declare(`declare ptr @scr_map_new(i32, i32, ptr, ptr, ptr)`);
       const v = shape.indexValue;
       const valKind = v.kind === "f64" ? 0 : v.kind === "bool" ? 1 : 2;
@@ -802,6 +582,37 @@ export function emitRecordShapes(host: ShapeHost, mod: IrModule): { typeDefs: st
     }
     nw.push(`  call void @scr_obj_alloc_note()`, `  ret ptr %o`, `}`, ``);
     defs.push(...nw);
+
+    if (host.recordCloneShapes.has(shape.id)) {
+      const attrs = shape.fields.length >= 16 ? "#2" : FN_ATTRS;
+      const clone: string[] = [
+        `define internal ptr @${mangleRecordClone(shape.id)}(ptr %src) ${attrs} {`,
+        `entry:`,
+        `  %o = call ptr @${mangleRecordNew(shape.id)}()`,
+      ];
+      let i = 0;
+      for (const field of shape.fields) {
+        const index = i + 1;
+        const fieldTy = llFieldType(field.type);
+        clone.push(
+          `  %sp${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
+          `  %sv${i} = load ${fieldTy}, ptr %sp${i}`,
+        );
+        const stored = isRefCounted(field.type)
+          ? `%sr${i}`
+          : `%sv${i}`;
+        if (isRefCounted(field.type)) {
+          clone.push(`  ${stored} = call ptr ${retainSym(host, field.type)}(ptr %sv${i})`);
+        }
+        clone.push(
+          `  %dp${i} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${index}`,
+          `  store ${fieldTy} ${stored}, ptr %dp${i} ; ${field.name}`,
+        );
+        i++;
+      }
+      clone.push(`  ret ptr %o`, `}`, ``);
+      defs.push(...clone);
+    }
 
     if (traced) {
       // trace: visit exactly the cycle-capable members; gcFree: release

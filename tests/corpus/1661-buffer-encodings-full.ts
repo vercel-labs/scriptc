@@ -61,3 +61,69 @@ const names = ["utf8", "UTF8", "utf-8", "ascii", "latin1", "binary", "base64", "
 for (const n of names) {
   console.log(n, Buffer.isEncoding(n));
 }
+
+// A BufferEncoding variable dispatches at runtime (including aliases and
+// range forms); casts can expose Node's case-insensitive spellings and its
+// catchable ERR_UNKNOWN_ENCODING path.
+const variableEncodings: BufferEncoding[] = ["hex", "base64url", "binary", "ucs-2", "utf-8"];
+for (const encoding of variableEncodings) {
+  console.log("variable", encoding, raw.toString(encoding));
+}
+function variableTail(encoding: BufferEncoding): string {
+  return raw.toString(encoding, 2);
+}
+function variableRange(encoding: BufferEncoding): string {
+  return raw.toString(encoding, 1, 4);
+}
+console.log("variable tail", variableTail("hex"));
+console.log("variable range", variableRange("hex"));
+console.log("variable upper", raw.toString("BASE64" as BufferEncoding));
+try {
+  raw.toString("wat" as BufferEncoding);
+  console.log("variable bad did not throw");
+} catch (e) {
+  if (e instanceof TypeError) {
+    console.log("variable bad", (e as NodeJS.ErrnoException).code, e.message);
+  }
+}
+try {
+  variableRange("wat-range" as BufferEncoding);
+  console.log("variable bad range did not throw");
+} catch (e) {
+  if (e instanceof TypeError) {
+    console.log("variable bad range", (e as NodeJS.ErrnoException).code, e.message);
+  }
+}
+
+// Forwarding an optional encoding preserves Buffer.toString(undefined)'s
+// utf8 default instead of treating the absent arm as a failed string cast.
+function optionalEncoding(encoding?: BufferEncoding): string {
+  return raw.toString(encoding);
+}
+console.log("variable optional present", optionalEncoding("hex"));
+console.log("variable optional absent", optionalEncoding());
+console.log("variable explicit undefined", raw.toString(undefined));
+
+// Unknown-encoding messages preserve the complete runtime string,
+// including long values and embedded NULs.
+const unusualBadEncodings: BufferEncoding[] = [
+  "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" as BufferEncoding,
+  "\u0000wat" as BufferEncoding,
+];
+for (const encoding of unusualBadEncodings) {
+  try {
+    raw.toString(encoding);
+  } catch (e) {
+    if (e instanceof TypeError) {
+      console.log("variable bad exact", (e as NodeJS.ErrnoException).code, JSON.stringify(e.message), e.message.length);
+    }
+  }
+}
+
+// Node selects the byte window before resolving a runtime encoding. An
+// empty buffer or a range that clamps to empty therefore returns "" even
+// when the encoding name is unknown.
+const emptyBadEncoding = "wat-empty" as BufferEncoding;
+console.log("variable bad empty buffer", JSON.stringify(Buffer.alloc(0).toString(emptyBadEncoding)));
+console.log("variable bad empty tail", JSON.stringify(raw.toString(emptyBadEncoding, raw.length)));
+console.log("variable bad empty range", JSON.stringify(raw.toString(emptyBadEncoding, 2, 2)));

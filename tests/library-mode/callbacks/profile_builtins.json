@@ -1,0 +1,23 @@
+{
+  "profile_format": 1,
+  "name": "conformance-callback-builtins",
+  "entry": "lib_builtins.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "cbb_",
+    "init_symbol": "cbb_init",
+    "sink_register_symbol": "cbb_set_panic_sink",
+    "collect_symbol": null,
+    "result_reset_symbol": null,
+    "callback_register_symbol": "cbb_set_callback"
+  },
+  "callbacks": [
+    { "name": "isNaN", "params": ["f64"], "returns": "bool" },
+    { "name": "parseInt", "params": ["string", "u32"], "returns": "f64" },
+    { "name": "int", "params": ["f64"], "returns": "f64" }
+  ],
+  "exports": [
+    { "export": "checkBuiltin", "symbol": "cbb_check_builtin", "params": ["f64"], "returns": "bool" },
+    { "export": "callKeyword", "symbol": "cbb_call_keyword", "params": ["f64"], "returns": "f64" }
+  ]
+}

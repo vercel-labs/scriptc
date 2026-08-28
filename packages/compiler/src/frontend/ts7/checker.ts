@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* The checker facade: 5.9.3-shaped TypeChecker methods over 7.0.2's sync
  * client, built around the survey's feasibility verdict. Naive per-call use
  * of the 7.0.2 client costs 0.1-0.3 ms of IPC per query; the census counted
@@ -13,24 +14,26 @@
  *    memoize (warm re-query of 21 nodes costs 2.5-3.8 ms; the survey's
  *    finding), so this layer is where reuse lives.
  *
- * 2. PER-FILE BATCH PREFETCH. The first getTypeAtLocation/getSymbolAtLocation
- *    miss in a source file walks the whole file client-side (free — the AST
- *    is local) and issues the ARRAY overloads for every node, chunked, then
- *    answers all later queries for that file from the memo. The lowering's
- *    walk touches most of a file anyway, so prefetching the file is the
- *    batching lever without changing a single call site. prefetchSourceFile()
- *    exposes the same hook explicitly. Symbol prefetch also batch-fetches
- *    getTypeOfSymbol over every symbol the file mentions (5,333 calls of the
- *    mock-gateway census ride that pattern).
+ * 2. PHASE-AWARE BATCH PREFETCH. Ordinary callers keep the whole-file
+ *    first-miss fallback, but the compiler explicitly batches declaration
+ *    headers, top-level code, and each newly reachable body wave. Managed
+ *    files then use direct memoized misses instead of accidentally sweeping
+ *    every unreachable body. prefetchSourceFile() retains the whole-file
+ *    escape hatch. Symbol prefetch also batch-fetches getTypeOfSymbol over
+ *    every symbol each batch surfaces (5,333 calls of the mock-gateway
+ *    census ride that pattern).
  *
  * 3. CLIENT-SIDE FAST PATHS. getBaseTypeOfLiteralType — the census's single
  *    hottest method (9,059 calls on mock-gateway) — is answered locally from
  *    type.flags plus the intrinsic-type singletons for the literal kinds
  *    5.9.3 maps to intrinsics (string/number/bigint/boolean literals), with
  *    IPC only for enum-ish and union types. isTupleType answers shape-true
- *    and non-object-false locally and round-trips (memoized) only for
- *    object types. Both verified against the raw checker AND against 5.9.3
- *    by the adapter's suites. */
+ *    and non-object-false locally; isArrayType likewise answers
+ *    non-object-false locally. Both round-trip (memoized) only where object
+ *    identity needs the checker. Immutable union/intersection constituents
+ *    are memoized too because TypeScript 7's Type.getTypes() otherwise
+ *    repeats an IPC request. All paths are verified against the raw checker
+ *    and against 5.9.3 by the adapter's suites. */
 
 import type { Node, SourceFile } from "typescript/unstable/ast";
 import type {
@@ -44,7 +47,7 @@ import type {
   TypeReference,
 } from "typescript/unstable/sync";
 import { walkPreorder } from "./ast.js";
-import { SignatureKind, TypeFlags } from "./enums.js";
+import { SignatureKind, SyntaxKind, TypeFlags } from "./enums.js";
 
 /** Array-overload chunk size: large enough that per-request overhead
  * vanishes, small enough to keep any single JSON-RPC payload modest. */
@@ -92,17 +95,108 @@ function chunked<T, R>(items: readonly T[], fetch: (chunk: readonly T[]) => read
  * memoized per-node call. */
 const PREFETCH_MAX_DEPTH = 512;
 
-/** Preorder sweep of the whole file, ITERATIVE (walkPreorder): the obvious
+/** Node kinds the lowering routinely asks getTypeAtLocation about. The
+ * fallback path remains correct for every other kind, but bulk-querying the
+ * entire AST was severe overfetch on generated facades (191k nodes fetched,
+ * only 29k ever requested). */
+const TYPE_PREFETCH_KINDS = new Set<SyntaxKind>([
+  SyntaxKind.Identifier,
+  SyntaxKind.ThisKeyword,
+  SyntaxKind.PropertyAccessExpression,
+  SyntaxKind.ElementAccessExpression,
+  SyntaxKind.CallExpression,
+  SyntaxKind.NewExpression,
+  SyntaxKind.ObjectLiteralExpression,
+  SyntaxKind.ArrayLiteralExpression,
+  SyntaxKind.ConditionalExpression,
+]);
+
+/** The TypeScript 7 client identity-dedupes immutable types but does not
+ * memoize Type.getTypes(): every union/intersection inspection otherwise
+ * repeats getTypesOfType over IPC. Keep that derived answer beside the
+ * adapter, shared by preflight and lowering regardless of which facade
+ * helper led to the type. */
+const constituentTypesOf = new WeakMap<Type, readonly Type[]>();
+
+export function constituentTypes(type: Type): readonly Type[] {
+  let types = constituentTypesOf.get(type);
+  if (types === undefined) {
+    types = (type as Type & { getTypes(): readonly Type[] | undefined }).getTypes() ?? [];
+    constituentTypesOf.set(type, types);
+  }
+  return types;
+}
+
+/** Function-like declarations whose body is deferred until reachability
+ * asks for it. Header prefetch walks their names, type parameters, params,
+ * and return types but leaves the body for a later explicit body wave. */
+const DEFERRED_BODY_OWNERS = new Set<SyntaxKind>([
+  SyntaxKind.FunctionDeclaration,
+  SyntaxKind.FunctionExpression,
+  SyntaxKind.ArrowFunction,
+  SyntaxKind.MethodDeclaration,
+  SyntaxKind.Constructor,
+  SyntaxKind.GetAccessor,
+  SyntaxKind.SetAccessor,
+]);
+
+type PrefetchWalk = "all" | "structure" | "reachable";
+
+function isClassLikeKind(kind: SyntaxKind): boolean {
+  return kind === SyntaxKind.ClassDeclaration || kind === SyntaxKind.ClassExpression;
+}
+
+function isClassMember(node: Node | undefined): boolean {
+  return node?.parent !== undefined && isClassLikeKind(node.parent.kind);
+}
+
+function isDeferredExecutableRoot(node: Node, walk: PrefetchWalk): boolean {
+  if (walk === "all") return false;
+  const parent = node.parent as (Node & {
+    body?: Node;
+    initializer?: Node;
+    modifiers?: readonly Node[];
+  }) | undefined;
+  if (parent === undefined) return false;
+  if (DEFERRED_BODY_OWNERS.has(parent.kind) && parent.body === node) {
+    // Structure collection defers every function-like body. A reached
+    // outer body still eagerly lowers nested closures/functions, but class
+    // methods remain independent reachability units.
+    return walk === "structure" || isClassMember(parent);
+  }
+  // Parameter defaults execute on function entry, not while its signature
+  // is collected. Keep an unreachable declaration's default cold too.
+  if (parent.kind === SyntaxKind.Parameter && parent.initializer === node) {
+    return walk === "structure" || isClassMember(parent.parent);
+  }
+  // Instance field initializers execute in the constructor. Static fields
+  // remain declaration-time code and therefore stay in the structure wave.
+  return (
+    parent.kind === SyntaxKind.PropertyDeclaration &&
+    parent.initializer === node &&
+    !parent.modifiers?.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword)
+  );
+}
+
+/** Preorder sweep of one or more roots, ITERATIVE (walkPreorder): the obvious
  * recursive forEachChild walk overflowed the stack HERE, in the prefetch
  * sweep, on the binderBinaryExpressionStress chains — before lowering could
- * answer with its SC1090 nesting fence. */
-function collectNodes(sf: SourceFile): Node[] {
+ * answer with its SC1090 nesting fence. Overlapping roots are identity-
+ * deduped so a header/body wave never sends the same node twice. */
+function collectNodes(roots: readonly Node[], walk: PrefetchWalk = "all"): Node[] {
   const nodes: Node[] = [];
-  walkPreorder(sf, (n, depth) => {
-    nodes.push(n);
-    if (depth >= PREFETCH_MAX_DEPTH) return "skip";
-    return undefined;
-  });
+  const seen = new Set<Node>();
+  for (const root of roots) {
+    walkPreorder(root, (n, depth) => {
+      if (n !== root && isDeferredExecutableRoot(n, walk)) return "skip";
+      if (!seen.has(n)) {
+        seen.add(n);
+        nodes.push(n);
+      }
+      if (depth >= PREFETCH_MAX_DEPTH) return "skip";
+      return undefined;
+    });
+  }
   return nodes;
 }
 
@@ -136,6 +230,11 @@ export class CheckerFacade {
   /** Files whose nodes have been batch-prefetched, per query kind. */
   private readonly prefetchedTypes = new WeakSet<SourceFile>();
   private readonly prefetchedSymbols = new WeakSet<SourceFile>();
+  /** Files owned by explicit phase-aware prefetch. A miss in one of these
+   * files must stay a direct memoized query; falling back to whole-file
+   * prefetch would silently pull every unreachable body back into a build. */
+  private readonly managedTypes = new WeakSet<SourceFile>();
+  private readonly managedSymbols = new WeakSet<SourceFile>();
   private unknownType: Type | null = null;
   /** Intrinsic singletons (string/number/bigint/boolean), fetched once. */
   private readonly intrinsics = new Map<string, Type>();
@@ -160,7 +259,7 @@ export class CheckerFacade {
 
   private requireProject(): Project {
     const project = this.options.project;
-    if (!project) throw new Error("CheckerFacade built without a project cannot resolve declarations");
+    if (!project) throw new InternalCompilerError("CheckerFacade built without a project cannot resolve declarations");
     return project;
   }
 
@@ -242,10 +341,97 @@ export class CheckerFacade {
     this.prefetchSymbols(sf);
   }
 
+  /** Batches the non-body structure of many files as ONE logical wave.
+   * Top-level executable statements, class field initializers/static blocks,
+   * and every declaration header are included; function/method/constructor
+   * bodies wait for reachability. Calling this also opts the files out of
+   * accidental whole-file first-miss prefetch. */
+  prefetchSourceFileStructures(files: readonly SourceFile[]): void {
+    this.markManaged(files);
+    this.prefetchNodes(collectNodes(files, "structure"));
+  }
+
+  /** Batches all checker-hot nodes under many reached roots. Lowering uses
+   * this for all init bodies together and for each declaration/instance
+   * worklist wave. The roots may overlap; identity deduplication and the
+   * answer memos make warm repeats free. */
+  prefetchRoots(roots: readonly Node[]): void {
+    this.markManaged(roots);
+    this.prefetchNodes(collectNodes(roots, "reachable"));
+  }
+
+  /** Batches symbol queries for every identifier under roots without the
+   * usual companion getTypeOfSymbol batch. Preflight uses this for AST
+   * analyses that themselves inspect deferred bodies for binding identity:
+   * those scans need symbols, but do not consume the symbols' types. */
+  prefetchSymbolRoots(roots: readonly Node[]): void {
+    this.markManaged(roots);
+    this.prefetchSymbolNodes(collectNodes(roots), false, false);
+  }
+
+  /** Exact-node sibling of prefetchSymbolRoots for analyses that first
+   * narrow a large AST walk to the identifier spellings they compare. */
+  prefetchSymbolNodesExact(nodes: readonly Node[]): void {
+    this.markManaged(nodes);
+    this.prefetchSymbolNodes([...new Set(nodes)], false, false);
+  }
+
+  /** Batches the hot getTypeAtLocation nodes structure collection may read
+   * despite their runtime expressions being reachability-deferred. */
+  prefetchCollectionTypes(nodes: readonly Node[]): void {
+    this.markManaged(nodes);
+    // Match ordinary whole-file prefetch's hot-kind boundary. Collection
+    // asks some defaults conditionally; uncommon cold expressions should
+    // remain direct misses only if collection actually consumes them.
+    this.prefetchTypeNodes([...new Set(nodes)]);
+  }
+
+  /** Batches the exact body nodes class-shape collection reads before body
+   * reachability is known. JavaScript field inference asks for the RHS type
+   * and for a symbol on the `this.x` property access itself; ordinary
+   * prefetch intentionally covers neither uncommon RHS kinds nor symbols
+   * on non-identifiers. Descendants of symbol roots join because computed
+   * `this[key]` declarations resolve the key identifier too. */
+  prefetchClassCollection(
+    typeNodes: readonly Node[],
+    symbolRoots: readonly Node[],
+  ): void {
+    this.markManaged([...typeNodes, ...symbolRoots]);
+    this.prefetchExactTypeNodes(typeNodes);
+    this.prefetchSymbolNodes(collectNodes(symbolRoots, "reachable"), true);
+  }
+
+  private prefetchExactTypeNodes(typeNodes: readonly Node[]): void {
+    const distinctTypes = [...new Set(typeNodes)].filter(
+      (node) => !this.typeAtLocation.has(node),
+    );
+    const types = chunked(distinctTypes, (chunk) => this.typesWithPanicFence(chunk));
+    distinctTypes.forEach((node, index) => this.typeAtLocation.set(node, types[index]));
+  }
+
+  private markManaged(roots: readonly Node[]): void {
+    for (const root of roots) {
+      const sf = root.getSourceFile();
+      this.managedTypes.add(sf);
+      this.managedSymbols.add(sf);
+    }
+  }
+
+  private prefetchNodes(nodes: readonly Node[]): void {
+    this.prefetchTypeNodes(nodes);
+    this.prefetchSymbolNodes(nodes);
+  }
+
   private prefetchTypes(sf: SourceFile): void {
     if (this.prefetchedTypes.has(sf)) return;
     this.prefetchedTypes.add(sf);
-    const nodes = collectNodes(sf).filter((n) => !this.typeAtLocation.has(n));
+    this.prefetchTypeNodes(collectNodes([sf]));
+  }
+
+  private prefetchTypeNodes(allNodes: readonly Node[]): void {
+    const nodes = allNodes.filter(
+      (n) => TYPE_PREFETCH_KINDS.has(n.kind) && !this.typeAtLocation.has(n),
+    );
     const types = chunked(nodes, (chunk) => this.typesWithPanicFence(chunk));
     nodes.forEach((n, i) => this.typeAtLocation.set(n, types[i]));
   }
@@ -259,7 +445,20 @@ export class CheckerFacade {
   private prefetchSymbols(sf: SourceFile): void {
     if (this.prefetchedSymbols.has(sf)) return;
     this.prefetchedSymbols.add(sf);
-    const nodes = collectNodes(sf).filter((n) => !this.symbolAtLocation.has(n));
+    this.prefetchSymbolNodes(collectNodes([sf]));
+  }
+
+  private prefetchSymbolNodes(
+    allNodes: readonly Node[],
+    includePropertyAccess = false,
+    prefetchSymbolTypes = true,
+  ): void {
+    const symbolNodes = allNodes.filter(
+      (n) =>
+        (n.kind === SyntaxKind.Identifier ||
+          (includePropertyAccess && n.kind === SyntaxKind.PropertyAccessExpression)),
+    );
+    const nodes = symbolNodes.filter((n) => !this.symbolAtLocation.has(n));
     // The same bisecting panic fence as the type sweep: tsgo panics on
     // SYMBOL queries too (observed: GetSymbolAtLocation over an
     // `import.defer(...)` callee — the sweep's batch must not turn one
@@ -268,10 +467,18 @@ export class CheckerFacade {
       withPanicFence(chunk, (c) => this.raw.getSymbolAtLocation(c)),
     );
     nodes.forEach((n, i) => this.symbolAtLocation.set(n, symbols[i]));
+    if (!prefetchSymbolTypes) return;
     // The walk's companion query: types of the symbols the file mentions.
-    const distinct = [...new Set(symbols.filter((s): s is Ts7Symbol => s !== undefined))].filter(
-      (s) => !this.typeOfSymbol.has(s),
-    );
+    // Include warm node answers too: a preceding symbol-only analysis may
+    // have populated symbolAtLocation without fetching symbol types, and a
+    // later reachable-body wave must still batch those missing types.
+    const distinct = [
+      ...new Set(
+        symbolNodes
+          .map((node) => this.symbolAtLocation.get(node))
+          .filter((symbol): symbol is Ts7Symbol => symbol !== undefined),
+      ),
+    ].filter((symbol) => !this.typeOfSymbol.has(symbol));
     const symbolTypes = chunked(distinct, (chunk) =>
       withPanicFence(chunk, (c) => this.raw.getTypeOfSymbol(c)),
     );
@@ -281,8 +488,11 @@ export class CheckerFacade {
   private autoPrefetch(node: Node, kind: "types" | "symbols"): void {
     if (this.options.autoPrefetch === false) return;
     const sf = node.getSourceFile();
-    if (kind === "types") this.prefetchTypes(sf);
-    else this.prefetchSymbols(sf);
+    if (kind === "types") {
+      if (!this.managedTypes.has(sf)) this.prefetchTypes(sf);
+    } else if (!this.managedSymbols.has(sf)) {
+      this.prefetchSymbols(sf);
+    }
   }
 
   getTypeAtLocation(node: Node): Type {
@@ -470,6 +680,11 @@ export class CheckerFacade {
   }
 
   isArrayType(type: Type): boolean {
+    // Arrays are object types. The raw checker agrees that primitive,
+    // union/intersection, and type-parameter objects themselves are not
+    // arrays (a narrowed array arm arrives as its object type), so avoid a
+    // request for every visibly non-object type just as isTupleType does.
+    if (!(type.flags & TypeFlags.Object)) return false;
     let answer = this.arrayTypeAnswer.get(type);
     if (answer === undefined) {
       answer = this.raw.isArrayType(type);
@@ -543,7 +758,7 @@ export class CheckerFacade {
   private computeAwaitedType(type: Type, depth: number): Type | undefined {
     if (depth > 8) return undefined; // matches 5.9.3's unwrap depth fence
     if (type.isUnionType()) {
-      const arms = type.getTypes();
+      const arms = constituentTypes(type);
       const awaited = arms.map((arm) => this.computeAwaitedType(arm, depth + 1));
       if (awaited.some((arm) => arm === undefined)) return undefined;
       // No arm was a promise: awaiting the union is the union itself

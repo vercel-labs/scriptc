@@ -75,6 +75,7 @@ import { compileLibrary } from "@scriptc/compiler";
 
 const repoRoot = join(import.meta.dirname, "../..");
 const fixtureRoot = join(repoRoot, "tests/library-mode");
+const platformTest = process.env["SCRIPTC_PORTABLE_ONLY"] === "1" ? test.skip : test;
 /* The plain and SCRIPTC_SAN=1 suites may run concurrently by design (the
  * suite lock is per flavor) and this suite runs the same ordinary builds in
  * both, so the cache path carries the SUITE flavor — otherwise the two runs
@@ -506,7 +507,7 @@ survived, sink_calls=1
 
   /* ── K10: the sanitized lane (ASan + the RC audit's re-init seam) ────── */
 
-  test("K10: K4 under ASan + RC audit (zero live heap across re-init)", async () => {
+  platformTest("K10: K4 under ASan + RC audit (zero live heap across re-init)", async () => {
     const { archive, outDir } = await buildLibrary("reinit", emission, { sanitize: true });
     const probe = buildProbe("reinit", archive, outDir, { sanitize: true });
     const run = runProbe(probe);
@@ -515,7 +516,7 @@ survived, sink_calls=1
     expect(run.stdout).toBe(SESSION + SESSION + SESSION);
   });
 
-  test("K10: K5/K7 under ASan", async () => {
+  platformTest("K10: K5/K7 under ASan", async () => {
     const { archive, outDir } = await buildLibrary("traps", emission, { sanitize: true });
     const probe = buildProbe("traps", archive, outDir, { sanitize: true });
     const trap = runProbe(probe, ["trap"]);
@@ -566,6 +567,38 @@ async function refusal(
     ...(d.note !== undefined ? { note: d.note } : {}),
     file: d.loc.file,
   }));
+}
+
+async function acceptance(
+  source: string,
+  profilePatch: Record<string, unknown>,
+  emission: Emission = "c",
+): Promise<void> {
+  const outDir = join(cacheDir, `acceptance-${refusalCounter++}`);
+  mkdirSync(outDir, { recursive: true });
+  const entry = join(outDir, "lib.ts");
+  writeFileSync(entry, source);
+  const profilePath = join(outDir, "profile.json");
+  writeFileSync(
+    profilePath,
+    JSON.stringify({
+      profile_format: 1,
+      name: "acceptance-fixture",
+      entry,
+      emission,
+      abi: {
+        prefix: "kx_",
+        init_symbol: "kx_init",
+        sink_register_symbol: "kx_set_panic_sink",
+        collect_symbol: null,
+        result_reset_symbol: null,
+      },
+      exports: [],
+      ...profilePatch,
+    }),
+  );
+  const result = await compileLibrary({ profilePath, outDir });
+  expect(result.ok, result.ok ? undefined : result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n")).toBe(true);
 }
 
 describe("K9: library-mode refusals", () => {
@@ -784,6 +817,25 @@ describe.each(EMISSIONS)("K14: determinism fences, %s emission", (emission) => {
     expect(diags[0]!.message).toContain("Date.now");
     expect(diags[0]!.note).toContain("time is an effect");
     expect(diags[0]!.file.endsWith("lib.ts")).toBe(true);
+  });
+
+  test("an exact Date.valueOf fence does not also fence getTime", async () => {
+    const exportProfile = {
+      exports: [{ export: "read", symbol: "kx_read", params: [], returns: "f64" }],
+      determinism: { fences: [{ id: "stdlib.date.valueOf" }] },
+    };
+    await acceptance(
+      `export function read(): number { return new Date(0).getTime(); }\n`,
+      exportProfile,
+      emission,
+    );
+    const diags = await refusal(
+      `export function read(): number { return new Date(0).valueOf(); }\n`,
+      exportProfile,
+      emission,
+    );
+    expect(diags.map((d) => d.code)).toEqual(["SC4008"]);
+    expect(diags[0]!.message).toContain("'stdlib.date.valueOf'");
   });
 
   test("a process.env read under the full-fence profile refuses SC4008 naming the process entry", async () => {

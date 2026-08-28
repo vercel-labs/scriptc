@@ -1,80 +1,35 @@
-node-fallback-fence.ts:17:1 - error SC2020: 'process.stdin.setEncoding' is part of the standard library types but has no scriptc lowering yet
+node-fallback-fence.ts:16:1 - error SC2020: 'process.stdin.setEncoding' is part of the standard library types but has no scriptc lowering yet
 
-  16 | process.off("exit", () => {});
-  17 | process.stdin.setEncoding("utf8"); // stays fenced: chunks are bytes
+  15 | process.off("exit", () => {});
+  16 | process.stdin.setEncoding("utf8"); // stays fenced: chunks are bytes
      | ^~~~~~~~~~~~~~~~~~~~~~~~~
-  18 | const buf = Buffer.from("x", "utf8").reverse(); // from and fill lower; reverse fences
+  17 | const buf = Buffer.from("x", "utf8").reverse(); // from and fill lower; reverse fences
 
   hint: isTTY, destroy(), on/once of the data/end/error events, and `for await (const chunk of process.stdin)` are the supported stdin surface (or read everything at once: readFileSync(0, "utf8") from node:fs)
 
-node-fallback-fence.ts:18:13 - error SC2020: 'Buffer<ArrayBufferLike>.reverse' is part of the standard library types but has no scriptc lowering yet
+node-fallback-fence.ts:17:13 - error SC2020: 'Buffer<ArrayBufferLike>.reverse' is part of the standard library types but has no scriptc lowering yet
 
-  17 | process.stdin.setEncoding("utf8"); // stays fenced: chunks are bytes
-  18 | const buf = Buffer.from("x", "utf8").reverse(); // from and fill lower; reverse fences
+  16 | process.stdin.setEncoding("utf8"); // stays fenced: chunks are bytes
+  17 | const buf = Buffer.from("x", "utf8").reverse(); // from and fill lower; reverse fences
      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  19 | const enc = new TextEncoder().encode("x");
+  18 | const enc = new TextEncoder().encode("x");
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-node-fallback-fence.ts:21:7 - error SC2012: a value of type 'AbortSignal' runs in the embedded dynamic engine, which this build does not include
+node-fallback-fence.ts:31:28 - error SC2020: 'deflateSync of 'string' data' is part of the standard library types but has no scriptc lowering yet
 
-  20 | const dec = new TextDecoder().decode(enc);
-  21 | const signal = AbortSignal.timeout(1000);
-     |       ^~~~~~
-  22 | const res = fetch("https://example.com", { signal });
-
-  hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
-
-node-fallback-fence.ts:21:16 - error SC2012: 'AbortSignal.timeout' runs in the embedded dynamic engine, which this build does not include
-
-  20 | const dec = new TextDecoder().decode(enc);
-  21 | const signal = AbortSignal.timeout(1000);
-     |                ^~~~~~~~~~~~~~~~~~~~~~~~~
-  22 | const res = fetch("https://example.com", { signal });
-
-  hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
-
-node-fallback-fence.ts:22:7 - error SC2011: values of type 'Promise<Response>' have no static representation but run in the embedded dynamic engine, which this build does not include
-
-  21 | const signal = AbortSignal.timeout(1000);
-  22 | const res = fetch("https://example.com", { signal });
-     |       ^~~
-  23 | const tty = process.stdout.isTTY;
-
-  hint: build with --dynamic to run these values in the embedded engine (adds ~620KB to the binary), or restate the type inside the static surface (https://scriptc.dev/limitations describes the boundary)
-
-node-fallback-fence.ts:22:13 - error SC2012: 'fetch' runs in the embedded dynamic engine, which this build does not include
-
-  21 | const signal = AbortSignal.timeout(1000);
-  22 | const res = fetch("https://example.com", { signal });
-     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  23 | const tty = process.stdout.isTTY;
-
-  hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
-
-node-fallback-fence.ts:29:49 - error SC2020: 'Buffer.toString with this encoding' is part of the standard library types but has no scriptc lowering yet
-
-  28 | const tmp = mkdtempSync("/tmp/scr-");
-  29 | const raw = readFileSync("/etc/hosts").toString(tty ? "hex" : "latin1"); // the read and every literal encoding lower; a non-literal fences
-     |                                                 ^~~~~~~~~~~~~~~~~~~~~~
-  30 | 
-
-  hint: a literal "utf8", "hex", "base64", "base64url", "latin1", "binary", "ascii", "utf16le", or "ucs2" spelling is the lowered encoding surface
-
-node-fallback-fence.ts:32:28 - error SC2020: 'deflateSync of 'string' data' is part of the standard library types but has no scriptc lowering yet
-
-  31 | import { deflateSync, gzipSync } from "node:zlib";
-  32 | const packed = deflateSync("data"); // string data: the wrap-it-first hint
+  30 | import { deflateSync, gzipSync } from "node:zlib";
+  31 | const packed = deflateSync("data"); // string data: the wrap-it-first hint
      |                            ^~~~~~
-  33 | const zipped = gzipSync("data"); // beyond the lowered pair: fenced
+  32 | const zipped = gzipSync("data"); // beyond the lowered pair: fenced
 
   hint: zlib works on Buffers: deflateSync(Buffer.from(s, "utf8"))
 
-node-fallback-fence.ts:33:16 - error SC2020: 'zlib.gzipSync' is part of the standard library types but has no scriptc lowering yet
+node-fallback-fence.ts:32:16 - error SC2020: 'zlib.gzipSync' is part of the standard library types but has no scriptc lowering yet
 
-  32 | const packed = deflateSync("data"); // string data: the wrap-it-first hint
-  33 | const zipped = gzipSync("data"); // beyond the lowered pair: fenced
+  31 | const packed = deflateSync("data"); // string data: the wrap-it-first hint
+  32 | const zipped = gzipSync("data"); // beyond the lowered pair: fenced
      |                ^~~~~~~~~~~~~~~~
-  34 | 
+  33 | // The remaining imports continue the declared-but-not-lowered surface.
 
   hint: deflateSync and inflateSync are the lowered zlib surface

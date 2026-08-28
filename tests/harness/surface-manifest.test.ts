@@ -26,7 +26,7 @@ import {
   generateSurfaceManifest,
   ir,
   LIB_FN_SIGS,
-  renderAll,
+  renderDiagnostics,
   renderSurfaceManifest,
   resolveLibraryFences,
   type SurfaceManifest,
@@ -39,7 +39,7 @@ const readJson = (p: string): { version: string } =>
 
 // The version spine: the release workflow keys on packages/cli (the
 // published `scriptc` package); sync-versions.mjs stamps the same string
-// into runtime and compiler.
+// into runtime, the native LLVM helper, and compiler.
 const releaseVersion = readJson("packages/cli/package.json").version;
 
 const committed = readFileSync(manifestPath, "utf8");
@@ -63,10 +63,11 @@ describe("surface manifest generation", () => {
   test("the version spine is the exact published version string", () => {
     const parsed = JSON.parse(committed) as SurfaceManifest;
     expect(parsed.compilerVersion).toBe(releaseVersion);
-    // The three packages publish in lockstep; a drifted stamp would make
+    // The four packages publish in lockstep; a drifted stamp would make
     // the spine ambiguous for a version pin.
     expect(readJson("packages/compiler/package.json").version).toBe(releaseVersion);
     expect(readJson("packages/runtime/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/llvm-darwin-arm64/package.json").version).toBe(releaseVersion);
   });
 
   test("schema: ids unique and sorted, enums valid, codes on every non-static entry", () => {
@@ -111,10 +112,29 @@ const PROBES: Probe[] = [
   { id: "syntax.compound-assignment.plus", source: 'let x = 1;\nx += 2;\nconsole.log(x);\n' },
   { id: "stdlib.string.charCodeAt", source: 'console.log("abc".charCodeAt(0));\n' },
   { id: "stdlib.array.push", source: "const xs: number[] = [1];\nxs.push(2);\nconsole.log(xs.length);\n" },
+  { id: "stdlib.array.unshift", source: "const xs: number[] = [2];\nconsole.log(xs.unshift(1), xs[0]);\n" },
+  { id: "stdlib.array.reverse", source: "const xs: number[] = [1, 2];\nconsole.log(xs.reverse()[0]);\n" },
   { id: "stdlib.math.floor", source: "console.log(Math.floor(1.5));\n" },
   { id: "stdlib.map.has", source: 'const m = new Map<string, number>();\nm.set("a", 1);\nconsole.log(m.has("a"));\n' },
   { id: "stdlib.date.now", source: "console.log(Date.now() > 0);\n" },
   { id: "stdlib.number.toFixed", source: "const n = 1.2345;\nconsole.log(n.toFixed(2));\n" },
+  { id: "stdlib.abort-signal.timeout", source: "const signal = AbortSignal.timeout(1000);\nconsole.log(signal.aborted);\n" },
+  {
+    id: "stdlib.abort-controller.constructor",
+    source: "const controller = new AbortController();\ncontroller.abort();\nconsole.log(controller.signal.aborted);\n",
+  },
+  {
+    id: "stdlib.readable-stream.constructor",
+    source: "const stream = new ReadableStream<number>();\nconsole.log(stream.locked);\n",
+  },
+  {
+    id: "stdlib.readable-stream.from",
+    source: "const stream = ReadableStream.from([1, 2]);\nconsole.log(stream.locked);\n",
+  },
+  {
+    id: "stdlib.response.constructor",
+    source: '/// <reference types="node" />\nvoid new Response("ok");\n',
+  },
   { id: "node-builtin.process.pid", source: "console.log(process.pid > 0);\n" },
   { id: "node-builtin.perf_hooks.performance.now", source: "console.log(performance.now() >= 0);\n" },
   { id: "node-builtin.path.join", source: 'import { join } from "node:path";\nconsole.log(join("a", "b"));\n' },
@@ -124,8 +144,52 @@ const PROBES: Probe[] = [
   { id: "stdlib.math.sqrt", source: "console.log(Math.sqrt(2));\n" },
   { id: "stdlib.math.PI", source: "console.log(Math.PI);\n" },
   { id: "stdlib.string.replace", source: 'console.log("aa".replace("a", "b"));\n' },
+  {
+    id: "stdlib.headers.entries",
+    source: '/// <reference types="node" />\nasync function f(): Promise<void> {\n  const r = await fetch("http://127.0.0.1");\n  void r.headers.entries();\n}\nvoid f();\n',
+  },
+  {
+    id: "stdlib.request.constructor",
+    source: '/// <reference types="node" />\nvoid new Request("http://127.0.0.1");\n',
+  },
+  {
+    id: "stdlib.headers.symbol.iterator",
+    source: '/// <reference types="node" />\nfunction f([first]: Headers): void {\n  void first;\n}\nvoid f;\n',
+  },
   { id: "diagnostic.sc2011", source: "const y: any = 1;\nconst z = y * 2;\nconsole.log(0);\n" },
   // status unsupported — refused with the entry's code
+  {
+    id: "stdlib.abort-signal.constructor",
+    source: '/// <reference types="node" />\nvoid new AbortSignal();\n',
+  },
+  {
+    id: "stdlib.headers.constructor",
+    source: '/// <reference types="node" />\nvoid new Headers();\n',
+  },
+  {
+    id: "stdlib.response.static.json",
+    source: '/// <reference types="node" />\nvoid Response.json(1);\n',
+  },
+  {
+    id: "stdlib.response.clone",
+    source: '/// <reference types="node" />\nasync function f(): Promise<void> {\n  const r = await fetch("http://127.0.0.1");\n  void r.clone();\n}\nvoid f();\n',
+  },
+  {
+    id: "stdlib.readable-stream.tee",
+    source: '/// <reference types="node" />\ntype BodyStream = ReadableStream<Uint8Array>;\nfunction f(s: BodyStream): void {\n  void s.tee();\n}\nconsole.log(typeof f);\n',
+  },
+  {
+    id: "stdlib.fetch.request-init.cache",
+    source: '/// <reference types="node" />\nconst init: RequestInit = { cache: "no-store" };\nvoid fetch("http://127.0.0.1", init);\nvoid fetch("http://127.0.0.1", { ...({ cache: "no-store" } as const) });\n',
+  },
+  {
+    id: "stdlib.fetch.request-init.dispatcher",
+    source: '/// <reference types="node" />\nvoid fetch("http://127.0.0.1", { dispatcher: JSON.parse("{}") });\n',
+  },
+  {
+    id: "stdlib.readable-stream.symbol.asyncIterator",
+    source: '/// <reference types="node" />\nfunction f(s: ReadableStream<Uint8Array>): void {\n  void s[Symbol.asyncIterator]();\n}\nvoid f;\n',
+  },
   { id: "syntax.debugger-statements", source: "debugger;\nconsole.log(0);\n" },
   {
     id: "syntax.delete-expressions",
@@ -142,7 +206,16 @@ const PROBES: Probe[] = [
   },
 ];
 
-const probeRoot = mkdtempSync(join(tmpdir(), "scr-surface-manifest-"));
+// Keep probes below the workspace so explicit `/// <reference types="node" />`
+// rows resolve the repository's pinned @types/node package. Ordinary probes
+// still use the compiler fallback declarations exactly as before.
+const probeCacheRoot = join(repoRoot, "node_modules/.cache");
+mkdirSync(probeCacheRoot, { recursive: true });
+const probeRoot = mkdtempSync(join(probeCacheRoot, "scr-surface-manifest-"));
+writeFileSync(
+  join(probeRoot, "tsconfig.json"),
+  `${JSON.stringify({ compilerOptions: { strict: true, skipLibCheck: true } }, null, 2)}\n`,
+);
 
 function probeFile(probe: Probe): string {
   const dir = join(probeRoot, probe.id.replace(/[^A-Za-z0-9]+/g, "-"));
@@ -175,9 +248,15 @@ describe("surface manifest sampling harness", () => {
       if (!result.ok) {
         expect.unreachable(
           `${probe.id} is listed static but did not compile:\n` +
-            renderAll(result.diagnostics, result.sourceTexts, { color: false }),
+            renderDiagnostics(result.diagnostics, result.sourceTexts, { color: false }),
         );
       }
+      const dyn = analyze(file, { dynamic: true }).coverage;
+      expect(
+        dyn.diagnostics.map((d) => `${d.code}: ${d.message}`),
+        `${probe.id}: enabling --dynamic must not disable a static surface`,
+      ).toEqual([]);
+      expect(dyn.stats.statementsFailed).toBe(0);
       return;
     }
     // Non-static: the refusal's code must equal the entry's code — the
@@ -193,13 +272,407 @@ describe("surface manifest sampling harness", () => {
         `${probe.id}: dynamic-only entries must analyze clean under --dynamic`,
       ).toEqual([]);
       expect(dyn.stats.statementsFailed).toBe(0);
+    } else {
+      const dyn = analyze(file, { dynamic: true }).coverage;
+      expect(dyn.preflightFailed, `${probe.id}: dynamic probe must reach lowering`).toBe(false);
+      const dynCodes = [...new Set(dyn.diagnostics.map((d) => d.code))];
+      expect(
+        dynCodes,
+        `${probe.id}: unsupported entries must retain the listed refusal under --dynamic`,
+      ).toEqual([entry!.code]);
     }
   });
 });
 
+test("unsupported RequestInit keys remain fenced when const-computed", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.request-init.cache.computed",
+    source:
+      '/// <reference types="node" />\nconst option = "cache" as const;\nvoid fetch("http://127.0.0.1", { [option]: "no-store" });\n',
+  });
+  const entry = entryById.get("stdlib.fetch.request-init.cache");
+  expect(entry).toBeDefined();
+  for (const dynamic of [false, true]) {
+    const { coverage } = analyze(file, { dynamic });
+    expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
+    expect(coverage.diagnostics[0]!.message).toContain("RequestInit option 'cache'");
+  }
+});
+
+test("unsupported RequestInit keys remain fenced through imported const aliases", () => {
+  const root = mkdtempSync(join(tmpdir(), "scr-request-init-import-"));
+  const initFile = join(root, "init.ts");
+  const mainFile = join(root, "main.ts");
+  writeFileSync(
+    join(root, "tsconfig.json"),
+    `${JSON.stringify({ compilerOptions: { strict: true, skipLibCheck: true } }, null, 2)}\n`,
+  );
+  writeFileSync(
+    initFile,
+    'export const init = { method: "GET", cache: "no-store" } as const;\n',
+  );
+  writeFileSync(
+    mainFile,
+    'import { init } from "./init.js";\nvoid fetch("http://127.0.0.1", init);\n',
+  );
+  const entry = entryById.get("stdlib.fetch.request-init.cache");
+  expect(entry).toBeDefined();
+  for (const dynamic of [false, true]) {
+    const { coverage } = analyze(mainFile, { dynamic });
+    expect(
+      coverage.preflightFailed,
+      coverage.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+    ).toBe(false);
+    expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
+    expect(coverage.diagnostics[0]!.message).toContain("RequestInit option 'cache'");
+  }
+});
+
+test("RequestInit fences statically traceable property and conditional values", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.request-init.cache.traced-expressions",
+    source:
+      '/// <reference types="node" />\n' +
+      'const options = { init: { cache: "no-store" } } as const;\n' +
+      'void fetch("http://127.0.0.1", options.init);\n' +
+      'const enabled = true;\n' +
+      'const init: RequestInit = enabled ? { cache: "no-store" } : { method: "GET" };\n' +
+      'void fetch("http://127.0.0.1", init);\n' +
+      'const disabled = false;\n' +
+      'const safe: RequestInit = disabled ? { cache: "no-store" } : { method: "GET" };\n' +
+      'void fetch("http://127.0.0.1", safe);\n',
+  });
+  const entry = entryById.get("stdlib.fetch.request-init.cache");
+  expect(entry).toBeDefined();
+  const { coverage } = analyze(file);
+  expect(coverage.preflightFailed).toBe(false);
+  expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
+  expect(coverage.diagnostics.filter((d) => d.code === entry!.code)).toHaveLength(2);
+  const dynamic = analyze(file, { dynamic: true }).coverage;
+  expect([...new Set(dynamic.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
+  expect(dynamic.diagnostics.filter((d) => d.code === entry!.code)).toHaveLength(2);
+});
+
+test("RequestInit traces properties through annotated const wrappers", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.request-init.cache.annotated-wrapper",
+    source:
+      '/// <reference types="node" />\n' +
+      'const options: { init: RequestInit } = { init: { cache: "no-store" } };\n' +
+      'void fetch("http://127.0.0.1", options.init);\n',
+  });
+  const entry = entryById.get("stdlib.fetch.request-init.cache");
+  expect(entry).toBeDefined();
+  const { coverage } = analyze(file);
+  expect(coverage.preflightFailed).toBe(false);
+  expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
+  expect(coverage.diagnostics).toHaveLength(1);
+  expect(coverage.diagnostics[0]!.message).toContain(
+    "RequestInit option 'cache' in a static build",
+  );
+  const dynamic = analyze(file, { dynamic: true }).coverage;
+  expect([...new Set(dynamic.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
+  expect(dynamic.diagnostics).toHaveLength(1);
+});
+
+test("RequestInit wrapper tracing respects a later property override", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.request-init.annotated-wrapper-override",
+    source:
+      '/// <reference types="node" />\n' +
+      'const base: { init: RequestInit } = { init: { cache: "no-store" } };\n' +
+      'const options: { init: RequestInit } = { ...base, init: { method: "GET" } };\n' +
+      'void fetch("http://127.0.0.1", options.init);\n',
+  });
+  for (const dynamic of [false, true]) {
+    const { coverage } = analyze(file, { dynamic });
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+    expect(coverage.stats.statementsFailed).toBe(0);
+  }
+});
+
+test("RequestInit spread tracing respects a later undefined override", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.request-init.spread-undefined-override",
+    source:
+      '/// <reference types="node" />\n' +
+      'const unsupported = { cache: "no-store" } as const;\n' +
+      'void fetch("http://127.0.0.1", { ...unsupported, cache: undefined });\n',
+  });
+  for (const dynamic of [false, true]) {
+    const coverage = analyze(file, { dynamic }).coverage;
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+    expect(coverage.stats.statementsFailed).toBe(0);
+  }
+});
+
+test("RequestInit tracing stops at property-mutated const objects", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.request-init.mutated-const",
+    source:
+      '/// <reference types="node" />\n' +
+      'const init: RequestInit = { cache: "no-store" };\n' +
+      'init.cache = undefined;\n' +
+      'void fetch("http://127.0.0.1", init);\n',
+  });
+  for (const dynamic of [false, true]) {
+    const coverage = analyze(file, { dynamic }).coverage;
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+    expect(coverage.stats.statementsFailed).toBe(0);
+  }
+});
+
+test("RequestInit traces const object and tuple binding aliases", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.request-init.cache.destructured-alias",
+    source:
+      '/// <reference types="node" />\n' +
+      'const options = { wrapper: { init: { cache: "no-store" } } } as const;\n' +
+      'const { wrapper: { init } } = options;\n' +
+      'void fetch("http://127.0.0.1", init);\n' +
+      'const tuple = [{ cache: "no-store" }] as const;\n' +
+      'const [tupleInit] = tuple;\n' +
+      'void fetch("http://127.0.0.1", tupleInit);\n',
+  });
+  const entry = entryById.get("stdlib.fetch.request-init.cache");
+  expect(entry).toBeDefined();
+  for (const dynamic of [false, true]) {
+    const coverage = analyze(file, { dynamic }).coverage;
+    expect(coverage.preflightFailed).toBe(false);
+    expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
+    expect(coverage.diagnostics.filter((d) => d.code === entry!.code)).toHaveLength(2);
+  }
+});
+
+test("island RequestInit literals accept supported const-computed keys", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.request-init.method.computed",
+    source:
+      '/// <reference types="node" />\n' +
+      'const option = "method" as const;\n' +
+      'void fetch("http://127.0.0.1", { [option]: "GET" });\n',
+  });
+  for (const dynamic of [false, true]) {
+    const coverage = analyze(file, { dynamic }).coverage;
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+    expect(coverage.stats.statementsFailed).toBe(0);
+  }
+});
+
+test("finite unions of dynamic-only Headers members retain the static fence", () => {
+  const file = probeFile({
+    id: "stdlib.headers.dynamic-member-union",
+    source:
+      '/// <reference types="node" />\n' +
+      'async function f(select: boolean): Promise<void> {\n' +
+      '  const response = await fetch("http://127.0.0.1");\n' +
+      '  const member: "keys" | "values" = select ? "keys" : "values";\n' +
+      '  void response.headers[member]();\n' +
+      '}\n' +
+      'void f;\n',
+  });
+  const entry = entryById.get("stdlib.headers.keys");
+  expect(entry).toBeDefined();
+  const { coverage } = analyze(file);
+  expect(coverage.preflightFailed).toBe(false);
+  expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
+  expect(coverage.diagnostics).toHaveLength(1);
+  expect(coverage.diagnostics[0]!.message).toContain("Headers.keys in a static build");
+  const dynamic = analyze(file, { dynamic: true }).coverage;
+  expect(dynamic.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+});
+
+test("fetch handle method calls retain their receiver through bracket spellings", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.bracket-method-calls",
+    source:
+      '/// <reference types="node" />\n' +
+      'async function f(): Promise<void> {\n' +
+      '  const response = await fetch("http://127.0.0.1");\n' +
+      '  const header: string | null = response.headers["get"]("x-kind");\n' +
+      '  const text: string = await response["text"]();\n' +
+      '  const member: "get" | "has" = header === null ? "get" : "has";\n' +
+      '  const selected: string | boolean | null = response.headers[member]("x-kind");\n' +
+      '  void text; void selected;\n' +
+      '}\n' +
+      'void f;\n',
+  });
+  for (const dynamic of [false, true]) {
+    const coverage = analyze(file, { dynamic }).coverage;
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+    expect(coverage.stats.statementsFailed).toBe(0);
+  }
+});
+
+test("static Response method unions retain their declared promise result", () => {
+  const file = probeFile({
+    id: "stdlib.response.computed-body-method-union",
+    source:
+      '/// <reference types="node" />\n' +
+      'async function f(select: boolean): Promise<void> {\n' +
+      '  const response = await fetch("http://127.0.0.1");\n' +
+      '  const member: "text" | "bytes" = select ? "text" : "bytes";\n' +
+      '  const body: string | Uint8Array = await response[member]();\n' +
+      '  void body;\n' +
+      '}\n' +
+      'void f;\n',
+  });
+  const coverage = analyze(file).coverage;
+  expect(coverage.preflightFailed).toBe(false);
+  expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  expect(coverage.stats.statementsFailed).toBe(0);
+});
+
+test("fetch companion surplus arguments remain supported under --dynamic", () => {
+  const dir = join(probeRoot, "fetch-companion-surplus");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "main.js");
+  writeFileSync(
+    file,
+    'const side = () => 1;\n' +
+      'void AbortSignal.abort(undefined, side());\n' +
+      'void AbortSignal.timeout(1, side());\n' +
+      'void AbortSignal.any([], side());\n' +
+      'void ReadableStream.from([], side());\n',
+  );
+  for (const dynamic of [false, true]) {
+    const coverage = analyze(file, { dynamic }).coverage;
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+    expect(coverage.stats.statementsFailed).toBe(0);
+  }
+});
+
+test("fetch interface object bindings retain the inventory fence code", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.object-binding-fences",
+    source:
+      '/// <reference types="node" />\n' +
+      'function headers(value: Headers): void { const { entries } = value; }\n' +
+      'function response(value: Response): void { const { clone } = value; }\n' +
+      'function stream(value: ReadableStream<Uint8Array>): void { const { tee } = value; }\n' +
+      'function assign(value: Headers, entries: unknown): void { ({ entries } = value); }\n' +
+      'void headers; void response; void stream; void assign;\n',
+  });
+  const { coverage } = analyze(file);
+  expect(coverage.preflightFailed).toBe(false);
+  expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual(["SC2020"]);
+  expect(coverage.diagnostics.filter((d) => d.code === "SC2020")).toHaveLength(4);
+  const dynamic = analyze(file, { dynamic: true }).coverage;
+  expect([...new Set(dynamic.diagnostics.map((d) => d.code))]).toEqual(["SC2020"]);
+  expect(dynamic.diagnostics.filter((d) => d.code === "SC2020")).toHaveLength(2);
+});
+
+test("static AbortController method reads fence instead of yielding undefined", () => {
+  const file = probeFile({
+    id: "stdlib.abort-controller.method-read-fence",
+    source:
+      '/// <reference types="node" />\n' +
+      'const controller = new AbortController();\n' +
+      'void controller.abort;\n' +
+      'void controller["abort"];\n' +
+      'void controller.signal;\n',
+  });
+  const { coverage } = analyze(file);
+  expect(coverage.preflightFailed).toBe(false);
+  expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual(["SC2020"]);
+  expect(coverage.diagnostics).toHaveLength(2);
+  expect(
+    coverage.diagnostics.every((d) =>
+      d.message.includes(
+        "AbortController.abort through method extraction in a static build",
+      )
+    ),
+  ).toBe(true);
+
+  const dynamic = analyze(file, { dynamic: true }).coverage;
+  expect(dynamic.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  expect(dynamic.stats.statementsFailed).toBe(0);
+});
+
+test("static fetch data properties remain destructurable in JavaScript", () => {
+  const dir = join(probeRoot, "fetch-static-data-binding");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "main.js");
+  writeFileSync(
+    file,
+      '/** @param {Response} response */\n' +
+      'function readResponse(response) {\n' +
+      '  const { status, ok } = response;\n' +
+      '  console.log(status, ok);\n' +
+      '}\n' +
+      'void readResponse;\n',
+  );
+  for (const dynamic of [false, true]) {
+    const coverage = analyze(file, { dynamic }).coverage;
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+    expect(coverage.stats.statementsFailed).toBe(0);
+  }
+});
+
+test("unimplemented Response and ReadableStream calls stay fenced under --dynamic", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.unimplemented-dynamic-methods",
+    source:
+      '/// <reference types="node" />\n' +
+      'function response(value: Response): void {\n' +
+      '  void value.clone(); void value.blob(); void value.formData();\n' +
+      '}\n' +
+      'function stream(value: ReadableStream<Uint8Array>): void {\n' +
+      '  void value.tee(); void value.pipeTo(null as never);\n' +
+      '}\n' +
+      'void response; void stream;\n',
+  });
+  for (const dynamic of [false, true]) {
+    const coverage = analyze(file, { dynamic }).coverage;
+    expect(coverage.preflightFailed).toBe(false);
+    expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual(["SC2020"]);
+    expect(coverage.diagnostics.filter((d) => d.code === "SC2020")).toHaveLength(5);
+  }
+});
+
+test("unsupported symbol object bindings remain fenced under --dynamic", () => {
+  const file = probeFile({
+    id: "stdlib.fetch.object-binding-unsupported-symbol",
+    source:
+      '/// <reference types="node" />\n' +
+      'function stream(value: ReadableStream<Uint8Array>): void {\n' +
+      '  const { [Symbol.asyncIterator]: iterator } = value;\n' +
+      '}\n' +
+      'void stream;\n',
+  });
+  for (const dynamic of [false, true]) {
+    const coverage = analyze(file, { dynamic }).coverage;
+    expect(coverage.preflightFailed).toBe(false);
+    expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual(["SC2020"]);
+  }
+});
+
+test("constructing a spread RequestInit does not apply fetch conversion fences", () => {
+  const root = mkdtempSync(join(tmpdir(), "scr-request-init-value-"));
+  const file = join(root, "main.ts");
+  writeFileSync(
+    file,
+    'interface RequestInit { cache?: "no-store"; }\n' +
+      'const base = { cache: "no-store" } as const;\n' +
+      'const init: RequestInit = { ...base };\n' +
+      'void init;\n',
+  );
+  const { coverage } = analyze(file);
+  expect(coverage.preflightFailed).toBe(false);
+  expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+  expect(coverage.stats.statementsFailed).toBe(0);
+});
+
 /* ── attestation ↔ fence parity: the ask-5 §4 invariant's ground ─────────
  * The library sidecar's `deterministic` attestation demotes on libCall
- * spellings by prefix (ir/nodes.ts's LIB_NONDETERMINISTIC_PREFIXES); the
+ * spellings by prefix (ir/ir.ts's LIB_NONDETERMINISTIC_PREFIXES); the
  * profile's determinism fences deny surfaces by manifest id. The §4
  * invariant — a program that compiles under full fences attests
  * deterministic: true — holds only if every spelling the attestation

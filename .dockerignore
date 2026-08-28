@@ -1,0 +1,13 @@
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!packages/
+!packages/cli/
+!packages/cli/package.json
+!packages/cli/scripts/
+!packages/cli/scripts/warm-cache.mjs
+!packages/compiler/
+!packages/compiler/package.json
+!packages/runtime/
+!packages/runtime/package.json

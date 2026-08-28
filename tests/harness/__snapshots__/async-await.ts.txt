@@ -1,6 +1,0 @@
-async-await.ts:4:13 - error SC1090: top-level await (await outside async functions) is not supported yet
-
-  3 | }
-  4 | const top = await ok();
-    |             ^~~~~~~~~~
-  5 | class Svc {

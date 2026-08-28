@@ -30,12 +30,19 @@ import { createHash } from "node:crypto";
 import { existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { describe, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { compile } from "@scriptc/compiler";
 
 const repoRoot = join(import.meta.dirname, "../..");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
+const executionTag = [
+  sanitize ? "san" : "plain",
+  process.env["SCRIPTC_TEST_RUN_ID"] ?? `pid-${process.pid}`,
+  process.env["SCRIPTC_TEST_SHARD"] ?? "all",
+]
+  .join("-")
+  .replace(/[^a-zA-Z0-9_.-]+/g, "-");
 
 const prettierRoot = process.env["SCRIPTC_PRETTIER_ROOT"] ?? join(homedir(), "Developer/prettier-scratch");
 const prettierPkg = join(prettierRoot, "node_modules/prettier");
@@ -44,6 +51,8 @@ const binEntry = join(prettierPkg, "bin/prettier.cjs");
 const havePrettier = existsSync(cliEntry) && existsSync(binEntry);
 
 let driverBinary = "";
+let driverDir = "";
+let driverOutDir = "";
 
 /* ── driver generation + build ───────────────────────────────────────── */
 
@@ -94,20 +103,25 @@ function hashInputs(): string {
 async function buildDriver(): Promise<string> {
   // realpath: macOS's tmpdir is a symlink (/var → /private/var), and Node
   // resolves the entry at its REAL path.
-  const dir = join(realpathSync(tmpdir()), "scriptc-prettier-e2e-driver");
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "main.ts"), DRIVER_ENTRY);
-  writeFileSync(join(dir, "prettier-cli.d.ts"), DRIVER_AMBIENT);
-  writeFileSync(join(dir, "tsconfig.json"), DRIVER_TSCONFIG);
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "prettier-e2e-driver", type: "module" }));
+  driverDir = join(realpathSync(tmpdir()), `scriptc-prettier-e2e-driver-${executionTag}`);
+  rmSync(driverDir, { recursive: true, force: true });
+  mkdirSync(driverDir, { recursive: true });
+  writeFileSync(join(driverDir, "main.ts"), DRIVER_ENTRY);
+  writeFileSync(join(driverDir, "prettier-cli.d.ts"), DRIVER_AMBIENT);
+  writeFileSync(join(driverDir, "tsconfig.json"), DRIVER_TSCONFIG);
+  writeFileSync(join(driverDir, "package.json"), JSON.stringify({ name: "prettier-e2e-driver", type: "module" }));
   // The bare "prettier/…" specifier resolves through the scratch install.
-  symlinkSync(join(prettierRoot, "node_modules"), join(dir, "node_modules"));
+  symlinkSync(join(prettierRoot, "node_modules"), join(driverDir, "node_modules"));
   const key = hashInputs();
-  const outDir = join(cacheDir, `prettier-e2e-${key}`);
-  const binary = join(outDir, "program");
-  mkdirSync(outDir, { recursive: true });
-  const result = await compile(join(dir, "main.ts"), { outPath: binary, outDir, sanitize, dynamic: true });
+  driverOutDir = join(cacheDir, `prettier-e2e-${key}-${executionTag}`);
+  const binary = join(driverOutDir, "program");
+  mkdirSync(driverOutDir, { recursive: true });
+  const result = await compile(join(driverDir, "main.ts"), {
+    outPath: binary,
+    outDir: driverOutDir,
+    sanitize,
+    dynamic: true,
+  });
   if (!result.ok) {
     throw new Error(
       "prettier e2e driver failed to compile:\n" +
@@ -251,6 +265,11 @@ describe.skipIf(!havePrettier)(`prettier e2e (real published CLI vs Node${saniti
   beforeAll(async () => {
     driverBinary = await buildDriver();
   }, 300_000);
+
+  afterAll(() => {
+    rmSync(driverDir, { recursive: true, force: true });
+    rmSync(driverOutDir, { recursive: true, force: true });
+  });
 
   test("version, help, and usage errors", async () => {
     await runBoth(["--version"]);

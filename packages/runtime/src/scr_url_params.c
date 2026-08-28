@@ -467,57 +467,6 @@ bool scr_sp_has_value(ScrSearchParams *sp, ScrStr *name, ScrStr *value) {
   return false;
 }
 
-/* UTF-16 code-unit comparison over well-formed UTF-8 (the spec's sort
- * order). Byte order ALMOST matches — the exception is U+E000..U+FFFF
- * (3-byte UTF-8, single high code units) vs supplementary code points
- * (4-byte UTF-8, surrogate pairs 0xD800..0xDFFF): bytes put the 4-byte
- * form last, code units put it first. Decode code points and compare
- * their leading UTF-16 units. */
-static uint32_t sp_lead_unit(const unsigned char *s, size_t len, size_t *adv) {
-  unsigned char b = s[0];
-  uint32_t cp;
-  size_t n;
-  if (b < 0x80) {
-    cp = b; n = 1;
-  } else if ((b & 0xe0) == 0xc0) {
-    cp = b & 0x1fu; n = 2;
-  } else if ((b & 0xf0) == 0xe0) {
-    cp = b & 0x0fu; n = 3;
-  } else {
-    cp = b & 0x07u; n = 4;
-  }
-  if (n > len) n = len; /* defensive: strings are well-formed by contract */
-  for (size_t i = 1; i < n; i++) cp = (cp << 6) | (s[i] & 0x3fu);
-  *adv = n;
-  if (cp >= 0x10000) return 0xd800 + ((cp - 0x10000) >> 10); /* high surrogate leads */
-  return cp;
-}
-
-static int sp_cmp_u16(const ScrStr *a, const ScrStr *b) {
-  size_t ia = 0, ib = 0;
-  while (ia < a->len && ib < b->len) {
-    size_t na, nb;
-    uint32_t ua = sp_lead_unit((const unsigned char *)a->data + ia, a->len - ia, &na);
-    uint32_t ub = sp_lead_unit((const unsigned char *)b->data + ib, b->len - ib, &nb);
-    if (ua != ub) return ua < ub ? -1 : 1;
-    /* Equal LEADING units: equal whole code points (both single units or
-     * both pairs with equal highs — lows only differ if cps differ). */
-    if (na == 4 && nb == 4) {
-      uint32_t cpa = 0, cpb = 0;
-      for (size_t i = 0; i < 4; i++) {
-        cpa = (cpa << 6) | ((i == 0 ? a->data[ia] & 0x07 : a->data[ia + i] & 0x3f));
-        cpb = (cpb << 6) | ((i == 0 ? b->data[ib] & 0x07 : b->data[ib + i] & 0x3f));
-      }
-      if (cpa != cpb) return cpa < cpb ? -1 : 1;
-    }
-    ia += na;
-    ib += nb;
-  }
-  if (ia < a->len) return 1;
-  if (ib < b->len) return -1;
-  return 0;
-}
-
 /* Stable insertion sort by name (lists are small; equal names keep their
  * relative order — the spec's stability requirement). */
 void scr_sp_sort(ScrSearchParams *sp) {
@@ -525,7 +474,7 @@ void scr_sp_sort(ScrSearchParams *sp) {
     ScrStr *n = sp->names[i];
     ScrStr *v = sp->vals[i];
     size_t j = i;
-    while (j > 0 && sp_cmp_u16(sp->names[j - 1], n) > 0) {
+    while (j > 0 && scr_str_cmp_u16(sp->names[j - 1], n) > 0) {
       sp->names[j] = sp->names[j - 1];
       sp->vals[j] = sp->vals[j - 1];
       j--;

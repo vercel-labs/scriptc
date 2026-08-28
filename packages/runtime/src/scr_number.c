@@ -24,6 +24,15 @@
  * unchanged. Provides d2d(), d2d_small_int(), decimalLength17(), div10(). */
 #include "../vendor/ryu/d2s.c"
 
+/* ECMA ToUint32, shared by bitwise operators and split's limit: non-finite
+ * values become zero, finite values truncate toward zero and wrap mod 2^32. */
+uint32_t scr_to_uint32(double d) {
+  if (!isfinite(d)) return 0;
+  double t = fmod(trunc(d), 4294967296.0);
+  if (t < 0) t += 4294967296.0;
+  return (uint32_t)t;
+}
+
 /* The Ryū digit core, shared by the ECMA placement below and the Intl
  * en-US number formatter (scr_lib.c): the shortest round-tripping digit
  * string for a positive finite double — value = 0.digits × 10^n with no

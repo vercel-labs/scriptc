@@ -7,7 +7,7 @@ fenced.ts:5:13 - error SC2020: 'process.memoryUsage' is typed by @types/node but
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-fenced.ts:6:7 - error SC2001: values of type 'bigint' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+fenced.ts:6:7 - error SC2001: values of type 'bigint' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
 
   5 | console.log(process.memoryUsage()); // uptime/cpuUsage/resourceUsage lower now; the V8-heap report does not
   6 | const buf = Buffer.from("bytes").readBigUInt64BE(0); // from, fill, and the numeric families lower; the bigint reads fence
@@ -37,159 +37,195 @@ fenced.ts:17:1 - error SC2020: 'Timeout.close' is typed by @types/node but has n
   16 | timer.refresh();
   17 | timer.close();
      | ^~~~~~~~~~~~~
-  18 | /* The web-platform globals ride in with @types/node (undici): they RESOLVE
+  18 | /* The web-platform globals ride in with @types/node (undici). Fetch,
 
   hint: unref(), ref(), hasRef(), and refresh() are the supported Timeout methods
 
-fenced.ts:20:7 - error SC2020: 'AbortController' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:29:15 - error SC2020: 'Response.type in a static build' is typed by @types/node but has no scriptc lowering yet
 
-  19 |  * (no "Cannot find name") and their uses fence cleanly. */
-  20 | const controller = new AbortController();
-     |       ^~~~~~~~~~
-  21 | controller.abort();
+  28 |   const response = await fetch(url);
+  29 |   console.log(response.type);
+     |               ^~~~~~~~~~~~~
+  30 |   response.clone();
 
-  hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
+  hint: the native static Response surface is status/ok/statusText/url/redirected/headers/body/bodyUsed plus json(), text(), and bytes(); use --dynamic for the wider Web API
 
-fenced.ts:20:20 - error SC2020: 'new AbortController' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:30:3 - error SC2020: 'Response.clone' is typed by @types/node but has no scriptc lowering yet
 
-  19 |  * (no "Cannot find name") and their uses fence cleanly. */
-  20 | const controller = new AbortController();
-     |                    ^~~~~~~~~~~~~~~~~~~~~
-  21 | controller.abort();
+  29 |   console.log(response.type);
+  30 |   response.clone();
+     |   ^~~~~~~~~~~~~~
+  31 | }
 
-  hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
+  hint: the dynamic fetch bridge does not implement this Response operation
 
-fenced.ts:21:1 - error SC2020: 'AbortController.abort' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:33:21 - error SC2020: 'ReadableStream.from() over Set<number> iterables' is part of the standard library types but has no scriptc lowering yet
 
-  20 | const controller = new AbortController();
-  21 | controller.abort();
-     | ^~~~~~~~~~~~~~~~
-  22 | fetch("https://example.invalid/");
+  32 | void inspectResponse;
+  33 | ReadableStream.from(new Set([1, 2]));
+     |                     ^~~~~~~~~~~~~~~
+  34 | /* Members of SUPPORTED builtin modules beyond the lowered tables: they
 
-  hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
+  hint: arrays, Uint8Array, and strings are supported — spread other synchronous iterables into an array first: [...iterable]
 
-fenced.ts:22:1 - error SC2012: 'fetch' runs in the embedded dynamic engine, which this build does not include
+fenced.ts:40:1 - error SC2020: 'fs.watchFile' is typed by @types/node but has no scriptc lowering yet
 
-  21 | controller.abort();
-  22 | fetch("https://example.invalid/");
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  23 | /* Members of SUPPORTED builtin modules beyond the lowered tables: they
-
-  hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
-
-fenced.ts:29:1 - error SC2020: 'fs.watchFile' is typed by @types/node but has no scriptc lowering yet
-
-  28 | import { win32 } from "path";
-  29 | watchFile("x", () => {});
+  39 | import { win32 } from "path";
+  40 | watchFile("x", () => {});
      | ^~~~~~~~~~~~~~~~~~~~~~~~
-  30 | console.log(cpus().length);
+  41 | console.log(cpus().length);
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-fenced.ts:30:13 - error SC2020: 'CpuInfo[].length' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:41:13 - error SC2020: 'CpuInfo[].length' is part of the standard library types but has no scriptc lowering yet
 
-  29 | watchFile("x", () => {});
-  30 | console.log(cpus().length);
+  40 | watchFile("x", () => {});
+  41 | console.log(cpus().length);
      |             ^~~~~~~~~~~~~
-  31 | console.log(win32.sep);
+  42 | console.log(win32.sep);
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-fenced.ts:31:13 - error SC2020: 'PlatformPath.sep' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:42:13 - error SC2020: 'PlatformPath.sep' is typed by @types/node but has no scriptc lowering yet
 
-  30 | console.log(cpus().length);
-  31 | console.log(win32.sep);
+  41 | console.log(cpus().length);
+  42 | console.log(win32.sep);
      |             ^~~~~~~~~
-  32 | /* URL members beyond the supported getters (protocol/pathname/href/
+  43 | /* URL members beyond the supported getters (protocol/pathname/href/
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-fenced.ts:37:13 - error SC2020: 'URL.hash' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:48:13 - error SC2020: 'URL.hash' is typed by @types/node but has no scriptc lowering yet
 
-  36 | const u = new URL("https://example.com/x?a=1");
-  37 | console.log(u.hash);
+  47 | const u = new URL("https://example.com/x?a=1");
+  48 | console.log(u.hash);
      |             ^~~~~~
-  38 | u.searchParams.get("a");
+  49 | u.searchParams.get("a");
 
   hint: protocol, pathname, href, host, hostname, search, searchParams, and toString() are the supported URL members
 
-fenced.ts:44:13 - error SC2020: 'deflateSync of 'string' data' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:55:13 - error SC2020: 'deflateSync of 'string' data' is part of the standard library types but has no scriptc lowering yet
 
-  43 | import { deflateSync, gzipSync } from "zlib";
-  44 | deflateSync("data");
+  54 | import { deflateSync, gzipSync } from "zlib";
+  55 | deflateSync("data");
      |             ^~~~~~
-  45 | gzipSync("data");
+  56 | gzipSync("data");
 
   hint: zlib works on Buffers: deflateSync(Buffer.from(s, "utf8"))
 
-fenced.ts:45:1 - error SC2020: 'zlib.gzipSync' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:56:1 - error SC2020: 'zlib.gzipSync' is typed by @types/node but has no scriptc lowering yet
 
-  44 | deflateSync("data");
-  45 | gzipSync("data");
+  55 | deflateSync("data");
+  56 | gzipSync("data");
      | ^~~~~~~~~~~~~~~~
-  46 | /* The http2 compatibility slice's @types/node-world fences (divergence
+  57 | /* The http2 compatibility slice's @types/node-world fences (divergence
 
   hint: deflateSync and inflateSync are the lowered zlib surface
 
-fenced.ts:54:71 - error SC2020: 'a createSecureServer SNICallback of 'undefined' values' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:65:71 - error SC2020: 'a createSecureServer SNICallback of 'undefined' values' is part of the standard library types but has no scriptc lowering yet
 
-  53 | import * as http2 from "node:http2";
-  54 | http2.createSecureServer({ allowHTTP1: true, cert: "pem", key: "pem", SNICallback: undefined });
+  64 | import * as http2 from "node:http2";
+  65 | http2.createSecureServer({ allowHTTP1: true, cert: "pem", key: "pem", SNICallback: undefined });
      |                                                                       ^~~~~~~~~~~~~~~~~~~~~~
-  55 | http2.createSecureServer({
+  66 | http2.createSecureServer({
 
   hint: SNICallback lowers as a direct option or the conditional spread ...(x ? { SNICallback: x } : {}) — the callback is (servername, cb) => void with cb: (err: Error | null, ctx?: tls.SecureContext) => void
 
-fenced.ts:59:3 - error SC2020: 'createSecureServer options with a conditional spread' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:70:3 - error SC2020: 'createSecureServer options with a conditional spread' is part of the standard library types but has no scriptc lowering yet
 
-  58 |   key: "pem",
-  59 |   ...(1 ? { SNICallback: undefined } : {}),
+  69 |   key: "pem",
+  70 |   ...(1 ? { SNICallback: undefined } : {}),
      |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  60 | });
+  71 | });
 
   hint: the lowered conditional spread is exactly ...(x ? { SNICallback: x } : {}) — the included value must BE the condition
 
-fenced.ts:61:71 - error SC2020: 'createSecureServer option 'streamResetBurst' with a non-literal value' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:72:71 - error SC2020: 'createSecureServer option 'streamResetBurst' with a non-literal value' is part of the standard library types but has no scriptc lowering yet
 
-  60 | });
-  61 | http2.createSecureServer({ allowHTTP1: true, cert: "pem", key: "pem", streamResetBurst: 1 + 0 });
+  71 | });
+  72 | http2.createSecureServer({ allowHTTP1: true, cert: "pem", key: "pem", streamResetBurst: 1 + 0 });
      |                                                                       ^~~~~~~~~~~~~~~~~~~~~~~
-  62 | http2.connect("https://localhost");
+  73 | http2.connect("https://localhost");
 
-  hint: h2 session-tuning options are accepted with literal values (settings: a literal of literals) and ignored — the allowHTTP1 lowering serves HTTP/1.1 only, which has no h2 sessions to tune
+  hint: h2 session-tuning options are accepted with literal values but are not applied yet
 
-fenced.ts:68:1 - error SC2020: 'crypto.generateKeyPair' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:79:1 - error SC2020: 'crypto.generateKeyPair' is typed by @types/node but has no scriptc lowering yet
 
-  67 | import { createCipheriv, generateKeyPair, pbkdf2Sync, setFips } from "node:crypto";
-  68 | generateKeyPair("rsa", { modulusLength: 2048 }, () => {});
+  78 | import { createCipheriv, generateKeyPair, pbkdf2Sync, setFips } from "node:crypto";
+  79 | generateKeyPair("rsa", { modulusLength: 2048 }, () => {});
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  69 | createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
+  80 | createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
 
   hint: asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and a KeyObject value model — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, and the introspection statics
 
-fenced.ts:69:1 - error SC2020: 'crypto.createCipheriv' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:80:1 - error SC2020: 'crypto.createCipheriv' is typed by @types/node but has no scriptc lowering yet
 
-  68 | generateKeyPair("rsa", { modulusLength: 2048 }, () => {});
-  69 | createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
+  79 | generateKeyPair("rsa", { modulusLength: 2048 }, () => {});
+  80 | createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  70 | pbkdf2Sync("pw", "salt", 100000, 64, "sha512");
+  81 | pbkdf2Sync("pw", "salt", 100000, 64, "sha512");
 
   hint: symmetric ciphers need a cipher stack the static runtime does not vendor — the lowered crypto surface is hashing, randomness, and the introspection statics
 
-fenced.ts:70:1 - error SC2020: 'crypto.pbkdf2Sync' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:81:1 - error SC2020: 'crypto.pbkdf2Sync' is typed by @types/node but has no scriptc lowering yet
 
-  69 | createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
-  70 | pbkdf2Sync("pw", "salt", 100000, 64, "sha512");
+  80 | createCipheriv("aes-128-cbc", Buffer.alloc(16), Buffer.alloc(16));
+  81 | pbkdf2Sync("pw", "salt", 100000, 64, "sha512");
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  71 | setFips(false);
+  82 | setFips(false);
 
   hint: key-derivation functions have no lowering yet — the lowered crypto surface is hashing, randomness, and the introspection statics
 
-fenced.ts:71:1 - error SC2020: 'crypto.setFips' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:82:1 - error SC2020: 'crypto.setFips' is typed by @types/node but has no scriptc lowering yet
 
-  70 | pbkdf2Sync("pw", "salt", 100000, 64, "sha512");
-  71 | setFips(false);
+  81 | pbkdf2Sync("pw", "salt", 100000, 64, "sha512");
+  82 | setFips(false);
      | ^~~~~~~~~~~~~~
-  72 | 
+  83 | fetch("https://example.invalid/", {
 
   hint: a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) in a non-FIPS build — getFips() answers 0 here
+
+fenced.ts:84:3 - error SC2020: 'RequestInit option 'integrity' in a static build' is typed by @types/node but has no scriptc lowering yet
+
+  83 | fetch("https://example.invalid/", {
+  84 |   integrity: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  85 | });
+
+  hint: neither compiler tier preserves this RequestInit member's conversion or transport behavior
+
+fenced.ts:88:3 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
+
+  87 |   const body = (await fetch(url)).body!;
+  88 |   body.tee();
+     |   ^~~~~~~~
+  89 |   const tee = body.tee;
+
+  hint: the dynamic Web Streams bridge exposes only an explicit unsupported stub for this operation
+
+fenced.ts:89:15 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
+
+  88 |   body.tee();
+  89 |   const tee = body.tee;
+     |               ^~~~~~~~
+  90 |   body["tee"]();
+
+  hint: the dynamic Web Streams bridge exposes only an explicit unsupported stub for this operation
+
+fenced.ts:90:3 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
+
+  89 |   const tee = body.tee;
+  90 |   body["tee"]();
+     |   ^~~~~~~~~~~
+  91 |   const bracketTee = body["tee"];
+
+  hint: the dynamic Web Streams bridge exposes only an explicit unsupported stub for this operation
+
+fenced.ts:91:22 - error SC2020: 'ReadableStream.tee' is typed by @types/node but has no scriptc lowering yet
+
+  90 |   body["tee"]();
+  91 |   const bracketTee = body["tee"];
+     |                      ^~~~~~~~~~~
+  92 | }
+
+  hint: the dynamic Web Streams bridge exposes only an explicit unsupported stub for this operation

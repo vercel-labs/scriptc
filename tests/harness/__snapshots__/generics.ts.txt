@@ -12,7 +12,7 @@ generics.ts:30:10 - error SC1090: '.join()' on arrays of this element type (numb
      |          ^~~~~~~~~~~
   31 | }
 
-generics.ts:44:7 - error SC2001: values of type 'typeof Box' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+generics.ts:44:7 - error SC2001: values of type 'typeof Box' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
 
   43 | // The uninstantiated family as a value: no thunk, no single ctor ABI.
   44 | const BoxAlias = Box;

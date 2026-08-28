@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 /* The node:util inspect/format lowering (a spoke module like
  * lower-assert.ts): STATIC util.inspect — one synthesized traversal
  * helper per argument type (the deepStrictEqual precedent, interned per
@@ -36,18 +37,14 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
-import { BOOL, DYN, F64, IrExpr, IrStmt, IrType, RUNTIME_ERROR_CLASSES, STRING, SrcLoc, shapeHasAccessorSlots, typeKey } from "../../ir/nodes.js";
+import { BOOL, DYN, F64, IrExpr, IrStmt, IrType, RUNTIME_ERROR_CLASSES, STRING, SrcLoc, canConvertToDyn, canDynCheckTo, shapeHasAccessorSlots, typeKey } from "../../ir/ir.js";
 import type { ClassInfo } from "./lower-classes.js";
 import { pureReemittable } from "./lower-exprs.js";
+import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
 
 /* ── IR construction shorthand ───────────────────────────────────────── */
-
-const str = (value: string, loc: SrcLoc): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
-const num = (value: number, loc: SrcLoc): IrExpr => ({ kind: "numLit", value, type: F64, loc });
-const boolLit = (value: boolean, loc: SrcLoc): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
-
 function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
-  if (parts.length === 0) return str("", loc);
+  if (parts.length === 0) return strLit("", loc);
   let out = parts[0]!;
   for (let i = 1; i < parts.length; i++) {
     out = { kind: "strConcat", left: out, right: parts[i]!, type: STRING, loc };
@@ -60,7 +57,7 @@ function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
 /** strEscape's quote ladder over a COMPILE-TIME string (record field
  * names, format-string chunks never pass through here — only keys).
  * Mirrors scr_inspect.c's insp_quote_into byte-for-byte. */
-export function inspectQuote(s: string): string {
+function inspectQuote(s: string): string {
   const hasSingle = s.includes("'");
   const quote = !hasSingle ? "'" : !s.includes('"') ? '"' : !s.includes("`") && !s.includes("${") ? "`" : "'";
   let body = "";
@@ -113,15 +110,15 @@ function errorRenderable(info: ClassInfo): boolean {
   return info.subclasses.every((s) => errorRenderable(s));
 }
 
-function isErrorClass(L: Lowerer, className: string): boolean {
+function isErrorClass(lowerer: Lowerer, className: string): boolean {
   if (RUNTIME_ERROR_CLASSES.has(className)) return true;
-  return L.isSubclassOf(className, "%Error");
+  return lowerer.isSubclassOf(className, "%Error");
 }
 
 /** inspUnsupportedReason: the deepUnsupportedReason twin. Fences name the
  * FIRST unsupported constituent. `visiting` terminates recursive shapes
  * and records their existence (the depth-null gate). */
-function inspectSupport(L: Lowerer, t: IrType, visiting: Set<string>, out: { recursive: boolean }): string | null {
+function inspectSupport(lowerer: Lowerer, t: IrType, visiting: Set<string>, out: { recursive: boolean }): string | null {
   switch (t.kind) {
     case "f64":
     case "string":
@@ -134,7 +131,7 @@ function inspectSupport(L: Lowerer, t: IrType, visiting: Set<string>, out: { rec
     case "jsval":
       return null;
     case "array":
-      return inspectSupport(L, t.elem, visiting, out);
+      return inspectSupport(lowerer, t.elem, visiting, out);
     case "bytes":
       return "typed arrays inside composites have no inspect lowering yet (Buffer's <Buffer ..> form vs Uint8Array's is not recorded in the static type here)";
     case "record": {
@@ -143,7 +140,7 @@ function inspectSupport(L: Lowerer, t: IrType, visiting: Set<string>, out: { rec
         return null;
       }
       visiting.add(t.shapeId);
-      const shape = L.shapes.get(t.shapeId);
+      const shape = lowerer.shapes.get(t.shapeId);
       if (!shape) return "this record shape has no inspect lowering";
       // Accessor-carrying shapes: Node prints the accessor names as
       // `x: [Getter]` / `[Setter]` / `[Getter/Setter]` in insertion order
@@ -162,27 +159,27 @@ function inspectSupport(L: Lowerer, t: IrType, visiting: Set<string>, out: { rec
         if (shape.fields.length > 0) {
           return "index-signature records with declared fields have no inspect lowering yet (JS interleaves integer keys across the declared and dynamic key sets)";
         }
-        const why = inspectSupport(L, shape.indexValue, visiting, out);
+        const why = inspectSupport(lowerer, shape.indexValue, visiting, out);
         if (why !== null) return why;
         visiting.delete(t.shapeId);
         return null;
       }
       for (const f of shape.fields) {
-        const why = inspectSupport(L, f.type, visiting, out);
+        const why = inspectSupport(lowerer, f.type, visiting, out);
         if (why !== null) return why;
       }
       visiting.delete(t.shapeId);
       return null;
     }
     case "map": {
-      const keyWhy = inspectSupport(L, t.key, visiting, out);
+      const keyWhy = inspectSupport(lowerer, t.key, visiting, out);
       if (keyWhy !== null) return keyWhy;
-      return inspectSupport(L, t.value, visiting, out);
+      return inspectSupport(lowerer, t.value, visiting, out);
     }
     case "set":
-      return inspectSupport(L, t.elem, visiting, out);
+      return inspectSupport(lowerer, t.elem, visiting, out);
     case "union": {
-      const def = L.unions.get(t.unionId);
+      const def = lowerer.unions.get(t.unionId);
       if (!def) return "this union has no inspect lowering";
       if (visiting.has(t.unionId)) {
         out.recursive = true;
@@ -190,7 +187,7 @@ function inspectSupport(L: Lowerer, t: IrType, visiting: Set<string>, out: { rec
       }
       visiting.add(t.unionId);
       for (const arm of def.arms) {
-        const why = inspectSupport(L, arm, visiting, out);
+        const why = inspectSupport(lowerer, arm, visiting, out);
         if (why !== null) return why;
       }
       visiting.delete(t.unionId);
@@ -199,9 +196,9 @@ function inspectSupport(L: Lowerer, t: IrType, visiting: Set<string>, out: { rec
     case "func":
       return "function values have no inspect lowering (no runtime name exists — Node prints '[Function: name]'; pass the function's declared identifier directly to util.inspect for the baked form)";
     case "object": {
-      const info = L.classes.get(t.className);
+      const info = lowerer.classes.get(t.className);
       if (!info) return `class '${t.className}' has no inspect lowering`;
-      if (isErrorClass(L, t.className)) {
+      if (isErrorClass(lowerer, t.className)) {
         return errorRenderable(info)
           ? null
           : "error subclasses with declared fields have no inspect lowering yet (the extra own properties are runtime-dynamic)";
@@ -218,14 +215,14 @@ function inspectSupport(L: Lowerer, t: IrType, visiting: Set<string>, out: { rec
       // properties), so their types don't gate support.
       for (const f of info.def.fields) {
         if (f.name.startsWith("#")) continue;
-        const why = inspectSupport(L, f.type, visiting, out);
+        const why = inspectSupport(lowerer, f.type, visiting, out);
         if (why !== null) return why;
       }
       visiting.delete(t.className);
       return null;
     }
     default:
-      return `'${L.fmt(t)}' values have no inspect lowering`;
+      return `'${lowerer.fmt(t)}' values have no inspect lowering`;
   }
 }
 
@@ -233,10 +230,10 @@ function inspectSupport(L: Lowerer, t: IrType, visiting: Set<string>, out: { rec
 
 /** True when a runtime value of `t` at index expr `v` answers
  * `typeof v === 'number'` — the grid-grouping order flag. */
-function isNumberFlag(L: Lowerer, t: IrType, v: () => IrExpr, loc: SrcLoc): IrExpr {
+function isNumberFlag(lowerer: Lowerer, t: IrType, v: () => IrExpr, loc: SrcLoc): IrExpr {
   if (t.kind === "f64") return boolLit(true, loc);
   if (t.kind === "union") {
-    const def = L.unions.get(t.unionId);
+    const def = lowerer.unions.get(t.unionId);
     const tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
     if (tag >= 0) {
       return { kind: "unionIsTag", unionId: t.unionId, tag, negated: false, value: v(), type: BOOL, loc };
@@ -249,7 +246,7 @@ function isNumberFlag(L: Lowerer, t: IrType, v: () => IrExpr, loc: SrcLoc): IrEx
  * with the depth budget `depth` — a direct scalar libCall or a call of
  * the interned per-type helper. */
 function inspectExpr(
-  L: Lowerer,
+  lowerer: Lowerer,
   t: IrType,
   value: IrExpr,
   recurse: IrExpr,
@@ -264,9 +261,9 @@ function inspectExpr(
     case "bool":
       return { kind: "toString", operand: value, type: STRING, loc };
     case "undefinedT":
-      return str("undefined", loc);
+      return strLit("undefined", loc);
     case "nullT":
-      return str("null", loc);
+      return strLit("null", loc);
     case "regex":
       return { kind: "libCall", fn: "insp.regex", args: [value], type: STRING, loc };
     case "symbol":
@@ -280,12 +277,12 @@ function inspectExpr(
     case "jsval":
       return { kind: "libCall", fn: "insp.jsval", args: [value, recurse, depth], type: STRING, loc };
     case "object":
-      if (isErrorClass(L, t.className)) {
+      if (isErrorClass(lowerer, t.className)) {
         return { kind: "libCall", fn: "insp.error", args: [value, recurse, depth], type: STRING, loc };
       }
-      return { kind: "call", callee: inspectHelper(L, t, loc), args: [value, recurse, depth], type: STRING, loc };
+      return { kind: "call", callee: inspectHelper(lowerer, t, loc), args: [value, recurse, depth], type: STRING, loc };
     default:
-      return { kind: "call", callee: inspectHelper(L, t, loc), args: [value, recurse, depth], type: STRING, loc };
+      return { kind: "call", callee: inspectHelper(lowerer, t, loc), args: [value, recurse, depth], type: STRING, loc };
   }
 }
 
@@ -295,14 +292,14 @@ function inspectExpr(
  * helpers over such types run Node's circular machinery (seen stack +
  * <ref *N>/[Circular *N]); everything acyclic keeps the zero-cost path
  * (a value of an acyclic type can never repeat on its own path). */
-export function typeReachesItself(L: Lowerer, t: IrType): boolean {
+export function typeReachesItself(lowerer: Lowerer, t: IrType): boolean {
   const root = typeKey(t);
   const seen = new Set<string>();
   const walk = (u: IrType): boolean => {
     const constituents: IrType[] = [];
     switch (u.kind) {
       case "record": {
-        const shape = L.shapes.get(u.shapeId);
+        const shape = lowerer.shapes.get(u.shapeId);
         if (!shape) return false;
         constituents.push(...shape.fields.map((f) => f.type));
         if (shape.indexValue) constituents.push(shape.indexValue);
@@ -316,12 +313,12 @@ export function typeReachesItself(L: Lowerer, t: IrType): boolean {
         constituents.push(u.key, u.value);
         break;
       case "union": {
-        const def = L.unions.get(u.unionId);
+        const def = lowerer.unions.get(u.unionId);
         if (def) constituents.push(...def.arms);
         break;
       }
       case "object": {
-        const info = L.classes.get(u.className);
+        const info = lowerer.classes.get(u.className);
         if (info) constituents.push(...info.def.fields.map((f) => f.type));
         break;
       }
@@ -349,18 +346,17 @@ export function typeReachesItself(L: Lowerer, t: IrType): boolean {
  * `[Set]`/`[ClassName]`, and non-empty composites drive the runtime
  * frame engine (begin / entry / end). Registered in the cache BEFORE the
  * body builds, so recursive shapes call themselves by name. */
-function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
+function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
   const key = `insp:${typeKey(t)}`;
-  const existing = L.inspectHelpers.get(key);
+  const existing = lowerer.inspectHelpers.get(key);
   if (existing) return existing;
-  const name = `%util.insp.${L.inspectHelpers.size}`;
-  L.inspectHelpers.set(key, name);
+  const name = `%util.insp.${lowerer.inspectHelpers.size}`;
+  lowerer.inspectHelpers.set(key, name);
 
-  const ref = (localId: string, type: IrType): IrExpr => ({ kind: "varRef", localId, type, loc });
-  const v = (): IrExpr => ref("v.0", t);
-  const r = (): IrExpr => ref("r.0", F64);
-  const d = (): IrExpr => ref("d.0", F64);
-  const rPlus1 = (): IrExpr => ({ kind: "bin", op: "+", left: r(), right: num(1, loc), type: F64, loc });
+  const v = (): IrExpr => varRef("v.0", t, loc);
+  const r = (): IrExpr => varRef("r.0", F64, loc);
+  const d = (): IrExpr => varRef("d.0", F64, loc);
+  const rPlus1 = (): IrExpr => ({ kind: "bin", op: "+", left: r(), right: numLit(1, loc), type: F64, loc });
   const ret = (value: IrExpr): IrStmt => ({ kind: "return", value, loc });
   const exprStmt = (expr: IrExpr): IrStmt => ({ kind: "exprStmt", expr, loc });
   // CYCLE-CAPABLE composites (typeReachesItself) run Node's circular
@@ -371,7 +367,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
   // keep the zero-cost path.
   const onCycle =
     (t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
-    typeReachesItself(L, t);
+    typeReachesItself(lowerer, t);
   const begin = (): IrStmt[] => [
     exprStmt({ kind: "libCall", fn: "insp.begin", args: [rPlus1()], type: { kind: "void" }, loc }),
     ...(onCycle
@@ -395,18 +391,19 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
   const depthGate = (placeholder: string): IrStmt => ({
     kind: "if",
     cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
-    then: [ret(str(placeholder, loc))],
+    then: [ret(strLit(placeholder, loc))],
     else_: null,
     loc,
   });
-  const child = (elemT: IrType, value: IrExpr): IrExpr => inspectExpr(L, elemT, value, rPlus1(), d(), loc);
+  const child = (elemT: IrType, value: IrExpr): IrExpr => inspectExpr(lowerer, elemT, value, rPlus1(), d(), loc);
 
   const locals: { id: string; name: string; type: IrType; mutable: boolean }[] = [
     { id: "v.0", name: "v", type: t, mutable: false },
     { id: "r.0", name: "r", type: F64, mutable: false },
     { id: "d.0", name: "d", type: F64, mutable: false },
   ];
-  let body: IrStmt[];
+  let body: IrStmt[] = [];
+  let rebuildShapeOrderBody: (() => void) | null = null;
 
   switch (t.kind) {
     case "array": {
@@ -417,28 +414,28 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         { id: "s.0", name: "s", type: F64, mutable: false },
         { id: "i.0", name: "i", type: F64, mutable: true },
       );
-      const n = (): IrExpr => ref("n.0", F64);
-      const shown = (): IrExpr => ref("s.0", F64);
-      const i = (): IrExpr => ref("i.0", F64);
-      const hasMore = (): IrExpr => ({ kind: "bin", op: ">", left: n(), right: num(100, loc), type: BOOL, loc });
+      const n = (): IrExpr => varRef("n.0", F64, loc);
+      const shown = (): IrExpr => varRef("s.0", F64, loc);
+      const i = (): IrExpr => varRef("i.0", F64, loc);
+      const hasMore = (): IrExpr => ({ kind: "bin", op: ">", left: n(), right: numLit(100, loc), type: BOOL, loc });
       body = [
         { kind: "varDecl", localId: "n.0", init: len(), loc },
         {
           kind: "if",
-          cond: { kind: "bin", op: "===", left: n(), right: num(0, loc), type: BOOL, loc },
-          then: [ret(str("[]", loc))],
+          cond: { kind: "bin", op: "===", left: n(), right: numLit(0, loc), type: BOOL, loc },
+          then: [ret(strLit("[]", loc))],
           else_: null,
           loc,
         },
         depthGate("[Array]"),
-        { kind: "varDecl", localId: "s.0", init: { kind: "ternary", cond: hasMore(), then: num(100, loc), else_: n(), type: F64, loc }, loc },
+        { kind: "varDecl", localId: "s.0", init: { kind: "ternary", cond: hasMore(), then: numLit(100, loc), else_: n(), type: F64, loc }, loc },
         ...begin(),
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0, loc), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: { kind: "bin", op: "<", left: i(), right: shown(), type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: num(1, loc), type: F64, loc }, loc },
-          body: [entry(child(t.elem, at(i())), isNumberFlag(L, t.elem, () => at(i()), loc))],
+          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: numLit(1, loc), type: F64, loc }, loc },
+          body: [entry(child(t.elem, at(i())), isNumberFlag(lowerer, t.elem, () => at(i()), loc))],
           loc,
         },
         {
@@ -449,35 +446,35 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
               {
                 kind: "libCall",
                 fn: "insp.moreItems",
-                args: [{ kind: "bin", op: "-", left: n(), right: num(100, loc), type: F64, loc }],
+                args: [{ kind: "bin", op: "-", left: n(), right: numLit(100, loc), type: F64, loc }],
                 type: STRING,
                 loc,
               },
-              isNumberFlag(L, t.elem, () => at(num(100, loc)), loc),
+              isNumberFlag(lowerer, t.elem, () => at(numLit(100, loc)), loc),
             ),
           ],
           else_: null,
           loc,
         },
-        ret(end(str("", loc), str("[", loc), str("]", loc), true, hasMore())),
+        ret(end(strLit("", loc), strLit("[", loc), strLit("]", loc), true, hasMore())),
       ];
       break;
     }
     case "record": {
-      const shape = L.shapes.get(t.shapeId);
-      if (!shape) throw new Error(`inspect of unknown shape ${t.shapeId}`);
+      const shape = lowerer.shapes.get(t.shapeId);
+      if (!shape) throw new InternalCompilerError(`inspect of unknown shape ${t.shapeId}`);
       const get = (field: string, type: IrType): IrExpr => ({ kind: "recordGet", obj: v(), shapeId: t.shapeId, field, type, loc });
       if (shape.tuple) {
         // Tuples ARE arrays to Node: bracket form, array-extras grouping.
         if (shape.fields.length === 0) {
-          body = [ret(str("[]", loc))];
+          body = [ret(strLit("[]", loc))];
           break;
         }
         body = [depthGate("[Array]"), ...begin()];
         for (const f of shape.fields) {
-          body.push(entry(child(f.type, get(f.name, f.type)), isNumberFlag(L, f.type, () => get(f.name, f.type), loc)));
+          body.push(entry(child(f.type, get(f.name, f.type)), isNumberFlag(lowerer, f.type, () => get(f.name, f.type), loc)));
         }
-        body.push(ret(end(str("", loc), str("[", loc), str("]", loc), true, boolLit(false, loc))));
+        body.push(ret(end(strLit("", loc), strLit("[", loc), strLit("]", loc), true, boolLit(false, loc))));
         break;
       }
       if (shape.indexValue && shape.fields.length === 0) {
@@ -495,10 +492,10 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
           { id: "i.0", name: "i", type: F64, mutable: true },
           { id: "k.0", name: "k", type: STRING, mutable: false },
         );
-        const ks = (): IrExpr => ref("ks.0", ksT);
-        const n = (): IrExpr => ref("n.0", F64);
-        const i = (): IrExpr => ref("i.0", F64);
-        const k = (): IrExpr => ref("k.0", STRING);
+        const ks = (): IrExpr => varRef("ks.0", ksT, loc);
+        const n = (): IrExpr => varRef("n.0", F64, loc);
+        const i = (): IrExpr => varRef("i.0", F64, loc);
+        const k = (): IrExpr => varRef("k.0", STRING, loc);
         const keyedRead = (): IrExpr =>
           ({ kind: "recordKeyGet", obj: v(), shapeId: t.shapeId, key: k(), overflowOnly: true, type: iv, loc });
         body = [
@@ -506,8 +503,8 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
           { kind: "varDecl", localId: "n.0", init: { kind: "arrIntrinsic", method: "length", receiver: ks(), args: [], type: F64, loc }, loc },
           {
             kind: "if",
-            cond: { kind: "bin", op: "===", left: n(), right: num(0, loc), type: BOOL, loc },
-            then: [ret(str("{}", loc))],
+            cond: { kind: "bin", op: "===", left: n(), right: numLit(0, loc), type: BOOL, loc },
+            then: [ret(strLit("{}", loc))],
             else_: null,
             loc,
           },
@@ -515,16 +512,16 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
           ...begin(),
           {
             kind: "for",
-            init: { kind: "varDecl", localId: "i.0", init: num(0, loc), loc },
+            init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
             cond: { kind: "bin", op: "<", left: i(), right: n(), type: BOOL, loc },
-            update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: num(1, loc), type: F64, loc }, loc },
+            update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: numLit(1, loc), type: F64, loc }, loc },
             body: [
               { kind: "varDecl", localId: "k.0", init: { kind: "arrayGet", arr: ks(), index: i(), type: STRING, loc }, loc },
               entry(
                 concatAll(
                   [
                     { kind: "libCall", fn: "insp.key", args: [k()], type: STRING, loc },
-                    str(": ", loc),
+                    strLit(": ", loc),
                     child(iv, keyedRead()),
                   ],
                   loc,
@@ -534,29 +531,35 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
             ],
             loc,
           },
-          ret(end(str("", loc), str("{", loc), str("}", loc), false, boolLit(false, loc))),
+          ret(end(strLit("", loc), strLit("{", loc), strLit("}", loc), false, boolLit(false, loc))),
         ];
         break;
       }
       if (shape.fields.length === 0) {
-        body = [ret(str("{}", loc))];
+        body = [ret(strLit("{}", loc))];
         break;
       }
-      // Object.keys' declared order (SEMANTICS.md 36's stance).
-      const order = shape.declaredOrder ?? shape.fields.map((f) => f.name);
-      const byName = new Map(shape.fields.map((f) => [f.name, f.type] as const));
-      body = [depthGate("[Object]"), ...begin()];
-      for (const fname of order) {
-        const ft = byName.get(fname);
-        if (!ft) continue;
-        body.push(
-          entry(
-            concatAll([str(`${inspectKey(fname)}: `, loc), child(ft, get(fname, ft))], loc),
-            boolLit(false, loc),
-          ),
-        );
-      }
-      body.push(ret(end(str("", loc), str("{", loc), str("}", loc), false, boolLit(false, loc))));
+      // Object.keys' declared order (SEMANTICS.md 36's stance). Retained
+      // reachability can settle this shape after the helper is first
+      // interned, so rebuild the field walk once metadata is final.
+      rebuildShapeOrderBody = (): void => {
+        const current = lowerer.shapes.get(t.shapeId) ?? shape;
+        const order = current.declaredOrder ?? current.fields.map((f) => f.name);
+        const byName = new Map(current.fields.map((f) => [f.name, f.type] as const));
+        body = [depthGate("[Object]"), ...begin()];
+        for (const fname of order) {
+          const ft = byName.get(fname);
+          if (!ft) continue;
+          body.push(
+            entry(
+              concatAll([strLit(`${inspectKey(fname)}: `, loc), child(ft, get(fname, ft))], loc),
+              boolLit(false, loc),
+            ),
+          );
+        }
+        body.push(ret(end(strLit("", loc), strLit("{", loc), strLit("}", loc), false, boolLit(false, loc))));
+      };
+      rebuildShapeOrderBody();
       break;
     }
     case "map":
@@ -571,35 +574,35 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         { id: "i.0", name: "i", type: F64, mutable: true },
         { id: "c.0", name: "c", type: F64, mutable: true },
       );
-      const n = (): IrExpr => ref("n.0", F64);
-      const i = (): IrExpr => ref("i.0", F64);
-      const c = (): IrExpr => ref("c.0", F64);
+      const n = (): IrExpr => varRef("n.0", F64, loc);
+      const i = (): IrExpr => varRef("i.0", F64, loc);
+      const c = (): IrExpr => varRef("c.0", F64, loc);
       const label = isMap ? "Map" : "Set";
       const keyT = isMap ? (t as IrType & { kind: "map" }).key : (t as IrType & { kind: "set" }).elem;
-      const hasMore = (): IrExpr => ({ kind: "bin", op: ">", left: n(), right: num(100, loc), type: BOOL, loc });
+      const hasMore = (): IrExpr => ({ kind: "bin", op: ">", left: n(), right: numLit(100, loc), type: BOOL, loc });
       const entryValue = (): IrExpr => {
         const k = child(keyT, mi("iterKey", [i()], keyT));
         if (!isMap) return k;
         const valueT = (t as IrType & { kind: "map" }).value;
-        return concatAll([k, str(" => ", loc), child(valueT, mi("iterValue", [i()], valueT))], loc);
+        return concatAll([k, strLit(" => ", loc), child(valueT, mi("iterValue", [i()], valueT))], loc);
       };
       body = [
         { kind: "varDecl", localId: "n.0", init: mi("size", [], F64), loc },
         {
           kind: "if",
-          cond: { kind: "bin", op: "===", left: n(), right: num(0, loc), type: BOOL, loc },
-          then: [ret(str(`${label}(0) {}`, loc))],
+          cond: { kind: "bin", op: "===", left: n(), right: numLit(0, loc), type: BOOL, loc },
+          then: [ret(strLit(`${label}(0) {}`, loc))],
           else_: null,
           loc,
         },
         depthGate(`[${label}]`),
         ...begin(),
-        { kind: "varDecl", localId: "c.0", init: num(0, loc), loc },
+        { kind: "varDecl", localId: "c.0", init: numLit(0, loc), loc },
         {
           kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: num(0, loc), loc },
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
           cond: { kind: "bin", op: "<", left: i(), right: mi("iterCount", [], F64), type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: num(1, loc), type: F64, loc }, loc },
+          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: numLit(1, loc), type: F64, loc }, loc },
           body: [
             {
               kind: "if",
@@ -610,13 +613,13 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
             },
             {
               kind: "if",
-              cond: { kind: "bin", op: "===", left: c(), right: num(100, loc), type: BOOL, loc },
+              cond: { kind: "bin", op: "===", left: c(), right: numLit(100, loc), type: BOOL, loc },
               then: [{ kind: "break", loc }],
               else_: null,
               loc,
             },
             entry(entryValue(), boolLit(false, loc)),
-            { kind: "assign", localId: "c.0", value: { kind: "bin", op: "+", left: c(), right: num(1, loc), type: F64, loc }, loc },
+            { kind: "assign", localId: "c.0", value: { kind: "bin", op: "+", left: c(), right: numLit(1, loc), type: F64, loc }, loc },
           ],
           loc,
         },
@@ -628,7 +631,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
               {
                 kind: "libCall",
                 fn: "insp.moreItems",
-                args: [{ kind: "bin", op: "-", left: n(), right: num(100, loc), type: F64, loc }],
+                args: [{ kind: "bin", op: "-", left: n(), right: numLit(100, loc), type: F64, loc }],
                 type: STRING,
                 loc,
               },
@@ -640,9 +643,9 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         },
         ret(
           end(
-            str("", loc),
-            concatAll([str(`${label}(`, loc), { kind: "toString", operand: n(), type: STRING, loc }, str(") {", loc)], loc),
-            str("}", loc),
+            strLit("", loc),
+            concatAll([strLit(`${label}(`, loc), { kind: "toString", operand: n(), type: STRING, loc }, strLit(") {", loc)], loc),
+            strLit("}", loc),
             false,
             hasMore(),
           ),
@@ -651,8 +654,8 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       break;
     }
     case "union": {
-      const def = L.unions.get(t.unionId);
-      if (!def) throw new Error(`inspect of unknown union ${t.unionId}`);
+      const def = lowerer.unions.get(t.unionId);
+      if (!def) throw new InternalCompilerError(`inspect of unknown union ${t.unionId}`);
       body = [];
       def.arms.forEach((arm, tag) => {
         // The union wrapper is not a nesting level: arms render at the
@@ -661,17 +664,17 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
         body.push({
           kind: "if",
           cond: { kind: "unionIsTag", unionId: t.unionId, tag, negated: false, value: v(), type: BOOL, loc },
-          then: [ret(inspectExpr(L, arm, narrowed, r(), d(), loc))],
+          then: [ret(inspectExpr(lowerer, arm, narrowed, r(), d(), loc))],
           else_: null,
           loc,
         });
       });
-      body.push(ret(str("", loc))); // unreachable: some arm always matches
+      body.push(ret(strLit("", loc))); // unreachable: some arm always matches
       break;
     }
     case "object": {
-      const info = L.classes.get(t.className);
-      if (!info) throw new Error(`inspect of unknown class ${t.className}`);
+      const info = lowerer.classes.get(t.className);
+      if (!info) throw new InternalCompilerError(`inspect of unknown class ${t.className}`);
       // Node prints the class's OWN name — the declaration's, never the
       // IR name's module qualifier (`m0.Timer` is the frontend's spelling
       // for a class declared in a non-entry module).
@@ -681,7 +684,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       // so a class whose only fields are private prints as `C {}`.
       const visible = info.def.fields.filter((f) => !f.name.startsWith("#"));
       if (visible.length === 0) {
-        body = [ret(str(`${display} {}`, loc))];
+        body = [ret(strLit(`${display} {}`, loc))];
         break;
       }
       const get = (field: string, type: IrType): IrExpr => ({ kind: "fieldGet", obj: v(), className: t.className, field, type, loc });
@@ -701,41 +704,45 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
       for (const f of ordered) {
         const key = symNames.has(f.name) ? f.name : inspectKey(f.name);
         body.push(
-          entry(concatAll([str(`${key}: `, loc), child(f.type, get(f.name, f.type))], loc), boolLit(false, loc)),
+          entry(concatAll([strLit(`${key}: `, loc), child(f.type, get(f.name, f.type))], loc), boolLit(false, loc)),
         );
       }
-      body.push(ret(end(str("", loc), str(`${display} {`, loc), str("}", loc), false, boolLit(false, loc))));
+      body.push(ret(end(strLit("", loc), strLit(`${display} {`, loc), strLit("}", loc), false, boolLit(false, loc))));
       break;
     }
     default:
-      throw new Error(`inspect helper over unexpected type ${typeKey(t)}`);
+      throw new InternalCompilerError(`inspect helper over unexpected type ${typeKey(t)}`);
   }
 
+  let prependCycleGuard: (() => void) | null = null;
   if (onCycle) {
     // The circular check, FIRST (before the empty-literal and depth
     // answers): a value already on the traversal stack renders
     // [Circular *N] and descends no further — Node's formatValue order
     // (a circular target beyond the depth budget still says Circular).
     locals.push({ id: "cc.0", name: "cc", type: F64, mutable: false });
-    const cc = (): IrExpr => ref("cc.0", F64);
-    body.unshift(
-      {
-        kind: "varDecl",
-        localId: "cc.0",
-        init: { kind: "libCall", fn: "insp.circCheck", args: [v()], type: F64, loc },
-        loc,
-      },
-      {
-        kind: "if",
-        cond: { kind: "bin", op: ">", left: cc(), right: num(0, loc), type: BOOL, loc },
-        then: [ret({ kind: "libCall", fn: "insp.circular", args: [cc()], type: STRING, loc })],
-        else_: null,
-        loc,
-      },
-    );
+    const cc = (): IrExpr => varRef("cc.0", F64, loc);
+    prependCycleGuard = (): void => {
+      body.unshift(
+        {
+          kind: "varDecl",
+          localId: "cc.0",
+          init: { kind: "libCall", fn: "insp.circCheck", args: [v()], type: F64, loc },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: { kind: "bin", op: ">", left: cc(), right: numLit(0, loc), type: BOOL, loc },
+          then: [ret({ kind: "libCall", fn: "insp.circular", args: [cc()], type: STRING, loc })],
+          else_: null,
+          loc,
+        },
+      );
+    };
+    prependCycleGuard();
   }
 
-  L.liftedFns.push({
+  const fn = {
     name,
     params: [
       { localId: "v.0", name: "v", type: t },
@@ -746,7 +753,15 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
     locals,
     body,
     loc,
-  });
+  };
+  if (rebuildShapeOrderBody !== null) {
+    lowerer.shapeOrderHelperFinalizers.push(() => {
+      rebuildShapeOrderBody!();
+      prependCycleGuard?.();
+      fn.body = body;
+    });
+  }
+  lowerer.liftedFns.push(fn);
   return name;
 }
 
@@ -759,7 +774,7 @@ function inspectHelper(L: Lowerer, t: IrType, loc: SrcLoc): string {
  * exactly as inspect at the given depth. Unions dispatch per arm AT
  * RUNTIME through an interned helper, so a string arm stays verbatim
  * while its sibling arms inspect. Callers check inspectSupport first. */
-export function formatValueExpr(L: Lowerer, t: IrType, value: IrExpr, depth: number, loc: SrcLoc): IrExpr {
+function formatValueExpr(lowerer: Lowerer, t: IrType, value: IrExpr, depth: number, loc: SrcLoc): IrExpr {
   switch (t.kind) {
     case "string":
       return value;
@@ -768,17 +783,17 @@ export function formatValueExpr(L: Lowerer, t: IrType, value: IrExpr, depth: num
     case "bool":
       return { kind: "toString", operand: value, type: STRING, loc };
     case "undefinedT":
-      return str("undefined", loc);
+      return strLit("undefined", loc);
     case "nullT":
-      return str("null", loc);
+      return strLit("null", loc);
     case "symbol":
       return { kind: "libCall", fn: "sym.toString", args: [value], type: STRING, loc };
     case "dyn":
-      return { kind: "libCall", fn: "insp.dynS", args: [value, num(depth, loc)], type: STRING, loc };
+      return { kind: "libCall", fn: "insp.dynS", args: [value, numLit(depth, loc)], type: STRING, loc };
     case "union":
-      return { kind: "call", callee: formatUnionHelper(L, t, depth, loc), args: [value], type: STRING, loc };
+      return { kind: "call", callee: formatUnionHelper(lowerer, t, depth, loc), args: [value], type: STRING, loc };
     default:
-      return inspectExpr(L, t, value, num(0, loc), num(depth, loc), loc);
+      return inspectExpr(lowerer, t, value, numLit(0, loc), numLit(depth, loc), loc);
   }
 }
 
@@ -786,14 +801,14 @@ export function formatValueExpr(L: Lowerer, t: IrType, value: IrExpr, depth: num
  * union's arms (interned per union + depth, the inspectHelper pattern).
  * The TOP-LEVEL union rule only: nested unions inside composites keep
  * inspect's own rendering, where string arms quote — exactly Node. */
-function formatUnionHelper(L: Lowerer, t: IrType & { kind: "union" }, depth: number, loc: SrcLoc): string {
+function formatUnionHelper(lowerer: Lowerer, t: IrType & { kind: "union" }, depth: number, loc: SrcLoc): string {
   const key = `fmtv:${typeKey(t)}:${depth}`;
-  const existing = L.inspectHelpers.get(key);
+  const existing = lowerer.inspectHelpers.get(key);
   if (existing) return existing;
-  const name = `%util.fmtv.${L.inspectHelpers.size}`;
-  L.inspectHelpers.set(key, name);
-  const def = L.unions.get(t.unionId);
-  if (!def) throw new Error(`format value over unknown union ${t.unionId}`);
+  const name = `%util.fmtv.${lowerer.inspectHelpers.size}`;
+  lowerer.inspectHelpers.set(key, name);
+  const def = lowerer.unions.get(t.unionId);
+  if (!def) throw new InternalCompilerError(`format value over unknown union ${t.unionId}`);
   const v = (): IrExpr => ({ kind: "varRef", localId: "v.0", type: t, loc });
   const body: IrStmt[] = [];
   def.arms.forEach((arm, tag) => {
@@ -801,13 +816,13 @@ function formatUnionHelper(L: Lowerer, t: IrType & { kind: "union" }, depth: num
     body.push({
       kind: "if",
       cond: { kind: "unionIsTag", unionId: t.unionId, tag, negated: false, value: v(), type: BOOL, loc },
-      then: [{ kind: "return", value: formatValueExpr(L, arm, narrowed, depth, loc), loc }],
+      then: [{ kind: "return", value: formatValueExpr(lowerer, arm, narrowed, depth, loc), loc }],
       else_: null,
       loc,
     });
   });
-  body.push({ kind: "return", value: str("", loc), loc }); // unreachable: some arm always matches
-  L.liftedFns.push({
+  body.push({ kind: "return", value: strLit("", loc), loc }); // unreachable: some arm always matches
+  lowerer.liftedFns.push({
     name,
     params: [{ localId: "v.0", name: "v", type: t }],
     returnType: STRING,
@@ -825,7 +840,7 @@ function formatUnionHelper(L: Lowerer, t: IrType & { kind: "union" }, depth: num
  * the rest-args depth 2 — or the honest fence naming the first
  * unsupported constituent. */
 export function lowerConsoleInspectArg(
-  L: Lowerer,
+  lowerer: Lowerer,
   node: ts.Expression,
   value: IrExpr,
   surface: string,
@@ -837,55 +852,55 @@ export function lowerConsoleInspectArg(
     // pure read, so dropping its evaluation loses nothing. Effectful
     // unit-typed operands keep a fence — a silent skip is banned.
     if (value.kind !== "unitLit" && !pureReemittable(value)) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         node,
-        `${surface} of an effectful '${L.fmt(t)}'-typed expression (evaluate it first: const v = ...; ${surface}(v))`,
+        `${surface} of an effectful '${lowerer.fmt(t)}'-typed expression (evaluate it first: const v = ...; ${surface}(v))`,
       );
     }
-    return str(t.kind === "undefinedT" ? "undefined" : "null", loc);
+    return strLit(t.kind === "undefinedT" ? "undefined" : "null", loc);
   }
   if (t.kind === "bytes") {
     // One runtime representation serves Buffer AND Uint8Array; their
     // renderings differ, so the argument's checker type picks — and only
     // Buffer lowers (lowerInspectCall's stance).
-    const tname = L.checker.typeToString(L.checker.getBaseTypeOfLiteralType(L.typeOf(node)));
+    const tname = lowerer.checker.typeToString(lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node)));
     const isBuffer =
       tname === "Buffer" || tname === "NonSharedBuffer" || tname.startsWith("Buffer<") || tname.startsWith("NonSharedBuffer<");
     if (t.elem !== "u8" || !isBuffer) {
-      L.unsupported(
+      lowerer.unsupported(
         "SC1090",
         node,
         `${surface} of '${tname}' values (Buffer's <Buffer ..> form is the lowered typed-array rendering; other typed arrays fence)`,
       );
     }
-    return inspectExpr(L, t, value, num(0, loc), num(2, loc), loc);
+    return inspectExpr(lowerer, t, value, numLit(0, loc), numLit(2, loc), loc);
   }
   if (t.kind === "void") {
     // Node prints "undefined" for a void call's result; a void expression
     // is not a value here, so the composition fences with the rewrite.
-    L.unsupported(
+    lowerer.unsupported(
       "SC1090",
       node,
       `${surface} of a void call result (call it as its own statement, then ${surface}(undefined))`,
     );
   }
   const walk = { recursive: false };
-  const reason = inspectSupport(L, t, new Set(), walk);
+  const reason = inspectSupport(lowerer, t, new Set(), walk);
   if (reason !== null) {
-    L.unsupported("SC1090", node, `${surface} of '${L.fmt(t)}' values (${reason})`);
+    lowerer.unsupported("SC1090", node, `${surface} of '${lowerer.fmt(t)}' values (${reason})`);
   }
-  return formatValueExpr(L, t, value, 2, loc);
+  return formatValueExpr(lowerer, t, value, 2, loc);
 }
 
 /* ── the callsite: options, direct function/class names ──────────────── */
 
 /** The parsed options literal: the resolved depth (numeric; Infinity for
  * `null`), with every non-default knob fenced by name. */
-function parseInspectOptions(L: Lowerer, node: ts.Expression | undefined, recursive: boolean): number {
+function parseInspectOptions(lowerer: Lowerer, node: ts.Expression | undefined, recursive: boolean): number {
   if (!node || (ts.isIdentifier(node) && node.text === "undefined")) return 2;
   if (!ts.isObjectLiteralExpression(node)) {
-    L.noLowering(
+    lowerer.noLowering(
       "util.inspect with a non-literal options argument",
       node,
       "the options must be an object literal ({ depth, colors: false, ... }) so the knobs resolve at compile time",
@@ -894,7 +909,7 @@ function parseInspectOptions(L: Lowerer, node: ts.Expression | undefined, recurs
   let depth = 2;
   for (const prop of node.properties) {
     if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
-      L.noLowering("util.inspect options in this form", prop, "plain `key: literal` entries are the lowered options");
+      lowerer.noLowering("util.inspect options in this form", prop, "plain `key: literal` entries are the lowered options");
     }
     const key = prop.name.text;
     const value = prop.initializer;
@@ -915,24 +930,24 @@ function parseInspectOptions(L: Lowerer, node: ts.Expression | undefined, recurs
       } else if (!(ts.isIdentifier(value) && value.text === "undefined")) {
         const n = numeric();
         if (n === null) {
-          L.noLowering("util.inspect with a non-literal depth option", value, "depth must be a numeric literal (or null)");
+          lowerer.noLowering("util.inspect with a non-literal depth option", value, "depth must be a numeric literal (or null)");
         }
         depth = n;
       }
     } else if (key === "colors") {
       if (value.kind !== ts.SyntaxKind.FalseKeyword) {
-        L.noLowering("util.inspect with colors: true", value, "ANSI styling has no lowering — only colors: false");
+        lowerer.noLowering("util.inspect with colors: true", value, "ANSI styling has no lowering — only colors: false");
       }
     } else if (key === "compact") {
       if (numeric() !== 3) {
-        L.noLowering("util.inspect with a non-default compact option", value, "only the default compact: 3 is lowered");
+        lowerer.noLowering("util.inspect with a non-default compact option", value, "only the default compact: 3 is lowered");
       }
     } else if (key === "breakLength") {
       if (numeric() !== 80) {
-        L.noLowering("util.inspect with a non-default breakLength option", value, "only the default breakLength: 80 is lowered");
+        lowerer.noLowering("util.inspect with a non-default breakLength option", value, "only the default breakLength: 80 is lowered");
       }
     } else {
-      L.noLowering(
+      lowerer.noLowering(
         `util.inspect with the '${key}' option`,
         prop,
         "the lowered options are depth (numeric literal or null), colors: false, compact: 3, and breakLength: 80",
@@ -946,26 +961,26 @@ function parseInspectOptions(L: Lowerer, node: ts.Expression | undefined, recurs
  * naming a declared function or class: the name is compile-time truth,
  * so `[Function: name]` / `[class X extends Y]` bake as literals. Null
  * when the identifier is not such a declaration. */
-function directCallableInspect(L: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr | null {
+function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr | null {
   if (!ts.isIdentifier(node)) return null;
-  const sym = L.resolveValueSymbol(node);
+  const sym = lowerer.resolveValueSymbol(node);
   if (!sym) return null;
-  const cls = L.classBySymbol.get(sym) ?? L.builtinErrorInfoOf(sym);
+  const cls = lowerer.classBySymbol.get(sym) ?? lowerer.builtinErrorInfoOf(sym);
   // A rebindable decorated name is not compile-time truth — the binding
   // holds the decoration result; no literal folds.
   if (cls?.classDecorators?.valueGlobalId !== undefined) return null;
   if (cls) {
     if (cls.builtinError) {
       // Node's Error constructors are native functions, not classes.
-      return str(`[Function: ${cls.def.name.replace(/^%/, "")}]`, loc);
+      return strLit(`[Function: ${cls.def.name.replace(/^%/, "")}]`, loc);
     }
     const base = cls.base ? ` extends ${cls.base.def.name.replace(/^%/, "")}` : "";
-    return str(`[class ${cls.def.name}${base}]`, loc);
+    return strLit(`[class ${cls.def.name}${base}]`, loc);
   }
-  const decl = L.checker.declarationsOf(sym)[0];
+  const decl = lowerer.checker.declarationsOf(sym)[0];
   if (!decl) return null;
   if (ts.isFunctionDeclaration(decl) && decl.name) {
-    return str(`[Function: ${decl.name.text}]`, loc);
+    return strLit(`[Function: ${decl.name.text}]`, loc);
   }
   if (
     ts.isVariableDeclaration(decl) &&
@@ -976,15 +991,15 @@ function directCallableInspect(L: Lowerer, node: ts.Expression, loc: SrcLoc): Ir
     // JS name inference: the binding names the function value — unless
     // the function expression carries its OWN name, which wins.
     const own = ts.isFunctionExpression(decl.initializer) ? decl.initializer.name?.text : undefined;
-    return str(`[Function: ${own ?? decl.name.text}]`, loc);
+    return strLit(`[Function: ${own ?? decl.name.text}]`, loc);
   }
   return null;
 }
 
 /** util.inspect(value[, options]) — the spoke's inspect entry. */
-function lowerInspectCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+function lowerInspectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (expr.arguments.length < 1 || expr.arguments.length > 2) {
-    L.noLowering(
+    lowerer.noLowering(
       `util.inspect with ${expr.arguments.length} arguments`,
       expr,
       "the supported forms are inspect(value) and inspect(value, options)",
@@ -993,42 +1008,42 @@ function lowerInspectCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrE
   const valueNode = expr.arguments[0]!;
   // Inline function/class literals and direct declared names render as
   // their baked forms; other function-typed values fence below.
-  const direct = directCallableInspect(L, valueNode, loc);
+  const direct = directCallableInspect(lowerer, valueNode, loc);
   if (direct) {
-    parseInspectOptions(L, expr.arguments[1], false);
+    parseInspectOptions(lowerer, expr.arguments[1], false);
     return direct;
   }
   if (ts.isArrowFunction(valueNode) || ts.isFunctionExpression(valueNode)) {
-    parseInspectOptions(L, expr.arguments[1], false);
-    return str(valueNode.kind === ts.SyntaxKind.FunctionExpression && (valueNode as ts.FunctionExpression).name ? `[Function: ${(valueNode as ts.FunctionExpression).name!.text}]` : "[Function (anonymous)]", loc);
+    parseInspectOptions(lowerer, expr.arguments[1], false);
+    return strLit(valueNode.kind === ts.SyntaxKind.FunctionExpression && (valueNode as ts.FunctionExpression).name ? `[Function: ${(valueNode as ts.FunctionExpression).name!.text}]` : "[Function (anonymous)]", loc);
   }
-  const value = L.lowerExpr(valueNode);
+  const value = lowerer.lowerExpr(valueNode);
   if (value.type.kind === "bytes") {
     // One runtime representation serves Buffer AND Uint8Array; their
     // renderings differ (<Buffer aa> vs Uint8Array(1) [ 170 ]), so the
     // TOP-LEVEL argument's checker type picks — and only Buffer lowers.
     // Nested bytes fence in inspectSupport (no checker type survives
     // into shapes).
-    const tname = L.checker.typeToString(L.checker.getBaseTypeOfLiteralType(L.typeOf(valueNode)));
+    const tname = lowerer.checker.typeToString(lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(valueNode)));
     const isBuffer = tname === "Buffer" || tname === "NonSharedBuffer" || tname.startsWith("Buffer<") || tname.startsWith("NonSharedBuffer<");
     if (value.type.elem !== "u8" || !isBuffer) {
-      L.noLowering(
+      lowerer.noLowering(
         `util.inspect of '${tname}' values`,
         valueNode,
         "Buffer's <Buffer ..> form is the lowered typed-array rendering; other typed arrays fence",
       );
     }
-    const bufDepth = parseInspectOptions(L, expr.arguments[1], false);
+    const bufDepth = parseInspectOptions(lowerer, expr.arguments[1], false);
     void bufDepth; // Buffers render fully at any depth (custom inspect)
-    return inspectExpr(L, value.type, value, num(0, loc), num(2, loc), loc);
+    return inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(2, loc), loc);
   }
   const walk = { recursive: false };
-  const reason = inspectSupport(L, value.type, new Set(), walk);
+  const reason = inspectSupport(lowerer, value.type, new Set(), walk);
   if (reason !== null) {
-    L.noLowering(`util.inspect of '${L.fmt(value.type)}' values`, valueNode, reason);
+    lowerer.noLowering(`util.inspect of '${lowerer.fmt(value.type)}' values`, valueNode, reason);
   }
-  const depth = parseInspectOptions(L, expr.arguments[1], walk.recursive);
-  return inspectExpr(L, value.type, value, num(0, loc), num(depth, loc), loc);
+  const depth = parseInspectOptions(lowerer, expr.arguments[1], walk.recursive);
+  return inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(depth, loc), loc);
 }
 
 /* ── util.format / util.formatWithOptions ────────────────────────────── */
@@ -1036,35 +1051,35 @@ function lowerInspectCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrE
 /** One argument as format's %s conversion (Node: numbers via
  * formatNumber, strings verbatim, objects through inspect at the given
  * depth). Null = fence with the given reason. */
-function formatSArg(L: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
-  const value = L.lowerExpr(node);
+function formatSArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
+  const value = lowerer.lowerExpr(node);
   const t = value.type;
   if (t.kind === "string") return value;
   if (t.kind === "f64") return { kind: "libCall", fn: "insp.f64", args: [value], type: STRING, loc };
   if (t.kind === "bool") return { kind: "toString", operand: value, type: STRING, loc };
-  if (t.kind === "undefinedT") return str("undefined", loc);
-  if (t.kind === "nullT") return str("null", loc);
+  if (t.kind === "undefinedT") return strLit("undefined", loc);
+  if (t.kind === "nullT") return strLit("null", loc);
   // %s of a symbol prints inspect's text ("Symbol(foo)") — String(sym)'s
   // answer too, one runtime call either way.
   if (t.kind === "symbol") return { kind: "libCall", fn: "sym.toString", args: [value], type: STRING, loc };
   if (t.kind === "dyn") {
-    return { kind: "libCall", fn: "insp.dynS", args: [value, num(depth, loc)], type: STRING, loc };
+    return { kind: "libCall", fn: "insp.dynS", args: [value, numLit(depth, loc)], type: STRING, loc };
   }
   // A UNION argument dispatches per arm at runtime: a string arm prints
   // VERBATIM (typeof arg === 'string' in Node's formatter — inspect's
   // quoting never applies at the top level), every other arm inspects.
   if (t.kind === "union") {
     const walk = { recursive: false };
-    const reason = inspectSupport(L, t, new Set(), walk);
-    if (reason !== null) L.noLowering(`util.format %s of '${L.fmt(t)}' values`, node, reason);
-    return formatValueExpr(L, t, value, depth, loc);
+    const reason = inspectSupport(lowerer, t, new Set(), walk);
+    if (reason !== null) lowerer.noLowering(`util.format %s of '${lowerer.fmt(t)}' values`, node, reason);
+    return formatValueExpr(lowerer, t, value, depth, loc);
   }
-  if (t.kind === "object" && !isErrorClass(L, t.className)) {
+  if (t.kind === "object" && !isErrorClass(lowerer, t.className)) {
     // hasBuiltInToString: a class with its OWN toString goes through
     // String(arg) in Node, not inspect — call it explicitly instead.
-    for (let info: ClassInfo | null = L.classes.get(t.className) ?? null; info; info = info.base) {
+    for (let info: ClassInfo | null = lowerer.classes.get(t.className) ?? null; info; info = info.base) {
       if (info.methods.has("toString")) {
-        L.noLowering(
+        lowerer.noLowering(
           "util.format %s over a class with its own toString",
           node,
           "Node calls the override (String(arg)) — call it explicitly",
@@ -1073,33 +1088,33 @@ function formatSArg(L: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc)
     }
   }
   if (t.kind === "bytes") {
-    L.noLowering(`util.format %s of typed-array values`, node, "pass util.inspect(buf) explicitly");
+    lowerer.noLowering(`util.format %s of typed-array values`, node, "pass util.inspect(buf) explicitly");
   }
   const walk = { recursive: false };
-  const reason = inspectSupport(L, t, new Set(), walk);
-  if (reason !== null) L.noLowering(`util.format %s of '${L.fmt(t)}' values`, node, reason);
-  return inspectExpr(L, t, value, num(0, loc), num(depth, loc), loc);
+  const reason = inspectSupport(lowerer, t, new Set(), walk);
+  if (reason !== null) lowerer.noLowering(`util.format %s of '${lowerer.fmt(t)}' values`, node, reason);
+  return inspectExpr(lowerer, t, value, numLit(0, loc), numLit(depth, loc), loc);
 }
 
 /** %O (depth 2) / %o (showHidden, depth 4) — inspect with the spec's
  * option deltas; %o fences over arrays (showHidden adds their hidden
  * [length] entry, which has no lowering). */
-function formatOArg(L: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
-  const value = L.lowerExpr(node);
+function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
+  const value = lowerer.lowerExpr(node);
   if (value.type.kind === "bytes") {
-    L.noLowering(`util.format %${depth === 4 ? "o" : "O"} of typed-array values`, node, "pass util.inspect(buf) explicitly");
+    lowerer.noLowering(`util.format %${depth === 4 ? "o" : "O"} of typed-array values`, node, "pass util.inspect(buf) explicitly");
   }
   const walk = { recursive: false };
-  const reason = inspectSupport(L, value.type, new Set(), walk);
-  if (reason !== null) L.noLowering(`util.format %${depth === 4 ? "o" : "O"} of '${L.fmt(value.type)}' values`, node, reason);
-  if (depth === 4 && typeTreeHasArray(L, value.type, new Set())) {
-    L.noLowering(
+  const reason = inspectSupport(lowerer, value.type, new Set(), walk);
+  if (reason !== null) lowerer.noLowering(`util.format %${depth === 4 ? "o" : "O"} of '${lowerer.fmt(value.type)}' values`, node, reason);
+  if (depth === 4 && typeTreeHasArray(lowerer, value.type, new Set())) {
+    lowerer.noLowering(
       "util.format %o over arrays",
       node,
       "%o renders with showHidden (arrays gain a hidden [length] entry) — use %O for the default rendering",
     );
   }
-  return inspectExpr(L, value.type, value, num(0, loc), num(depth, loc), loc);
+  return inspectExpr(lowerer, value.type, value, numLit(0, loc), numLit(depth, loc), loc);
 }
 
 /** util.format(...) / util.formatWithOptions({}, ...): the compile-time
@@ -1107,30 +1122,30 @@ function formatOArg(L: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc)
  * ported exactly — the arg cursor, the args-exhausted guard, %c's
  * consume-and-drop), with per-static-type conversions. Non-literal
  * format strings lower only in the substitution-free shapes. */
-export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc, withOptions: boolean): IrExpr {
+export function lowerFormatCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc, withOptions: boolean): IrExpr {
   const argNodes = [...expr.arguments];
   if (withOptions) {
     const opts = argNodes.shift();
     if (!opts || !ts.isObjectLiteralExpression(opts) || opts.properties.length > 0) {
-      L.noLowering(
+      lowerer.noLowering(
         "util.formatWithOptions with a non-empty options literal",
         opts ?? expr,
         "only the empty literal {} (the defaults — exactly util.format) is lowered",
       );
     }
   }
-  if (argNodes.length === 0) return str("", loc);
+  if (argNodes.length === 0) return strLit("", loc);
   const first = argNodes[0]!;
   const firstIsLiteral = ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first);
 
   /** The rest-args tail: ` ` + (strings verbatim, everything else
    * inspected at the default depth). */
-  const restArg = (node: ts.Expression): IrExpr => formatSArg(L, node, 2, loc);
+  const restArg = (node: ts.Expression): IrExpr => formatSArg(lowerer, node, 2, loc);
 
   if (!firstIsLiteral) {
-    const firstT = L.mapTypeOf(L.typeOf(first));
+    const firstT = lowerer.mapTypeOf(lowerer.typeOf(first));
     if (firstT?.kind === "string" && argNodes.length > 1) {
-      L.noLowering(
+      lowerer.noLowering(
         "util.format with a runtime format string and further arguments",
         first,
         "the %-substitution positions are runtime-dependent — use a string literal",
@@ -1139,7 +1154,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
     // No substitutions possible: every argument joins with spaces.
     const parts: IrExpr[] = [];
     for (let i = 0; i < argNodes.length; i++) {
-      if (i > 0) parts.push(str(" ", loc));
+      if (i > 0) parts.push(strLit(" ", loc));
       parts.push(restArg(argNodes[i]!));
     }
     return concatAll(parts, loc);
@@ -1148,7 +1163,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
   const fmt = (first as ts.StringLiteralLike).text;
   // Node's early return: a lone string first argument passes VERBATIM —
   // no substitution runs, "%%" stays "%%".
-  if (argNodes.length === 1) return str(fmt, loc);
+  if (argNodes.length === 1) return strLit(fmt, loc);
   const parts: IrExpr[] = [];
   let a = 0; // the arg cursor over argNodes (0 = the format string)
   let lastPos = 0;
@@ -1156,12 +1171,12 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
   const convert = (spec: number, node: ts.Expression): IrExpr => {
     switch (spec) {
       case 115: // %s
-        return formatSArg(L, node, 0, loc);
+        return formatSArg(lowerer, node, 0, loc);
       case 100: {
         // %d — Number(arg) formatted: numbers as-is, booleans 1/0,
         // strings through the runtime's ECMA-exact StringToNumber
         // (num.fromString — the same lowering Number(aString) takes).
-        const value = L.lowerExpr(node);
+        const value = lowerer.lowerExpr(node);
         if (value.type.kind === "f64") return { kind: "libCall", fn: "insp.f64", args: [value], type: STRING, loc };
         if (value.type.kind === "string") {
           const parsed: IrExpr = { kind: "libCall", fn: "num.fromString", args: [value], type: F64, loc };
@@ -1171,7 +1186,7 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
           return {
             kind: "libCall",
             fn: "insp.f64",
-            args: [{ kind: "ternary", cond: value, then: num(1, loc), else_: num(0, loc), type: F64, loc }],
+            args: [{ kind: "ternary", cond: value, then: numLit(1, loc), else_: numLit(0, loc), type: F64, loc }],
             type: STRING,
             loc,
           };
@@ -1190,37 +1205,37 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
             loc,
           };
         }
-        L.noLowering(`util.format %d of '${L.fmt(value.type)}' values`, node, "numbers, booleans, and strings lower; ToNumber over other types has no static lowering");
+        lowerer.noLowering(`util.format %d of '${lowerer.fmt(value.type)}' values`, node, "numbers, booleans, and strings lower; ToNumber over other types has no static lowering");
         break;
       }
       case 105: {
         // %i — parseInt(ToString(arg)): the spec-exact composition.
-        const value = L.lowerExpr(node);
+        const value = lowerer.lowerExpr(node);
         if (value.type.kind === "f64" || value.type.kind === "bool" || value.type.kind === "string") {
           const text: IrExpr = value.type.kind === "string" ? value : { kind: "toString", operand: value, type: STRING, loc };
-          const parsed: IrExpr = { kind: "libCall", fn: "num.parseInt", args: [text, num(0, loc)], type: F64, loc };
+          const parsed: IrExpr = { kind: "libCall", fn: "num.parseInt", args: [text, numLit(0, loc)], type: F64, loc };
           return { kind: "libCall", fn: "insp.f64", args: [parsed], type: STRING, loc };
         }
-        L.noLowering(`util.format %i of '${L.fmt(value.type)}' values`, node);
+        lowerer.noLowering(`util.format %i of '${lowerer.fmt(value.type)}' values`, node);
         break;
       }
       case 106: {
         // %j — JSON.stringify; undefined-valued args print "undefined"
         // (Node appends the non-string result of tryStringify).
-        const value = L.lowerExpr(node);
-        if (value.type.kind === "undefinedT") return str("undefined", loc);
+        const value = lowerer.lowerExpr(node);
+        if (value.type.kind === "undefinedT") return strLit("undefined", loc);
         // JSON.stringify(sym) is undefined in Node — %j prints the
         // "undefined" text. Folding drops the operand, so only
         // side-effect-free reads compose (the typeof-fold stance).
         if (value.type.kind === "symbol") {
           if (!pureReemittable(value)) {
-            L.noLowering(
+            lowerer.noLowering(
               `util.format %j of computed symbol values`,
               node,
               "bind the symbol to a const first (the %j text is always \"undefined\")",
             );
           }
-          return str("undefined", loc);
+          return strLit("undefined", loc);
         }
         // A checked-dynamic argument (`console.error('headers: %j',
         // headers)` — the suite's http logging idiom): the runtime dyn
@@ -1229,17 +1244,17 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
         if (value.type.kind === "dyn") {
           return { kind: "libCall", fn: "insp.jsonDyn", args: [value], type: STRING, loc };
         }
-        if (!L.jsonSafe(value.type)) {
-          L.noLowering(`util.format %j of '${L.fmt(value.type)}' values`, node, "only JSON-safe static types lower");
+        if (!lowerer.jsonSafe(value.type)) {
+          lowerer.noLowering(`util.format %j of '${lowerer.fmt(value.type)}' values`, node, "only JSON-safe static types lower");
         }
         return { kind: "jsonStringify", value, type: STRING, loc };
       }
       case 79: // %O — inspect at the defaults
-        return formatOArg(L, node, 2, loc);
+        return formatOArg(lowerer, node, 2, loc);
       case 111: // %o — showHidden semantics; depth 4
-        return formatOArg(L, node, 4, loc);
+        return formatOArg(lowerer, node, 4, loc);
     }
-    throw new Error("unreachable format spec");
+    throw new InternalCompilerError("unreachable format spec");
   };
 
   for (let i = 0; i < fmt.length - 1; i++) {
@@ -1254,73 +1269,73 @@ export function lowerFormatCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc
           case 111: // o
           case 105: { // i
             const node = args[++a]!;
-            if (lastPos !== i - 1) parts.push(str(fmt.slice(lastPos, i - 1), loc));
+            if (lastPos !== i - 1) parts.push(strLit(fmt.slice(lastPos, i - 1), loc));
             parts.push(convert(nextChar, node));
             lastPos = i + 1;
             continue;
           }
           case 102: // f — parseFloat's full grammar has no static lowering
-            L.noLowering("util.format %f", expr, "parseFloat has no static lowering (it runs with --dynamic)");
+            lowerer.noLowering("util.format %f", expr, "parseFloat has no static lowering (it runs with --dynamic)");
             break;
           case 99: // c — consumes its argument, contributes nothing
             a += 1;
-            if (lastPos !== i - 1) parts.push(str(fmt.slice(lastPos, i - 1), loc));
+            if (lastPos !== i - 1) parts.push(strLit(fmt.slice(lastPos, i - 1), loc));
             lastPos = i + 1;
             continue;
           case 37: // %%
-            parts.push(str(fmt.slice(lastPos, i), loc));
+            parts.push(strLit(fmt.slice(lastPos, i), loc));
             lastPos = i + 1;
             continue;
           default:
             continue;
         }
       } else if (nextChar === 37) {
-        parts.push(str(fmt.slice(lastPos, i), loc));
+        parts.push(strLit(fmt.slice(lastPos, i), loc));
         lastPos = i + 1;
       }
     }
   }
   if (lastPos !== 0) {
     a++;
-    if (lastPos < fmt.length) parts.push(str(fmt.slice(lastPos), loc));
+    if (lastPos < fmt.length) parts.push(strLit(fmt.slice(lastPos), loc));
   } else {
     // No substitution touched the format string: it joins verbatim, and
     // the cursor advances past it.
-    parts.push(str(fmt, loc));
+    parts.push(strLit(fmt, loc));
     a++;
   }
   for (; a < args.length; a++) {
-    parts.push(str(" ", loc));
+    parts.push(strLit(" ", loc));
     parts.push(restArg(args[a]!));
   }
   return concatAll(parts, loc);
 }
 
 /** Arrays anywhere in the tree — the %o (showHidden) gate. */
-function typeTreeHasArray(L: Lowerer, t: IrType, visiting: Set<string>): boolean {
+function typeTreeHasArray(lowerer: Lowerer, t: IrType, visiting: Set<string>): boolean {
   switch (t.kind) {
     case "array":
       return true;
     case "record": {
       if (visiting.has(t.shapeId)) return false;
       visiting.add(t.shapeId);
-      const shape = L.shapes.get(t.shapeId);
+      const shape = lowerer.shapes.get(t.shapeId);
       if (shape?.tuple) return true;
-      return (shape?.fields ?? []).some((f) => typeTreeHasArray(L, f.type, visiting));
+      return (shape?.fields ?? []).some((f) => typeTreeHasArray(lowerer, f.type, visiting));
     }
     case "map":
-      return typeTreeHasArray(L, t.key, visiting) || typeTreeHasArray(L, t.value, visiting);
+      return typeTreeHasArray(lowerer, t.key, visiting) || typeTreeHasArray(lowerer, t.value, visiting);
     case "set":
-      return typeTreeHasArray(L, t.elem, visiting);
+      return typeTreeHasArray(lowerer, t.elem, visiting);
     case "union": {
       if (visiting.has(t.unionId)) return false;
       visiting.add(t.unionId);
-      return (L.unions.get(t.unionId)?.arms ?? []).some((a) => typeTreeHasArray(L, a, visiting));
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).some((a) => typeTreeHasArray(lowerer, a, visiting));
     }
     case "object": {
       if (visiting.has(t.className)) return false;
       visiting.add(t.className);
-      return (L.classes.get(t.className)?.def.fields ?? []).some((f) => typeTreeHasArray(L, f.type, visiting));
+      return (lowerer.classes.get(t.className)?.def.fields ?? []).some((f) => typeTreeHasArray(lowerer, f.type, visiting));
     }
     case "bytes":
       return true;
@@ -1335,7 +1350,7 @@ function typeTreeHasArray(L: Lowerer, t: IrType, visiting: Set<string>): boolean
  * default-import call paths. Null for other modules and members (the
  * module tables' fence takes over). */
 export function lowerUtilModuleCall(
-  L: Lowerer,
+  lowerer: Lowerer,
   expr: ts.CallExpression,
   bi: { module: string; member: string },
   loc: SrcLoc,
@@ -1343,16 +1358,83 @@ export function lowerUtilModuleCall(
   if (bi.module !== "util") return null;
   switch (bi.member) {
     case "inspect":
-      return lowerInspectCall(L, expr, loc);
+      return lowerInspectCall(lowerer, expr, loc);
     case "format":
-      return lowerFormatCall(L, expr, loc, false);
+      return lowerFormatCall(lowerer, expr, loc, false);
     case "formatWithOptions":
-      return lowerFormatCall(L, expr, loc, true);
+      return lowerFormatCall(lowerer, expr, loc, true);
+    case "parseArgs":
+      return lowerParseArgsCall(lowerer, expr, loc);
     case "getCallSites":
-      return lowerGetCallSitesCall(L, expr, loc);
+      return lowerGetCallSitesCall(lowerer, expr, loc);
     default:
       return null;
   }
+}
+
+/** util.parseArgs(config?): the configuration is ordinary JSON-safe data,
+ * so it crosses into the runtime as a checked-dynamic tree. The native
+ * parser returns the same tree-shaped result Node does (including token
+ * variants and a null-prototype values object); statically typed member
+ * reads leave that tree through the ordinary dyn checks. */
+function lowerParseArgsCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  if (expr.arguments.length > 1 || expr.arguments.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `util.parseArgs with ${expr.arguments.length} arguments`,
+      expr,
+      "the lowered form is parseArgs() or parseArgs(config)",
+    );
+  }
+
+  let config: IrExpr;
+  const configNode = expr.arguments[0];
+  if (!configNode) {
+    config = { kind: "dynObjLit", fields: [], type: DYN, loc };
+  } else {
+    const raw = lowerer.lowerExpr(configNode);
+    if (raw.type.kind === "dyn") {
+      config = raw;
+    } else if (raw.type.kind === "jsval") {
+      config = { kind: "dynFromJsval", value: raw, type: DYN, loc };
+    } else if (canConvertToDyn(raw.type, (id) => lowerer.shapes.get(id), (id) => lowerer.unions.get(id))) {
+      // parseArgs assigns descriptor default arrays directly into the
+      // returned values object. Keep mutable config composites in typed-ref
+      // capsules so that default arrays can leave the dyn result as the
+      // original static reference; the runtime still snapshots `args` and
+      // the option schema before parsing, matching Node's synchronous read.
+      const liveRef = raw.type.kind === "record" || raw.type.kind === "array" ||
+        raw.type.kind === "bytes";
+      config = {
+        kind: "dynFrom",
+        value: raw,
+        ...(liveRef ? { liveRef: true as const } : {}),
+        type: DYN,
+        loc,
+      };
+    } else {
+      lowerer.noLowering(
+        `util.parseArgs with a '${lowerer.fmt(raw.type)}' configuration`,
+        configNode,
+        "pass the documented JSON-safe config object (args/options and boolean flags)",
+      );
+    }
+  }
+
+  const parsed: IrExpr = {
+    kind: "libCall",
+    fn: "util.parseArgs",
+    args: [config],
+    type: DYN,
+    loc,
+  };
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (
+    result !== null && result.kind !== "dyn" && result.kind !== "jsval" && result.kind !== "void" &&
+    canDynCheckTo(result, (id) => lowerer.shapes.get(id), (id) => lowerer.unions.get(id))
+  ) {
+    return { kind: "dynCheck", value: parsed, type: result, loc };
+  }
+  return parsed;
 }
 
 /** util.getCallSites() in a JS source: compiled binaries keep no runtime
@@ -1364,7 +1446,7 @@ export function lowerUtilModuleCall(
  * failure text — read a printable value instead of throwing). Argument
  * forms and TypeScript keep the SC2020 fence: a typed consumer asserting
  * real frames must fail loudly at compile time, not read placeholders. */
-function lowerGetCallSitesCall(L: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr | null {
+function lowerGetCallSitesCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr | null {
   if (expr.arguments.length !== 0) return null;
   if (!isJsSourceFile(expr.getSourceFile())) return null;
   const frame = (): IrExpr => {

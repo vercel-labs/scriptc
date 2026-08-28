@@ -28,3 +28,18 @@ console.log("initials:", totals.size, "sum:", sum);
 // Inferred anonymous literals stringify in the checker's (alphabetical)
 // property order — keys chosen here so both orders agree.
 console.log(JSON.stringify({ best: best.name, count: players.length }));
+
+// JSDoc Record values declared at JS file scope live in the checked-dynamic
+// tree even though the checker sees a record shape. Strict equality uses an
+// absence-aware read so missing index keys remain undefined; dot and bracket
+// spelling must both dispatch through that runtime representation.
+/** @type {Record<string, string>} */
+const strings = { a: "x", b: "y" };
+console.log(strings.a === strings.a, strings.a !== strings.b);
+console.log(strings.a === strings["a"], strings["a"] !== strings.b);
+console.log(strings.missing === undefined, strings["missing"] !== undefined);
+
+/** @type {Record<string, { value: string }>} */
+const objects = { a: { value: "x" }, b: { value: "y" } };
+console.log(objects.a === objects.a, objects.a !== objects.b);
+console.log(objects["a"] === objects.a, objects["missing"] === undefined);

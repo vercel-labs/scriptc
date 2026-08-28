@@ -1,5 +1,6 @@
+import { InternalCompilerError } from "../../errors.js";
 /* The LLVM backend's class machinery — the .ll mirror of the C emitter's
- * class slice (emit-shapes.ts): the class graph (base/children links, the
+ * class slice (shapes.ts): the class graph (base/children links, the
  * whole-program preorder numbering behind O(1) instanceof, hierarchy
  * membership, per-hierarchy virtual slot lists), per-class struct types and
  * RC/trace helper families, the hierarchy vtable instances, and the class
@@ -19,8 +20,9 @@
  * Emitter- and stream-rooted classes stay out of the tier (their prefixes
  * embed runtime registry/state slots and their surfaces are async-shaped);
  * the emitter refuses them by name before anything here runs. */
-import type { IrClassDef, IrFunction, IrModule, IrType } from "../../ir/nodes.js";
-import { isRefCounted, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES } from "../../ir/nodes.js";
+import type { IrClassDef, IrFunction, IrModule, IrType, IrUnionDef } from "../../ir/ir.js";
+import { isRefCounted, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES } from "../../ir/ir.js";
+import { streamRooted, undefinedArmTag } from "../../ir/analysis.js";
 import {
   mangleClassGcFree,
   mangleClassNew,
@@ -35,7 +37,7 @@ import {
   mangleVtInstance,
   mangleVtStruct,
 } from "../mangle.js";
-import { FN_ATTRS, llFieldType, releaseSym, traceAdapter, type ShapeHost } from "./shapes.js";
+import { FN_ATTRS, llFieldType, releaseBody, releaseSym, retainBody, traceAdapter, type ShapeHost } from "./shapes.js";
 
 /** One virtual method slot of a hierarchy: the ROOT-MOST declaring class
  * owns the slot; its declaration's IrFunction fixes the slot's ABI (the
@@ -83,7 +85,7 @@ export function buildClassGraph(mod: IrModule, fnByName: Map<string, IrFunction>
   for (const meta of metaMap.values()) {
     if (meta.def.base === undefined) continue;
     const base = metaMap.get(meta.def.base);
-    if (!base) throw new Error(`llvm emitter bug: undeclared base class ${meta.def.base}`);
+    if (!base) throw new InternalCompilerError(`llvm emitter bug: undeclared base class ${meta.def.base}`);
     meta.base = base;
     base.children.push(meta);
   }
@@ -124,7 +126,7 @@ export function buildClassGraph(mod: IrModule, fnByName: Map<string, IrFunction>
           fn = findImpl(m);
           if (!fn) continue;
         }
-        if (!fn) throw new Error(`llvm emitter bug: missing method function %${m.def.name}.${method}`);
+        if (!fn) throw new InternalCompilerError(`llvm emitter bug: missing method function %${m.def.name}.${method}`);
         root.slots.push({ method, declarer: m, fn });
       }
     }
@@ -139,7 +141,7 @@ export function buildClassGraph(mod: IrModule, fnByName: Map<string, IrFunction>
 /** The root's slot list as seen by one class: the implementation the class
  * dispatches to, or null outside the slot's declaring subtree / on a
  * fully-abstract chain (vtEntriesFor, ported). */
-export function vtEntriesFor(meta: LlClassMeta): { slot: LlVtSlot; impl: LlClassMeta | null }[] {
+function vtEntriesFor(meta: LlClassMeta): { slot: LlVtSlot; impl: LlClassMeta | null }[] {
   return meta.root.slots.map((slot) => {
     if (!(slot.declarer.pre <= meta.pre && meta.pre <= slot.declarer.post)) {
       return { slot, impl: null };
@@ -150,7 +152,7 @@ export function vtEntriesFor(meta: LlClassMeta): { slot: LlVtSlot; impl: LlClass
       }
     }
     if (meta.def.abstract === true) return { slot, impl: null };
-    throw new Error(`llvm emitter bug: no implementation of ${slot.method} for ${meta.def.name}`);
+    throw new InternalCompilerError(`llvm emitter bug: no implementation of ${slot.method} for ${meta.def.name}`);
   });
 }
 
@@ -167,20 +169,9 @@ export function classStructSym(className: string): string {
 /** True when the class descends from the runtime emitter class: its
  * struct embeds ScrEmitter's remaining prefix (the registry pointer and
  * the display-name slot) after the vtable word, so an upcast to
- * ScrEmitter* is the usual pointer reinterpret (emit-shapes.ts's rule). */
-export function emitterRooted(meta: LlClassMeta): boolean {
+ * ScrEmitter* is the usual pointer reinterpret (shapes.ts's rule). */
+function emitterRooted(meta: LlClassMeta): boolean {
   return meta.root.def.name === RUNTIME_EMITTER_CLASS;
-}
-
-/** True when the class descends from a runtime STREAM class: its struct
- * embeds the FULL ScrStream prefix (registry, display name, state
- * pointer) and its RC/trace helpers delegate the state block to
- * scr_stream_st_* (emit-shapes.ts's streamRooted). */
-export function streamRooted(meta: LlClassMeta): boolean {
-  for (let m = meta.base; m; m = m.base) {
-    if (RUNTIME_STREAM_CLASSES.has(m.def.name)) return true;
-  }
-  return false;
 }
 
 /** The GEP index where a class's own fields start: rc at 0, the vtable
@@ -197,7 +188,7 @@ function fieldBase(meta: LlClassMeta): number {
  * at 1 on hierarchy members, then the flattened field list. */
 export function classFieldIndex(meta: LlClassMeta, field: string): { index: number; type: IrType } {
   const idx = meta.def.fields.findIndex((f) => f.name === field);
-  if (idx < 0) throw new Error(`llvm emitter bug: unknown field ${field} on class ${meta.def.name}`);
+  if (idx < 0) throw new InternalCompilerError(`llvm emitter bug: unknown field ${field} on class ${meta.def.name}`);
   return { index: fieldBase(meta) + idx, type: meta.def.fields[idx]!.type };
 }
 
@@ -206,8 +197,8 @@ export function classFieldIndex(meta: LlClassMeta, field: string): { index: numb
  * undefined-armed union start as JS's `undefined`, never NULL), and the
  * interned NUL-terminated constants (emitter subclass display names). */
 export interface ClassHost extends ShapeHost {
+  readonly unionsById: Map<string, IrUnionDef>;
   unitInstanceRef(unionId: string, tag: number): string;
-  undefinedArmTag(t: IrType): number;
   cstr(text: string): string;
 }
 
@@ -229,7 +220,7 @@ function undefFieldInits(host: ClassHost, meta: LlClassMeta): string[] {
       return;
     }
     if (f.type.kind !== "union") return;
-    const tag = host.undefinedArmTag(f.type);
+    const tag = undefinedArmTag(f.type, host.unionsById);
     if (tag < 0) return;
     out.push(
       `  %uf${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr %o, i64 0, i32 ${index}`,
@@ -270,7 +261,7 @@ export function emitClassShapes(
       : [];
     const members = [...prefix, ...fieldTys];
     typeDefs.push(
-      `%${mangleClassStruct(cls.name)} = type { i64${members.length ? ", " + members.join(", ") : ""} } ` +
+      `%${mangleClassStruct(cls.name)} = type { ${host.sizeType}${members.length ? ", " + members.join(", ") : ""} } ` +
         `; class ${cls.name}${meta.hierarchy ? " (vt at 1)" : ""}${streamRooted(meta) ? " (ScrStream prefix at 2)" : emitterRooted(meta) ? " (ScrEmitter prefix at 2)" : ""} { ${cls.fields.map((f) => f.name).join("; ")} }`,
     );
   }
@@ -299,7 +290,7 @@ export function emitClassShapes(
         ? `ptr null` // outside the declaring subtree / fully-abstract chain
         : `ptr @${mangleFunction(`%${impl.def.name}.${slot.method}`)}`,
     );
-    const head = `%ScrVt { i64 ${meta.pre}, i64 ${meta.post}, ptr @${mangleClassReleaseDirect(cls.name)} }`;
+    const head = `%ScrVt { ${host.sizeType} ${meta.pre}, ${host.sizeType} ${meta.post}, ptr @${mangleClassReleaseDirect(cls.name)} }`;
     defs.push(
       `@${mangleVtInstance(cls.name)} = internal constant %${mangleVtStruct(meta.root.def.name)} ` +
         `{ ${[head, ...entries].join(", ")} } ; class ${cls.name}`,
@@ -317,7 +308,7 @@ export function emitClassShapes(
     const refFields = cls.fields
       .map((f, i) => ({ ...f, index: fieldIndex(i) }))
       .filter((f) => isRefCounted(f.type));
-    const sizeOf = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 1) to i64)`;
+    const sizeOf = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 1) to ${host.sizeType})`;
     // An embedded prefix slot (the emitter registry at 2, the stream
     // state at 4) handed to one of the runtime's prefix helpers —
     // teardown/trace/collector.
@@ -336,27 +327,7 @@ export function emitClassShapes(
 
     // retain: NULL-tolerant, immortal-skip, mark-live on traced shapes —
     // layout-generic (rc at 0), so hierarchy members need no dispatch.
-    defs.push(
-      `define internal ptr @${mangleClassRetain(cls.name)}(ptr %o) ${FN_ATTRS} { ; retain ${cls.name}`,
-      `entry:`,
-      `  %isnull = icmp eq ptr %o, null`,
-      `  br i1 %isnull, label %done, label %check`,
-      `check:`,
-      `  %rc = load i64, ptr %o`,
-      `  %imm = icmp eq i64 %rc, -1`,
-      `  br i1 %imm, label %done, label %inc`,
-      `inc:`,
-      `  %n = add i64 %rc, 1`,
-      `  store i64 %n, ptr %o`,
-      ...(traced
-        ? [`  %colorp = getelementptr i8, ptr %o, i64 -16`, `  store i32 0, ptr %colorp ; mark live`]
-        : []),
-      `  br label %done`,
-      `done:`,
-      `  ret ptr %o`,
-      `}`,
-      ``,
-    );
+    defs.push(...retainBody(host, mangleClassRetain(cls.name), traced, `retain ${cls.name}`), ``);
 
     // The field-releasing teardown body shared by both release shapes
     // (the public one on standalone classes, the DIRECT one on hierarchy
@@ -395,8 +366,8 @@ export function emitClassShapes(
         `  %isnull = icmp eq ptr %o, null`,
         `  br i1 %isnull, label %done, label %check`,
         `check:`,
-        `  %rc = load i64, ptr %o`,
-        `  %imm = icmp eq i64 %rc, -1`,
+        `  %rc = load ${host.sizeType}, ptr %o`,
+        `  %imm = icmp eq ${host.sizeType} %rc, -1`,
         `  br i1 %imm, label %done, label %disp`,
         `disp:`,
         `  %vtp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 1`,
@@ -415,10 +386,10 @@ export function emitClassShapes(
       const reld: string[] = [
         `define internal void @${mangleClassReleaseDirect(cls.name)}(ptr %o) ${FN_ATTRS} { ; direct release ${cls.name}`,
         `entry:`,
-        `  %rc = load i64, ptr %o`,
-        `  %n = sub i64 %rc, 1`,
-        `  store i64 %n, ptr %o`,
-        `  %dead = icmp eq i64 %n, 0`,
+        `  %rc = load ${host.sizeType}, ptr %o`,
+        `  %n = sub ${host.sizeType} %rc, 1`,
+        `  store ${host.sizeType} %n, ptr %o`,
+        `  %dead = icmp eq ${host.sizeType} %n, 0`,
         `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
         `free:`,
       ];
@@ -435,34 +406,12 @@ export function emitClassShapes(
       reld.push(`done:`, `  ret void`, `}`, ``);
       defs.push(...reld);
     } else {
-      const rel: string[] = [
-        `define internal void @${mangleClassRelease(cls.name)}(ptr %o) ${FN_ATTRS} { ; release ${cls.name}`,
-        `entry:`,
-        `  %isnull = icmp eq ptr %o, null`,
-        `  br i1 %isnull, label %done, label %check`,
-        `check:`,
-        `  %rc = load i64, ptr %o`,
-        `  %imm = icmp eq i64 %rc, -1`,
-        `  br i1 %imm, label %done, label %dec`,
-        `dec:`,
-        `  %n = sub i64 %rc, 1`,
-        `  store i64 %n, ptr %o`,
-        `  %dead = icmp eq i64 %n, 0`,
-        `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
-        `free:`,
-      ];
-      teardown(rel);
-      rel.push(`  br label %done`);
-      if (traced) {
-        host.declare(`declare void @scr_cyc_on_release(ptr)`);
-        rel.push(
-          `root:`,
-          `  call void @scr_cyc_on_release(ptr %o) ; possible cycle root; may collect`,
-          `  br label %done`,
-        );
-      }
-      rel.push(`done:`, `  ret void`, `}`, ``);
-      defs.push(...rel);
+      const freeBody: string[] = [];
+      teardown(freeBody);
+      defs.push(
+        ...releaseBody(host, mangleClassRelease(cls.name), traced, freeBody, `release ${cls.name}`),
+        ``,
+      );
     }
 
     // new: zeroed allocation, rc = 1, the vtable word on hierarchy
@@ -474,15 +423,15 @@ export function emitClassShapes(
       `entry:`,
     ];
     if (traced) {
-      host.declare(`declare ptr @scr_cyc_alloc(i64, ptr, ptr)`);
+      host.declare(`declare ptr @scr_cyc_alloc(${host.sizeType}, ptr, ptr)`);
       nw.push(
-        `  %o = call ptr @scr_cyc_alloc(i64 ${sizeOf}, ptr @${mangleClassTrace(cls.name)}, ptr @${mangleClassGcFree(cls.name)})`,
+        `  %o = call ptr @scr_cyc_alloc(${host.sizeType} ${sizeOf}, ptr @${mangleClassTrace(cls.name)}, ptr @${mangleClassGcFree(cls.name)})`,
       );
     } else {
-      host.declare(`declare ptr @calloc(i64, i64)`);
+      host.declare(`declare ptr @calloc(${host.sizeType}, ${host.sizeType})`);
       host.needOom();
       nw.push(
-        `  %o = call ptr @calloc(i64 1, i64 ${sizeOf})`,
+        `  %o = call ptr @calloc(${host.sizeType} 1, ${host.sizeType} ${sizeOf})`,
         `  %isnull = icmp eq ptr %o, null`,
         `  br i1 %isnull, label %oom, label %ok`,
         `oom:`,
@@ -491,7 +440,7 @@ export function emitClassShapes(
         `ok:`,
       );
     }
-    nw.push(`  store i64 1, ptr %o`);
+    nw.push(`  store ${host.sizeType} 1, ptr %o`);
     if (meta.hierarchy) {
       nw.push(
         `  %vtp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 1`,
@@ -501,7 +450,7 @@ export function emitClassShapes(
     if (isEmitterRooted) {
       // The ScrEmitter prefix: registry stays NULL (zeroed allocation);
       // the display name Node's leak warning prints ([My]) is the source
-      // class name, without the module qualifier (emit-shapes.ts's rule).
+      // class name, without the module qualifier (shapes.ts's rule).
       const displayName = cls.name.includes(".")
         ? cls.name.slice(cls.name.lastIndexOf(".") + 1)
         : cls.name;
@@ -576,16 +525,16 @@ export function emitClassObjDefs(
   const out: string[] = [];
   for (const [className, { nameSym }] of classObjs) {
     const meta = metaMap.get(className);
-    if (!meta) throw new Error(`llvm emitter bug: class object for unknown class ${className}`);
+    if (!meta) throw new InternalCompilerError(`llvm emitter bug: class object for unknown class ${className}`);
     // A generic instantiation's class object carries its FAMILY's interval
     // (JS has ONE `Box` at runtime); construction still dispatches the
     // instantiation's own thunk.
     const intervalMeta = meta.def.genericOf !== undefined ? metaMap.get(meta.def.genericOf) : meta;
     if (!intervalMeta) {
-      throw new Error(`llvm emitter bug: class object for ${className} names unknown family ${meta.def.genericOf ?? ""}`);
+      throw new InternalCompilerError(`llvm emitter bug: class object for ${className} names unknown family ${meta.def.genericOf ?? ""}`);
     }
     const ctor = fnByName.get(`%${className}.constructor`);
-    if (!ctor) throw new Error(`llvm emitter bug: class object for ${className} without a constructor`);
+    if (!ctor) throw new InternalCompilerError(`llvm emitter bug: class object for ${className} without a constructor`);
     const params = ctor.params.slice(1);
     const paramDecls = params.map((p, i) => `${llType(p.type)} %a${i}`).join(", ");
     const ctorArgs = params.map((p, i) => `${llType(p.type)} %a${i}`);
@@ -598,7 +547,7 @@ export function emitClassObjDefs(
       `  ret ptr %o`,
       `}`,
       `@${mangleClassObj(className)} = internal global %ScrClassObj ` +
-        `{ i64 -1, i64 ${intervalMeta.pre}, i64 ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym} } ; class ${className}`,
+        `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym} } ; class ${className}`,
       ``,
     );
   }

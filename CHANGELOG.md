@@ -4,15 +4,177 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Features
+
+- **Builds can stop at typed IR, readable C, or textual LLVM IR.** `scriptc build --emit=ir|c|llvm` writes one primary source artifact with stable default suffixes and requires only Node—no external compiler, archiver, linker, or executable cache. `--emit=exe` remains the default, and executable builds retain the former additive `--emit-ir` flag for one release with a deprecation warning; library mode keeps its additive `--emit-ir` option.
+
 <!-- release:start -->
+
+## 0.0.35
+
+### Performance
+
+- **Development builds reach native output sooner.** Exact executable cache hits route through the lightweight CLI before loading the compiler, while uncached dev builds use `-O0` and split large LLVM programs and libraries into stable, parallel, independently cached objects. npm installation also warms toolchain-specific runtime, TLS, and dynamic-engine artifacts for later builds.
+- **The TypeScript frontend asks the checker for less work.** Lowering batches structure, reachable-body, call, receiver, and implicit-instance queries by phase, memoizes immutable type constituents, and avoids querying dead bodies or visibly non-object array candidates.
+
+### Fixes
+
+- **Unsupported `Array.from` element shapes refuse cleanly.** Mapper results that the backends cannot represent are diagnosed or deferred before emission instead of reaching a C emitter crash.
+- **JSDoc record equality reads preserve dynamic property behavior.** Dot and bracket reads used by strict-equality and missing-key probes now route through checked-dynamic lookup, preserving absent properties and object identity.
+
+<!-- release:end -->
+
+## 0.0.34
+
+### Performance
+
+- **Library builds reuse more validated work.** Unchanged frontends, comment-only edits, lowered IR, and emitted C or LLVM translation units can be restored from the persistent cache while semantic, configuration, package-resolution, toolchain, and source-annotation changes still invalidate safely; volatile library identity is refreshed independently.
+- **Reachable library code is lowered once.** Module assembly reuses retained lowering output without re-lowering function bodies, preserving reached-only artifact filtering, coverage remainder behavior, and output ordering while reducing repeated compiler work.
+- **Same-shape record spreads emit smaller code.** Reusable clone helpers and outlined large-record copies reduce generated C and LLVM code while preserving ownership, integer proofs, and runtime behavior.
+
+## 0.0.33
+
+### Features
+
+- **Foreign-thread native callbacks are marshalled to the event loop.** FFI format 5 adds `invoke: "foreign"` for retained, context-bearing, `void` callbacks. Thread-safe generated trampolines copy scalar/string/byte arguments into plain staging memory, wake the process loop, and return immediately; the loop delivers one callback per turn on the script thread with ref'd registration liveness, concurrent-producer FIFO safety, explicit release, throw propagation, and clean shutdown across both backends.
+- **Native callbacks can be retained and explicitly released.** FFI format 4 adds `lifetime: "retained"` registrations and paired `release` descriptors that reuse the original function-pointer trampoline. Registrations pin captured closures until the same function value is released, count duplicate registrations, support multiple context-bearing registrations and raw single-slot replacement, defer callback throws through later FFI pump calls, and clean up live registrations at process exit across both backends.
+- **Native callbacks copy in strings and byte spans.** FFI format 3 adds callback-only `cstring` parameters plus length-delimited `string` and `bytes` parameters. Trampolines in both backends copy native memory into owned scriptc values, decode malformed UTF-8 with U+FFFD replacement, preserve embedded NUL bytes in spans, and trap precise invalid null pointers before invoking the closure.
+- **`Array.prototype.filter` accepts JavaScript-truthy predicate results.** Static predicates may return strings, numbers, references, or supported unions and now keep elements according to JavaScript's `ToBoolean` rules instead of requiring a boolean result. Checked-dynamic calls without a predicate reach the runtime's callback error, while predicates whose return value was erased to `void` refuse rather than silently producing the wrong array.
+
+### Performance
+
+- **Repeated builds avoid redundant compiler work.** Validated native-toolchain metadata and same-output artifacts persist across CLI processes with dependency and content checks that preserve cache invalidation; Node 24's bytecode cache reduces CLI startup work, frontend type lowering is memoized and checker prefetch avoids unused AST queries, and library profiles gain a fast `optimization: "dev"` posture plus `SCRIPTC_TIMING=1` phase diagnostics. The compiler CLI now requires Node 24 or newer.
+
+## 0.0.32
+
+### Features
+
+- **Cross-compilation targets ARM64 Alpine Linux.** `SCRIPTC_TARGET=aarch64-linux-musl` produces statically linked executables and library archives through both backends, including async and generator fibers, runtime localization, multi-instance libraries, and the full portable differential contract. Cross-tool failures also retain the compiler's useful stderr or stdout diagnostics instead of losing the underlying error.
+
+### Fixes
+
+- **Windows TLS trusts the native system certificate stores.** TLS and HTTPS clients now load, policy-filter, and deduplicate server-auth roots and intermediates from the applicable user and machine stores; `tls.getCACertificates("system")` exposes the same live trust source.
+- **Library integer proofs preserve JavaScript's NaN comparison behavior.** Failed ordered comparisons no longer narrow a value when either operand may be NaN, preventing an unsafe integer-boundary proof, while the false edge of `!==` correctly proves equality and clears the NaN alternative.
+
+## 0.0.31
+
+### Fixes
+
+- **`Array.isArray` recognizes fixed tuples.** Readonly tuple arms now retain JavaScript array identity and their runtime-tag narrowing through `Array.isArray`, so Native SDK-style values such as `Model | readonly [Model, Command]` compile and preserve tuple indexing, `.length`, `slice`, and `map` behavior.
+
+## 0.0.30
+
+### Features
+
+- **Library archives call back into their host.** A profile's `callbacks` array declares named channels over the marshalling classes (bytes, string, f64, bool, and the u8/u32/i32 plumbing classes; scalar returns), and `abi.callback_register_symbol` names the registration entry point: the host supplies a function pointer and an opaque context per channel, and compiled code reaches a channel as a signature-only ambient function whose direct calls deliver synchronously on the calling thread, buffers borrowed for the duration of the call. Registrations are per instance, matching the panic sink under `abi.localize_runtime` and `abi.instance_per_thread`. Calling an unregistered channel is a structured `SC4025` trap through the sink naming the channel and the entry; a call the profile's channels cannot serve refuses at compile time with `SC4024`. Profiles without a `callbacks` section produce unchanged output.
+
+## 0.0.29
+
+### Features
+
+- **Library archives build for iOS and Android.** `SCRIPTC_TARGET=aarch64-apple-ios`, `aarch64-apple-ios-simulator`, and `aarch64-linux-android` produce library-mode static archives for an embedding app to link — Xcode projects on the Apple side, Gradle/NDK builds on the Android side. iOS archives compile against the selected Xcode SDK with an iOS 15.0 minimum (stamped into every object's `LC_BUILD_VERSION`) and localize with the macOS host linker; Android archives compile against the NDK's bionic headers at API level 26 and use the same in-process ELF localization as the Linux cross targets. Multi-instance (`abi.localize_runtime`) and thread-instanced (`abi.instance_per_thread`) profiles carry over unchanged, verified by simulator- and emulator-executed probes; standalone executable builds refuse these targets with a pointer to `--lib`.
+
+## 0.0.28
+
+### Features
+
+- **Runtime-localized library archives build for Windows and cross targets.** `abi.localize_runtime` now follows the target object format: COFF localization runs in process for native and cross Windows builds, ELF cross builds use Zig plus in-process symbol demotion, and macOS cross builds work from Darwin hosts. The existing independent-instance and per-thread composition contracts now carry across the supported Windows and Linux targets; unsupported host-target pairings still refuse before emission.
+
+## 0.0.27
+
+### Features
+
+- **Library archives support independent instances in one process.** `abi.localize_runtime` combines an archive's reached program, runtime, and vendor objects and hides every definition except its profile-declared ABI, so archives with distinct symbol prefixes link together without collisions or shared mutable runtime state. Each instance owns its allocator, collector, result arena, and panic sink, and a trap poisons only the instance that raised it. Localization is available for host-native Darwin and Linux builds and refuses cross-target builds before emission.
+- **One library archive can serve an independent instance per embedder thread.** `abi.instance_per_thread` moves mutable program and runtime state into thread-local storage while keeping immutable interned data shared, preserving the existing entry family with the calling thread as the instance selector. Each thread initializes and owns its instance for its lifetime, including its collector, result arena, panic sink, and poison state. Thread instancing composes with runtime localization, remains opt-in, and leaves classic archives byte-for-byte unchanged.
+
+## 0.0.26
+
+### Features
+
+- **WebAssembly is a production target.** `SCRIPTC_TARGET=wasm32-wasi` emits a standalone WASI Preview 1 module through the LLVM backend, and `scriptc run` hosts it with inherited stdio and environment plus preopened working and temporary directories. The full portable language tier includes checked dynamic values, async/await, promises, generators, timers, filesystem work, and `--dynamic`; APIs whose capabilities WASI does not provide refuse before linking with a targeted diagnostic instead of producing a broken module.
+- **Cross-compilation targets Alpine Linux directly.** `SCRIPTC_TARGET=x86_64-linux-musl` produces a statically linked executable with Zig, backed by musl-specific runtime shims for randomness, fibers, and child-process working directories. Executables and library archives are validated against Alpine alongside the existing glibc targets.
+- **Native FFI accepts C function-pointer callbacks.** Format 2 describes callback pointers and opaque contexts as independently positioned ABI entries, adapts ordinary capturing TypeScript closures through both backends, and preserves scalar C conversion and catchable callback throws. Raw callbacks without userdata use a binding-specific same-thread trampoline. The initial lifetime policy is explicit and bounded: callbacks are valid only during the native call; retained and foreign-thread callbacks remain rejected by contract.
+- **HTTP and HTTPS servers expose Node's timeout configuration statically.** `timeout`, `keepAliveTimeout`, `keepAliveTimeoutBuffer`, `headersTimeout`, and `requestTimeout` retain Node's defaults and independent per-server storage through typed and dynamic reads and writes. The HTTP and HTTPS constructors also accept and validate `keepAliveTimeoutBuffer`; this surface configures the values, while deadline enforcement remains a separate server behavior.
+
+## 0.0.25
+
+### Fixes
+
+- **Busy sockets no longer starve the native event loop.** Readable wakes now yield after a bounded batch, allowing timers and other descriptors to keep progressing even while upgraded connections are continuously flooded.
+
+## 0.0.24
+
+### Features
+
+- **Everyday filesystem work stays static across more of the file lifecycle.** `fs.rename`, `fs.renameSync`, and `fs/promises.rename` lower with Node's callback, promise, replacement, and platform error behavior; `fs.writeSync` covers the Buffer-window and UTF-8 string overloads with current-offset and positioned writes; and `fs/promises.open` returns a native `FileHandle` with `fd`, `read`, `write`, `readFile`, `writeFile`, `appendFile`, `stat`, and idempotent `close`. The three-argument `fs/promises.writeFile` accepts the supported UTF-8 and creation-mode options, while filesystem stats expose `blocks`, `nlink`, and `atimeMs` through path, promise, file-handle, and dynamic-bridge results.
+- **Native text decoding covers the WHATWG encoding families.** A statically labelled `TextDecoder` recognizes the standard aliases for the legacy single-byte, UTF-16, Chinese, Japanese, and Korean encodings, including BOM handling and malformed-input recovery matching the pinned Node runtime. Runtime-valued `BufferEncoding` arguments also work in `Buffer.toString`, with case-insensitive aliases, optional defaults, range behavior, and Node's unknown-encoding errors.
+- **`util.parseArgs` compiles statically.** Boolean and string options, short and clustered spellings, repeated values, defaults, negative options, positionals, token output, permissive parsing, the live default `process.argv`, and Node's coded validation errors lower through both backends.
+- **Array mutation and bounded string splitting grow their static surface.** `Array.prototype.unshift` and `reverse` preserve mutation, spread, evaluation order, and reference identity, while `String.prototype.split` accepts JavaScript limits for string and literal-RegExp separators with `ToUint32` semantics.
+- **`process.stdout.write` and `process.stderr.write` accept encoding and completion arguments.** String chunks honor supported encoding aliases, byte chunks retain their bytes, and successful completion callbacks join the next-tick queue in Node's order on both backends.
+
+### Performance
+
+- **Canonical typed-array loops use native integer induction.** Both backends recognize semantics-safe byte loops and emit integer counters and direct byte indexes, avoiding repeated floating-point index conversion while preserving the general fallback whenever the loop shape cannot prove the rewrite.
+
+## 0.0.23
+
+### Features
+
+- **Read-only `Date` values compile statically.** Zero-argument and single-value construction, storage and passing, `getTime`/`valueOf`, `toISOString`, UTC and host-local calendar getters, and `getTimezoneOffset` lower through both backends. Construction applies ECMAScript TimeClip behavior, the supported ISO and certificate-date strings parse without an embedded engine, and valid extreme years retain calendar answers even beyond a platform CRT's native range.
+- **The native web surface grows response construction and fetch cancellation.** `new Response(body, init)` covers the supported `BodyInit`, `ResponseInit`, header mutation, conversion, validation, and stream-error semantics, while `AbortController` supplies shared native signal state, abort events and reasons, and preflight or in-flight `fetch` cancellation across the static and dynamic tiers.
+- **`fs.readSync` accepts positioned reads.** A numeric position reads without advancing the descriptor, while omitted, `null`, and `-1` positions preserve current-offset behavior; validation order, zero-length reads, EOF, and partial Windows reads match Node.
+
+### Fixes
+
+- **Top-level `await` marks an implicit ES module.** TypeScript and JavaScript files without an explicit import or export now follow Node 24's syntax detection, package-type precedence, module scoping, and `require` diagnostics instead of being misclassified as CommonJS.
+- **Cycle collection stays fast on large live heaps.** The runtime now collects cycles generationally, promotes survivors, and schedules bounded mature passes, avoiding repeated whole-heap walks while retaining full sweeps for cross-generation garbage and shutdown auditing.
+- **Typed-array reads, writes, and lengths use specialized native lowering.** Both backends emit operations directly from the IR element kind while preserving numeric coercion, bounds behavior, and receiver lifetime across side-effecting index and value expressions.
+
+## 0.0.22
+
+### Features
+
+- **Coverage can analyze projects with embedder-provided module surfaces.** Repeatable `--external-types <specifier=file.d.ts>` mappings give the checker a local declaration for an otherwise unresolvable bare specifier, so project-owned statements remain measurable. The mapping is coverage-only and never invents execution semantics: value imports and uses stay explicit SC1010 external-host blockers, while type-only structural use can remain fully static.
+- **Production and library builds persist compilation work.** A bounded content-addressed cache is enabled by default: unchanged executables and library archives skip native code generation/linking, while source edits reuse separately keyed runtime objects (including library mode's `-DSCR_LIB` flavor) and rebuild only the program translation unit. Identities include resolved system-header dependency bytes plus linker/assembler identities, and checksums protect complete artifacts as well as runtime objects. The compiler remains required so every cache-enabled invocation rediscovers dependency selection; metadata-probe failures fall back to an ordinary build, and the configured size cap is enforced after writes. FFI builds with archive/object inputs or ambient `system_libraries` deliberately relink on every invocation so a transitive or in-place native rebuild cannot return stale code; their runtime objects remain cached. Mutable compiler input paths such as `CPATH` and `SDKROOT`, and opaque compiler wrappers, conservatively bypass persistent artifacts and objects; opaque archiver wrappers rebuild library program members and archives while retaining runtime-object reuse. Direct Clang, Apple's system Clang shim, `zig cc`, trusted platform archivers, and `zig ar` retain their applicable persistent tiers. Complete binary hits are checked before any missing vendor prerequisite is rebuilt. Library graphs with no npm package to opt in also retain the auto-detection frontend instead of loading the same graph twice. `SCRIPTC_CACHE_DIR` overrides the platform cache root, and `SCRIPTC_NO_CACHE=1` preserves a fully uncached path.
+
+## 0.0.21
+
+### Fixes
+
+- **Contract integer attestations cover synthesized tagged-record payloads.** Integer slots declared on lowered payload paths such as `TextInputEvent_set_composition.cursor` and `Msg_audio_event.at` now carry compile-time write obligations, so fractional writes refuse instead of surviving until runtime encoding. Distinct inline records whose underscore-joined synthesized names collide now refuse instead of reusing the wrong table entry and dropping an obligation.
+- Same-shaped contract integer slots with the same declared class now share one lowered proof obligation while retaining every source slot path in refusals. Differing-class collisions remain SC4009 until arm provenance can keep their assumptions distinct.
+
+## 0.0.20
+
+### Features
+
+- **Contract sidecars accept TypeScript's read-only and named scalar vocabulary.** `readonly T[]` and `ReadonlyArray<T>` project as the same mutability-neutral slice as `T[]`, while aliases of `number`, `string`, `boolean`, and `Uint8Array` dissolve recursively to their primitive wire types across models, messages, helpers, and integer slots without adding phantom type-table entries.
+
+### Fixes
+
+- A local declaration, import, or type parameter named `Array`, `ReadonlyArray`, or `Uint8Array` remains the user's type instead of being mistaken for the same-spelled global and publishing the wrong slice or bytes contract.
+
+## 0.0.19
+
+### Fixes
+
+- **Library integer slots compose with optional numbers.** A declared `number | null` or optional-number slot projects as `optional<i64>` and proves only its present numeric values across records, tagged-message payloads, and helper parameters/returns. When two sidecar paths collapse to the same structurally interned record field, the build now refuses with both paths instead of silently overwriting one proof obligation.
+
+## 0.0.18
+
+### Features
+
+- **Top-level `await` compiles across the program's ESM graph.** Module evaluation follows Node 24's dependency ordering, one-time promise caching, cycle rooting, rejection precedence, and unsettled-module exit status 13 in both the LLVM and C backends. Dynamic imports of compiled modules await the same evaluation verdict.
+
+### Fixes
+
+- **`https.request(options, responseCallback)` compiles on the LLVM backend.** The options-object row now lowers the TLS verification and CA arguments through the same runtime ABI as the C backend, including response-callback ownership and event-loop liveness. The already-supported `http.request(options, responseCallback)` row is pinned alongside it.
 
 ## 0.0.17
 
 ### Fixes
 
 - **The CLI builds and runs programs on Windows.** TypeScript's virtual filesystem now sees consistently slash-normalized Windows paths, default executable names carry the required `.exe` suffix for both native and cross-target Windows builds, and the workspace build command survives Windows shell quoting. A Windows CI lane pins the path regressions and drives `scriptc run` end to end.
-
-<!-- release:end -->
 
 ## 0.0.16
 

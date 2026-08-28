@@ -237,11 +237,11 @@ typedef struct {
   bool all_num; /* every entry so far flagged numeric (grouping order) */
 } InspFrame;
 
-static InspFrame *g_frames;
-static size_t g_nframes;
-static size_t g_frames_cap;
-static size_t g_indent;       /* ctx.indentationLvl */
-static double g_cur_depth;    /* ctx.currentDepth (last-entered composite) */
+static SCR_TL InspFrame *g_frames;
+static SCR_TL size_t g_nframes;
+static SCR_TL size_t g_frames_cap;
+static SCR_TL size_t g_indent;       /* ctx.indentationLvl */
+static SCR_TL double g_cur_depth;    /* ctx.currentDepth (last-entered composite) */
 
 static InspFrame *insp_top(void) { return &g_frames[g_nframes - 1]; }
 
@@ -297,12 +297,12 @@ typedef struct {
   int id; /* circular id (0 while only on the stack) */
 } InspSeenEnt;
 
-static InspSeenEnt *g_seen;
-static size_t g_nseen;
-static size_t g_seen_cap;
+static SCR_TL InspSeenEnt *g_seen;
+static SCR_TL size_t g_nseen;
+static SCR_TL size_t g_seen_cap;
 /* Detection-numbered circular targets (persist across the call). */
-static const void *g_circ[64];
-static int g_ncirc;
+static SCR_TL const void *g_circ[64];
+static SCR_TL int g_ncirc;
 
 static void insp_circ_reset(void) {
   g_nseen = 0;
@@ -848,6 +848,12 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       scr_str_release(t);
       scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
       return scr_str_new("", 0);
+    }
+    case SCR_DYN_TYPED_REF: {
+      ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
+      ScrStr *out = scr_insp_dyn(materialized, recurse, depth);
+      scr_dyn_release(materialized);
+      return out;
     }
     case SCR_DYN_PROMISE: {
       /* Node renders Promise { <pending> } / Promise { value } — the

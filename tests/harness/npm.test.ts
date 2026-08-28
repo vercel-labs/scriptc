@@ -70,10 +70,9 @@ async function build(entry: string): Promise<string> {
   const outDir = join(cacheDir, `npm-${key}`);
   mkdirSync(outDir, { recursive: true });
   // Deliberately NO backend pin: this suite rides the release default.
-  // Every --dynamic npm embedding is outside the LLVM tier today
-  // (npmEmbedding), so these builds exercise the transparent C fallback
-  // at scale — the binaries stay C-emitted (the historical lane) while
-  // proving a flagless user build of npm programs keeps working verbatim.
+  // Embedded npm tables are production LLVM surface; this differential
+  // keeps package resolution, compressed source storage, and island/runtime
+  // boundaries covered through the backend that ships.
   const result = await compile(entry, {
     outPath: join(outDir, "program"),
     outDir,

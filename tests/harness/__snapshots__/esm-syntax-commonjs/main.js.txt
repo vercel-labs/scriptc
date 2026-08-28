@@ -1,0 +1,7 @@
+esm-syntax-commonjs/main.js:1:1 - error SC1013: Node classifies this file as CommonJS, where this ES-module syntax marker is a SyntaxError
+
+  1 | export {};
+    | ^~~~~~~~~~
+  2 | require("node:path");
+
+  hint: use a .mjs/.mts extension or set the nearest package.json's "type" to "module"

@@ -1,5 +1,5 @@
 /* The zlib ↔ island bridge — the one translation unit referencing BOTH
- * scr_zlib.c and the island (the scr_inspect_island.c precedent): cc.ts
+ * scr_zlib.c and the island (the scr_inspect_island.c precedent): native-toolchain.ts
  * compiles it exactly when a --dynamic build's embedded npm graph
  * imports node:zlib, and the emitted main calls scr_zlib_island_install
  * before any island entry. zlib-free dynamic builds keep the island's

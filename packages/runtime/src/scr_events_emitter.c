@@ -97,11 +97,11 @@ struct ScrEeReg {
  * stamps pre/post from the program's preorder numbering (the
  * scr_error_vts precedent). release is the direct teardown below. */
 static void scr_emitter_release_direct(void *obj);
-ScrVt scr_emitter_vt = {0, 0, &scr_emitter_release_direct};
+SCR_TL ScrVt scr_emitter_vt = {0, 0, &scr_emitter_release_direct};
 
-double scr_emitter_default_max = 10; /* EventEmitter.defaultMaxListeners */
+SCR_TL double scr_emitter_default_max = 10; /* EventEmitter.defaultMaxListeners */
 
-static bool scr_ee_trace_hint_shown = false;
+static SCR_TL bool scr_ee_trace_hint_shown = false;
 
 /* Post-registration hook (scr_runtime.h): the stream unit's flow kick.
  * NULL in stream-free builds — behavior byte-identical. */
@@ -390,10 +390,10 @@ ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*
 
 /* ── fixed-arity invoke shims (scr_runtime.h's contract) ──────────────
  * Read k pointer-size slots and call the fixed-signature adapter behind
- * cb->fn. The LLVM lane's emit sites pass every tuple argument pointer-
- * classed (f64 as its i64 bit pattern, bool zero-extended) and the
- * runtime's own emits are pointer-only, so va_arg(ap, void *) reads every
- * tuple a fixed-registered listener can observe. */
+ * cb->fn. The LLVM lane's emit sites pass scalars by pointer to typed stack
+ * slots and references directly; the runtime's own emits are pointer-only,
+ * so va_arg(ap, void *) reads every tuple a fixed-registered listener can
+ * observe on 32- and 64-bit targets. */
 void scr_ee_inv_fixed0(ScrClosure *cb, va_list ap) {
   (void)ap;
   ((void (*)(ScrClosure *))cb->fn)(cb);

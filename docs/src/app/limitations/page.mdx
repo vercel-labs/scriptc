@@ -8,11 +8,10 @@ These are rejected at compile time with an `SC` code, a code frame, and usually 
 
 **Language edges**
 
-- `var` declarations, and loose equality `==`/`!=` (they need dynamic coercion semantics; use `let`/`const` and `===`).
-- Labeled `break`/`continue`, and jumps crossing a `finally` block (`return` through `finally` is supported).
-- Top-level `await` — wrap it in an `async function main()` and call it.
-- Generic classes, generic methods, and generic arrows — only top-level generic function declarations monomorphize.
-- Generic functions and stdlib methods used as *values* (`const f = id`, `const g = Math.floor`) — call them directly.
+- Loose `==`/`!=` comparisons compile between two numbers, two strings, or two booleans, and for the `x == null`/`x != null` nullish idiom. Other coercing comparisons are rejected — use `===`/`!==`.
+- `break`/`continue` crossing a `finally` block, and any `return`/`break`/`continue` out of the `finally` body itself, are fenced. An ordinary `return` through `finally` compiles.
+- Generics monomorphize when the target resolves statically. The remaining edges include generic functions declared inside another function, generic class expressions, generic classes whose base depends on their own type parameters, and generic methods that would require dynamic dispatch.
+- Generic function values must be pinned at use to a concrete signature and come from a never-reassigned binding; unpinned or rebound values remain fenced. Built-in and standard-library functions often have call-only lowerings, so values such as `const g = Math.floor` are rejected — call them directly.
 
 **Types and shapes**
 
@@ -25,11 +24,12 @@ const jobs: Promise<number>[] = [work(1), work(2), work(3)];
 const results = await Promise.all(jobs); // number[] — compiles
 ```
 
-- `undefined`/`null` exist only as union arms, not as standalone values; optional *class* fields are fenced (optional record fields and optional/default/rest parameters compile).
+- `undefined` and `null` compile both as standalone values and as union arms. Optional record and class fields compile, as do optional/default/rest parameters.
 
 **Standard library**
 
 - The type checker sees the full standard library; only the supported surface compiles. Reaching declared-but-unlowered surface is SC2020 with the supported alternatives in the hint — e.g. parts of the regex API (`re.exec`), `Symbol`, `globalThis`, array/Map/Set methods beyond the lowered sets.
+- `Date` values support zero-argument construction, one number/string argument, storage and passing, `getTime`/`valueOf`, `toISOString`, the local and UTC calendar getters, and `getTimezoneOffset`. Date-armed unions, the year/month field constructor, setters, identity comparisons, throwing `Date` values, `Date.parse`, and locale/string formatters remain fenced; the supported string grammar is described below.
 - Map keys and Set elements are strings and numbers; other key types are fenced.
 
 **The `any`/`unknown` boundary**
@@ -67,23 +67,30 @@ const who = process.argv.length > 2 ? process.argv[2] : "world";
 
 **Strings are stored as UTF-8.** Invisible through `.length` and the string methods (which compute UTF-16 semantics) — except relational comparison (`<`, `>`), which uses code-point order, and surrogate-splitting operations, which produce U+FFFD.
 
+**Date parsing and timezone data are bounded.** The one-string constructor accepts ECMAScript date-only forms, date-times with an explicit `Z` or numeric offset, and the GMT certificate-validity strings returned by the supported X509 surface; other V8-specific forms and offset-less local date-times produce Invalid Date. Local calendar getters use the operating system's timezone database, so historical results can differ when it and Node's timezone data disagree. When a platform's calendar API cannot represent an otherwise-valid extreme year, scriptc queries its zone rule at a calendar-equivalent year in the 400-year Gregorian cycle.
+
 **Memory is reference-counted.** Acyclic values free deterministically; reference cycles are collected at deterministic collection points, not by a concurrent GC. Cycles that cross the static/island boundary are uncollectable by either side.
+
+**Foreign native callbacks are asynchronous and not real-time capable.** FFI format 5 accepts retained, context-bearing, `void` callbacks invoked by library-owned threads, but the native trampoline only copies arguments and enqueues work. The closure runs on the script event loop at least one turn later. Value-returning foreign callbacks and direct execution on the library thread are refused: waiting for the loop is deadlock-prone, while scriptc's reference counting and exception state are thread-confined.
 
 **Process shape** — `process.argv[0]` is `"scriptc"` and `argv[1]` is the binary's path (positions line up with Node; `argv[2]` onward are your args). The uncaught-exception stderr line reads `Uncaught <value>` instead of Node's stack-trace block (exit code and pre-throw stdout are identical). Runtime errors carry `message` and Node's `code`, but not `errno`/`syscall`/`path`.
 
-**Comparator call sequences differ in `sort`** (stable insertion sort here, TimSort in V8 — sorted results are byte-identical for consistent comparators), and **`localeCompare` compares code units**, not ICU collation.
+**Comparator call sequences differ in `sort` and `toSorted`** (stable insertion sort here, TimSort in V8 — sorted results are byte-identical for consistent comparators), and **`localeCompare` compares code units**, not ICU collation.
 
 ## Dynamic-tier limits
 
 - **The island is quickjs-ng, not V8** — correct, but slower for CPU-bound dependency code. The win is startup, size, memory, deployment shape.
 - **The island's Node builtins are shims** — reimplementations, reported per-builtin in the coverage report, not the real modules.
 - **Island microtask interleaving**: static fibers drain first, then the engine's jobs at loop quiescence — a static `await` racing a package promise resolves in a documented, deterministic order that can differ from Node's interleaving.
+- **Top-level `await` in embedded ESM packages** is not supported yet. It does compile in your program's own ESM graph and in npm packages compiled through `--npm-static`; the remaining limit is package code running inside the `--dynamic` island.
 - **`--npm-static` and `--provenance-sources` are experimental** — see [npm Dependencies](/dependencies) for the maturity notes.
-- **Cross-compiled `--dynamic` binaries are not supported yet** — the engine archive is host-native today.
+
+## WASI target limits
+
+The production <code>wasm32-wasi</code> target supports the complete executable language tier through LLVM: async/await, promises, generators, timers and other portable event-loop work, stdin/readline, filesystem callbacks and promises, and the <code>--dynamic</code> island. Portable WASI Preview 1 has no socket, process-spawn, OS-signal, network-interface, or filesystem-notification capabilities, so networking/fetch, child processes, signal APIs, <code>os.networkInterfaces()</code>, and <code>fs.watch</code> are rejected before linking with <code>SC3002</code>. <code>--sanitize</code>, native FFI, and library-mode archive builds are also unavailable. Filesystem access is bounded by the host's preopens; <code>scriptc run</code> exposes the current working directory and <code>/tmp</code>. See [Platform Support](/platforms) for build and run details.
 
 ## Tooling gaps
 
 - `scriptc run` does not forward extra CLI arguments to the program — `build` and invoke the binary directly.
-- Native FFI is a direct, manifest-declared C ABI link surface. It does not yet support callbacks, variadic calls, structs by value, owned pointer/string/byte returns, runtime dynamic-library loading, or library-mode builds. See [Native FFI](/ffi).
+- Native FFI is a direct, manifest-declared C ABI link surface. Formats 2–5 cover call-scoped callbacks, copied string/byte callback parameters, explicitly released retained callbacks, and asynchronous foreign-thread delivery. Variadic calls, structs by value, owned pointer/string/byte returns, runtime dynamic-library loading, and library-mode builds remain unsupported. See [Native FFI](/ffi).
 - Numbers are JS-exact f64 everywhere. Integer inference and ownership analysis — the systems-language performance ceiling — are roadmap, not shipped.
-- No Windows servers or `child_process` yet — see [Platform Support](/platforms).

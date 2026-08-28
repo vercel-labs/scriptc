@@ -118,7 +118,7 @@ static void *isl_realloc_fn(void *opaque, void *ptr, size_t size) {
   if (!ptr && p) isl_live_allocs++;
   return p;
 }
-static size_t isl_usable_size(const void *ptr) { return isl_malloc_size(ptr); }
+static size_t isl_usable_size(const void *ptr) { return isl_malloc_size((void *)ptr); }
 
 static const JSMallocFunctions isl_mf = {
     isl_calloc, isl_malloc, isl_free, isl_realloc_fn, isl_usable_size,
@@ -267,14 +267,14 @@ void scr_island_set_netmod(void (*attach)(void *jsctx, void *host_obj), void (*t
  * false when a promise rejects with no reaction attached (tracked here,
  * promise and reason retained), is_handled == true when a handler is
  * attached to it later (the rescission: unlinked and freed — a
- * handled-later rejection never reports). At loop exit the ledger joins
- * scr_report_unhandled_rejections through the hook registered at boot:
- * the FIRST never-observed rejection prints in the static runtime's exact
- * voice ("Unhandled promise rejection: <String(reason)>", stderr, exit 1
- * — an Error reason renders "name: message" through its toString, same
- * as the static ledger). Retaining the promise value keeps its identity
- * stable for the rescission (the engine cannot recycle the object while
- * the ledger holds it). */
+ * handled-later rejection never reports). At the completed microtask
+ * checkpoint the ledger joins scr_report_unhandled_rejections through
+ * the hook registered at boot: the FIRST never-observed rejection prints
+ * in the static runtime's exact voice ("Unhandled promise rejection:
+ * <String(reason)>", stderr, exit 1 — an Error reason renders "name:
+ * message" through its toString, same as the static ledger). Retaining
+ * the promise value keeps its identity stable for the rescission (the
+ * engine cannot recycle the object while the ledger holds it). */
 typedef struct IslRejection {
   JSValue promise; /* owned; identity for the rescission */
   JSValue reason;  /* owned */
@@ -555,10 +555,13 @@ static void isl_init(void) {
    * progress exactly where Node runs its microtasks. */
   scr_loop_set_io(isl_io_pending, isl_io_poll);
   /* Unhandled island rejections: tracked as they happen (and rescinded
-   * when handled later), reported at loop exit through the SAME report the
-   * static promise ledger uses — one voice, exit 1, like Node. */
+   * when handled later), reported at the same completed microtask
+   * checkpoint as the static promise ledger — one voice, exit 1, like
+   * Node. The report hook drains engine jobs first so a same-checkpoint
+   * handler attachment gets its chance to rescind. */
   JS_SetHostPromiseRejectionTracker(isl_rt, isl_rejection_tracker, NULL);
-  scr_loop_set_island_rejections(isl_report_rejections);
+  scr_loop_set_island_rejections(isl_report_rejections,
+                                 scr_island_drain_jobs);
   /* Armed island timers (AbortSignal.timeout) cap the loop's idle sleep
    * so they fire on time while the poller waits on socket readiness —
    * without keeping the loop alive by themselves (Node's unref'd timer).
@@ -1632,6 +1635,25 @@ ScrJsval *scr_jsval_call(ScrJsval *f, int argc, ScrJsval **argv) {
   return isl_cell_new(r);
 }
 
+/* Call an already-resolved computed member with its original receiver. The
+ * frontend performs GetValue before argument evaluation, then arrives here
+ * after the arguments are ready; keeping callee and receiver separate avoids
+ * a second getter read while preserving method `this`. */
+ScrJsval *scr_jsval_call_this(ScrJsval *f, ScrJsval *receiver, int argc,
+                              ScrJsval **argv) {
+  isl_entry();
+  JSValue stack_args[8];
+  JSValue *args = argc <= 8 ? stack_args : malloc((size_t)argc * sizeof(JSValue));
+  for (int i = 0; i < argc; i++) args[i] = argv[i]->v;
+  JSValue r = JS_Call(isl_ctx, f->v, receiver->v, argc, args);
+  if (args != stack_args) free(args);
+  if (JS_IsException(r)) {
+    isl_bridge_exception();
+    return NULL;
+  }
+  return isl_cell_new(r);
+}
+
 /* Spread application on an island callee (jsOp callSpread) — the prelude
  * helper's real `f(...pre, ...spread)`, so iterator protocols are the
  * engine's own and the guards front-run V8's exact spread-call TypeError
@@ -2085,7 +2107,7 @@ ScrJsval *scr_jsval_from_promise(ScrPromise *p, int payload) {
   w->payload = payload;
   w->next = isl_prom_wraps;
   isl_prom_wraps = w;
-  ScrPromise *waiter = scr_async_spawn(isl_prom_wrap_entry, w);
+  ScrPromise *waiter = scr_async_spawn_after(w->p, isl_prom_wrap_entry, w);
   scr_promise_release(waiter); /* the waiter never rejects; nobody awaits it */
   return isl_cell_new(prom);
 }
@@ -2743,8 +2765,10 @@ static JSValue isl_host_exit(JSContext *ctx, JSValueConst this_val, int argc,
  * mirrored here by the shim's setter, read by the emitted main after the
  * loop drains — Node's a-program-that-sets-it-and-returns contract. */
 static int isl_exit_code = 0;
+static size_t isl_exit_code_version = 0;
 
 int scr_island_exit_code(void) { return isl_exit_code; }
+size_t scr_island_exit_code_version(void) { return isl_exit_code_version; }
 
 static JSValue isl_host_set_exit_code(JSContext *ctx, JSValueConst this_val,
                                       int argc, JSValueConst *argv) {
@@ -2753,6 +2777,7 @@ static JSValue isl_host_set_exit_code(JSContext *ctx, JSValueConst this_val,
   int32_t code = 0;
   JS_ToInt32(ctx, &code, argv[0]);
   isl_exit_code = code;
+  isl_exit_code_version++;
   return JS_UNDEFINED;
 }
 
@@ -2953,6 +2978,9 @@ static JSValue isl_host_fs(JSContext *ctx, JSValueConst this_val, int argc,
       JS_SetPropertyUint32(ctx, arr, 2, JS_NewBool(ctx, scr_stats_is_symlink(st)));
       JS_SetPropertyUint32(ctx, arr, 3, JS_NewFloat64(ctx, scr_stats_size(st)));
       JS_SetPropertyUint32(ctx, arr, 4, JS_NewFloat64(ctx, scr_stats_mtime_ms(st)));
+      JS_SetPropertyUint32(ctx, arr, 5, JS_NewFloat64(ctx, scr_stats_blocks(st)));
+      JS_SetPropertyUint32(ctx, arr, 6, JS_NewFloat64(ctx, scr_stats_nlink(st)));
+      JS_SetPropertyUint32(ctx, arr, 7, JS_NewFloat64(ctx, scr_stats_atime_ms(st)));
       scr_stats_release(st);
       ret = arr;
     }
@@ -3324,7 +3352,7 @@ static JSValue isl_host_ids(JSContext *ctx, JSValueConst this_val, int argc,
   (void)argc;
   (void)argv;
   JSValue arr = JS_NewArray(ctx);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__wasi__)
   JS_SetPropertyUint32(ctx, arr, 0, JS_NewInt32(ctx, -1));
   JS_SetPropertyUint32(ctx, arr, 1, JS_NewInt32(ctx, -1));
 #else
@@ -3342,7 +3370,7 @@ static JSValue isl_host_umask(JSContext *ctx, JSValueConst this_val, int argc,
   (void)this_val;
   (void)argc;
   (void)argv;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__wasi__)
   return JS_NewInt32(ctx, 0);
 #else
   mode_t m = umask(0);
@@ -3467,11 +3495,15 @@ static JSValue isl_host_hostname(JSContext *ctx, JSValueConst this_val, int argc
    * counted like the socket units' own WSAStartup calls (ws2_32 is on
    * every win32 link line). */
   char buf[256];
+#if defined(__wasi__)
+  buf[0] = '\0';
+#else
 #ifdef _WIN32
   WSADATA wsa;
   if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return JS_NewString(ctx, "");
 #endif
   if (gethostname(buf, sizeof buf) != 0) buf[0] = '\0';
+#endif
   buf[sizeof buf - 1] = '\0';
   return JS_NewString(ctx, buf);
 }
@@ -3971,6 +4003,10 @@ static const char isl_modules_bootstrap[] =
     "      this._l = row[2];\n"
     "      this.size = row[3];\n"
     "      this.mtimeMs = row[4];\n"
+    "      this.blocks = row[5];\n"
+    "      this.nlink = row[6];\n"
+    "      this.atimeMs = row[7];\n"
+    "      this.atime = new Date(row[7]);\n"
     "      this.mtime = new Date(row[4]);\n"
     "      this.mode = (this._f ? constants.S_IFREG : this._d ? constants.S_IFDIR : this._l ? (constants.S_IFLNK || 0) : 0);\n"
     "    }\n"
@@ -4168,6 +4204,9 @@ static const char isl_modules_bootstrap[] =
     "    closeSync: () => undefined,\n"
     "    readSync: () => {\n"
     "      throw new Error(\"fs.readSync is not available in the scriptc island (whole-file reads/writes only)\");\n"
+    "    },\n"
+    "    writeSync: () => {\n"
+    "      throw new Error(\"fs.writeSync is not available in the scriptc island (whole-file reads/writes only)\");\n"
     "    },\n"
     "    read: () => {\n"
     "      throw new Error(\"fs.read is not available in the scriptc island (whole-file reads/writes only)\");\n"

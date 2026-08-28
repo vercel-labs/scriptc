@@ -6,7 +6,8 @@
  * silently on ECONNREFUSED until the driver is up (both lanes race the
  * same way; retries print nothing), then runs the scripted exchanges:
  * a GET over Content-Length framing, a CHUNKED streaming response, a
- * HEAD (no body regardless of Content-Length), and /quit to stop the
+ * a 205 response whose invalid-but-observable body Node still delivers,
+ * a HEAD (no body regardless of Content-Length), and /quit to stop the
  * driver. Exercises the runtime parser against Node's real serializer. */
 import { createServer } from "node:net";
 import { request } from "node:http";
@@ -42,8 +43,10 @@ function start(): void {
       console.log("driver up");
       fetchPath("/text", "GET", () => {
         fetchPath("/chunked", "GET", () => {
-          fetchPath("/text", "HEAD", () => {
-            fetchPath("/quit", "GET", () => console.log("done"));
+          fetchPath("/reset-content", "GET", () => {
+            fetchPath("/text", "HEAD", () => {
+              fetchPath("/quit", "GET", () => console.log("done"));
+            });
           });
         });
       });

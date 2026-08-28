@@ -1,0 +1,35 @@
+text-codec-value.ts:2:13 - error SC2020: 'TextEncoder instance stored in encoder' is part of the standard library types but has no scriptc lowering yet
+
+  1 | const encoder = new TextEncoder();
+  2 | console.log(encoder);
+    |             ^~~~~~~
+  3 | 
+
+  hint: encoder.encode(s) compiles through this const; the codec object itself has no representation (the composed new TextEncoder().encode(s) form also compiles)
+
+text-codec-value.ts:5:10 - error SC2020: 'TextEncoder.encode' is part of the standard library types but has no scriptc lowering yet
+
+  4 | function encodeCaptured(s: string): Uint8Array {
+  5 |   return sharedEncoder.encode(s);
+    |          ^~~~~~~~~~~~~~~~~~~~
+  6 | }
+
+  hint: the inline new TextEncoder().encode(s) form and same-scope const store-then-call (const encoder = new TextEncoder(); encoder.encode(s)) compile; captured/imported instances and other members need a runtime object representation
+
+text-codec-value.ts:17:15 - error SC2020: 'TextEncoder.encode' is part of the standard library types but has no scriptc lowering yet
+
+  16 |     const Encoded = class {
+  17 |       bytes = caseEncoder.encode("should fence");
+     |               ^~~~~~~~~~~~~~~~~~
+  18 |     };
+
+  hint: the inline new TextEncoder().encode(s) form and same-scope const store-then-call (const encoder = new TextEncoder(); encoder.encode(s)) compile; captured/imported instances and other members need a runtime object representation
+
+text-codec-value.ts:23:17 - error SC2020: 'TextEncoder.encode' is part of the standard library types but has no scriptc lowering yet
+
+  22 |     // @ts-expect-error -- dispatch can enter here while caseEncoder is in its TDZ
+  23 |     console.log(caseEncoder.encode("should fence directly").length);
+     |                 ^~~~~~~~~~~~~~~~~~
+  24 |     break;
+
+  hint: the inline new TextEncoder().encode(s) form and same-scope const store-then-call (const encoder = new TextEncoder(); encoder.encode(s)) compile; captured/imported instances and other members need a runtime object representation

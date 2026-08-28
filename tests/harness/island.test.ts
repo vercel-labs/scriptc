@@ -30,6 +30,7 @@ const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
+const platformTest = process.env["SCRIPTC_PORTABLE_ONLY"] === "1" ? test.skip : test;
 
 interface RunResult {
   stdout: string;
@@ -244,15 +245,15 @@ main();
     expect(r.stdout).toBe("RangeError\n");
   });
 
-  test("a never-observed island rejection reports at loop exit and exits 1", async () => {
+  test("a never-observed island rejection reports at its checkpoint and exits 1", async () => {
     // The island's JS_SetHostPromiseRejectionTracker ledger joins the
     // static promise ledger's report — same line shape ("Unhandled promise
     // rejection: <String(reason)>", an Error reason rendering name:
     // message), same exit code 1. scriptc-only: Node's stderr for this
     // wears ERR_UNHANDLED_REJECTION clothing; the LINE is ours to pin.
-    // The async main gives the program a loop turn (the report runs at
-    // loop exit — a program with no async/timers/embedded modules never
-    // runs the loop, and its island promise machinery is dormant anyway).
+    // The async main gives the program a loop turn (a program with no
+    // async/timers/embedded modules never runs the loop, and its island
+    // promise machinery is dormant anyway).
     const r = await compileAndRun(
       "island-unhandled-rejection",
       `async function main(): Promise<void> {
@@ -354,14 +355,11 @@ console.log(greet("world"), 6 * 7);
     expect(body(dyn)).toBe(body(stat));
   });
 
-  test("static hello-world stays in its size class; island use pays the engine", async () => {
+  platformTest("static hello-world stays in its size class; island use pays the engine", async () => {
     // The engine must NEVER leak into static builds: a default-built
-    // hello-world is ~200KB today (page-granular — macOS segments round
-    // to 16KB), and the embedded engine alone is ~620KB — a static binary
-    // crossing 240KB means the fence broke. The upper assertion pins the
-    // flip side: a program actually entering the island carries the
-    // engine. (An island-FREE --dynamic binary stays small too — the
-    // linker dead-strips the unreferenced archive.)
+    // hello-world stays in the platform's compact class, while entering an
+    // island carries the embedded engine. An island-FREE --dynamic binary
+    // stays small too because the linker dead-strips the unreferenced archive.
     // Measured on plain (non-ASan) builds in both lanes.
     const [stat, dyn] = await Promise.all([
       build("size-static", `console.log("hello", "world");\n`, {
@@ -375,29 +373,12 @@ console.log(greet("world"), 6 * 7);
     ]);
     const staticSize = statSync(stat.binaryPath).size;
     const dynamicSize = statSync(dyn.binaryPath).size;
-    // The budget is page-granular (Mach-O rounds segments to 16KB): the
-    // loop's net hooks, the console/process/child surface, the
-    // fs-scandir/Math-static slice, the path.win32 port (~14KB of
-    // always-linked path algorithms), the Buffer numeric/encoding/
-    // search families (~11KB of always-linked bytes runtime with Node's
-    // exact error ladders), and the primitive-prototype formatters
-    // (toExponential/toFixed0, Date.UTC, String.raw — a page of
-    // always-linked scr_lib/scr_array bytes) each tipped a page on real
-    // deltas — 320_000 keeps the intent: an accidentally-linked engine
-    // is a ~620KB jump, not a page.
-    // The static class forks per platform like the regex class: the
-    // server-callbacks + LLVM-phase-2 runtime growth (~6,900 always-linked
-    // lines) measured 322,528 on native Linux (AL2023 ELF alignment +
-    // glibc static bits + the sandbox link shim) while Mach-O stays at
-    // 312,024 — a page-scale cushion on each arm; an accidentally-linked
-    // engine is a ~620KB jump, not a page. The globals lane (DOMException,
-    // structuredClone + the dyn object walks, atob/btoa, queueMicrotask —
-    // always-linked TUs) re-based both arms by ~2 pages (Mach-O measured
-    // 333,544). StringToNumber (Number(aString) — ~1.3KB in the
-    // always-linked string TU) tipped the Mach-O arm one more page from
-    // 336,328 to a measured 353,000; the cushion stays under a page so
-    // the next tip still fails loudly.
-    expect(staticSize).toBeLessThan(process.platform === "linux" ? 360_000 : 361_000);
+    // The class is toolchain-specific and page-granular. The canonical
+    // Ubuntu 24.04/clang Sandbox measures 387,600 bytes; current Mach-O
+    // toolchains measure 398,024 bytes. Each bound leaves roughly one native
+    // page of growth while staying far below the >1MB jump measured when the
+    // engine is linked.
+    expect(staticSize).toBeLessThan(process.platform === "linux" ? 392_000 : 415_000);
     expect(dynamicSize).toBeGreaterThan(500_000);
   });
 

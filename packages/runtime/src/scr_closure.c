@@ -5,8 +5,8 @@
 #include <string.h>
 
 #ifdef SCR_RC_AUDIT
-static long scr_live_boxes = 0;
-static long scr_live_closures = 0;
+static SCR_TL long scr_live_boxes = 0;
+static SCR_TL long scr_live_closures = 0;
 long scr_box_live_count(void) { return scr_live_boxes; }
 long scr_closure_live_count(void) { return scr_live_closures; }
 #endif

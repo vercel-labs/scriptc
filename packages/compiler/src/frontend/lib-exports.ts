@@ -8,7 +8,7 @@
  * what the SC4002/SC4004/SC4007 refusals key on; the marshalling check
  * (SC4003) runs later against the lowered IrFunction's types. */
 import * as ts from "./ts7/adapter.js";
-import type { SrcLoc } from "../ir/nodes.js";
+import type { SrcLoc } from "../ir/ir.js";
 
 export interface EntryExportInfo {
   name: string;

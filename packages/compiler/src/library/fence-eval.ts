@@ -17,7 +17,7 @@
  *   - a fenced STATIC entry is policed against the COMPILED module graph:
  *     the emit pass lowers only reachability-discovered bodies, so the
  *     module IR *is* the reached graph — the same ground the sidecar's
- *     `deterministic` attestation stands on (ir/nodes.ts's
+ *     `deterministic` attestation stands on (ir/ir.ts's
  *     moduleLibNondeterministicSurface). Fence evaluation reuses that
  *     posture with one generic walk collecting the reached surface facts
  *     (libCall spellings, str/arr/map/set intrinsic methods); each fenced
@@ -59,7 +59,7 @@ import {
   STATIC_NUMBER_METHODS,
   STR_METHODS,
 } from "../frontend/lowering/surfaces.js";
-import type { IrModule, SrcLoc } from "../ir/nodes.js";
+import type { IrModule, SrcLoc } from "../ir/ir.js";
 import { compilerReleaseVersion } from "./sidecar.js";
 
 /** One raw fence declaration as the profile spelled it (validated for
@@ -126,6 +126,11 @@ interface FenceTaxonomy {
 
 let taxonomy: FenceTaxonomy | null = null;
 
+/** The taxonomy is a compilation-session view of the release manifest. */
+export function clearFenceEvalCaches(): void {
+  taxonomy = null;
+}
+
 function builtinRootId(mod: string): string {
   return `node-builtin.${mod.split("/").join(".")}`;
 }
@@ -167,12 +172,13 @@ function fenceTaxonomy(): FenceTaxonomy {
 
 /* ── classification: what policing a static entry means ───────────────── */
 
-/** Array methods with a distinct IR trace (arrIntrinsic methods). `push`
- * includes the spread spelling — `a.push(...xs)` lowers to pushSpread and
- * is the same surface. The rest of ARRAY_METHODS desugars to plain loops. */
+/** Array methods whose distinct arrIntrinsic traces can be policed. The
+ * variadic inserters include their spread spellings under the same surface. */
 const ARR_DETECTABLE: Record<string, readonly string[] | undefined> = {
   push: ["push", "pushSpread"],
+  unshift: ["unshift", "unshiftSpread"],
   pop: ["pop"],
+  reverse: ["reverse"],
   indexOf: ["indexOf"],
   includes: ["includes"],
   join: ["join"],

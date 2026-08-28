@@ -601,6 +601,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/1409-typedarray-integer-loops.ts": {
+   "order": [
+    "<repo>/tests/corpus/1409-typedarray-integer-loops.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/1420-number-statics.ts": {
    "order": [
     "<repo>/tests/corpus/1420-number-statics.ts"
@@ -5288,6 +5294,370 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2643-or-default-retag.ts": {
+   "order": [
+    "<repo>/tests/corpus/2643-or-default-retag.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2644-http-client-url-argument.ts": {
+   "order": [
+    "<repo>/tests/corpus/2644-http-client-url-argument.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2645-https-client-url-argument.ts": {
+   "order": [
+    "<repo>/tests/corpus/2645-https-client-url-argument.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2646-top-level-await.ts": {
+   "order": [
+    "<repo>/tests/corpus/2646-top-level-await.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2647-top-level-await-modules/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2647-top-level-await-modules/shared.ts",
+    "<repo>/tests/corpus/2647-top-level-await-modules/left.ts",
+    "<repo>/tests/corpus/2647-top-level-await-modules/sibling.ts",
+    "<repo>/tests/corpus/2647-top-level-await-modules/right.ts",
+    "<repo>/tests/corpus/2647-top-level-await-modules/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2648-top-level-await-rejection.ts": {
+   "order": [
+    "<repo>/tests/corpus/2648-top-level-await-rejection.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2649-top-level-await-pending.ts": {
+   "order": [
+    "<repo>/tests/corpus/2649-top-level-await-pending.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2650-top-level-await-self-import.ts": {
+   "order": [
+    "<repo>/tests/corpus/2650-top-level-await-self-import.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2651-top-level-await-pending-unhandled.ts": {
+   "order": [
+    "<repo>/tests/corpus/2651-top-level-await-pending-unhandled.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2652-top-level-await-dynamic/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2652-top-level-await-dynamic/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2653-top-level-await-rejection-stops-loop.ts": {
+   "order": [
+    "<repo>/tests/corpus/2653-top-level-await-rejection-stops-loop.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2654-top-level-await-unrelated-rejection.ts": {
+   "order": [
+    "<repo>/tests/corpus/2654-top-level-await-unrelated-rejection.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2655-top-level-await-cycle/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2655-top-level-await-cycle/b.ts",
+    "<repo>/tests/corpus/2655-top-level-await-cycle/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2656-top-level-await-cycle-order/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2656-top-level-await-cycle-order/a.ts",
+    "<repo>/tests/corpus/2656-top-level-await-cycle-order/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2657-top-level-await-cycle-dynamic/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2657-top-level-await-cycle-dynamic/b.ts",
+    "<repo>/tests/corpus/2657-top-level-await-cycle-dynamic/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2658-top-level-await-sync-completion/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2658-top-level-await-sync-completion/dep.ts",
+    "<repo>/tests/corpus/2658-top-level-await-sync-completion/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2659-top-level-await-dynamic-cycle/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2659-top-level-await-dynamic-cycle/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2660-top-level-await-cycle-rejection/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2660-top-level-await-cycle-rejection/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2661-top-level-await-dynamic-runtime-root/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2661-top-level-await-dynamic-runtime-root/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2662-top-level-await-cycle-external-wait/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2662-top-level-await-cycle-external-wait/b.ts",
+    "<repo>/tests/corpus/2662-top-level-await-cycle-external-wait/a.ts",
+    "<repo>/tests/corpus/2662-top-level-await-cycle-external-wait/waiter.ts",
+    "<repo>/tests/corpus/2662-top-level-await-cycle-external-wait/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2663-top-level-await-dependency-errors/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2663-top-level-await-dependency-errors/listener.ts",
+    "<repo>/tests/corpus/2663-top-level-await-dependency-errors/async-bad.ts",
+    "<repo>/tests/corpus/2663-top-level-await-dependency-errors/sync-bad.ts",
+    "<repo>/tests/corpus/2663-top-level-await-dependency-errors/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2664-top-level-await-same-checkpoint-rejection.ts": {
+   "order": [
+    "<repo>/tests/corpus/2664-top-level-await-same-checkpoint-rejection.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2665-top-level-await-unhandled-listener-liveness.ts": {
+   "order": [
+    "<repo>/tests/corpus/2665-top-level-await-unhandled-listener-liveness.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2666-array-to-sorted.ts": {
+   "order": [
+    "<repo>/tests/corpus/2666-array-to-sorted.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2667-array-to-sorted-any.ts": {
+   "order": [
+    "<repo>/tests/corpus/2667-array-to-sorted-any.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2668-stored-number-array-iterator.ts": {
+   "order": [
+    "<repo>/tests/corpus/2668-stored-number-array-iterator.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2669-array-copying-methods.ts": {
+   "order": [
+    "<repo>/tests/corpus/2669-array-copying-methods.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2670-uint8array-copy-iterate.ts": {
+   "order": [
+    "<repo>/tests/corpus/2670-uint8array-copy-iterate.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2671-array-copying-js.cjs": {
+   "order": [
+    "<repo>/tests/corpus/2671-array-copying-js.cjs"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2672-http-request-response-callback.ts": {
+   "order": [
+    "<repo>/tests/corpus/2672-http-request-response-callback.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2673-top-level-await-implicit-module.ts": {
+   "order": [
+    "<repo>/tests/corpus/2673-top-level-await-implicit-module.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2674-top-level-for-await-implicit-module.ts": {
+   "order": [
+    "<repo>/tests/corpus/2674-top-level-for-await-implicit-module.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2675-create-require-nested-esm.js": {
+   "order": [
+    "<repo>/tests/corpus/2675-create-require-nested-esm.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2675-process-self-reexec.ts": {
+   "order": [
+    "<repo>/tests/corpus/2675-process-self-reexec.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2676-indexed-read-strict-equality.ts": {
+   "order": [
+    "<repo>/tests/corpus/2676-indexed-read-strict-equality.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2676-top-level-await-ambiguous/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2676-top-level-await-ambiguous/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2677-runtime-optional-closure.ts": {
+   "order": [
+    "<repo>/tests/corpus/2677-runtime-optional-closure.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2677-top-level-await-module-scope/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2677-top-level-await-module-scope/a.ts",
+    "<repo>/tests/corpus/2677-top-level-await-module-scope/b.ts",
+    "<repo>/tests/corpus/2677-top-level-await-module-scope/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2678-date-instances.ts": {
+   "order": [
+    "<repo>/tests/corpus/2678-date-instances.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2678-util-parseargs.ts": {
+   "order": [
+    "<repo>/tests/corpus/2678-util-parseargs.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2679-util-parseargs-cjs.cjs": {
+   "order": [
+    "<repo>/tests/corpus/2679-util-parseargs-cjs.cjs"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2680-util-parseargs-default.ts": {
+   "order": [
+    "<repo>/tests/corpus/2680-util-parseargs-default.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2681-util-parseargs-dynamic.js": {
+   "order": [
+    "<repo>/tests/corpus/2681-util-parseargs-dynamic.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2682-fs-rename.ts": {
+    "order": [
+     "<repo>/tests/corpus/2682-fs-rename.ts"
+    ],
+    "diags": []
+   },
+  "<repo>/tests/corpus/2683-filter-truthy-predicate.ts": {
+   "order": [
+    "<repo>/tests/corpus/2683-filter-truthy-predicate.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2683-fs-rename-js.cjs": {
+   "order": [
+    "<repo>/tests/corpus/2683-fs-rename-js.cjs"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2684-filter-no-predicate-dyn.cjs": {
+   "order": [
+    "<repo>/tests/corpus/2684-filter-no-predicate-dyn.cjs"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2684-fs-rename-abort.ts": {
+   "order": [
+    "<repo>/tests/corpus/2684-fs-rename-abort.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2685-array-unshift-reverse.ts": {
+   "order": [
+    "<repo>/tests/corpus/2685-array-unshift-reverse.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2685-fs-write-sync.ts": {
+   "order": [
+    "<repo>/tests/corpus/2685-fs-write-sync.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2686-fs-file-handle.ts": {
+   "order": [
+    "<repo>/tests/corpus/2686-fs-file-handle.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2687-fsp-write-file-options.ts": {
+   "order": [
+    "<repo>/tests/corpus/2687-fsp-write-file-options.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2687-process-write-args.ts": {
+   "order": [
+    "<repo>/tests/corpus/2687-process-write-args.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2688-fs-stats-disk-fields.ts": {
+   "order": [
+    "<repo>/tests/corpus/2688-fs-stats-disk-fields.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2689-http-server-timeout-properties.ts": {
+   "order": [
+    "<repo>/tests/corpus/2689-http-server-timeout-properties.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2690-https-server-timeout-option.ts": {
+   "order": [
+    "<repo>/tests/corpus/2690-https-server-timeout-option.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2691-retained-lowering-record-order.ts": {
+   "order": [
+    "<repo>/tests/corpus/2691-retained-lowering-record-order.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2700-wasi-core.ts": {
+    "order": [
+     "<repo>/tests/corpus/2700-wasi-core.ts"
+    ],
+   "diags": []
+  },
   "<repo>/tests/corpus/300-if-else.ts": {
    "order": [
     "<repo>/tests/corpus/300-if-else.ts"
@@ -5779,6 +6149,12 @@
   "<repo>/tests/corpus/756-cycle-inheritance.ts": {
    "order": [
     "<repo>/tests/corpus/756-cycle-inheritance.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/757-cycle-cross-generation.ts": {
+   "order": [
+    "<repo>/tests/corpus/757-cycle-cross-generation.ts"
    ],
    "diags": []
   },
@@ -6289,12 +6665,6 @@
    ],
    "diags": []
   },
-  "<repo>/tests/diagnostics/async-await.ts": {
-   "order": [
-    "<repo>/tests/diagnostics/async-await.ts"
-   ],
-   "diags": []
-  },
   "<repo>/tests/diagnostics/blocked-binding-cascade.ts": {
    "order": [
     "<repo>/tests/diagnostics/blocked-binding-cascade.ts"
@@ -6477,6 +6847,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/diagnostics/date-union-fences.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/date-union-fences.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/diagnostics/deep-binary-nesting.ts": {
    "order": [
     "<repo>/tests/diagnostics/deep-binary-nesting.ts"
@@ -6577,6 +6953,24 @@
    ],
    "diags": []
   },
+  "<repo>/tests/diagnostics/esm-syntax-commonjs/main.js": {
+   "order": [
+    "<repo>/tests/diagnostics/esm-syntax-commonjs/main.js"
+   ],
+   "diags": [
+    {
+     "code": "SC1013",
+     "message": "Node classifies this file as CommonJS, where this ES-module syntax marker is a SyntaxError",
+     "loc": {
+      "file": "<repo>/tests/diagnostics/esm-syntax-commonjs/main.js",
+      "start": 0,
+      "end": 10
+     },
+     "milestone": "later",
+     "hint": "use a .mjs/.mts extension or set the nearest package.json's \"type\" to \"module\""
+    }
+   ]
+  },
   "<repo>/tests/diagnostics/exceptions.ts": {
    "order": [
     "<repo>/tests/diagnostics/exceptions.ts"
@@ -6598,6 +6992,30 @@
   "<repo>/tests/diagnostics/filter-narrow.ts": {
    "order": [
     "<repo>/tests/diagnostics/filter-narrow.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/filter-void-predicate-dyn.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/filter-void-predicate-dyn.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/filter-void-predicate-dynamic.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/filter-void-predicate-dynamic.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/filter-void-predicate-island.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/filter-void-predicate-island.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/filter-void-predicate.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/filter-void-predicate.ts"
    ],
    "diags": []
   },
@@ -6838,6 +7256,24 @@
    ],
    "diags": []
   },
+  "<repo>/tests/diagnostics/invalid-package-config/main.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/invalid-package-config/main.ts"
+   ],
+   "diags": [
+    {
+     "code": "SC1013",
+     "message": "Node cannot load this module because '<repo>/tests/diagnostics/invalid-package-config/package.json' is an invalid package configuration (ERR_INVALID_PACKAGE_CONFIG)",
+     "loc": {
+      "file": "<repo>/tests/diagnostics/invalid-package-config/main.ts",
+      "start": 0,
+      "end": 0
+     },
+     "milestone": "later",
+     "hint": "fix the nearest package.json so it contains valid JSON"
+    }
+   ]
+  },
   "<repo>/tests/diagnostics/island-boundary-slots.ts": {
    "order": [
     "<repo>/tests/diagnostics/island-boundary-slots.ts"
@@ -6916,6 +7352,23 @@
     "<repo>/tests/diagnostics/json-shape/main.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/diagnostics/local-require-binding-esm.js": {
+   "order": [
+    "<repo>/tests/diagnostics/local-require-binding-esm.js"
+   ],
+   "diags": [
+    {
+     "code": "SC1013",
+     "message": "calls through a source binding named 'require' (this spelling is reserved for CommonJS/createRequire module edges — rename the binding) is not supported yet",
+     "loc": {
+      "file": "<repo>/tests/diagnostics/local-require-binding-esm.js",
+      "start": 80,
+      "end": 100
+     },
+     "milestone": "later"
+    }
+   ]
   },
   "<repo>/tests/diagnostics/maps-surface.ts": {
    "order": [
@@ -7255,6 +7708,18 @@
    ],
    "diags": []
   },
+  "<repo>/tests/diagnostics/retained-generic-rest-order.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/retained-generic-rest-order.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/runtime-optional-capture-chain.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/runtime-optional-capture-chain.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/diagnostics/self-returning-function.ts": {
    "order": [
     "<repo>/tests/diagnostics/self-returning-function.ts"
@@ -7302,6 +7767,71 @@
     "<repo>/tests/diagnostics/stdlib.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/diagnostics/text-codec-value.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/text-codec-value.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/text-decoder-label.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/text-decoder-label.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/top-level-await-commonjs/main.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/top-level-await-commonjs/main.ts"
+   ],
+   "diags": [
+    {
+     "code": "SC1013",
+     "message": "Node classifies this file as CommonJS, where this ES-module syntax marker is a SyntaxError",
+     "loc": {
+      "file": "<repo>/tests/diagnostics/top-level-await-commonjs/main.ts",
+      "start": 15,
+      "end": 40
+     },
+     "milestone": "later",
+     "hint": "use a .mjs/.mts extension or set the nearest package.json's \"type\" to \"module\""
+    }
+   ]
+  },
+  "<repo>/tests/diagnostics/top-level-await-implicit-module-nested-require.js": {
+   "order": [
+    "<repo>/tests/diagnostics/top-level-await-implicit-module-nested-require.js"
+   ],
+   "diags": [
+    {
+     "code": "SC1013",
+     "message": "require() in an ES module (Node throws ReferenceError — use import) is not supported yet",
+     "loc": {
+      "file": "<repo>/tests/diagnostics/top-level-await-implicit-module-nested-require.js",
+      "start": 114,
+      "end": 134
+     },
+     "milestone": "later"
+    }
+   ]
+  },
+  "<repo>/tests/diagnostics/top-level-await-module-leak/main.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/top-level-await-module-leak/a.ts",
+    "<repo>/tests/diagnostics/top-level-await-module-leak/b.ts",
+    "<repo>/tests/diagnostics/top-level-await-module-leak/main.ts"
+   ],
+   "diags": [
+    {
+     "code": "SC0001",
+     "message": "Cannot find name 'shared'.",
+     "loc": {
+      "file": "<repo>/tests/diagnostics/top-level-await-module-leak/b.ts",
+      "start": 37,
+      "end": 43
+     }
+    }
+   ]
   },
   "<repo>/tests/diagnostics/tuples.ts": {
    "order": [
@@ -7523,6 +8053,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/fixtures/npm/cases/fetch-destructure/main.ts": {
+   "order": [
+    "<repo>/tests/fixtures/npm/cases/fetch-destructure/main.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/fixtures/npm/cases/fs-shims/main.ts": {
    "order": [
     "<repo>/tests/fixtures/npm/cases/fs-shims/main.ts"
@@ -7658,6 +8194,18 @@
    ],
    "diags": []
   },
+  "<repo>/tests/fixtures/npm/cases/top-level-await-pending-exit-code/main.ts": {
+   "order": [
+    "<repo>/tests/fixtures/npm/cases/top-level-await-pending-exit-code/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/fixtures/npm/cases/top-level-await-pending-exit-listener/main.ts": {
+   "order": [
+    "<repo>/tests/fixtures/npm/cases/top-level-await-pending-exit-listener/main.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/fixtures/npm/cases/typed-callbacks/main.ts": {
    "order": [
     "<repo>/tests/fixtures/npm/cases/typed-callbacks/main.ts"
@@ -7770,6 +8318,12 @@
   "<repo>/tests/fixtures/node-types/fenced.ts": {
    "order": [
     "<repo>/tests/fixtures/node-types/fenced.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/fixtures/node-types/fetch-static.ts": {
+   "order": [
+    "<repo>/tests/fixtures/node-types/fetch-static.ts"
    ],
    "diags": []
   },

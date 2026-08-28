@@ -32,6 +32,7 @@ beforeAll(async () => {
     join(testDir, "../src/scr_bytes.c"),
     join(testDir, "../src/scr_error.c"),
     join(testDir, "../src/scr_exception.c"),
+    ...(process.platform === "linux" ? ["-D_GNU_SOURCE", "-lm"] : []),
   ]);
 });
 

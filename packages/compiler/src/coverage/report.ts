@@ -7,7 +7,7 @@
  * collects — the diagnostics registry is the coverage taxonomy.
  */
 import type { Milestone, ScrDiagnostic } from "../diagnostics/diagnostic.js";
-import { renderAll } from "../diagnostics/render.js";
+import { renderDiagnostics } from "../diagnostics/render.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
 import type { NpmBuiltinUse, NpmLazyTrap } from "../frontend/npm.js";
 import type { ProvenanceSources } from "../frontend/provenance-registry.js";
@@ -115,7 +115,7 @@ export function renderCoverage(input: CoverageInput, opts: { color?: boolean; so
       // swallow the code frames that say what to fix.
       if (opts.sourceTexts) {
         out.push("");
-        out.push(renderAll(tsc, opts.sourceTexts, { color: opts.color ?? false }));
+        out.push(renderDiagnostics(tsc, opts.sourceTexts, { color: opts.color ?? false }));
       }
       return out.join("\n");
     }
@@ -133,7 +133,7 @@ export function renderCoverage(input: CoverageInput, opts: { color?: boolean; so
     }
     if (opts.sourceTexts) {
       out.push("");
-      out.push(renderAll(input.diagnostics, opts.sourceTexts, { color: opts.color ?? false }));
+      out.push(renderDiagnostics(input.diagnostics, opts.sourceTexts, { color: opts.color ?? false }));
     }
     return out.join("\n");
   }

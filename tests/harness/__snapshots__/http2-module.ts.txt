@@ -1,4 +1,4 @@
-http2-module.ts:24:13 - error SC1090: using the result of the 'stream.on(...)' call (stream is always undefined on this HTTP/1.1 lowering — call it as its own statement) is not supported yet
+http2-module.ts:24:13 - error SC1090: using the result of stream.on(...) (the result is void here — call it as its own statement) is not supported yet
 
   23 |   // differential's http2-hello).
   24 |   const r = req.stream.on("error", () => {});

@@ -8,8 +8,12 @@
     "init_symbol": "kc_init",
     "sink_register_symbol": "kc_set_panic_sink",
     "collect_symbol": null,
-    "result_reset_symbol": null
+    "result_reset_symbol": null,
+    "callback_register_symbol": "kc_set_callback"
   },
+  "callbacks": [
+    { "name": "contractNotice", "params": ["string"], "returns": "void" }
+  ],
   "exports": [
     { "export": "boot", "symbol": "kc_boot", "params": [], "returns": "void" },
     { "export": "send", "symbol": "kc_send", "params": ["f64", "f64"], "returns": "void" },

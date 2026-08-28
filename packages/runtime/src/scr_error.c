@@ -17,7 +17,7 @@ static void scr_error_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }
 
-static bool scr_error_traced = false;
+static SCR_TL bool scr_error_traced = false;
 
 void scr_error_set_traced(void) { scr_error_traced = true; }
 
@@ -49,7 +49,7 @@ static void scr_error_gcfree(void *obj) {
  * must stay linkable WITHOUT the checked-dynamic tree (the runtime C-unit tests link
  * subsets), so the drop goes through a hook scr_json.c installs before
  * any cause can exist (scr_domex_new is the only producer). */
-static void (*scr_domex_cause_drop)(void *obj) = NULL;
+static SCR_TL void (*scr_domex_cause_drop)(void *obj) = NULL;
 
 void scr_domex_install_cause_drop(void (*fn)(void *obj)) {
   scr_domex_cause_drop = fn;
@@ -90,7 +90,7 @@ static void scr_domex_reld(void *obj) {
 
 /* Defaults cover only the instants before main() stamps the program's real
  * preorder intervals; release is permanent. */
-ScrVt scr_error_vts[5] = {
+SCR_TL ScrVt scr_error_vts[5] = {
     {0, 4, &scr_error_reld}, /* Error */
     {1, 1, &scr_error_reld}, /* TypeError */
     {2, 2, &scr_error_reld}, /* RangeError */

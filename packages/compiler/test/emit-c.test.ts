@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
-import { emitModule } from "../src/backend/emission/emitter.js";
-import { compileC } from "../src/backend/cc.js";
+import { emitCModule } from "../src/backend/c/c-emitter.js";
+import { compileC } from "../src/backend/native-toolchain.js";
 import { validateModule } from "../src/ir/validate.js";
 import { fibModule } from "./fixtures/fib-ir.js";
-import { BOOL, F64, STRING, VOID, type IrExpr, type IrModule } from "../src/ir/nodes.js";
+import { BOOL, F64, STRING, VOID, type IrExpr, type IrModule } from "../src/ir/ir.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,7 +16,7 @@ async function emitCompileRun(mod: IrModule, sanitize = true): Promise<string> {
   expect(validateModule(mod)).toEqual([]);
   const dir = await mkdtemp(join(tmpdir(), "scriptc-emit-"));
   const cPath = join(dir, "program.c");
-  await writeFile(cPath, emitModule(mod));
+  await writeFile(cPath, emitCModule(mod));
   const outPath = join(dir, "program");
   await compileC({ cPath, outPath, sanitize });
   const { stdout } = await execFileAsync(outPath);
@@ -35,7 +35,7 @@ test("strings: literals, concat in a loop, toString, RC-clean under audit", asyn
   // while (i < 3) { acc = acc + ("-" + i); i = i + 1; }
   // console.log(acc, acc === "x-0-1-2", "α∂" < "β");
   const mod: IrModule = {
-    irVersion: 2,
+    irVersion: 6,
     sourceFile: "s.ts",
     entry: "__main",
     functions: [
@@ -113,7 +113,7 @@ test("short-circuit: right operand of && only evaluates when left is true", asyn
   // if (false && sideEffect()) {} ; if (true || sideEffect()) {}
   // console.log("done")
   const mod: IrModule = {
-    irVersion: 2,
+    irVersion: 6,
     sourceFile: "l.ts",
     entry: "__main",
     functions: [
@@ -161,7 +161,7 @@ test("string params: callee owns and releases; returns transfer ownership", asyn
   // function greet(who: string): string { return "hi " + who; }
   // console.log(greet("world"));
   const mod: IrModule = {
-    irVersion: 2,
+    irVersion: 6,
     sourceFile: "p.ts",
     entry: "__main",
     functions: [

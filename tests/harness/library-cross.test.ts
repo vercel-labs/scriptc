@@ -11,6 +11,8 @@
  *                             pinned to the differential container's
  *                             bookworm — docs/linux-port.md)
  *   x86_64-linux-gnu.2.36    (the linux lane's amd64 triple)
+ *   aarch64-linux-musl       (the Alpine-compatible static arm64 triple)
+ *   x86_64-linux-musl        (the Alpine-compatible static amd64 triple)
  *   x86_64-windows-gnu       (the windows lane's triple)
  *   x86_64-macos             (build-only; the host arm64-macos build is
  *                             the ordinary suites' tested baseline)
@@ -32,7 +34,7 @@
  *   - Linkability: for fixtures with a probe, the probe LINKS against the
  *     cross archive with the target's libc alone — plus, on win32, the
  *     documented embedder system libs (advapi32/iphlpapi/ws2_32, the same
- *     unconditional set cc.ts links into win32 executables). A stray
+ *     unconditional set native-toolchain.ts links into win32 executables). A stray
  *     undefined (the scr_win.c shim gap this lane caught on day one)
  *     fails HERE, at build time on the host, not in an embedder's build.
  *
@@ -67,12 +69,14 @@ const fixtureRoot = join(repoRoot, "tests/library-mode");
 const flavor = process.env["SCRIPTC_SAN"] === "1" ? "san" : "plain";
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests/library-cross", flavor);
 
-/* The embedder-relevant target list. The linux triples pin the glibc minor
+/* The embedder-relevant target list. GNU/Linux triples pin the glibc minor
  * the differential container's bookworm ships (the linux lane's default);
- * windows-gnu and macos triples carry no libc version. */
+ * musl, windows-gnu, and macos triples carry no libc version. */
 const TARGETS = [
   "aarch64-linux-gnu.2.36",
   "x86_64-linux-gnu.2.36",
+  "aarch64-linux-musl",
+  "x86_64-linux-musl",
   "x86_64-windows-gnu",
   "x86_64-macos",
 ] as const;
@@ -82,7 +86,7 @@ type Target = (typeof TARGETS)[number];
  * units import beyond the CRT — advapi32 (RtlGenRandom behind
  * arc4random_buf, GetUserNameA), iphlpapi (GetAdaptersAddresses behind
  * os.networkInterfaces), ws2_32 (inet_ntop/htonl) — exactly the
- * unconditional win32 libs cc.ts links into every win32 executable. An
+ * unconditional win32 libs native-toolchain.ts links into every win32 executable. An
  * archive carries no -l flags, so a win32 embedder spells these on its own
  * link line; the probe links pin the set. */
 const WIN32_EMBEDDER_LIBS = ["-ladvapi32", "-liphlpapi", "-lws2_32"];
@@ -119,6 +123,7 @@ interface LibProfile {
     sink_register_symbol: string;
     collect_symbol: string | null;
     result_reset_symbol: string | null;
+    callback_register_symbol?: string;
   };
   exports: { symbol: string }[];
   sidecar?: { build_id_symbol: string; abi_version_symbol: string } | null;
@@ -134,6 +139,7 @@ function declaredSymbols(p: LibProfile): string[] {
     p.abi.sink_register_symbol,
     ...(p.abi.collect_symbol !== null ? [p.abi.collect_symbol] : []),
     ...(p.abi.result_reset_symbol !== null ? [p.abi.result_reset_symbol] : []),
+    ...(p.abi.callback_register_symbol !== undefined ? [p.abi.callback_register_symbol] : []),
     ...(p.sidecar != null ? [p.sidecar.build_id_symbol, p.sidecar.abi_version_symbol] : []),
   ];
 }
@@ -295,6 +301,8 @@ describe.skipIf(!enabled)("cross-target library conformance", () => {
       EMISSIONS.flatMap((e) => [
         [`aarch64-linux-gnu.2.36 ${e}`, "aarch64-linux-gnu.2.36", e],
         [`x86_64-linux-gnu.2.36 ${e}`, "x86_64-linux-gnu.2.36", e],
+        [`aarch64-linux-musl ${e}`, "aarch64-linux-musl", e],
+        [`x86_64-linux-musl ${e}`, "x86_64-linux-musl", e],
       ] as const),
     )(
       "scalar round-trip in the container (%s)",
@@ -304,14 +312,16 @@ describe.skipIf(!enabled)("cross-target library conformance", () => {
         // One-shot container per run (no oracle, no repo paths in the
         // output — the long-lived-container mechanics of the differential
         // lane buy nothing here). Image and platform follow the sibling
-        // lane: the pinned node's bookworm carries the triples' glibc.
+        // lane: GNU triples use the pinned bookworm image; the musl triple
+        // runs in Alpine, matching the executable differential lane.
+        const distro = target.includes("linux-musl") ? "alpine" : "bookworm";
         const out = execFileSync(
           "docker",
           [
             "run", "--rm",
             "--platform", target.startsWith("x86_64") ? "linux/amd64" : "linux/arm64",
             "-v", `${repoRoot}:${repoRoot}`,
-            `node:${nodeVersion()}-bookworm`,
+            `node:${nodeVersion()}-${distro}`,
             probe,
           ],
           { encoding: "utf8", timeout: 240_000 },

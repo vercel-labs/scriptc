@@ -14,38 +14,28 @@
  * implementations and requires identical answers. Change 5.9.3's options
  * and these tables are wrong — that is what the suite is for. */
 
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { isNpmStaticPackage, npmStaticPackageOfPath, npmStaticTransformPkgJson } from "./npm-static.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
+import { trackedAccessibleEntries, trackedDirectoryExists, trackedExists, trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import { packageNameOfSpecifier } from "./workspace-registry.js";
 
 function isFile(path: string): boolean {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
+  return trackedFileExists(path);
 }
 
 function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
+  return trackedDirectoryExists(path);
 }
 
 function realpathOr(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
+  return trackedRealpath(path) ?? path;
 }
 
 interface PkgJson {
   name?: string;
   version?: string;
+  type?: string;
   types?: string;
   typings?: string;
   main?: string;
@@ -62,9 +52,9 @@ function pkgJsonOf(dir: string): PkgJson | null {
   if (cached === undefined) {
     const path = join(dir, "package.json");
     let parsed: PkgJson | null = null;
-    if (existsSync(path)) {
+    if (trackedExists(path)) {
       try {
-        parsed = JSON.parse(readFileSync(path, "utf8")) as PkgJson;
+        parsed = JSON.parse(trackedReadFile(path)!) as PkgJson;
       } catch {
         parsed = null;
       }
@@ -113,12 +103,7 @@ function expandWorkspacePattern(root: string, pattern: string): string[] {
     const next: string[] = [];
     for (const dir of dirs) {
       if (seg === "*") {
-        let entries: string[];
-        try {
-          entries = readdirSync(dir);
-        } catch {
-          continue;
-        }
+        const entries = trackedAccessibleEntries(dir)?.directories ?? [];
         for (const e of entries) {
           if (e === "node_modules" || e.startsWith(".")) continue;
           const child = join(dir, e);
@@ -355,14 +340,13 @@ const EXPORT_CONDITIONS = new Set(["types", "import", "default"]);
 const JS_ONLY_CONDITIONS = new Set(["import", "default"]);
 
 /** package.json "exports" lookup: exact subpath keys, then '*' patterns
- * (longest literal prefix wins), condition objects in object-key order,
- * arrays first-resolvable. Returns the target path relative to the package
- * directory, or null. Mirrors npm.ts's runtime resolver with the TYPES
- * condition set. */
-function resolveExportsTypes(
+ * (longest literal prefix wins), condition objects matched against the
+ * supplied set in object-key order, arrays first-resolvable. Returns the
+ * target path relative to the package directory, or null. */
+export function resolveExports(
   exports: unknown,
   subpath: string,
-  conditions: ReadonlySet<string> = EXPORT_CONDITIONS,
+  conditions: ReadonlySet<string>,
 ): string | null {
   const resolveTarget = (target: unknown, wildcard: string | null): string | null => {
     if (typeof target === "string") {
@@ -454,6 +438,21 @@ function nearestPkgDir(dir: string): string | null {
   }
 }
 
+/** The nearest package.json FILE, whether or not its JSON parses. Runtime
+ * module-format lookup must stop at a malformed nearest scope: Node reports
+ * ERR_INVALID_PACKAGE_CONFIG there rather than silently inheriting a parent
+ * package's `type`. The resolver's historical nearestPkgDir stays parseable-
+ * package-only because its callers need a package OBJECT to inspect. */
+function nearestPackageConfigDir(dir: string): string | null {
+  let d = dir;
+  for (;;) {
+    if (trackedExists(join(d, "package.json"))) return d;
+    const parent = dirname(d);
+    if (parent === d) return null;
+    d = parent;
+  }
+}
+
 /** package.json "imports" lookup — the exports machinery over "#" keys
  * (exact keys, then '*' patterns, condition objects in key order). */
 function resolveImportsField(imports: unknown, specifier: string): string | null {
@@ -466,7 +465,7 @@ function resolveImportsField(imports: unknown, specifier: string): string | null
     if (!k.startsWith("#")) continue;
     rekeyed["." + k.slice(1)] = v;
   }
-  return resolveExportsTypes(rekeyed, "." + specifier.slice(1));
+  return resolveExports(rekeyed, "." + specifier.slice(1), EXPORT_CONDITIONS);
 }
 
 /** Absolute path of the nearest package.json at or above `fromFile`'s
@@ -475,6 +474,27 @@ function resolveImportsField(imports: unknown, specifier: string): string | null
 export function nearestPkgJsonPath(fromFile: string): string | null {
   const dir = nearestPkgDir(dirname(resolve(fromFile)));
   return dir === null ? null : join(dir, "package.json");
+}
+
+/** The explicit module format of the nearest package scope. A package.json
+ * without a recognized `type` keeps the file ambiguous, so callers may
+ * apply Node's syntax detector; an explicit commonjs/module answer must win
+ * over syntax detection for ordinary .js/.ts files. */
+export function nearestPackageType(fromFile: string): "module" | "commonjs" | null {
+  const dir = nearestPackageConfigDir(dirname(resolve(fromFile)));
+  if (dir === null) return null;
+  const type = pkgJsonOf(dir)?.type;
+  return type === "module" || type === "commonjs" ? type : null;
+}
+
+/** The malformed nearest package scope Node would reject before loading
+ * `fromFile`, or null when there is no package.json or it parses as an
+ * object. Kept separate from nearestPackageType so an absent/typeless valid
+ * package can still use syntax detection. */
+export function nearestInvalidPackageJsonPath(fromFile: string): string | null {
+  const dir = nearestPackageConfigDir(dirname(resolve(fromFile)));
+  if (dir === null || pkgJsonOf(dir) !== null) return null;
+  return join(dir, "package.json");
 }
 
 /** Resolves a PROJECT-INTERNAL package.json-mediated specifier from
@@ -518,7 +538,7 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
     const pkgName = parts.slice(0, nameLen).join("/");
     if (pkgName !== pkg.name || parts.length < nameLen) return null;
     const subpath = parts.length === nameLen ? "." : "./" + parts.slice(nameLen).join("/");
-    target = resolveExportsTypes(pkg.exports, subpath);
+    target = resolveExports(pkg.exports, subpath, EXPORT_CONDITIONS);
   }
   if (target === null) return null;
   const path = join(pkgDir, target);
@@ -532,9 +552,9 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
  * fails does a second identical walk run admitting the JavaScript files
  * themselves. An untyped package with an @types twin therefore answers the
  * @types files; an untyped package without one answers its own .js. */
-type NmPass = "types" | "js";
+type ResolutionPass = "types" | "js";
 
-function extensionsFor(pass: NmPass, flavor: "plain" | "x" | "m" | "c"): string[] {
+function extensionsFor(pass: ResolutionPass, flavor: "plain" | "x" | "m" | "c"): string[] {
   if (pass === "types") {
     switch (flavor) {
       case "m": return [".mts", ".d.mts"];
@@ -554,7 +574,7 @@ function extensionsFor(pass: NmPass, flavor: "plain" | "x" | "m" | "c"): string[
 /** File resolution of an exports-map target (or types/typings/main field)
  * inside node_modules, for one pass: recognized-extension substitution,
  * extension addition, then directory index. */
-function loadTargetInPass(pkgDir: string, target: string, pass: NmPass): string | null {
+function loadTargetInPass(pkgDir: string, target: string, pass: ResolutionPass): string | null {
   const path = join(pkgDir, target);
   if (pass === "types") {
     if (/\.(d\.ts|d\.mts|d\.cts|ts|tsx|mts|cts)$/.test(path) && isFile(path)) return path;
@@ -599,7 +619,7 @@ function loadTargetInPass(pkgDir: string, target: string, pass: NmPass): string 
 
 /** node_modules file-or-directory resolution for a package-internal path (a
  * subpath without exports, the root lookup), for one pass. */
-function loadPathInPass(pkgDir: string, rel: string, pass: NmPass): string | null {
+function loadPathInPass(pkgDir: string, rel: string, pass: ResolutionPass): string | null {
   const base = rel === "." ? pkgDir : join(pkgDir, rel);
   if (rel !== ".") {
     const viaFile = loadTargetInPass(pkgDir, rel, pass);
@@ -646,13 +666,6 @@ export interface BareResolution {
   workspaceDir?: string;
 }
 
-/** Package name prefix of a bare specifier ("@scope/pkg/sub" → "@scope/pkg",
- * "pkg/sub" → "pkg"). */
-function packagePrefixOf(specifier: string): string {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
-}
-
 /** The DefinitelyTyped name mangling: "@scope/pkg" → "scope__pkg". */
 function mangleScopedName(name: string): string {
   return name.startsWith("@") ? name.slice(1).replace("/", "__") : name;
@@ -680,7 +693,7 @@ export function resolveBareModule(
    * --npm-static set (the auto-detection probe); default follows the set. */
   mode?: "js-only",
 ): BareResolution | null {
-  const pkgName = packagePrefixOf(specifier);
+  const pkgName = packageNameOfSpecifier(specifier);
   const rest = specifier.slice(pkgName.length).replace(/^\//, "");
   const subpath = rest === "" ? "." : `./${rest}`;
   // An opted-in --npm-static package resolves to its RUNTIME JS: the js
@@ -689,7 +702,7 @@ export function resolveBareModule(
   const npmStatic = mode === "js-only" || isNpmStaticPackage(pkgName);
   const conditions = npmStatic ? JS_ONLY_CONDITIONS : EXPORT_CONDITIONS;
 
-  const inPackage = (nmPkgDir: string, name: string, pass: NmPass): BareResolution | null => {
+  const inPackage = (nmPkgDir: string, name: string, pass: ResolutionPass): BareResolution | null => {
     // A workspace link: the answer's realpath escaped node_modules, so the
     // package directory is a symlink into the project. Stamp the realpath'd
     // package root so callers can classify (and register) the package.
@@ -726,7 +739,7 @@ export function resolveBareModule(
           })()
         : rawPkg;
     if (pkg?.exports !== undefined) {
-      const target = resolveExportsTypes(pkg.exports, subpath, conditions);
+      const target = resolveExports(pkg.exports, subpath, conditions);
       if (target !== null) {
         const file = loadTargetInPass(nmPkgDir, target, pass);
         if (file) return withWorkspace(packageAnswer(nmPkgDir, name, file));
@@ -743,7 +756,7 @@ export function resolveBareModule(
     return withWorkspace(packageAnswer(answerDir, name, file));
   };
 
-  const passOnce = (pass: NmPass): BareResolution | null => {
+  const passOnce = (pass: ResolutionPass): BareResolution | null => {
     for (let dir = dirname(resolve(fromFile)); ; ) {
       const nm = join(dir, "node_modules");
       if (isDirectory(nm)) {
@@ -806,11 +819,12 @@ export function resolveTypeDirective(name: string, fromFile: string): string | n
   }
 }
 
-/** Test hook: the package.json cache holds across programs (fine within one
- * compile; a long-lived test process editing fixtures must reset it). */
+/** Resolver metadata and the active project realm are shared within one
+ * compile, never across compiles in a long-lived process. */
 export function clearResolveCaches(): void {
   pkgJsonCache.clear();
   workspaceMembersCache.clear();
+  projectRealmPkgJson = null;
 }
 
 /** True when `path` is under a node_modules directory (the

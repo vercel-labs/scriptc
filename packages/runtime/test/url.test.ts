@@ -15,6 +15,7 @@ beforeAll(async () => {
   await execFileAsync("clang", [
     "-std=c11", "-O1", "-Wall", "-Wextra",
     "-fsanitize=address", "-DSCR_RC_AUDIT",
+    ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
     "-o", bin,
     join(testDir, "test_url.c"),
     join(testDir, "../src/scr_url.c"),
@@ -27,6 +28,7 @@ beforeAll(async () => {
     join(testDir, "../src/scr_exception.c"),
     join(testDir, "../src/scr_object.c"),
     join(testDir, "../src/scr_cycle.c"),
+    ...(process.platform === "linux" ? ["-lm"] : []),
   ]);
 });
 

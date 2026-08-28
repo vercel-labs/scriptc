@@ -53,7 +53,7 @@ jobs:
     name: Publish to npm
     needs: check-release
     if: needs.check-release.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     timeout-minutes: 15
     environment: Release
     permissions:
@@ -66,7 +66,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 11.1.3
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -74,10 +74,14 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Install pinned LLVM
+        run: brew install llvm@22
+
       # Publishing uses npm trusted publishing (OIDC): the job's id-token
       # permission lets npm mint short-lived credentials, so no npm token
-      # secret exists anywhere in this repo. All three packages —
-      # @scriptc/runtime, @scriptc/compiler, scriptc — must each be
+      # secret exists anywhere in this repo. All four packages —
+      # @scriptc/runtime, @scriptc/llvm-darwin-arm64, @scriptc/compiler,
+      # and scriptc — must each be
       # configured on npmjs.com with a GitHub Actions trusted publisher
       # pointing at repository vercel-labs/scriptc, workflow release.yml,
       # environment Release. A package missing that configuration fails
@@ -87,12 +91,13 @@ jobs:
       - name: Install and build
         run: |
           pnpm install --frozen-lockfile
+          pnpm --filter @scriptc/llvm-darwin-arm64 build:native
           pnpm -r build
 
       - name: Check version sync
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
-          for pkg in packages/runtime packages/compiler packages/cli; do
+          for pkg in packages/runtime packages/llvm-darwin-arm64 packages/compiler packages/cli; do
             V=$(node -p "require('./$pkg/package.json').version")
             if [ "$V" != "$VERSION" ]; then
               echo "Version mismatch: $pkg is $V, expected $VERSION"
@@ -100,6 +105,13 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Package and verify LLVM helper
+        run: |
+          TARBALL=$(pnpm --dir packages/llvm-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent)
+          HELPER_TARBALL="$RUNNER_TEMP/$(basename "$TARBALL")"
+          node scripts/verify-llvm-package.mjs "$HELPER_TARBALL"
+          echo "HELPER_TARBALL=$HELPER_TARBALL" >> "$GITHUB_ENV"
 
       - name: Publish to npm
         run: |
@@ -123,16 +135,21 @@ jobs:
           # Re-runs skip anything already on the registry at this version.
           publish_dir() {
             dir="$1"
+            packed="${2:-}"
             name=$(node -p "require('./$dir/package.json').name")
             if npm view "$name@$VERSION" version >/dev/null 2>&1; then
               echo "$name@$VERSION already published, skipping"
               return 0
             fi
-            tarball=$(cd "$dir" && pnpm pack --silent | tail -1)
-            npm publish "$dir/$tarball" $PROVENANCE --access public
+            if [ -z "$packed" ]; then
+              tarball=$(cd "$dir" && pnpm pack --silent | tail -1)
+              packed="$dir/$tarball"
+            fi
+            npm publish "$packed" $PROVENANCE --access public
           }
 
           publish_dir packages/runtime
+          publish_dir packages/llvm-darwin-arm64 "$HELPER_TARBALL"
           publish_dir packages/compiler
           publish_dir packages/cli
         env:
@@ -142,9 +159,9 @@ jobs:
   # manifest (packages/compiler/surface-manifest.json — the machine-
   # readable listing of the surface the static tier compiles at this
   # version, regenerated here and verified against the committed file).
-  # scriptc has no platform binary assets to stage (programs compile on
-  # the user's machine), so the job runs AFTER a successful npm publish
-  # and never gates it. The body is the CHANGELOG.md block between the
+  # The platform helper ships through its npm package rather than as a GitHub
+  # release asset, so this job runs AFTER a successful npm publish and never
+  # gates it. The body is the CHANGELOG.md block between the
   # release:start/release:end markers, which RELEASING.md keeps on the
   # latest entry only.
   github-release:
@@ -162,7 +179,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 11.1.3
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

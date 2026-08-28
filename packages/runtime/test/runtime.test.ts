@@ -8,7 +8,7 @@ const execFileAsync = promisify(execFile);
 const testDir = import.meta.dirname;
 const srcDir = join(testDir, "../src");
 
-const RUNTIME_SOURCES = ["scr_number.c", "scr_string.c", "scr_array.c", "scr_bytes.c", "scr_map.c", "scr_closure.c", "scr_object.c", "scr_union.c", "scr_exception.c", "scr_error.c", "scr_console.c", "scr_lib.c", "scr_json.c", "scr_async.c", "scr_child.c", "scr_cycle.c"].map(
+const RUNTIME_SOURCES = ["scr_number.c", "scr_string.c", "scr_array.c", "scr_bytes.c", "scr_map.c", "scr_closure.c", "scr_ffi.c", "scr_object.c", "scr_union.c", "scr_exception.c", "scr_error.c", "scr_console.c", "scr_lib.c", "scr_json.c", "scr_async.c", "scr_child.c", "scr_cycle.c"].map(
   (f) => join(srcDir, f),
 );
 
@@ -22,9 +22,11 @@ test("runtime smoke.c: output exact, ASan and RC audit clean", async () => {
   await execFileAsync("clang", [
     "-std=c11", "-O1", "-Wall", "-Wextra",
     "-fsanitize=address", "-DSCR_RC_AUDIT",
+    ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
     "-o", bin,
     join(testDir, "smoke.c"),
     ...RUNTIME_SOURCES,
+    ...(process.platform === "linux" ? ["-lm"] : []),
   ]);
   const { stdout } = await execFileAsync(bin);
   expect(stdout).toBe(

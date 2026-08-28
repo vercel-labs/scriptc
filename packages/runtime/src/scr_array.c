@@ -8,7 +8,7 @@
 /* Live heap-array count for the RC audit lane (-DSCR_RC_AUDIT); same
  * contract as scr_str_live_count in scr_string.c. */
 #ifdef SCR_RC_AUDIT
-static long scr_live_arrays = 0;
+static SCR_TL long scr_live_arrays = 0;
 long scr_arr_live_count(void) { return scr_live_arrays; }
 #endif
 
@@ -66,6 +66,16 @@ static void scr_elem_release(const ScrArr *a, uint64_t slot) {
   else if (a->elem == SCR_ELEM_ARR) scr_arr_release((ScrArr *)p);
   else if (a->elem == SCR_ELEM_BYTES) scr_bytes_release((ScrBytes *)p);
   else if (a->elem == SCR_ELEM_REF) a->elem_release(p);
+}
+
+static uint64_t scr_elem_retain_slot(const ScrArr *a, uint64_t slot) {
+  if (!scr_elem_is_ref(a->elem)) return slot;
+  void *p = scr_slot_to_ptr(slot);
+  if (a->elem == SCR_ELEM_STR) p = scr_str_retain((ScrStr *)p);
+  else if (a->elem == SCR_ELEM_ARR) p = scr_arr_retain((ScrArr *)p);
+  else if (a->elem == SCR_ELEM_BYTES) p = scr_bytes_retain((ScrBytes *)p);
+  else p = a->elem_retain(p);
+  return scr_slot_from_ptr(p);
 }
 
 /* ── lifecycle ─────────────────────────────────────────────────────────── */
@@ -257,6 +267,61 @@ double scr_arr_push_bool(ScrArr *a, bool v) {
 
 double scr_arr_push_ref(ScrArr *a, void *v) {
   return scr_arr_push_slot(a, scr_slot_from_ptr(v));
+}
+
+/* ── unshift / reverse ──────────────────────────────────────────────────
+ * Single-element unshift takes ownership, matching push. The emitter calls
+ * it from right to left after evaluating every variadic argument, preserving
+ * JS argument order without a temporary array. The spread form borrows and
+ * retains its source, snapshots the count, and handles self-spread after the
+ * tail move by reading the relocated original block. */
+static double scr_arr_unshift_slot(ScrArr *a, uint64_t slot) {
+  scr_arr_grow(a, a->len + 1);
+  memmove(a->data + 1, a->data, a->len * sizeof(uint64_t));
+  a->data[0] = slot;
+  a->len++;
+  return (double)a->len;
+}
+
+double scr_arr_unshift_f64(ScrArr *a, double v) {
+  return scr_arr_unshift_slot(a, scr_slot_from_f64(v));
+}
+
+double scr_arr_unshift_bool(ScrArr *a, bool v) {
+  return scr_arr_unshift_slot(a, (uint64_t)(v ? 1 : 0));
+}
+
+double scr_arr_unshift_ref(ScrArr *a, void *v) {
+  return scr_arr_unshift_slot(a, scr_slot_from_ptr(v));
+}
+
+double scr_arr_unshift_spread(ScrArr *a, const ScrArr *src) {
+  size_t old_len = a->len;
+  size_t add = src->len;
+  if (add == 0) return (double)old_len;
+  if (add > SIZE_MAX - old_len) scr_arr_oom();
+  scr_arr_grow(a, old_len + add);
+  memmove(a->data + add, a->data, old_len * sizeof(uint64_t));
+  if (src == a) {
+    for (size_t i = 0; i < add; i++) {
+      a->data[i] = scr_elem_retain_slot(a, a->data[add + i]);
+    }
+  } else {
+    for (size_t i = 0; i < add; i++) {
+      a->data[i] = scr_elem_retain_slot(src, src->data[i]);
+    }
+  }
+  a->len = old_len + add;
+  return (double)a->len;
+}
+
+ScrArr *scr_arr_reverse(ScrArr *a) {
+  for (size_t i = 0; i < a->len / 2; i++) {
+    uint64_t tmp = a->data[i];
+    a->data[i] = a->data[a->len - 1 - i];
+    a->data[a->len - 1 - i] = tmp;
+  }
+  return scr_arr_retain(a);
 }
 
 static uint64_t scr_arr_pop_slot(ScrArr *a) {

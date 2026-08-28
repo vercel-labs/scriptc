@@ -24,6 +24,11 @@ const server = createServer((req, res) => {
     res.end("third");
     return;
   }
+  if (req.url === "/reset-content") {
+    res.writeHead(205, { "content-length": "4" });
+    res.end("body");
+    return;
+  }
   if (req.url === "/quit") {
     res.end("bye");
     server.close(() => console.log("driver closed"));

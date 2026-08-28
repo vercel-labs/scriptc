@@ -4,7 +4,7 @@
  * implementation the dynamic island uses — compiled standalone (libregexp.c
  * + libunicode.c; cutils is header-only) and linked ONLY into programs that
  * contain a regex literal. This file is likewise regex-only: it is NOT in
- * the always-compiled runtime source list (see cc.ts), so regex-free
+ * the always-compiled runtime source list (see native-toolchain.ts), so regex-free
  * programs keep a byte-identical link line.
  *
  * - Every ScrRegex today is an immortal interned literal (the compiler
@@ -82,8 +82,8 @@ void *lre_realloc(void *opaque, void *ptr, size_t size) {
  * allocation audit sees the bytecode gone).
  */
 
-static ScrRegex **scr_compiled = NULL;
-static size_t scr_compiled_len = 0, scr_compiled_cap = 0;
+static SCR_TL ScrRegex **scr_compiled = NULL;
+static SCR_TL size_t scr_compiled_len = 0, scr_compiled_cap = 0;
 
 static void scr_regex_free_bytecodes(void) {
   for (size_t i = 0; i < scr_compiled_len; i++) {
@@ -624,8 +624,10 @@ ScrStr *scr_regex_replace_all(ScrStr *s, ScrRegex *re, ScrStr *rep) {
 
 /* ── split ────────────────────────────────────────────────────────────── */
 
-ScrArr *scr_regex_split(ScrStr *s, ScrRegex *re) {
+ScrArr *scr_regex_split_limit(ScrStr *s, ScrRegex *re, double limit_num) {
   uint8_t *bc = scr_regex_bc(re);
+  uint32_t limit = scr_to_uint32(limit_num);
+  if (limit == 0) return scr_arr_new(SCR_ELEM_STR, 0);
   if (lre_get_capture_count(bc) > 1) {
     /* JS splices every capture group's value into the result between the
      * pieces, changing the array's SHAPE per match — not modeled this
@@ -675,6 +677,11 @@ ScrArr *scr_regex_split(ScrStr *s, ScrRegex *re) {
       q = scr_advance(u, len, start, unicode);
     } else {
       scr_arr_push_ref(out, scr_str_from_utf16(u, p, start));
+      if (out->len == limit) {
+        free(capture);
+        free(u);
+        return out;
+      }
       p = end;
       q = p;
     }
@@ -683,6 +690,10 @@ ScrArr *scr_regex_split(ScrStr *s, ScrRegex *re) {
   free(capture);
   free(u);
   return out;
+}
+
+ScrArr *scr_regex_split(ScrStr *s, ScrRegex *re) {
+  return scr_regex_split_limit(s, re, 4294967295.0);
 }
 
 /* ── String.prototype.toLowerCase / toUpperCase (the static path) ──────

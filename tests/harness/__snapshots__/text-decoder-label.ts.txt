@@ -1,0 +1,33 @@
+text-decoder-label.ts:4:13 - error SC2020: 'new TextDecoder with runtime-valued options or an unknown label' is part of the standard library types but has no scriptc lowering yet
+
+  3 | const runtimeLabel: string = process.argv[2] ?? "utf-8";
+  4 | console.log(new TextDecoder(runtimeLabel).decode(bytes));
+    |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  5 | 
+
+  hint: a recognized literal WHATWG label with default options compiles
+
+text-decoder-label.ts:7:13 - error SC2020: 'new TextDecoder with runtime-valued options or an unknown label' is part of the standard library types but has no scriptc lowering yet
+
+  6 | // WHATWG's replacement labels deliberately fail TextDecoder construction.
+  7 | console.log(new TextDecoder("replacement").decode(bytes));
+    |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  8 | 
+
+  hint: a recognized literal WHATWG label with default options compiles
+
+text-decoder-label.ts:10:13 - error SC2020: 'new TextDecoder with runtime-valued options or an unknown label' is part of the standard library types but has no scriptc lowering yet
+
+   9 | // Vertical tab is not WHATWG ASCII whitespace and must not be trimmed.
+  10 | console.log(new TextDecoder("\vutf-8").decode(bytes));
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 | 
+
+  hint: a recognized literal WHATWG label with default options compiles
+
+text-decoder-label.ts:16:31 - error SC1090: the reference to 'forwardLabel' (a binding form with no lowering) is not supported yet
+
+  15 |   // @ts-expect-error Deliberately retain the runtime TDZ shape.
+  16 |   console.log(new TextDecoder(forwardLabel).decode(bytes));
+     |                               ^~~~~~~~~~~~
+  17 |   const forwardLabel = "windows-1252" as const;

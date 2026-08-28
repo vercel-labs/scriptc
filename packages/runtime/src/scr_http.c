@@ -112,12 +112,23 @@ static const char *scr_http_reason(int code) {
  * typedef lives in scr_runtime.h (both units name it). */
 static const ScrHttpH2Ops *scr_http_h2_ops = NULL;
 static void (*scr_http_h2_request_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
+                                         void *fn, bool once) = NULL;
+static void (*scr_http_h2_connect_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
+                                        void *h1_fn, void *h2_fn, bool once) = NULL;
+static void (*scr_http_h2_upgrade_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
                                         void *fn, bool once) = NULL;
 
 void scr_http_set_h2_ops(const ScrHttpH2Ops *ops) { scr_http_h2_ops = ops; }
 
 void scr_http_set_h2_request_hook(void (*hook)(void *h2ctx, ScrClosure *cb, void *fn, bool once)) {
   scr_http_h2_request_hook = hook;
+}
+void scr_http_set_h2_connect_hook(void (*hook)(void *h2ctx, ScrClosure *cb,
+                                               void *h1_fn, void *h2_fn, bool once)) {
+  scr_http_h2_connect_hook = hook;
+}
+void scr_http_set_h2_upgrade_hook(void (*hook)(void *h2ctx, ScrClosure *cb, void *fn, bool once)) {
+  scr_http_h2_upgrade_hook = hook;
 }
 
 /* ── the request handle ──────────────────────────────────────────────── */
@@ -762,6 +773,27 @@ static void scr_http_buf_append(ScrHttpBuf *b, const char *s, size_t n) {
 
 static void scr_http_buf_str(ScrHttpBuf *b, const char *s) { scr_http_buf_append(b, s, strlen(s)); }
 
+static bool scr_http_header_has_token(const ScrStr *value, const char *token) {
+  size_t token_len = strlen(token);
+  for (size_t off = 0; off < value->len;) {
+    while (off < value->len &&
+           (value->data[off] == ',' || value->data[off] == ' ' || value->data[off] == '\t')) off++;
+    size_t end = off;
+    while (end < value->len && value->data[end] != ',' &&
+           value->data[end] != ' ' && value->data[end] != '\t') end++;
+    if (end - off == token_len) {
+      bool equal = true;
+      for (size_t i = 0; i < token_len && equal; i++) {
+        if (tolower((unsigned char)value->data[off + i]) != token[i]) equal = false;
+      }
+      if (equal) return true;
+    }
+    while (end < value->len && value->data[end] != ',') end++;
+    off = end;
+  }
+  return false;
+}
+
 /* Serializes and sends the head. `body_len` >= 0 fixes Content-Length
  * (the end(data)-before-head path); -1 means chunked unless the user set
  * Content-Length or Transfer-Encoding (Node's useChunkedEncodingByDefault
@@ -788,12 +820,19 @@ static void scr_http_res_send_head(ScrHttpRes *r, long long body_len) {
   if (r->status_msg) scr_http_buf_append(&b, r->status_msg->data, r->status_msg->len);
   else scr_http_buf_str(&b, scr_http_reason(status));
   scr_http_buf_str(&b, "\r\n");
+  bool user_chunked = false;
   for (size_t i = 0; i < r->nheaders; i++) {
     scr_http_buf_append(&b, r->hnames[i]->data, r->hnames[i]->len);
     scr_http_buf_str(&b, ": ");
     scr_http_buf_append(&b, r->hvalues[i]->data, r->hvalues[i]->len);
     scr_http_buf_str(&b, "\r\n");
+    bool transfer = r->hnames[i]->len == 17;
+    for (size_t j = 0; j < 17 && transfer; j++) {
+      if (tolower((unsigned char)r->hnames[i]->data[j]) != "transfer-encoding"[j]) transfer = false;
+    }
+    if (transfer && scr_http_header_has_token(r->hvalues[i], "chunked")) user_chunked = true;
   }
+  r->chunked = user_chunked;
   if (!r->no_date && !scr_http_res_has_header(r, "date")) {
     /* Node's utcDate: "Date: Wed, 16 Jul 2026 04:20:00 GMT" */
     time_t now = time(NULL);
@@ -1406,6 +1445,50 @@ static void scr_http_srv_ctx_settle(void *p) {
   scr_net_ls_drop(&ctx->connect_ls);
 }
 
+/* Combined HTTP/2 allowHTTP1 servers retain the HTTP/1 parser ctx behind
+ * their h2-facing alias. These narrow hooks let scr_http2.c mirror request
+ * listeners and settle both protocol lists without exposing the ctx shape. */
+void scr_http1_ctx_on_request(void *p, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
+                              ScrNetOnce *shared_once /*moves, nullable*/) {
+  ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)p;
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1) {
+    scr_closure_release(cb);
+    scr_net_once_release(shared_once);
+    return;
+  }
+  if (shared_once != NULL) {
+    scr_net_ls_add_shared_once(&ctx->request_ls, cb, (void *)fn, shared_once);
+  } else {
+    scr_net_ls_add(&ctx->request_ls, cb, (void *)fn, once);
+  }
+}
+
+void scr_http1_ctx_on_connect(void *p, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once,
+                              ScrNetOnce *shared_once /*moves, nullable*/) {
+  ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)p;
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1) {
+    scr_closure_release(cb);
+    scr_net_once_release(shared_once);
+    return;
+  }
+  if (shared_once != NULL) {
+    scr_net_ls_add_shared_once(&ctx->connect_ls, cb, (void *)fn, shared_once);
+  } else {
+    scr_net_ls_add(&ctx->connect_ls, cb, (void *)fn, once);
+  }
+}
+
+void scr_http1_ctx_on_upgrade(void *p, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once) {
+  ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)p;
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&ctx->upgrade_ls, cb, (void *)fn, once);
+}
+
+void scr_http1_ctx_settle(void *p) { scr_http_srv_ctx_settle(p); }
+
 static void scr_http_conn_drop_request(ScrHttpConn *conn, bool fire_end) {
   /* the deferred 'close' emits: res before req, Node's order */
   if (conn->res) scr_http_queue_res_close(conn->res);
@@ -1626,13 +1709,12 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len) {
   /* A CONNECT request: 'connect' fires INSTEAD of 'request' — the
    * upgrade machinery's exact shape ((req, socket, head); the parser
    * steps aside; no listener destroys the socket, Node's default). The
-   * h2 compat server's HTTP/1.1 arm lands here too — under the
-   * allowHTTP1 lowering it is the ONLY arm (SEMANTICS.md divergence
-   * 57), so a portless-style listener always takes the raw socket. */
+   * h2 compat server's HTTP/1.1 arm lands here too; its HTTP/2 arm is
+   * dispatched separately with the compatibility response handle. */
   if (req->method->len == 7 && memcmp(req->method->data, "CONNECT", 7) == 0) {
     memmove(conn->buf, conn->buf + head_len, conn->len - head_len);
     conn->len -= head_len;
-    if (conn->srv->connect_ls.n == 0) {
+    if (!scr_net_ls_has_live(&conn->srv->connect_ls)) {
       scr_http_req_release(req);
       conn->len = 0;
       scr_net_sock_destroy(conn->sock);
@@ -2009,6 +2091,7 @@ void scr_http2_stream_undef_call(ScrStr *member) {
 ScrNetServer *scr_http_create_server(ScrClosure *handler /*moves, nullable*/, ScrHttpReqFn fn) {
   scr_http_install();
   ScrNetServer *s = scr_net_create_server(NULL, NULL);
+  scr_net_server_enable_http_timeout_surface(s);
   ScrHttpSrvCtx *ctx = calloc(1, sizeof *ctx);
   if (!ctx) scr_http_oom();
   ctx->proto = SCR_NET_PROTO_HTTP1;
@@ -2081,6 +2164,16 @@ ScrHttpReq *scr_http_h2_req_new(ScrNetSocket *sock /*borrowed, nullable*/,
   return req;
 }
 
+void *scr_http_req_h2_stream(ScrHttpReq *r) {
+  return r->h2_stream != NULL ? scr_http_h2_ops->retain(r->h2_stream) : NULL;
+}
+
+void *scr_http_req_h2_stream_or_throw(ScrHttpReq *r, ScrStr *member /*borrowed*/) {
+  if (r->h2_stream != NULL) return scr_http_h2_ops->retain(r->h2_stream);
+  scr_http2_stream_undef_call(member);
+  return NULL;
+}
+
 void scr_http_h2_req_line(ScrHttpReq *r, ScrStr *method /*borrowed, nullable*/,
                            ScrStr *url /*borrowed, nullable*/) {
   if (method != NULL) {
@@ -2147,23 +2240,36 @@ bool scr_http_h2_res_finished(ScrHttpRes *r) { return r->finished; }
  * server.on("upgrade", ...) below: the registration twins of on_request.
  * On a server with no HTTP parser neither list ever fires — honest dead
  * weight, Node's shape. */
-void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn,
+void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
+                                 ScrHttpUpgradeFn h1_fn, ScrHttpConnectH2Fn h2_fn,
                                  bool once) {
   ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
-  if (ctx != NULL && ctx->proto != SCR_NET_PROTO_HTTP1) ctx = NULL; /* an h2 server's ctx */
+  if (ctx != NULL && ctx->proto != SCR_NET_PROTO_HTTP1) {
+    if (scr_http_h2_connect_hook != NULL && !scr_net_server_settled(s)) {
+      scr_http_h2_connect_hook(ctx, cb, (void *)h1_fn, (void *)h2_fn, once);
+      return;
+    }
+    ctx = NULL;
+  }
   if (ctx == NULL) {
     /* no HTTP parser on this server: the event can never fire (Node's
      * net server never emits 'connect' either) — honest dead weight */
     scr_closure_release(cb);
     return;
   }
-  scr_net_ls_add(&ctx->connect_ls, cb, (void *)fn, once);
+  scr_net_ls_add(&ctx->connect_ls, cb, (void *)h1_fn, once);
 }
 
 void scr_http_server_on_upgrade(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn,
-                                 bool once) {
+                                  bool once) {
   ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
-  if (ctx != NULL && ctx->proto != SCR_NET_PROTO_HTTP1) ctx = NULL; /* an h2 server's ctx */
+  if (ctx != NULL && ctx->proto != SCR_NET_PROTO_HTTP1) {
+    if (scr_http_h2_upgrade_hook != NULL && !scr_net_server_settled(s)) {
+      scr_http_h2_upgrade_hook(ctx, cb, (void *)fn, once);
+      return;
+    }
+    ctx = NULL;
+  }
   if (ctx == NULL) {
     scr_closure_release(cb);
     return;
@@ -2606,6 +2712,19 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len) {
   if (!ok) {
     scr_http_req_release(res);
     return false;
+  }
+
+  /*
+   * Informational responses do not settle the request. Node emits an
+   * `information` event for these and keeps parsing until the final
+   * response; this runtime has no information listener surface yet, so
+   * consume the head and continue. 101 is the upgrade case below.
+   */
+  if (status >= 100 && status < 200 && status != 101) {
+    memmove(conn->buf, conn->buf + head_len, conn->len - head_len);
+    conn->len -= head_len;
+    scr_http_req_release(res);
+    return true;
   }
 
   /* framing: HEAD requests and 204/304 responses have NO body; chunked

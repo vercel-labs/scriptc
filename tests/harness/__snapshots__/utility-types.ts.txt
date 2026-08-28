@@ -25,15 +25,6 @@ utility-types.ts:18:7 - error SC2006: values of type '{ [k: string]: Date; }' ca
 
   hint: string- and number-keyed index signatures over the supported value types compile directly; symbol keys and dual signatures with unequal value types have no lowering
 
-utility-types.ts:19:7 - error SC2020: 'Date' is part of the standard library types but has no scriptc lowering yet
-
-  18 | const dateBag: { [k: string]: Date } = {};
-  19 | const boot = dateBag["boot"];
-     |       ^~~~
-  20 | console.log(boot);
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
 utility-types.ts:19:14 - error SC2004: uses of 'dateBag' inherit the blocker on its declaration
 
   18 | const dateBag: { [k: string]: Date } = {};
@@ -43,30 +34,19 @@ utility-types.ts:19:14 - error SC2004: uses of 'dateBag' inherit the blocker on 
 
   hint: the declaration of 'dateBag' did not compile — fix the diagnostic reported there and these sites clear with it
 
-utility-types.ts:20:13 - error SC2004: uses of 'boot' inherit the blocker on its declaration
+utility-types.ts:20:13 - error SC1090: console.log of 'Date' values ('Date' values have no inspect lowering) are not supported yet
 
   19 | const boot = dateBag["boot"];
   20 | console.log(boot);
      |             ^~~~
   21 | 
 
-  hint: the declaration of 'boot' did not compile — fix the diagnostic reported there and these sites clear with it
-
-utility-types.ts:22:7 - error SC2001: values of type 'Readonly<Date>' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+utility-types.ts:22:7 - error SC2001: values of type 'Readonly<Date>' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
 
   21 | 
   22 | const stamped: Readonly<Date> = new Date(0);
      |       ^~~~~~~
   23 | console.log(stamped.getTime());
-
-utility-types.ts:22:33 - error SC2020: 'new Date' is part of the standard library types but has no scriptc lowering yet
-
-  21 | 
-  22 | const stamped: Readonly<Date> = new Date(0);
-     |                                 ^~~~~~~~~~~
-  23 | console.log(stamped.getTime());
-
-  hint: Date values have no representation — Date.now() and the composed new Date(ms?).toISOString() form compile
 
 utility-types.ts:23:13 - error SC2020: 'Readonly<Date>.getTime' is part of the standard library types but has no scriptc lowering yet
 

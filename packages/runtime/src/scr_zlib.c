@@ -1,9 +1,9 @@
 /* node:zlib, the lowered slice: deflateSync/inflateSync over u8 bytes with
  * Node's DEFAULT options (zlib format, Z_DEFAULT_COMPRESSION, windowBits
- * 15). Compiled ONLY when the program uses zlib (cc.ts gates it exactly
+ * 15). Compiled ONLY when the program uses zlib (native-toolchain.ts gates it exactly
  * like scr_regex.c/libregexp), so zlib-free binaries keep their
  * historical link line. Host builds link the system -lz; cross targets
- * link the vendored zlib built per target (ensureZlibObjects in cc.ts).
+ * link the vendored zlib built per target (ensureZlibObjects in native-toolchain.ts).
  *
  * Compressed OUTPUT bytes are zlib-version-dependent — the differential
  * corpus tests round-trips and fixed-blob inflation, never raw deflate

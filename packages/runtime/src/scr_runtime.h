@@ -15,22 +15,36 @@
 #include <string.h>    /* memcpy in the inline slot accessors */
 #include <sys/types.h> /* ssize_t in the transport ops table */
 
-/* ── win32 libc shims (scr_win.c; see the windows portability inventory) ──
- * The POSIX/BSD functions the runtime calls that mingw-w64's CRT does not
- * provide: stpcpy (POSIX.1-2008; scr_number.c's digit writer), the
- * arc4random_buf CSPRNG (Math.random and node:crypto; RtlGenRandom
- * underneath), gmtime_r (scr_http.c's Date header; the CRT's gmtime is
- * already per-thread), and strcasestr (scr_http.c's token scan).
- * scr_win.c — compiled into win32-target builds only (cc.ts) —
- * implements all of them. Declared here so every TU that calls them
- * through scr_runtime.h compiles unchanged; POSIX hosts never see
- * these. */
+/* ── libc shims ─────────────────────────────────────────────────────────
+ * Win32's missing POSIX/BSD functions live in scr_win.c. Zig's musl sysroot
+ * additionally lacks arc4random_buf; scr_musl.c supplies it from Linux's
+ * getrandom syscall. Both files are selected by native-toolchain.ts only for their target. */
 #ifdef _WIN32
 #include <time.h> /* time_t / struct tm for the gmtime_r shim */
 char *stpcpy(char *dst, const char *src);
 void arc4random_buf(void *buf, size_t n);
 struct tm *gmtime_r(const time_t *t, struct tm *out);
 char *strcasestr(const char *hay, const char *needle);
+#elif defined(SCR_MUSL)
+void arc4random_buf(void *buf, size_t n);
+#endif
+
+/* ── thread-instanced library state ─────────────────────────────────────
+ * Archives built under the profile's abi.instance_per_thread compile every
+ * TU with -DSCR_THREAD_INSTANCES, and SCR_TL moves each unit's mutable
+ * state — and the emitted program's globals — into thread-local storage.
+ * A thread that calls the profile's init entry then owns a complete,
+ * independent instance: its own collector, result arena, panic-sink
+ * registration, poison flag, and program state. The instance's lifetime is
+ * the thread's; the one-thread-per-instance contract (an instance is never
+ * entered from two threads) is unchanged — this mode adds instances, not
+ * thread awareness. Expands to nothing everywhere else, so executable
+ * builds and classic library builds carry the exact bytes they always
+ * carried. Truly immutable tables (static const data) stay shared. */
+#if defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)
+#define SCR_TL _Thread_local
+#else
+#define SCR_TL
 #endif
 
 /* ── process ──────────────────────────────────────────────────────────── */
@@ -39,6 +53,10 @@ char *strcasestr(const char *hay, const char *needle);
  * flush-at-exit, RC audit registration (when built with -DSCR_RC_AUDIT).
  * JavaScript-visible writes flush before returning. */
 void scr_init(void);
+/* Program objects emitted by the bundled LLVM helper reference this symbol.
+ * Its versioned spelling makes a mismatched manual runtime link fail before
+ * the program can start. */
+void scr_runtime_abi_v1(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
  * Every unrecoverable runtime trap — OOM, semantic range traps, internal-
@@ -89,8 +107,9 @@ typedef struct ScrBytes ScrBytes;
  *
  * Every trap the runtime DETECTS arrives structured: the funnel assembles
  * the baseline human line into field 0 unchanged, a stable code for the
- * trap kind (the compiler registry's SC4013–SC4019 runtime family,
- * classified in scr_library.c), the entry symbol recorded by the trapping
+ * trap kind (the compiler registry's runtime family — SC4013–SC4019 plus
+ * the SC4025 unregistered-callback trap, classified in scr_library.c), the
+ * entry symbol recorded by the trapping
  * entry's prologue, and the profile's remediation for that code when the
  * program TU's overlay table declares one (the whole fourth field is
  * absent otherwise). A message that already begins with the marker — a
@@ -99,6 +118,39 @@ typedef struct ScrBytes ScrBytes;
 typedef void (*ScrLibSinkFn)(void *ctx, const uint8_t *msg, size_t msg_len,
                               uint64_t address);
 void scr_library_set_sink(ScrLibSinkFn fn, void *ctx); /* latest wins */
+
+/* ── host-callback channels ───────────────────────────────────────────────
+ * The panic sink's registration pattern generalized into a synchronous
+ * outbound seam: the profile declares named channels (bytes/scalar
+ * signatures), the generated registration symbol maps a channel name to a
+ * slot index here, and compiled call sites fetch the slot through
+ * scr_library_cb_require — which returns the host's pointer or delivers
+ * the call site's trap message through the funnel (the SC4025 detected
+ * trap) when the host never registered. The typed shape of each stored
+ * pointer is the channel's, with the opaque context first:
+ *
+ *   <ret> (*)(void *ctx, <params...>)
+ *
+ * Registration is a pure store like the sink's (no entry prologue, no
+ * poison guard, legal before init); latest wins, NULL clears, and
+ * registrations persist across init/reset. Slots are per-copy of this
+ * state, exactly the sink's story: per-archive under abi.localize_runtime,
+ * per-thread instance under abi.instance_per_thread (SCR_TL) — a callback
+ * registered on thread T fires only for T's instance. The host's callback
+ * runs on the calling thread inside the entry's dynamic extent and must
+ * NOT call back into any library entry (registration symbols included) or
+ * unwind/longjmp across library frames: read the borrowed buffers, copy
+ * what outlives the call, return. Buffer parameters are borrowed for the
+ * duration of the call only. */
+#define SCR_LIB_MAX_CALLBACKS 32 /* keep in step with LIB_MAX_CALLBACKS (library/library-profile.ts) */
+/* The stored shape: generated call sites cast a slot's pointer to the
+ * channel's typed shape before calling. */
+typedef void (*ScrLibCbFn)(void);
+void scr_library_cb_set(size_t slot, ScrLibCbFn fn, void *ctx);
+/* The call-site fetch: the registered pointer, or the funnel trap with
+ * trap_msg (never returns NULL). */
+ScrLibCbFn scr_library_cb_require(size_t slot, const char *trap_msg);
+void *scr_library_cb_ctx(size_t slot);
 
 /* Entry prologue: aborts deterministically when the library is poisoned (a
  * trap already fired — no profile entry may run again; recovery is process
@@ -148,8 +200,8 @@ _Noreturn void scr_trap_len(const char *msg, size_t len);
  * (both emissions emit identical data) and consumed by the funnel when it
  * assembles a detected trap's structured message: flat triples of
  * (code, teaching-or-NULL, remediation-or-NULL), one per runtime trap code
- * (SC4013–SC4019 family) the profile declares text for; _len counts
- * triples. A declared teaching replaces the baseline human line as field 0;
+ * (the SC4013–SC4019 family plus SC4025) the profile declares text for;
+ * _len counts triples. A declared teaching replaces the baseline human line as field 0;
  * a declared remediation becomes the optional fourth field. */
 extern const char *const scr_library_trap_overlays[];
 extern const size_t scr_library_trap_overlays_len;
@@ -197,9 +249,15 @@ void scr_library_bytes_out(ScrBytes *b, const uint8_t **out, size_t *out_len);
  * collection walks the buffer (markGray: trial-decrement internal edges;
  * scan: restore externally-referenced subgraphs; collectWhite: free the
  * dead cycle members, releasing only edges that LEAVE the white set).
- * Collection points: program exit (before the RC audit), event-loop
- * quiescence, and a root-buffer threshold (SCR_CYCLE_THRESHOLD env var,
- * default 256). There is no concurrent or incremental collection.
+ * It is GENERATIONAL: each header carries a generation, a pass names the
+ * oldest one it will walk, and objects that survive a pass are promoted out
+ * of the nursery so later nursery passes never re-walk them. That is what
+ * keeps a pass proportional to recent allocation rather than to the whole
+ * live heap — see the generation note in scr_cycle.c for the soundness
+ * argument and the schedule. Collection points: program exit (before the RC
+ * audit), event-loop quiescence, and the per-generation triggers.
+ * SCR_CYCLE_THRESHOLD pins the nursery trigger to a fixed candidate count.
+ * There is no concurrent or incremental collection.
  *
  * Contract for trace/teardown pairs (the compiler emits them for shapes,
  * the runtime owns its own): trace(obj) visits exactly the strong
@@ -214,15 +272,49 @@ typedef void (*ScrTraceVisit)(void *child, void *ctx);
 typedef void (*ScrTraceFn)(void *obj, ScrTraceVisit visit, void *ctx);
 typedef void (*ScrCycFreeFn)(void *obj);
 
-enum { SCR_CYC_BLACK = 0, SCR_CYC_PURPLE = 1, SCR_CYC_GRAY = 2, SCR_CYC_WHITE = 3 };
+/* DOOMED is WHITE that collectWhite has already gathered: it stops the
+ * gather recursing twice, and distinguishes "about to be freed" from a
+ * survivor for the re-buffering step (see scr_cycle.c). */
+enum {
+  SCR_CYC_BLACK = 0, SCR_CYC_PURPLE = 1, SCR_CYC_GRAY = 2, SCR_CYC_WHITE = 3,
+  SCR_CYC_DOOMED = 4
+};
+
+/* Generations. A candidate sits in the buffer named by its own `gen`, and a
+ * pass walks only objects at or below the generation it collects. */
+enum { SCR_CYC_NURSERY = 0, SCR_CYC_MATURE = 1, SCR_CYC_NGENS = 2 };
 
 typedef struct ScrCycHdr {
   ScrTraceFn trace;
   ScrCycFreeFn free_fn;
   uint32_t color;    /* SCR_CYC_* */
-  uint32_t buffered; /* 1 = sitting in the candidate-root buffer */
+  uint16_t buffered; /* 1 = sitting in its generation's candidate buffer */
+  uint16_t gen;      /* SCR_CYC_NURSERY..SCR_CYC_MATURE (the walk filter) */
   size_t buf_index;  /* position there (O(1) removal when rc hits 0) */
 } ScrCycHdr;
+
+/* This layout is an ABI, not an implementation detail. The LLVM backend
+ * inlines scr_cyc_mark_live as a raw `store i32 0`: color is at obj-16 on
+ * 64-bit targets and obj-12 on wasm32. Three sites emit it —
+ * llvm/shapes.ts, llvm/classes.ts, and llvm/emitter.ts. Nothing but `color`
+ * may share those four bytes: a field placed in them is silently zeroed by
+ * every retain, which is invisible to the type system and to the C
+ * compiler. Hence the target-width assertions. */
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(ScrCycHdr) == 32, "LLVM backend expects a 32-byte cycle header");
+_Static_assert(offsetof(ScrCycHdr, color) == 16,
+               "LLVM backend's inlined mark-live stores i32 0 at obj-16");
+#elif UINTPTR_MAX == UINT32_MAX
+_Static_assert(sizeof(ScrCycHdr) == 20, "LLVM backend expects a 20-byte cycle header");
+_Static_assert(offsetof(ScrCycHdr, color) == 8,
+               "LLVM backend's inlined mark-live stores i32 0 at obj-12");
+#endif
+_Static_assert(sizeof(((ScrCycHdr *)0)->color) == 4,
+               "mark-live is an i32 store: color must own all four bytes");
+_Static_assert(SCR_CYC_BLACK == 0,
+               "the emitted mark-live stores the LITERAL 0, not the enumerator "
+               "— reordering the colors would make every compiled retain write "
+               "the wrong one");
 
 static inline ScrCycHdr *scr_cyc_hdr(void *obj) { return (ScrCycHdr *)obj - 1; }
 
@@ -243,8 +335,17 @@ static inline void scr_cyc_mark_live(void *obj) {
   scr_cyc_hdr(obj)->color = SCR_CYC_BLACK;
 }
 
-/* Run one full trial-deletion pass over the buffered candidates now. */
+/* Full sweep: trial-deletion passes over EVERY generation, to a fixpoint.
+ * This is the exit / session-reset entry point (the RC audit runs straight
+ * after and wants nothing reclaimable left), and it costs a walk of the
+ * live heap — do not put it on a per-turn path. */
 void scr_collect_cycles(void);
+
+/* One pass on the normal generational schedule, for callers that reach a
+ * natural collection point rather than a threshold (the event loop between
+ * turns). Cheap: usually a nursery pass; a waiting mature backlog ages into
+ * a bounded full pass so sparse roots cannot float forever. */
+void scr_cyc_collect_scheduled(void);
 
 /* ── class hierarchies (single inheritance) ───────────────────────────
  * Classes in an `extends` hierarchy share a two-word object prefix: the
@@ -292,6 +393,9 @@ typedef struct ScrStr {
 } ScrStr;
 
 ScrStr *scr_str_new(const char *bytes, size_t len); /* returns +1 */
+/* Native callback boundary: copy and WHATWG-decode a UTF-8 span, replacing
+ * malformed subsequences with U+FFFD. NULL with len == 0 is an empty span. */
+ScrStr *scr_str_from_utf8_lossy(const uint8_t *bytes, size_t len); /* +1 */
 
 /* Internal allocators for buffer builders (scr_json.c): a +1 string with
  * UNINITIALIZED data (the builder fills bytes, then len and the NUL), and
@@ -316,6 +420,10 @@ bool scr_str_eq(ScrStr *a, ScrStr *b);
  * JS UTF-16 code-unit order only for non-BMP vs U+E000..U+FFFF). Returns
  * <0, 0, >0. */
 int scr_str_cmp(ScrStr *a, ScrStr *b);
+
+/* ECMAScript string-list ordering: compare UTF-16 code units even though
+ * ScrStr stores well-formed UTF-8. Returns <0, 0, >0. */
+int scr_str_cmp_u16(ScrStr *a, ScrStr *b);
 
 /* ── class objects (classes as first-class values) ────────────────────
  * The class STATIC side as a runtime value: one emitted IMMORTAL static
@@ -396,7 +504,7 @@ enum {
   SCR_ERR_DOMEX = 4, /* DOMException — ScrDomException, the wider layout */
 };
 
-extern ScrVt scr_error_vts[5]; /* indexed by SCR_ERR_*; main() stamps pre/post */
+extern SCR_TL ScrVt scr_error_vts[5]; /* indexed by SCR_ERR_*; main() stamps pre/post */
 
 struct ScrDyn; /* full declaration below (the checked-dynamic tree section) */
 
@@ -565,12 +673,14 @@ ScrStr *scr_str_cp_at(ScrStr *s, double i);
 ScrStr *scr_str_trim_start(ScrStr *s);
 ScrStr *scr_str_trim_end(ScrStr *s);
 
-/* split(separator) with a STRING separator, no limit: empty separator
+/* split(separator[, limit]) with a STRING separator: limit uses ToUint32;
+ * the no-limit wrapper supplies 2^32-1. Empty separator
  * splits into single UTF-16 code units (each half of an astral char is
  * U+FFFD — divergence, see above); otherwise splits on every occurrence,
  * empty pieces kept. Borrows both; returns a +1 string[] (SCR_ELEM_STR). */
 struct ScrArr;
 struct ScrArr *scr_str_split(ScrStr *s, ScrStr *sep);
+struct ScrArr *scr_str_split_limit(ScrStr *s, ScrStr *sep, double limit);
 
 /* padStart(maxLength, fill)/padEnd — ECMA StringPad, UTF-16 unit counts.
  * Target at or below the length (or empty fill) returns the receiver
@@ -672,6 +782,12 @@ typedef struct ScrMap ScrMap; /* full definition below (C11 repeat) */
 void scr_qs_parse_into(ScrMap *out, const ScrStr *qs, const ScrStr *sep,
                        const ScrStr *eq, double max_keys, uint32_t str_tag,
                        uint32_t arr_tag);
+
+/* node:util.parseArgs — the static checked-dynamic boundary. `config` is
+ * the documented JSON-safe configuration object; the returned dyn tree is
+ * a fresh ParsedResults object whose `values` child has null prototype.
+ * Borrows config; returns +1, or NULL with a Node-coded TypeError pending. */
+struct ScrDyn *scr_util_parse_args(const struct ScrDyn *config);
 
 /* querystring.stringify — Node's stringify over a borrowed dyn value (the
  * frontend dynFroms the typed record; JS-world dyn values pass straight
@@ -818,10 +934,29 @@ void scr_arr_set_ref(ScrArr *a, double i, void *v);
  * elements retain into the copy. Borrows a. */
 ScrArr *scr_arr_slice(ScrArr *a, double start, double end);
 
+/* ES2023 copying methods. All borrow their inputs and return fresh +1
+ * shallow copies. with() raises Node's catchable RangeError for an invalid
+ * relative index; the ref variant retains the borrowed replacement. */
+ScrArr *scr_arr_to_reversed(const ScrArr *a);
+ScrArr *scr_arr_to_spliced(const ScrArr *a, double start,
+                           double delete_count, const ScrArr *items);
+ScrArr *scr_arr_with_f64(ScrArr *a, double index, double value);
+ScrArr *scr_arr_with_bool(ScrArr *a, double index, bool value);
+ScrArr *scr_arr_with_ref(ScrArr *a, double index, void *value);
+
 /* push returns the new length (JS-exact); _ref takes ownership. */
 double scr_arr_push_f64(ScrArr *a, double v);
 double scr_arr_push_bool(ScrArr *a, bool v);
 double scr_arr_push_ref(ScrArr *a, void *v);
+
+/* unshift returns the new length and _ref takes ownership. The spread form
+ * borrows a same-element-kind source, retains copied refs, and snapshots
+ * self-spread. reverse mutates in place and returns the receiver at +1. */
+double scr_arr_unshift_f64(ScrArr *a, double v);
+double scr_arr_unshift_bool(ScrArr *a, bool v);
+double scr_arr_unshift_ref(ScrArr *a, void *v);
+double scr_arr_unshift_spread(ScrArr *a, const ScrArr *src);
+ScrArr *scr_arr_reverse(ScrArr *a);
 
 /* pop traps on an empty array; _ref transfers ownership out (+1 to the
  * caller, no release). */
@@ -870,7 +1005,7 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep);
 ScrStr *scr_str_raw(ScrArr *raw, ScrArr *subs);
 
 /* ── regular expressions (scr_regex.c — linked ONLY when the program
- * contains a regex literal; see cc.ts) ────────────────────────────────
+ * contains a regex literal; see native-toolchain.ts) ────────────────────────────────
  * The engine is quickjs-ng's libregexp (the same bytecode interpreter the
  * dynamic island uses), compiled standalone. A ScrRegex is today ALWAYS an
  * immortal interned literal: the compiler emits one static per distinct
@@ -926,8 +1061,10 @@ ScrStr *scr_regex_flags(ScrRegex *re);        /* +1 */
 ScrStr *scr_regex_replace(ScrStr *s, ScrRegex *re, ScrStr *rep);
 /* replaceAll: throws Node's TypeError when /g is missing (may-throw). */
 ScrStr *scr_regex_replace_all(ScrStr *s, ScrRegex *re, ScrStr *rep);
-/* split: capture-free patterns only — capture groups throw (may-throw). */
+/* split: capture-free patterns only — capture groups throw (may-throw).
+ * limit uses ToUint32; the no-limit wrapper supplies 2^32-1. */
 ScrArr *scr_regex_split(ScrStr *s, ScrRegex *re);
+ScrArr *scr_regex_split_limit(ScrStr *s, ScrRegex *re, double limit);
 /* matchAll drained eagerly: +1 string[][] of honest match slices; throws
  * Node's TypeError on a non-global regex (catchable). */
 ScrArr *scr_regex_match_all(ScrStr *s, ScrRegex *re);
@@ -1186,6 +1323,100 @@ static inline ScrClosure *scr_closure_retain(ScrClosure *c) {
 
 void scr_closure_release(ScrClosure *c); /* releases the boxes; NULL-tolerant */
 
+/* ── outbound FFI retained callbacks (scr_ffi.c) ─────────────────────
+ * One compiler-emitted table per retained callback descriptor. For
+ * context-bearing descriptors, entries are counted rather than
+ * deduplicated: registering the same closure twice requires two matching
+ * releases. Raw singleton slots replace instead: commit_slot retires
+ * every pin the new registration superseded — a duplicate of the same
+ * closure included — so after any number of set calls exactly one
+ * release is pending. The table owns one closure reference per entry and
+ * joins a process-global teardown list on first use. Script-thread retained
+ * callbacks do not contribute event-loop liveness; foreign registrations do,
+ * and their queued invocations keep released closure pins alive until the
+ * script-thread dispatch has finished. */
+typedef struct ScrFfiTable {
+  ScrClosure **entries;
+  size_t len;
+  size_t cap;
+  struct ScrFfiTable *next;
+  bool linked;
+  /* Raw retained singletons only: the compiler-emitted global the
+   * trampoline dispatches through. Teardown and release disarm it so a
+   * late native invocation hits the trampoline's NULL trap instead of a
+   * freed closure. NULL for context-bearing descriptors. */
+  ScrClosure **slot;
+  /* Foreign descriptors only. The global FFI queue lock protects these
+   * fields together with entries/len/cap. Retired pins were explicitly
+   * released while a queued invocation could still name them; dispatch
+   * drops them on the script thread after this table's queue reaches zero. */
+  ScrClosure **retired;
+  size_t retired_len;
+  size_t retired_cap;
+  size_t queued;
+  /* Reserved process-loop identity captured by queued calls. Executables use
+   * one global loop today; library mode can make this per instance later
+   * without changing the post/call ABI. */
+  void *loop;
+  /* Optional format-5 teardown. NULL keeps format-4 tables on the compact
+   * always-linked path; foreign tables point into scr_ffi_queue.c. */
+  void (*teardown)(struct ScrFfiTable *table);
+} ScrFfiTable;
+
+void scr_ffi_link(ScrFfiTable *table);
+void scr_ffi_retain(ScrFfiTable *table, ScrClosure *callback);
+void scr_ffi_retain_foreign(ScrFfiTable *table, ScrClosure *callback);
+/* Raw singleton registration, split around the native set call:
+ * retain_slot pins the incoming closure BEFORE the call without touching
+ * the current registration; commit_slot repoints the slot and retires the
+ * superseded pins after the call returns. */
+void scr_ffi_retain_slot(ScrFfiTable *table, ScrClosure **slot, ScrClosure *callback);
+void scr_ffi_commit_slot(ScrFfiTable *table, ScrClosure *callback);
+/* Traps unless the registration exists — emitted BEFORE a native release
+ * call so a bogus release cannot reach native code. */
+void scr_ffi_require(ScrFfiTable *table, ScrClosure *callback);
+void scr_ffi_release(ScrFfiTable *table, ScrClosure *callback);
+void scr_ffi_require_foreign(ScrFfiTable *table, ScrClosure *callback);
+void scr_ffi_release_foreign(ScrFfiTable *table, ScrClosure *callback);
+void scr_ffi_teardown(ScrFfiTable *table);
+void scr_ffi_teardown_all(void);
+
+/* Format-5 foreign-thread delivery. A generated native trampoline creates a
+ * plain malloc-backed call, stages scalar values or copied byte spans, and
+ * posts it. It never touches closure RC, exception cells, fibers, or other
+ * script-thread-only runtime state. The generated dispatch thunk runs later
+ * on the event loop and materializes script strings/bytes there. */
+typedef struct ScrFfiCall ScrFfiCall;
+typedef void (*ScrFfiDispatchFn)(ScrClosure *callback, ScrFfiCall *call);
+
+ScrFfiCall *scr_ffi_call_new(ScrFfiTable *table, ScrClosure *callback,
+                             ScrFfiDispatchFn dispatch, size_t nargs);
+void scr_ffi_call_set_f64(ScrFfiCall *call, size_t index, double value);
+void scr_ffi_call_set_bool(ScrFfiCall *call, size_t index, uint8_t value);
+void scr_ffi_call_set_u8(ScrFfiCall *call, size_t index, uint8_t value);
+void scr_ffi_call_set_u32(ScrFfiCall *call, size_t index, uint32_t value);
+void scr_ffi_call_set_i32(ScrFfiCall *call, size_t index, int32_t value);
+void scr_ffi_call_copy_cstring(ScrFfiCall *call, size_t index, const char *value);
+void scr_ffi_call_copy_string(ScrFfiCall *call, size_t index,
+                              const uint8_t *value, size_t len);
+void scr_ffi_call_copy_bytes(ScrFfiCall *call, size_t index,
+                             const uint8_t *value, size_t len);
+void scr_ffi_post(ScrFfiCall *call);
+
+double scr_ffi_call_get_f64(const ScrFfiCall *call, size_t index);
+bool scr_ffi_call_get_bool(const ScrFfiCall *call, size_t index);
+double scr_ffi_call_get_u8(const ScrFfiCall *call, size_t index);
+double scr_ffi_call_get_u32(const ScrFfiCall *call, size_t index);
+double scr_ffi_call_get_i32(const ScrFfiCall *call, size_t index);
+const uint8_t *scr_ffi_call_get_data(const ScrFfiCall *call, size_t index);
+size_t scr_ffi_call_get_len(const ScrFfiCall *call, size_t index);
+
+void scr_ffi_install(void);
+void scr_ffi_stop(void);
+void scr_ffi_teardown_foreign(ScrFfiTable *table);
+void scr_loop_set_ffi(bool (*pending)(void), bool (*dispatch)(void),
+                      int (*pollfd)(void), void (*stop)(void));
+
 /* ── unions ─────────────────────────────────────────────────────────
  * A union value (`A | B`) is an IMMUTABLE tagged box: a refcounted header,
  * the arm's tag (its index in the compiler's canonical arm order), and one
@@ -1295,8 +1526,8 @@ typedef struct ScrEmitter {
   const char *cls; /* display name for the leak warning ("EventEmitter") */
 } ScrEmitter;
 
-extern ScrVt scr_emitter_vt; /* main() stamps pre/post */
-extern double scr_emitter_default_max;
+extern SCR_TL ScrVt scr_emitter_vt; /* main() stamps pre/post */
+extern SCR_TL double scr_emitter_default_max;
 
 ScrEmitter *scr_emitter_new(void); /* +1, collector-headered */
 void scr_emitter_init(void *obj);  /* super() into the prefix (no-op today) */
@@ -1345,9 +1576,10 @@ ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*
  * slots off the emit tuple and calls cb->fn behind the fixed signature
  * `void (ScrClosure *, void * ×k)` — the fixed-signature adapter the
  * backend provides. Such backends pass every user tuple argument
- * pointer-classed at the emit site (f64 as its i64 bit pattern, bool
- * zero-extended); the runtime's own emits (data/error/pipe/meta) carry
- * pointers only, so the shims read every tuple either lane produces.
+ * pointer-classed at the emit site: scalar values point at call-lived
+ * typed stack slots and reference values ride directly. The runtime's own
+ * emits (data/error/pipe/meta) carry pointers only, so the shims read every
+ * tuple either lane produces on 32- and 64-bit targets.
  * SCR_EE_FIXED_MAX is the registry's audited arity ceiling — backends
  * refuse listeners past it rather than guess. */
 #define SCR_EE_FIXED_MAX 4
@@ -1897,7 +2129,7 @@ bool scr_process_kill_named(double pid, const ScrStr *signal);
 void scr_process_exit(double code);
 /* process._exiting: true once the exit sequence began (process.exit or
  * the exit-listener runner set the flag). Never throws. */
-extern bool scr_process_in_exit;
+extern SCR_TL bool scr_process_in_exit;
 bool scr_process_exiting(void);
 /* umask(2): mask < 0 reads without setting; otherwise sets and answers
  * the previous mask. Never throws. */
@@ -1990,6 +2222,11 @@ void scr_fs_chmod(ScrStr *path, double mode);
 void scr_fs_chown(ScrStr *path, double uid, double gid);
 void scr_fs_copyfile(ScrStr *src, ScrStr *dest);
 void scr_fs_rename(ScrStr *oldpath, ScrStr *newpath);
+/* The callback rename worker uses the non-throwing syscall seam off the
+ * runtime thread, then materializes any Node-shaped Error back on the main
+ * thread. raw returns 0 on success or a positive errno value on failure. */
+int scr_fs_rename_raw(const ScrStr *oldpath, const ScrStr *newpath);
+void scr_fs_rename_error(int error, const ScrStr *oldpath, const ScrStr *newpath);
 void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
@@ -2022,6 +2259,7 @@ double scr_process_columns(double fd);
  * stat(2) — follows symlinks, like Node's stat family. scr_fs_stat
  * THROWS like the other sync calls. */
 typedef struct ScrStats ScrStats;
+typedef struct ScrFileHandle ScrFileHandle;
 typedef struct ScrPromise ScrPromise; /* full section further down */
 
 ScrStats *scr_fs_stat(ScrStr *path);  /* +1, or throws */
@@ -2034,6 +2272,9 @@ bool scr_stats_is_file(ScrStats *s);
 bool scr_stats_is_dir(ScrStats *s);
 bool scr_stats_is_symlink(ScrStats *s); /* lstat snapshots only */
 double scr_stats_size(ScrStats *s);
+double scr_stats_blocks(ScrStats *s); /* allocated size in 512-byte units */
+double scr_stats_nlink(ScrStats *s);
+double scr_stats_atime_ms(ScrStats *s); /* ms with the sub-second fraction */
 double scr_stats_mtime_ms(ScrStats *s); /* ms with the ns fraction */
 
 /* fs/promises: the SAME sync operations, minting an already-settled
@@ -2044,6 +2285,7 @@ double scr_stats_mtime_ms(ScrStats *s); /* ms with the ns fraction */
  * scr_lib.c without the fiber slice). */
 ScrPromise *scr_fsp_read_file(ScrStr *path);
 ScrPromise *scr_fsp_write_file(ScrStr *path, ScrStr *data);
+ScrPromise *scr_fsp_write_file_mode(ScrStr *path, ScrStr *data, double mode);
 ScrPromise *scr_fsp_mkdir(ScrStr *path);
 ScrPromise *scr_fsp_mkdir_mode(ScrStr *path, double mode);
 ScrPromise *scr_fsp_mkdir_recursive(ScrStr *path);
@@ -2053,6 +2295,24 @@ ScrPromise *scr_fsp_chmod(ScrStr *path, double mode);
 ScrPromise *scr_fsp_readdir(ScrStr *path);
 ScrPromise *scr_fsp_rm(ScrStr *path);
 ScrPromise *scr_fsp_stat(ScrStr *path);
+ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath);
+ScrPromise *scr_fsp_open(ScrStr *path, ScrStr *flags, double mode);
+ScrPromise *scr_file_handle_close_promise(ScrFileHandle *h);
+ScrPromise *scr_file_handle_read_file_promise(ScrFileHandle *h, ScrStr *encoding);
+ScrPromise *scr_file_handle_read_file_bytes_promise(ScrFileHandle *h, ScrStr *encoding);
+ScrPromise *scr_file_handle_write_file_promise(ScrFileHandle *h, ScrStr *data, ScrStr *encoding);
+ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h, ScrBytes *data, ScrStr *encoding);
+ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h);
+
+/* fs.rename: the syscall is submitted to a native worker immediately and
+ * its error-first callback fires on a later event-loop turn through an
+ * emitted, program-shaped adapter. Both paths and the callback are borrowed
+ * at entry; the callback MOVES into the operation. err is borrowed and NULL
+ * on success. */
+typedef void (*ScrFsRenameFn)(ScrClosure *cb, ScrError *err);
+void scr_fs_rename_async(ScrStr *oldpath, ScrStr *newpath,
+                         ScrClosure *cb /*moves*/, ScrFsRenameFn fn);
+void scr_fs_rename_thunk0(ScrClosure *cb, ScrError *err);
 
 /* ── node:timers/promises (scr_async.c) ──────────────────────────────
  * The promisified pair: a PENDING void promise a one-shot heap timer /
@@ -2402,7 +2662,36 @@ ScrStr *scr_path_win32_to_namespaced_path(ScrStr *path);
  * (failure throws the path-less "EBADF: bad file descriptor, close").
  * The pair behind spawn's fd-stdio form. */
 double scr_fs_open(ScrStr *path, ScrStr *flags);
-double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length);
+ScrFileHandle *scr_file_handle_open(ScrStr *path, ScrStr *flags, double mode);
+ScrFileHandle *scr_file_handle_retain(ScrFileHandle *h);
+void scr_file_handle_release(ScrFileHandle *h);
+void *scr_file_handle_retain_v(void *p);
+void scr_file_handle_release_v(void *p);
+double scr_file_handle_fd(ScrFileHandle *h);
+void scr_file_handle_close(ScrFileHandle *h);
+double scr_file_handle_read(ScrFileHandle *h, ScrBytes *buf, double offset,
+                            double length, double position, bool length_default);
+double scr_file_handle_write_bytes(ScrFileHandle *h, ScrBytes *buf,
+                                   double offset, double length,
+                                   double position, bool length_default);
+double scr_file_handle_write_str(ScrFileHandle *h, ScrStr *data,
+                                 double position, ScrStr *encoding);
+ScrStr *scr_file_handle_read_file(ScrFileHandle *h);
+ScrBytes *scr_file_handle_read_file_bytes(ScrFileHandle *h);
+void scr_file_handle_write_file(ScrFileHandle *h, ScrStr *data);
+void scr_file_handle_write_file_bytes(ScrFileHandle *h, ScrBytes *data);
+ScrStats *scr_file_handle_stat(ScrFileHandle *h);
+/* position == -1 reads from and advances the descriptor's current offset;
+ * nonnegative positions leave that offset unchanged (pread/ReadFile seam). */
+double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
+                        double position);
+/* writeSync's classic Buffer window and utf8 string forms. position -1 (or
+ * any other non-safe/nonnegative-integer value) writes at and advances the
+ * current descriptor offset; safe nonnegative positions leave it unchanged. */
+double scr_fs_write_sync(double fd, ScrBytes *buf, double offset, double length,
+                         double position);
+double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
+                             ScrStr *encoding);
 void scr_fs_close(double fd);
 
 /* ── WHATWG URL (scr_url.c) ──────────────────────────────────────────
@@ -2669,9 +2958,15 @@ typedef enum {
    * a silent wrong answer. The dyn→cell edge is NOT visible to the cycle
    * collector (the dyn→closure stance): a cycle dyn → cell → engine
    * object → host closure → dyn is merely never collected (the
-   * documented cross-boundary-cycle divergence). Enum position: LAST —
-   * the LLVM backend hardcodes the preceding kind numbers. */
+   * documented cross-boundary-cycle divergence). */
   SCR_DYN_JSVAL,
+  /* A compiler-owned typed reference in transit through a native Web
+   * stream. Unlike an ordinary typed→unknown conversion, this capsule
+   * retains the original value so a statically typed reader can recover
+   * its identity. `materialize` supplies the ordinary deep-copy view for
+   * consumers such as fetch request bodies that need a dyn chunk. Enum
+   * position: LAST — LLVM hardcodes every preceding kind number. */
+  SCR_DYN_TYPED_REF,
 } ScrDynKind;
 
 /* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
@@ -2687,12 +2982,28 @@ typedef enum {
   SCR_DYNH_H2_STREAM,  /* ScrH2Stream — Http2Stream (client & server) */
   SCR_DYNH_HTTP_CLIENT, /* ScrHttpClientReq — http.ClientRequest */
   SCR_DYNH_HTTP_AGENT,  /* ScrHttpAgent — http.Agent / https.Agent */
+  SCR_DYNH_ABORT_SIGNAL, /* native static-fetch AbortSignal */
+  SCR_DYNH_WEB_STREAM,   /* native WHATWG ReadableStream */
+  SCR_DYNH_WEB_READER,   /* native ReadableStreamDefaultReader */
+  SCR_DYNH_WEB_CONTROLLER, /* native ReadableStreamDefaultController */
+  SCR_DYNH_FETCH_RESPONSE, /* native static-fetch Response */
+  SCR_DYNH_FETCH_HEADERS, /* native static-fetch response Headers */
+  SCR_DYNH_EVENT,          /* native static-fetch abort Event */
+  SCR_DYNH_ABORT_CONTROLLER, /* native static-fetch AbortController */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
 typedef struct ScrDyn ScrDyn;
 typedef struct ScrBytes ScrBytes; /* full definition below (C11 repeat) */
 typedef struct ScrClosure ScrClosure; /* full definition below (C11 repeat) */
+typedef struct ScrDynTypedCast {
+  const char *type_key;
+  size_t type_key_len;
+  void *ptr;
+  void *(*retain)(void *);
+  void (*release)(void *);
+  struct ScrDynTypedCast *next;
+} ScrDynTypedCast;
 typedef struct ScrJsval ScrJsval; /* opaque island cell (C11 repeat; the
                                    * always-linked dyn core never touches
                                    * its engine value — only the gated ops
@@ -2738,7 +3049,19 @@ struct ScrDyn {
     ScrStr *str; /* owned */
     ScrBytes *bytes; /* owned (SCR_DYN_BYTES) */
     struct { size_t len; size_t cap; ScrDyn **items; } arr;      /* owned */
-    struct { size_t len; size_t cap; ScrDynEntry *entries; } obj; /* owned */
+    struct {
+      size_t len;
+      size_t cap;
+      ScrDynEntry *entries;
+      /* Optional identity of the typed record that produced this ordinary
+       * deep-copy snapshot. EventTarget uses it to recognize the same
+       * EventListenerObject across repeated static→dyn crossings without
+       * changing generic dyn-object `===` semantics. */
+      /* Owned through source_access(source_identity, false). Callback
+       * interfaces may request a fresh snapshot with the true arm. */
+      void *source_identity;
+      ScrDyn *(*source_access)(void *, bool materialize);
+    } obj; /* owned */
     /* SCR_DYN_FUNC: the boxed closure (owned) + its call descriptor. `sig`
      * and `name` are static compiler-emitted literals (never freed); name
      * may be NULL (anonymous — inspect prints [Function (anonymous)]).
@@ -2753,6 +3076,23 @@ struct ScrDyn {
      * so a listener capturing its own boxed handle never cycles past the
      * settle — the settle-releases-listeners story. */
     struct { void *ptr; ScrDynHandleTag tag; } handle;
+    /* SCR_DYN_TYPED_REF: original static value + its compiler-emitted
+     * identity tag, RC adapters, and ordinary dyn snapshot adapter. */
+    struct {
+      void *ptr;
+      void *(*retain)(void *);
+      void (*release)(void *);
+      const char *type_key;
+      size_t type_key_len;
+      ScrDyn *(*materialize)(void *);
+      void (*commit)(void *, const ScrDyn *);
+      /* Both caches belong to this capsule. ReadableStream canonicalizes
+       * capsules for repeated source references, so the refreshed dyn view
+       * and every structurally converted static view keep JS reference
+       * identity while the source reference remains observable. */
+      ScrDyn *materialized;
+      ScrDynTypedCast *casts;
+    } typed_ref;
     /* SCR_DYN_PROMISE: the retained promise. The boundary contract: it
      * settles with a dyn payload (SCR_EXC_REF ScrDyn fulfillment or a
      * void fulfillment awaiters read as the undefined value) — the
@@ -2827,6 +3167,14 @@ ScrDyn *scr_dyn_new_num(double n);
 ScrDyn *scr_dyn_new_str(ScrStr *s);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_new_obj(void);
+/* The ordinary deep-copy object plus a retained typed source. source_access
+ * releases that source when materialize=false and returns a fresh dyn snapshot
+ * when true. Generic dyn member reads and strict equality remain snapshot/node
+ * based; callback-interface consumers opt into the live arm explicitly. */
+ScrDyn *scr_dyn_new_obj_with_identity(
+    void *source, void *(*source_retain)(void *),
+    ScrDyn *(*source_access)(void *, bool materialize));
+bool scr_dyn_obj_same_source(const ScrDyn *a, const ScrDyn *b);
 /* Object.create(null): the fresh null-prototype dictionary (see the
  * null_proto flavor flag above). */
 ScrDyn *scr_dyn_new_obj_null_proto(void);
@@ -2836,6 +3184,26 @@ ScrDyn *scr_dyn_new_bytes_copy(const ScrBytes *b);
 /* The Buffer-flavored twin (stream chunks): string coercion/toString
  * decode utf8 instead of joining elements. */
 ScrDyn *scr_dyn_new_buffer_copy(const ScrBytes *b);
+/* Identity-preserving transit capsule used by ReadableStream.from over
+ * typed arrays. The constructor retains `ptr`; matching unbox returns +1.
+ * materialize lazily creates and then retains one detached dyn snapshot.
+ * The cast cache lets a non-exact dynCheck reuse one safe, compiler-built
+ * target view instead of raw-casting structurally different layouts. */
+ScrDyn *scr_dyn_new_typed_ref(
+    void *ptr, void *(*retain)(void *), void (*release)(void *),
+    const char *type_key, size_t type_key_len,
+    ScrDyn *(*materialize)(void *),
+    void (*commit)(void *, const ScrDyn *));
+bool scr_dyn_typed_ref_is(
+    const ScrDyn *d, const char *type_key, size_t type_key_len);
+void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
+ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
+void scr_dyn_typed_ref_commit(ScrDyn *d);
+void *scr_dyn_typed_ref_cached_cast(
+    const ScrDyn *d, const char *type_key, size_t type_key_len); /* +1/NULL */
+void scr_dyn_typed_ref_cache_cast(
+    ScrDyn *d, const char *type_key, size_t type_key_len, void *ptr,
+    void *(*retain)(void *), void (*release)(void *));
 /* A fresh u8 COPY of a SCR_DYN_BYTES payload (+1) — the dynCheck
  * extraction (`u as Uint8Array`). */
 ScrBytes *scr_dyn_bytes_copy_out(const ScrDyn *d);
@@ -2888,6 +3256,7 @@ ScrStr *scr_dyn_string_coerce(const ScrDyn *d);
  * called, their throws propagating) — the WHATWG USVString conversions.
  * Borrows; +1 or NULL with the exception pending. */
 ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d);
+bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out);
 
 /* `d instanceof TypeError` (and the other builtin error classes) on a
  * checked-dynamic value: the from_error cache resolves the dyn encoding
@@ -3123,9 +3492,10 @@ ScrDyn *scr_dyn_alloc_jsval(ScrJsval *cell, const ScrDynJsvalOps *ops);
 /* The installed ops (traps on a missing install — impossible unless a
  * JSVAL node was forged without the constructor). */
 const ScrDynJsvalOps *scr_dyn_jsval_ops(void);
-/* dynTest arms that need the ENGINE's answer on a JSVAL node. Each
- * answers false for every other kind (callers test unconditionally —
- * the emitted narrowing tests stay branch-free). Never throw. */
+/* dynTest arms that need the ENGINE's answer on a JSVAL node, or the
+ * materialized answer for a live typed-reference capsule. Each answers
+ * false for every other kind (callers test unconditionally — the emitted
+ * narrowing tests stay branch-free). Never throw. */
 bool scr_dyn_isl_typeof_is(const ScrDyn *d, const char *name);
 bool scr_dyn_isl_is_array(const ScrDyn *d);
 bool scr_dyn_isl_is_error(const ScrDyn *d);
@@ -3256,6 +3626,8 @@ typedef struct {
 } ScrJsonBuf;
 
 void scr_jb_init(ScrJsonBuf *b);
+/* Append one borrowed runtime string verbatim (no JSON quoting). */
+void scr_jb_put_str(ScrJsonBuf *b, const ScrStr *s);
 /* Push a container onto the circular-detection stack before serializing
  * its members. If `v` is already ON the stack, throws V8's exact
  * "Converting circular structure to JSON" TypeError (the --> starting at /
@@ -3332,12 +3704,46 @@ void scr_promise_release_v(void *p);
 typedef struct ScrFiber ScrFiber;
 /* Spawn + run eagerly to the first suspension; returns the promise, +1. */
 ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack);
+/* Runtime-authored C waiters cannot themselves become LLVM switched
+ * coroutines on wasm32. Spawn after `dependency` settles so their first
+ * (and only) await is extraction from an already-settled promise, while
+ * retaining the ordinary promise-job hop on every target. +1. */
+ScrPromise *scr_async_spawn_after(ScrPromise *dependency,
+                                  void (*entry)(ScrFiber *, void *),
+                                  void *argpack);
+
+/* wasm32-wasi lowers async functions and generators through LLVM switched
+ * coroutines instead of the native stack-switching implementations. The
+ * first two adapters are emitted into the program module; the remaining
+ * helpers let scr_async.c register, queue, and finish those coroutine
+ * frames through the same ScrFiber scheduler. These declarations are part
+ * of the LLVM/runtime ABI even though native targets never call them. */
+void scr_wasi_coro_resume(void *handle);
+void scr_wasi_coro_destroy(void *handle);
+void scr_wasi_coro_started(void *handle);
+void scr_wasi_await_prepare(ScrFiber *self, ScrPromise *p);
+void scr_wasi_await_hop_prepare(ScrFiber *self);
+bool scr_wasi_module_await_prepare(ScrFiber *self, ScrPromise *p);
+void scr_wasi_async_finish(ScrFiber *self);
+void scr_wasi_gen_finish(ScrFiber *self);
 
 double scr_await_f64(ScrPromise *p); /* rejected promises re-throw */
 bool scr_await_bool(ScrPromise *p);
 ScrStr *scr_await_str(ScrPromise *p); /* +1 */
 void *scr_await_ref(ScrPromise *p);   /* +1 via the stored retain */
 void scr_await_void(ScrPromise *p);
+/* Internal ESM dependency wait: parks while pending but, unlike a
+ * JavaScript await expression, does not hop when already settled. */
+void scr_module_await(ScrPromise *p);
+/* After the root-aware event loop returns, inspect the executable's async
+ * module-root promise without another microtask hop: 0 = fulfilled,
+ * 1 = rejected, 13 = still pending with no ref'd work capable of settling
+ * it (Node's unsettled top-level-await exit status). A rejected root is
+ * marked observed here but re-thrown separately; earlier-checkpoint
+ * rejections were already decided by the loop and same-checkpoint
+ * competitors are suppressed by the executable-module verdict. */
+int scr_promise_finish_top_level(ScrPromise *p);
+void scr_promise_rethrow_top_level(ScrPromise *p);
 /* The checked-dynamic tree-crossing await (SCR_DYN_PROMISE's boundary contract): the
  * payload as a dyn value (+1; void fulfillments answer the undefined
  * value), or NULL with the rejection re-thrown into the awaiter. */
@@ -3388,23 +3794,19 @@ ScrDyn *scr_als_run(double id, ScrDyn *value, ScrDyn *fn, ScrDyn *args);
 ScrDyn *scr_als_exit_run(double id, ScrDyn *fn, ScrDyn *args);
 
 /* process.on/once('unhandledRejection', fn): dyn listeners dispatched
- * per never-observed rejection at loop end — (reason, promise),
- * suppressing the default report and the exit-1 (Node's handled-event
- * contract; the end-of-turn vs loop-end timing is a SEMANTICS.md
- * divergence). `once` auto-removes after one delivery; off removes by
- * closure identity (the warning registry's story). Throws Node's
+ * per never-observed rejection at the end of its nextTick/microtask
+ * checkpoint — (reason, promise), suppressing the default report and the
+ * exit-1. `once` auto-removes after one delivery; off removes by closure
+ * identity (the warning registry's story). Throws Node's
  * ERR_INVALID_ARG_TYPE on a non-function. */
 void scr_process_on_unhandled_rejection(ScrDyn *fn, bool once);
 void scr_process_off_unhandled_rejection(ScrDyn *fn);
-/* process.on/once/off('rejectionHandled', fn): the sibling registry.
- * Under the loop-exhaustion model the event's ONE firing window is a
- * handler attached DURING an unhandledRejection listener (a rejection
- * handled any earlier never enters the report at all — the same
- * documented divergence); dispatch is synchronous at the attach, with
- * the promise, Node's payload. */
+/* process.on/once/off('rejectionHandled', fn): the sibling registry. A
+ * promise handled after its unhandledRejection delivery fires once, with
+ * the promise as Node's payload. */
 void scr_process_on_rejection_handled(ScrDyn *fn, bool once);
 void scr_process_off_rejection_handled(ScrDyn *fn);
-/* The loop-end delivery hook the registration above installs
+/* The checkpoint delivery hook the registration above installs
  * (scr_async_dyn.c → scr_report_unhandled_rejections; NULL = default
  * report). Runtime-internal. */
 extern bool (*scr_urj_deliver_fn)(ScrPromise *p);
@@ -3414,9 +3816,10 @@ extern bool (*scr_urj_deliver_fn)(ScrPromise *p);
  * Runtime-internal. */
 extern void (*scr_rjh_notify_fn)(ScrPromise *p);
 /* The attach-time handled mark (a dyn then/catch carrying a rejection
- * handler): marks an already-rejected source observed — Node's attach
- * moment — firing the late-handled hook when the report already
- * delivered it. Runtime-internal. */
+ * handler, or the module loader taking ownership of an evaluation
+ * promise): marks pending and rejected sources observed at Node's attach
+ * moment, firing the late-handled hook when the report already delivered
+ * it. Runtime-internal. */
 void scr_promise_mark_handled(ScrPromise *p);
 /* A rejected promise's reason as a dyn value (identity-preserving for
  * dyn payloads and %Error instances). +1. */
@@ -3562,6 +3965,10 @@ bool scr_immediate_has_ref(double handle);
  * teardown (they must never run yet must not leak). cb ownership moves
  * in. */
 void scr_next_tick(ScrClosure *cb);
+/* A successful process.stdout/stderr.write completion on that same queue.
+ * The callback and its program-shaped Error | null adapter both MOVE into
+ * the entry; the adapter is invoked with NULL (Node's success argument). */
+void scr_process_write_callback(ScrClosure *cb, ScrFsRenameFn fn);
 /* A raw C-hook entry on the SAME queue: the stream unit enqueues one
  * marker per deferred stream emission, so stream ticks and user
  * nextTicks run in true FIFO order (in Node they are the same queue).
@@ -3646,7 +4053,13 @@ int scr_exit_code_hint_get(void);
  * poll(2) sleep, or -1 when it can't wake for every pending child. */
 int scr_children_wake_fd(void);
 double scr_now_ms(void); /* the loop's monotonic clock, in ms */
-void scr_loop_run(void);
+/* Run to ordinary loop exhaustion, except that a non-NULL executable
+ * module-root promise stops the loop as soon as it is rejected at a
+ * microtask checkpoint. Fulfilled roots do not stop the loop: Node keeps
+ * running ref'd work scheduled by a successfully evaluated module.
+ * Returns true when a default/listener-crashing unhandled rejection
+ * already selected and reported exit status 1. */
+bool scr_loop_run(ScrPromise *top_level);
 /* External I/O hook, polled at loop quiescence like the child registry:
  * `pending` keeps the loop alive; `poll` makes progress and may SLEEP up
  * to max_wait_ms (on real fds — socket readiness wakes it early), so the
@@ -3655,12 +4068,14 @@ void scr_loop_run(void);
  * never set it. */
 void scr_loop_set_io(bool (*pending)(void), void (*poll)(double max_wait_ms));
 bool scr_report_unhandled_rejections(void); /* true = exit 1 */
+void scr_discard_unhandled_rejections(void);
 /* The island's unhandled-rejection ledger joins the report above (one
  * registrant, set at engine boot; static builds never set it): called with
  * print=true when the static ledger reported nothing, prints its FIRST
  * never-observed rejection in the same voice, frees the ledger either way,
  * and returns whether it had any. */
-void scr_loop_set_island_rejections(bool (*fn)(bool print));
+void scr_loop_set_island_rejections(bool (*fn)(bool print),
+                                    int (*drain_jobs)(void));
 /* The island's earliest armed timer deadline (scr_island_timers_deadline;
  * HUGE_VAL when none) joins the loop's sleep computation: an armed
  * AbortSignal.timeout must fire on time while the loop sleeps on socket
@@ -3788,6 +4203,35 @@ ScrGen *scr_gen_of_fiber(ScrFiber *f);
 long scr_promise_live_count(void);
 #endif
 
+/* ── fetch (scr_fetch.c) ──────────────────────────────────────────────
+ * The native bridge over scr_net + scr_tls + scr_http's client parser.
+ * Static fetch(url) resolves at the response head with native Response
+ * and ReadableStream handles; Response.json consumes that same stream.
+ * AbortSignal and streaming request bodies stay native too. Under
+ * --dynamic the same TU boots the broader engine web surface. The
+ * emitted main calls scr_fetch_install in either form. */
+void scr_fetch_install(void);
+ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init); /* +1 promise<Response handle> */
+ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init); /* borrowed args; +1 Response handle or NULL pending */
+ScrPromise *scr_fetch_response_json(ScrDyn *response); /* +1 promise<dyn> */
+ScrPromise *scr_fetch_response_text(ScrDyn *response); /* +1 promise<dyn> */
+ScrPromise *scr_fetch_response_bytes(ScrDyn *response); /* +1 promise<dyn> */
+ScrDyn *scr_fetch_abort_controller_new(void); /* +1 AbortController handle */
+/* Borrowed number; +1 AbortSignal handle or NULL pending. */
+ScrDyn *scr_fetch_abort_timeout(ScrDyn *delay);
+ScrDyn *scr_fetch_abort_now(ScrDyn *reason); /* borrowed reason; +1 handle */
+ScrDyn *scr_fetch_abort_any(ScrDyn *signals); /* borrowed array; +1 handle or NULL pending */
+ScrDyn *scr_fetch_stream_new(ScrDyn *source); /* borrowed source; +1 handle or NULL pending */
+ScrDyn *scr_fetch_stream_from(ScrDyn *iterable); /* borrowed iterable; +1 handle or NULL pending */
+ScrDyn *scr_fetch_stream_from_array(
+    ScrArr *iterable,
+    ScrDyn *(*item)(ScrArr *, double)); /* borrowed array/callback; +1 handle */
+ScrDyn *scr_fetch_stream_from_bytes(
+    ScrBytes *iterable); /* borrowed bytes; +1 handle */
+ScrDyn *scr_fetch_stream_from_string(
+    ScrStr *iterable); /* borrowed string; +1 handle */
+ScrPromise *scr_fetch_reader_read(ScrDyn *reader); /* borrowed handle; +1 */
+
 /* ── dynamic island (scr_island.c; --dynamic builds ONLY) ────────────
  * The embedded QuickJS-ng engine. Compiled and linked only under
  * -DSCR_DYNAMIC; static builds never reference these symbols (nor the
@@ -3874,8 +4318,10 @@ bool scr_zlib_inflate_exact(const unsigned char *src, size_t src_len,
 
 /* The island process shim's implicit exit status (process.exitCode):
  * Node's set-it-and-return-normally contract. The emitted main returns
- * this after the loop drains; 0 when never set. */
+ * this after the loop drains; 0 when never set. The version advances on
+ * every assignment so an exit listener can override a provisional status. */
 int scr_island_exit_code(void);
+size_t scr_island_exit_code_version(void);
 
 /* ── web-platform globals (scr_web.c) ─────────────────────────────────
  * The pure-JS prelude defining the island's WHATWG subset (streams et
@@ -3915,24 +4361,18 @@ bool scr_island_timers_due(void);
 bool scr_island_timers_fire_due(void); /* true = fired at least one */
 void scr_island_timers_teardown(void);
 
-/* ── fetch (scr_fetch.c) ──────────────────────────────────────────────
- * The native bridge behind the island's fetch (scr_net + scr_tls +
- * scr_http's client parser + zlib), compiled and linked ONLY into
- * --dynamic builds whose graph references fetch. The emitted main calls
- * scr_fetch_install BEFORE any island entry; install registers the
- * bridge's hooks with the island, which boots the fetch glue with the
- * engine. The native bridge registers NO pending/poll hooks (its
+/* ── dynamic fetch hooks ──────────────────────────────────────────────
+ * The native bridge registers NO pending/poll hooks (its
  * transfers live on real sockets the loop's poller sleeps on); the curl
  * reference implementation (scr_fetch_curl.c, SCRIPTC_FETCH_CURL=1 —
  * one release as the flip's reference) still registers all four so the
  * loop can sleep on curl's fds. */
-void scr_fetch_install(void);
 void scr_island_set_fetch(void (*boot)(void *jsctx), bool (*pending)(void),
                            void (*poll)(double max_wait_ms), void (*teardown)(void));
 
 /* ── the island's node:http/https client bridge (scr_net_island.c) ────
  * The one TU referencing BOTH the socket units and the island (the
- * scr_zlib_island.c precedent): cc.ts compiles it exactly when a
+ * scr_zlib_island.c precedent): native-toolchain.ts compiles it exactly when a
  * --dynamic build links the socket units, and the emitted main calls
  * scr_net_island_install before any island entry. `attach` runs while
  * the island builds its bootstrap host object (jsctx and host_obj are
@@ -4045,6 +4485,7 @@ ScrJsval *scr_jsval_destr_check(ScrJsval *v, const char *spell, const char *firs
 ScrJsval *scr_jsval_iter_n(ScrJsval *v, double n);
 int scr_jsval_set_idx(ScrJsval *o, ScrJsval *key, ScrJsval *v);
 ScrJsval *scr_jsval_call_method(ScrJsval *o, const ScrStr *name, int argc, ScrJsval **argv);
+ScrJsval *scr_jsval_call_this(ScrJsval *f, ScrJsval *receiver, int argc, ScrJsval **argv);
 /* `o.name?.(...)`: a nullish member answers the engine's undefined;
  * anything else calls with this = o (non-callables throw in the engine). */
 ScrJsval *scr_jsval_opt_call_method(ScrJsval *o, const ScrStr *name, int argc, ScrJsval **argv);
@@ -4264,10 +4705,13 @@ bool scr_num_same_value(double a, double b);
  * en-US is the one embedded locale. Result +1; never throws. */
 ScrStr *scr_intl_num_format_en_us(double x);
 
-/* ── Date, the composed slice (scr_lib.c) ─────────────────────────────
- * Date values have no representation; the runtime surface is exactly
- * Date.now() and toISOString over a millisecond time value. */
+/* ── Date, the read-only value slice (scr_lib.c) ──────────────────────
+ * A Date value is its TimeClip'd epoch-millisecond scalar. Identity and
+ * mutation are frontend-fenced; construction, storage, getters, and ISO
+ * formatting are exact over this representation. */
 double scr_date_now(void); /* integer ms since epoch, like Node */
+double scr_date_new_ms(double ms); /* TimeClip (NaN when invalid) */
+double scr_date_get_time(double ms);
 /* Node's exact ISO 8601 UTC format (expanded ±YYYYYY years outside
  * 0–9999). THROWS Node's "Invalid time value" RangeError on NaN or
  * |ms| > 8.64e15 and returns NULL; +1 otherwise. */
@@ -4281,13 +4725,39 @@ double scr_date_parse_get_time(ScrStr *s);
  * and years past V8's ±1e6 MakeDay bound. Never throws. */
 double scr_date_utc(double y, double mo, double d,
                     double h, double mi, double s, double ms);
+double scr_date_get_full_year(double ms, bool utc);
+double scr_date_get_month(double ms, bool utc);
+double scr_date_get_date(double ms, bool utc);
+double scr_date_get_day(double ms, bool utc);
+double scr_date_get_hours(double ms, bool utc);
+double scr_date_get_minutes(double ms, bool utc);
+double scr_date_get_seconds(double ms, bool utc);
+double scr_date_get_milliseconds(double ms);
+double scr_date_get_timezone_offset(double ms);
+/* One-argument ABI wrappers used by the LLVM lib-call table. */
+double scr_date_get_full_year_local(double ms);
+double scr_date_get_full_year_utc(double ms);
+double scr_date_get_month_local(double ms);
+double scr_date_get_month_utc(double ms);
+double scr_date_get_date_local(double ms);
+double scr_date_get_date_utc(double ms);
+double scr_date_get_day_local(double ms);
+double scr_date_get_day_utc(double ms);
+double scr_date_get_hours_local(double ms);
+double scr_date_get_hours_utc(double ms);
+double scr_date_get_minutes_local(double ms);
+double scr_date_get_minutes_utc(double ms);
+double scr_date_get_seconds_local(double ms);
+double scr_date_get_seconds_utc(double ms);
 
-/* ── bitwise operators (scr_lib.c) ────────────────────────────────────
+/* ── numeric coercion + bitwise operators ─────────────────────────────
  * JS-exact ToInt32/ToUint32 semantics: NaN/±Infinity → 0, truncation
  * toward zero, modular wrap into 32 bits; the operation runs in 32-bit
  * space (shift counts mask to 5 bits, `>>` is an arithmetic shift spelled
  * portably — no C UB/implementation-defined shifts) and the result
- * returns to f64: `>>>` as Uint32, everything else as Int32. */
+ * returns to f64: `>>>` as Uint32, everything else as Int32.
+ * scr_to_uint32 lives in scr_number.c; the bitwise operations in scr_lib.c. */
+uint32_t scr_to_uint32(double d);
 double scr_bit_and(double a, double b);
 double scr_bit_or(double a, double b);
 double scr_bit_xor(double a, double b);
@@ -4366,6 +4836,9 @@ ScrJsval *scr_jsval_from_bytes(const ScrBytes *b);
  * THROWS Node's "Invalid typed array length" RangeError catchably and
  * returns NULL with the exception pending). */
 ScrBytes *scr_bytes_new(ScrBytesElem elem, double n); /* +1 */
+/* Native callback boundary: exact owned u8 copy. NULL with len == 0 is an
+ * empty span. */
+ScrBytes *scr_bytes_from_data(const uint8_t *data, size_t len); /* +1 */
 
 /* `new Uint8Array(src)` / Buffer.from(u8): a same-elem-kind copy (the
  * compiler fences cross-kind construction). Borrows src. Never throws. */
@@ -4435,11 +4908,25 @@ void scr_dataview_set(ScrBytes *b, double byte_off, double value, ScrDataViewGet
  * toward zero, wrap mod 2^8/2^32), f32 by double→float rounding. */
 double scr_bytes_get(const ScrBytes *b, double i);
 void scr_bytes_set(ScrBytes *b, double i, double v);
+/* Replace a live typed-array capsule's fixed-size payload from its dyn
+ * snapshot. Source and target have the same compiler-checked bytes type. */
+void scr_bytes_copy_contents(ScrBytes *dst, const ScrBytes *src);
 
 /* TypedArray.prototype.slice(start, end): relative indices clamp like
  * string/array slice (ToIntegerOrInfinity, negatives from the end); the
  * result is a fresh same-kind copy. Never throws. */
 ScrBytes *scr_bytes_slice(const ScrBytes *b, double start, double end); /* +1 */
+
+/* ES2023 typed-array copying methods. Both preserve the receiver's element
+ * kind and return a fresh +1 owner. with() raises Node's catchable
+ * "Invalid typed array index" RangeError for an invalid relative index. */
+ScrBytes *scr_bytes_to_reversed(const ScrBytes *b); /* +1 */
+ScrBytes *scr_bytes_with(const ScrBytes *b, double index, double value); /* +1 */
+
+/* Numeric typed-array iteration drained into number[], and Uint8Array.join.
+ * Inputs borrowed; results fresh +1. */
+ScrArr *scr_bytes_to_arr(const ScrBytes *b); /* +1 */
+ScrStr *scr_bytes_join(const ScrBytes *b, const ScrStr *separator); /* +1 */
 
 /* TypedArray.prototype.fill on non-u8 receivers: per-element fill with
  * the element write's coercion, slice-clamped relative indices; answers
@@ -4470,11 +4957,21 @@ void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset);
  * compiler fences other encodings). */
 ScrStr *scr_bytes_to_str(const ScrBytes *b, const ScrStr *enc);
 ScrStr *scr_bytes_to_str_range(const ScrBytes *b, const ScrStr *enc, double start, double end);
+/* Runtime-valued Buffer.toString encoding: aliases/case canonicalize;
+ * unknown names throw ERR_UNKNOWN_ENCODING. +1, or NULL when throwing. */
+ScrStr *scr_bytes_to_str_checked(const ScrBytes *b, const ScrStr *enc);
+ScrStr *scr_bytes_to_str_checked_range(const ScrBytes *b, const ScrStr *enc, double start, double end);
 
 /* WHATWG TextDecoder.decode over u8 bytes (utf-8, default options): the
  * same replacement decode as toString("utf8") with the leading BOM
  * stripped. Borrows; +1; never throws. */
 ScrStr *scr_text_decode(const ScrBytes *b);
+
+/* TextDecoder with a compile-time WHATWG legacy-encoding id. The frontend
+ * owns label canonicalization and emits only the ids understood by
+ * scr_bytes.c; keeping this separate from scr_text_decode means default
+ * UTF-8 users do not retain the legacy mapping tables. Borrows; +1. */
+ScrStr *scr_text_decode_legacy(const ScrBytes *b, double encoding);
 
 /* Buffer.from(string, enc): "utf8" copies the bytes; "hex" parses pairs
  * and stops at the first invalid/odd tail (Node-lenient); "base64" and
@@ -4571,7 +5068,7 @@ ScrBytes *scr_bytes_concat_len(const ScrArr *list, double total);
 ScrBytes *scr_bytes_concat(const ScrArr *list); /* +1 */
 
 /* ── util.inspect (scr_inspect.c — linked ONLY when the program calls
- * util.inspect/format; see cc.ts) ─────────────────────────────────────
+ * util.inspect/format; see native-toolchain.ts) ─────────────────────────────────────
  * The runtime half of the static inspect rendering: the compiler
  * synthesizes one traversal helper per static type; these entries own
  * Node's exact scalar formatting and the layout engine (frames,
@@ -4670,10 +5167,12 @@ ScrPromise *scr_fsp_read_file_bytes(ScrStr *path); /* +1 */
  * RangeError catchably (same check as scr_crypto_random_string). */
 ScrBytes *scr_crypto_random_bytes(double n); /* +1 */
 
-/* process.stdout/stderr.write(buf): the raw byte writes' Buffer overloads
- * (same streams and buffering as the string forms). Constantly true. */
-bool scr_process_stdout_write_bytes(const ScrBytes *b);
-bool scr_process_stderr_write_bytes(const ScrBytes *b);
+/* process.stdout/stderr.write(buf[, encoding]): the raw byte writes' Buffer
+ * overloads (same streams and buffering as the string forms). The encoding
+ * is evaluated by the caller and ignored here, as Node does for bytes.
+ * Constantly true. */
+bool scr_process_stdout_write_bytes(const ScrBytes *b, const ScrStr *encoding);
+bool scr_process_stderr_write_bytes(const ScrBytes *b, const ScrStr *encoding);
 
 /* The Node-shaped fs error thrower (scr_lib.c): formats "ENOENT: no such
  * file or directory, open 'x'" and throws it catchably. Shared with
@@ -4681,7 +5180,7 @@ bool scr_process_stderr_write_bytes(const ScrBytes *b);
 void scr_fs_throw(int e, const char *op, const ScrStr *path);
 
 /* ── zlib (scr_zlib.c — compiled and linked with -lz only when the
- * program uses zlib, like scr_regex.c/libregexp; see cc.ts) ──────────
+ * program uses zlib, like scr_regex.c/libregexp; see native-toolchain.ts) ──────────
  * deflateSync/inflateSync over u8 bytes with Node's default options
  * (zlib format, default level/windowBits). deflate never throws (OOM
  * aborts); inflate of corrupt input THROWS Node's error catchably
@@ -4696,7 +5195,7 @@ ScrBytes *scr_zlib_inflate_mode(const ScrBytes *data, double mode);
 void scr_zlib_island_install(void);
 
 /* ── node:net (scr_net.c — compiled and linked ONLY when the program
- * uses the net surface, like scr_events.c; see cc.ts) ─────────────────
+ * uses the net surface, like scr_events.c; see native-toolchain.ts) ─────────────────
  * TCP servers and sockets over the unit's own readiness poller
  * (scr_platform.h: kqueue on macOS/BSD, epoll on Linux): refcounted handles
  * whose listeners MOVE in and drop at settlement (the ScrChild ownership
@@ -4711,10 +5210,13 @@ typedef void (*ScrNetDataFn)(ScrClosure *cb, ScrBytes *chunk);    /* borrowed */
 
 /* The listener-list family (snapshot firing, once-before-run): owned by
  * scr_net.c, reused by scr_http.c for the request-body event lists. */
+typedef struct ScrNetOnce ScrNetOnce;
+
 typedef struct {
   ScrClosure *cb; /* owned */
   void *fn;       /* adapter with the event's firing ABI */
   bool once;
+  ScrNetOnce *shared_once; /* owned, nullable: one once registration mirrored across lists */
 } ScrNetL;
 
 typedef struct {
@@ -4723,6 +5225,12 @@ typedef struct {
 } ScrNetLs;
 
 void scr_net_ls_add(ScrNetLs *l, ScrClosure *cb, void *fn, bool once);
+ScrNetOnce *scr_net_once_new(void); /* +1 */
+ScrNetOnce *scr_net_once_retain(ScrNetOnce *once); /* +1 */
+void scr_net_once_release(ScrNetOnce *once);
+void scr_net_ls_add_shared_once(ScrNetLs *l, ScrClosure *cb, void *fn,
+                                ScrNetOnce *once /*moves*/);
+bool scr_net_ls_has_live(const ScrNetLs *l);
 void scr_net_ls_drop(ScrNetLs *l);
 size_t scr_net_ls_snapshot(ScrNetLs *l, ScrNetL **out);
 void scr_net_fire0(ScrNetLs *l);
@@ -4795,6 +5303,20 @@ void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullab
 void scr_net_listen_opts(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
                           bool ipv6_only, ScrClosure *cb /*moves, nullable*/);
 double scr_net_server_port(ScrNetServer *s); /* address().port */
+/* Writable http.Server timeout property storage. `field` is the compiler
+ * ABI selector: timeout, keepAliveTimeout, headersTimeout, requestTimeout,
+ * keepAliveTimeoutBuffer. Typed reads validate that no dynamic write left
+ * a non-number in the ordinary JS property slot. */
+double scr_net_server_timeout_get(ScrNetServer *s, double field);
+void scr_net_server_timeout_set(ScrNetServer *s, double field, double value);
+/* Marks the shared net-server handle as an HTTP/1 or HTTPS server. The
+ * dynamic handle uses this to keep HTTP-only fields off net/TLS/H2. */
+void scr_net_server_enable_http_timeout_surface(ScrNetServer *s);
+/* Constructor-option twin: undefined is absent; otherwise validates type
+ * and a non-negative safe integer before storing, matching Node's option
+ * ladder (plain property writes do not validate). */
+bool scr_net_server_timeout_option_check(double field, double value);
+void scr_net_server_timeout_option_set(ScrNetServer *s, double field, const struct ScrDyn *value);
 ScrStr *scr_net_server_addr_ip(ScrNetServer *s);     /* +1 — address().address */
 ScrStr *scr_net_server_addr_family(ScrNetServer *s); /* +1 — address().family */
 void scr_net_server_close(ScrNetServer *s, ScrClosure *cb /*moves, nullable*/);
@@ -5035,7 +5557,7 @@ void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn
  * the https-authority client wrap. scr_http2.c calls both directly —
  * every http2-using binary links the TLS unit (the moduleUsesTls
  * switch), so no registration indirection is needed. */
-void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len, const char *key, size_t key_len, ScrNetNativeConnFn h2_conn, void *h2_ctx /*moves*/, void (*h2_ctx_free)(void *));
+void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len, const char *key, size_t key_len, ScrNetNativeConnFn h2_conn, void *h2_ctx /*moves*/, void (*h2_ctx_free)(void *), ScrClosure *sni_cb /*moves, nullable*/, void *sni_answer_fn);
 void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/, bool reject_unauthorized, const char *ca /*borrowed, len 0 = none*/, size_t ca_len);
 
 /* ── tls.SecureContext + the SNI callback (scr_tls.c) ─────────────────
@@ -5075,15 +5597,25 @@ long scr_secure_ctx_live_count(void);
 #endif
 
 /* ── node:tls, the CA-store introspection slice (scr_tls_ca.c — its own
- * unit and link gate; plain PEM-block bookkeeping, NO mbedTLS, so a
- * getCACertificates-only binary never builds the archive; cc.ts also
- * compiles it whenever scr_tls.c does). The HOST bundle (the
- * /etc/ssl/cert.pem probe order scr_tls.c documents) stands in for both
- * Node's compiled-in Mozilla roots ('bundled', rootCertificates) and the
- * platform store ('system') — the established SEMANTICS divergence,
- * extended to introspection; 'extra' reads NODE_EXTRA_CA_CERTS. Arrays
- * are cached per type (+1 retained answers each call — Node's own
- * caching, and the identity the suite pins with strictEqual). */
+ * unit and link gate; NO mbedTLS, so a getCACertificates-only binary never
+ * builds the archive; native-toolchain.ts also compiles it whenever scr_tls.c does). The
+ * HOST roots (Windows' system certificate stores, the established bundle probe on
+ * POSIX) stand in for both Node's compiled-in Mozilla roots ('bundled',
+ * rootCertificates) and the platform store ('system') — the established
+ * SEMANTICS divergence, extended to introspection; 'extra' uses the
+ * NODE_EXTRA_CA_CERTS file captured before user code runs. Arrays are cached
+ * per type (+1 retained answers each call — Node's own caching, and the
+ * identity the suite pins with strictEqual). */
+void scr_tls_ca_install(void); /* snapshots NODE_EXTRA_CA_CERTS + file bytes */
+bool scr_tls_ca_extra_pem(const char **pem, size_t *len); /* borrowed launch snapshot */
+#ifdef _WIN32
+/* Enumerates Windows' trusted ROOT, intermediate CA, and TrustedPeople store
+ * locations, yielding only certificates whose effective Windows EKU policy
+ * permits TLS server authentication. DER is borrowed for the call. */
+typedef void (*ScrTlsCaWindowsCertFn)(void *ctx, const unsigned char *der, size_t len);
+bool scr_tls_ca_windows_cert_server_auth(const void *cert_context);
+void scr_tls_ca_windows_certs(ScrTlsCaWindowsCertFn fn, void *ctx);
+#endif
 ScrArr *scr_tls_ca_get(ScrStr *type); /* +1; throws ERR_INVALID_ARG_VALUE on unknown types */
 ScrArr *scr_tls_ca_root(void);        /* +1; === getCACertificates("bundled") */
 /* Replaces the 'default' set: entries filter to their PEM certificate
@@ -5105,6 +5637,7 @@ bool scr_tls_ca_default_override(const char **pem, size_t *len, uint64_t *gen);
 typedef struct ScrHttpReq ScrHttpReq;
 typedef struct ScrHttpRes ScrHttpRes;
 typedef void (*ScrHttpReqFn)(ScrClosure *cb, ScrHttpReq *req, ScrHttpRes *res); /* both +1 */
+typedef void (*ScrHttpConnectH2Fn)(ScrClosure *cb, ScrHttpReq *req, ScrHttpRes *res); /* both +1 */
 /* 'upgrade' listeners, both sides: (req-or-res, socket, head) — all +1.
  * The parser steps aside (native reader cleared) and the socket is the
  * listener's raw stream; `head` carries bytes read past the 101/request
@@ -5147,10 +5680,16 @@ typedef struct ScrHttpH2Ops {
 void scr_http_set_h2_ops(const ScrHttpH2Ops *ops);
 void scr_http_set_h2_request_hook(void (*hook)(void *h2ctx, ScrClosure *cb /*moves*/,
                                                void *fn, bool once));
+void scr_http_set_h2_connect_hook(void (*hook)(void *h2ctx, ScrClosure *cb /*moves*/,
+                                               void *h1_fn, void *h2_fn, bool once));
+void scr_http_set_h2_upgrade_hook(void (*hook)(void *h2ctx, ScrClosure *cb /*moves*/,
+                                               void *fn, bool once));
 
 /* The compat pair, built by scr_http2.c per server stream. */
 ScrHttpReq *scr_http_h2_req_new(ScrNetSocket *sock /*borrowed, nullable*/,
                                  void *stream /*borrowed, nullable*/); /* +1 */
+void *scr_http_req_h2_stream(ScrHttpReq *r); /* +1 or NULL */
+void *scr_http_req_h2_stream_or_throw(ScrHttpReq *r, ScrStr *member /*borrowed*/); /* +1 */
 void scr_http_h2_req_line(ScrHttpReq *r, ScrStr *method /*borrowed, nullable*/,
                            ScrStr *url /*borrowed, nullable*/);
 void scr_http_h2_req_header(ScrHttpReq *r, ScrStr *name /*borrowed*/, ScrStr *value /*borrowed*/);
@@ -5185,6 +5724,12 @@ void scr_http2_stream_undef_call(ScrStr *member);
  * server) the closure releases unregistered: 'request' never fires
  * there, like Node. */
 void scr_http_server_on_request(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once);
+void scr_http1_ctx_on_request(void *ctx, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
+                              ScrNetOnce *shared_once /*moves, nullable*/);
+void scr_http1_ctx_on_connect(void *ctx, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once,
+                              ScrNetOnce *shared_once /*moves, nullable*/);
+void scr_http1_ctx_on_upgrade(void *ctx, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
+void scr_http1_ctx_settle(void *ctx);
 ScrStr *scr_http_req_url(ScrHttpReq *r);      /* +1 */
 ScrStr *scr_http_req_method(ScrHttpReq *r);   /* +1 */
 ScrStr *scr_http_req_header(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL (undefined arm) */
@@ -5232,10 +5777,10 @@ void scr_http_server_join_duplicate_headers(ScrNetServer *s);
 void scr_http_handler_thunk0(ScrClosure *cb, ScrHttpReq *req, ScrHttpRes *res);
 void scr_http_handler_thunk1(ScrClosure *cb, ScrHttpReq *req, ScrHttpRes *res);
 void scr_http_handler_thunk2(ScrClosure *cb, ScrHttpReq *req, ScrHttpRes *res);
-/* server.on("connect", ...) — HTTP CONNECT, the upgrade twin: fired
- * INSTEAD of 'request' for CONNECT-method requests with (req, socket,
- * head); no listener destroys the socket. */
-void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn,
+/* server.on("connect", ...) — fired instead of 'request' for CONNECT.
+ * HTTP/1 uses (req, socket, head); HTTP/2 compatibility uses (req, res). */
+void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
+                                 ScrHttpUpgradeFn h1_fn, ScrHttpConnectH2Fn h2_fn,
                                  bool once);
 void scr_http_server_on_upgrade(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
 ScrArr *scr_http_req_raw_headers(ScrHttpReq *r); /* +1 — [name, value, ...], arrival order/case */
@@ -5380,6 +5925,8 @@ enum { SCR_NET_PROTO_HTTP1 = 1, SCR_NET_PROTO_H2 = 2 };
 
 typedef struct ScrH2Session ScrH2Session;
 typedef struct ScrH2Stream ScrH2Stream;
+typedef void (*ScrH2SessionErrorFn)(ScrClosure *cb, ScrStr *msg,
+                                    ScrH2Session *session); /* session +1 */
 
 typedef void (*ScrH2StreamFn)(ScrClosure *cb, ScrH2Stream *st, ScrArr *pairs, double flags); /* st, pairs +1 */
 typedef void (*ScrH2RespFn)(ScrClosure *cb, ScrArr *pairs, double status, double flags);     /* pairs +1 */
@@ -5406,11 +5953,12 @@ ScrNetServer *scr_http2_create_server_req(ScrClosure *handler /*moves*/, ScrHttp
 /* The REAL h2-over-TLS server (http2.createSecureServer({ cert, key })):
  * the same session machinery behind an mbedTLS handshake whose ALPN
  * advertises h2 alone — protocol-identical after establishment. */
-ScrNetServer *scr_http2_create_secure_server(const char *cert, size_t cert_len, const char *key, size_t key_len); /* +1 */
+ScrNetServer *scr_http2_create_secure_server(const char *cert, size_t cert_len, const char *key, size_t key_len, bool enable_connect_protocol); /* +1 */
+ScrNetServer *scr_http2_create_secure_server_allow_http1(const char *cert, size_t cert_len, const char *key, size_t key_len, ScrClosure *handler /*moves, nullable*/, ScrHttpReqFn fn, ScrClosure *sni_cb /*moves, nullable*/, void *sni_answer_fn, bool enable_connect_protocol); /* +1 */
 /* createSecureServer(options, handler): the eager COMPAT handler as the
  * first 'request' listener over the ALPN=h2 server (the createServerReq
  * route, secured). */
-ScrNetServer *scr_http2_create_secure_server_req(const char *cert, size_t cert_len, const char *key, size_t key_len, ScrClosure *handler /*moves, nullable*/, ScrHttpReqFn fn); /* +1 */
+ScrNetServer *scr_http2_create_secure_server_req(const char *cert, size_t cert_len, const char *key, size_t key_len, ScrClosure *handler /*moves, nullable*/, ScrHttpReqFn fn, bool enable_connect_protocol); /* +1 */
 /* createSecureServer with a RUNTIME options record (the divergence-66
  * stance): allowHTTP1 picks the flavor at runtime, cert/key ride the
  * shared TLS server walk (out-of-bounds members throw the catchable
@@ -5440,6 +5988,11 @@ void scr_http2_session_close(ScrH2Session *s, ScrClosure *cb /*moves, nullable*/
 void scr_http2_session_destroy(ScrH2Session *s);
 void scr_http2_session_on_close(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
+void scr_http2_server_on_session_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
+                                       ScrH2SessionErrorFn fn, bool once);
+void scr_http2_session_error_thunk0(ScrClosure *cb, ScrStr *msg, ScrH2Session *session);
+void scr_http2_session_error_thunk1(ScrClosure *cb, ScrStr *msg, ScrH2Session *session);
+void scr_http2_session_error_thunk2(ScrClosure *cb, ScrStr *msg, ScrH2Session *session);
 void scr_http2_session_on_connect(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2ConnectFn fn, bool once);
 void scr_http2_session_on_stream(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2StreamFn fn, bool once);
 void scr_http2_session_on_goaway(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2GoawayFn fn, bool once);

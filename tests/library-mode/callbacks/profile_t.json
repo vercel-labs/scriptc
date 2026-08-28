@@ -1,0 +1,28 @@
+{
+  "profile_format": 1,
+  "name": "conformance-callbacks-threads",
+  "entry": "lib.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "cbt_",
+    "init_symbol": "cbt_init",
+    "sink_register_symbol": "cbt_set_panic_sink",
+    "collect_symbol": null,
+    "result_reset_symbol": null,
+    "localize_runtime": true,
+    "instance_per_thread": true,
+    "callback_register_symbol": "cbt_set_callback"
+  },
+  "callbacks": [
+    { "name": "emitChunk", "params": ["bytes", "u32"], "returns": "void" },
+    { "name": "progress", "params": ["f64", "f64"], "returns": "i32" },
+    { "name": "note", "params": ["string", "bool"], "returns": "void" },
+    { "name": "mix", "params": ["u8", "i32"], "returns": "u32" },
+    { "name": "orphan", "params": ["f64"], "returns": "void" }
+  ],
+  "exports": [
+    { "export": "stream", "symbol": "cbt_stream", "params": ["f64", "f64"], "returns": "f64" },
+    { "export": "askHost", "symbol": "cbt_ask_host", "params": ["f64"], "returns": "f64" },
+    { "export": "pokeOrphan", "symbol": "cbt_poke_orphan", "params": [], "returns": "f64" }
+  ]
+}

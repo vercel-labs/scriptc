@@ -47,11 +47,11 @@
 export * from "./enums.js";
 export * from "./ast.js";
 export * from "./checker.js";
-export * from "./program.js";
+export * from "./program-adapter.js";
 
 /* 5.9.3-name aliases for the program/checker surface. */
 export type { CheckerFacade as TypeChecker } from "./checker.js";
-export type { Ts7Program as Program } from "./program.js";
+export type { Ts7Program as Program } from "./program-adapter.js";
 
 /* Checker-world object types under their census names. Symbol and Signature
  * are 7's client classes (identity-bearing — the registry dedupes by server

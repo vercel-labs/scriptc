@@ -7,7 +7,7 @@ import { globSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { compile, renderAll } from "@scriptc/compiler";
+import { compile, renderDiagnostics } from "@scriptc/compiler";
 
 const repoRoot = join(import.meta.dirname, "../..");
 const diagDir = join(repoRoot, "tests/diagnostics");
@@ -40,7 +40,7 @@ describe(`diagnostics corpus (${files.length} programs)`, () => {
       if (result.ok) {
         expect.unreachable(`${name} compiled successfully but must produce diagnostics`);
       }
-      const rendered = renderAll(result.diagnostics, result.sourceTexts, { color: false })
+      const rendered = renderDiagnostics(result.diagnostics, result.sourceTexts, { color: false })
         // keep snapshots machine-independent
         .replaceAll(diagDir + "/", "");
       await expect(rendered).toMatchFileSnapshot(`__snapshots__/${name}.txt`);

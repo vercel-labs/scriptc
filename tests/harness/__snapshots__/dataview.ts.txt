@@ -14,7 +14,7 @@ dataview.ts:9:17 - error SC1090: '.buffer' outside new DataView(x.buffer, ...) /
      |                 ^~~~~~~~~~
   10 | 
 
-dataview.ts:12:7 - error SC2001: values of type 'bigint' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+dataview.ts:12:7 - error SC2001: values of type 'bigint' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
 
   11 | // bigint values have no representation — only Number(view.getBigUint64(...)).
   12 | const big = view.getBigUint64(0);

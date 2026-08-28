@@ -56,7 +56,7 @@
  * head buffers in the socket's write buffer until the handshake
  * establishes (the mid-connect buffering path, reused verbatim).
  * rejectUnauthorized:false maps to VERIFY_NONE; `ca` replaces the trust
- * anchors; with neither, /etc/ssl/cert.pem stands in for Node's bundled
+ * anchors; with neither, the host trust store stands in for Node's bundled
  * Mozilla roots (SEMANTICS.md documents the divergence). Verify
  * failures surface as Node-shaped 'error' messages on the request
  * ("self-signed certificate", "self-signed certificate in certificate
@@ -276,6 +276,7 @@ typedef struct ScrTlsSrv {
  * the handshake with no_application_protocol — Node's h2-only split). */
 static const char *SCR_TLS_ALPN_HTTP11[] = {"http/1.1", NULL};
 static const char *SCR_TLS_ALPN_H2[] = {"h2", NULL};
+static const char *SCR_TLS_ALPN_H2_HTTP11[] = {"h2", "http/1.1", NULL};
 
 static ScrTlsSrv *scr_tls_srv_new(const char *cert, size_t cert_len, const char *key,
                                    size_t key_len, bool alpn_http11) {
@@ -335,18 +336,15 @@ typedef struct ScrTlsCli {
   bool verify_recorded;
 } ScrTlsCli;
 
-/* The default trust anchors when no `ca` option is given: the system
- * bundle, standing in for Node's compiled-in Mozilla roots. Probed once
- * across the distro spellings — /etc/ssl/cert.pem first (macOS ships it;
- * Alpine links it), then Debian/Ubuntu's ca-certificates.crt,
- * Fedora/RHEL's ca-bundle.crt, and openSUSE's ca-bundle.pem. On macOS
- * only the first path exists, so the probe order changes nothing there.
- * A host with none leaves the chain empty: verification fails, exactly
- * the no-roots behavior /etc/ssl/cert.pem-only had. Windows is that host
- * by construction (no PEM bundle ships; the OS store is cert-database-
- * shaped) — a no-`ca` client there fails verification like a bundle-less
- * Unix host, which agrees with the oracle wherever the fixtures tread
- * (their CAs are local, never in Node's Mozilla roots either). */
+/* The default trust anchors when no `ca` option is given: the host trust
+ * store, standing in for Node's compiled-in Mozilla roots, plus
+ * NODE_EXTRA_CA_CERTS. Windows certificates live as DER entries across the
+ * machine, enterprise, current-user, and policy ROOT/CA/TrustedPeople store
+ * locations; mbedTLS copies each successfully parsed entry into its own chain.
+ * POSIX hosts probe the established bundle spellings — /etc/ssl/cert.pem
+ * first (macOS ships it; Alpine links it), then Debian/Ubuntu's
+ * ca-certificates.crt, Fedora/RHEL's ca-bundle.crt, and openSUSE's
+ * ca-bundle.pem. */
 static mbedtls_x509_crt scr_tls_system_roots;
 static bool scr_tls_system_roots_loaded = false;
 
@@ -357,6 +355,12 @@ static bool scr_tls_system_roots_loaded = false;
  * verification fails, Node's own consequence of trusting nothing. */
 static mbedtls_x509_crt scr_tls_override_roots;
 static uint64_t scr_tls_override_parsed_gen = 0;
+
+#ifdef _WIN32
+static void scr_tls_add_windows_ca(void *ctx, const unsigned char *der, size_t len) {
+  (void)mbedtls_x509_crt_parse_der((mbedtls_x509_crt *)ctx, der, len);
+}
+#endif
 
 static mbedtls_x509_crt *scr_tls_system_ca(void) {
   const char *pem = NULL;
@@ -377,6 +381,12 @@ static mbedtls_x509_crt *scr_tls_system_ca(void) {
   if (!scr_tls_system_roots_loaded) {
     scr_tls_system_roots_loaded = true;
     mbedtls_x509_crt_init(&scr_tls_system_roots);
+#ifdef _WIN32
+    /* The shared enumerator applies Windows' effective server-auth EKU
+     * policy before yielding DER. mbedTLS copies every successfully parsed
+     * entry, so the store contexts may die immediately after each callback. */
+    scr_tls_ca_windows_certs(scr_tls_add_windows_ca, &scr_tls_system_roots);
+#else
     static const char *const bundles[] = {
         "/etc/ssl/cert.pem",                  /* macOS, Alpine */
         "/etc/ssl/certs/ca-certificates.crt", /* Debian/Ubuntu */
@@ -385,6 +395,14 @@ static mbedtls_x509_crt *scr_tls_system_ca(void) {
     };
     for (size_t i = 0; i < sizeof bundles / sizeof bundles[0]; i++) {
       if (mbedtls_x509_crt_parse_file(&scr_tls_system_roots, bundles[i]) == 0) break;
+    }
+#endif
+    const char *extra = NULL;
+    size_t extra_len = 0;
+    if (scr_tls_ca_extra_pem(&extra, &extra_len) && extra_len > 0) {
+      (void)mbedtls_x509_crt_parse(
+          &scr_tls_system_roots, (const unsigned char *)extra,
+          extra_len + 1);
     }
   }
   return &scr_tls_system_roots;
@@ -860,7 +878,8 @@ static void scr_tls_on_established(void *tctx) {
     const char *alpn = mbedtls_ssl_get_alpn_protocol(&t->ssl);
     if (alpn != NULL && strcmp(alpn, "h2") == 0) {
       t->srv->h2_conn(t->srv->h2_ctx, t->sock);
-    } else if (alpn != NULL && t->srv->inner_conn != NULL && strcmp(alpn, "http/1.1") == 0) {
+    } else if (t->srv->inner_conn != NULL &&
+               (alpn == NULL || strcmp(alpn, "http/1.1") == 0)) {
       t->srv->inner_conn(t->srv->inner_ctx, t->sock);
     } else {
       scr_net_sock_transport_error(t->sock, NULL);
@@ -1411,6 +1430,27 @@ ScrNetServer *scr_tls_create_server_dyn(const ScrDyn *opts /*borrowed*/,
 ScrNetServer *scr_https_create_server_dyn(const ScrDyn *opts /*borrowed*/,
                                            ScrClosure *handler /*moves, nullable*/,
                                            ScrHttpReqFn fn) {
+  /* HTTPS ServerOptions extends http.ServerOptions. Consume the one HTTP
+   * constructor field this runtime models before the shared TLS walker;
+   * that walker deliberately owns only the TLS-side option surface. */
+  bool has_timeout_buffer = false;
+  double timeout_buffer = 0;
+  if (opts != NULL && opts->kind == SCR_DYN_OBJ) {
+    const ScrDyn *v = scr_dyn_obj_get(opts, "keepAliveTimeoutBuffer", 22);
+    if (v != NULL && v->kind != SCR_DYN_UNDEF) {
+      if (v->kind != SCR_DYN_NUM) {
+        scr_dyn_arg_type_fail("keepAliveTimeoutBuffer", "of type number", v);
+        scr_closure_release(handler);
+        return NULL;
+      }
+      timeout_buffer = v->v.num;
+      if (!scr_net_server_timeout_option_check(4, timeout_buffer)) {
+        scr_closure_release(handler);
+        return NULL;
+      }
+      has_timeout_buffer = true;
+    }
+  }
   ScrBytes *cert, *key;
   if (!scr_tls_srv_opts_walk(opts, "https.createServer", &cert, &key)) {
     scr_closure_release(handler);
@@ -1418,6 +1458,7 @@ ScrNetServer *scr_https_create_server_dyn(const ScrDyn *opts /*borrowed*/,
   }
   ScrNetServer *s = scr_https_create_server((const char *)cert->data, cert->len,
                                              (const char *)key->data, key->len, handler, fn);
+  if (has_timeout_buffer) scr_net_server_timeout_set(s, 4, timeout_buffer);
   scr_bytes_release(cert);
   scr_bytes_release(key);
   return s;
@@ -1567,13 +1608,20 @@ ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable
 void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len,
                              const char *key, size_t key_len,
                              ScrNetNativeConnFn h2_conn, void *h2_ctx /*moves*/,
-                             void (*h2_ctx_free)(void *)) {
+                             void (*h2_ctx_free)(void *),
+                             ScrClosure *sni_cb /*moves, nullable*/, void *sni_answer_fn) {
   ScrTlsSrv *srv = scr_tls_srv_new(cert, cert_len, key, key_len, false);
-  mbedtls_ssl_conf_alpn_protocols(&srv->conf, SCR_TLS_ALPN_H2);
   srv->h2_conn = h2_conn;
   srv->h2_ctx = h2_ctx;
   srv->h2_ctx_free = h2_ctx_free;
   scr_net_server_get_native_conn(s, &srv->inner_conn, &srv->inner_ctx, &srv->inner_ctx_free);
+  mbedtls_ssl_conf_alpn_protocols(
+      &srv->conf, srv->inner_conn != NULL ? SCR_TLS_ALPN_H2_HTTP11 : SCR_TLS_ALPN_H2);
+  if (sni_cb != NULL) {
+    srv->sni_cb = sni_cb;
+    srv->sni_answer_fn = sni_answer_fn;
+    mbedtls_ssl_conf_sni(&srv->conf, &scr_tls_f_sni, NULL);
+  }
   scr_net_server_set_native_conn(s, &scr_tls_srv_on_conn, srv, &scr_tls_srv_release_v);
   scr_net_server_defer_connections(s); /* 'connection'/'secureConnection' wait for the handshake */
 }

@@ -9,8 +9,8 @@
  * Exercises the IR (and later the C emitter) from the consumer side before
  * any frontend exists.
  */
-import type { IrExpr, IrModule, SrcLoc } from "../../src/ir/nodes.js";
-import { BOOL, F64, VOID } from "../../src/ir/nodes.js";
+import type { IrExpr, IrModule, SrcLoc } from "../../src/ir/ir.js";
+import { BOOL, F64, VOID } from "../../src/ir/ir.js";
 
 const loc: SrcLoc = { file: "fib.ts", start: 0, end: 0 };
 
@@ -18,7 +18,7 @@ const n = (localId: string): IrExpr => ({ kind: "varRef", localId, type: F64, lo
 const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
 
 export const fibModule: IrModule = {
-  irVersion: 2,
+  irVersion: 6,
   sourceFile: "fib.ts",
   entry: "__main",
   functions: [

@@ -30,6 +30,9 @@
 #include <io.h>
 #include <unistd.h> /* mingw-w64 ships one: read */
 #include <windows.h>
+#elif defined(__wasi__)
+#include <poll.h>
+#include <unistd.h>
 #else
 #include <poll.h>
 #include <unistd.h>
@@ -39,6 +42,21 @@ static void scr_events_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
   abort();
 }
+
+#ifdef __wasi__
+/* The native child unit normally owns these generic Error-listener adapters.
+ * WASI cannot spawn children and therefore does not link that unit, while
+ * stdin's error event intentionally shares the same adapter ABI. */
+void scr_child_err_thunk0(ScrClosure *cb, ScrStr *msg) {
+  (void)msg;
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+}
+
+void scr_child_err_thunk_error(ScrClosure *cb, ScrStr *msg) {
+  ScrError *error = scr_error_new(0 /* Error */, msg);
+  ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, error);
+}
+#endif
 
 /* ── process signal events (process.on("SIGINT" | "SIGTERM")) ─────────
  * Classic self-pipe integration: a watched signal's sigaction handler
@@ -62,7 +80,7 @@ typedef struct {
 
 typedef struct ScrSigReg {
   int sig;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__wasi__)
   void (*prev)(int); /* restored when the last listener leaves */
 #else
   struct sigaction prev; /* restored when the last listener leaves */
@@ -116,7 +134,7 @@ static void scr_sig_cleanup(void) {
 }
 
 static void scr_wake_pipe_init(void) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__wasi__)
   /* No self-pipe: the win32 loop never polls fds (scr_async.c's capped
    * nanosleep takes the idle sleep), so the handler's flag is the whole
    * wake path and the fds stay -1 — every pipe use below is guarded. */
@@ -141,6 +159,15 @@ static void scr_wake_pipe_drain(void) {
 }
 
 void scr_signal_on(double signum, ScrClosure *cb /*moves*/, bool once) {
+#ifdef __wasi__
+  (void)signum;
+  (void)once;
+  scr_closure_release(cb);
+  /* The compiler rejects this capability before linking. This guard keeps
+   * the optional events unit honest if hand-authored IR reaches it. */
+  scr_trap("scriptc: internal error: OS signal surface reached on WASI\n");
+  return;
+#else
   int sig = (int)signum;
   if (sig <= 0 || sig >= SCR_SIG_MAX) {
     scr_closure_release(cb); /* frontend only emits classic signals */
@@ -176,11 +203,15 @@ void scr_signal_on(double signum, ScrClosure *cb /*moves*/, bool once) {
   reg->ls[reg->n].cb = cb;
   reg->ls[reg->n].once = once;
   reg->n++;
+#endif
 }
 
 static void scr_sig_reg_drop(ScrSigReg *reg) {
 #ifdef _WIN32
   signal(reg->sig, reg->prev); /* default disposition back */
+#elif defined(__wasi__)
+  /* No signal disposition exists in WASI Preview 1. The compiler refuses
+   * signal registrations, so this arm is only the cleanup safety net. */
 #else
   sigaction(reg->sig, &reg->prev, NULL); /* default disposition back */
 #endif
@@ -193,6 +224,12 @@ static void scr_sig_reg_drop(ScrSigReg *reg) {
 }
 
 void scr_signal_off(double signum, ScrClosure *cb /*borrowed*/) {
+#ifdef __wasi__
+  (void)signum;
+  (void)cb;
+  scr_trap("scriptc: internal error: OS signal surface reached on WASI\n");
+  return;
+#else
   int sig = (int)signum;
   ScrSigReg *reg = scr_sig_regs;
   while (reg && reg->sig != sig) reg = reg->next;
@@ -206,6 +243,7 @@ void scr_signal_off(double signum, ScrClosure *cb /*borrowed*/) {
       return;
     }
   }
+#endif
 }
 
 /* One dispatch pass: every flagged signal fires its listener SNAPSHOT
@@ -486,6 +524,10 @@ static void scr_stdin_service(void) {
       if (WaitForSingleObject(h, 0) != WAIT_OBJECT_0) return;
     }
   }
+#elif defined(__wasi__)
+  /* install() puts fd 0 in nonblocking mode, so a direct read is both the
+   * readiness probe and the operation. This also observes a closed pipe on
+   * WASI hosts whose poll_oneoff adapter does not report POLLHUP. */
 #else
   struct pollfd pfd = {0 /* stdin */, POLLIN, 0};
   int rc = poll(&pfd, 1, 0);
@@ -705,6 +747,10 @@ void scr_events_install(void) {
   static bool installed = false;
   if (installed) return;
   installed = true;
+#ifdef __wasi__
+  int stdin_flags = fcntl(0, F_GETFL, 0);
+  if (stdin_flags >= 0) (void)fcntl(0, F_SETFL, stdin_flags | O_NONBLOCK);
+#endif
   atexit(scr_events_cleanup_atexit);
   atexit(scr_exit_atexit);
   scr_loop_set_events(&scr_events_pending, &scr_events_watching, &scr_events_dispatch,

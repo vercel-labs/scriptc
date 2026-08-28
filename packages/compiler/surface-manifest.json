@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "compilerVersion": "0.0.17",
+  "compilerVersion": "0.0.35",
   "coverage": [
     "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
     "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
@@ -8,7 +8,10 @@
     "stdlib and node-builtin member entries name surface whose LOWERED call forms are constrained (arity, argument shapes); declared call forms outside the lowered set are refused per site, with code SC2020 for standard-library and node-builtin surface.",
     "Entries with status 'unsupported' or 'dynamic-only' describe where the named code is raised: forms of the construct outside the supported subset are refused with that code — not that every form of the named feature is refused. Supported forms appear as their own static entries where a table projects them.",
     "Entries with status 'dynamic-only' compile when the build embeds the dynamic engine (--dynamic); without the flag each use site is refused with the entry's code.",
-    "Process-level diagnostic codes are not surface entries: SC0001-SC0004 are preflight gates, SC1110 is a comptime evaluation failure, SC3001 is the alternate-backend tier refusal, SC9001/SC9002 are internal errors.",
+    "The engine-free fetch projection targets Node 24.15.0 with bundled Undici 7.24.4. Each projected row names the differential evidence that guards it; changing the pinned Node or Undici version is an explicit profile update.",
+    "The fetch profile also contains a runtime-reflected census of the selected fetch, abort, Headers, and readable-stream interfaces plus RequestInit/ResponseInit dictionary reads. Static, dynamic-only, and unsupported census rows are projected here; its explicitly out-of-scope metadata rows and adjacent-interface exclusions remain in the profile so absence is deliberate rather than ambiguous.",
+    "Process-level diagnostic codes are not surface entries: SC0001-SC0004 are preflight gates, SC1110 is a comptime evaluation failure, SC3001/SC3002 are backend/target tier refusals, SC9001/SC9002 are internal errors.",
+    "Entry statuses are projected for the desktop targets. The mobile targets (aarch64-apple-ios, aarch64-apple-ios-simulator, aarch64-linux-android) compile library-mode archives only: the library-admissible surface (what SC4005's async_free requirement and the library link set admit) is supported there, the executable lane refuses those triples with SC3002, and no entry outside the library-admissible surface carries a mobile support claim. iOS archives build for iOS 15.0 on darwin hosts; Android archives build against NDK API level 26.",
     "No scheduling metadata is published; entry ids are the stable diff keys across releases."
   ],
   "entries": [
@@ -954,6 +957,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.promises.open",
+      "kind": "node-builtin",
+      "name": "fs/promises.open",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.promises.readFile",
       "kind": "node-builtin",
       "name": "fs/promises.readFile",
@@ -963,6 +972,12 @@
       "id": "node-builtin.fs.promises.readdir",
       "kind": "node-builtin",
       "name": "fs/promises.readdir",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.promises.rename",
+      "kind": "node-builtin",
+      "name": "fs/promises.rename",
       "status": "static"
     },
     {
@@ -1014,6 +1029,18 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.rename",
+      "kind": "node-builtin",
+      "name": "fs.rename",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.renameSync",
+      "kind": "node-builtin",
+      "name": "fs.renameSync",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.rmSync",
       "kind": "node-builtin",
       "name": "fs.rmSync",
@@ -1047,6 +1074,12 @@
       "id": "node-builtin.fs.writeFileSync",
       "kind": "node-builtin",
       "name": "fs.writeFileSync",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.writeSync",
+      "kind": "node-builtin",
+      "name": "fs.writeSync",
       "status": "static"
     },
     {
@@ -1770,6 +1803,12 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.util.parseArgs",
+      "kind": "node-builtin",
+      "name": "util.parseArgs",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.promisify",
       "kind": "node-builtin",
       "name": "util.promisify",
@@ -1863,6 +1902,105 @@
       "status": "unsupported",
       "code": "SC2020",
       "note": "deflateSync and inflateSync are the lowered zlib surface"
+    },
+    {
+      "id": "stdlib.abort-controller.abort",
+      "kind": "stdlib",
+      "name": "AbortController.abort",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: callback-order, identity, liveness, state-machine, surplus-arguments; differential evidence: fixture:static-controller"
+    },
+    {
+      "id": "stdlib.abort-controller.constructor",
+      "kind": "stdlib",
+      "name": "AbortController constructor",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: argument-evaluation, identity, state-machine, surplus-arguments; differential evidence: fixture:static-controller"
+    },
+    {
+      "id": "stdlib.abort-controller.signal",
+      "kind": "stdlib",
+      "name": "AbortController.signal",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: identity, property-read, state-machine; differential evidence: fixture:static-controller"
+    },
+    {
+      "id": "stdlib.abort-signal.abort",
+      "kind": "stdlib",
+      "name": "AbortSignal.abort",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: identity, liveness, surplus-arguments, property-read; differential evidence: generated:webidl-operations, fixture:static-stream-this"
+    },
+    {
+      "id": "stdlib.abort-signal.aborted",
+      "kind": "stdlib",
+      "name": "AbortSignal.aborted",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: property-read; differential evidence: generated:webidl-operations"
+    },
+    {
+      "id": "stdlib.abort-signal.add-event-listener",
+      "kind": "stdlib",
+      "name": "AbortSignal.addEventListener",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, identity, callback-order, callback-this; differential evidence: generated:abort-events, fixture:static-listener-this, fixture:static-listener-noncallable"
+    },
+    {
+      "id": "stdlib.abort-signal.any",
+      "kind": "stdlib",
+      "name": "AbortSignal.any",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, missing-arguments, surplus-arguments, property-read; differential evidence: generated:webidl-operations, fixture:static-stream-this"
+    },
+    {
+      "id": "stdlib.abort-signal.constructor",
+      "kind": "stdlib",
+      "name": "AbortSignal constructor",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; Node exposes the interface object but constructing it throws; neither compiler tier currently preserves that constructor behavior"
+    },
+    {
+      "id": "stdlib.abort-signal.dispatch-event",
+      "kind": "stdlib",
+      "name": "AbortSignal.dispatchEvent",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: callback-order, callback-this, error-shape; differential evidence: fixture:static-dispatch-throw"
+    },
+    {
+      "id": "stdlib.abort-signal.onabort",
+      "kind": "stdlib",
+      "name": "AbortSignal.onabort",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: callback-order, callback-this, mutation, property-read; differential evidence: generated:abort-events, fixture:static-listener-this"
+    },
+    {
+      "id": "stdlib.abort-signal.reason",
+      "kind": "stdlib",
+      "name": "AbortSignal.reason",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: identity, liveness, property-read; differential evidence: generated:webidl-operations, fixture:static-stream-this"
+    },
+    {
+      "id": "stdlib.abort-signal.remove-event-listener",
+      "kind": "stdlib",
+      "name": "AbortSignal.removeEventListener",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, identity, callback-order; differential evidence: generated:abort-events, fixture:static-stream-this"
+    },
+    {
+      "id": "stdlib.abort-signal.throw-if-aborted",
+      "kind": "stdlib",
+      "name": "AbortSignal.throwIfAborted",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: identity, error-shape; differential evidence: generated:webidl-operations, fixture:static-abort-throw"
+    },
+    {
+      "id": "stdlib.abort-signal.timeout",
+      "kind": "stdlib",
+      "name": "AbortSignal.timeout",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, missing-arguments, surplus-arguments, error-shape; differential evidence: generated:webidl-operations, fixture:static-stream-this"
     },
     {
       "id": "stdlib.array.at",
@@ -1973,6 +2111,12 @@
       "status": "static"
     },
     {
+      "id": "stdlib.array.reverse",
+      "kind": "stdlib",
+      "name": "Array.prototype.reverse",
+      "status": "static"
+    },
+    {
       "id": "stdlib.array.slice",
       "kind": "stdlib",
       "name": "Array.prototype.slice",
@@ -1985,6 +2129,36 @@
       "status": "static"
     },
     {
+      "id": "stdlib.array.toReversed",
+      "kind": "stdlib",
+      "name": "Array.prototype.toReversed",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.array.toSorted",
+      "kind": "stdlib",
+      "name": "Array.prototype.toSorted",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.array.toSpliced",
+      "kind": "stdlib",
+      "name": "Array.prototype.toSpliced",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.array.unshift",
+      "kind": "stdlib",
+      "name": "Array.prototype.unshift",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.array.with",
+      "kind": "stdlib",
+      "name": "Array.prototype.with",
+      "status": "static"
+    },
+    {
       "id": "stdlib.date.UTC",
       "kind": "stdlib",
       "name": "Date.UTC",
@@ -1992,25 +2166,359 @@
       "note": "the lowered call form takes 1 to 7 number arguments"
     },
     {
+      "id": "stdlib.date.constructor",
+      "kind": "stdlib",
+      "name": "Date constructor",
+      "status": "static",
+      "note": "zero arguments, or one milliseconds/date-string argument; values are the read-only TimeClip scalar slice"
+    },
+    {
+      "id": "stdlib.date.getDate",
+      "kind": "stdlib",
+      "name": "Date.prototype.getDate",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getDay",
+      "kind": "stdlib",
+      "name": "Date.prototype.getDay",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getFullYear",
+      "kind": "stdlib",
+      "name": "Date.prototype.getFullYear",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getHours",
+      "kind": "stdlib",
+      "name": "Date.prototype.getHours",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getMilliseconds",
+      "kind": "stdlib",
+      "name": "Date.prototype.getMilliseconds",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getMinutes",
+      "kind": "stdlib",
+      "name": "Date.prototype.getMinutes",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getMonth",
+      "kind": "stdlib",
+      "name": "Date.prototype.getMonth",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getSeconds",
+      "kind": "stdlib",
+      "name": "Date.prototype.getSeconds",
+      "status": "static"
+    },
+    {
       "id": "stdlib.date.getTime",
       "kind": "stdlib",
       "name": "Date.prototype.getTime",
       "status": "static",
-      "note": "the composed new Date(dateString).getTime() form; new Date().getTime() is stdlib.date.now's surface"
+      "note": "the millisecond value of a stored Date"
+    },
+    {
+      "id": "stdlib.date.getTimezoneOffset",
+      "kind": "stdlib",
+      "name": "Date.prototype.getTimezoneOffset",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getUTCDate",
+      "kind": "stdlib",
+      "name": "Date.prototype.getUTCDate",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getUTCDay",
+      "kind": "stdlib",
+      "name": "Date.prototype.getUTCDay",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getUTCFullYear",
+      "kind": "stdlib",
+      "name": "Date.prototype.getUTCFullYear",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getUTCHours",
+      "kind": "stdlib",
+      "name": "Date.prototype.getUTCHours",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getUTCMilliseconds",
+      "kind": "stdlib",
+      "name": "Date.prototype.getUTCMilliseconds",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getUTCMinutes",
+      "kind": "stdlib",
+      "name": "Date.prototype.getUTCMinutes",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getUTCMonth",
+      "kind": "stdlib",
+      "name": "Date.prototype.getUTCMonth",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.getUTCSeconds",
+      "kind": "stdlib",
+      "name": "Date.prototype.getUTCSeconds",
+      "status": "static"
     },
     {
       "id": "stdlib.date.now",
       "kind": "stdlib",
       "name": "Date.now",
       "status": "static",
-      "note": "the live clock; the zero-argument new Date() compositions read it too"
+      "note": "the live clock"
     },
     {
       "id": "stdlib.date.toISOString",
       "kind": "stdlib",
       "name": "Date.prototype.toISOString",
       "status": "static",
-      "note": "the composed new Date(ms?).toISOString() form"
+      "note": "UTC ISO formatting over constructed and stored Date values"
+    },
+    {
+      "id": "stdlib.date.valueOf",
+      "kind": "stdlib",
+      "name": "Date.prototype.valueOf",
+      "status": "static",
+      "note": "the same millisecond read as getTime()"
+    },
+    {
+      "id": "stdlib.fetch",
+      "kind": "stdlib",
+      "name": "fetch",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: argument-evaluation, webidl-conversion, surplus-arguments, promise-settlement, transport, error-shape; differential evidence: fixture:static, fixture:static-coercion, fixture:static-network-error"
+    },
+    {
+      "id": "stdlib.fetch.request-init.body",
+      "kind": "stdlib",
+      "name": "RequestInit.body",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; conversion: string, Uint8Array, ReadableStream, or null; differential evidence: fixture:static, fixture:static-stream, fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.fetch.request-init.cache",
+      "kind": "stdlib",
+      "name": "RequestInit.cache",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; neither compiler tier preserves this RequestInit member's conversion or transport behavior"
+    },
+    {
+      "id": "stdlib.fetch.request-init.credentials",
+      "kind": "stdlib",
+      "name": "RequestInit.credentials",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; neither compiler tier preserves this RequestInit member's conversion or transport behavior"
+    },
+    {
+      "id": "stdlib.fetch.request-init.dispatcher",
+      "kind": "stdlib",
+      "name": "RequestInit.dispatcher",
+      "status": "dynamic-only",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the dynamic tier recognizes Vercel CLI's EnvProxyDispatcher and applies equivalent native environment-proxy routing"
+    },
+    {
+      "id": "stdlib.fetch.request-init.duplex",
+      "kind": "stdlib",
+      "name": "RequestInit.duplex",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; conversion: WebIDL enum; 'half' required for streaming bodies; differential evidence: fixture:static-stream, fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.fetch.request-init.headers",
+      "kind": "stdlib",
+      "name": "RequestInit.headers",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; conversion: Headers, record, or sequence-of-pairs snapshot; differential evidence: fixture:static, fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.fetch.request-init.integrity",
+      "kind": "stdlib",
+      "name": "RequestInit.integrity",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; neither compiler tier preserves this RequestInit member's conversion or transport behavior"
+    },
+    {
+      "id": "stdlib.fetch.request-init.keepalive",
+      "kind": "stdlib",
+      "name": "RequestInit.keepalive",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; neither compiler tier preserves this RequestInit member's conversion or transport behavior"
+    },
+    {
+      "id": "stdlib.fetch.request-init.method",
+      "kind": "stdlib",
+      "name": "RequestInit.method",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; conversion: WebIDL ByteString after all call arguments evaluate; differential evidence: fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.fetch.request-init.mode",
+      "kind": "stdlib",
+      "name": "RequestInit.mode",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; neither compiler tier preserves this RequestInit member's conversion or transport behavior"
+    },
+    {
+      "id": "stdlib.fetch.request-init.priority",
+      "kind": "stdlib",
+      "name": "RequestInit.priority",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; neither compiler tier preserves this RequestInit member's conversion or transport behavior"
+    },
+    {
+      "id": "stdlib.fetch.request-init.redirect",
+      "kind": "stdlib",
+      "name": "RequestInit.redirect",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; conversion: WebIDL enum: follow, error, or manual; differential evidence: fixture:static, fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.fetch.request-init.referrer",
+      "kind": "stdlib",
+      "name": "RequestInit.referrer",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; neither compiler tier preserves this RequestInit member's conversion or transport behavior"
+    },
+    {
+      "id": "stdlib.fetch.request-init.referrerPolicy",
+      "kind": "stdlib",
+      "name": "RequestInit.referrerPolicy",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; neither compiler tier preserves this RequestInit member's conversion or transport behavior"
+    },
+    {
+      "id": "stdlib.fetch.request-init.signal",
+      "kind": "stdlib",
+      "name": "RequestInit.signal",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; conversion: native AbortSignal handle or absent; differential evidence: fixture:static, fixture:static-abort-throw"
+    },
+    {
+      "id": "stdlib.fetch.request-init.window",
+      "kind": "stdlib",
+      "name": "RequestInit.window",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; neither compiler tier preserves this RequestInit member's conversion or transport behavior"
+    },
+    {
+      "id": "stdlib.headers.append",
+      "kind": "stdlib",
+      "name": "Headers.append",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, mutation, error-shape; differential evidence: fixture:static, fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.headers.constructor",
+      "kind": "stdlib",
+      "name": "Headers constructor",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the interface constructor has no compiler bridge in either tier"
+    },
+    {
+      "id": "stdlib.headers.delete",
+      "kind": "stdlib",
+      "name": "Headers.delete",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, mutation, error-shape; differential evidence: fixture:static, fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.headers.entries",
+      "kind": "stdlib",
+      "name": "Headers.entries",
+      "status": "dynamic-only",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; native Headers iteration does not yet expose a static iterator handle"
+    },
+    {
+      "id": "stdlib.headers.forEach",
+      "kind": "stdlib",
+      "name": "Headers.forEach",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: callback-order, callback-this, mutation; differential evidence: fixture:static, fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.headers.get",
+      "kind": "stdlib",
+      "name": "Headers.get",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, missing-arguments, property-read; differential evidence: fixture:static, fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.headers.getSetCookie",
+      "kind": "stdlib",
+      "name": "Headers.getSetCookie",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, mutation, error-shape; differential evidence: fixture:static, fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.headers.has",
+      "kind": "stdlib",
+      "name": "Headers.has",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, missing-arguments, property-read; differential evidence: fixture:static, fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.headers.keys",
+      "kind": "stdlib",
+      "name": "Headers.keys",
+      "status": "dynamic-only",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; native Headers iteration does not yet expose a static iterator handle"
+    },
+    {
+      "id": "stdlib.headers.set",
+      "kind": "stdlib",
+      "name": "Headers.set",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, mutation, error-shape; differential evidence: fixture:static, fixture:static-coercion"
+    },
+    {
+      "id": "stdlib.headers.symbol.iterator",
+      "kind": "stdlib",
+      "name": "Headers.[Symbol.iterator]",
+      "status": "dynamic-only",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; native Headers iteration does not expose an engine-free iterator handle"
+    },
+    {
+      "id": "stdlib.headers.values",
+      "kind": "stdlib",
+      "name": "Headers.values",
+      "status": "dynamic-only",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; native Headers iteration does not yet expose a static iterator handle"
     },
     {
       "id": "stdlib.map.clear",
@@ -2252,6 +2760,538 @@
       "code": "SC2012"
     },
     {
+      "id": "stdlib.readable-stream-default-controller.close",
+      "kind": "stdlib",
+      "name": "ReadableStreamDefaultController.close",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: state-machine, error-shape; differential evidence: generated:stream-traces, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.readable-stream-default-controller.constructor",
+      "kind": "stdlib",
+      "name": "ReadableStreamDefaultController constructor",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the constructor object is unavailable in the dynamic engine; static controller handles come from underlying-source callbacks"
+    },
+    {
+      "id": "stdlib.readable-stream-default-controller.desired-size",
+      "kind": "stdlib",
+      "name": "ReadableStreamDefaultController.desiredSize",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: property-read, state-machine; differential evidence: generated:stream-traces"
+    },
+    {
+      "id": "stdlib.readable-stream-default-controller.enqueue",
+      "kind": "stdlib",
+      "name": "ReadableStreamDefaultController.enqueue",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: identity, liveness, state-machine, error-shape; differential evidence: generated:stream-traces, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.readable-stream-default-controller.error",
+      "kind": "stdlib",
+      "name": "ReadableStreamDefaultController.error",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: identity, promise-settlement, state-machine; differential evidence: generated:stream-traces, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.readable-stream-default-reader.cancel",
+      "kind": "stdlib",
+      "name": "ReadableStreamDefaultReader.cancel",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: identity, promise-settlement, state-machine; differential evidence: generated:stream-traces, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.readable-stream-default-reader.closed",
+      "kind": "stdlib",
+      "name": "ReadableStreamDefaultReader.closed",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: promise-settlement, property-read, state-machine; differential evidence: generated:stream-traces, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.readable-stream-default-reader.constructor",
+      "kind": "stdlib",
+      "name": "ReadableStreamDefaultReader constructor",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the constructor object is unavailable in the dynamic engine; static reader handles come from ReadableStream.getReader()"
+    },
+    {
+      "id": "stdlib.readable-stream-default-reader.read",
+      "kind": "stdlib",
+      "name": "ReadableStreamDefaultReader.read",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: identity, promise-settlement, state-machine; differential evidence: generated:stream-traces, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.readable-stream-default-reader.release-lock",
+      "kind": "stdlib",
+      "name": "ReadableStreamDefaultReader.releaseLock",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: promise-settlement, state-machine, error-shape; differential evidence: generated:stream-traces, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.readable-stream.cancel",
+      "kind": "stdlib",
+      "name": "ReadableStream.cancel",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: identity, promise-settlement, state-machine; differential evidence: generated:stream-traces, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.readable-stream.constructor",
+      "kind": "stdlib",
+      "name": "ReadableStream constructor",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, callback-this, callback-order, state-machine; differential evidence: generated:stream-traces, fixture:static-stream-this"
+    },
+    {
+      "id": "stdlib.readable-stream.from",
+      "kind": "stdlib",
+      "name": "ReadableStream.from",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, missing-arguments, surplus-arguments, liveness; differential evidence: generated:webidl-operations, generated:stream-traces"
+    },
+    {
+      "id": "stdlib.readable-stream.get-reader",
+      "kind": "stdlib",
+      "name": "ReadableStream.getReader",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, identity, state-machine, error-shape; differential evidence: generated:stream-traces, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.readable-stream.locked",
+      "kind": "stdlib",
+      "name": "ReadableStream.locked",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: property-read, state-machine; differential evidence: generated:stream-traces"
+    },
+    {
+      "id": "stdlib.readable-stream.pipeThrough",
+      "kind": "stdlib",
+      "name": "ReadableStream.pipeThrough",
+      "status": "dynamic-only",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the wider Web Streams graph is outside the native readable-stream slice"
+    },
+    {
+      "id": "stdlib.readable-stream.pipeTo",
+      "kind": "stdlib",
+      "name": "ReadableStream.pipeTo",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the dynamic Web Streams bridge exposes only an explicit unsupported stub for this operation"
+    },
+    {
+      "id": "stdlib.readable-stream.symbol.asyncIterator",
+      "kind": "stdlib",
+      "name": "ReadableStream.[Symbol.asyncIterator]",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; symbol-keyed async iterator handles have no compiler lowering in either tier; use values() with --dynamic"
+    },
+    {
+      "id": "stdlib.readable-stream.tee",
+      "kind": "stdlib",
+      "name": "ReadableStream.tee",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the dynamic Web Streams bridge exposes only an explicit unsupported stub for this operation"
+    },
+    {
+      "id": "stdlib.readable-stream.values",
+      "kind": "stdlib",
+      "name": "ReadableStream.values",
+      "status": "dynamic-only",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the wider Web Streams graph is outside the native readable-stream slice"
+    },
+    {
+      "id": "stdlib.request.arrayBuffer",
+      "kind": "stdlib",
+      "name": "Request.arrayBuffer",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.attribute",
+      "kind": "stdlib",
+      "name": "Request.attribute",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.blob",
+      "kind": "stdlib",
+      "name": "Request.blob",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.body",
+      "kind": "stdlib",
+      "name": "Request.body",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.bodyUsed",
+      "kind": "stdlib",
+      "name": "Request.bodyUsed",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.bytes",
+      "kind": "stdlib",
+      "name": "Request.bytes",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.cache",
+      "kind": "stdlib",
+      "name": "Request.cache",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.clone",
+      "kind": "stdlib",
+      "name": "Request.clone",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.constructor",
+      "kind": "stdlib",
+      "name": "Request constructor",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.credentials",
+      "kind": "stdlib",
+      "name": "Request.credentials",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.destination",
+      "kind": "stdlib",
+      "name": "Request.destination",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.duplex",
+      "kind": "stdlib",
+      "name": "Request.duplex",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.formData",
+      "kind": "stdlib",
+      "name": "Request.formData",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.headers",
+      "kind": "stdlib",
+      "name": "Request.headers",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.integrity",
+      "kind": "stdlib",
+      "name": "Request.integrity",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.isHistoryNavigation",
+      "kind": "stdlib",
+      "name": "Request.isHistoryNavigation",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.isReloadNavigation",
+      "kind": "stdlib",
+      "name": "Request.isReloadNavigation",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.json",
+      "kind": "stdlib",
+      "name": "Request.json",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.keepalive",
+      "kind": "stdlib",
+      "name": "Request.keepalive",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.method",
+      "kind": "stdlib",
+      "name": "Request.method",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.mode",
+      "kind": "stdlib",
+      "name": "Request.mode",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.redirect",
+      "kind": "stdlib",
+      "name": "Request.redirect",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.referrer",
+      "kind": "stdlib",
+      "name": "Request.referrer",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.referrerPolicy",
+      "kind": "stdlib",
+      "name": "Request.referrerPolicy",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.signal",
+      "kind": "stdlib",
+      "name": "Request.signal",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.text",
+      "kind": "stdlib",
+      "name": "Request.text",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.request.url",
+      "kind": "stdlib",
+      "name": "Request.url",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; typed source has no compiler bridge for this interface in either tier"
+    },
+    {
+      "id": "stdlib.response-init.headers",
+      "kind": "stdlib",
+      "name": "ResponseInit.headers",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; conversion: Headers, record, or sequence-of-pairs snapshot; differential evidence: fixture:static"
+    },
+    {
+      "id": "stdlib.response-init.status",
+      "kind": "stdlib",
+      "name": "ResponseInit.status",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; conversion: WebIDL unsigned-short conversion followed by the 200–599 range check; differential evidence: fixture:static"
+    },
+    {
+      "id": "stdlib.response-init.statusText",
+      "kind": "stdlib",
+      "name": "ResponseInit.statusText",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; conversion: WebIDL ByteString with HTTP reason-phrase validation; differential evidence: fixture:static"
+    },
+    {
+      "id": "stdlib.response.arrayBuffer",
+      "kind": "stdlib",
+      "name": "Response.arrayBuffer",
+      "status": "dynamic-only",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; free-standing ArrayBuffer values have no static representation; use Response.bytes()"
+    },
+    {
+      "id": "stdlib.response.blob",
+      "kind": "stdlib",
+      "name": "Response.blob",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the dynamic fetch bridge does not implement this Response operation"
+    },
+    {
+      "id": "stdlib.response.body",
+      "kind": "stdlib",
+      "name": "Response.body",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: property-read; differential evidence: fixture:static"
+    },
+    {
+      "id": "stdlib.response.bodyUsed",
+      "kind": "stdlib",
+      "name": "Response.bodyUsed",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: property-read; differential evidence: fixture:static"
+    },
+    {
+      "id": "stdlib.response.bytes",
+      "kind": "stdlib",
+      "name": "Response.bytes",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: body-consumption, promise-settlement, state-machine, error-shape; differential evidence: fixture:static, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.response.clone",
+      "kind": "stdlib",
+      "name": "Response.clone",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the dynamic fetch bridge does not implement this Response operation"
+    },
+    {
+      "id": "stdlib.response.constructor",
+      "kind": "stdlib",
+      "name": "Response constructor",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: webidl-conversion, body-consumption, state-machine, error-shape; supported scope: BodyInit is string, Uint8Array/Buffer, ReadableStream<Uint8Array>, null/undefined, or a checked-dynamic value that follows the supported WebIDL string conversion; ResponseInit is headers/status/statusText; differential evidence: fixture:static"
+    },
+    {
+      "id": "stdlib.response.formData",
+      "kind": "stdlib",
+      "name": "Response.formData",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the dynamic fetch bridge does not implement this Response operation"
+    },
+    {
+      "id": "stdlib.response.headers",
+      "kind": "stdlib",
+      "name": "Response.headers",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: property-read; differential evidence: fixture:static"
+    },
+    {
+      "id": "stdlib.response.json",
+      "kind": "stdlib",
+      "name": "Response.json",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: body-consumption, promise-settlement, state-machine, error-shape; differential evidence: fixture:static, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.response.ok",
+      "kind": "stdlib",
+      "name": "Response.ok",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: property-read; differential evidence: fixture:static"
+    },
+    {
+      "id": "stdlib.response.redirected",
+      "kind": "stdlib",
+      "name": "Response.redirected",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: property-read; differential evidence: fixture:static"
+    },
+    {
+      "id": "stdlib.response.static.error",
+      "kind": "stdlib",
+      "name": "Response.error",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; Response static constructor-object operations have no compiler lowering in either tier"
+    },
+    {
+      "id": "stdlib.response.static.json",
+      "kind": "stdlib",
+      "name": "Response.json",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; Response static constructor-object operations have no compiler lowering in either tier"
+    },
+    {
+      "id": "stdlib.response.static.redirect",
+      "kind": "stdlib",
+      "name": "Response.redirect",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; Response static constructor-object operations have no compiler lowering in either tier"
+    },
+    {
+      "id": "stdlib.response.status",
+      "kind": "stdlib",
+      "name": "Response.status",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: property-read; differential evidence: fixture:static"
+    },
+    {
+      "id": "stdlib.response.statusText",
+      "kind": "stdlib",
+      "name": "Response.statusText",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: property-read; differential evidence: fixture:static"
+    },
+    {
+      "id": "stdlib.response.text",
+      "kind": "stdlib",
+      "name": "Response.text",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: body-consumption, promise-settlement, state-machine, error-shape; differential evidence: fixture:static, fixture:static-stream"
+    },
+    {
+      "id": "stdlib.response.type",
+      "kind": "stdlib",
+      "name": "Response.type",
+      "status": "dynamic-only",
+      "code": "SC2020",
+      "note": "Node 24.15.0 / Undici 7.24.4; the member is outside the native static handle projection"
+    },
+    {
+      "id": "stdlib.response.url",
+      "kind": "stdlib",
+      "name": "Response.url",
+      "status": "static",
+      "note": "Node 24.15.0 / Undici 7.24.4; facets: property-read; differential evidence: fixture:static"
+    },
+    {
       "id": "stdlib.set.add",
       "kind": "stdlib",
       "name": "Set.prototype.add",
@@ -2426,7 +3466,7 @@
       "kind": "stdlib",
       "name": "string.prototype.split",
       "status": "static",
-      "note": "the lowered call form takes exactly 1 argument"
+      "note": "the lowered call form takes 1 to 2 arguments"
     },
     {
       "id": "stdlib.string.startsWith",

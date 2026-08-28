@@ -3,8 +3,7 @@
 // @types/node needed to preflight) and every reached use without a
 // lowering terminates in a clean SC2020-family diagnostic at its use
 // site — the coverage report's honest blocker list, never a raw
-// "Cannot find name". fetch/AbortSignal.timeout DO lower (island-backed
-// ambients): in this static build their sites report SC2012 instead.
+// "Cannot find name". fetch, RequestInit, and AbortSignal lower natively.
 // setInterval/clearInterval, process.on/once/off (signals and "exit"),
 // the stdin events, and stdin.destroy() all LOWER now — the fences here
 // are the members BEYOND the lowered slice.
@@ -26,8 +25,9 @@ const errTty = process.stderr.isTTY;
 import { accessSync, constants, mkdtempSync, readFileSync } from "node:fs";
 accessSync("/bin/sh", constants.X_OK);
 const tmp = mkdtempSync("/tmp/scr-");
-const raw = readFileSync("/etc/hosts").toString(tty ? "hex" : "latin1"); // the read and every literal encoding lower; a non-literal fences
-
+const raw = readFileSync("/etc/hosts").toString(tty ? "hex" : "latin1"); // runtime BufferEncoding selection lowers too
+// The computed encoding is now part of the static Buffer surface.
 import { deflateSync, gzipSync } from "node:zlib";
 const packed = deflateSync("data"); // string data: the wrap-it-first hint
 const zipped = gzipSync("data"); // beyond the lowered pair: fenced
+// The remaining imports continue the declared-but-not-lowered surface.

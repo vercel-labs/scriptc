@@ -105,7 +105,7 @@ Blocker lines carry `SC` codes — the same codes `scriptc build` errors with, s
 
 - `'X' is part of the standard library types but has no scriptc lowering yet (SC2020)` — the type checker sees the full standard library, but only the supported surface compiles. The build error at that site includes the supported-alternatives hint.
 - `importing 'pkg' requires the embedded dynamic engine (SC2013)` — npm package implementations run in the engine; add `--dynamic` or drop the dependency.
-- `'fetch' runs in the embedded dynamic engine (SC2012)` — island-backed ambient API: typed, callable from your code, executed by the engine.
+- `'Response.arrayBuffer() in a static build' is typed but has no scriptc lowering yet (SC2020)` — `fetch` itself is native static; use `Response.bytes()` for a byte body, or `--dynamic` for the wider Web API.
 - `passing 'unknown' values where 'any' is expected (SC1100)` — the `any`/`unknown` boundary rules; narrow or cast first.
 
 ## Type errors gate the analysis
@@ -119,3 +119,24 @@ $ scriptc coverage broken.ts
 ```
 
 This is deliberate: tier assignment is driven by types, so numbers computed over an ill-typed program would be fiction.
+
+## External host type surfaces
+
+Some applications run inside an embedder that provides modules which do not
+exist in `node_modules`. When the embedder ships a declaration restating that
+surface, map its exact bare specifier during coverage:
+
+`scriptc coverage src/core.ts --external-types @native-sdk/core=types/native-sdk-core.d.ts`
+
+The option is repeatable. Relative declaration paths resolve from the current
+working directory; `.d.ts`, `.d.mts`, and `.d.cts` files are accepted. The
+declaration participates in type checking, so project-owned modules and local
+values using its structural types can be measured. Type-only imports add no
+runtime boundary. Relative declaration imports and re-exports are included, so
+the mapped file may be a conventional `index.d.ts` barrel.
+
+This mapping deliberately does not claim that the host module can execute in a
+scriptc binary. Value imports and uses appear as `SC1010` external-host
+blockers, while coverage continues counting the rest of the application. The
+option is available only on `scriptc coverage`; builds still require an actual
+module implementation or an explicit runtime integration.

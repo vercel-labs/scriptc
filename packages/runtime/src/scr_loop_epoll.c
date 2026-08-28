@@ -1,6 +1,6 @@
 /* The Linux backend of the platform readiness contract (scr_platform.h):
  * epoll for fd readiness, one timerfd per armed one-shot timer. This is
- * the LIVE Linux poller behind scr_net.c and scr_dgram.c (cc.ts links it
+ * the LIVE Linux poller behind scr_net.c and scr_dgram.c (native-toolchain.ts links it
  * alongside scr_loop_kqueue.c whenever those units compile; each TU is
  * empty off its platform). Child-exit wakeups are NOT here: scr_child.c
  * keeps its narrow seam inline (kqueue EVFILT_PROC on BSD, pidfd_open +

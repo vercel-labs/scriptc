@@ -26,6 +26,7 @@ const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
+const platformTest = process.env["SCRIPTC_PORTABLE_ONLY"] === "1" ? test.skip : test;
 
 interface BuildResult {
   binaryPath: string;
@@ -125,12 +126,12 @@ console.log(/${"(a)".repeat(300)}/.test("a"));
     expect(err.stderr).toContain("SyntaxError: Invalid regular expression:");
   });
 
-  test("regex-free programs never reference the regex runtime; regex use stays under 300KB", async () => {
+  platformTest("regex-free programs never reference the regex runtime; regex use stays in its size class", async () => {
     // Measured on plain (non-ASan) builds. A regex-free program's C names
     // no ScrRegex symbol, so its link line is the historical one (the
-    // <200KB static size class is pinned by island.test.ts). A regex-USING
-    // binary links libregexp + libunicode (~110KB of matcher) — it must
-    // stay far below the ~700KB engine size class.
+    // compact static size class is pinned by island.test.ts). A regex-USING
+    // binary links libregexp + libunicode, but must stay far below the
+    // embedded-engine size class.
     const [plainBuild, regexBuild] = await Promise.all([
       build("size-plain", `console.log("hello", "world");\n`, { sanitize: false }),
       build(
@@ -159,32 +160,21 @@ console.log(/${"(a)".repeat(300)}/.test("a"));
     // re-based the static class by one more; the ambient-receiver stack,
     // the %j dyn stringify walk, and the runtime-encoding readFileSync
     // form (all in always-linked TUs) tipped the regex class one more
-    // page.
-    // The static class forks per platform (see island.test.ts's twin):
-    // Linux measured 322,528 at the same commit where Mach-O sits at
-    // 312,024. The globals lane (DOMException, structuredClone + the checked-dynamic tree
-    // object walks, atob/btoa, queueMicrotask — all in always-linked
-    // TUs) re-based both arms by ~2 pages (Mach-O measured 333,544).
-    // StringToNumber (Number(aString) — ~1.3KB in the always-linked
-    // string TU) tipped the Mach-O arm one more page from 336,328 to a
-    // measured 353,000; the cushion stays under a page so the next tip
-    // still fails loudly.
-    expect(statSync(plainBuild.binaryPath).size).toBeLessThan(process.platform === "linux" ? 360_000 : 361_000);
-// The regex class re-bases per platform: the same program measured
-    // 461,456 bytes on native Linux (scripts/sandbox-suite.mjs — AL2023
-    // clang 15, ELF section alignment, glibc static bits, and the lane's
-    // link shim appending -lm plus an arc4random_buf compat object),
-    // where the Mach-O calibration sits BELOW the class. The
-    // server-callbacks additions (ambient-receiver stack, %j dyn
-    // stringify walk, runtime-encoding readFileSync — always-linked TUs)
-    // re-based BOTH arms by a page. The fences are unchanged on both
-    // platforms: regex linkage is a ~110KB jump above the static class
-    // and the engine a ~620KB one, so a page-scale cushion cannot mask
-    // either regression.
-    // (The dyn-async page re-base above moves this arm in step. Re-based
-    // +8KB for the engine-handle kind arms and validation-ladder strings.)
+    // page; positioned readSync's cross-platform pread seam tipped the
+    // Mach-O regex class by one further page. Native Response construction
+    // and mutable constructed Headers added another page to both Darwin
+    // classes; the Linux bounds were rebased by the same 16KB while
+    // preserving their existing cushion.
+    // The canonical Ubuntu 24.04/clang Sandbox measures 387,600 bytes for
+    // the plain binary and 540,232 with regex linked. The Linux bounds leave
+    // roughly one ELF page of growth. Current Mach-O toolchains measure
+    // 398,024 bytes for the plain binary, whose bound likewise leaves about
+    // one native page; neither cushion can hide an engine-sized jump.
+    expect(statSync(plainBuild.binaryPath).size).toBeLessThan(
+      process.platform === "linux" ? 408_000 : 415_000,
+    );
     expect(statSync(regexBuild.binaryPath).size).toBeLessThan(
-      process.platform === "linux" ? 540_000 : 512_000,
+      process.platform === "linux" ? 561_000 : 545_000,
     );
   });
 });

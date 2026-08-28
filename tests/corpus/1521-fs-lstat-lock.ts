@@ -9,15 +9,39 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const dir = mkdtempSync(join(tmpdir(), "scr-lstat-"));
-writeFileSync(join(dir, "target.txt"), "pointed-at");
+const target = join(dir, "target");
+const link = join(dir, "link");
+mkdirSync(target);
+writeFileSync(join(target, "payload.txt"), "pointed-at");
 
-// A symlink, made with ln -s (symlinkSync has no lowering yet).
-execFileSync("ln", ["-s", join(dir, "target.txt"), join(dir, "link")], { stdio: "pipe" });
-const viaStat = statSync(join(dir, "link")); // follows
-const viaLstat = lstatSync(join(dir, "link")); // does not
-console.log("stat follows:", viaStat.isFile(), viaStat.isSymbolicLink(), viaStat.size);
-console.log("lstat sees the link:", viaLstat.isSymbolicLink(), viaLstat.isFile());
-console.log("plain file:", lstatSync(join(dir, "target.txt")).isSymbolicLink());
+// symlinkSync has no lowering yet, so ask the Node binary available on every
+// differential host to create it. A Windows directory junction needs no
+// developer-mode symlink privilege. Backdate the target's atime so the
+// lstat snapshot proves its metadata came from the link, not the target.
+execFileSync(
+  "node",
+  [
+    "-e",
+    "const fs=require('node:fs');fs.utimesSync(process.argv[1],946684800,946684800);" +
+      "fs.symlinkSync(process.argv[1],process.argv[2],process.platform==='win32'?'junction':'dir')",
+    target,
+    link,
+  ],
+  { stdio: "pipe" },
+);
+const viaStat = statSync(link); // follows
+const viaLstat = lstatSync(link); // does not
+console.log("stat follows:", viaStat.isDirectory(), viaStat.isSymbolicLink());
+console.log(
+  "lstat sees the link:",
+  viaLstat.isSymbolicLink(),
+  viaLstat.isDirectory(),
+  viaLstat.atimeMs !== viaStat.atimeMs,
+  viaLstat.size === target.length,
+  viaLstat.blocks,
+  viaLstat.nlink,
+);
+console.log("plain directory:", lstatSync(target).isSymbolicLink());
 try {
   lstatSync(join(dir, "nope"));
 } catch (e) {
@@ -29,7 +53,7 @@ try {
 // mtimeMs: a fresh file's mtime is recent (within the last hour) and not
 // in the future (a minute of clock skew allowed) — bounded facts.
 const now = Date.now();
-const mtime = statSync(join(dir, "target.txt")).mtimeMs;
+const mtime = statSync(join(target, "payload.txt")).mtimeMs;
 console.log("mtime sane:", now - mtime < 3600_000, mtime <= now + 60_000);
 
 // The lock idiom: mkdirSync succeeds once, then throws catchable EEXIST;

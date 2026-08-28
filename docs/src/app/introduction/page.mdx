@@ -1,6 +1,6 @@
 # Introduction
 
-**scriptc compiles ordinary TypeScript into small, fast native executables** — no Node, no V8, no JavaScript engine in the binary. No changes to your code: no annotations, no dialect, no special standard library. The same TypeScript you run on Node, type-checked by the real TypeScript compiler, compiled to native code. What compiles behaves byte-for-byte like Node.
+**scriptc compiles ordinary TypeScript into small, fast native executables** — no Node, no V8, no JavaScript engine in the binary. No changes to your code: no annotations, no dialect, no special standard library. The same TypeScript you run on Node, type-checked by the real TypeScript compiler, compiled to native code.
 
 ```console
 $ cat fib.ts
@@ -50,7 +50,7 @@ $ scriptc coverage cli.ts
 The static surface covers the language and the standard library real programs use:
 
 - **The language** — classes with single inheritance and dynamic dispatch, closures with JS capture semantics, generic function declarations (monomorphized), discriminated unions driven by TypeScript's own narrowing, `async`/`await` with JS-exact scheduling, exceptions with `finally`, destructuring, spread, optional/default/rest parameters, getters and setters, iterators, template literals, bitwise operators with JS-exact ToInt32 semantics, and the static slice of regular expressions.
-- **The standard library** — strings with UTF-16-exact surface semantics, arrays, `Map` and `Set` with JS-exact ordering, `JSON` with runtime-validated casts, `Math`, typed arrays and `Buffer`, `Error` hierarchies with typed `catch`.
+- **The standard library** — strings with UTF-16-exact surface semantics, arrays, `Map` and `Set` with JS-exact ordering, read-only `Date` values and calendar getters, `JSON` with runtime-validated casts, `Math`, typed arrays and `Buffer`, `Error` hierarchies with typed `catch`.
 - **Node's API surface** — `fs` (sync and promises), `path`, `process`, `child_process`, `os`, `crypto`, `url`/`URL`, `zlib`, timers and signal handlers on a dependency-free event loop, and the server stack: `net`, `http`, `https`, `tls`, `dgram`, `dns`, `readline`. Real servers compile:
 
 ```ts:server.ts

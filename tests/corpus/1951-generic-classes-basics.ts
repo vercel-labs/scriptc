@@ -1,6 +1,18 @@
 // Generic classes, monomorphized per instantiation: fields, methods,
 // accessors, inference and explicit type arguments, instanceof against the
 // generic name (one runtime class in Node — the family interval here).
+// The early reference pins collection-order independence: its checker type is
+// first mapped before Box's family has collected, then must remap to Box%N.
+class EarlyHolder {
+  readonly box: Box<number>;
+  constructor(box: Box<number>) {
+    this.box = box;
+  }
+  read(): number {
+    return this.box.get();
+  }
+}
+
 class Box<T> {
   v: T;
   constructor(v: T) {
@@ -20,6 +32,7 @@ class Box<T> {
 const a = new Box(41); // inferred Box<number>
 a.set(a.get() + 1);
 console.log(a.get(), a.describe());
+console.log(new EarlyHolder(a).read());
 
 const b = new Box<string>("hi"); // explicit
 console.log(b.get().toUpperCase(), b.describe());

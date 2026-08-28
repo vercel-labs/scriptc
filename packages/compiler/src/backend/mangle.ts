@@ -117,6 +117,9 @@ export function mangleRecordStruct(shapeId: string): string {
 export function mangleRecordNew(shapeId: string): string {
   return `sc_rnew_${sanitize(shapeId)}`;
 }
+export function mangleRecordClone(shapeId: string): string {
+  return `sc_rclone_${sanitize(shapeId)}`;
+}
 export function mangleRecordRetain(shapeId: string): string {
   return `sc_rretain_${sanitize(shapeId)}`;
 }
@@ -204,6 +207,11 @@ export function mangleCloseOverrideWrap(n: number): string {
 export function mangleDnsLookupThunk(n: number): string {
   return `sc_dnslk_${n}`;
 }
+/** Emitted fs.rename callback adapter (the Error | null union's tags are
+ * program data), interned per callback type. */
+export function mangleFsRenameThunk(n: number): string {
+  return `sc_fsren_${n}`;
+}
 /** Emitted SNI answer-closure thunk (the `(err, ctx?) => void` callback a
  * TLS server's SNICallback receives — its unions' tags are program data),
  * interned per cb func-type key. */
@@ -222,6 +230,9 @@ export function mangleNetLookupAnswerThunk(n: number): string {
  * func-type key. */
 export function mangleConnectSockThunk(n: number): string {
   return `sc_h2conn_${n}`;
+}
+export function mangleConnectResThunk(n: number): string {
+  return `sc_h2conn_res_${n}`;
 }
 
 /** Emitted EventEmitter listener invoke adapter (va_list → the listener's

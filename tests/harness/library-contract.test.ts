@@ -66,7 +66,7 @@ async function buildContract(
    * directories is exactly what the canonical root-relative paths
    * guarantee, and the V13-style assertions prove it). */
   root = cacheDir,
-): Promise<{ outDir: string; archive: string; sidecarPath: string; doc: SidecarDoc; bytes: Buffer }> {
+): Promise<{ outDir: string; archive: string; cPath: string; sidecarPath: string; doc: SidecarDoc; bytes: Buffer }> {
   const dir = join(fixtureRoot, fixture);
   const outDir = join(root, `${fixture}-${emission}${tag}`);
   mkdirSync(outDir, { recursive: true });
@@ -92,6 +92,7 @@ async function buildContract(
   return {
     outDir,
     archive: result.archivePath,
+    cPath: result.cPath,
     sidecarPath: result.sidecarPath!,
     doc: JSON.parse(bytes.toString("utf8")) as SidecarDoc,
     bytes: bytes as Buffer,
@@ -112,7 +113,7 @@ function nmDefined(archive: string, prefix: string): string[] {
 
 describe.each(EMISSIONS)("contract sidecar, %s emission", (emission) => {
   test("anti-alphabetical declaration order, schema shape, V11/V12 identity", async () => {
-    const { outDir, archive, doc, bytes } = await buildContract("contract", emission);
+    const { outDir, archive, cPath, doc, bytes } = await buildContract("contract", emission);
 
     // The emitter's own self-check ran before writing; the test-side
     // validator agrees the document conforms.
@@ -231,10 +232,25 @@ describe.each(EMISSIONS)("contract sidecar, %s emission", (emission) => {
     // exactly prefix + suffix over abi.exports — no extras, no misses.
     expect(doc.abi).toEqual({
       prefix: "kc_",
-      exports: ["abi_version", "build_id", "set_panic_sink", "init", "boot", "send", "command_msg", "title", "helper_probe", "boom"],
+      exports: ["abi_version", "build_id", "set_panic_sink", "set_callback", "init", "boot", "send", "command_msg", "title", "helper_probe", "boom"],
       snapshot_format: 2,
     });
     expect(nmDefined(archive, "kc_")).toEqual(doc.abi.exports.map((s) => `kc_${s}`).sort());
+
+    // The kept/returned program TU is a complete public artifact, even though
+    // archive assembly privately compiles an identity-free projection beside
+    // its tiny volatile identity object.
+    const keptObject = join(outDir, "kept-program.o");
+    execFileSync("clang", [
+      "-std=c11",
+      "-DSCR_LIB",
+      ...(emission === "llvm"
+        ? ["-Wno-override-module"]
+        : ["-Wno-comment", "-I", join(repoRoot, "packages/runtime/src")]),
+      "-c", cPath,
+      "-o", keptObject,
+    ]);
+    expect(nmDefined(keptObject, "kc_")).toEqual(doc.abi.exports.map((s) => `kc_${s}`).sort());
 
     // V12 + the poisoned-guard exemption, end to end: the probe reads the
     // getters before init and after a trap; both reads equal the
@@ -590,6 +606,12 @@ describe("the V1-V14 validator", () => {
     });
   });
 
+  test("V1: a synthesized struct marker is absent or literal true", () => {
+    expectViolation("V1", (d) => {
+      d["types"].structs[0].synthesized = false;
+    });
+  });
+
   test("V2: hashes are exactly 16 lowercase hex digits", () => {
     expectViolation("V2", (d) => {
       d["build_id"] = "B01DFACE00C0FFEE";
@@ -706,6 +728,130 @@ describe("the V1-V14 validator", () => {
   });
 });
 
+/* ── Focused sidecar projection fixtures ───────────────────────────────── */
+
+let projectionCounter = 0;
+
+async function sidecarProjection(source: string): Promise<SidecarDoc> {
+  const outDir = join(cacheDir, `projection-${projectionCounter++}`);
+  mkdirSync(outDir, { recursive: true });
+  const entry = join(outDir, "lib.ts");
+  writeFileSync(entry, source);
+  const profile = {
+    profile_format: 1,
+    name: "sidecar-projection-fixture",
+    entry: "lib.ts",
+    emission: "c",
+    abi: {
+      prefix: "kp_",
+      init_symbol: "kp_init",
+      sink_register_symbol: "kp_set_panic_sink",
+      collect_symbol: null,
+      result_reset_symbol: null,
+    },
+    exports: [{ export: "boot", symbol: "kp_boot", params: [], returns: "f64" }],
+    sidecar: {
+      wire_version: 1,
+      abi_version: 1,
+      snapshot_format: 1,
+      build_id_symbol: "kp_build_id",
+      abi_version_symbol: "kp_abi_version",
+      model: "Model",
+      msg: "Msg",
+    },
+  };
+  const profilePath = join(outDir, "profile.json");
+  writeFileSync(profilePath, JSON.stringify(profile));
+  const result = await compileLibrary({ profilePath, outDir });
+  if (!result.ok) {
+    throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  }
+  return JSON.parse(readFileSync(result.sidecarPath!, "utf8")) as SidecarDoc;
+}
+
+describe("contract sidecar scalar aliases", () => {
+  test("aliases dissolve recursively across records, msg payloads, and helpers", async () => {
+    const doc = await sidecarProjection(`export type Scalar = number;
+export type Volume = Scalar;
+export type Label = string;
+export type Enabled = boolean;
+export type Bytes = Uint8Array;
+export interface Model {
+  volume: Volume;
+  label: Label;
+  enabled: Enabled;
+  data: Bytes;
+  maybe?: Scalar;
+  samples: Volume[];
+}
+export type Msg =
+  | { kind: "set"; value: Volume }
+  | { kind: "rename"; value: Label }
+  | { kind: "toggle"; value: Enabled }
+  | { kind: "upload"; value: Bytes }
+  | { kind: "packet"; size: Volume; body: Label }
+  | { kind: "noop" };
+export function init(): Model {
+  return {
+    volume: 1,
+    label: "one",
+    enabled: true,
+    data: new Uint8Array([1]),
+    samples: [1, 2],
+  };
+}
+export function update(m: Model, msg: Msg): Model { return m; }
+export function inspect(
+  m: Model,
+  volume: Volume,
+  label: Label,
+  enabled: Enabled,
+  data: Bytes,
+): Scalar {
+  return enabled ? volume + label.length + data.length : m.volume;
+}
+let state = init();
+export function boot(): number {
+  state = update(state, { kind: "noop" });
+  return state.volume;
+}
+`);
+
+    expect(validateSidecar(doc)).toEqual([]);
+    expect(doc.types.structs).toEqual([
+      {
+        name: "Model",
+        fields: [
+          { name: "volume", type: { kind: "f64" } },
+          { name: "label", type: { kind: "bytes" } },
+          { name: "enabled", type: { kind: "bool" } },
+          { name: "data", type: { kind: "bytes" } },
+          { name: "maybe", type: { kind: "optional", inner: { kind: "f64" } } },
+          { name: "samples", type: { kind: "slice", elem: { kind: "f64" } } },
+        ],
+      },
+    ]);
+    expect(doc.types.enums).toEqual([]);
+    expect(doc.types.unions).toEqual([]);
+    expect(doc.msg.arms).toEqual([
+      { name: "set", payload: { kind: "number", class: "f64" } },
+      { name: "rename", payload: { kind: "bytes" } },
+      { name: "toggle", payload: { kind: "scalar", type: { kind: "bool" } } },
+      { name: "upload", payload: { kind: "bytes" } },
+      { name: "packet", payload: { kind: "number_bytes", number_field: "size", number_class: "f64", bytes_field: "body" } },
+      { name: "noop", payload: { kind: "void" } },
+    ]);
+    expect(doc.model_helpers).toEqual([
+      {
+        name: "inspect",
+        params: [{ kind: "f64" }, { kind: "bytes" }, { kind: "bool" }, { kind: "bytes" }],
+        returns: { kind: "f64" },
+        arena: false,
+      },
+    ]);
+  });
+});
+
 /* ── SC4009: unprojectable designations refuse, never guess ────────────── */
 
 let refusalCounter = 0;
@@ -713,7 +859,7 @@ async function sidecarRefusal(
   source: string,
   sidecarPatch: Record<string, unknown> = {},
   extraFiles: Record<string, string> = {},
-): Promise<{ code: string; message: string; hint?: string }[]> {
+): Promise<{ code: string; message: string; file: string; hint?: string }[]> {
   const outDir = join(cacheDir, `refusal-${refusalCounter++}`);
   mkdirSync(outDir, { recursive: true });
   const entry = join(outDir, "lib.ts");
@@ -748,7 +894,11 @@ async function sidecarRefusal(
   const result = await compileLibrary({ profilePath, outDir });
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("unreachable");
-  return result.diagnostics.map((d) => (d.hint === undefined ? { code: d.code, message: d.message } : { code: d.code, message: d.message, hint: d.hint }));
+  return result.diagnostics.map((d) => (
+    d.hint === undefined
+      ? { code: d.code, message: d.message, file: d.loc.file }
+      : { code: d.code, message: d.message, file: d.loc.file, hint: d.hint }
+  ));
 }
 
 const REFUSAL_BASE = `export interface Model { count: number; }
@@ -759,7 +909,121 @@ let state = init();
 export function boot(): number { state = update(state, { kind: "tick" }); return state.count; }
 `;
 
+describe("contract sidecar array spellings", () => {
+  test("readonly T[] and ReadonlyArray<T> project identically to T[]", async () => {
+    const doc = await sidecarProjection(`export interface Model {
+  plainIds: number[];
+  readonlyIds: readonly number[];
+  genericIds: ReadonlyArray<number>;
+  maybeIds?: readonly number[];
+}
+export type Msg =
+  | { kind: "replace"; ids: ReadonlyArray<number> }
+  | { kind: "keep" };
+export function init(): Model {
+  return { plainIds: [1], readonlyIds: [2], genericIds: [3] };
+}
+export function update(m: Model, msg: Msg): Model {
+  if (msg.kind === "keep") return m;
+  return { plainIds: msg.ids.slice(), readonlyIds: msg.ids, genericIds: m.genericIds };
+}
+export function inspect(m: Model, left: readonly number[], right: ReadonlyArray<number>): readonly number[] {
+  return [m.plainIds.length, left.length, right.length];
+}
+let state = init();
+export function boot(): number {
+  state = update(state, { kind: "replace", ids: [4, 5] });
+  return state.readonlyIds.length;
+}
+`);
+    const slice = { kind: "slice", elem: { kind: "f64" } } as const;
+    const model = doc.types.structs.find((s) => s.name === "Model");
+    expect(model?.fields).toEqual([
+      { name: "plainIds", type: slice },
+      { name: "readonlyIds", type: slice },
+      { name: "genericIds", type: slice },
+      { name: "maybeIds", type: { kind: "optional", inner: slice } },
+    ]);
+    expect(doc.msg.arms).toEqual([
+      { name: "replace", payload: { kind: "scalar", type: slice } },
+      { name: "keep", payload: { kind: "void" } },
+    ]);
+    expect(doc.model_helpers).toEqual([
+      { name: "inspect", params: [slice, slice], returns: slice, arena: true },
+    ]);
+  });
+
+  test.each(["Array", "ReadonlyArray"])("a local %s<T> alias is not mistaken for the global array type", async (name) => {
+    const diags = await sidecarRefusal(`export type ${name}<T> = { value: T };
+export interface Model { item: ${name}<number>; }
+export type Msg = { kind: "keep" } | { kind: "alsoKeep" };
+export function init(): Model { return { item: { value: 1 } }; }
+export function update(m: Model, msg: Msg): Model { return m; }
+let state = init();
+export function boot(): number {
+  state = update(state, { kind: "keep" });
+  return state.item.value;
+}
+`);
+    expect(diags[0]!.code).toBe("SC4009");
+    expect(diags[0]!.message).toContain(`${name}<number>`);
+  });
+
+  test("an imported ReadonlyArray binding is not mistaken for the global array type", async () => {
+    const diags = await sidecarRefusal(
+      `import type { Box as ReadonlyArray } from "./box.ts";
+export interface Model { item: ReadonlyArray<number>; }
+export type Msg = { kind: "keep" } | { kind: "alsoKeep" };
+export function init(): Model { return { item: { value: 1 } }; }
+export function update(m: Model, msg: Msg): Model { return m; }
+let state = init();
+export function boot(): number {
+  state = update(state, { kind: "keep" });
+  return state.item.value;
+}
+`,
+      {},
+      { "box.ts": "export type Box<T> = { value: T };\n" },
+    );
+    expect(diags[0]!.code).toBe("SC4009");
+    expect(diags[0]!.message).toContain("ReadonlyArray<number>");
+  });
+
+  test("a local Uint8Array interface remains a named record", async () => {
+    const doc = await sidecarProjection(`export interface Uint8Array { value: number; }
+export interface Model { data: Uint8Array; }
+export type Msg = { kind: "keep" } | { kind: "alsoKeep" };
+export function init(): Model { return { data: { value: 1 } }; }
+export function update(m: Model, msg: Msg): Model { return m; }
+let state = init();
+export function boot(): number {
+  state = update(state, { kind: "keep" });
+  return state.data.value;
+}
+`);
+    expect(doc.types.structs.find((s) => s.name === "Uint8Array")?.fields).toEqual([
+      { name: "value", type: { kind: "f64" } },
+    ]);
+    expect(doc.types.structs.find((s) => s.name === "Model")?.fields).toEqual([
+      { name: "data", type: { kind: "node", name: "Uint8Array" } },
+    ]);
+  });
+});
+
 describe("SC4009: contract sidecar refusals", () => {
+  test("an explicit subscriptions export naming nothing refuses at the profile", async () => {
+    const diags = await sidecarRefusal(REFUSAL_BASE, { subscriptions_export: "watch" });
+    expect(diags[0]!.code).toBe("SC4009");
+    expect(diags[0]!.message).toContain("'sidecar.subscriptions_export'");
+    expect(diags[0]!.message).toContain("'watch'");
+    expect(diags[0]!.file).toMatch(/[/\\]profile\.json$/);
+  });
+
+  test("an omitted subscriptions export remains optional", async () => {
+    const doc = await sidecarProjection(REFUSAL_BASE);
+    expect(doc.has_subscriptions).toBe(false);
+  });
+
   test("a model designation naming nothing refuses", async () => {
     const diags = await sidecarRefusal(REFUSAL_BASE, { model: "Nope" });
     expect(diags[0]!.code).toBe("SC4009");

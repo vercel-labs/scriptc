@@ -1,9 +1,10 @@
+import { InternalCompilerError } from "../errors.js";
 /* The machine-readable surface manifest: what the static tier compiles at
  * this compiler version, projected MECHANICALLY from the tables that
  * already decide support — the diagnostics registry (diagnostic.ts), the
  * unsupported-syntax dispatch tables and stdlib/builtin lowering tables
  * (lowering/surfaces.ts), and the supported-builtin-module list
- * (frontend/shared.ts). Nothing here is hand-maintained: adding a table
+ * (frontend/builtin-modules.ts). Nothing here is hand-maintained: adding a table
  * row changes the manifest on the next generation, and the staleness test
  * (tests/harness/surface-manifest.test.ts) fails until the committed file
  * is regenerated (`pnpm manifest`).
@@ -38,7 +39,8 @@
  * byte-deterministic: entries sort by id, keys are emitted in one fixed
  * order, and the output carries no timestamps or absolute paths. */
 import { FENCE_CODES, UNSUPPORTED } from "../diagnostics/diagnostic.js";
-import { SUPPORTED_BUILTIN_MODULES, SUPPORTED_NODE_MODULES } from "../frontend/shared.js";
+import { NODE24_FETCH_COMPAT_PROFILE } from "../compat/fetch-profile.js";
+import { SUPPORTED_BUILTIN_MODULES, SUPPORTED_NODE_MODULES } from "../frontend/builtin-modules.js";
 import {
   AMBIENT_SURFACE_FNS,
   ARRAY_METHODS,
@@ -89,7 +91,10 @@ const COVERAGE_NOTES: string[] = [
   "stdlib and node-builtin member entries name surface whose LOWERED call forms are constrained (arity, argument shapes); declared call forms outside the lowered set are refused per site, with code SC2020 for standard-library and node-builtin surface.",
   "Entries with status 'unsupported' or 'dynamic-only' describe where the named code is raised: forms of the construct outside the supported subset are refused with that code — not that every form of the named feature is refused. Supported forms appear as their own static entries where a table projects them.",
   "Entries with status 'dynamic-only' compile when the build embeds the dynamic engine (--dynamic); without the flag each use site is refused with the entry's code.",
-  "Process-level diagnostic codes are not surface entries: SC0001-SC0004 are preflight gates, SC1110 is a comptime evaluation failure, SC3001 is the alternate-backend tier refusal, SC9001/SC9002 are internal errors.",
+  `The engine-free fetch projection targets Node ${NODE24_FETCH_COMPAT_PROFILE.target.node} with bundled Undici ${NODE24_FETCH_COMPAT_PROFILE.target.undici}. Each projected row names the differential evidence that guards it; changing the pinned Node or Undici version is an explicit profile update.`,
+  "The fetch profile also contains a runtime-reflected census of the selected fetch, abort, Headers, and readable-stream interfaces plus RequestInit/ResponseInit dictionary reads. Static, dynamic-only, and unsupported census rows are projected here; its explicitly out-of-scope metadata rows and adjacent-interface exclusions remain in the profile so absence is deliberate rather than ambiguous.",
+  "Process-level diagnostic codes are not surface entries: SC0001-SC0004 are preflight gates, SC1110 is a comptime evaluation failure, SC3001/SC3002 are backend/target tier refusals, SC9001/SC9002 are internal errors.",
+  "Entry statuses are projected for the desktop targets. The mobile targets (aarch64-apple-ios, aarch64-apple-ios-simulator, aarch64-linux-android) compile library-mode archives only: the library-admissible surface (what SC4005's async_free requirement and the library link set admit) is supported there, the executable lane refuses those triples with SC3002, and no entry outside the library-admissible surface carries a mobile support claim. iOS archives build for iOS 15.0 on darwin hosts; Android archives build against NDK API level 26.",
   "No scheduling metadata is published; entry ids are the stable diff keys across releases.",
 ];
 
@@ -309,6 +314,72 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
     }
   }
 
+  // ── fetch/Web platform: one explicit, versioned compatibility profile ─
+  const fetchTarget =
+    `Node ${NODE24_FETCH_COMPAT_PROFILE.target.node} / ` +
+    `Undici ${NODE24_FETCH_COMPAT_PROFILE.target.undici}`;
+  for (const operation of NODE24_FETCH_COMPAT_PROFILE.operations) {
+    const evidence = operation.evidence.map((item) =>
+      item.generated !== undefined
+        ? `generated:${item.generated}`
+        : `fixture:${item.fixture!}`
+    );
+    add({
+      id: operation.id,
+      kind: "stdlib",
+      name: operation.name,
+      status: "static",
+      note:
+        `${fetchTarget}; facets: ${operation.facets.join(", ")};` +
+        (operation.scope !== undefined ? ` supported scope: ${operation.scope};` : "") +
+        " " +
+        `differential evidence: ${evidence.join(", ")}`,
+    });
+  }
+  for (const options of [
+    NODE24_FETCH_COMPAT_PROFILE.requestInit,
+    NODE24_FETCH_COMPAT_PROFILE.responseInit,
+  ]) {
+    for (const option of options) {
+      const evidence = option.evidence.map((item) =>
+        item.generated !== undefined
+          ? `generated:${item.generated}`
+          : `fixture:${item.fixture!}`
+      );
+      add({
+        id: option.id,
+        kind: "stdlib",
+        name: option.name,
+        status: "static",
+        note:
+          `${fetchTarget}; conversion: ${option.conversion}; ` +
+          `differential evidence: ${evidence.join(", ")}`,
+      });
+    }
+  }
+  for (const row of NODE24_FETCH_COMPAT_PROFILE.inventory.entries) {
+    if (row.status !== "dynamic-only" && row.status !== "unsupported") continue;
+    if (row.code === undefined || row.reason === undefined) {
+      throw new InternalCompilerError(`non-static fetch inventory row '${row.id}' is incomplete`);
+    }
+    const name =
+      row.placement === "constructor"
+        ? `${row.owner} constructor`
+        : row.placement === "dictionary"
+          ? `${row.owner}.${row.member}`
+          : row.owner === "globalThis"
+            ? row.member
+            : `${row.owner}.${row.member}`;
+    add({
+      id: row.id,
+      kind: "stdlib",
+      name,
+      status: row.status,
+      code: row.code,
+      note: `${fetchTarget}; ${row.reason}`,
+    });
+  }
+
   // ── ambient dedicated-path surfaces: the attestation's ground ─────────
   // Date/perf_hooks/process rows from the one ambient table — each entry
   // is fenceable by construction (its row carries the reach-witnessing
@@ -335,7 +406,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
     });
   }
   for (const [code, entry] of Object.entries(FENCE_CODES)) {
-    if (code in UNSUPPORTED) throw new Error(`diagnostic code ${code} is in both UNSUPPORTED and FENCE_CODES`);
+    if (code in UNSUPPORTED) throw new InternalCompilerError(`diagnostic code ${code} is in both UNSUPPORTED and FENCE_CODES`);
     add({
       id: `diagnostic.${code.toLowerCase()}`,
       kind: "diagnostic-fence",
@@ -348,13 +419,13 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
   // ── invariants, then the stable order ──────────────────────────────────
   const seen = new Set<string>();
   for (const e of entries) {
-    if (seen.has(e.id)) throw new Error(`duplicate manifest id: ${e.id}`);
+    if (seen.has(e.id)) throw new InternalCompilerError(`duplicate manifest id: ${e.id}`);
     seen.add(e.id);
     if (e.status !== "static" && e.code === undefined) {
-      throw new Error(`manifest entry ${e.id} has status ${e.status} but no diagnostic code`);
+      throw new InternalCompilerError(`manifest entry ${e.id} has status ${e.status} but no diagnostic code`);
     }
     if (e.code !== undefined && !/^SC\d{4}$/.test(e.code)) {
-      throw new Error(`manifest entry ${e.id} has a malformed code: ${e.code}`);
+      throw new InternalCompilerError(`manifest entry ${e.id} has a malformed code: ${e.code}`);
     }
   }
   entries.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));

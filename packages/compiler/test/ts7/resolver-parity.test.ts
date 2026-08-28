@@ -20,7 +20,7 @@ import {
   resolveRelativeModule,
   resolveTypeDirective,
 } from "../../src/frontend/resolve.js";
-import { isRelativeSpecifier } from "../../src/frontend/shared.js";
+import { isRelativeSpecifier } from "../../src/frontend/workspace-registry.js";
 import { options5 } from "./harness.js";
 
 const repoRoot = join(import.meta.dirname, "../../../..");

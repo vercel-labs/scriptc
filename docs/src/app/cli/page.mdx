@@ -1,21 +1,25 @@
 # CLI Reference
 
-The CLI has three commands. `scriptc --help` prints this same surface.
+The CLI has four commands. `scriptc --help` prints this same surface.
 
 ```console
 $ scriptc --help
-scriptc — TypeScript/JavaScript to native executables (experimental)
+scriptc — TypeScript/JavaScript to native and WebAssembly executables (experimental)
 
 Usage:
-  scriptc build <file.ts|.js> [options]     compile to a native executable
+  scriptc build <file.ts|.js> [options]     compile to an executable or source artifact
   scriptc run <file.ts|.js> [options]       compile and run
   scriptc coverage <file.ts|.js>            how much compiles statically, and why not
   scriptc coverage <file.ts|.js> --dynamic  what a --dynamic build compiles, and what still blocks it
+  scriptc coverage <file.ts|.js> --external-types <specifier=file.d.ts>
+                                            type-resolve an embedder-provided module for analysis
+  scriptc cache warm [runtime|tls|dynamic…] prebuild expensive native cache families
+                                            for the current compiler/SDK/target
 ```
 
 ## scriptc build
 
-Compiles a TypeScript (or JavaScript) entry file to a native executable. The program is type-checked first — by the real TypeScript compiler, honoring the nearest `tsconfig.json` — and any construct without a lowering is a compile error with an `SC`-prefixed code, a code frame, and usually a rewrite hint.
+Compiles a TypeScript (or JavaScript) entry file to serialized typed IR, readable C, textual LLVM IR, native assembly, a relocatable object, a native executable, or a WebAssembly module when the <code>wasm32-wasi</code> target is selected. The program is type-checked first — by the real TypeScript compiler, honoring the nearest `tsconfig.json` — and any construct without a lowering is a compile error with an `SC`-prefixed code, a code frame, and usually a rewrite hint.
 
 ```console
 $ scriptc build fib.ts -o fib
@@ -23,19 +27,44 @@ $ ./fib
 832040
 ```
 
-Without `-o`, the executable lands in `.scriptc/<name>` next to the input, and the generated C translation unit is kept beside it (see `--keep-c`):
+Without `-o`, the primary artifact lands in `.scriptc/` next to the input. Source outputs have stable suffixes and stop before native compilation:
 
 ```console
-$ scriptc build fib.ts --emit-ir
+$ scriptc build fib.ts --emit=ir >/dev/null
 $ ls .scriptc/
-fib
-fib.c
 fib.ir.json
+$ scriptc build fib.ts --emit=c >/dev/null
+$ ls .scriptc/
+fib.c
+$ scriptc build fib.ts --emit=llvm >/dev/null
+$ ls .scriptc/
+fib.ll
+$ scriptc build fib.ts --emit=asm >/dev/null
+$ ls .scriptc/
+fib.s
+$ scriptc build fib.ts --emit=obj >/dev/null
+$ ls .scriptc/
+fib.o
 ```
+
+The three source outputs require only Node. On macOS 15+ arm64, assembly and object
+outputs use the matching native helper installed with scriptc and do not
+invoke an external compiler, archiver, linker, or SDK. The object is a
+relocatable program object with undefined <code>scr_*</code> runtime symbols
+and a required <code>scr_runtime_abi_v1</code> marker, not a standalone library.
+External consumption is experimental and requires the exact runtime version
+reported by <code>--print=native-link-info</code>. That option still writes the
+object, performs no link, and prints a versioned JSON recipe with the target,
+<code>main</code> entry, installed source runtime pack, FFI inputs, and system
+libraries. It never reports private scriptc cache paths. See
+<a href="/native-objects">Native Program Objects</a> for complete C-driver and
+direct-linker examples.
+<code>--emit=exe</code> is the default and retains the existing executable
+behavior.
 
 ## scriptc run
 
-`build` followed by executing the binary, with stdio inherited.
+`build` followed by executing the binary, with stdio inherited. For <code>wasm32-wasi</code>, the CLI starts the module through Node's WASI Preview 1 host, preopens the current working directory as <code>/</code>, and exposes the host's <code>/tmp</code> as the guest's <code>/tmp</code>.
 
 ```console
 $ scriptc run fib.ts
@@ -48,11 +77,21 @@ Note: `run` does not forward extra command-line arguments to the program. To pas
 
 Analyzes the program without producing a binary and reports, statement by statement, what compiles statically, what needs the embedded dynamic engine, and what blocks the rest. With `--dynamic` it answers a different question: what would a `--dynamic` build compile, and what still blocks it. Both forms are covered in depth in [Coverage Reports](/coverage).
 
+## scriptc cache warm
+
+Prebuilds the release runtime objects and native TLS/dynamic-engine archives against the currently selected compiler, SDK, and target. npm installations run this best-effort automatically; use the explicit command when preparing a container image, CI runner, or installation whose lifecycle scripts were disabled. Pass one or more of `runtime`, `tls`, and `dynamic` to seed only those families. Warming applies to persistently cached native executable targets; WASI and mobile library targets report a target-level error. It also reports an error when mutable toolchain inputs have disabled persistent caching, rather than doing disposable work. The entries use the ordinary strict cache identities, and later builds still revalidate their compiler and dependency inputs.
+
 ## Options
 
 <dl>
   <dt><code>-o, --out &lt;path&gt;</code></dt>
-  <dd>Output executable path. Default: <code>.scriptc/&lt;name&gt;</code> next to the input file.</dd>
+  <dd>Primary artifact path. An explicit path is exact. Defaults are <code>.scriptc/&lt;name&gt;.ir.json</code>, <code>.c</code>, <code>.ll</code>, <code>.s</code>, <code>.o</code>, or the platform executable name.</dd>
+
+  <dt><code>--emit &lt;ir|c|llvm|asm|obj|exe&gt;</code></dt>
+  <dd>Select the invocation's one primary artifact. <code>ir</code>, <code>c</code>, and <code>llvm</code> need only Node. <code>asm</code> and <code>obj</code> use the bundled LLVM helper on macOS 15+ arm64 and emit artifacts targeting macOS 14.0. <code>exe</code> is the default.</dd>
+
+  <dt><code>--print &lt;native-link-info&gt;</code></dt>
+  <dd>Build an object (equivalent to <code>--emit=obj</code>) and print its machine-readable external link recipe as JSON instead of printing the artifact path. The document names the exact installed source runtime pack and all link inputs, but does not invoke a linker.</dd>
 
   <dt><code>--dynamic</code></dt>
   <dd>Embed the dynamic engine (~620KB) so npm dependencies and <code>any</code>-typed code can run. Static stays the default — without this flag, dynamic-tier sites are per-site compile errors. See <a href="/dependencies">npm Dependencies</a>.</dd>
@@ -61,7 +100,7 @@ Analyzes the program without producing a binary and reports, statement by statem
   <dd>Bind signature-only TypeScript declarations to native C ABI symbols and link the manifest's archive, object, and system-library inputs. See <a href="/ffi">Native FFI</a>.</dd>
 
   <dt><code>--backend &lt;c|llvm&gt;</code></dt>
-  <dd>Code generator: <code>llvm</code> (default — emits LLVM IR text, compiled by the same clang) or <code>c</code> (the readable reference backend). Unset, the build tries LLVM and falls back to the C backend when the program is outside the LLVM tier — a one-line stderr note says so, and program behavior is identical either way. An explicit <code>--backend llvm</code> fails with a diagnostic instead of falling back (the debugging/CI pin); <code>--backend c</code> pins the reference backend.</dd>
+  <dd>Code generator: <code>llvm</code> (default — emits LLVM IR text, compiled by the same clang) or <code>c</code> (the readable debugging backend). Unset, a native build can fall back to C when the program is outside the LLVM tier. The production <code>wasm32-wasi</code> target never falls back: a missing LLVM lowering is <code>SC3001</code>. Use <code>--backend c</code> explicitly only when inspecting generated C; on WASI that inspection lane accepts async-free programs only and reports <code>SC3001</code> for coroutine-dependent surfaces.</dd>
 
   <dt><code>--npm-static &lt;pkg[,pkg…]|auto&gt;</code></dt>
   <dd>EXPERIMENTAL. Compile the named npm packages' shipped JS statically as program modules instead of embedding them for the engine (repeatable; <code>auto</code> opts in every eligible direct import). A package the preflight refuses falls back to the island with a coverage-report note. See <a href="/dependencies">npm Dependencies</a> for maturity notes.</dd>
@@ -69,17 +108,20 @@ Analyzes the program without producing a binary and reports, statement by statem
   <dt><code>--provenance-sources</code></dt>
   <dd>EXPERIMENTAL. Compile npm dependencies from their provenance-attested source, fetched at the attested commit, as static program modules; packages without a usable attestation keep the engine path (a note, never a failure).</dd>
 
+  <dt><code>--external-types &lt;specifier=file.d.ts&gt;</code></dt>
+  <dd>Coverage only. Map an exact bare module specifier to a local declaration file supplied by an embedder. Repeat the option for multiple modules. The declaration supplies checker types so application coverage can continue; runtime imports and values remain explicit <code>SC1010</code> blockers. Relative paths resolve from the current working directory. Accepted files end in <code>.d.ts</code>, <code>.d.mts</code>, or <code>.d.cts</code>.</dd>
+
   <dt><code>--sanitize</code></dt>
-  <dd>Build with AddressSanitizer plus the runtime reference-count audit — the same lane the compiler's own test corpus runs under. Useful when a program misbehaves and you want leaks or memory errors to be loud.</dd>
+  <dd>Build an executable with AddressSanitizer plus the runtime reference-count audit — the same lane the compiler's own test corpus runs under. <code>--emit=asm|obj</code> rejects this option until the helper's sanitizer pipeline has parity.</dd>
 
   <dt><code>--emit-ir</code></dt>
-  <dd>Also write the typed IR as JSON (<code>&lt;name&gt;.ir.json</code>) next to the executable.</dd>
+  <dd>Additive IR side artifact. It is deprecated for executable builds for one release cycle; prefer <code>--emit=ir</code> when IR is the primary output. Library mode retains <code>--emit-ir</code> because <code>--emit</code> does not select library artifacts.</dd>
 
   <dt><code>--keep-c</code> / <code>--no-keep-c</code></dt>
   <dd>Keep (default) or delete the generated program translation unit next to the executable — the <code>.ll</code> file under the default LLVM backend, or the <code>.c</code> under <code>--backend c</code> (and when the default build fell back). The generated C is readable and annotated with source lines.</dd>
 
   <dt><code>--from-c</code></dt>
-  <dd>Treat the input as a C (or <code>.ll</code>) file. Toolchain plumbing and debugging.</dd>
+  <dd>Treat the input as a C (or <code>.ll</code>) file. Toolchain plumbing and debugging. These arbitrary translation units bypass the persistent artifact cache because their header dependency graph is caller-owned.</dd>
 
   <dt><code>-h, --help</code></dt>
   <dd>Show usage.</dd>
@@ -88,11 +130,20 @@ Analyzes the program without producing a binary and reports, statement by statem
 ## Environment variables
 
 <dl>
+  <dt><code>SCRIPTC_CACHE_DIR</code></dt>
+  <dd>Override the persistent build-cache root. By default it is <code>$XDG_CACHE_HOME/scriptc/build</code> when that variable is set, <code>$HOME/Library/Caches/scriptc/build</code> on macOS, <code>%LOCALAPPDATA%\scriptc\cache\build</code> on Windows, and <code>$HOME/.cache/scriptc/build</code> on other platforms. The cache stores checksum-verified, content-addressed executables, library archives, and per-flavor runtime objects. Identities include the compiler's resolved system-header dependencies and linker/assembler identities. The compiler remains required so dependency selection is rediscovered on every cache-enabled invocation. FFI builds with archive/object inputs or ambient <code>system_libraries</code> always relink against their current dependencies while retaining runtime-object reuse. Mutable compiler input paths such as <code>CPATH</code> and <code>SDKROOT</code>, and compiler wrappers, bypass persistent artifacts and objects so dependencies rebuilt in place cannot go stale. Opaque archiver wrappers rebuild library program members and archives while retaining runtime-object reuse. Direct Clang, Apple's system Clang shim, <code>zig cc</code>, trusted platform archivers, and <code>zig ar</code> retain their applicable persistent tiers. An existing POSIX override must already be private; otherwise caching is bypassed without changing the directory's permissions.</dd>
+
+  <dt><code>SCRIPTC_NO_CACHE</code></dt>
+  <dd>Set to <code>1</code> to bypass all build-cache reads and writes. An explicitly empty <code>SCRIPTC_CACHE_DIR</code> has the same effect.</dd>
+
+  <dt><code>SCRIPTC_CACHE_MAX_MB</code></dt>
+  <dd>Maximum build-cache size in megabytes. The default is <code>4096</code>; the default cache is swept periodically, while an explicitly configured cap is checked after every successful cache write. Least-recently-used entries are removed when the cache exceeds the cap.</dd>
+
   <dt><code>SCRIPTC_CC</code></dt>
   <dd>The C compiler to invoke. <code>zigcc</code> selects zig's bundled clang, which enables cross-compilation with its bundled sysroots.</dd>
 
   <dt><code>SCRIPTC_TARGET</code></dt>
-  <dd>Target triple for cross-compilation, e.g. <code>aarch64-linux-gnu.2.36</code> or <code>x86_64-windows-gnu</code>. See <a href="/platforms">Platform Support</a>.</dd>
+  <dd>Target triple for cross-compilation, e.g. <code>aarch64-linux-gnu.2.36</code>, <code>x86_64-windows-gnu</code>, or <code>wasm32-wasi</code>. WASI builds default to a <code>.wasm</code> output name. See <a href="/platforms">Platform Support</a>.</dd>
 </dl>
 
 ```console
@@ -103,14 +154,9 @@ fib-linux: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically
 
 ## Backends
 
-The default backend emits textual LLVM IR, compiled by the same clang that links the runtime. It covers most of the supported surface; a program outside that tier is never miscompiled — the build falls back to the C backend transparently and says so in one stderr line:
+The default backend emits textual LLVM IR, compiled by the same clang that links the runtime. On native targets, a program outside that tier is never miscompiled—the build falls back to the C backend transparently and says so in one stderr line. The production <code>wasm32-wasi</code> target uses LLVM's 32-bit ABI path and never falls back; an LLVM coverage gap is a build diagnostic. Dynamic npm embedding is LLVM surface on every target.
 
-```console
-$ scriptc build cli-tool.ts --dynamic -o cli-tool
-scriptc: backend c (llvm refused: npmEmbedding)
-```
-
-The C backend is the reference, forever: deliberately readable, source-line-annotated output, and byte-identical program behavior wherever the two backends overlap — every release verifies that. Pin it when you want to read what your program became:
+The C backend is a debugging aid: deliberately readable, source-line-annotated output with differential tests against LLVM wherever the two overlap. Pin it when you want to inspect what your program became:
 
 ```console
 $ scriptc build fib.ts --backend c -o fib
@@ -121,3 +167,48 @@ $ head -1 fib.c
 ```
 
 An explicit <code>--backend llvm</code> pins the LLVM backend and fails with diagnostic SC3001, naming the unsupported construct, instead of falling back — useful for CI lanes that must notice tier changes.
+
+## Tool requirements
+
+<table>
+  <thead>
+    <tr>
+      <th>Operation</th>
+      <th>Node</th>
+      <th>Compiler</th>
+      <th>Linker / SDK</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>coverage</code>, <code>--emit=ir|c|llvm</code></td>
+      <td>Required</td>
+      <td>Not used</td>
+      <td>Not used</td>
+    </tr>
+    <tr>
+      <td><code>--emit=asm|obj</code> (macOS 15+ arm64)</td>
+      <td>Required</td>
+      <td>Bundled scriptc LLVM helper</td>
+      <td>Not used</td>
+    </tr>
+    <tr>
+      <td>External link of <code>--emit=obj</code> with the reported source runtime pack</td>
+      <td>Not used by the artifact</td>
+      <td>C compiler required for runtime sources</td>
+      <td>macOS linker and SDK required</td>
+    </tr>
+    <tr>
+      <td><code>--emit=exe</code></td>
+      <td>Required to run scriptc</td>
+      <td>clang or the selected cross compiler</td>
+      <td>Required by that compiler driver</td>
+    </tr>
+    <tr>
+      <td><code>--from-c</code></td>
+      <td>Required to run scriptc</td>
+      <td>Required</td>
+      <td>Required</td>
+    </tr>
+  </tbody>
+</table>

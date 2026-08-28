@@ -158,9 +158,9 @@ void scr_assert_ok(bool pass, ScrStr *message) {
  * PAIR already being compared answers equal (the coinductive step —
  * Node's memo behavior exactly). The stack is global (comparisons never
  * interleave; the emitted walks cannot throw mid-compare). */
-static struct { const void *a, *b; } *g_deq_stack;
-static size_t g_deq_len;
-static size_t g_deq_cap;
+static SCR_TL struct { const void *a, *b; } *g_deq_stack;
+static SCR_TL size_t g_deq_len;
+static SCR_TL size_t g_deq_cap;
 
 bool scr_assert_deq_enter(const void *a, const void *b) {
   for (size_t i = 0; i < g_deq_len; i++) {
@@ -444,6 +444,8 @@ static bool scr_assert_dyn_same_value(const ScrDyn *a, const ScrDyn *b) {
        * === — exact for SameValue too, since wrap-time scalar
        * normalization leaves only reference kinds behind. */
       return a == b || scr_dyn_jsval_ops()->strict_eq(a->v.jsval.cell, b->v.jsval.cell);
+    case SCR_DYN_TYPED_REF:
+      return scr_dyn_strict_eq(a, b);
     default:
       return a == b; /* ARR/OBJ/BYTES: node identity */
   }
@@ -459,6 +461,18 @@ static bool scr_assert_dyn_same_value(const ScrDyn *a, const ScrDyn *b) {
  * memo here where Node carries one (documented divergence). */
 static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
   if (a == b) return true;
+  if (a->kind == SCR_DYN_TYPED_REF || b->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *ma = a->kind == SCR_DYN_TYPED_REF
+                     ? scr_dyn_typed_ref_materialize(a)
+                     : scr_dyn_retain((ScrDyn *)a);
+    ScrDyn *mb = b->kind == SCR_DYN_TYPED_REF
+                     ? scr_dyn_typed_ref_materialize(b)
+                     : scr_dyn_retain((ScrDyn *)b);
+    bool same = scr_assert_dyn_deep_eq(ma, mb);
+    scr_dyn_release(ma);
+    scr_dyn_release(mb);
+    return same;
+  }
   if (a->kind != b->kind) {
     /* A MIXED comparison with an island side (wrapped engine object vs
      * dyn data): Node walks both structurally — a plain `false` would
@@ -524,6 +538,8 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
       if (scr_dyn_jsval_ops()->strict_eq(a->v.jsval.cell, b->v.jsval.cell)) return true;
       scr_dyn_isl_fence(a, "deepStrictEqual");
       return false;
+    case SCR_DYN_TYPED_REF:
+      return false; /* both mixed and same-kind capsules returned above */
   }
   return false; /* unreachable */
 }
@@ -682,6 +698,12 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
        * not model; the text only appears inside FAILURE reports, which
        * already diverge in format. */
       ab_cstr(b, "[island value]");
+      return;
+    }
+    case SCR_DYN_TYPED_REF: {
+      ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
+      scr_assert_cf_value(b, materialized, indent, depth);
+      scr_dyn_release(materialized);
       return;
     }
     case SCR_DYN_OBJ: {
@@ -928,6 +950,7 @@ static bool scr_assert_print_myers(ScrAssertBuf *b, const ScrDiffOp *diff, size_
 static bool scr_assert_dyn_is_object(const ScrDyn *d) {
   return d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ || d->kind == SCR_DYN_BYTES ||
          d->kind == SCR_DYN_HANDLE || d->kind == SCR_DYN_PROMISE ||
+         d->kind == SCR_DYN_TYPED_REF ||
          scr_dyn_isl_typeof_is(d, "object"); /* engine-held: the engine's typeof */
 }
 
@@ -1205,7 +1228,7 @@ typedef struct {
   ScrStr *val; /* owned: the string value, or the regex's /source/flags */
 } ScrShapeSlot;
 
-static struct {
+static SCR_TL struct {
   ScrError *err; /* borrowed — alive across the straight-line sequence */
   ScrShapeSlot slots[3];
 } scr_shape;

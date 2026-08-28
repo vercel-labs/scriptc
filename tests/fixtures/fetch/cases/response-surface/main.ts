@@ -12,7 +12,9 @@ async function main(baseUrl: string): Promise<void> {
   // getSetCookie on a cookie-less response, and the sorted forEach walk
   // (filtered to the fixture's own x- names — wire noise stays out).
   const r = await fetch(`${baseUrl}/text`);
-  const ct = r.headers.get("content-type");
+  const responseType: string = (r as any).type;
+  console.log("type:", responseType);
+  const ct = r.headers["get"]("content-type");
   const kind = r.headers.get("x-kind");
   const missing = r.headers.get("x-nope");
   console.log("ct:", ct ?? "none");
@@ -22,17 +24,44 @@ async function main(baseUrl: string): Promise<void> {
   r.headers.forEach((v, k) => {
     if (k.startsWith("x-")) console.log("hdr:", k, "=", v);
   });
-  const text: string = await r.text();
+  try {
+    const computedHeaderMember = (): "get" | "has" => "missing" as "get";
+    const member = computedHeaderMember();
+    r.headers[member]("x-kind");
+    console.log("computed member unexpectedly accepted");
+  } catch (error) {
+    console.log("computed member:", (error as Error).name);
+  }
+  const explicitIterator = r.headers[Symbol.iterator]();
+  const explicitFirst = explicitIterator.next();
+  console.log(
+    "iterator:",
+    explicitFirst.done ? "done" : explicitFirst.value[0],
+    explicitFirst.done ? "done" : explicitFirst.value[1],
+  );
+  let iteratedHeaders = 0;
+  for (const [k] of r.headers) {
+    if (k.startsWith("x-")) iteratedHeaders++;
+  }
+  console.log("for-of:", iteratedHeaders);
+  const spreadHeaders = [...r.headers];
+  console.log("spread:", spreadHeaders.length);
+  const [destructuredFirst] = r.headers;
+  console.log("destructure:", destructuredFirst[0], destructuredFirst[1]);
+  const text: string = await r["text"]();
   console.log("used:", r.bodyUsed, "url-tail:", r.url.endsWith("/text"), "redirected:", r.redirected);
   console.log("text:", text);
 
   // Duplicate response headers combine on read (x-multi: a, b).
-  const he = await fetch(`${baseUrl}/header-echo`, {
+  const echoInit: RequestInit = {
     headers: { "x-echo-one": "1", "x-echo-two": "2" },
-  });
+  };
+  const he = await fetch(`${baseUrl}/header-echo`, { ...echoInit });
   const multi = he.headers.get("x-multi");
+  const latin = he.headers.get("x-latin") ?? "";
   const echoed: string = await he.text();
   console.log("multi:", multi ?? "none");
+  console.log("latin:", latin, latin.charCodeAt(0));
   console.log("echo:", echoed);
 
   // arrayBuffer(): the whole body as an engine ArrayBuffer handle.

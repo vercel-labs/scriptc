@@ -24,7 +24,7 @@
 /* Live heap-map count for the RC audit lane (-DSCR_RC_AUDIT); same contract
  * as scr_str_live_count in scr_string.c. */
 #ifdef SCR_RC_AUDIT
-static long scr_live_maps = 0;
+static SCR_TL long scr_live_maps = 0;
 long scr_map_live_count(void) { return scr_live_maps; }
 #endif
 

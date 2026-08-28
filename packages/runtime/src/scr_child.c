@@ -2292,7 +2292,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   } else if (o->stderr_mode != 3) {
     posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
   } /* mode 3 (inherit): the child keeps the parent's fd 2 */
-#if defined(__APPLE__) || defined(__GLIBC__)
+#if defined(__APPLE__) || defined(__GLIBC__) || defined(SCR_MUSL)
   if (o->cwd != NULL) {
     posix_spawn_file_actions_addchdir_np(&fa, o->cwd->data);
   }
@@ -3180,7 +3180,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   } else if ((int)err_mode == 3) {
     posix_spawn_file_actions_adddup2(&fa, err_pipe[1], 2);
   }
-#if defined(__APPLE__) || defined(__GLIBC__)
+#if defined(__APPLE__) || defined(__GLIBC__) || defined(SCR_MUSL)
   if (cwd != NULL && cwd->len > 0) {
     posix_spawn_file_actions_addchdir_np(&fa, cwd->data);
   }

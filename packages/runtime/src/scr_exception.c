@@ -35,28 +35,38 @@ _Noreturn void scr_trap_fmt(const char *fmt, ...) {
 }
 #endif /* !SCR_LIB */
 
-static ScrExcCell scr_main_exc; /* fiber zero (the main stack) */
+static SCR_TL ScrExcCell scr_main_exc; /* fiber zero (the main stack) */
+#if defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)
+/* A thread-local pointer cannot be initialized with &scr_main_exc — the
+ * address of a thread-local is not a constant expression — so NULL stands
+ * for the main cell and every read resolves it. Fibers never exist in
+ * library artifacts, so the cell only ever IS the main cell here. */
+static SCR_TL ScrExcCell *scr_cur;
+#define SCR_EXC_CUR() (scr_cur ? scr_cur : &scr_main_exc)
+#else
 static ScrExcCell *scr_cur = &scr_main_exc;
+#define SCR_EXC_CUR() (scr_cur)
+#endif
 
 /* Fiber switching (scr_async.c) points the exception machinery at the
  * incoming fiber's cell; returns the previous cell. */
 ScrExcCell *scr_exc_swap_cell(ScrExcCell *cell) {
-  ScrExcCell *prev = scr_cur;
+  ScrExcCell *prev = SCR_EXC_CUR();
   scr_cur = cell ? cell : &scr_main_exc;
   return prev;
 }
 
 /* The ACTIVE cell, for runtime code that moves a pending payload out of it
  * (a new-Promise executor throw rejecting the promise). */
-ScrExcCell *scr_exc_current_cell(void) { return scr_cur; }
+ScrExcCell *scr_exc_current_cell(void) { return SCR_EXC_CUR(); }
 
-#define scr_exc_kind (scr_cur->kind)
-#define scr_exc_f64 (scr_cur->f64)
-#define scr_exc_bool (scr_cur->b)
-#define scr_exc_payload (scr_cur->payload)
-#define scr_exc_retain_fn (scr_cur->retain_fn)
-#define scr_exc_release_fn (scr_cur->release_fn)
-#define scr_exc_trace_fn (scr_cur->trace_fn)
+#define scr_exc_kind (SCR_EXC_CUR()->kind)
+#define scr_exc_f64 (SCR_EXC_CUR()->f64)
+#define scr_exc_bool (SCR_EXC_CUR()->b)
+#define scr_exc_payload (SCR_EXC_CUR()->payload)
+#define scr_exc_retain_fn (SCR_EXC_CUR()->retain_fn)
+#define scr_exc_release_fn (SCR_EXC_CUR()->release_fn)
+#define scr_exc_trace_fn (SCR_EXC_CUR()->trace_fn)
 
 bool scr_exc_pending(void) { return scr_exc_kind != SCR_EXC_NONE; }
 
@@ -187,7 +197,7 @@ ScrStr *scr_caught_to_string(const ScrCaught *c) {
  * delivery; only the 0x01-led verbatim path below bypasses assembly. */
 void scr_library_check_exc(void) {
   if (!scr_exc_pending()) return;
-  static char buf[1024]; /* the message is copied out before the payload dies */
+  static SCR_TL char buf[1024]; /* the message is copied out before the payload dies */
   /* The ratified verbatim rule: a thrown message that ALREADY begins with
    * the structured trap-teaching marker (0x01) is delivered exactly as
    * authored — no "Uncaught " prefix, no added newline — which is how a
@@ -301,7 +311,7 @@ void scr_throw_obj(void *v, void *(*retain)(void *), void (*release)(void *),
  * events unit's atexit, when linked) must see that code, like Node's.
  * Lives HERE so the unit is self-contained (the reporters below and in
  * scr_async.c both note it; scr_events.c reads it). */
-static int scr_exit_code_hint = 0;
+static SCR_TL int scr_exit_code_hint = 0;
 void scr_exit_code_note(int code) { scr_exit_code_hint = code; }
 int scr_exit_code_hint_get(void) { return scr_exit_code_hint; }
 

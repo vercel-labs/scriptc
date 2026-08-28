@@ -85,4 +85,22 @@ describe("async_free detection over the IR", () => {
       await surfaceOf("sig", `process.on("SIGINT", () => console.log("int"));\nconsole.log("armed");\n`),
     ).toContain("signal");
   });
+
+  test("process output completion callbacks refuse as event-loop work", async () => {
+    expect(
+      await surfaceOf(
+        "stdout-write-callback",
+        `process.stdout.write("x", () => console.log("written"));\n`,
+      ),
+    ).toContain("process.stdout.write completion callbacks");
+  });
+
+  test("explicitly omitted process output callbacks remain async_free", async () => {
+    expect(
+      await surfaceOf(
+        "stdout-write-undefined",
+        `process.stdout.write("x", undefined);\nprocess.stdout.write("y", "utf8", undefined);\n`,
+      ),
+    ).toBeNull();
+  });
 });

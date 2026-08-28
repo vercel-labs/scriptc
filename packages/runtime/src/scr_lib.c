@@ -49,13 +49,14 @@
 #include <ws2tcpip.h> /* inet_ntop, sockaddr_in6 */
 #include <iphlpapi.h> /* GetAdaptersAddresses (os.networkInterfaces) */
 #include <windows.h>
+#include <winioctl.h> /* FSCTL_GET_REPARSE_POINT */
 #include <lmcons.h>  /* UNLEN for GetUserNameA */
+#include "scr_win_stats.h"
 
 
-/* CRT stat has no symlink view — lstat degrades to stat (divergence: a
- * compiled binary never reports isSymbolicLink() true on Windows; Node
- * does for real symlinks/junctions). Mechanical fix: GetFileAttributesW +
- * FILE_ATTRIBUTE_REPARSE_POINT. */
+/* The CRT has no symlink view, so its internal lstat users degrade to stat.
+ * The public Stats path below bypasses this seam and opens the final component
+ * as a reparse point for lstatSync, matching Node's no-follow split. */
 #define lstat stat
 
 /* Windows has no directory mode bits; the CRT mkdir takes one argument. */
@@ -76,6 +77,7 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <pwd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -102,14 +104,15 @@ extern char **environ; /* env snapshot (scr_env_pairs) */
 
 /* ── process ─────────────────────────────────────────────────────────── */
 
-static int scr_lib_argc = 0;
-static char **scr_lib_argv = NULL;
-static ScrArr *scr_argv_arr = NULL;    /* interned process.argv */
-static ScrStr *scr_platform_str = NULL; /* interned process.platform */
-static ScrStr *scr_exec_path_str = NULL; /* interned process.execPath */
-static ScrStr *scr_arch_str = NULL;      /* interned process.arch */
-static ScrStr *scr_versions_node_str = NULL; /* interned process.versions.node */
-static ScrStr *scr_versions_openssl_str = NULL; /* interned process.versions.openssl */
+static SCR_TL int scr_lib_argc = 0;
+static SCR_TL char **scr_lib_argv = NULL;
+static SCR_TL bool scr_lib_skip_reexec_arg = false;
+static SCR_TL ScrArr *scr_argv_arr = NULL;    /* interned process.argv */
+static SCR_TL ScrStr *scr_platform_str = NULL; /* interned process.platform */
+static SCR_TL ScrStr *scr_exec_path_str = NULL; /* interned process.execPath */
+static SCR_TL ScrStr *scr_arch_str = NULL;      /* interned process.arch */
+static SCR_TL ScrStr *scr_versions_node_str = NULL; /* interned process.versions.node */
+static SCR_TL ScrStr *scr_versions_openssl_str = NULL; /* interned process.versions.openssl */
 
 static void scr_lib_cleanup(void) {
   scr_arr_release(scr_argv_arr);
@@ -131,9 +134,28 @@ static void scr_lib_cleanup(void) {
  * atexit handlers (the emitted library init never calls this; keeping it out
  * the archive's objects free of any atexit reference — the K8 ambient
  * audit's bar). */
+static bool scr_lib_same_executable_arg(const char *a, const char *b) {
+  if (strcmp(a, b) == 0) return true;
+  char resolved_a[PATH_MAX], resolved_b[PATH_MAX];
+#ifdef _WIN32
+  const char *use_a = _fullpath(resolved_a, a, sizeof resolved_a) != NULL ? resolved_a : a;
+  const char *use_b = _fullpath(resolved_b, b, sizeof resolved_b) != NULL ? resolved_b : b;
+  return _stricmp(use_a, use_b) == 0;
+#else
+  const char *use_a = realpath(a, resolved_a) != NULL ? resolved_a : a;
+  const char *use_b = realpath(b, resolved_b) != NULL ? resolved_b : b;
+  return strcmp(use_a, use_b) == 0;
+#endif
+}
+
 void scr_lib_init(int argc, char **argv) {
   scr_lib_argc = argc;
   scr_lib_argv = argv;
+  /* Node self-reexecution spells `spawn(process.execPath,
+   * [process.argv[1], ...args])`. In a native binary argv[0] already IS the
+   * entry executable, so collapse that repeated first argument before
+   * exposing Node's [exec, script, ...args] process.argv shape. */
+  scr_lib_skip_reexec_arg = argc >= 2 && scr_lib_same_executable_arg(argv[0], argv[1]);
   atexit(scr_lib_cleanup);
 }
 #endif /* !SCR_LIB */
@@ -149,18 +171,21 @@ void scr_lib_session_cleanup(void) { scr_lib_cleanup(); }
 /* Raw argv accessors for the island's process shim (scr_island.c): the
  * island's process.argv must match the static world's ["scriptc",
  * argv[0], ...] shape exactly, so both build from the same stash. */
-int scr_lib_arg_count(void) { return scr_lib_argc; }
-const char *scr_lib_arg(int i) { return scr_lib_argv[i]; }
+int scr_lib_arg_count(void) { return scr_lib_argc - (scr_lib_skip_reexec_arg ? 1 : 0); }
+const char *scr_lib_arg(int i) {
+  return scr_lib_argv[i + (scr_lib_skip_reexec_arg && i > 0 ? 1 : 0)];
+}
 
 ScrArr *scr_process_argv(void) {
   if (!scr_argv_arr) {
     /* ["scriptc", argv[0], argv[1], ...]: positions and length line up
      * with Node's [node-path, script-path, ...args]; the argv[0]/argv[1]
      * VALUES diverge (SEMANTICS.md). */
-    scr_argv_arr = scr_arr_new(SCR_ELEM_STR, (size_t)scr_lib_argc + 1);
+    int argc = scr_lib_arg_count();
+    scr_argv_arr = scr_arr_new(SCR_ELEM_STR, (size_t)argc + 1);
     scr_arr_push_ref(scr_argv_arr, scr_str_new("scriptc", 7));
-    for (int i = 0; i < scr_lib_argc; i++) {
-      const char *a = scr_lib_argv[i];
+    for (int i = 0; i < argc; i++) {
+      const char *a = scr_lib_arg(i);
       scr_arr_push_ref(scr_argv_arr, scr_str_new(a, strlen(a)));
     }
   }
@@ -173,6 +198,8 @@ ScrStr *scr_process_platform(void) {
     scr_platform_str = scr_str_new("darwin", 6);
 #elif defined(__linux__)
     scr_platform_str = scr_str_new("linux", 5);
+#elif defined(__wasi__)
+    scr_platform_str = scr_str_new("wasi", 4);
 #elif defined(_WIN32)
     scr_platform_str = scr_str_new("win32", 5);
 #else
@@ -186,7 +213,11 @@ ScrStr *scr_process_platform(void) {
  * Node spells its own build's arch. Interned like process.platform. */
 ScrStr *scr_process_arch(void) {
   if (!scr_arch_str) {
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__wasm32__)
+    scr_arch_str = scr_str_new("wasm32", 6);
+#elif defined(__wasm64__)
+    scr_arch_str = scr_str_new("wasm64", 6);
+#elif defined(__aarch64__) || defined(_M_ARM64)
     scr_arch_str = scr_str_new("arm64", 5);
 #elif defined(__x86_64__) || defined(_M_X64)
     scr_arch_str = scr_str_new("x64", 3);
@@ -348,11 +379,11 @@ ScrArr *scr_env_pairs(void) {
 
 double scr_process_pid(void) { return (double)getpid(); }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__wasi__)
 /* No uids/gids exist on Windows: Node's process object simply has no
  * getuid/getgid members there, so a call is the property-access TypeError
  * below — thrown catchably, exactly what `process.getuid()` does under
- * Windows Node. */
+ * Windows Node. WASI has no uid/gid process model either. */
 double scr_process_getuid(void) {
   scr_throw_error_msg(SCR_ERR_TYPE, "process.getuid is not a function", 32);
   return 0;
@@ -530,6 +561,14 @@ static int scr_win_kill(int pid, int sig) {
   return 0;
 }
 #define scr_sys_kill(pid, sig) scr_win_kill((int)(pid), (sig))
+#elif defined(__wasi__)
+static int scr_wasi_kill(int pid, int sig) {
+  (void)pid;
+  (void)sig;
+  errno = ENOSYS;
+  return -1;
+}
+#define scr_sys_kill(pid, sig) scr_wasi_kill((int)(pid), (sig))
 #else
 #define scr_sys_kill(pid, sig) kill((pid_t)(pid), (sig))
 #endif
@@ -687,6 +726,27 @@ ScrStr *scr_os_tmpdir(void) {
   if (len > 1 && (buf[len - 1] == '\\' || buf[len - 1] == '/')) len--;
   return scr_str_new(buf, len);
 }
+#elif defined(__wasi__)
+/* WASI has an inherited environment but no passwd database, uname, or
+ * physical-memory query. Keep the useful environment-backed answers and
+ * spell the platform explicitly for the rest. */
+ScrStr *scr_os_homedir(void) {
+  const char *home = getenv("HOME");
+  return scr_str_new(home ? home : "", home ? strlen(home) : 0);
+}
+ScrStr *scr_os_user_name(void) {
+  const char *user = getenv("USER");
+  return scr_str_new(user ? user : "", user ? strlen(user) : 0);
+}
+ScrStr *scr_os_user_shell(void) { return scr_str_new("", 0); }
+ScrStr *scr_os_user_homedir(void) { return scr_os_homedir(); }
+ScrStr *scr_os_release(void) { return scr_str_new("", 0); }
+ScrStr *scr_os_type(void) { return scr_str_new("WASI", 4); }
+double scr_os_totalmem(void) { return 0; }
+/* The guest temp namespace is stable across hosts. `scriptc run` preopens
+ * the host's /tmp at this path; other WASI hosts can provide the same
+ * capability without leaking a host-specific TMPDIR into the module. */
+ScrStr *scr_os_tmpdir(void) { return scr_str_new("/tmp", 4); }
 #else
 ScrStr *scr_os_homedir(void) {
   /* uv_os_homedir: $HOME when set (even empty is "set" only if non-NULL;
@@ -1066,8 +1126,27 @@ void scr_process_exit(double code) {
  * attribute monotonic stamp — the binary's own start, which is what
  * "the current Node.js process" means for a compiled program). */
 #ifdef _WIN32
+#if defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)
+/* The uptime anchor belongs to the host PROCESS, not to a library
+ * instance. InitOnce keeps the lazy Windows spelling race-free when
+ * several thread instances ask for the clock concurrently. */
+static INIT_ONCE scr_uptime_once = INIT_ONCE_STATIC_INIT;
 static double scr_uptime_t0_ms;
+static BOOL CALLBACK scr_uptime_anchor_once(PINIT_ONCE once, PVOID param,
+                                             PVOID *ctx) {
+  (void)once;
+  (void)param;
+  (void)ctx;
+  scr_uptime_t0_ms = (double)GetTickCount64();
+  return TRUE;
+}
+static void scr_uptime_anchor_init(void) {
+  InitOnceExecuteOnce(&scr_uptime_once, scr_uptime_anchor_once, NULL, NULL);
+}
+#else
+static SCR_TL double scr_uptime_t0_ms;
 static void scr_uptime_anchor_init(void) { scr_uptime_t0_ms = (double)GetTickCount64(); }
+#endif
 static double scr_uptime_now_ms(void) { return (double)GetTickCount64(); }
 #else
 #include <sys/resource.h>
@@ -1075,6 +1154,10 @@ static double scr_uptime_now_ms(void) { return (double)GetTickCount64(); }
 #ifdef __APPLE__
 #include <mach/mach.h>
 #endif
+/* A load-time, process-wide anchor: the constructor runs on only the
+ * initial thread, while thread-instanced archives are entered from worker
+ * threads whose TLS slots would otherwise stay zero. It is immutable once
+ * main starts, so sharing it adds no cross-instance mutable state. */
 static double scr_uptime_t0_ms;
 static double scr_uptime_now_ms(void) {
   struct timespec ts;
@@ -1087,7 +1170,9 @@ __attribute__((constructor)) static void scr_uptime_anchor_init(void) {
 #endif
 
 double scr_process_uptime(void) {
-#ifdef _WIN32
+#if defined(_WIN32) && defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)
+  scr_uptime_anchor_init();
+#elif defined(_WIN32)
   if (scr_uptime_t0_ms == 0) scr_uptime_anchor_init();
 #endif
   return (scr_uptime_now_ms() - scr_uptime_t0_ms) / 1000.0;
@@ -1097,7 +1182,9 @@ double scr_process_uptime(void) {
  * start (Node's timeOrigin anchor), fractional — the same monotonic
  * clock and anchor as uptime, in Node's performance.now units. */
 double scr_perf_now(void) {
-#ifdef _WIN32
+#if defined(_WIN32) && defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)
+  scr_uptime_anchor_init();
+#elif defined(_WIN32)
   if (scr_uptime_t0_ms == 0) scr_uptime_anchor_init();
 #endif
   return scr_uptime_now_ms() - scr_uptime_t0_ms;
@@ -1110,6 +1197,23 @@ static double scr_filetime_us(FILETIME ft) {
   v.LowPart = ft.dwLowDateTime;
   v.HighPart = ft.dwHighDateTime;
   return (double)(v.QuadPart / 10);
+}
+
+/* A filesystem FILETIME is 100ns ticks since 1601. Match libuv's split into
+ * Unix seconds + nanoseconds before doing Node's millisecond arithmetic; the
+ * split matters for the last-bit rounding of dates far from the epoch. */
+static double scr_filetime_unix_ms(FILETIME ft) {
+  ULARGE_INTEGER raw;
+  raw.LowPart = ft.dwLowDateTime;
+  raw.HighPart = ft.dwHighDateTime;
+  int64_t ticks = (int64_t)raw.QuadPart - INT64_C(116444736000000000);
+  int64_t sec = ticks / INT64_C(10000000);
+  int64_t rem = ticks % INT64_C(10000000);
+  if (rem < 0) {
+    sec--;
+    rem += INT64_C(10000000);
+  }
+  return (double)sec * 1000.0 + (double)rem / 10000.0;
 }
 double scr_cpu_user(void) {
   FILETIME c, e, k, u;
@@ -1207,7 +1311,7 @@ double scr_thread_cpu_system_diff(double prev) { return scr_thread_cpu_system() 
  * Darwin's bytes by 1024; the rest are getrusage's own counters, zero
  * where the platform never fills them). */
 double scr_process_rusage(double idx) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__wasi__)
   /* uv fills only the CPU times and page-fault/maxRSS slice on Windows;
    * everything else answers 0 — Node's own shape there. */
   switch ((int)idx) {
@@ -1299,7 +1403,7 @@ double scr_available_memory(void) {
 /* process._exiting — true once the exit sequence began (set above and by
  * scr_run_exit_listeners in scr_events.c; the flag lives HERE so reading
  * it never forces the events unit into the link). */
-bool scr_process_in_exit = false;
+SCR_TL bool scr_process_in_exit = false;
 
 bool scr_process_exiting(void) { return scr_process_in_exit; }
 
@@ -1316,6 +1420,11 @@ double scr_process_umask(double mask) {
   } else {
     _umask_s((int)mask, &prev);
   }
+  return (double)prev;
+#elif defined(__wasi__)
+  static SCR_TL mode_t current = 022;
+  mode_t prev = current;
+  if (mask >= 0) current = (mode_t)mask;
   return (double)prev;
 #else
   mode_t prev;
@@ -1340,7 +1449,7 @@ void scr_process_chdir(ScrStr *dir) {
 /* net's process-wide happy-eyeballs attempt budget (Node's
  * getDefaultAutoSelectFamilyAttemptTimeout pair, default 250ms). Lives in
  * the core unit so the knob never forces scr_net.c into the link. */
-static double scr_net_autosel_timeout_ms = 250;
+static SCR_TL double scr_net_autosel_timeout_ms = 250;
 
 double scr_net_get_autosel_timeout(void) { return scr_net_autosel_timeout_ms; }
 
@@ -1380,11 +1489,23 @@ static const char *scr_errno_name(int e, char *fallback, size_t cap) {
   case ENOENT: return "ENOENT";
   case EEXIST: return "EEXIST";
   case EACCES: return "EACCES";
+  case EBUSY: return "EBUSY";
+  case EINVAL: return "EINVAL";
+  case EIO: return "EIO";
+  case ENAMETOOLONG: return "ENAMETOOLONG";
+  case ENOMEM: return "ENOMEM";
+  case ENOSPC: return "ENOSPC";
   case ENOTDIR: return "ENOTDIR";
   case EISDIR: return "EISDIR";
   case ENOTEMPTY: return "ENOTEMPTY";
   case EPERM: return "EPERM";
+  case EROFS: return "EROFS";
+  case EXDEV: return "EXDEV";
   case EBADF: return "EBADF";
+  case EAGAIN: return "EAGAIN";
+  case EFBIG: return "EFBIG";
+  case EPIPE: return "EPIPE";
+  case ESPIPE: return "ESPIPE";
   default:
     snprintf(fallback, cap, "E%d", e);
     return fallback;
@@ -1396,11 +1517,23 @@ static const char *scr_errno_text(int e) {
   case ENOENT: return "no such file or directory";
   case EEXIST: return "file already exists";
   case EACCES: return "permission denied";
+  case EBUSY: return "resource busy or locked";
+  case EINVAL: return "invalid argument";
+  case EIO: return "i/o error";
+  case ENAMETOOLONG: return "name too long";
+  case ENOMEM: return "not enough memory";
+  case ENOSPC: return "no space left on device";
   case ENOTDIR: return "not a directory";
   case EISDIR: return "illegal operation on a directory";
   case ENOTEMPTY: return "directory not empty";
   case EPERM: return "operation not permitted";
+  case EROFS: return "read-only file system";
+  case EXDEV: return "cross-device link not permitted";
   case EBADF: return "bad file descriptor";
+  case EAGAIN: return "resource temporarily unavailable";
+  case EFBIG: return "file too large";
+  case EPIPE: return "broken pipe";
+  case ESPIPE: return "invalid seek";
   default: return strerror(e);
   }
 }
@@ -1542,6 +1675,22 @@ void scr_fs_write_file(ScrStr *path, ScrStr *data) {
  * existing file keeps its permissions, exactly Node (which never chmods
  * here). Same error shapes as the plain form. */
 void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode) {
+  char recv[48], msg[176];
+  scr_num_received(mode, recv);
+  if (!(isfinite(mode) && trunc(mode) == mode)) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"mode\" is out of range. It must be an integer. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return;
+  }
+  if (mode < 0 || mode > 4294967295.0) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"mode\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return;
+  }
   /* O_BINARY: zero on POSIX; on Windows it keeps the CRT from translating
    * \n in these byte-exact writes (fopen's "wb" path already does). */
   int fd = open(path->data, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, (mode_t)mode);
@@ -1594,9 +1743,10 @@ void scr_fs_chmod(ScrStr *path, double mode) {
 }
 
 void scr_fs_chown(ScrStr *path, double uid, double gid) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__wasi__)
   /* libuv's uv_fs_chown on Windows is an unconditional no-op success —
-   * Node's chownSync "works" and changes nothing there; same here. */
+   * Node's chownSync "works" and changes nothing there; WASI likewise has
+   * no ownership model. */
   (void)path; (void)uid; (void)gid;
 #else
   /* Node passes the ids straight to chown(2); -1 is the POSIX "leave
@@ -1646,12 +1796,321 @@ double scr_fs_open(ScrStr *path, ScrStr *flags) {
 
 /* fs.closeSync(fd) — close(2); failure throws Node's path-less fs error
  * shape ("EBADF: bad file descriptor, close"). */
-/* fs.readSync(fd, buffer, offset, length) — the 4-argument buffer form.
+
+/* Offset-preserving read for fs.readSync's numeric-position form. POSIX
+ * supplies pread(2). Windows follows libuv's synchronous-handle recipe:
+ * ReadFile with an OVERLAPPED byte offset, then restore the handle position
+ * because synchronous ReadFile updates it even when OVERLAPPED is present. */
+static ssize_t scr_fs_pread(int fd, void *data, size_t length, double position) {
+#ifdef _WIN32
+  HANDLE handle = (HANDLE)_get_osfhandle(fd);
+  if (handle == INVALID_HANDLE_VALUE) {
+    errno = EBADF;
+    return -1;
+  }
+
+  OVERLAPPED overlapped;
+  memset(&overlapped, 0, sizeof overlapped);
+  LARGE_INTEGER at;
+  at.QuadPart = (LONGLONG)position;
+  overlapped.Offset = at.LowPart;
+  overlapped.OffsetHigh = at.HighPart;
+
+  LARGE_INTEGER zero;
+  LARGE_INTEGER original;
+  zero.QuadPart = 0;
+  BOOL restore = SetFilePointerEx(handle, zero, &original, FILE_CURRENT);
+  DWORD got = 0;
+  DWORD want = length > (size_t)UINT32_MAX ? UINT32_MAX : (DWORD)length;
+  BOOL ok = ReadFile(handle, data, want, &got, &overlapped);
+  DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+  if (restore) (void)SetFilePointerEx(handle, original, NULL, FILE_BEGIN);
+  /* ReadFile may report a terminal status after still filling part of the
+   * caller's buffer (notably ERROR_MORE_DATA for a message-mode pipe).
+   * libuv/Node return those bytes and surface the status on the next read. */
+  if (ok || got > 0 || error == ERROR_HANDLE_EOF || error == ERROR_BROKEN_PIPE) {
+    return (ssize_t)got;
+  }
+
+  /* The read-specific subset of libuv's Win32-to-errno translation. */
+  switch (error) {
+    case ERROR_INVALID_HANDLE:
+    case ERROR_ACCESS_DENIED:
+      errno = EBADF;
+      break;
+    case ERROR_INVALID_FUNCTION:
+    case ERROR_INVALID_PARAMETER:
+      errno = EINVAL;
+      break;
+    case ERROR_NOT_ENOUGH_MEMORY:
+    case ERROR_OUTOFMEMORY:
+      errno = ENOMEM;
+      break;
+    case ERROR_OPERATION_ABORTED:
+      errno = EINTR;
+      break;
+    default:
+      errno = EIO;
+      break;
+  }
+  return -1;
+#else
+  return pread(fd, data, length, (off_t)position);
+#endif
+}
+
+/* Offset-preserving write for fs.writeSync's numeric-position forms. The
+ * Windows arm mirrors scr_fs_pread: WriteFile receives an OVERLAPPED offset
+ * and the CRT descriptor's current position is restored before returning. */
+static ssize_t scr_fs_pwrite(int fd, const void *data, size_t length, double position) {
+#ifdef _WIN32
+  HANDLE handle = (HANDLE)_get_osfhandle(fd);
+  if (handle == INVALID_HANDLE_VALUE) {
+    errno = EBADF;
+    return -1;
+  }
+
+  OVERLAPPED overlapped;
+  memset(&overlapped, 0, sizeof overlapped);
+  LARGE_INTEGER at;
+  at.QuadPart = (LONGLONG)position;
+  overlapped.Offset = at.LowPart;
+  overlapped.OffsetHigh = at.HighPart;
+
+  LARGE_INTEGER zero;
+  LARGE_INTEGER original;
+  zero.QuadPart = 0;
+  BOOL restore = SetFilePointerEx(handle, zero, &original, FILE_CURRENT);
+  DWORD wrote = 0;
+  DWORD want = length > (size_t)UINT32_MAX ? UINT32_MAX : (DWORD)length;
+  BOOL ok = WriteFile(handle, data, want, &wrote, &overlapped);
+  DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+  if (restore) (void)SetFilePointerEx(handle, original, NULL, FILE_BEGIN);
+  if (ok || wrote > 0) return (ssize_t)wrote;
+
+  switch (error) {
+    case ERROR_INVALID_HANDLE:
+    case ERROR_ACCESS_DENIED:
+      errno = EBADF;
+      break;
+    case ERROR_INVALID_FUNCTION:
+    case ERROR_INVALID_PARAMETER:
+      errno = EINVAL;
+      break;
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL:
+      errno = ENOSPC;
+      break;
+    case ERROR_FILE_TOO_LARGE:
+      errno = EFBIG;
+      break;
+    case ERROR_BROKEN_PIPE:
+    case ERROR_NO_DATA:
+      errno = EPIPE;
+      break;
+    case ERROR_NOT_ENOUGH_MEMORY:
+    case ERROR_OUTOFMEMORY:
+      errno = ENOMEM;
+      break;
+    case ERROR_OPERATION_ABORTED:
+      errno = EINTR;
+      break;
+    default:
+      errno = EIO;
+      break;
+  }
+  return -1;
+#else
+  return pwrite(fd, data, length, (off_t)position);
+#endif
+}
+
+static bool scr_fs_write_fd_valid(double fd) {
+  char msg[160];
+  char recv[48];
+  scr_num_received(fd, recv);
+  if (!(isfinite(fd) && trunc(fd) == fd)) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"fd\" is out of range. It must be an integer. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (fd < 0 || fd > 2147483647.0) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"fd\" is out of range. It must be >= 0 && <= 2147483647. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  return true;
+}
+
+/* write(2) raises SIGPIPE before returning EPIPE when a pipe/socket peer has
+ * closed; write(2)/pwrite(2) likewise raise SIGXFSZ before returning EFBIG at
+ * RLIMIT_FSIZE. Node turns both into catchable fs errors. Do the same per
+ * calling thread rather than changing process dispositions (which spawned
+ * children would inherit). Consume only a signal freshly generated by this
+ * call, preserving any signal that was already pending. */
+static ssize_t scr_fs_write_once(int fd, const void *data, size_t length,
+                                 bool positioned, double position) {
+#if defined(_WIN32) || defined(__wasi__)
+  return positioned
+    ? scr_fs_pwrite(fd, data, length, position)
+    : write(fd, data, length);
+#else
+  sigset_t write_set, old_set, pending;
+  sigemptyset(&write_set);
+#ifdef SIGPIPE
+  sigaddset(&write_set, SIGPIPE);
+#endif
+#ifdef SIGXFSZ
+  sigaddset(&write_set, SIGXFSZ);
+#endif
+  if (pthread_sigmask(SIG_BLOCK, &write_set, &old_set) != 0) {
+    return positioned
+      ? scr_fs_pwrite(fd, data, length, position)
+      : write(fd, data, length);
+  }
+
+  bool pending_known = sigpending(&pending) == 0;
+#ifdef SIGPIPE
+  bool had_pipe = pending_known && sigismember(&pending, SIGPIPE) == 1;
+#endif
+#ifdef SIGXFSZ
+  bool had_xfsz = pending_known && sigismember(&pending, SIGXFSZ) == 1;
+#endif
+  ssize_t n = positioned
+    ? scr_fs_pwrite(fd, data, length, position)
+    : write(fd, data, length);
+  int write_errno = errno;
+
+  int generated = 0;
+  if (n < 0 && pending_known && sigpending(&pending) == 0) {
+#ifdef SIGPIPE
+    if (write_errno == EPIPE && !had_pipe && sigismember(&pending, SIGPIPE) == 1) {
+      generated = SIGPIPE;
+    }
+#endif
+#ifdef SIGXFSZ
+    if (write_errno == EFBIG && !had_xfsz && sigismember(&pending, SIGXFSZ) == 1) {
+      generated = SIGXFSZ;
+    }
+#endif
+  }
+  if (generated != 0) {
+    sigset_t generated_set;
+    sigemptyset(&generated_set);
+    sigaddset(&generated_set, generated);
+    int caught = 0;
+    int wait_err;
+    do {
+      wait_err = sigwait(&generated_set, &caught);
+    } while (wait_err == EINTR);
+  }
+
+  (void)pthread_sigmask(SIG_SETMASK, &old_set, NULL);
+  errno = write_errno;
+  return n;
+#endif
+}
+
+static double scr_fs_write_bytes(double fd, const void *data, size_t length,
+                                 double position) {
+  if (!scr_fs_write_fd_valid(fd)) return 0;
+  /* Node/libuv treats every position other than a safe nonnegative integer
+   * as the current-offset sentinel for writes (unlike readSync, it does not
+   * throw for negative/fractional positions). */
+  bool positioned = isfinite(position) && trunc(position) == position &&
+                    position >= 0 && position <= 9007199254740991.0;
+  ssize_t n;
+  do {
+    n = scr_fs_write_once((int)fd, data, length, positioned, position);
+  } while (n < 0 && errno == EINTR);
+  if (n < 0) {
+    int e = errno;
+    char namebuf[16];
+    const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
+    const char *text = scr_errno_text(e);
+    char msg[160];
+    int len = snprintf(msg, sizeof msg, "%s: %s, write", name, text);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, name);
+    return 0;
+  }
+  return (double)n;
+}
+
+/* fs.writeSync(fd, buffer, offset, length[, position]) — validates the
+ * caller window before touching the descriptor, then submits one write like
+ * Node/libuv. Positioned writes do not advance the descriptor. */
+double scr_fs_write_sync(double fd, ScrBytes *buf, double offset, double length,
+                         double position) {
+  size_t bytelen = buf->len; /* frontend admits u8 buffers only */
+  char msg[160];
+  char recv[48];
+  scr_num_received(offset, recv);
+  if (!(isfinite(offset) && trunc(offset) == offset)) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"offset\" is out of range. It must be an integer. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  if (offset < 0 || offset > 9007199254740991.0) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"offset\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  if (offset > (double)bytelen) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"offset\" is out of range. It must be <= %zu. Received %s",
+                       bytelen, recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+
+  scr_num_received(length, recv);
+  if (length < 0) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"length\" is out of range. It must be >= 0. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  size_t off = (size_t)offset;
+  if (length > (double)(bytelen - off)) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"length\" is out of range. It must be <= %zu. Received %s",
+                       bytelen - off, recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  if (!(isfinite(length) && trunc(length) == length)) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"length\" is out of range. It must be an integer. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  return scr_fs_write_bytes(fd, buf->data + off, (size_t)length, position);
+}
+
+double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
+                             ScrStr *encoding) {
+  (void)encoding; /* frontend proves utf8; the argument still evaluates */
+  return scr_fs_write_bytes(fd, data->data, data->len, position);
+}
+
+/* fs.readSync(fd, buffer, offset, length[, position]) — the buffer form.
  * Node validates offset/length against the buffer before reading and
  * throws ERR_OUT_OF_RANGE; here the checks clamp to the same contract and
- * throw the RangeError shape. Returns the byte count read(2) reports;
- * errors carry the errno name like the other fd operations. */
-double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length) {
+ * throw the RangeError shape. Position -1 means the fd's current offset;
+ * nonnegative positions do not advance it. Returns the byte count the OS
+ * reports; errors carry the errno name like the other fd operations. */
+double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
+                        double position) {
   size_t bytelen = buf->len; /* u8 buffers: elem count == byte count */
   char msg[160];
   int mlen;
@@ -1659,7 +2118,28 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length) 
    * form, length against the remaining window (validateOffset vs the
    * buffer-bounds check in fs.readSync). */
   char numbuf[40];
-  if (offset < 0 || offset > (double)bytelen) {
+  if (!(isfinite(offset) && trunc(offset) == offset)) {
+    char recv[48];
+    scr_num_received(offset, recv);
+    mlen = snprintf(msg, sizeof msg,
+                    "The value of \"offset\" is out of range. It must be an integer. Received %s",
+                    recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  if (offset < 0 || offset > 9007199254740991.0) {
+    numbuf[scr_f64_to_str(offset, numbuf)] = 0;
+    mlen = snprintf(msg, sizeof msg,
+                    "The value of \"offset\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s",
+                    numbuf);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  /* Node returns after offset's intrinsic validation when the requested
+   * length normalizes to zero: buffer-window bounds, position, and fd are
+   * not consulted. Preserve the existing size_t coercion's [0, 1) case. */
+  if (length >= 0 && length < 1) return 0;
+  if (offset > (double)bytelen) {
     numbuf[scr_f64_to_str(offset, numbuf)] = 0;
     mlen = snprintf(msg, sizeof msg,
                     "The value of \"offset\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s",
@@ -1677,7 +2157,27 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length) 
     return 0;
   }
   size_t want = (size_t)length;
-  ssize_t n = read((int)fd, buf->data + off, want);
+  if (!(isfinite(position) && trunc(position) == position)) {
+    char recv[48];
+    scr_num_received(position, recv);
+    mlen = snprintf(msg, sizeof msg,
+                    "The value of \"position\" is out of range. It must be an integer. Received %s",
+                    recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  if (position < -1 || position > 9007199254740991.0) {
+    char recv[48];
+    scr_num_received(position, recv);
+    mlen = snprintf(msg, sizeof msg,
+                    "The value of \"position\" is out of range. It must be >= -1 && <= 9007199254740991. Received %s",
+                    recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  ssize_t n = position == -1
+    ? read((int)fd, buf->data + off, want)
+    : scr_fs_pread((int)fd, buf->data + off, want, position);
   if (n < 0) {
     int e = errno;
     char namebuf[16];
@@ -1778,11 +2278,110 @@ void scr_fs_copyfile(ScrStr *src, ScrStr *dest) {
 }
 
 /* renameSync(old, new): rename(2), Node's two-path error shape ("ENOENT:
- * no such file or directory, rename 'a' -> 'b'"). */
-void scr_fs_rename(ScrStr *oldpath, ScrStr *newpath) {
-  if (rename(oldpath->data, newpath->data) != 0) {
-    scr_fs_throw2(errno, "rename", oldpath, newpath);
+ * no such file or directory, rename 'a' -> 'b'"). Windows must bypass
+ * the CRT's rename(): it refuses an existing destination and cannot move
+ * directories between parents, while Node/libuv uses MoveFileExW with
+ * MOVEFILE_REPLACE_EXISTING. Runtime strings are UTF-8, so feed the wide
+ * Win32 API rather than the active-code-page `A` form. */
+#ifdef _WIN32
+static WCHAR *scr_fs_win_wide(const ScrStr *path) {
+  if (path->len > INT_MAX) {
+    SetLastError(ERROR_FILENAME_EXCED_RANGE);
+    return NULL;
   }
+  int n = path->len > 0
+    ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                          path->data, (int)path->len, NULL, 0)
+    : 0;
+  if (path->len > 0 && n == 0) return NULL;
+  WCHAR *wide = malloc(((size_t)n + 1) * sizeof *wide);
+  if (!wide) {
+    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+    return NULL;
+  }
+  if (n > 0) {
+    (void)MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                              path->data, (int)path->len, wide, n);
+  }
+  wide[n] = L'\0';
+  return wide;
+}
+
+/* The reachable fs subset of libuv's uv_translate_sys_error table. */
+static int scr_fs_win_errno(DWORD error) {
+  switch (error) {
+  case ERROR_ALREADY_EXISTS:
+  case ERROR_FILE_EXISTS:
+    return EEXIST;
+  case ERROR_LOCK_VIOLATION:
+  case ERROR_PIPE_BUSY:
+  case ERROR_SHARING_VIOLATION:
+    return EBUSY;
+  case ERROR_INVALID_FUNCTION:
+    return EISDIR;
+  case ERROR_INSUFFICIENT_BUFFER:
+  case ERROR_INVALID_DATA:
+  case ERROR_INVALID_PARAMETER:
+    return EINVAL;
+  case ERROR_BUFFER_OVERFLOW:
+  case ERROR_FILENAME_EXCED_RANGE:
+    return ENAMETOOLONG;
+  case ERROR_NOT_ENOUGH_MEMORY:
+  case ERROR_OUTOFMEMORY:
+    return ENOMEM;
+  case ERROR_CANNOT_MAKE:
+  case ERROR_DISK_FULL:
+  case ERROR_HANDLE_DISK_FULL:
+    return ENOSPC;
+  case ERROR_DIR_NOT_EMPTY:
+    return ENOTEMPTY;
+  case ERROR_ACCESS_DENIED:
+  case ERROR_PRIVILEGE_NOT_HELD:
+    return EPERM;
+  case ERROR_WRITE_PROTECT:
+    return EROFS;
+  case ERROR_NOT_SAME_DEVICE:
+    return EXDEV;
+  case ERROR_BAD_PATHNAME:
+  case ERROR_DIRECTORY:
+  case ERROR_FILE_NOT_FOUND:
+  case ERROR_INVALID_DRIVE:
+  case ERROR_INVALID_NAME:
+  case ERROR_PATH_NOT_FOUND:
+    return ENOENT;
+  default:
+    return EIO;
+  }
+}
+#endif
+
+int scr_fs_rename_raw(const ScrStr *oldpath, const ScrStr *newpath) {
+#ifdef _WIN32
+  WCHAR *oldwide = scr_fs_win_wide(oldpath);
+  if (!oldwide) return scr_fs_win_errno(GetLastError());
+  WCHAR *newwide = scr_fs_win_wide(newpath);
+  if (!newwide) {
+    DWORD error = GetLastError();
+    free(oldwide);
+    return scr_fs_win_errno(error);
+  }
+  BOOL ok = MoveFileExW(oldwide, newwide, MOVEFILE_REPLACE_EXISTING);
+  DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+  free(oldwide);
+  free(newwide);
+  return ok ? 0 : scr_fs_win_errno(error);
+#else
+  return rename(oldpath->data, newpath->data) == 0 ? 0 : errno;
+#endif
+}
+
+void scr_fs_rename_error(int error, const ScrStr *oldpath, const ScrStr *newpath) {
+  scr_fs_throw2(error, "rename", oldpath, newpath);
+}
+
+void scr_fs_rename(ScrStr *oldpath, ScrStr *newpath) {
+  int error = scr_fs_rename_raw(oldpath, newpath);
+  if (error != 0) scr_fs_rename_error(error, oldpath, newpath);
 }
 
 void scr_fs_rm(ScrStr *path) {
@@ -2012,23 +2611,23 @@ void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_r
   scr_str_release(f.path);
 }
 
-#ifdef _WIN32
-/* No mkdtemp in the CRT: libuv's own fallback shape — six random
+#if defined(_WIN32) || defined(__wasi__)
+/* No mkdtemp in the Windows CRT or WASI libc: libuv's own fallback shape — six random
  * [a-z0-9] name characters from the CSPRNG, retried on EEXIST. */
-static char *scr_win_mkdtemp(char *tmpl) {
+static char *scr_portable_mkdtemp(char *tmpl) {
   static const char cs[] = "abcdefghijklmnopqrstuvwxyz0123456789";
   size_t len = strlen(tmpl);
   for (int tries = 0; tries < 32; tries++) {
     unsigned char r[6];
     arc4random_buf(r, sizeof r);
     for (size_t i = 0; i < 6; i++) tmpl[len - 6 + i] = cs[r[i] % 36];
-    if (mkdir(tmpl) == 0) return tmpl;
+    if (scr_sys_mkdir(tmpl, 0777) == 0) return tmpl;
     if (errno != EEXIST) break;
   }
   memcpy(tmpl + len - 6, "XXXXXX", 6); /* the error message shows the template */
   return NULL;
 }
-#define mkdtemp scr_win_mkdtemp
+#define mkdtemp scr_portable_mkdtemp
 #endif
 
 ScrStr *scr_fs_mkdtemp(ScrStr *prefix) {
@@ -2070,7 +2669,7 @@ static void scr_fs_throw_nopath(int e, const char *op) {
   const char *text = scr_errno_text(e);
   char msg[256];
   int len = snprintf(msg, sizeof msg, "%s: %s, %s", name, text, op);
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)len);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, name);
 }
 
 /* read(2) loop to EOF from the CURRENT position — Node's
@@ -2180,6 +2779,8 @@ double scr_process_columns(double fd) {
   CONSOLE_SCREEN_BUFFER_INFO info;
   if (h == INVALID_HANDLE_VALUE || !GetConsoleScreenBufferInfo(h, &info)) return -1;
   return (double)(info.srWindow.Right - info.srWindow.Left + 1);
+#elif defined(__wasi__)
+  return -1;
 #else
   struct winsize ws;
   if (ioctl((int)fd, TIOCGWINSZ, &ws) != 0) return -1;
@@ -2194,8 +2795,8 @@ double scr_process_columns(double fd) {
  * NON-TTY stdin: Node's process.stdin is a Socket with no setRawMode
  * member at all, so the call throws Node's exact catchable TypeError. */
 #ifdef _WIN32
-static DWORD scr_stdin_cooked;
-static bool scr_stdin_cooked_saved = false;
+static SCR_TL DWORD scr_stdin_cooked;
+static SCR_TL bool scr_stdin_cooked_saved = false;
 
 void scr_process_stdin_set_raw_mode(bool raw) {
   if (!isatty(0)) {
@@ -2220,9 +2821,15 @@ void scr_process_stdin_set_raw_mode(bool raw) {
     (void)SetConsoleMode(h, scr_stdin_cooked);
   }
 }
+#elif defined(__wasi__)
+void scr_process_stdin_set_raw_mode(bool raw) {
+  (void)raw;
+  const char msg[] = "process.stdin.setRawMode is not a function";
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+}
 #else
-static struct termios scr_stdin_cooked;
-static bool scr_stdin_cooked_saved = false;
+static SCR_TL struct termios scr_stdin_cooked;
+static SCR_TL bool scr_stdin_cooked_saved = false;
 
 void scr_process_stdin_set_raw_mode(bool raw) {
   if (!isatty(0)) {
@@ -2261,8 +2868,8 @@ void scr_process_stdin_destroy(void) {
 }
 
 /* ── Stats values ────────────────────────────────────────────────────
- * An immutable snapshot of stat(2) results — the slice the lowered
- * surface exposes (isFile/isDirectory/size). statSync THROWS like the
+ * An immutable snapshot of stat(2) results — the lowered type/mode, size,
+ * allocation/link, and access/write-time slice. statSync THROWS like the
  * other sync fs calls; the promise form rejects (see the fsp section). */
 
 struct ScrStats {
@@ -2271,6 +2878,9 @@ struct ScrStats {
   bool is_dir;
   bool is_symlink; /* lstat only — a followed stat never sees one */
   double size;
+  double blocks;   /* allocated size in 512-byte units (Node/libuv) */
+  double nlink;
+  double atime_ms;
   double mtime_ms; /* milliseconds with the nanosecond fraction (Node) */
 };
 
@@ -2291,53 +2901,310 @@ bool scr_stats_is_file(ScrStats *s) { return s->is_file; }
 bool scr_stats_is_dir(ScrStats *s) { return s->is_dir; }
 bool scr_stats_is_symlink(ScrStats *s) { return s->is_symlink; }
 double scr_stats_size(ScrStats *s) { return s->size; }
+double scr_stats_blocks(ScrStats *s) { return s->blocks; }
+double scr_stats_nlink(ScrStats *s) { return s->nlink; }
+double scr_stats_atime_ms(ScrStats *s) { return s->atime_ms; }
 double scr_stats_mtime_ms(ScrStats *s) { return s->mtime_ms; }
 
-static ScrStats *scr_stats_of(const struct stat *st) {
+static ScrStats *scr_stats_new(void) {
   ScrStats *s = malloc(sizeof(ScrStats));
   if (!s) {
     scr_trap("scriptc: out of memory\n");
   }
   s->rc = 1;
-  s->is_file = S_ISREG(st->st_mode);
-  s->is_dir = S_ISDIR(st->st_mode);
-#if defined(_WIN32)
-  /* CRT stat has no symlink view (lstat above degrades to stat) and no
-   * sub-second mtime — whole seconds where Node reads the FILETIME's
-   * 100ns units (divergence: mtimeMs precision; mechanical fix is
-   * GetFileAttributesEx). */
-  s->is_symlink = false;
-  s->mtime_ms = (double)st->st_mtime * 1000.0;
-#else
-  s->is_symlink = S_ISLNK(st->st_mode);
-#if defined(__APPLE__)
-  s->mtime_ms = (double)st->st_mtimespec.tv_sec * 1000.0 +
-                (double)st->st_mtimespec.tv_nsec / 1e6;
-#else
-  s->mtime_ms = (double)st->st_mtim.tv_sec * 1000.0 +
-                (double)st->st_mtim.tv_nsec / 1e6;
-#endif
-#endif
-  s->size = (double)st->st_size;
   return s;
 }
 
+#ifdef _WIN32
+/* The CRT fallback is deliberately complete: callers either get every field
+ * from this one stat() result or every field from one Win32 handle below,
+ * never a snapshot spliced across two path resolutions. */
+static ScrStats *scr_stats_of_crt(const struct stat *st) {
+  ScrStats *s = scr_stats_new();
+  s->is_file = S_ISREG(st->st_mode);
+  s->is_dir = S_ISDIR(st->st_mode);
+  s->is_symlink = false;
+  s->size = (double)st->st_size;
+  s->blocks = st->st_size <= 0 ? 0.0 : (double)(((uint64_t)st->st_size + 511) >> 9);
+  s->nlink = (double)st->st_nlink;
+  s->atime_ms = (double)st->st_atime * 1000.0;
+  s->mtime_ms = (double)st->st_mtime * 1000.0;
+  return s;
+}
+
+static ScrStats *scr_stats_crt_fallback(const ScrStr *path, const char *op) {
+  struct stat st;
+  if (stat(path->data, &st) != 0) {
+    scr_fs_throw(errno, op, path);
+    return NULL;
+  }
+  return scr_stats_of_crt(&st);
+}
+
+/* Resolve ordinary disk paths once and populate every public field from the
+ * resulting handle. Splitting size/type across CRT stat() and a later
+ * CreateFile call can mix two entries when another process replaces path. */
+static bool scr_stats_is_link_tag(DWORD tag) {
+  return tag == IO_REPARSE_TAG_SYMLINK ||
+         tag == IO_REPARSE_TAG_MOUNT_POINT ||
+         tag == IO_REPARSE_TAG_APPEXECLINK ||
+         tag == UINT32_C(0xA000001D); /* IO_REPARSE_TAG_LX_SYMLINK */
+}
+
+static double scr_stats_utf16_len(const WCHAR *text, size_t len) {
+  if (len == 0) return 0;
+  if (len > INT_MAX) return -1;
+  int bytes = WideCharToMultiByte(
+    CP_UTF8, 0, text, (int)len, NULL, 0, NULL, NULL);
+  return bytes > 0 ? (double)bytes : -1;
+}
+
+typedef struct {
+  ULONG tag;
+  USHORT data_len;
+  USHORT reserved;
+  union {
+    struct {
+      USHORT substitute_offset;
+      USHORT substitute_len;
+      USHORT print_offset;
+      USHORT print_len;
+      ULONG flags;
+      WCHAR path[1];
+    } symlink;
+    struct {
+      USHORT substitute_offset;
+      USHORT substitute_len;
+      USHORT print_offset;
+      USHORT print_len;
+      WCHAR path[1];
+    } mount;
+    struct {
+      unsigned char bytes[1];
+    } generic;
+  } body;
+} ScrStatsReparseData;
+
+/* Node/libuv reports a Windows link's target-text length as st_size. The
+ * ordinary handle information does not carry that value, so read the reparse
+ * payload while the no-follow handle is live. */
+static bool scr_stats_link_size(HANDLE h, DWORD tag, double *size_out) {
+  union {
+    ScrStatsReparseData align;
+    unsigned char bytes[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+  } storage;
+  DWORD used;
+  if (!DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, NULL, 0,
+                       storage.bytes, sizeof storage.bytes, &used, NULL)) return false;
+  ScrStatsReparseData *data = (ScrStatsReparseData *)storage.bytes;
+  const size_t body_offset = offsetof(ScrStatsReparseData, body);
+  if (used < body_offset || data->data_len > used - body_offset ||
+      data->tag != tag) return false;
+
+  const WCHAR *target;
+  size_t len;
+  if (tag == IO_REPARSE_TAG_SYMLINK) {
+    const size_t fixed = offsetof(ScrStatsReparseData, body.symlink.path) -
+      body_offset;
+    size_t offset = data->body.symlink.substitute_offset;
+    size_t bytes = data->body.symlink.substitute_len;
+    if (data->data_len < fixed || ((offset | bytes) & 1) != 0 ||
+        offset > data->data_len - fixed ||
+        bytes > data->data_len - fixed - offset) return false;
+    target = (const WCHAR *)((const unsigned char *)data->body.symlink.path +
+      offset);
+    len = bytes / sizeof(WCHAR);
+  } else if (tag == IO_REPARSE_TAG_MOUNT_POINT) {
+    const size_t fixed = offsetof(ScrStatsReparseData, body.mount.path) -
+      body_offset;
+    size_t offset = data->body.mount.substitute_offset;
+    size_t bytes = data->body.mount.substitute_len;
+    if (data->data_len < fixed || ((offset | bytes) & 1) != 0 ||
+        offset > data->data_len - fixed ||
+        bytes > data->data_len - fixed - offset) return false;
+    target = (const WCHAR *)((const unsigned char *)data->body.mount.path +
+      offset);
+    len = bytes / sizeof(WCHAR);
+    _Static_assert(sizeof(WCHAR) == sizeof(uint16_t),
+                   "Windows reparse payloads use UTF-16 code units");
+    if (!scr_win_stats_mount_target_is_junction(
+          (const uint16_t *)target, len)) return false;
+  } else if (tag == UINT32_C(0xA000001D)) {
+    /* WSL's LX symlink payload is a version word followed by UTF-8 bytes. */
+    if (data->data_len < sizeof(ULONG)) return false;
+    *size_out = (double)(data->data_len - sizeof(ULONG));
+    return true;
+  } else {
+    /* App execution links carry a counted UTF-16 string list; the third
+     * string is the target path. */
+    if (tag != IO_REPARSE_TAG_APPEXECLINK ||
+        data->data_len < sizeof(ULONG)) return false;
+    const unsigned char *raw = data->body.generic.bytes;
+    ULONG count;
+    memcpy(&count, raw, sizeof count);
+    if (count < 3 || ((data->data_len - sizeof count) & 1) != 0) return false;
+    target = (const WCHAR *)(raw + sizeof count);
+    size_t chars = (data->data_len - sizeof count) / sizeof(WCHAR);
+    for (size_t item = 0; item < 2; item++) {
+      size_t part = 0;
+      while (part < chars && target[part] != L'\0') part++;
+      if (part == 0 || part == chars) return false;
+      target += part + 1;
+      chars -= part + 1;
+    }
+    len = 0;
+    while (len < chars && target[len] != L'\0') len++;
+    if (len == 0 || len == chars || len < 3 ||
+        !((target[0] >= L'A' && target[0] <= L'Z') ||
+          (target[0] >= L'a' && target[0] <= L'z')) ||
+        target[1] != L':' || target[2] != L'\\') return false;
+    double size = scr_stats_utf16_len(target, len);
+    if (size < 0) return false;
+    *size_out = size;
+    return true;
+  }
+
+  /* Undo the NT namespace prefix CreateSymbolicLinkW stores for absolute
+   * DOS/UNC targets, matching libuv's readlink normalization. */
+  if (len >= 4 && target[0] == L'\\' && target[1] == L'?' &&
+      target[2] == L'?' && target[3] == L'\\') {
+    if (len >= 6 && target[5] == L':' &&
+        ((target[4] >= L'A' && target[4] <= L'Z') ||
+         (target[4] >= L'a' && target[4] <= L'z')) &&
+        (len == 6 || target[6] == L'\\')) {
+      target += 4;
+      len -= 4;
+    } else if (len >= 8 &&
+               (target[4] == L'U' || target[4] == L'u') &&
+               (target[5] == L'N' || target[5] == L'n') &&
+               (target[6] == L'C' || target[6] == L'c') &&
+               target[7] == L'\\') {
+      target += 6;
+      len -= 6;
+    }
+  }
+  double size = scr_stats_utf16_len(target, len);
+  if (size < 0) return false;
+  *size_out = size;
+  return true;
+}
+
+static ScrStats *scr_stats_of_path(const ScrStr *path, const char *op,
+                                   bool no_follow) {
+  WCHAR *wide = scr_fs_win_wide(path);
+  if (!wide) return scr_stats_crt_fallback(path, op);
+
+  DWORD flags = FILE_FLAG_BACKUP_SEMANTICS;
+  if (no_follow) flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+  HANDLE h = CreateFileW(wide, FILE_READ_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING, flags, NULL);
+  free(wide);
+  if (h == INVALID_HANDLE_VALUE) return scr_stats_crt_fallback(path, op);
+
+  DWORD file_type = GetFileType(h);
+  if (file_type != FILE_TYPE_DISK) {
+    CloseHandle(h);
+    return scr_stats_crt_fallback(path, op);
+  }
+  BY_HANDLE_FILE_INFORMATION basic;
+  if (!GetFileInformationByHandle(h, &basic)) {
+    CloseHandle(h);
+    return scr_stats_crt_fallback(path, op);
+  }
+  bool is_link = false;
+  double link_size = -1;
+  if (no_follow && (basic.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+    FILE_ATTRIBUTE_TAG_INFO tagged;
+    if (!GetFileInformationByHandleEx(
+          h, FileAttributeTagInfo, &tagged, sizeof tagged) ||
+        !scr_stats_is_link_tag(tagged.ReparseTag)) {
+      /* Reparse points are a general interception mechanism. Node/libuv
+       * follows non-link tags even for lstat, so reopen the resolved target. */
+      CloseHandle(h);
+      return scr_stats_of_path(path, op, false);
+    }
+    if (!scr_stats_link_size(h, tagged.ReparseTag, &link_size)) {
+      /* A mount-point tag may name a mounted volume rather than a junction.
+       * libuv treats those (and malformed/unsupported link payloads) as
+       * ordinary reparse points and retries with the final component
+       * followed. Do not classify from the tag alone. */
+      CloseHandle(h);
+      return scr_stats_of_path(path, op, false);
+    }
+    is_link = true;
+  }
+  FILE_STANDARD_INFO standard;
+  bool have_standard = GetFileInformationByHandleEx(
+    h, FileStandardInfo, &standard, sizeof standard);
+  CloseHandle(h);
+
+  bool is_dir = (basic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+  uint64_t size = ((uint64_t)basic.nFileSizeHigh << 32) | basic.nFileSizeLow;
+  ScrStats *s = scr_stats_new();
+  s->is_file = !is_link && (have_standard ? !standard.Directory : !is_dir);
+  s->is_dir = !is_link && (have_standard ? standard.Directory : is_dir);
+  s->is_symlink = is_link;
+  s->size = is_link && link_size >= 0 ? link_size : s->is_dir ? 0.0
+    : have_standard ? (double)standard.EndOfFile.QuadPart : (double)size;
+  s->blocks = have_standard
+    ? (double)((uint64_t)standard.AllocationSize.QuadPart >> 9)
+    : size == 0 ? 0.0 : (double)((size + 511) >> 9);
+  s->nlink = have_standard
+    ? (double)standard.NumberOfLinks
+    : (double)basic.nNumberOfLinks;
+  s->atime_ms = scr_filetime_unix_ms(basic.ftLastAccessTime);
+  s->mtime_ms = scr_filetime_unix_ms(basic.ftLastWriteTime);
+  return s;
+}
+#else
+static ScrStats *scr_stats_of(const struct stat *st) {
+  ScrStats *s = scr_stats_new();
+  s->is_file = S_ISREG(st->st_mode);
+  s->is_dir = S_ISDIR(st->st_mode);
+  s->is_symlink = S_ISLNK(st->st_mode);
+#if defined(__APPLE__)
+  s->atime_ms = (double)st->st_atimespec.tv_sec * 1000.0 +
+                (double)st->st_atimespec.tv_nsec / 1e6;
+  s->mtime_ms = (double)st->st_mtimespec.tv_sec * 1000.0 +
+                (double)st->st_mtimespec.tv_nsec / 1e6;
+#else
+  s->atime_ms = (double)st->st_atim.tv_sec * 1000.0 +
+                (double)st->st_atim.tv_nsec / 1e6;
+  s->mtime_ms = (double)st->st_mtim.tv_sec * 1000.0 +
+                (double)st->st_mtim.tv_nsec / 1e6;
+#endif
+  s->blocks = (double)st->st_blocks;
+  s->nlink = (double)st->st_nlink;
+  s->size = (double)st->st_size;
+  return s;
+}
+#endif
+
 ScrStats *scr_fs_stat(ScrStr *path) {
+#ifdef _WIN32
+  return scr_stats_of_path(path, "stat", false);
+#else
   struct stat st;
   if (stat(path->data, &st) != 0) { /* follows symlinks, like Node's statSync */
     scr_fs_throw(errno, "stat", path);
     return NULL;
   }
   return scr_stats_of(&st);
+#endif
 }
 
 ScrStats *scr_fs_lstat(ScrStr *path) {
+#ifdef _WIN32
+  return scr_stats_of_path(path, "lstat", true);
+#else
   struct stat st;
   if (lstat(path->data, &st) != 0) { /* no follow; Node reports lstat */
     scr_fs_throw(errno, "lstat", path);
     return NULL;
   }
   return scr_stats_of(&st);
+#endif
 }
 
 ScrArr *scr_fs_readdir(ScrStr *path) {
@@ -3116,10 +3983,6 @@ ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem) {
 
 /* ── String surface (fromCharCode / lastIndexOf) ─────────────────────── */
 
-/* Forward declaration — scr_to_uint32 lives with the bitwise operators
- * below (ToUint16 is its low 16 bits, per spec). */
-static uint32_t scr_to_uint32(double d);
-
 /* String.fromCharCode core over n UTF-16 code units read through
  * `unit(src, i)` (already ToUint16'd): combine adjacent surrogate pairs,
  * substitute U+FFFD for lone surrogates (divergence 1's storage policy —
@@ -3214,9 +4077,10 @@ double scr_str_last_index_of(ScrStr *s, ScrStr *needle) {
   return -1.0;
 }
 
-/* ── Date, the composed slice ──────────────────────────────────────────
- * Date values have no representation — the compiled surface is exactly
- * Date.now() and the composed new Date(ms?).toISOString(). */
+/* ── Date, the read-only value slice ───────────────────────────────────
+ * Values are TimeClip'd epoch-millisecond scalars. Identity/mutation are
+ * frontend-fenced; construction, storage, getters, and ISO formatting
+ * observe exactly this payload. */
 
 double scr_date_now(void) {
   struct timespec ts;
@@ -3224,6 +4088,16 @@ double scr_date_now(void) {
   /* Node's Date.now() is integer milliseconds. */
   return floor((double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6);
 }
+
+/* Date's TimeClip: non-finite/out-of-range values become Invalid Date,
+ * finite values truncate toward zero, and -0 normalizes to +0. */
+double scr_date_new_ms(double ms) {
+  if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return NAN;
+  double clipped = trunc(ms);
+  return clipped == 0 ? 0 : clipped;
+}
+
+double scr_date_get_time(double ms) { return ms; }
 
 /* Node's Date.prototype.toISOString over a millisecond time value:
  * TimeClip's ToInteger truncation, proleptic Gregorian civil-from-days
@@ -3291,7 +4165,7 @@ static double scr_days_from_civil(long long y, int m, int d) {
   return (double)(era * 146097 + (long long)doe - 719468);
 }
 
-static double scr_date_ms_of(long long y, int mo, int d, int hh, int mi, int ss, int ms) {
+static double scr_date_make_ms(long long y, int mo, int d, int hh, int mi, int ss, int ms) {
   /* V8 accepts days 1..31 in every month and ROLLS OVER past the month's
    * end (Feb 30 → Mar 2) — days_from_civil extrapolates linearly, so the
    * rollover falls out; day 0 and 32+ are NaN, like V8. */
@@ -3299,8 +4173,11 @@ static double scr_date_ms_of(long long y, int mo, int d, int hh, int mi, int ss,
   if (hh > 24 || mi > 59 || ss > 59 || (hh == 24 && (mi || ss || ms))) return NAN;
   double t = scr_days_from_civil(y, mo, d) * 86400000.0 +
              hh * 3600000.0 + mi * 60000.0 + ss * 1000.0 + ms;
-  if (fabs(t) > 8640000000000000.0) return NAN;
   return t;
+}
+
+static double scr_date_ms_of(long long y, int mo, int d, int hh, int mi, int ss, int ms) {
+  return scr_date_new_ms(scr_date_make_ms(y, mo, d, hh, mi, ss, ms));
 }
 
 static bool scr_date_digits(const char **p, const char *end, int n, int *out) {
@@ -3358,6 +4235,7 @@ double scr_date_parse_get_time(ScrStr *s) {
       bool neg = *p == '-';
       p++;
       if (!scr_date_digits(&p, end, 6, &y6)) return NAN;
+      if (neg && y6 == 0) return NAN; /* ECMA forbids expanded -000000 */
       yy = neg ? -(long long)y6 : y6;
     } else {
       if (!scr_date_digits(&p, end, 4, &y)) return NAN;
@@ -3393,14 +4271,18 @@ double scr_date_parse_get_time(ScrStr *s) {
       p++;
       if (!scr_date_digits(&p, end, 2, &oh) || p >= end || *p++ != ':') return NAN;
       if (!scr_date_digits(&p, end, 2, &om)) return NAN;
+      if (oh > 23 || om > 59) return NAN;
       off = (oh * 60 + om) * 60000.0;
       if (neg) off = -off;
     } else {
       return NAN;
     }
     if (p != end) return NAN;
-    double t = scr_date_ms_of(yy, mo, d, hh, mi, ss, ms);
-    return isnan(t) ? t : t - off;
+    /* MakeDate can lie just beyond the TimeClip boundary while the
+     * explicit offset brings the final UTC instant back into range. The
+     * spec clips only after that offset has been applied. */
+    double t = scr_date_make_ms(yy, mo, d, hh, mi, ss, ms);
+    return scr_date_new_ms(t - off);
   }
 }
 
@@ -3412,10 +4294,10 @@ double scr_date_parse_get_time(ScrStr *s) {
  * 1900+year (the spec's MakeFullYear), out-of-range months ROLL into the
  * year (Date.UTC(2017, 13) is Feb 2018) and any integer date offsets from
  * day 1 of that month — days_from_civil extrapolates linearly, so both
- * rollovers fall out. V8 bounds MakeDay's year to ±1e6 (kMaxYear/kMinYear,
- * date.h) before TimeClip can see the result, and Node answers NaN past
- * it — matched here, and it keeps days_from_civil's long long exact.
- * Never throws. */
+ * rollovers fall out. V8 bounds MakeDay's input year to ±1e6 and input
+ * month to ±1e7 before normalizing the month (kMaxYear/kMinYear and
+ * kMaxMonth/kMinMonth, date.h); Node answers NaN past either bound even
+ * when the two inputs would normalize back into range. Never throws. */
 double scr_date_utc(double y, double mo, double d,
                     double h, double mi, double s, double ms) {
   if (!isfinite(y) || !isfinite(mo) || !isfinite(d) || !isfinite(h) ||
@@ -3429,14 +4311,148 @@ double scr_date_utc(double y, double mo, double d,
   mi = trunc(mi);
   s = trunc(s);
   ms = trunc(ms);
+  if (fabs(y) > 1000000.0 || fabs(mo) > 10000000.0) return NAN;
   if (y >= 0 && y <= 99) y += 1900;
   double ym = y + floor(mo / 12.0);
   int mn = (int)(mo - floor(mo / 12.0) * 12.0); /* 0..11 */
-  if (fabs(ym) > 1000000.0) return NAN; /* V8's MakeDay year bound */
   double days = scr_days_from_civil((long long)ym, mn + 1, 1) + (d - 1.0);
   double t = days * 86400000.0 + h * 3600000.0 + mi * 60000.0 + s * 1000.0 + ms;
   if (fabs(t) > 8640000000000000.0) return NAN; /* TimeClip */
   return t == 0 ? 0 : t; /* normalize -0 (TimeClip's +0) */
+}
+
+/* ── Date calendar getters ────────────────────────────────────────────
+ * UTC fields use the same proleptic-Gregorian walk as toISOString, so the
+ * whole Date range is portable. Local fields use the host timezone via
+ * localtime, exactly the environment the sibling Node process observes;
+ * a libc that cannot represent an extreme instant answers NaN rather than
+ * inventing a zone. */
+
+typedef struct ScrDateParts {
+  long long year;
+  int month, date, day, hours, minutes, seconds, milliseconds;
+  double timezone_offset;
+} ScrDateParts;
+
+/* Calendar decomposition itself also serves LocalTime(t), which can lie
+ * just outside TimeClip's UTC interval after applying a zone offset at an
+ * endpoint. The checked wrapper is the public UTC-getter gate; the inner
+ * walk accepts those bounded local-time values too. */
+static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
+  double dayd = floor(t / 86400000.0);
+  long long msday = (long long)(t - dayd * 86400000.0);
+  long long z = (long long)dayd + 719468;
+  long long era = (z >= 0 ? z : z - 146096) / 146097;
+  unsigned long long doe = (unsigned long long)(z - era * 146097);
+  unsigned long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  long long y = (long long)yoe + era * 400;
+  unsigned long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  unsigned long long mp = (5 * doy + 2) / 153;
+  unsigned long long d = doy - (153 * mp + 2) / 5 + 1;
+  unsigned long long m = mp < 10 ? mp + 3 : mp - 9;
+  if (m <= 2) y++;
+  long long wday = ((long long)dayd + 4) % 7;
+  if (wday < 0) wday += 7;
+  out->year = y;
+  out->month = (int)m - 1;
+  out->date = (int)d;
+  out->day = (int)wday;
+  out->hours = (int)(msday / 3600000);
+  out->minutes = (int)(msday / 60000 % 60);
+  out->seconds = (int)(msday / 1000 % 60);
+  out->milliseconds = (int)(msday % 1000);
+  out->timezone_offset = 0;
+}
+
+static bool scr_date_utc_parts(double ms, ScrDateParts *out) {
+  if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return false;
+  scr_date_utc_parts_unchecked(trunc(ms), out);
+  return true;
+}
+
+static bool scr_date_localtime(double secd, struct tm *out) {
+  time_t sec = (time_t)secd;
+  if ((double)sec != secd) return false;
+#ifdef _WIN32
+  return localtime_s(out, &sec) == 0;
+#else
+  return localtime_r(&sec, out) != NULL;
+#endif
+}
+
+static bool scr_date_local_parts(double ms, ScrDateParts *out) {
+  if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return false;
+  double clipped = trunc(ms);
+  double secd = floor(clipped / 1000.0);
+  struct tm tmv;
+  double basis_secd = secd;
+  if (!scr_date_localtime(basis_secd, &tmv)) {
+    /* Windows' _localtime64_s rejects pre-epoch instants and years after
+     * 3001 even though both are valid ECMAScript Dates. Query the host's
+     * zone rule at a calendar-equivalent surrogate year in 2000..2399:
+     * Gregorian weekdays/leap years repeat every 400 years. This keeps
+     * every valid Date finite; the OS-vs-Node historical-rule difference
+     * remains the documented timezone-data divergence. */
+    ScrDateParts utc;
+    scr_date_utc_parts_unchecked(clipped, &utc);
+    long long cycle_year = (utc.year - 2000) % 400;
+    if (cycle_year < 0) cycle_year += 400;
+    long long surrogate_year = 2000 + cycle_year;
+    basis_secd =
+      scr_days_from_civil(surrogate_year, utc.month + 1, utc.date) * 86400.0 +
+      utc.hours * 3600.0 + utc.minutes * 60.0 + utc.seconds;
+    if (!scr_date_localtime(basis_secd, &tmv)) return false;
+  }
+  /* Treat the local broken-down fields as UTC. Its distance from the real
+   * (or surrogate) epoch second is the zone offset. Apply that offset to
+   * the original instant and use the portable Gregorian walk for its
+   * fields; Date#getTimezoneOffset uses the
+   * opposite sign (UTC - local), in whole minutes. Historical local-mean
+   * offsets can contain seconds, which JavaScript truncates toward zero. */
+  double local_as_utc =
+    scr_days_from_civil((long long)tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday) * 86400.0 +
+    tmv.tm_hour * 3600.0 + tmv.tm_min * 60.0 + tmv.tm_sec;
+  double local_offset = local_as_utc - basis_secd;
+  scr_date_utc_parts_unchecked(clipped + local_offset * 1000.0, out);
+  double timezone_offset = trunc(-local_offset / 60.0);
+  out->timezone_offset = timezone_offset == 0 ? 0 : timezone_offset;
+  return true;
+}
+
+static bool scr_date_parts(double ms, bool utc, ScrDateParts *out) {
+  return utc ? scr_date_utc_parts(ms, out) : scr_date_local_parts(ms, out);
+}
+
+#define SCR_DATE_PART_GETTER(name, field)                                    \
+  double scr_date_get_##name(double ms, bool utc) {                          \
+    ScrDateParts p;                                                           \
+    return scr_date_parts(ms, utc, &p) ? (double)p.field : NAN;              \
+  }                                                                           \
+  double scr_date_get_##name##_local(double ms) {                            \
+    return scr_date_get_##name(ms, false);                                    \
+  }                                                                           \
+  double scr_date_get_##name##_utc(double ms) {                              \
+    return scr_date_get_##name(ms, true);                                     \
+  }
+
+SCR_DATE_PART_GETTER(full_year, year)
+SCR_DATE_PART_GETTER(month, month)
+SCR_DATE_PART_GETTER(date, date)
+SCR_DATE_PART_GETTER(day, day)
+SCR_DATE_PART_GETTER(hours, hours)
+SCR_DATE_PART_GETTER(minutes, minutes)
+SCR_DATE_PART_GETTER(seconds, seconds)
+
+#undef SCR_DATE_PART_GETTER
+
+double scr_date_get_milliseconds(double ms) {
+  ScrDateParts p;
+  return scr_date_utc_parts(ms, &p) ? (double)p.milliseconds : NAN;
+}
+
+double scr_date_get_timezone_offset(double ms) {
+  ScrDateParts p;
+  return scr_date_local_parts(ms, &p) ? p.timezone_offset : NAN;
 }
 
 /* ── Number statics ────────────────────────────────────────────────────
@@ -3779,14 +4795,6 @@ bool scr_num_is_safe_integer(double x) {
  * as two's complement, spelled portably (no implementation-defined
  * narrowing casts, no UB shifts of signed values).
  */
-
-static uint32_t scr_to_uint32(double d) {
-  if (!isfinite(d)) return 0; /* NaN, +Infinity, -Infinity */
-  double t = trunc(d);
-  t = fmod(t, 4294967296.0); /* exact for doubles; result in (-2^32, 2^32) */
-  if (t < 0) t += 4294967296.0;
-  return (uint32_t)t;
-}
 
 /* The 32 bits as a SIGNED (Int32) JS number. */
 static double scr_bits_as_int32(uint32_t u) {

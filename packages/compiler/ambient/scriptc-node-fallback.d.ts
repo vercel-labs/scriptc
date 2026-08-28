@@ -205,12 +205,18 @@ declare var process: {
   /* The raw byte writes — no newline, no formatting. stdout shares
    * console.log's stream, each call is submitted promptly, and ordering is
    * preserved. The boolean is Node's backpressure signal — these synchronous
-   * writes always return true. The Uint8Array overload
-   * and isTTY exist so real CLIs TYPECHECK (they are @types/node surface);
-   * only the one-string form has a lowering — everything else fences at
-   * its use site. */
-  stdout: { write(data: string): boolean; write(data: Uint8Array): boolean; readonly isTTY: boolean };
-  stderr: { write(data: string): boolean; write(data: Uint8Array): boolean; readonly isTTY: boolean };
+   * writes always return true. Static BufferEncoding arguments and the
+   * completion callback overloads match Node's WritableStream surface. */
+  stdout: {
+    write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
+    write(data: string | Uint8Array, encoding: BufferEncoding, callback?: (error?: Error | null) => void): boolean;
+    readonly isTTY: boolean;
+  };
+  stderr: {
+    write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
+    write(data: string | Uint8Array, encoding: BufferEncoding, callback?: (error?: Error | null) => void): boolean;
+    readonly isTTY: boolean;
+  };
   /* The stdin stream, the piped-input slice: the TTY probe, the
    * data/end/error events (on and once — a 'data' listener keeps the
    * event loop alive until EOF, like Node's flowing stdin), destroy()
@@ -250,10 +256,10 @@ declare var process: {
    * deprecation sites dispatch synchronously (SEMANTICS.md). */
   on(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   /* 'unhandledRejection' — dispatched per never-observed rejection at
-   * loop end (reason, promise), suppressing the default report.
-   * 'rejectionHandled' — the sibling event: under the loop-exhaustion
-   * model its one firing window is a handler attached during an
-   * unhandledRejection listener (promise payload, Node's shape). */
+   * the completed nextTick/microtask checkpoint (reason, promise),
+   * suppressing the default report. 'rejectionHandled' — the sibling
+   * event, fired once when a delivered promise later gains a handler
+   * (promise payload, Node's shape). */
   on(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   on(event: "rejectionHandled", listener: (promise: unknown) => void): void;
   once(event: "SIGINT" | "SIGTERM", listener: () => void): void;
@@ -473,10 +479,11 @@ interface BufferConstructor {
 }
 declare var Buffer: BufferConstructor;
 
-/* The WHATWG encoders (Node globals). Only the COMPOSED forms lower —
- * `new TextEncoder().encode(s)` and `new TextDecoder().decode(bytes)`;
- * the label is typed as the utf-8 spellings (the one supported decoder;
- * other labels and the fatal/ignoreBOM options fence at the use site). */
+/* The WHATWG encoders (Node globals). The COMPOSED forms lower —
+ * `new TextEncoder().encode(s)` and `new TextDecoder().decode(bytes)` —
+ * as do same-scope const store-then-call forms. Recognized literal WHATWG
+ * labels compile statically; runtime-valued/unknown labels and the
+ * fatal/ignoreBOM options fence at the use site). */
 interface TextEncoder {
   encode(input?: string): Uint8Array;
 }
@@ -484,7 +491,7 @@ declare var TextEncoder: { new (): TextEncoder };
 interface TextDecoder {
   decode(input?: ArrayBufferView | ArrayBuffer): string;
 }
-declare var TextDecoder: { new (label?: "utf-8" | "utf8"): TextDecoder };
+declare var TextDecoder: { new (label?: string): TextDecoder };
 
 /* The WHATWG event surface (Node globals since v15): declared so the
  * suite's event-plumbing tests typecheck and fence per SITE with the
@@ -587,10 +594,9 @@ declare var MessageChannel: {
   readonly prototype: MessageChannel;
 };
 
-/* AbortSignal, the fetch-cancellation slice (AbortSignal.timeout is the
- * whole surface real CLIs construct; the statics beyond it — abort/any —
- * and the instance events are declared for the suite and fence per site
- * statically, with the island's real implementation behind --dynamic). */
+/* AbortSignal, the native fetch-cancellation slice. The three statics,
+ * state/reason reads, throwIfAborted, and abort listeners all lower in
+ * static builds; dynamic builds use the island's Web implementation. */
 interface AbortSignal extends EventTarget {
   readonly aborted: boolean;
   readonly reason: unknown;
@@ -604,22 +610,55 @@ declare var AbortSignal: {
   readonly prototype: AbortSignal;
 };
 
-/* fetch, typed as the JSON-API slice: one URL, an optional init with the
- * members CLI requests carry, a Response with the probe members and body
- * readers. json() returns unknown — the same dynamic boundary as
- * JSON.parse: cast and validate. Response, AbortSignal, and RequestInit
- * are ISLAND-BACKED ambients: under --dynamic their values are handles
- * into the embedded engine (the engine's own fetch executes; member reads
- * and calls are engine ops with validated exits at typed boundaries), so
- * `body` is honestly `any` — the streaming world lives entirely in the
- * island. The named RequestInit interface is what routes init object
- * literals through the island literal builder. */
-/* Headers — a response's header map (r.headers), island-backed like
- * Response itself: the value is the engine's real Headers (lowercase
- * names, combine-on-append, sorted iteration), member reads and calls are
- * engine ops with validated exits at typed boundaries. Declared to the
- * implemented surface; constructing one statically (`new Headers()`) keeps
- * the constructor fence. */
+interface ReadableStreamReadValueResult<T> {
+  done: false;
+  value: T;
+}
+interface ReadableStreamReadDoneResult<T> {
+  done: true;
+  value: T | undefined;
+}
+type ReadableStreamReadResult<T> =
+  | ReadableStreamReadValueResult<T>
+  | ReadableStreamReadDoneResult<T>;
+interface ReadableStreamDefaultReader<T = unknown> {
+  readonly closed: Promise<void>;
+  read(): Promise<ReadableStreamReadResult<T>>;
+  cancel(reason?: unknown): Promise<void>;
+  releaseLock(): void;
+}
+interface ReadableStreamDefaultController<T = unknown> {
+  readonly desiredSize: number | null;
+  enqueue(chunk?: T): void;
+  close(): void;
+  error(reason?: unknown): void;
+}
+interface UnderlyingSource<T = unknown> {
+  start?(controller: ReadableStreamDefaultController<T>): unknown;
+  pull?(controller: ReadableStreamDefaultController<T>): unknown;
+  cancel?(reason?: unknown): unknown;
+}
+interface ReadableStream<T = unknown> {
+  readonly locked: boolean;
+  cancel(reason?: unknown): Promise<void>;
+  getReader(): ReadableStreamDefaultReader<T>;
+}
+declare var ReadableStream: {
+  new <T = unknown>(source?: UnderlyingSource<T>): ReadableStream<T>;
+  from<T>(iterable: readonly T[]): ReadableStream<T>;
+  from(iterable: Uint8Array): ReadableStream<number>;
+  from(iterable: string): ReadableStream<string>;
+  readonly prototype: ReadableStream<unknown>;
+};
+
+/* fetch, typed as the native JSON + readable-stream slice: one URL, an
+ * optional init with the members CLI requests carry, and a Response
+ * whose body is the same stream consumed by json(). json() returns
+ * unknown — the same dynamic boundary as JSON.parse: cast and validate. */
+/* Headers — a response's native header map (lowercase names,
+ * combine-on-append, sorted iteration). The value is a checked-dynamic
+ * native handle like Response itself; constructing one statically
+ * (`new Headers()`) keeps the constructor fence. */
 interface Headers {
   append(name: string, value: string): void;
   delete(name: string): void;
@@ -627,8 +666,16 @@ interface Headers {
   getSetCookie(): string[];
   has(name: string): boolean;
   set(name: string, value: string): void;
-  forEach(callbackfn: (value: string, key: string, parent: Headers) => void): void;
+  forEach(
+    callbackfn: (value: string, key: string, parent: Headers) => void,
+    thisArg?: unknown,
+  ): void;
+  [Symbol.iterator](): IterableIterator<[string, string]>;
 }
+declare var Headers: {
+  new (init?: Record<string, string> | readonly (readonly [string, string])[]): Headers;
+  readonly prototype: Headers;
+};
 interface Response {
   readonly ok: boolean;
   readonly status: number;
@@ -636,25 +683,62 @@ interface Response {
   readonly url: string;
   readonly redirected: boolean;
   readonly headers: Headers;
-  readonly body: any;
+  readonly body: ReadableStream<Uint8Array> | null;
   readonly bodyUsed: boolean;
   json(): Promise<unknown>;
   text(): Promise<string>;
-  /* The whole body as bytes: arrayBuffer() answers the engine's
-   * ArrayBuffer (a handle — read it through `new Uint8Array(...)` in
-   * island code or its byteLength directly); bytes() answers a
-   * Uint8Array, which exits to the static bytes tier at a typed
-   * boundary (`const b: Uint8Array = await r.bytes()` is a validated
-   * copy — divergence 44's aliasing stance). */
+  /* The whole body as bytes: bytes() answers a Uint8Array in both tiers.
+   * arrayBuffer() remains dynamic-only because static programs have no
+   * free-standing ArrayBuffer representation; the compiler diagnoses its
+   * direct use and points at bytes(). */
+  arrayBuffer(): Promise<ArrayBuffer>;
+  bytes(): Promise<Uint8Array>;
+}
+interface ResponseInit {
+  headers?:
+    | Headers
+    | Record<string, string>
+    | readonly (readonly [string, string])[];
+  status?: number;
+  statusText?: string;
+}
+declare var Response: {
+  new (
+    body?: string | Uint8Array | ReadableStream<Uint8Array> | null,
+    init?: ResponseInit,
+  ): Response;
+  readonly prototype: Response;
+  error(): Response;
+  json(data: unknown, init?: ResponseInit): Response;
+  redirect(url: string | URL, status?: number): Response;
+};
+interface Request {
+  readonly method: string;
+  readonly url: string;
+  readonly headers: Headers;
+  readonly signal: AbortSignal;
+  readonly body: ReadableStream<Uint8Array> | null;
+  readonly bodyUsed: boolean;
+  json(): Promise<unknown>;
+  text(): Promise<string>;
   arrayBuffer(): Promise<ArrayBuffer>;
   bytes(): Promise<Uint8Array>;
 }
 interface RequestInit {
   method?: string;
-  headers?: Record<string, string>;
-  body?: string;
+  headers?:
+    | Headers
+    | Record<string, string>
+    | readonly (readonly [string, string])[];
+  body?: string | Uint8Array | ReadableStream<Uint8Array> | null;
+  duplex?: "half";
+  redirect?: "follow" | "error" | "manual";
   signal?: AbortSignal;
 }
+declare var Request: {
+  new (input: string | URL | Request, init?: RequestInit): Request;
+  readonly prototype: Request;
+};
 declare function fetch(input: string | URL, init?: RequestInit): Promise<Response>;
 
 /* The repeating timer pair (setTimeout lives in scriptc.d.ts — always
@@ -716,7 +800,7 @@ declare module "timers/promises" {
  * the AsyncLocalStorage integration (dc.chan* libCalls).
  *
  * TracingChannel (tracingChannel) is the five-event-channel collection:
- * an f64 handle into the runtime's tracing registry (types.ts maps the
+ * an f64 handle into the runtime's tracing registry (type-mapper.ts maps the
  * name like Channel). subscribe/unsubscribe walk a handlers object;
  * traceSync/traceCallback run Node's publish choreography in the runtime
  * (context defaults to a fresh {}); tracePromise is declared (the member
@@ -897,6 +981,8 @@ declare module "node:fs" {
   /* The 2-argument form only (Node's mode flags have no lowering). The
    * destination is created or truncated carrying the SOURCE's mode. */
   export function copyFileSync(src: string, dest: string): void;
+  export function rename(oldPath: string, newPath: string, callback: (err: NodeJS.ErrnoException | null) => void): void;
+  export function renameSync(oldPath: string, newPath: string): void;
   export function rmSync(path: string): void;
   /* maxRetries/retryDelay are accepted no-ops (Node retries around
    * EBUSY-class races; the synchronous lowering has no re-entrancy that
@@ -906,7 +992,7 @@ declare module "node:fs" {
   export function readdirSync(path: string): string[];
   /* The withFileTypes form: Dirent rows (name + parentPath + the type
    * probes — the honest subset of Node's Dirent surface). The type is
-   * interned explicitly in types.ts (the record's hidden %dtype field
+   * interned explicitly in type-mapper.ts (the record's hidden %dtype field
    * carries the entry kind; isFile/isDirectory/isSymbolicLink lower as
    * reads of it in lower-builtins.ts). */
   export interface Dirent {
@@ -932,12 +1018,16 @@ declare module "node:fs" {
   };
   /* A stat(2) snapshot (statSync follows symlinks, lstatSync does not —
    * Node's split) — immutable; the supported surface is exactly these
-   * members. mtimeMs is milliseconds with the nanosecond fraction. */
+   * members. blocks is the allocated size in 512-byte units; the time
+   * fields are milliseconds with their sub-second fractions. */
   export interface Stats {
     isFile(): boolean;
     isDirectory(): boolean;
     isSymbolicLink(): boolean;
     readonly size: number;
+    readonly blocks: number;
+    readonly nlink: number;
+    readonly atimeMs: number;
     readonly mtimeMs: number;
   }
   export function statSync(path: string): Stats;
@@ -947,10 +1037,15 @@ declare module "node:fs" {
    * variants), closeSync(fd). */
   export function openSync(path: string, flags: string): number;
   export function closeSync(fd: number): void;
-  /* read(2) into a caller buffer from the fd's current position (the
-   * position argument is declared for parity and fences when non-null);
-   * answers the byte count, 0 at EOF. */
+  /* Read into a caller buffer from the fd's current position when position
+   * is omitted/null, or from a numeric byte position without advancing the
+   * fd. Answers the byte count, 0 at EOF. */
   export function readSync(fd: number, buffer: Uint8Array, offset: number, length: number, position?: number | null): number;
+  /* Write a caller-buffer window, or a utf8 string, at the fd's current
+   * position when position is omitted/null (advancing it), or at a numeric
+   * byte position without advancing it. Answers the byte count. */
+  export function writeSync(fd: number, buffer: Uint8Array, offset: number, length: number, position?: number | null): number;
+  export function writeSync(fd: number, string: string, position?: number | null, encoding?: "utf8" | "utf-8"): number;
   /* statSync over an open fd — the same Stats snapshot. */
   export function fstatSync(fd: number): Stats;
   /* realpath(3) — resolves symlinks, `.`/`..`, throwing Node's fs error
@@ -1012,15 +1107,52 @@ declare module "fs" {
  * interleaves with timers or other fibers — observable only in concurrent
  * code. readFile is utf8-only, like readFileSync. */
 declare module "fs/promises" {
+  export interface FileReadResult<T extends Uint8Array> {
+    bytesRead: number;
+    buffer: T;
+  }
+  export interface FileWriteResult<T> {
+    bytesWritten: number;
+    buffer: T;
+  }
+  export interface FileHandle {
+    readonly fd: number;
+    close(): Promise<void>;
+    read<T extends Uint8Array>(
+      buffer: T,
+      offset?: number | null,
+      length?: number | null,
+      position?: number | null,
+    ): Promise<FileReadResult<T>>;
+    write<T extends Uint8Array>(
+      buffer: T,
+      offset?: number | null,
+      length?: number | null,
+      position?: number | null,
+    ): Promise<FileWriteResult<T>>;
+    write(data: string, position?: number | null, encoding?: "utf8" | "utf-8" | null): Promise<FileWriteResult<string>>;
+    readFile(options?: null): Promise<Buffer>;
+    readFile(encoding: "utf8" | "utf-8"): Promise<string>;
+    writeFile(data: string | Uint8Array, encoding?: "utf8" | "utf-8" | null): Promise<void>;
+    appendFile(data: string | Uint8Array, encoding?: "utf8" | "utf-8" | null): Promise<void>;
+    stat(): Promise<import("node:fs").Stats>;
+  }
+  export function open(path: string, flags?: string, mode?: number): Promise<FileHandle>;
   export function readFile(path: string, encoding: "utf8" | "utf-8"): Promise<string>;
   export function readFile(path: string): Promise<Buffer>;
-  export function writeFile(path: string, data: string): Promise<void>;
+  export function writeFile(
+    path: string,
+    data: string,
+    options?: { mode?: number; encoding?: "utf8" | "utf-8"; flag?: string; [option: string]: unknown },
+  ): Promise<void>;
+  export function writeFile(path: string, data: string, encoding: "utf8" | "utf-8"): Promise<void>;
   export function mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Promise<void>;
   export function readdir(path: string): Promise<string[]>;
   export function rm(path: string): Promise<void>;
   export function stat(path: string): Promise<import("node:fs").Stats>;
   export function unlink(path: string): Promise<void>;
   export function chmod(path: string, mode: number): Promise<void>;
+  export function rename(oldPath: string, newPath: string): Promise<void>;
 }
 declare module "node:fs/promises" {
   export * from "fs/promises";
@@ -1107,7 +1239,7 @@ declare module "os" {
   /* The passwd-entry snapshot (uv_os_get_passwd): shell is `string |
    * null` to match @types/node (POSIX always answers the string arm);
    * homedir is pw_dir — NOT os.homedir()'s $HOME-first cascade. The type
-   * is interned explicitly in types.ts (the AddressInfo pattern — this
+   * is interned explicitly in type-mapper.ts (the AddressInfo pattern — this
    * concrete form and @types/node's UserInfo<string> both), and the call
    * assembles field-by-field in lowerOsUserInfoCall. */
   export interface UserInfo {
@@ -1438,7 +1570,7 @@ declare module "child_process" {
   /* The named options interface for the string-encoding exec form —
    * @types/node's ExecFileSyncOptionsWithStringEncoding, narrowed to the
    * honestly-implemented members. VALUES of this type are a real record
-   * (types.ts interns the shape), so a typed const or a runner function's
+   * (type-mapper.ts interns the shape), so a typed const or a runner function's
    * options parameter flows to execFileSync at runtime — the windows-ca
    * command-runner idiom. */
   export interface ExecFileSyncOptionsWithStringEncoding {
@@ -1506,6 +1638,41 @@ declare module "util" {
     format?: unknown,
     ...args: unknown[]
   ): string;
+  export type ParseArgsOptionsType = "boolean" | "string";
+  export interface ParseArgsOptionDescriptor {
+    type: ParseArgsOptionsType;
+    multiple?: boolean;
+    short?: string;
+    default?: string | boolean | string[] | boolean[];
+  }
+  export interface ParseArgsOptionsConfig {
+    [longOption: string]: ParseArgsOptionDescriptor;
+  }
+  export interface ParseArgsConfig {
+    args?: readonly string[];
+    options?: ParseArgsOptionsConfig;
+    strict?: boolean;
+    allowPositionals?: boolean;
+    allowNegative?: boolean;
+    tokens?: boolean;
+  }
+  export type ParseArgsToken =
+    | {
+        kind: "option";
+        index: number;
+        name: string;
+        rawName: string;
+        value: string | undefined;
+        inlineValue: boolean | undefined;
+      }
+    | { kind: "positional"; index: number; value: string }
+    | { kind: "option-terminator"; index: number };
+  export interface ParseArgsResult {
+    values: { [longOption: string]: undefined | string | boolean | Array<string | boolean> };
+    positionals: string[];
+    tokens?: ParseArgsToken[];
+  }
+  export function parseArgs(config?: ParseArgsConfig): ParseArgsResult;
   /* util.getCallSites (Node ≥22.9): the captured-frame slice harness
    * code reads. No stack bookkeeping exists in a compiled binary — every
    * reached call fences per site. */
@@ -1951,23 +2118,33 @@ declare module "node:net" {
  * connection per call (no agent pooling) with Node's exact wire head. */
 declare module "http" {
   import { Server as NetServer, Socket } from "net";
-  export type Server = NetServer;
+  export interface Server extends NetServer {
+    timeout: number;
+    keepAliveTimeout: number;
+    keepAliveTimeoutBuffer: number;
+    headersTimeout: number;
+    requestTimeout: number;
+  }
+  export type RequestListener =
+    (req: IncomingMessage, res: ServerResponse) => void;
   /* The Server VALUE — Node's constructor works with and without `new`
    * (test/parallel's http.Server(fn) spelling); both route to the
    * createServer lowering. */
   export const Server: {
-    new (requestListener?: (req: IncomingMessage, res: ServerResponse) => void): NetServer;
-    new (options: ServerOptions, requestListener?: (req: IncomingMessage, res: ServerResponse) => void): NetServer;
-    (requestListener?: (req: IncomingMessage, res: ServerResponse) => void): NetServer;
-    (options: ServerOptions, requestListener?: (req: IncomingMessage, res: ServerResponse) => void): NetServer;
+    new (requestListener?: (req: IncomingMessage, res: ServerResponse) => void): Server;
+    new (options: ServerOptions, requestListener?: (req: IncomingMessage, res: ServerResponse) => void): Server;
+    (requestListener?: (req: IncomingMessage, res: ServerResponse) => void): Server;
+    (options: ServerOptions, requestListener?: (req: IncomingMessage, res: ServerResponse) => void): Server;
   };
   /* The options-record stance (the RequestOptions precedent): every
    * documented key typechecks; the lowering's option walk decides per
-   * key — requireHostHeader: false and joinDuplicateHeaders lower,
+   * key — requireHostHeader: false, joinDuplicateHeaders, and
+   * keepAliveTimeoutBuffer lower,
    * documented-but-unlowered keys fence by name, unknown keys drop. */
   export interface ServerOptions {
     requireHostHeader?: boolean;
     joinDuplicateHeaders?: boolean;
+    keepAliveTimeoutBuffer?: number;
     [option: string]: unknown;
   }
   /* The outgoing-header shape, @types/node's matrix: numbers format via
@@ -2201,7 +2378,7 @@ declare module "tls" {
   /** The CA-store introspection surface (scr_tls_ca.c): per-type cached
    * PEM string arrays. The host bundle stands in for Node's compiled-in
    * Mozilla roots ('bundled', and rootCertificates) AND the platform
-   * store ('system') — the /etc/ssl/cert.pem stance, documented;
+   * store ('system') — the Windows certificate stores or POSIX bundle probe;
    * 'extra' reads NODE_EXTRA_CA_CERTS. An unknown type string throws
    * Node's ERR_INVALID_ARG_VALUE TypeError. */
   export function getCACertificates(type?: string): string[];
@@ -2223,7 +2400,7 @@ declare module "node:tls" {
  * self-signed probe shape). With neither, /etc/ssl/cert.pem stands in
  * for Node's bundled roots. */
 declare module "https" {
-  import { Server } from "net";
+  import { Server } from "http";
   import { Agent, ClientRequest, IncomingMessage, ServerResponse } from "http";
   export { Agent, Server };
   export interface ServerOptions {
@@ -2267,18 +2444,10 @@ declare module "node:https" {
   export * from "https";
 }
 
-/* node:http2 — the COMPATIBILITY slice (SEMANTICS.md divergence 57):
- * createSecureServer({ allowHTTP1: true, cert, key }) is the https
- * server without an eager handler — ALPN advertises http/1.1 ONLY, so
- * h2-capable clients negotiate down and every connection serves
- * HTTP/1.1 (h2-only clients fail the handshake; no multiplexing, no
- * server push). The handler arrives via server.on("request", ...);
- * Http2ServerRequest/Response ARE the http req/res surface (exactly
- * what Node hands an allowHTTP1 server's HTTP/1.1 connections), with
- * the h2-only members (stream, session) answering undefined behind a
- * '?.' guard and fencing unguarded. 'sessionError' registers and never
- * fires (no h2 session ever exists). h2 sessions themselves — connect,
- * the h2c createServer — have no lowering. */
+/* node:http2 — the compatibility surface: allowHTTP1 servers negotiate
+ * h2 or HTTP/1.1 and expose the shared request/response API. HTTP/2
+ * requests retain their backing stream; server session failures surface
+ * through sessionError. */
 declare module "http2" {
   import { Socket } from "net";
   export interface Http2Stream {
@@ -2352,7 +2521,7 @@ declare module "http2" {
     on(event: "request", listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(event: "close", listener: () => void): void;
-    on(event: "sessionError", listener: () => void): void;
+    on(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     /* The ALPN=h2 server's surface (createSecureServer WITHOUT
      * allowHTTP1 — the real h2-over-TLS stack): per-stream and
      * per-session listeners, exactly the h2c server's. */

@@ -33,7 +33,7 @@ void scr_record_key_miss(ScrStr *k) {
 }
 
 #ifdef SCR_RC_AUDIT
-static long scr_live_objects = 0;
+static SCR_TL long scr_live_objects = 0;
 long scr_obj_live_count(void) { return scr_live_objects; }
 void scr_obj_alloc_note(void) { scr_live_objects++; }
 void scr_obj_free_note(void) { scr_live_objects--; }

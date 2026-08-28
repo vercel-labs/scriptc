@@ -688,7 +688,11 @@ typedef struct ScrH2SrvCtx {
   ScrNetLs stream_ls;
   ScrNetLs session_ls;
   ScrNetLs request_ls; /* the compat (req, res) listeners — createServer's
-                        * eager handler and server.on("request", ...) */
+                         * eager handler and server.on("request", ...) */
+  ScrNetLs connect_ls; /* traditional/RFC 8441 CONNECT (req, res) listeners */
+  ScrNetLs session_error_ls; /* server 'sessionError' (err, session) */
+  void *http1_ctx;     /* borrowed: owned by the TLS wrapper's inner hook */
+  bool enable_connect_protocol;
 } ScrH2SrvCtx;
 
 /* The SETTINGS the API observes (session.localSettings/remoteSettings —
@@ -750,6 +754,7 @@ struct ScrH2Session {
   /* the API-visible settings records + the in-flight local ack */
   ScrH2Settings local_settings, remote_settings;
   bool pending_settings_ack;
+  bool error_emitted;
   ScrNetLs stream_ls, close_ls, err_ls, connect_ls, goaway_ls,
       remote_settings_ls, local_settings_ls;
 };
@@ -802,6 +807,8 @@ static void scr_h2_srv_ctx_release(ScrH2SrvCtx *ctx) {
   scr_net_ls_drop(&ctx->stream_ls);
   scr_net_ls_drop(&ctx->session_ls);
   scr_net_ls_drop(&ctx->request_ls);
+  scr_net_ls_drop(&ctx->connect_ls);
+  scr_net_ls_drop(&ctx->session_error_ls);
   free(ctx);
 }
 
@@ -947,6 +954,11 @@ static void scr_h2_send_settings(ScrH2Session *s) {
   if (s->client) {
     static const uint8_t no_push[6] = { 0x0, 0x2, 0, 0, 0, 0 };
     scr_h2_send_frame(s, SCR_H2_F_SETTINGS, 0, 0, no_push, 6);
+    return;
+  }
+  if (s->local_settings.enable_connect_protocol) {
+    static const uint8_t enable_connect[6] = { 0x0, 0x8, 0, 0, 0, 1 };
+    scr_h2_send_frame(s, SCR_H2_F_SETTINGS, 0, 0, enable_connect, 6);
     return;
   }
   scr_h2_send_frame(s, SCR_H2_F_SETTINGS, 0, 0, NULL, 0);
@@ -1233,6 +1245,8 @@ static void scr_h2_cleanup_atexit(void) {
 
 static const ScrHttpH2Ops scr_h2_compat_ops;
 static void scr_h2_request_hook(void *ctx, ScrClosure *cb, void *fn, bool once);
+static void scr_h2_connect_hook(void *ctx, ScrClosure *cb, void *h1_fn, void *h2_fn, bool once);
+static void scr_h2_upgrade_hook(void *ctx, ScrClosure *cb, void *fn, bool once);
 
 static void scr_http2_install(void) {
   static bool installed = false;
@@ -1244,6 +1258,8 @@ static void scr_http2_install(void) {
    * ops vtable and h2-tagged 'request' registrations through the hook */
   scr_http_set_h2_ops(&scr_h2_compat_ops);
   scr_http_set_h2_request_hook(&scr_h2_request_hook);
+  scr_http_set_h2_connect_hook(&scr_h2_connect_hook);
+  scr_http_set_h2_upgrade_hook(&scr_h2_upgrade_hook);
 }
 
 /* ── session lifecycle ───────────────────────────────────────────────── */
@@ -1281,6 +1297,31 @@ static void scr_h2_session_abort_streams(ScrH2Session *s) {
   }
 }
 
+static void scr_h2_session_fail(ScrH2Session *s, const char *text) {
+  if (s->error_emitted) return;
+  s->error_emitted = true;
+  ScrStr *msg = scr_str_new(text, strlen(text));
+  if (s->srv != NULL && s->srv->session_error_ls.n > 0) {
+    ScrNetL *snap;
+    size_t n = scr_net_ls_snapshot(&s->srv->session_error_ls, &snap);
+    ScrNetServer *server = s->sock ? scr_net_sock_server(s->sock) : NULL;
+    scr_dyn_this_push(server, SCR_DYNH_NET_SERVER);
+    for (size_t i = 0; i < n; i++) {
+      if (!scr_exc_pending()) {
+        ((ScrH2SessionErrorFn)snap[i].fn)(snap[i].cb, msg,
+                                          scr_http2_session_retain(s));
+      }
+      scr_closure_release(snap[i].cb);
+    }
+    scr_dyn_this_pop();
+    free(snap);
+  }
+  if (!scr_exc_pending() && s->err_ls.n > 0) {
+    scr_net_fire_err_this(&s->err_ls, msg, s, SCR_DYNH_H2_SESSION);
+  }
+  scr_str_release(msg);
+}
+
 void scr_http2_session_destroy(ScrH2Session *s) {
   if (s->destroyed) return;
   s->destroyed = true;
@@ -1303,7 +1344,7 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
                                      ScrH2Headers *h);
 static void scr_h2_stream_flush(ScrH2Stream *st);
 static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2Headers *h,
-                                    bool end_stream);
+                                    bool end_stream, ScrNetLs *listeners);
 
 /* The settings record the API observes (Node's key order; maxHeaderSize
  * aliases maxHeaderListSize; customSettings not modeled — empty). +1. */
@@ -1342,8 +1383,7 @@ static bool scr_h2_on_frame(ScrH2Session *s, uint8_t type, uint8_t flags, int32_
                              const uint8_t *p, size_t n) {
   /* An open header block admits only its CONTINUATIONs. */
   if (s->hblock_active && type != SCR_H2_F_CONTINUATION) {
-    scr_http2_session_destroy(s);
-    return false;
+    goto proto_err;
   }
   switch (type) {
   case SCR_H2_F_HEADERS: {
@@ -1583,6 +1623,7 @@ static bool scr_h2_on_frame(ScrH2Session *s, uint8_t type, uint8_t flags, int32_
   return true;
 proto_err:
   scr_h2_send_goaway(s, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+  scr_h2_session_fail(s, "Protocol error");
   scr_http2_session_destroy(s);
   return false;
 }
@@ -1605,6 +1646,7 @@ static void scr_h2_on_data(void *ctx, const char *buf, size_t n) {
   if (!s->client && !s->preface_done) {
     if (s->rlen - off < 24) goto done;
     if (memcmp(s->rbuf + off, SCR_H2_PREFACE, 24) != 0) {
+      scr_h2_session_fail(s, "Protocol error");
       scr_http2_session_destroy(s);
       goto done;
     }
@@ -1659,8 +1701,10 @@ static void scr_h2_on_closed(void *ctx) {
 
 static bool scr_h2_on_err(void *ctx, ScrStr *msg) {
   ScrH2Session *s = ctx;
-  if (s->err_ls.n == 0) return false; /* the socket's error story applies */
-  scr_net_fire_err_this(&s->err_ls, msg, s, SCR_DYNH_H2_SESSION);
+  if (s->err_ls.n == 0 && (s->srv == NULL || s->srv->session_error_ls.n == 0)) {
+    return false; /* the socket's error story applies */
+  }
+  scr_h2_session_fail(s, (const char *)msg->data);
   return true;
 }
 
@@ -2043,6 +2087,15 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
       st->end_recv = true;
       st->state = SCR_H2_S_CLOSED_REMOTE;
     }
+    bool connect_request = false;
+    for (size_t i = 0; i < h->n; i++) {
+      ScrStr *name = h->names[i];
+      ScrStr *value = h->values[i];
+      if (name->len == 7 && memcmp(name->data, ":method", 7) == 0 &&
+          value->len == 7 && memcmp(value->data, "CONNECT", 7) == 0) {
+        connect_request = true;
+      }
+    }
     ScrArr *pairs = scr_h2_headers_pairs(h, false, NULL);
     ScrNetServer *server = s->sock ? scr_net_sock_server(s->sock) : NULL;
     if (s->srv) scr_h2_fire_stream_list(&s->srv->stream_ls, st, pairs, fl, server, SCR_DYNH_NET_SERVER);
@@ -2050,9 +2103,12 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
       scr_h2_fire_stream_list(&s->stream_ls, st, pairs, fl, s, SCR_DYNH_H2_SESSION);
     }
     scr_arr_release(pairs);
-    /* the compat layer: 'request' listeners get the (req, res) pair */
-    if (!scr_exc_pending() && s->srv != NULL && s->srv->request_ls.n > 0 && !st->destroyed) {
-      scr_h2_compat_dispatch(s, st, h, end_stream);
+    /* The stream events precede their compatibility event, Node's order.
+     * Both traditional and extended CONNECT emit 'connect', never
+     * 'request'; ordinary methods retain the request path. */
+    if (!scr_exc_pending() && s->srv != NULL && !st->destroyed) {
+      ScrNetLs *listeners = connect_request ? &s->srv->connect_ls : &s->srv->request_ls;
+      if (scr_net_ls_has_live(listeners)) scr_h2_compat_dispatch(s, st, h, end_stream, listeners);
     }
     scr_http2_stream_release(st);
     return;
@@ -2171,13 +2227,57 @@ static const ScrHttpH2Ops scr_h2_compat_ops = {
  * ctx carries the h2 proto tag (the compat registration seam). */
 static void scr_h2_request_hook(void *ctx, ScrClosure *cb /*moves*/, void *fn, bool once) {
   ScrH2SrvCtx *srv = (ScrH2SrvCtx *)ctx;
-  scr_net_ls_add(&srv->request_ls, cb, fn, once);
+  ScrNetOnce *shared_once = srv->http1_ctx != NULL && once ? scr_net_once_new() : NULL;
+  if (srv->http1_ctx != NULL) {
+    scr_http1_ctx_on_request(srv->http1_ctx, scr_closure_retain(cb), (ScrHttpReqFn)fn, once,
+                             shared_once != NULL ? scr_net_once_retain(shared_once) : NULL);
+  }
+  if (shared_once != NULL) {
+    scr_net_ls_add_shared_once(&srv->request_ls, cb, fn, shared_once);
+  } else {
+    scr_net_ls_add(&srv->request_ls, cb, fn, once);
+  }
+}
+
+static void scr_h2_connect_hook(void *ctx, ScrClosure *cb /*moves*/,
+                                void *h1_fn, void *h2_fn, bool once) {
+  ScrH2SrvCtx *srv = (ScrH2SrvCtx *)ctx;
+  bool have_h1 = srv->http1_ctx != NULL;
+  bool have_h2 = h2_fn != NULL;
+  ScrNetOnce *shared_once = have_h1 && have_h2 && once ? scr_net_once_new() : NULL;
+  if (!have_h1 && !have_h2) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (have_h1 && !have_h2) {
+    scr_http1_ctx_on_connect(srv->http1_ctx, cb, (ScrHttpUpgradeFn)h1_fn, once, NULL);
+    return;
+  }
+  if (srv->http1_ctx != NULL) {
+    scr_http1_ctx_on_connect(srv->http1_ctx, scr_closure_retain(cb),
+                             (ScrHttpUpgradeFn)h1_fn, once,
+                             shared_once != NULL ? scr_net_once_retain(shared_once) : NULL);
+  }
+  if (shared_once != NULL) {
+    scr_net_ls_add_shared_once(&srv->connect_ls, cb, h2_fn, shared_once);
+  } else {
+    scr_net_ls_add(&srv->connect_ls, cb, h2_fn, once);
+  }
+}
+
+static void scr_h2_upgrade_hook(void *ctx, ScrClosure *cb /*moves*/, void *fn, bool once) {
+  ScrH2SrvCtx *srv = (ScrH2SrvCtx *)ctx;
+  if (srv->http1_ctx != NULL) {
+    scr_http1_ctx_on_upgrade(srv->http1_ctx, cb, (ScrHttpUpgradeFn)fn, once);
+  } else {
+    scr_closure_release(cb);
+  }
 }
 
 /* Build the (req, res) pair over a fresh server stream and fire the
  * 'request' listeners (this = the net server, the http/1 shape). */
 static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2Headers *h,
-                                    bool end_stream) {
+                                    bool end_stream, ScrNetLs *listeners) {
   ScrHttpReq *req = scr_http_h2_req_new(s->sock, st);
   for (size_t i = 0; i < h->n; i++) {
     ScrStr *name = h->names[i];
@@ -2199,7 +2299,7 @@ static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2
    * already satisfied (settle conditions see a delivered read side) */
   if (end_stream) st->end_emitted = true;
   ScrNetL *snap;
-  size_t n = scr_net_ls_snapshot(&s->srv->request_ls, &snap);
+  size_t n = scr_net_ls_snapshot(listeners, &snap);
   ScrNetServer *server = s->sock ? scr_net_sock_server(s->sock) : NULL;
   scr_dyn_this_push(server, SCR_DYNH_NET_SERVER);
   for (size_t i = 0; i < n; i++) {
@@ -2226,6 +2326,9 @@ static void scr_h2_srv_ctx_settle(void *p) {
   scr_net_ls_drop(&ctx->stream_ls);
   scr_net_ls_drop(&ctx->session_ls);
   scr_net_ls_drop(&ctx->request_ls);
+  scr_net_ls_drop(&ctx->connect_ls);
+  scr_net_ls_drop(&ctx->session_error_ls);
+  if (ctx->http1_ctx != NULL) scr_http1_ctx_settle(ctx->http1_ctx);
 }
 
 static void scr_h2_on_connection(void *ctx, ScrNetSocket *sock) {
@@ -2234,6 +2337,7 @@ static void scr_h2_on_connection(void *ctx, ScrNetSocket *sock) {
   sess->srv = scr_h2_srv_ctx_retain(srv);
   sess->sock = scr_net_sock_retain(sock);
   sess->next_stream_id = 2; /* server-initiated ids are even (push, unused) */
+  sess->local_settings.enable_connect_protocol = srv->enable_connect_protocol;
   scr_net_sock_set_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
                                   sess, &scr_h2_session_ctx_free);
   scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
@@ -2279,19 +2383,43 @@ ScrNetServer *scr_http2_create_server_req(ScrClosure *handler /*moves*/, ScrHttp
  * tears down at establishment (Node parks it as 'unknownProtocol' and
  * destroys at the timeout — this surface destroys now). */
 ScrNetServer *scr_http2_create_secure_server(const char *cert, size_t cert_len,
-                                              const char *key, size_t key_len) {
+                                               const char *key, size_t key_len,
+                                               bool enable_connect_protocol) {
   scr_http2_install();
   ScrNetServer *s = scr_net_create_server(NULL, NULL);
   ScrH2SrvCtx *ctx = calloc(1, sizeof *ctx);
   if (!ctx) scr_h2_oom();
   ctx->proto = SCR_NET_PROTO_H2;
   ctx->rc = 1;
+  ctx->enable_connect_protocol = enable_connect_protocol;
   scr_net_server_set_http_ctx(s, ctx); /* borrowed alias: 'stream'/'session' registration */
   scr_net_server_set_proto_settle(s, &scr_h2_srv_ctx_settle);
   /* the TLS wrap owns the ctx reference (+1 moved in) and dispatches
    * established h2 connections back into scr_h2_on_connection */
   scr_tls_server_wrap_h2(s, cert, cert_len, key, key_len, &scr_h2_on_connection, ctx,
-                          &scr_h2_srv_ctx_free_v);
+                          &scr_h2_srv_ctx_free_v, NULL, NULL);
+  return s;
+}
+
+ScrNetServer *scr_http2_create_secure_server_allow_http1(
+    const char *cert, size_t cert_len, const char *key, size_t key_len,
+    ScrClosure *handler /*moves, nullable*/, ScrHttpReqFn fn,
+    ScrClosure *sni_cb /*moves, nullable*/, void *sni_answer_fn,
+    bool enable_connect_protocol) {
+  scr_http2_install();
+  ScrNetServer *s = scr_http_create_server(NULL, NULL);
+  void *http1_ctx = scr_net_server_get_http_ctx(s);
+  ScrH2SrvCtx *ctx = calloc(1, sizeof *ctx);
+  if (!ctx) scr_h2_oom();
+  ctx->proto = SCR_NET_PROTO_H2;
+  ctx->rc = 1;
+  ctx->http1_ctx = http1_ctx;
+  ctx->enable_connect_protocol = enable_connect_protocol;
+  scr_net_server_set_http_ctx(s, ctx);
+  scr_net_server_set_proto_settle(s, &scr_h2_srv_ctx_settle);
+  if (handler != NULL) scr_h2_request_hook(ctx, handler, (void *)fn, false);
+  scr_tls_server_wrap_h2(s, cert, cert_len, key, key_len, &scr_h2_on_connection, ctx,
+                          &scr_h2_srv_ctx_free_v, sni_cb, sni_answer_fn);
   return s;
 }
 
@@ -2307,10 +2435,12 @@ static ScrH2SrvCtx *scr_h2_server_ctx(ScrNetServer *s) {
  * first 'request' listener over the ALPN=h2 server — the
  * create_server_req route, secured. */
 ScrNetServer *scr_http2_create_secure_server_req(const char *cert, size_t cert_len,
-                                                  const char *key, size_t key_len,
-                                                  ScrClosure *handler /*moves, nullable*/,
-                                                  ScrHttpReqFn fn) {
-  ScrNetServer *s = scr_http2_create_secure_server(cert, cert_len, key, key_len);
+                                                   const char *key, size_t key_len,
+                                                   ScrClosure *handler /*moves, nullable*/,
+                                                   ScrHttpReqFn fn,
+                                                   bool enable_connect_protocol) {
+  ScrNetServer *s = scr_http2_create_secure_server(cert, cert_len, key, key_len,
+                                                    enable_connect_protocol);
   if (handler != NULL) {
     ScrH2SrvCtx *ctx = scr_h2_server_ctx(s);
     if (ctx != NULL) scr_net_ls_add(&ctx->request_ls, handler, (void *)fn, false);
@@ -2346,7 +2476,8 @@ ScrNetServer *scr_http2_create_secure_server_dyn(const ScrDyn *opts /*borrowed*/
       ? scr_https_create_server((const char *)cert->data, cert->len,
                                  (const char *)key->data, key->len, handler, fn)
       : scr_http2_create_secure_server_req((const char *)cert->data, cert->len,
-                                            (const char *)key->data, key->len, handler, fn);
+                                            (const char *)key->data, key->len, handler, fn,
+                                            false);
   scr_bytes_release(cert);
   scr_bytes_release(key);
   return s;
@@ -2529,6 +2660,33 @@ void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrCh
     return;
   }
   scr_net_ls_add(&s->err_ls, cb, (void *)fn, once);
+}
+
+void scr_http2_server_on_session_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
+                                        ScrH2SessionErrorFn fn, bool once) {
+  ScrH2SrvCtx *ctx = scr_h2_server_ctx(s);
+  if (ctx == NULL || scr_net_server_settled(s)) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&ctx->session_error_ls, cb, (void *)fn, once);
+}
+
+void scr_http2_session_error_thunk0(ScrClosure *cb, ScrStr *msg, ScrH2Session *session) {
+  (void)msg;
+  scr_http2_session_release(session);
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+}
+
+void scr_http2_session_error_thunk1(ScrClosure *cb, ScrStr *msg, ScrH2Session *session) {
+  scr_http2_session_release(session);
+  ScrError *err = scr_error_new(0, msg);
+  ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, err);
+}
+
+void scr_http2_session_error_thunk2(ScrClosure *cb, ScrStr *msg, ScrH2Session *session) {
+  ScrError *err = scr_error_new(0, msg);
+  ((void (*)(ScrClosure *, ScrError *, ScrH2Session *))cb->fn)(cb, err, session);
 }
 
 void scr_http2_session_on_connect(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2ConnectFn fn, bool once) {

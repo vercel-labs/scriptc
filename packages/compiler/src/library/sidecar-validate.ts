@@ -184,6 +184,11 @@ export function validateSidecar(doc: unknown): string[] {
 
   /* ── V3 (inner uniqueness) + table entry shapes ───────────────────── */
   for (const [name, s] of structs) {
+    // Format 1 marks compiler-created anonymous inline records with the
+    // optional literal `synthesized: true`; source-declared records omit it.
+    if ("synthesized" in s && s["synthesized"] !== true) {
+      bad("V1", `struct '${name}' has a synthesized marker other than literal true`);
+    }
     const fields = s["fields"];
     if (!Array.isArray(fields)) {
       bad("V1", `struct '${name}' has no fields array`);
@@ -317,7 +322,10 @@ export function validateSidecar(doc: unknown): string[] {
         }
         case "scalar": {
           const t = d["type"];
-          walkRef(t, `msg arm '${armName}' scalar payload`, null, null);
+          // Scalar optionals can carry the msg arm's integer-classed number
+          // slot (optional<i64>); slices still clear the path in walkRef
+          // because format 1 has no slice-element slot grammar.
+          walkRef(t, `msg arm '${armName}' scalar payload`, null, `${msgName}.${armName}`);
           if (isDict(t) && (t["kind"] === "node" || t["kind"] === "value" || t["kind"] === "void")) {
             bad("V7", `msg arm '${armName}': scalar descriptors carry a non-record, non-void TypeRef`);
           }

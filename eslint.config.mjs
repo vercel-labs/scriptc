@@ -18,11 +18,15 @@ const TS5_ISLANDS = [
   // BEFORE the 7.0.2 program reads the file — a text→text parser island
   // beside cjs-lexer.ts (only strings cross its boundary).
   "packages/compiler/src/frontend/npm-static-rewrite.ts",
+  // Semantic cache validation parses source text only to identify exact
+  // regex spans and syntax errors; its boundary is strings, offsets, and
+  // booleans, so no 5.9.3 AST value enters the 7.0.2 program world.
+  "packages/compiler/src/library/semantic-source.ts",
 ];
 
 const ts5Fence = {
   group: ["typescript5", "typescript5/*"],
-  message: "typescript5 (the 5.9.3 island alias) is only for the parser islands (npm.ts, cjs-lexer.ts, lower-comptime.ts, ts7/world-check.ts) — everything else is the 7.0.2 world; the worlds never mix",
+  message: "typescript5 (the 5.9.3 island alias) is only for the explicit parser islands — everything else is the 7.0.2 world; the worlds never mix",
 };
 const frontendFence = {
   group: ["**/frontend/*", "**/frontend/**"],
@@ -38,6 +42,11 @@ const backendFence = {
  * block below therefore carries its complete pattern set. */
 export default tseslint.config(
   ...tseslint.configs.recommended,
+  {
+    rules: {
+      "@typescript-eslint/no-non-null-assertion": "warn",
+    },
+  },
   {
     // The IR is the only interface between frontend and backend.
     files: ["packages/compiler/src/backend/**"],
@@ -62,7 +71,11 @@ export default tseslint.config(
     // Everything in the compiler outside frontend/backend (ir, diagnostics,
     // index) is 7.0.2-world too.
     files: ["packages/compiler/src/**"],
-    ignores: ["packages/compiler/src/frontend/**", "packages/compiler/src/backend/**"],
+    ignores: [
+      "packages/compiler/src/frontend/**",
+      "packages/compiler/src/backend/**",
+      ...TS5_ISLANDS,
+    ],
     rules: {
       "no-restricted-imports": ["error", { patterns: [ts5Fence] }],
     },

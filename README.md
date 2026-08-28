@@ -1,112 +1,180 @@
 # scriptc
 
-**Zero-runtime TypeScript.** scriptc compiles ordinary TypeScript into small, fast native executables — no Node, no V8, no JavaScript engine in the binary.
+scriptc compiles TypeScript and JavaScript to typed IR, readable C, textual LLVM IR, native assembly and objects, native executables, and WebAssembly modules. It uses the TypeScript compiler for parsing and type checking. Source outputs require only Node; macOS 15+ arm64 assembly/object output uses scriptc's bundled LLVM helper; executable builds currently use clang to compile/link the runtime.
 
-```console
-$ cat fib.ts
-function fib(n: number): number {
-  return n < 2 ? n : fib(n - 1) + fib(n - 2);
-}
-console.log(fib(30));
+Static builds include a small native runtime, but no Node or JavaScript engine. Code that cannot compile statically is reported as a diagnostic. For npm packages and `any`-typed code, `--dynamic` embeds [quickjs-ng](https://github.com/quickjs-ng/quickjs) explicitly.
 
-$ scriptc run fib.ts
-832040
+scriptc is experimental and targets macOS, Linux, Windows, and WebAssembly via WASI Preview 1.
 
-$ scriptc build fib.ts && ls -la fib
--rwxr-xr-x  178K  fib        # a self-contained native binary, ~2ms startup
-```
+## Installation
 
-No changes to your code. No annotations, no dialect — the same TypeScript you run on Node, type-checked by the real TypeScript compiler and compiled to native. What compiles behaves byte-for-byte like Node.
-
-## Install
+The compiler requires Node.js 24 or newer. `--emit=ir|c|llvm` needs only Node. On macOS 15+ arm64, `--emit=asm|obj` additionally uses the optional platform helper installed with scriptc, but needs no compiler, archiver, linker, or SDK. Executable builds still require clang and the platform SDK. The executables it produces do not require Node.
 
 ```console
 $ npm install -g scriptc
 ```
 
-Requires clang (preinstalled with Xcode Command Line Tools). macOS arm64 is the primary platform; Linux and Windows binaries build by cross-compilation, each verified by its own differential test lane.
+## Build a program
 
-## The idea: staticness you can see
+Create `hello.ts`:
 
-Most TypeScript is far more static than the ecosystem assumes. scriptc decides, construct by construct, what can compile to native code — and tells you:
+```ts
+const who = process.argv.length > 2 ? process.argv[2] : "world";
+console.log(`hello, ${who}`);
+```
+
+Compile and run it in one step:
 
 ```console
-$ scriptc coverage app.ts
-
-  statements analyzed   4481
-  compile statically    4451  (99%)
-
-  blockers:
-      ×2  functions with optional parameters as values   SC1090
-      ×1  Promise.reject                                 SC2020
+$ scriptc run hello.ts
+hello, world
 ```
 
-Three tiers, always explicit:
+Or write a standalone executable:
 
-1. **Compiled statically** — native code, no engine. The default, and the only mode unless you opt out.
-2. **Runs dynamically** (`--dynamic`) — an embedded JavaScript engine ([quickjs-ng](https://github.com/quickjs-ng/quickjs), ~620KB) executes what can't be static: npm dependencies' shipped JS, `any`-typed code. Every value crossing back into static code is validated at runtime — a lying type throws a catchable `TypeError` instead of corrupting memory.
-3. **Rejected** — everything else fails with a specific error code, a code frame, and usually a rewrite hint. Nothing is ever silently miscompiled.
-
-## What compiles
-
-The static surface covers the language and the standard library real programs use:
-
-- **The language** — classes with single inheritance and true dynamic dispatch (devirtualized when provably safe), closures with JS capture semantics, generics (monomorphized), discriminated unions as tagged values driven by TypeScript's own narrowing, `async`/`await` on stackful fibers with JS-exact scheduling, exceptions with `finally`, destructuring, spread, optional/default/rest parameters, getters/setters, iterators over strings/arrays/Maps/Sets, template literals, regular expressions (the engine is the same ECMAScript-exact bytecode interpreter QuickJS uses, linked only into regex-using binaries).
-- **The standard library** — strings with UTF-16-exact semantics, arrays/Maps/Sets with JS-exact ordering and identity, `JSON` with runtime-validated casts, `Math`, typed arrays and `Buffer`, `Error` hierarchies with typed `catch`.
-- **Node's API surface** — `fs` (sync and promises), `path` (byte-exact port), `process`, `child_process` with piped streams, `os`, `crypto`, `url`/`URL`, `zlib`, timers and signal handlers on a dependency-free event loop — and the server stack: **`net`, `http`, `https`, `tls`** (vendored mbedTLS), `dgram`, `dns`, `fs.watch`, `readline`. Real proxy servers compile.
-- **`fetch`** and the WHATWG web subset (streams, `Headers`, `AbortSignal`) over the same native net/TLS stack — redirects, gzip, `AbortSignal.timeout`, Node-shaped error causes; no libcurl, no system HTTP dependency.
-- **npm dependencies** (with `--dynamic`) — packages resolve with Node's own algorithm, typecheck against their shipped `.d.ts`, and their JS is embedded into the binary at build time. Binaries never read `node_modules` at runtime.
-
-Programs typecheck against TypeScript's real `es2025` lib (plus `@types/node` when your project has it), and your `tsconfig.json` governs checker strictness. Anything reached that has no lowering is a precise diagnostic, never a surprise.
-
-## Correctness
-
-Two enforcement mechanisms run on every change:
-
-- **Differential testing** — every corpus program (800+ tests) runs under Node *and* as a native binary; stdout, stderr, and exit codes must match byte-for-byte. Number formatting is JS-exact (shortest-roundtrip, fuzz-verified against Node on a million doubles). Servers are tested with live client drivers against both implementations.
-- **Memory-safety lane** — the entire corpus re-runs under AddressSanitizer with a reference-count audit; leaks and use-after-free are build failures.
-
-The deliberate divergences from Node (there are a few dozen, mostly around timing internals and error-object properties) are documented and numbered; nothing diverges silently.
-
-## Performance
-
-Measured on Apple M-series against the same workloads in Node, Go, Rust, and Zig (all byte-identical output, verified):
-
-| dimension | scriptc | context |
-|---|---|---|
-| startup | ~2.4ms | Node: ~47ms; on par with Zig, ahead of Go/Rust |
-| binary size | 170–200KB static, ~3MB with `--dynamic` + embedded deps | Go: ~2MB; Node SEA: 60–100MB |
-| memory (RSS) | 1–4MB typical | Node: 67–116MB |
-| runtime | JS-faithful f64 semantics; competitive with the systems languages on most workloads | integer inference and ownership analysis are on the roadmap |
-
-## Escape hatches
-
-- **`comptime(() => ...)`** runs TypeScript at build time (in an isolated VM inside the compiler) and bakes the result into the binary as a literal.
-- **Native FFI (`--ffi`)** binds signature-only TypeScript declarations to direct C ABI calls and links manifest-declared archives, objects, and system libraries. The boundary is explicit and length-delimited; see the [Native FFI guide](https://scriptc.dev/ffi).
-- **`--dynamic`** embeds the engine for npm deps and `any` code. `scriptc coverage --dynamic` reports exactly which statements run where and what the remaining blockers are. Static stays the default: a binary never silently grows an engine.
-- **Checked casts** — `JSON.parse(...) as Config` inserts a runtime validation that throws a catchable error naming the offending path (`expected number at $.port, got string`). TypeScript's `as` is a promise; scriptc verifies it.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    TS[TypeScript] -->|tsc: parse + typecheck| L[lowering]
-    L --> IR[typed IR]
-    IR --> C[C]
-    C -->|clang| BIN[native executable]
+```console
+$ scriptc build hello.ts -o hello
+$ ./hello ctate
+hello, ctate
 ```
 
-- `packages/compiler` — frontend (tsc API → IR), the IR with validator/serializer, the LLVM and C backends. The IR is the only interface between the ends; LLVM is the default code generator (with a transparent fallback for programs outside its tier), and C is the reference backend forever (readable, source-line-annotated output via `--backend c`).
-- `packages/runtime` — the C runtime: refcounted values with a cycle collector, stackful fibers and the event loop (kqueue), the server stack, JS-exact number formatting. Feature units are link-gated: binaries pay only for what they use.
-- `packages/cli` — `scriptc build | run | coverage`.
+Or stop at a source-level compiler artifact without invoking clang, an archiver, or a linker:
+
+```console
+$ scriptc build hello.ts --emit=ir >/dev/null
+$ ls .scriptc/
+hello.ir.json
+$ scriptc build hello.ts --emit=c >/dev/null
+$ ls .scriptc/
+hello.c
+$ scriptc build hello.ts --emit=llvm >/dev/null
+$ ls .scriptc/
+hello.ll
+$ scriptc build hello.ts --emit=asm >/dev/null
+$ ls .scriptc/
+hello.s
+$ scriptc build hello.ts --emit=obj >/dev/null
+$ ls .scriptc/
+hello.o
+```
+
+`--emit=obj` writes a relocatable program object, not a standalone library. It
+has undefined `scr_*` runtime references and a required
+`scr_runtime_abi_v1` marker; `scriptc build --lib --profile ...` remains the
+self-contained archive interface. The helper runs on macOS 15+ arm64 and emits
+artifacts with an `arm64-apple-macosx14.0.0` deployment target. Sanitized
+assembly/object
+emission is rejected until the helper's AddressSanitizer pipeline matches the
+executable path.
+
+External object consumption is experimental. Use
+`--print=native-link-info` to emit the object and print a versioned JSON recipe
+containing its target, `main` entry, exact `@scriptc/runtime` source pack,
+required system libraries, FFI inputs, and ABI marker. The recipe never uses
+hidden scriptc cache paths. See [`examples/native-object`](./examples/native-object)
+for C-driver and direct Apple-linker builds.
+
+## Use Node APIs
+
+Supported Node APIs compile to the native runtime. For example, `server.ts`:
+
+```ts
+import { createServer } from "node:http";
+
+const server = createServer((req, res) => {
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify({ path: req.url }));
+});
+
+server.listen(8080, () => {
+  console.log("listening on http://localhost:8080");
+});
+```
+
+```console
+$ scriptc build server.ts -o server
+$ ./server
+listening on http://localhost:8080
+```
+
+## Check static coverage
+
+`scriptc coverage` shows how much of a program can compile statically and gives a coded diagnostic for every dynamic or unsupported site.
+
+```console
+$ scriptc coverage hello.ts
+
+  statements analyzed   2
+  compile statically    2  (100%)
+
+  fully static — this program has no dynamic remainder.
+```
+
+## Build WebAssembly
+
+WASI and other cross-target builds require Zig. Its bundled WASI libc produces a portable WASI Preview 1 module through the production LLVM backend:
+
+```console
+$ SCRIPTC_CC=zigcc SCRIPTC_TARGET=wasm32-wasi scriptc build hello.ts --no-keep-c -o hello.wasm >/dev/null
+$ file hello.wasm
+hello.wasm: WebAssembly (wasm) binary module version 0x1 (MVP)
+$ SCRIPTC_CC=zigcc SCRIPTC_TARGET=wasm32-wasi scriptc run hello.ts
+hello, world
+```
+
+The WASI target supports the same executable language tiers as the native targets, including async/await, promises, generators, timers, stdin/readline events, callback and promise filesystem APIs, and `--dynamic`. APIs that require capabilities absent from portable WASI Preview 1—network sockets/fetch, child processes, OS signals, and filesystem watching—fail before linking with `SC3002`; sanitizer builds, native FFI, and library-mode archive builds are target diagnostics too. See [platform support](https://scriptc.dev/platforms) for the precise boundary.
+
+## Use npm packages
+
+Pass `--dynamic` to embed an npm package's JavaScript in the executable. The result does not read `node_modules` at runtime.
+
+```ts
+import pc from "picocolors";
+
+console.log(pc.green("hello from scriptc"));
+```
+
+```console
+$ npm install picocolors
+$ scriptc build cli.ts --dynamic -o cli
+$ ./cli
+hello from scriptc
+```
+
+## Documentation
+
+See the [quickstart](https://scriptc.dev/quickstart) and [CLI reference](https://scriptc.dev/cli) for the complete workflow. The docs also describe [npm dependencies](https://scriptc.dev/dependencies), [native FFI](https://scriptc.dev/ffi), [platform support](https://scriptc.dev/platforms), and the current [limitations](https://scriptc.dev/limitations).
 
 ## Development
 
 ```console
-$ pnpm install && pnpm build
-$ pnpm test                      # differential corpus + diagnostics snapshots
-$ SCRIPTC_SAN=1 pnpm test        # the same corpus under ASan + RC audit
-$ pnpm scriptc build x.ts --emit-ir   # keep .scriptc/x.c and x.ir.json
+$ pnpm install && pnpm -r build
+$ vercel link && vercel env pull  # writes a project-scoped VERCEL_OIDC_TOKEN
+$ pnpm test:sandbox
 ```
 
-Every feature lands with differential tests; both lanes green is the merge bar.
+The normal workspace build needs no local LLVM installation. To rebuild the
+optional macOS arm64 assembly/object helper, install CMake, Ninja, and
+Homebrew `llvm@22`, then run
+`pnpm --filter @scriptc/llvm-darwin-arm64 build:native`. The macOS full test
+suite also uses that generated helper.
+
+`pnpm test:sandbox` loads `.env.local`, preflights Vercel authentication and
+project access, and uses the managed `vercel/sandbox/universal` image by
+default. It installs the repository-pinned Node, pnpm, and LLVM toolchain plus
+ScriptC dependencies in each disposable Sandbox before building the uploaded
+worktree. Set
+`SCRIPTC_SANDBOX_IMAGE` to a fully qualified VCR reference only to use the
+optional prebuilt image from `pnpm test:sandbox:image`.
+The prebuilt image keeps the roughly four-minute fast path; cold managed-image
+runs take longer because they install the pinned toolchain in each Sandbox.
+
+`VERCEL_OIDC_TOKEN` is preferred. For access-token authentication, set
+`VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`; team and project are
+never inferred from `SCRIPTC_SANDBOX_IMAGE`. The legacy VCR command used by
+`pnpm test:sandbox:image` cannot authenticate with an OIDC JWT, so image builds
+use `VERCEL_TOKEN` when available or the existing Vercel CLI login; OIDC claims
+still select the VCR team and project. The test corpus runs each program
+under Node and as a compiled native binary, then compares stdout, stderr, and
+exit codes byte for byte. The full gate also runs the corpus with
+AddressSanitizer and the runtime reference-count audit.

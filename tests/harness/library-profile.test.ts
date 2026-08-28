@@ -55,6 +55,7 @@ describe("library profile validation", () => {
     if (!r.ok) return;
     expect(r.profile.name).toBe("conformance-test");
     expect(r.profile.emission).toBe("llvm");
+    expect(r.profile.optimization).toBe("release");
     expect(r.profile.prefix).toBe("kx_");
     expect(r.profile.initSymbol).toBe("kx_init");
     expect(r.profile.collectSymbol).toBe("kx_collect");
@@ -148,6 +149,12 @@ describe("library profile validation", () => {
     expectSc4001(rest, "'name'");
   });
   test("bad emission", () => expectSc4001({ ...good, emission: "wasm" }, "emission"));
+  test("optimization defaults to release and admits dev explicitly", () => {
+    const dev = loadLibraryProfile(writeProfile({ ...good, optimization: "dev" }));
+    expect(dev.ok).toBe(true);
+    if (dev.ok) expect(dev.profile.optimization).toBe("dev");
+    expectSc4001({ ...good, optimization: "fast" }, "optimization");
+  });
   test("bad prefix identifier", () =>
     expectSc4001({ ...good, abi: { ...good.abi, prefix: "9bad_" } }, "abi.prefix"));
   test("symbol without the prefix", () =>
@@ -239,6 +246,7 @@ describe("library profile sidecar section", () => {
       initExport: "init",
       updateExport: "update",
       subscriptionsExport: "subscriptions",
+      subscriptionsExportDeclared: false,
       sourceHash: "module-graph",
       integerSlots: [],
     });
@@ -427,7 +435,31 @@ describe("library profile fences", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const dateIds = r.profile.fences[0]!.surfaces.map((s) => s.id);
-    expect(dateIds).toEqual(["stdlib.date.UTC", "stdlib.date.getTime", "stdlib.date.now", "stdlib.date.toISOString"]);
+    expect(dateIds).toEqual([
+      "stdlib.date.UTC",
+      "stdlib.date.constructor",
+      "stdlib.date.getDate",
+      "stdlib.date.getDay",
+      "stdlib.date.getFullYear",
+      "stdlib.date.getHours",
+      "stdlib.date.getMilliseconds",
+      "stdlib.date.getMinutes",
+      "stdlib.date.getMonth",
+      "stdlib.date.getSeconds",
+      "stdlib.date.getTime",
+      "stdlib.date.getTimezoneOffset",
+      "stdlib.date.getUTCDate",
+      "stdlib.date.getUTCDay",
+      "stdlib.date.getUTCFullYear",
+      "stdlib.date.getUTCHours",
+      "stdlib.date.getUTCMilliseconds",
+      "stdlib.date.getUTCMinutes",
+      "stdlib.date.getUTCMonth",
+      "stdlib.date.getUTCSeconds",
+      "stdlib.date.now",
+      "stdlib.date.toISOString",
+      "stdlib.date.valueOf",
+    ]);
     expect(r.profile.fences[0]!.surfaces.every((s) => s.detector !== undefined)).toBe(true);
     const processIds = r.profile.fences[1]!.surfaces.map((s) => s.id);
     expect(processIds).toContain("node-builtin.process.env");
@@ -439,6 +471,24 @@ describe("library profile fences", () => {
     expect(processIds).toContain("node-builtin.process.isTTY");
     expect(r.profile.fences[1]!.surfaces.every((s) => s.detector !== undefined)).toBe(true);
     expect(r.profile.fences[2]!.surfaces.map((s) => s.id)).toEqual(["node-builtin.perf_hooks.performance.now"]);
+  });
+
+  test("Date getTime and valueOf fences keep distinct IR witnesses", () => {
+    const r = loadLibraryProfile(
+      writeProfile({
+        ...good,
+        determinism: {
+          fences: [{ id: "stdlib.date.getTime" }, { id: "stdlib.date.valueOf" }],
+        },
+      }),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.profile.fences[0]!.surfaces[0]!.detector?.libFns).toEqual([
+      "date.getTime",
+      "date.parseGetTime",
+    ]);
+    expect(r.profile.fences[1]!.surfaces[0]!.detector?.libFns).toEqual(["date.valueOf"]);
   });
 
   test("a prefix matching nothing refuses — the spec's illustrative spelling included", () => {
@@ -515,4 +565,108 @@ describe("library profile fences", () => {
     if (!r.ok) return;
     expect(r.profile.fences).toEqual([]);
   });
+});
+
+describe("library profile host-callback channels", () => {
+  const withCallbacks = {
+    ...good,
+    abi: { ...good.abi, callback_register_symbol: "kx_set_callback" },
+    callbacks: [
+      { name: "emitChunk", params: ["bytes", "u32"], returns: "void" },
+      { name: "progress", params: ["f64", "f64"], returns: "i32" },
+    ],
+  };
+
+  test("well-formed channels resolve in declaration order", () => {
+    const r = loadLibraryProfile(writeProfile(withCallbacks));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.profile.callbackRegisterSymbol).toBe("kx_set_callback");
+    expect(r.profile.callbacks).toEqual([
+      { name: "emitChunk", params: ["bytes", "u32"], returns: "void" },
+      { name: "progress", params: ["f64", "f64"], returns: "i32" },
+    ]);
+  });
+
+  test("a callback-free profile carries the empty surface", () => {
+    const r = loadLibraryProfile(writeProfile(good));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.profile.callbackRegisterSymbol).toBeNull();
+    expect(r.profile.callbacks).toEqual([]);
+  });
+
+  test("channels without a registration symbol refuse (unreachable by any host)", () =>
+    expectSc4001(
+      { ...good, callbacks: [{ name: "emitChunk", params: ["bytes"], returns: "void" }] },
+      "abi.callback_register_symbol",
+    ));
+
+  test("a registration symbol without channels refuses (the anti-inert posture)", () =>
+    expectSc4001(
+      { ...good, abi: { ...good.abi, callback_register_symbol: "kx_set_callback" } },
+      "declares no channels",
+    ));
+
+  test("the registration symbol keeps the prefix and pairwise-distinct rules", () => {
+    expectSc4001(
+      { ...withCallbacks, abi: { ...withCallbacks.abi, callback_register_symbol: "other_set" } },
+      "must start with the profile prefix",
+    );
+    expectSc4001(
+      { ...withCallbacks, abi: { ...withCallbacks.abi, callback_register_symbol: "kx_init" } },
+      "declared twice",
+    );
+  });
+
+  test("declared integer classes refuse in callback parameter position", () =>
+    expectSc4001(
+      { ...withCallbacks, callbacks: [{ name: "x", params: ["i64"], returns: "void" }] },
+      "export-map surface",
+    ));
+
+  test("buffer returns refuse with the ownership teaching", () =>
+    expectSc4001(
+      { ...withCallbacks, callbacks: [{ name: "x", params: [], returns: "bytes" }] },
+      "ownership contract",
+    ));
+
+  test("duplicate channel names refuse", () =>
+    expectSc4001(
+      {
+        ...withCallbacks,
+        callbacks: [
+          { name: "x", params: [], returns: "void" },
+          { name: "x", params: [], returns: "void" },
+        ],
+      },
+      "declared twice",
+    ));
+
+  test("a channel name colliding with an export-map export refuses", () =>
+    expectSc4001(
+      { ...withCallbacks, callbacks: [{ name: "update", params: [], returns: "void" }] },
+      "both an export-map export and a callback channel name",
+    ));
+
+  test("unknown fields inside a channel entry refuse", () =>
+    expectSc4001(
+      { ...withCallbacks, callbacks: [{ name: "x", params: [], returns: "void", lifetime: "call" }] },
+      "callbacks[0].lifetime",
+    ));
+
+  test("a channel name must be a plain identifier (the TS binding and the C name string)", () =>
+    expectSc4001(
+      { ...withCallbacks, callbacks: [{ name: "emit-chunk", params: [], returns: "void" }] },
+      "not a valid channel name",
+    ));
+
+  test("the runtime's slot capacity caps the channel count", () =>
+    expectSc4001(
+      {
+        ...withCallbacks,
+        callbacks: Array.from({ length: 33 }, (_, i) => ({ name: `c${i}`, params: [], returns: "void" })),
+      },
+      "slot capacity is 32",
+    ));
 });

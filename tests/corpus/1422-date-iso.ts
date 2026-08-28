@@ -1,4 +1,4 @@
-// Date, the composed slice: new Date(ms).toISOString() with Node's exact
+// Date ISO formatting: new Date(ms).toISOString() with Node's exact
 // UTC formatting (expanded years, fractional-ms truncation, RangeError on
 // invalid values), plus the Date.now() contract (values are wall-clock, so
 // properties — not values — are compared).

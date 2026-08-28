@@ -19,6 +19,31 @@ export const QJS_ENGINE_SOURCES = ["dtoa.c", "libregexp.c", "libunicode.c", "qui
 export const LRE_SOURCES = ["libregexp.c", "libunicode.c"] as const;
 export const ZLIB_SOURCES = ["adler32.c", "compress.c", "crc32.c", "deflate.c", "infback.c", "inffast.c", "inflate.c", "inftrees.c", "trees.c", "uncompr.c", "zutil.c"] as const;
 
+/** A zig driver supplies its own archiver (`zig ar`) and its own vendored
+ * zlib. Only the bare-clang host driver may assume a system `ar` and a system
+ * `-lz`.
+ *
+ * Keying those choices on `driver.target === null` conflates "this build is
+ * native" with "a POSIX toolchain and system libraries are present". They are
+ * independent: under SCRIPTC_CC=zigcc a host build silently mixes a clang-built
+ * vendor archive into a zig link, and on Windows it cannot work at all, since
+ * there is no `ar` and no system libz. Mirrors the dispatch that
+ * ensureLreObjects and ensureZlibObjects already use. */
+export function driverUsesZig(driver: Pick<CcDriver, "argv">): boolean {
+  return driver.argv[0] === "zig";
+}
+
+/** The archiver spelling for a vendored prerequisite built with `driver`. */
+export function vendorArArgv(driver: Pick<CcDriver, "argv">): string[] {
+  return driverUsesZig(driver) ? [...driver.argv.slice(0, 1), "ar"] : ["ar"];
+}
+
+/** Whether this build links scriptc's vendored zlib objects instead of a
+ * system `-lz`: every cross build, and every zig-driven host build. */
+export function usesVendoredZlib(driver: Pick<CcDriver, "argv" | "target">): boolean {
+  return driver.target !== null || driverUsesZig(driver);
+}
+
 export interface VendorArchiveContext {
   runtimeSrcDir(): string;
   targetPlatform(driver: CcDriver): string;
@@ -91,13 +116,13 @@ export function createVendorArchives(context: VendorArchiveContext) {
     driver: Pick<CcDriver, "argv" | "target">,
     environmentFingerprint: string,
   ): Promise<string> {
-    // Native vendor recipes additionally use bare clang/ar; cross
+    // Bare-clang host recipes additionally use clang/ar; zig-driven
     // recipes use the zig driver for compilation and `zig ar`. Include every
     // executable that can affect the cached prerequisite, not just the
     // final program's driver.
     const commands = [
       driver.argv[0] ?? "clang",
-      ...(driver.target === null ? ["clang", "ar"] : []),
+      ...(driver.target === null && !driverUsesZig(driver) ? ["clang", "ar"] : []),
     ].filter((command, index, all) => all.indexOf(command) === index);
     const identities = await Promise.all(
       commands.map(async (command) => {
@@ -240,8 +265,8 @@ export function createVendorArchives(context: VendorArchiveContext) {
   async function buildEngineArchiveDirect(sanitize: boolean, driver: CcDriver, cacheRoot: string, cacheDir: string): Promise<string> {
     const vendor = vendorEngineDir();
     const archive = join(cacheDir, "libqjs.a");
-    const compileArgv = driver.target === null ? ["clang"] : driver.argv;
-    const arArgv = driver.target === null ? ["ar"] : [...driver.argv.slice(0, 1), "ar"];
+    const compileArgv = driver.argv;
+    const arArgv = vendorArArgv(driver);
     const cflags = [
       "-std=gnu11",
       ...driver.targetArgs,
@@ -525,7 +550,8 @@ export function createVendorArchives(context: VendorArchiveContext) {
    * SCRIPTC_TARGET adds a per-target cache flavor (the lre-objects story):
    * TUs compile with `zig cc -target <triple>` and the archive is packed
    * with `zig ar` (llvm-ar — the host BSD ar has no business indexing ELF
-   * objects). Host builds keep the exact historical clang + ar recipe. */
+   * objects). Bare-clang host builds keep the exact historical clang + ar
+   * recipe; a zig-driven host build uses zig cc and `zig ar` like a cross one. */
   async function ensureTlsArchive(
     sanitize: boolean,
     driver: CcDriver,
@@ -533,8 +559,8 @@ export function createVendorArchives(context: VendorArchiveContext) {
     cacheRoot: string = vendorBuildCacheRoot(),
   ): Promise<string> {
     const flavor = `${sanitize ? "asan" : "plain"}-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
-    const compileArgv = driver.target !== null ? driver.argv : ["clang"];
-    const arArgv = driver.target !== null ? [...driver.argv.slice(0, 1), "ar"] : ["ar"];
+    const compileArgv = driver.argv;
+    const arArgv = vendorArArgv(driver);
     const vendor = vendorTlsDir();
     const archive = tlsArchivePath(sanitize, driver, buildIdentity, cacheRoot);
     if (await validVendorArtifact(archive)) return archive;

@@ -425,6 +425,11 @@ export function emitContainerExpr(host: LlvmEmitterContext, e: ExprOf<"arrayLit"
         if (elem.kind === "union") {
           const tag = undefinedArmTag(elem, host.unionsById);
           if (tag >= 0) fill = host.unitInstanceRef(elem.unionId, tag);
+        } else if (elem.kind === "dyn") {
+          host.declare("declare ptr @scr_dyn_undefined()");
+          const undef = B.tmp();
+          B.line(`${undef} = call ptr @scr_dyn_undefined()`);
+          fill = undef;
         }
         const bound = B.tmp();
         B.line(`${bound} = fsub double ${n.name}, ${f64Lit(1)}`);

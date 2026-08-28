@@ -1120,18 +1120,6 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // keeps its static array-of-handles representation.
     if (elem?.kind === "jsval" && !(elemTs.flags & ts.TypeFlags.Any)) return JSVAL;
     if (!elem) return null;
-    // A dyn ELEMENT makes the WHOLE array the checked-dynamic value:
-    // `unknown[]`, `object[]`, and the collapsed `(string | object)[]`
-    // (the plugins-slot shape) — the checked-dynamic tree has real arrays, so length/
-    // index/push/iteration ride the keyed-dyn paths, while a dyn-element
-    // STATIC array has no backend representation (ScrArr has no dyn
-    // element kind). This is dynFallbackType's JS stance promoted into
-    // the mapping itself; construction sites build dynArrLit (the checked-dynamic tree
-    // array literal) and typed sources convert per element at the slot.
-    if (elem.kind === "dyn") return DYN;
-    // The shared predicate is the runtime/backend storage contract. In
-    // particular, valid standalone values such as Map/Set/Date and opaque
-    // handles do not automatically have an array element representation.
     if (!isSupportedArrayElem(elem)) return null;
     // ChildProcess[] (the running-apps list) and Server[] (the [...set]
     // drain of the auxiliary-server registries): handles are ordinary

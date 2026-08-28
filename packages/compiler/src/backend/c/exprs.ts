@@ -1500,6 +1500,8 @@ function emitContainerExpr(
           const def = emitter.unionsById.get(elem.unionId);
           const tag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
           if (tag >= 0) fill = emitter.unitInstanceRef(elem.unionId, tag);
+        } else if (elem.kind === "dyn") {
+          fill = "scr_dyn_undefined()";
         }
         const i = `sc_i${emitter.tempCounter++}`;
         emitter.line(`for (double ${i} = 0; ${i} <= ${n.name} - 1; ${i} += 1) {`);

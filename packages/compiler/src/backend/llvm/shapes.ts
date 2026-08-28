@@ -300,6 +300,7 @@ export function arrNewCall(host: ShapeHost, elem: IrType, capText: string): stri
     elem.kind === "child" || // spawned child handles: scr_child_* adapters, no trace
     elem.kind === "netServer" || // server handles ([...set] drains): REF, no trace
     elem.kind === "jsval" || // island handles (`any[]` under --dynamic): REF, no trace
+    elem.kind === "dyn" || // dyn values (`unknown[]`): REF, no trace
     elem.kind === "regex" || // RegExp values: scr_regex_* adapters, no trace (no refs inside)
     (elem.kind === "array" && traceAdapter(host, elem) !== null);
   if (!useRef) {
@@ -382,8 +383,14 @@ export function llFieldType(t: IrType): "double" | "i8" | "ptr" {
 export function mapKeyAccess(key: IrType): "f64" | "str" | "ref" {
   if (key.kind === "f64") return "f64";
   if (key.kind === "string") return "str";
-  if (key.kind === "symbol") return "ref";
-  if (key.kind === "netServer") return "ref"; // handle identity (Set<Server>)
+  if (
+    key.kind === "symbol" ||
+    key.kind === "netServer" || // handle identity (Set<Server>)
+    key.kind === "promise" ||
+    key.kind === "object" ||
+    key.kind === "record" ||
+    key.kind === "dyn"
+  ) return "ref";
   throw new LlvmUnsupportedError(`mapKey:${key.kind}`);
 }
 

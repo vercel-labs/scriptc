@@ -518,6 +518,7 @@ export function isSupportedArrayElem(t: IrType): boolean {
     case "netServer":
     case "symbol":
     case "classval":
+    case "dyn":
       return true;
     default:
       return false;
@@ -561,7 +562,15 @@ export function isSupportedMapKey(t: IrType): boolean {
  * sentinel-registry idiom) is the same honest hashed storage with no
  * cycle risk at all (symbols hold only strings). */
 export function isSupportedSetElem(t: IrType): boolean {
-  return isSupportedMapKey(t) || t.kind === "netServer" || t.kind === "symbol";
+  return (
+    isSupportedMapKey(t) ||
+    t.kind === "netServer" ||
+    t.kind === "symbol" ||
+    t.kind === "promise" ||
+    t.kind === "object" ||
+    t.kind === "record" ||
+    t.kind === "dyn"
+  );
 }
 
 /** The Map VALUE fence: scalars plus every refcounted kind EXCEPT

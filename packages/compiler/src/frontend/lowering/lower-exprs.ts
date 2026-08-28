@@ -10683,28 +10683,98 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
    * every observable way, so the entries build the array directly and
    * the runtime's countdown combinator runs (the certs read-both-files
    * shape). Result Promise<T[]>; void inners collapse to Promise<void>
-   * exactly like the array path. Null otherwise: heterogeneous literals
-   * and non-literal arguments keep the array path and its fences. */
+    * exactly like the array path. The EMPTY tuple resolves [] through the
+    * same combinator, and a HETEROGENEOUS tuple of promises
+    * (Promise<[A, B]>) lowers as sequential in-order awaits building the
+    * tuple record. Null otherwise: non-literal arguments keep the array
+    * path and its fences. */
   export function lowerPromiseAllTupleCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken) return null;
     if (lowerer.stdlibGlobalMember(access, "Promise") !== "all") return null;
-    const argNode = call.arguments.length === 1 ? call.arguments[0]! : null;
+    let argNode = call.arguments.length === 1 ? call.arguments[0]! : null;
+    // `[p1, p2] as const` — the tuple overload's canonical spelling: the
+    // conversion is type-only, the literal underneath is the argument.
+    while (
+      argNode &&
+      (ts.isParenthesizedExpression(argNode) || ts.isAsExpression(argNode) ||
+        ts.isTypeAssertion(argNode) || ts.isNonNullExpression(argNode))
+    ) {
+      argNode = argNode.expression;
+    }
     if (
       !argNode ||
       !ts.isArrayLiteralExpression(argNode) ||
-      argNode.elements.some(ts.isSpreadElement) ||
-      argNode.elements.length === 0
+      argNode.elements.some(ts.isSpreadElement)
     ) {
       return null;
+    }
+    // The EMPTY tuple (`Promise.all([] as const)`): JS resolves an empty
+    // input to [] immediately, so the countdown combinator over a zero-
+    // length entries array answers the same — the result rides the
+    // empty-tuple array rule (the undefined[] representation).
+    if (argNode.elements.length === 0) {
+      const loc = locOf(call);
+      const entryT: IrType = { kind: "promise", inner: unitOnlyUnion(lowerer.unions) };
+      const type: IrType = { kind: "promise", inner: arrayOf(unitOnlyUnion(lowerer.unions)) };
+      return { kind: "intrinsic", name: "promise.all", args: [{ kind: "arrayLit", elems: [], type: arrayOf(entryT), loc }], type, loc };
     }
     // The claim test runs on checker types only (no side effects): every
     // element the same representable promise type.
     const mapped = argNode.elements.map((el) => lowerer.mapTypeOf(lowerer.typeOf(el)));
     const first = mapped[0];
     if (first?.kind !== "promise") return null;
-    if (!mapped.every((m) => m?.kind === "promise" && typeEquals(m.inner, first.inner))) {
-      return null;
+    if (!mapped.every((m) => m?.kind === "promise" && m.inner.kind !== "void")) return null;
+    if (!mapped.every((m) => typeEquals((m as { kind: "promise"; inner: IrType }).inner, (first as { kind: "promise"; inner: IrType }).inner))) {
+      // The HETEROGENEOUS tuple (`Promise.all([Promise<string>,
+      // Promise<number>])` — the checker's tuple overload, result
+      // Promise<[A, B]>): the inners differ per position, so a values
+      // ARRAY cannot type the result. Await the entries in order and
+      // build the tuple record — the awaited locals keep the entry
+      // order observable and the positional types exact. Element
+      // expressions evaluate first, exactly JS (the argument array is
+      // fully built before any entry is awaited).
+      const callT = lowerer.mapTypeOf(lowerer.typeOf(call));
+      if (callT?.kind !== "promise" || callT.inner.kind !== "record") return null;
+      const shape = lowerer.shapes.get(callT.inner.shapeId);
+      if (!shape?.tuple || shape.fields.length !== argNode.elements.length) return null;
+      const loc = locOf(call);
+      const pending = argNode.elements.map((el) => {
+        const elem = lowerer.lowerExpr(el);
+        const local = lowerer.declareHiddenLocal("%allEntry", elem.type);
+        return { local, init: elem, loc: locOf(el) };
+      });
+      const stmts: IrStmt[] = pending.map((p) => ({
+        kind: "varDecl" as const,
+        localId: p.local.id,
+        init: p.init,
+        loc: p.loc,
+      }));
+      const awaited = pending.map((p) => {
+        const value: IrExpr = {
+          kind: "awaitExpr",
+          value: { kind: "varRef", localId: p.local.id, type: p.local.type, loc: p.loc },
+          type: (p.local.type as { kind: "promise"; inner: IrType }).inner,
+          loc: p.loc,
+        };
+        const local = lowerer.declareHiddenLocal("%allValue", value.type);
+        stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: p.loc });
+        return local;
+      });
+      const fields = shape.fields.map((f) => {
+        const local = awaited[Number(f.name)]!;
+        return {
+          name: f.name,
+          value: { kind: "varRef" as const, localId: local.id, type: local.type, loc },
+        };
+      });
+      return {
+        kind: "seqExpr",
+        stmts,
+        result: { kind: "recordLit", fields, type: callT.inner, loc },
+        type: callT.inner,
+        loc,
+      };
     }
     const loc = locOf(call);
     const inner = first.inner;

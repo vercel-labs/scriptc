@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
+  createRuntimeLinkPlan,
   effectiveRuntimeFeatures,
   evaluateRuntimePredicate,
+  linkRuntimePackExecutable,
   loadRuntimePack,
   parseRuntimePackManifest,
   type RuntimePackManifest,
@@ -168,4 +170,53 @@ describe("runtime pack manifests", () => {
     })).rejects.toThrow("hash mismatch");
     expect(await readFile(packagePath, "utf8")).toContain("runtime-darwin-arm64");
   });
+
+  test.runIf(process.platform === "darwin")(
+    "does not publish an executable cache proof when a dependency changes during linking",
+    async () => {
+      const { root, packagePath } = await fixture();
+      const programObject = join(root, "program.o");
+      const dependency = join(root, "link-dependency.a");
+      const output = join(root, "program");
+      const linker = join(root, "linker.mjs");
+      await Promise.all([
+        writeFile(programObject, "program object"),
+        writeFile(dependency, "before link"),
+        writeFile(linker, [
+          "#!/usr/bin/env node",
+          'import { writeFileSync } from "node:fs";',
+          `const dependency = ${JSON.stringify(dependency)};`,
+          'if (process.argv[2]?.startsWith("-print-file-name=")) {',
+          '  process.stdout.write(`${dependency}\\n`);',
+          "  process.exit(0);",
+          "}",
+          'const outputIndex = process.argv.indexOf("-o");',
+          'if (outputIndex < 0) process.exit(2);',
+          'writeFileSync(dependency, "changed during link");',
+          'writeFileSync(process.argv[outputIndex + 1], "linked executable");',
+          "",
+        ].join("\n")),
+      ]);
+      await chmod(linker, 0o755);
+      const plan = await createRuntimeLinkPlan({
+        target: MACOS_ARM64_TARGET,
+        programObject,
+        outPath: output,
+        features: BASE,
+        ffi: null,
+        optimization: "release",
+        programObjectDependencies: [dependency],
+        resolver: () => packagePath,
+      });
+      let published = false;
+
+      await linkRuntimePackExecutable(plan, {
+        linker,
+        onArtifactReady: async () => { published = true; },
+      });
+
+      expect(await readFile(output, "utf8")).toBe("linked executable");
+      expect(published).toBe(false);
+    },
+  );
 });

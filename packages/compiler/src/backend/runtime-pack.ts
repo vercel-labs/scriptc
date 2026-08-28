@@ -8,7 +8,12 @@ import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import { privateSiblingPath } from "./build-cache.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
-import { CcCompileError, subprocessFailureDetail, type NativeArtifactDependency } from "./native-toolchain.js";
+import {
+  CcCompileError,
+  nativeArtifactDependenciesStillMatch,
+  subprocessFailureDetail,
+  type NativeArtifactDependency,
+} from "./native-toolchain.js";
 import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
 import type { NativeTargetSpec } from "./targets.js";
 
@@ -454,6 +459,14 @@ export async function linkRuntimePackExecutable(
     ...plan.systemLibraries.map((name) => `-l${name}`),
     "-o", privateOut,
   ];
+  // Snapshot every cache-bearing input before the linker can consume it. A
+  // package update or SDK/toolchain replacement during the subprocess must
+  // not let output built from one state ride a proof captured from the next.
+  const preLinkDependencies = options.onArtifactReady === undefined
+    ? null
+    : await linkToolchainDependencies(linkerPath)
+      .then((toolchain) => snapshotDependencies([...toolchain, ...plan.dependencyPaths]))
+      .catch(() => null);
   try {
     await execFileAsync(linker, args);
     const output = await stat(privateOut);
@@ -462,17 +475,16 @@ export async function linkRuntimePackExecutable(
       await rm(plan.outputPath, { force: true });
       await rename(privateOut, plan.outputPath);
     });
-    if (options.onArtifactReady !== undefined) {
+    if (
+      options.onArtifactReady !== undefined && preLinkDependencies !== null &&
+      await nativeArtifactDependenciesStillMatch(preLinkDependencies).catch(() => false)
+    ) {
       // A complete executable cache entry is published only when the driver,
       // platform linker, compiler runtime, selected SDK stubs/settings, pack,
-      // and FFI inputs all have a replayable metadata proof. Failure to prove
-      // any ambient input keeps a correct executable but no complete cache.
-      const dependencies = await linkToolchainDependencies(linkerPath)
-        .then((toolchain) => snapshotDependencies([...toolchain, ...plan.dependencyPaths]))
-        .catch(() => null);
-      if (dependencies !== null) {
-        await options.onArtifactReady({ dependencies }).catch(() => undefined);
-      }
+      // and FFI inputs all remained unchanged across the link. Failure to
+      // prove any ambient input keeps a correct executable but no complete
+      // cache.
+      await options.onArtifactReady({ dependencies: preLinkDependencies }).catch(() => undefined);
     }
   } catch (error) {
     if (error instanceof CcCompileError) throw error;

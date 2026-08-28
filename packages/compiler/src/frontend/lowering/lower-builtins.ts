@@ -5223,6 +5223,19 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     };
   }
 
+  export function lowerErrorStackProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+    if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
+    if (expr.name.text !== "stack") return null;
+    const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    if (recvT?.kind !== "object") return null;
+    let info = lowerer.classes.get(recvT.className) ?? null;
+    while (info && info.base) info = info.base;
+    if (!info || info.def.name !== "%Error") return null;
+    if (!lowerer.isStdlibMember(expr)) return null;
+    const receiver = lowerer.lowerExpr(expr.expression);
+    return { kind: "libCall", fn: "error.stack", args: [receiver], type: STRING, loc: locOf(expr) };
+  }
+
 /** `JSON.parse` / `JSON.stringify` referenced without a call: rejected
    * specifically, like process methods as values. Null for non-JSON
    * receivers (the property chain keeps trying other lowerings). */

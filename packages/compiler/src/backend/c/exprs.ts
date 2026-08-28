@@ -7393,7 +7393,7 @@ function emitErrorsEventsLibCall(state: LibCallState): Temp {
           case "emitter.getDefaultMax":
             return finish(`scr_emitter_get_default_max()`);
           case "error.code": {
-            // `string | undefined`, constructed type-directedly like
+            // `string | undefined`, constructed type-directly like
             // process.envGet: a stamped code wraps the string arm (+1
             // moves into the box); absent yields the interned
             // undefined-arm instance. The receiver may be a user subclass
@@ -7413,6 +7413,9 @@ function emitErrorsEventsLibCall(state: LibCallState): Temp {
             const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
             const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
             return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
+          }
+          case "error.stack": {
+            return emitter.newTemp(e.type, `scr_error_stack((ScrError *)${arg(0)})`);
           }
     default:
       throw new InternalCompilerError(`emitter bug: errorsEvents libCall dispatch for ${fn}`);

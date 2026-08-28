@@ -592,6 +592,7 @@ void scr_undef_global_read(ScrStr *name);
  * thrower is scr_throw_error_msg with the code stamped on the payload. */
 void scr_error_set_code(ScrError *e, const char *code);
 ScrStr *scr_error_code(ScrError *e);
+ScrStr *scr_error_stack(ScrError *e);
 void scr_throw_error_msg_code(int kind, const char *message, size_t len, const char *code);
 /* The compiler-resolved Node-parity throw (error.nodeThrow): builtin
  * error of `kind`, `code` stamped when non-empty. Borrows both. */

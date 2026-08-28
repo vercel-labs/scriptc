@@ -3724,6 +3724,10 @@ export type IrLibFn =
    * process.kill, the spawn 'error' event), the undefined arm everywhere
    * else. Never throws. */
   | "error.code"
+  /** `Error.stack` (and subclasses) — borrowed `%Error`-typed receiver,
+   * → +1 string (the stack trace; empty when not captured — the runtime
+   * returns the `name: message` rendering). Never throws. */
+  | "error.stack"
   /** node:assert (scr_assert.c; assert.match in scr_regex.c — every call
    * site carries a regex value, so the regex link switch is already on).
    * Failures throw a catchable AssertionError — a runtime %Error whose

@@ -569,5 +569,12 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       B.line(`${raw} = call ptr @scr_error_code(ptr ${recv.name})`);
       return host.wrapNullable(raw, raw, STRING, strTag, e.type, undefTag);
     }
+    if (e.fn === "error.stack") {
+      const recv = host.emitExpr(e.args[0]!);
+      host.declare(`declare ptr @scr_error_stack(ptr)`);
+      const out = B.tmp();
+      B.line(`${out} = call ptr @scr_error_stack(ptr ${recv.name})`);
+      return { name: out, type: STRING };
+    }
     return host.emitGenericLibCall(e);
   }

@@ -1614,6 +1614,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         lowerer.lowerNamespaceBuiltinProperty(expr) ??
         lowerer.lowerJsonProperty(expr) ??
         lowerer.lowerErrorCodeProperty(expr) ??
+        lowerer.lowerErrorStackProperty(expr) ??
+        lowerCaughtProperty(lowerer, expr) ??
         lowerer.lowerNumberStaticProperty(expr) ??
         lowerer.lowerMathProperty(expr) ??
         lowerer.lowerIntrinsicProperty(expr) ??
@@ -8740,6 +8742,18 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     if (!ts.isIdentifier(node)) return null;
     const local = lowerer.resolveLocal(node);
     return local?.type.kind === "caught" ? local : null;
+  }
+
+  export function lowerCaughtProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+    const local = lowerer.caughtLocalOf(expr.expression);
+    if (!local) return null;
+    // Only stack needs special string rendering; other members (message, name, type, code)
+    // ride the generic dynKeyGet fallback via the receiver-lowered path. Handling stack
+    // here avoids the dyn undefined for a property the dyn error encoding doesn't store.
+    if (expr.name.text !== "stack") return null;
+    if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
+    const loc = locOf(expr);
+    return { kind: "toString", operand: { kind: "varRef", localId: local.id, type: CAUGHT, loc }, type: STRING, loc };
   }
 
 /** `x instanceof C` for a program-declared class C. When x's static

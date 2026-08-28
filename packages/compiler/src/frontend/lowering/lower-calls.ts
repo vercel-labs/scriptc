@@ -3125,14 +3125,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const args = expr.arguments.map((a) => {
         const lowered = lowerer.lowerExpr(a);
         if (lowered.type.kind === "jsval") {
-          // Node prints objects with util.inspect formatting, which
-          // String() cannot match — silent divergence is banned. Templates
-          // are ToString (Node-exact), casts are validated: both honest.
-          lowerer.unsupported(
-            "SC1090",
-            a,
-            `${surface} of 'any' values (wrap it: ${surface}(\`\${v}\`), or validate with 'as <type>' first)`,
-          );
+          // 2714: console.error/warn of 'any' values via inspect (formatWithOptions depth 2)
+          // - strings still print verbatim through the inspect path, matching Node's console.
+          return lowerConsoleInspectArg(lowerer, a, lowered, surface, loc);
         }
         // Checked-dynamic values carry their own shape, so the runtime
         // renders them exactly like Node's console formatter renders a

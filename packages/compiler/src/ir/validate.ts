@@ -847,6 +847,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   // Receiver (any error-hierarchy object) and the program-dependent
   // `string | undefined` result are checked in the libCall case.
   "error.code": { argTypes: [null], result: VOID },
+  "error.stack": { argTypes: [null], result: STRING },
   // DOMException: construction takes the two dyn args (WebIDL's
   // resolution runs in the runtime); the %DOMException result is a
   // program-dependent object type, checked in the libCall case. The

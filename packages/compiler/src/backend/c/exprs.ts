@@ -4468,6 +4468,10 @@ function emitPathUrlLibCall(state: LibCallState): Temp {
             return finish(`scr_os_type()`);
           case "os.totalmem":
             return finish(`scr_os_totalmem()`);
+          case "os.freemem":
+            return finish(`scr_os_freemem()`);
+          case "os.loadavg":
+            return finish(`scr_os_loadavg()`);
           case "os.release":
             return finish(`scr_os_release()`);
           case "os.userName":
@@ -4591,6 +4595,8 @@ function emitPathUrlLibCall(state: LibCallState): Temp {
             return finish(`scr_url_new(${arg(0)})`);
           case "url.protocol":
             return finish(`scr_url_protocol(${arg(0)})`);
+          case "url.origin":
+            return finish(`scr_url_origin(${arg(0)})`);
           case "url.host":
             return finish(`scr_url_host(${arg(0)})`);
           case "url.hostname":
@@ -4765,6 +4771,8 @@ function emitPrimitiveLibCall(state: LibCallState): Temp {
             return finish(`scr_parse_float(${arg(0)})`);
           case "num.fromString":
             return finish(`scr_string_to_number(${arg(0)})`);
+          case "num.fromDyn":
+            return finish(`scr_num_from_dyn(${arg(0)})`);
           case "num.isNaN":
             return finish(`(bool)isnan(${arg(0)})`);
           // The URI codecs (scr_string.c). Borrow; results +1. decode
@@ -4852,6 +4860,14 @@ function emitPrimitiveLibCall(state: LibCallState): Temp {
             return finish(`scr_num_is_integer(${arg(0)})`);
           case "number.isSafeInteger":
             return finish(`scr_num_is_safe_integer(${arg(0)})`);
+          case "number.isFiniteDyn":
+            return finish(`scr_num_is_finite_dyn(${arg(0)})`);
+          case "number.isNaNDyn":
+            return finish(`scr_num_is_nan_dyn(${arg(0)})`);
+          case "number.isIntegerDyn":
+            return finish(`scr_num_is_integer_dyn(${arg(0)})`);
+          case "number.isSafeIntegerDyn":
+            return finish(`scr_num_is_safe_integer_dyn(${arg(0)})`);
           case "date.now":
             // Node's integer milliseconds since epoch. Never throws.
             return finish(`scr_date_now()`);
@@ -4861,6 +4877,8 @@ function emitPrimitiveLibCall(state: LibCallState): Temp {
             return finish(`scr_date_new_ms(${arg(0)})`);
           case "date.newString":
             return finish(`scr_date_parse_get_time(${arg(0)})`);
+          case "date.newDyn":
+            return finish(`scr_date_new_dyn(${arg(0)})`);
           case "date.getTime":
           case "date.valueOf":
             return finish(`${arg(0)}`);
@@ -7046,6 +7064,8 @@ function emitProcessLibCall(state: LibCallState): Temp {
             return finish(`scr_process_exec_path()`);
           case "process.arch":
             return finish(`scr_process_arch()`);
+          case "process.version":
+            return finish(`scr_process_version()`);
           case "process.versionsNode":
             return finish(`scr_process_versions_node()`);
           case "process.versionsOpenssl":

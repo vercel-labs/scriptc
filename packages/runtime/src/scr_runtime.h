@@ -2111,6 +2111,8 @@ ScrStr *scr_process_exec_path(void);
 /* process.arch: the binary's OWN architecture ("arm64", "x64") — Node's
  * answer for its own build on the same machine. +1 interned. */
 ScrStr *scr_process_arch(void);
+/* process.version: "v" + process.versions.node */
+ScrStr *scr_process_version(void);
 /* process.versions.node: the runtime's Node COMPATIBILITY TARGET — no
  * Node exists under a compiled binary, so this reports the version whose
  * semantics the runtime implements (SEMANTICS.md divergence 60). +1
@@ -2724,6 +2726,7 @@ void scr_url_release(ScrUrl *u);
 void *scr_url_retain_v(void *p);
 void scr_url_release_v(void *p);
 ScrStr *scr_url_protocol(ScrUrl *u); /* +1 "https:" */
+ScrStr *scr_url_origin(ScrUrl *u);   /* +1 "https://host[:port]" or "null" */
 ScrStr *scr_url_host(ScrUrl *u);     /* +1 "host[:port]" (defaults stripped) */
 ScrStr *scr_url_hostname(ScrUrl *u); /* +1 port-less host ("" when none) */
 ScrStr *scr_url_pathname(ScrUrl *u); /* +1 */
@@ -2814,6 +2817,8 @@ ScrStr *scr_os_tmpdir(void);
 ScrStr *scr_os_release(void); /* uname(2) release — +1 fresh */
 ScrStr *scr_os_type(void);    /* uname(2) sysname — +1 fresh */
 double scr_os_totalmem(void); /* total physical memory, bytes */
+double scr_os_freemem(void);  /* free physical memory, bytes */
+ScrArr *scr_os_loadavg(void); /* 1, 5, 15m load averages as +1 array */
 /* os.userInfo()'s field trio (pw_name / pw_shell / pw_dir — the passwd
  * home, not the $HOME cascade). +1 fresh; abort on lookup failure. */
 ScrStr *scr_os_user_name(void);
@@ -4691,10 +4696,15 @@ double scr_str_last_index_of(ScrStr *s, ScrStr *needle);
  * JS-exact by construction: Number.isFinite/isNaN/isInteger/isSafeInteger
  * never coerce, and the compiler only routes f64-typed arguments here.
  * None throws. */
+double scr_num_from_dyn(const struct ScrDyn *d);
 bool scr_num_is_finite(double x);
 bool scr_num_is_nan(double x);
 bool scr_num_is_integer(double x);
 bool scr_num_is_safe_integer(double x);
+bool scr_num_is_finite_dyn(const struct ScrDyn *d);
+bool scr_num_is_nan_dyn(const struct ScrDyn *d);
+bool scr_num_is_integer_dyn(const struct ScrDyn *d);
+bool scr_num_is_safe_integer_dyn(const struct ScrDyn *d);
 /* Number.prototype formatters: toExponential() is the fraction-digits-free
  * shortest correctly-rounded mantissa; toFixed0 is the non-throwing omitted
  * argument form. toFixed implements an explicit 0..100 fractionDigits with
@@ -4722,6 +4732,7 @@ ScrStr *scr_intl_num_format_en_us(double x);
  * formatting are exact over this representation. */
 double scr_date_now(void); /* integer ms since epoch, like Node */
 double scr_date_new_ms(double ms); /* TimeClip (NaN when invalid) */
+double scr_date_new_dyn(const struct ScrDyn *d);
 double scr_date_get_time(double ms);
 /* Node's exact ISO 8601 UTC format (expanded ±YYYYYY years outside
  * 0–9999). THROWS Node's "Invalid time value" RangeError on NaN or

@@ -196,6 +196,8 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "os.release": { argTypes: [], result: STRING },
   "os.type": { argTypes: [], result: STRING },
   "os.totalmem": { argTypes: [], result: F64 },
+  "os.freemem": { argTypes: [], result: F64 },
+  "os.loadavg": { argTypes: [], result: { kind: "array", elem: F64 } },
   "process.umask": { argTypes: [F64], result: F64 },
   "process.chdir": { argTypes: [STRING], result: VOID },
   "process.exiting": { argTypes: [], result: BOOL },
@@ -222,6 +224,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "num.parseInt": { argTypes: [STRING, F64], result: F64 },
   "num.parseFloat": { argTypes: [STRING], result: F64 },
   "num.fromString": { argTypes: [STRING], result: F64 },
+  "num.fromDyn": { argTypes: [DYN], result: F64 },
   "num.isNaN": { argTypes: [F64], result: BOOL },
   "str.encodeUriComponent": { argTypes: [STRING], result: STRING },
   // The base64 globals: the argument is a dyn value (WebIDL ToString
@@ -247,6 +250,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "sym.toString": { argTypes: [SYMBOL_T], result: STRING },
   "url.new": { argTypes: [STRING], result: URL_T },
   "url.protocol": { argTypes: [URL_T], result: STRING },
+  "url.origin": { argTypes: [URL_T], result: STRING },
   "url.host": { argTypes: [URL_T], result: STRING },
   "url.hostname": { argTypes: [URL_T], result: STRING },
   "url.port": { argTypes: [URL_T], result: STRING },
@@ -804,6 +808,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
   "process.argv": { argTypes: [], result: arrayOf(STRING) },
   "process.platform": { argTypes: [], result: STRING },
+  "process.version": { argTypes: [], result: STRING },
   // The one libCall whose result type is program-dependent (union ids are
   // per-module): the `result` here is a placeholder — the libCall case
   // checks the union's ARMS ([string, undefinedT] in canonical order)
@@ -1095,10 +1100,15 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "number.isNaN": { argTypes: [F64], result: BOOL },
   "number.isInteger": { argTypes: [F64], result: BOOL },
   "number.isSafeInteger": { argTypes: [F64], result: BOOL },
+  "number.isFiniteDyn": { argTypes: [DYN], result: BOOL },
+  "number.isNaNDyn": { argTypes: [DYN], result: BOOL },
+  "number.isIntegerDyn": { argTypes: [DYN], result: BOOL },
+  "number.isSafeIntegerDyn": { argTypes: [DYN], result: BOOL },
   "date.now": { argTypes: [], result: F64 },
   "date.newNow": { argTypes: [], result: DATE_T },
   "date.newMs": { argTypes: [F64], result: DATE_T },
   "date.newString": { argTypes: [STRING], result: DATE_T },
+  "date.newDyn": { argTypes: [DYN], result: DATE_T },
   "date.getTime": { argTypes: [DATE_T], result: F64 },
   "date.valueOf": { argTypes: [DATE_T], result: F64 },
   "date.toISOString": { argTypes: [F64], result: STRING },

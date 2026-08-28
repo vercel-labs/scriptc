@@ -5391,6 +5391,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     if (member === "platform") {
       return { kind: "libCall", fn: "process.platform", args: [], type: STRING, loc };
     }
+    if (member === "version") {
+      return { kind: "libCall", fn: "process.version", args: [], type: STRING, loc };
+    }
     // process.arch: the compiled binary's OWN architecture ("arm64",
     // "x64") — the same answer Node gives for its own build on the same
     // machine.
@@ -6720,6 +6723,16 @@ const NUMBER_CONSTANTS: Record<string, number | undefined> = {
         return { kind: "jsExit", value: raw, type: BOOL, loc };
       }
       if (arg.type.kind !== "f64") {
+        const dynFn = ({
+          isFinite: "number.isFiniteDyn",
+          isNaN: "number.isNaNDyn",
+          isInteger: "number.isIntegerDyn",
+          isSafeInteger: "number.isSafeIntegerDyn",
+        } as const)[member as "isFinite" | "isNaN" | "isInteger" | "isSafeInteger"];
+        if (dynFn !== undefined) {
+          const coerced = lowerer.coerceInto(argNode, arg, DYN);
+          return { kind: "libCall", fn: dynFn, args: [coerced], type: BOOL, loc };
+        }
         lowerer.noLowering(
           `Number.${member} of '${lowerer.fmt(arg.type)}' values`,
           argNode,

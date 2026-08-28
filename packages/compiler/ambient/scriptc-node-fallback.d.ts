@@ -137,6 +137,7 @@ declare const console: {
 declare var process: {
   argv: string[];
   platform: string;
+  readonly version: string;
   /* The binary's OWN architecture ("arm64", "x64") — Node's answer for
    * its own build on the same machine. */
   readonly arch: string;
@@ -1244,6 +1245,10 @@ declare module "os" {
   export function type(): string;
   /* Total system memory in bytes (sysctl hw.memsize / sysconf). */
   export function totalmem(): number;
+  /* Free system memory in bytes. */
+  export function freemem(): number;
+  /* 1, 5, and 15 minute load averages. */
+  export function loadavg(): number[];
   /* The passwd-entry snapshot (uv_os_get_passwd): shell is `string |
    * null` to match @types/node (POSIX always answers the string arm);
    * homedir is pw_dir — NOT os.homedir()'s $HOME-first cascade. The type
@@ -1298,6 +1303,7 @@ declare module "node:os" {
  * documented in SEMANTICS.md. */
 interface URL {
   readonly protocol: string;
+  readonly origin: string;
   readonly pathname: string;
   readonly href: string;
   readonly host: string;

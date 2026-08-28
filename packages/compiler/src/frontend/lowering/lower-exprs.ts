@@ -3507,22 +3507,24 @@ export function lowerOptionalChain(lowerer: Lowerer, expr: ts.CallExpression | t
       // host field verbatim (Node would keep IPv6 brackets here, but the
       // parser rejects IPv6 hosts — documented divergence — so the getter
       // never sees one).
-      if (name === "protocol" || name === "pathname" || name === "href" || name === "host" || name === "hostname" || name === "port" || name === "search") {
+      if (name === "protocol" || name === "origin" || name === "pathname" || name === "href" || name === "host" || name === "hostname" || name === "port" || name === "search") {
         const receiver = lowerer.lowerExpr(expr.expression);
         const fn =
           name === "protocol"
             ? "url.protocol"
-            : name === "pathname"
-              ? "url.pathname"
-              : name === "host"
-                ? "url.host"
-                : name === "hostname"
-                  ? "url.hostname"
-                  : name === "port"
-                    ? "url.port"
-                    : name === "search"
-                      ? "url.search"
-                      : "url.href";
+            : name === "origin"
+              ? "url.origin"
+              : name === "pathname"
+                ? "url.pathname"
+                : name === "host"
+                  ? "url.host"
+                  : name === "hostname"
+                    ? "url.hostname"
+                    : name === "port"
+                      ? "url.port"
+                      : name === "search"
+                        ? "url.search"
+                        : "url.href";
         return { kind: "libCall", fn, args: [receiver], type: STRING, loc: locOf(expr) };
       }
       // `u.searchParams`: the LIVE cached view (one identity per URL —
@@ -3538,7 +3540,7 @@ export function lowerOptionalChain(lowerer: Lowerer, expr: ts.CallExpression | t
       lowerer.noLowering(
         `URL.${name}`,
         expr,
-        "protocol, pathname, href, host, hostname, search, searchParams, and toString() are the supported URL members",
+        "protocol, origin, pathname, href, host, hostname, search, searchParams, and toString() are the supported URL members",
         lowerer.checker.getSymbolAtLocation(expr.name),
       );
     }

@@ -1384,6 +1384,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // Object` still maps as a record. Its Object.prototype member surface
   // (`x.toString()`) fences at each use site, never silently.
   if (isStdlibInterface("Object")) return DYN;
+  // The lib's `Function` interface is a TOP callable type: it lowers like
+  // `dyn` (the dynamic value representation).
+  if (isStdlibInterface("Function")) return DYN;
   // events.EventEmitter: the runtime-provided emitter base class (the
   // Error-hierarchy precedent — user subclasses resolved through the
   // class-instance branch above). Both type layers declare it in the

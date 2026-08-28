@@ -692,6 +692,8 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
     type: { fn: "os.type", params: [], result: STRING },
     // Total physical memory in bytes — same predating-pair story.
     totalmem: { fn: "os.totalmem", params: [], result: F64 },
+    freemem: { fn: "os.freemem", params: [], result: F64 },
+    loadavg: { fn: "os.loadavg", params: [], result: arrayOf(F64) },
     // Entirely special-cased (lowerOsNetworkInterfacesCall): the result is
     // the call site's mapped Dict<NetworkInterfaceInfo[]> shape, verified
     // structurally there — this entry only routes the dispatch.

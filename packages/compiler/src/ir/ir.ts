@@ -2097,6 +2097,7 @@ export type IrLibFn =
    * strings, and util.format %d over strings lower here. Borrows; never
    * throws. */
   | "num.fromString"
+  | "num.fromDyn"
   /** The static URI component codecs (scr_string.c), ECMA-262 Encode/
    * Decode with the component sets over the runtime's UTF-8 strings.
    * str.encodeUriComponent percent-encodes every byte outside the
@@ -2173,6 +2174,7 @@ export type IrLibFn =
    * path (getcwd) and never throws. */
   | "url.new"
   | "url.protocol"
+  | "url.origin"
   | "url.host"
   | "url.hostname"
   | "url.port"
@@ -3151,6 +3153,7 @@ export type IrLibFn =
   | "fileHandle.stat"
   | "process.argv"
   | "process.platform"
+  | "process.version"
   /** getenv(3): one string key arg → the interned `string | undefined`
    * union (present: +1 string wrapped into the string arm; absent: the
    * interned undefined-arm instance). BOTH source forms — `process.env.FOO`
@@ -3211,6 +3214,10 @@ export type IrLibFn =
   | "os.type"
   /** os.totalmem(): total physical memory in bytes. Never throws. */
   | "os.totalmem"
+  /** os.freemem(): free physical memory in bytes. Never throws. */
+  | "os.freemem"
+  /** os.loadavg(): 1, 5, 15 minute load averages as [f64, f64, f64]. Never throws. */
+  | "os.loadavg"
   /** net's process-wide happy-eyeballs attempt budget (Node's default
    * 250ms): one runtime double in the core unit, so reading/writing it
    * never forces the net unit into the link. Never throw. */
@@ -4010,6 +4017,10 @@ export type IrLibFn =
   | "number.isNaN"
   | "number.isInteger"
   | "number.isSafeInteger"
+  | "number.isFiniteDyn"
+  | "number.isNaNDyn"
+  | "number.isIntegerDyn"
+  | "number.isSafeIntegerDyn"
   /** Date (scr_lib.c). Values are TimeClip'd epoch-millisecond scalars:
    * construction/store/pass/getters are exact while identity and mutation
    * remain fenced. date.now is Node's integer milliseconds since epoch;
@@ -4023,6 +4034,7 @@ export type IrLibFn =
   | "date.newNow"
   | "date.newMs"
   | "date.newString"
+  | "date.newDyn"
   | "date.getTime"
   | "date.valueOf"
   | "date.toISOString"

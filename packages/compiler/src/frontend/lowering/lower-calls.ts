@@ -3407,13 +3407,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       if (arg.type.kind === "string") {
         return { kind: "libCall", fn: "num.fromString", args: [arg], type: F64, loc };
       }
-      lowerer.noLowering(
-        `Number of ${lowerer.fmt(arg.type)} values`,
-        argNode,
-        arg.type.kind === "union"
-          ? "numbers, booleans, and strings lower (the full ToNumber string grammar included) — narrow the union first"
-          : undefined,
-      );
+      const coerced = lowerer.coerceInto(argNode, arg, DYN);
+      return { kind: "libCall", fn: "num.fromDyn", args: [coerced], type: F64, loc };
     }
 
     // __island_eval: the internal island testing hook (eval in the embedded

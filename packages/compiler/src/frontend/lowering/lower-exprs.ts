@@ -9,7 +9,7 @@ import * as ts from "../ts7/adapter.js";
 import { dirname, posix } from "node:path";
 import type { Lowerer } from "./lowerer.js";
 import { wasiGuestPath } from "../../wasi-paths.js";
-import { BOOL, CAUGHT, DYN, DYN_HANDLE_KINDS, F64, IrExpr, IrFunction, IrJsOp, IrLocal, IrRecordShape, IrStmt, IrType, JSVAL, NULL_T, REF_TRUTHY_KINDS, REGEX, RUNTIME_ERROR_CLASSES, SEARCH_PARAMS_T, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, canAdaptDynFuncTo, canBoxFuncIntoDyn, canDynCheckTo, funcOf, isJsonSafeType, isUnitType, jsOpResultKind, shapeHasAccessorSlots, typeEquals, typeKey, unionFuncSetArmsOk } from "../../ir/ir.js";
+import { BOOL, CAUGHT, DYN, DYN_HANDLE_KINDS, F64, IrExpr, IrFunction, IrJsOp, IrLocal, IrRecordShape, IrStmt, IrType, JSVAL, NULL_T, REF_TRUTHY_KINDS, REGEX, RUNTIME_ERROR_CLASSES, SEARCH_PARAMS_T, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, canAdaptDynFuncTo, canBoxFuncIntoDyn, canDynCheckTo, canExitIslandToType, funcOf, isJsonSafeType, isUnitType, jsOpResultKind, shapeHasAccessorSlots, typeEquals, typeKey, unionFuncSetArmsOk } from "../../ir/ir.js";
 import { cjsClassExprWholeExportOf, cjsExportAssignmentOf, cjsExportDiscardReason, isCjsExportTableLiteral, isCjsJsFile, isJsSourceFile, isModuleExportsAccess, isNodeEsmFile, locOf } from "../program.js";
 import { ARRAY_METHODS, builtinConstLit, builtinFenceHintOf, builtinModuleConstOf, builtinModulesArrayLit, builtinModuleFnOf, CompoundOp, ISLAND_SURFACE, isChildSurfaceMember, MAP_METHODS, NARROW_FIRST, SET_METHODS, STR_METHODS, UNSUPPORTED_EXPR, sideEffectFreeOptionValue, stdlibGlobalNameOf } from "./surfaces.js";
 import { UNSUPPORTED, blockedBindingUseDiag, recordShapeMismatchDiag, requiresDynamicPackageDiag, unsupportedDiag } from "../../diagnostics/diagnostic.js";
@@ -291,7 +291,26 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       (() => {
         const ctxTs = lowerer.checker.getContextualType(expr);
         const mapped = (ctxTs ? lowerer.mapTypeOf(ctxTs) : null) ?? lowerer.mapTypeOf(lowerer.typeOf(expr));
-        if (mapped?.kind !== "jsval") return false;
+        if (mapped?.kind !== "jsval") {
+          // An OBJECT literal spreading an ISLAND value (`{ timeout: 1000,
+          // ...opts }` over an `any`/index-signature opts, --dynamic):
+          // no static record can hold the spread's runtime keys, so the
+          // literal builds in the engine, where the objSpread merge
+          // answers JS's last-wins exactly.
+          if (
+            !(
+              ts.isObjectLiteralExpression(expr) &&
+              lowerer.dynamic &&
+              expr.properties.some(
+                (p) =>
+                  ts.isSpreadAssignment(p) &&
+                  lowerer.mapTypeOf(lowerer.typeOf(p.expression))?.kind === "jsval",
+              )
+            )
+          ) {
+            return false;
+          }
+        }
         // The tsgo readonly-[] panic repair (see lowerArrayLiteral): an
         // EMPTY array literal under a const assertion is the empty tuple —
         // its `any` answer is a panicked query, not an island slot.
@@ -335,7 +354,23 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             });
           if (projectDeclared) {
             const own = lowerer.mapTypeOf(lowerer.typeOf(expr));
-            if (own?.kind === "record" || own?.kind === "array") return false;
+            if (own?.kind === "record" || own?.kind === "array") {
+              // EXCEPT a spread of an island or checked-dynamic value
+              // (`{ timeout: 1000, ...opts }` over an index-signature
+              // record, --dynamic): no static record can hold the
+              // spread's runtime keys, so the engine literal is the only
+              // honest build (the objSpread merge answers JS's last-wins).
+              const dynamicSpread =
+                ts.isObjectLiteralExpression(expr) &&
+                lowerer.dynamic &&
+                expr.properties.some(
+                  (p) =>
+                    ts.isSpreadAssignment(p) &&
+                    (lowerer.mapTypeOf(lowerer.typeOf(p.expression))?.kind === "jsval" ||
+                      lowerer.mapTypeOf(lowerer.typeOf(p.expression))?.kind === "dyn"),
+                );
+              if (!dynamicSpread) return false;
+            }
           }
         }
         return true;
@@ -407,7 +442,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           value: IrExpr,
           valueNode: ts.Node,
           into: IrExpr[][],
-        ): void => {
+        ): IrExpr | null => {
           const diagsBefore = lowerer.diags.length;
           let marshaled: IrExpr;
           try {
@@ -419,7 +454,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             // conditional spread owns the literal (getters cannot combine).
             const asGetter = value.type.kind !== "func" && spread === null;
             const fence = islandMemberFence(diagsBefore, err, valueNode, asGetter ? name.text : null);
-            if (fence === null) return; // registered as a fence getter — no data property
+            if (fence === null) return null; // registered as a fence getter — no data property
             marshaled = fence;
           }
           for (const args of into) {
@@ -430,8 +465,19 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             });
             args.push(marshaled);
           }
+          return marshaled;
         };
         const spreadSrcs: IrExpr[] = [];
+        // Source-order contributors (plain spreads and explicit data
+        // properties): a spread FOLLOWING an explicit property overwrites
+        // that property's keys (JS's last-wins), so the composition
+        // replays the literal in source order instead of props-last.
+        const ordered: ({ kind: "spread"; src: IrExpr; loc: SrcLoc } | {
+          kind: "prop";
+          name: string;
+          value: IrExpr;
+          loc: SrcLoc;
+        })[] = [];
         let sawPlainProp = false;
         for (const prop of expr.properties) {
           if (ts.isSpreadAssignment(prop)) {
@@ -467,14 +513,16 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             // JS's later-wins — which a spread after them would invert);
             // mixing with a conditional spread keeps the fence.
             if (cs === undefined || cs === null) {
-              if (sawPlainProp || spread) {
+              if (spread) {
                 lowerer.unsupported(
                   "SC1090",
                   prop,
                   "object spread after explicit properties (or mixed with a conditional spread) in an 'any'-typed object literal — spreads must come first",
                 );
               }
-              spreadSrcs.push(lowerer.jsvalIn(lowerer.lowerExpr(prop.expression), prop.expression));
+              const src = lowerer.jsvalIn(lowerer.lowerExpr(prop.expression), prop.expression);
+              spreadSrcs.push(src);
+              ordered.push({ kind: "spread", src, loc: locOf(prop) });
               continue;
             }
             lowerer.unsupported(
@@ -526,7 +574,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             if (value === null) continue; // registered as a fence getter — no data property
           }
           if (value && name && (ts.isIdentifier(name) || ts.isStringLiteral(name))) {
-            pushProp(name, value, prop, [argsWithout, argsWith]);
+            const marshaled = pushProp(name, value, prop, [argsWithout, argsWith]);
+            if (marshaled !== null) {
+              ordered.push({ kind: "prop", name: name.text, value: marshaled, loc: locOf(name) });
+            }
           } else {
             lowerer.unsupported(
               "SC1090",
@@ -553,6 +604,42 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         if (!spread) {
           if (spreadSrcs.length === 0) {
             return withGetters({ kind: "jsOp", op: "objLit", args: argsWithout, type: JSVAL, loc });
+          }
+          // A spread FOLLOWING an explicit property (`{ timeout: 1000,
+          // ...opts }`): source order is the semantics — every
+          // contributor merges onto the fresh object later-wins (the
+          // engine's CopyDataProperties), so the spread's keys overwrite
+          // the properties written before it and later properties
+          // overwrite the spread's, exactly JS. A null/undefined spread
+          // source contributes nothing (the engine's own rule).
+          if (ordered[0]?.kind === "prop" && ordered.length > 1) {
+            let merged: IrExpr = { kind: "jsOp", op: "objLit", args: [], type: JSVAL, loc };
+            for (const c of ordered) {
+              if (c.kind === "spread") {
+                merged = { kind: "jsOp", op: "objSpread", args: [merged, c.src], type: JSVAL, loc };
+              } else {
+                merged = {
+                  kind: "jsOp",
+                  op: "objSpread",
+                  args: [
+                    merged,
+                    {
+                      kind: "jsOp",
+                      op: "objLit",
+                      args: [
+                        { kind: "jsMarshal", value: { kind: "strLit", value: c.name, type: STRING, loc: c.loc }, type: JSVAL, loc: c.loc },
+                        c.value,
+                      ],
+                      type: JSVAL,
+                      loc: c.loc,
+                    },
+                  ],
+                  type: JSVAL,
+                  loc,
+                };
+              }
+            }
+            return withGetters(merged);
           }
           // Plain spreads compose left to right onto a fresh object, the
           // explicit properties merging LAST (JS's later-wins): spread
@@ -3948,6 +4035,47 @@ export function lowerOptionalChain(lowerer: Lowerer, expr: ts.CallExpression | t
           const w = lowerer.widthCoerce(src, type);
           if (w) src = w;
         }
+        // A CHECKED-DYNAMIC source: the JS iteration protocol packs it
+        // ONCE (dyn.iterPack — arrays element-by-element, strings by code
+        // point, bytes by byte; every other runtime kind throws V8's
+        // TypeError, exactly JS), then the pack validates into the
+        // literal's element type per element (dynCheck) and the spread
+        // machinery copies it like any array source.
+        if (src.type.kind === "dyn") {
+          if (!canDynCheckTo(type, (id) => lowerer.shapes.get(id), (id) => lowerer.unions.get(id))) {
+            lowerer.unsupported(
+              "SC1090",
+              el,
+              `spreading 'any' into a '${lowerer.fmt(type)}' literal (the element type has no checked-dynamic conversion)`,
+            );
+          }
+          src = {
+            kind: "dynCheck",
+            value: {
+              kind: "libCall",
+              fn: "dyn.iterPack",
+              args: [src, { kind: "strLit", value: "spread source", type: STRING, loc: locOf(el) }],
+              type: DYN,
+              loc: locOf(el),
+            },
+            type,
+            loc: locOf(el),
+          };
+        }
+        // An ISLAND source: the engine array exits as a validated
+        // per-element copy into the literal's element type (jsExit —
+        // JSON-safe element types only), and the spread machinery copies
+        // it like any array source.
+        if (src.type.kind === "jsval") {
+          if (!canExitIslandToType(type, (id) => lowerer.shapes.get(id), (id) => lowerer.unions.get(id))) {
+            lowerer.unsupported(
+              "SC1090",
+              el,
+              `spreading 'any' into a '${lowerer.fmt(type)}' literal (the element type cannot exit the engine)`,
+            );
+          }
+          src = { kind: "jsExit", value: src, type, loc: locOf(el) };
+        }
         if (!typeEquals(src.type, type)) {
           lowerer.unsupported(
             "SC1090",
@@ -4717,8 +4845,21 @@ export function lowerObjectLiteral(lowerer: Lowerer, expr: ts.ObjectLiteralExpre
     // PropertyDescriptorMap argument of Object.defineProperties, nested
     // descriptor records with `any` values) — builds as a dyn OBJECT:
     // each field converts through the usual dyn boundary, and dynamic
-    // consumers ride the keyed-dyn paths. TypeScript keeps the fence.
-    if ((!mapped || mapped.kind === "dyn") && isJsSourceFile(expr.getSourceFile())) {
+    // consumers ride the keyed-dyn paths. TypeScript keeps the fence —
+    // EXCEPT when a spread operand is itself a checked-dynamic value
+    // (`{ timeout: 1000, ...opts }` over an index-signature record):
+    // no static record can hold the spread's runtime keys, so the whole
+    // literal builds in the checked-dynamic tree under --dynamic, where
+    // the dyn.assign merge answers JS's last-wins exactly.
+    if (
+      ((!mapped || mapped.kind === "dyn") && isJsSourceFile(expr.getSourceFile())) ||
+      (lowerer.dynamic &&
+        expr.properties.some(
+          (p) =>
+            ts.isSpreadAssignment(p) &&
+            lowerer.mapTypeOf(lowerer.typeOf(p.expression))?.kind === "dyn",
+        ))
+    ) {
       return lowerDynObjectLiteral(lowerer, expr);
     }
     if (!mapped || mapped.kind !== "record") lowerer.badType(expr, tsType);

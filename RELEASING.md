@@ -5,7 +5,7 @@ Releases are manual, single-commit affairs. The maintainer controls the changelo
 To prepare a release:
 
 1. Bump the version in `packages/cli/package.json`
-2. Run `node scripts/sync-versions.mjs` to stamp the same version into `packages/runtime`, `packages/llvm-darwin-arm64`, and `packages/compiler`, then `pnpm manifest` to restamp `packages/compiler/surface-manifest.json` with the new version, and commit both (the test suite's staleness guard fails on a version drift)
+2. Run `node scripts/sync-versions.mjs` to stamp the same version into `packages/runtime`, `packages/runtime-darwin-arm64`, `packages/llvm-darwin-arm64`, and `packages/compiler`, then `pnpm manifest` to restamp `packages/compiler/surface-manifest.json` with the new version, and commit both (the test suite's staleness guard fails on a version drift)
 3. Fold the `## Unreleased` section of `CHANGELOG.md` into a new `## <version>` entry (newest first, below `## Unreleased`), and leave `## Unreleased` empty for the next cycle
 4. Wrap the new entry in `<!-- release:start -->` and `<!-- release:end -->` markers; this marked block is also the GitHub release body
 5. Remove the `<!-- release:start -->` and `<!-- release:end -->` markers from the previous release entry; only the latest release should have markers

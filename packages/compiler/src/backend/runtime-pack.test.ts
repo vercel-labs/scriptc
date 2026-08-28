@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { compilerReleaseVersion } from "../library/sidecar.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
   effectiveRuntimeFeatures,
@@ -12,6 +13,8 @@ import {
   type RuntimePackManifest,
 } from "./runtime-pack.js";
 import { MACOS_ARM64_TARGET } from "./targets.js";
+
+const VERSION = compilerReleaseVersion();
 
 const BASE: NativeLinkFeatures = {
   dynamic: false,
@@ -50,7 +53,7 @@ async function fixture() {
   const packagePath = join(root, "package.json");
   await writeFile(packagePath, JSON.stringify({
     name: "@scriptc/runtime-darwin-arm64",
-    version: "0.0.35",
+    version: VERSION,
   }));
   const artifact = async (path: string, bytes: string) => {
     const output = join(root, path);
@@ -81,7 +84,7 @@ async function fixture() {
     schema: "scriptc.runtime-pack.v1",
     format: 1,
     package: "@scriptc/runtime-darwin-arm64",
-    version: "0.0.35",
+    version: VERSION,
     target: {
       name: "macos-arm64",
       llvm_triple: "arm64-apple-macosx14.0.0",

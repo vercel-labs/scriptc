@@ -5554,6 +5554,13 @@ export function isIslandCallbackParamType(
   getUnion: (unionId: string) => IrUnionDef | undefined,
 ): boolean {
   if (t.kind === "jsval") return true;
+  // The %Error callback param (the EventEmitter-style boundary: a package
+  // API's `(err: Error) => void` handler crossing into the island): the
+  // engine argument converts through the boundary-thunk extraction — a
+  // real engine Error or the %error-encoded data object — exactly the
+  // dynCheck %Error domain, so a lying argument throws the catchable
+  // TypeError at the call.
+  if (t.kind === "object" && t.className === "%Error") return true;
   if (isJsonSafeType(t, getRecord, getUnion)) return true;
   if (t.kind === "union") {
     // A bare undefined-armed union: every non-undefined arm must be

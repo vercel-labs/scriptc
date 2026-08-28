@@ -1402,6 +1402,51 @@ ScrDyn *scr_dyn_from_jsval(ScrJsval *cell) {
   return scr_dyn_alloc_jsval(scr_jsval_retain(cell), &isl_dynjs_ops);
 }
 
+/* The boundary-thunk %Error extraction: an island host-call argument
+ * validated as the callback's declared 'Error' parameter (the
+ * EventEmitter-style boundary — dbPool.on('error', (err) => ...)). A real
+ * engine Error instance reads name/message/code in the engine; the
+ * %error-encoded DATA object (a native error that entered the island as
+ * data) rebuilds the same way. The kind resolves from the name, so a
+ * later `instanceof TypeError` still answers. Anything else throws the
+ * catchable TypeError — the boundary's trust-but-verify rule. Returns +1,
+ * or NULL with the exception pending. */
+ScrError *scr_error_from_jsval(ScrJsval *cell) {
+  isl_entry();
+  JSValue v = cell->v;
+  if (!JS_IsError(v)) {
+    JSValue marker = JS_GetPropertyStr(isl_ctx, v, "%error");
+    bool ok = !JS_IsException(marker) && !JS_IsUndefined(marker) && !JS_IsNull(marker);
+    JS_FreeValue(isl_ctx, marker);
+    if (!ok) {
+      static const char bad[] = "expected an Error value";
+      scr_throw_error_msg(SCR_ERR_TYPE, bad, sizeof bad - 1);
+      return NULL;
+    }
+  }
+  ScrStr *name = isl_prop_str(v, "name", "Error");
+  ScrStr *message = isl_prop_str(v, "message", "");
+  int k = SCR_ERR_ERROR;
+  if (name->len == 9 && memcmp(name->data, "TypeError", 9) == 0) k = SCR_ERR_TYPE;
+  else if (name->len == 10 && memcmp(name->data, "RangeError", 10) == 0) k = SCR_ERR_RANGE;
+  else if (name->len == 11 && memcmp(name->data, "SyntaxError", 11) == 0) k = SCR_ERR_SYNTAX;
+  ScrError *e = scr_error_new(k, message);
+  scr_str_release(message); /* scr_error_new retained a copy */
+  scr_str_release(e->name);
+  e->name = name; /* moves */
+  JSValue code = JS_GetPropertyStr(isl_ctx, v, "code");
+  if (!JS_IsException(code) && !JS_IsUndefined(code) && !JS_IsNull(code)) {
+    size_t cl = 0;
+    const char *cs = JS_ToCStringLen(isl_ctx, &cl, code);
+    if (cs) {
+      e->code = scr_str_new(cs, cl);
+      JS_FreeCString(isl_ctx, cs);
+    }
+  }
+  JS_FreeValue(isl_ctx, code);
+  return e;
+}
+
 /* ── operators (through the pinned prelude helpers) ───────────────────── */
 
 ScrJsval *scr_jsval_binop(int op, ScrJsval *a, ScrJsval *b) {
@@ -3143,7 +3188,7 @@ static JSValue isl_host_zlib(JSContext *ctx, JSValueConst this_val, int argc,
   JS_ToInt32(ctx, &deflating, argv[0]);
   JS_ToInt32(ctx, &mode, argv[2]);
   JS_ToFloat64(ctx, &level, argv[3]);
-  if ((deflating ? isl_zlib_deflate : isl_zlib_inflate) == NULL) {
+  if (deflating ? isl_zlib_deflate == NULL : isl_zlib_inflate == NULL) {
     return JS_ThrowReferenceError(ctx, "zlib is not linked into this binary");
   }
   size_t len = 0;
@@ -3151,8 +3196,9 @@ static JSValue isl_host_zlib(JSContext *ctx, JSValueConst this_val, int argc,
   if (!data && len) return JS_EXCEPTION;
   ScrBytes *in = scr_bytes_new(SCR_BYTES_U8, (double)len);
   memcpy(in->data, data, len);
-  ScrBytes *out = deflating ? isl_zlib_deflate(in, (double)mode, level)
-                            : isl_zlib_inflate(in, (double)mode);
+  ScrBytes *out;
+  if (deflating) out = isl_zlib_deflate(in, (double)mode, level);
+  else out = isl_zlib_inflate(in, (double)mode);
   scr_bytes_release(in);
   if (!out) return isl_throw_pending(ctx);
   JSValue r = JS_NewUint8ArrayCopy(ctx, out->data, (size_t)scr_bytes_len(out));

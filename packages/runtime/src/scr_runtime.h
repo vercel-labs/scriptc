@@ -3302,6 +3302,10 @@ ScrDyn *scr_dyn_from_error(const ScrError *e);
  * out-and-back crossings compare reference-equal); alien %error objects
  * rebuild once and enter the cache. Borrows d. */
 ScrError *scr_error_from_dyn(const ScrDyn *d); /* scr_async_dyn.c (gated) */
+/* The island boundary-thunk's %Error extraction (scr_island.c, gated on
+ * the island): an engine Error instance or the %error-encoded data object
+ * converts to the native error. +1, or NULL with the TypeError pending. */
+ScrError *scr_error_from_jsval(ScrJsval *cell);
 /* The cache's runtime-internal access pair (scr_json.c owns the storage;
  * the gated extraction reads/writes through these). */
 ScrError *scr_errdyn_err_of(const ScrDyn *d); /* +1 or NULL */

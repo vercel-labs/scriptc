@@ -2,7 +2,7 @@ import { InternalCompilerError } from "./errors.js";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, compilerDriverSupportsPersistentCache, configuredTargetPlatform, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform, toolchainEnvironmentCachePolicy, toolchainEnvironmentFingerprint } from "./backend/native-toolchain.js";
+import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, compilerDriverSupportsPersistentCache, configuredTargetPlatform, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform, toolchainEnvironmentCachePolicy, toolchainEnvironmentFingerprint, type NativeArtifactDependency } from "./backend/native-toolchain.js";
 import { emitCModule } from "./backend/c/c-emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
 import { emitNativeArtifact, NativeCodegenError } from "./backend/native-codegen.js";
@@ -1050,7 +1050,7 @@ async function compileExecutableNative(
   sanitize: boolean,
   ffi: FfiProfile | null,
   programSplit: ReturnType<typeof splitLlvmProgram> = null,
-  programObjectDependencies: readonly string[] = [],
+  programObjectDependencies: readonly NativeArtifactDependency[] = [],
   onArtifactReady?: NonNullable<Parameters<typeof compileC>[0]["onArtifactReady"]>,
 ): Promise<void> {
   const programIsObject = /\.(?:o|obj)$/.test(cPath);
@@ -1160,7 +1160,7 @@ async function emitNativeProgramObject(
   entryPath: string,
   opts: CompileRequestOptions,
   llvm: string,
-): Promise<{ linkPath: string; artifactPath: string; dependencyPaths: string[] }> {
+): Promise<{ linkPath: string; artifactPath: string; dependencies: NativeArtifactDependency[] }> {
   const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const artifactPath = join(opts.outDir, `${stem}.helper.o`);
   // compileExecutableNative recognizes object inputs by suffix. The random
@@ -1176,7 +1176,7 @@ async function emitNativeProgramObject(
       optimization: opts.optimization === "dev" ? "0" : "2",
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
     });
-    return { linkPath, artifactPath, dependencyPaths: artifact.dependencyPaths };
+    return { linkPath, artifactPath, dependencies: artifact.dependencies };
   } catch (error) {
     await rm(linkPath, { force: true }).catch(() => undefined);
     throw error;
@@ -1390,7 +1390,7 @@ async function compileTracked(
     let nativeProgramObject: {
       linkPath: string;
       artifactPath: string;
-      dependencyPaths: string[];
+      dependencies: NativeArtifactDependency[];
     } | null = null;
     const useRuntimePack = opts.nativeProgramObject === true ||
       usesPrecompiledRuntimePack(opts, earlyHit.native.backend);
@@ -1424,7 +1424,7 @@ async function compileTracked(
         opts.sanitize ?? false,
         ffi,
         null,
-        nativeProgramObject?.dependencyPaths,
+        nativeProgramObject?.dependencies,
         opts.nativeProgramObject === true ? undefined : async ({ dependencies }) => {
           await publishEarlyExecutableCache(cacheRoot, executableCacheOptions, {
             ...earlyHit,
@@ -1719,7 +1719,7 @@ async function compileTracked(
   let nativeProgramObject: {
     linkPath: string;
     artifactPath: string;
-    dependencyPaths: string[];
+    dependencies: NativeArtifactDependency[];
   } | null = null;
   try {
     const useRuntimePack = opts.nativeProgramObject === true ||
@@ -1746,7 +1746,7 @@ async function compileTracked(
       opts.sanitize ?? false,
       ffi,
       programSplit,
-      nativeProgramObject?.dependencyPaths,
+      nativeProgramObject?.dependencies,
       opts.nativeProgramObject === true ? undefined : async ({ dependencies }) => {
         await publishEarlyExecutableCache(cacheRoot, executableCacheOptions, {
           cPath,

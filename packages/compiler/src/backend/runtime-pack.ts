@@ -111,6 +111,8 @@ export interface RuntimeLinkPlan {
   systemLibraries: string[];
   driverFlags: string[];
   dependencyPaths: string[];
+  /** Inputs already snapshotted by the stage that produced the program object. */
+  programObjectDependencies: NativeArtifactDependency[];
   runtimePack: RuntimePackSelection;
 }
 
@@ -412,7 +414,7 @@ export async function createRuntimeLinkPlan(options: {
   features: NativeLinkFeatures;
   ffi: FfiProfile | null;
   optimization: "release" | "dev";
-  programObjectDependencies?: readonly string[];
+  programObjectDependencies?: readonly NativeArtifactDependency[];
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
 }): Promise<RuntimeLinkPlan> {
@@ -436,9 +438,9 @@ export async function createRuntimeLinkPlan(options: {
     ],
     dependencyPaths: [
       ...runtimePack.dependencyPaths,
-      ...(options.programObjectDependencies ?? []),
       ...(options.ffi?.libraries ?? []),
     ],
+    programObjectDependencies: [...(options.programObjectDependencies ?? [])],
     runtimePack,
   };
 }
@@ -530,22 +532,26 @@ export async function linkRuntimePackExecutable(
       ...plan.systemLibraries.map((name) => `-l${name}`),
       "-o", privateOut,
     ];
-    // The pack dependency snapshots bracket both verification passes and the
-    // private staging copy. Snapshot the remaining cache-bearing inputs before
-    // the linker consumes them, then require the complete set to remain stable
-    // through publication.
-    const packDependencyPaths = new Set(
-      plan.runtimePack.sourceDependencies.map((dependency) => resolve(dependency.path)),
+    // The pack snapshots bracket both verification passes and private staging;
+    // the program-object snapshot begins before helper emission. Snapshot the
+    // remaining cache-bearing inputs before the linker consumes them, then
+    // require the complete set to remain stable through publication.
+    const inheritedDependencies = [
+      ...plan.runtimePack.sourceDependencies,
+      ...plan.programObjectDependencies,
+    ];
+    const inheritedDependencyPaths = new Set(
+      inheritedDependencies.map((dependency) => resolve(dependency.path)),
     );
     const additionalDependencyPaths = plan.dependencyPaths.filter(
-      (path) => !packDependencyPaths.has(resolve(path)),
+      (path) => !inheritedDependencyPaths.has(resolve(path)),
     );
     const preLinkDependencies = options.onArtifactReady === undefined ||
-        !(await nativeArtifactDependenciesStillMatch(plan.runtimePack.sourceDependencies).catch(() => false))
+        !(await nativeArtifactDependenciesStillMatch(inheritedDependencies).catch(() => false))
       ? null
       : await linkToolchainDependencies(linkerPath)
         .then(async (toolchain) => [
-          ...plan.runtimePack.sourceDependencies,
+          ...inheritedDependencies,
           ...await snapshotDependencies([...toolchain, ...additionalDependencyPaths]),
         ])
         .catch(() => null);

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compilerReleaseVersion } from "../library/sidecar.js";
+import { snapshotNativeArtifactDependencies } from "./native-toolchain.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
   createRuntimeLinkPlan,
@@ -241,6 +242,47 @@ describe("runtime pack manifests", () => {
     expect(await readFile(runtimeObject, "utf8")).toBe("tampered");
   });
 
+  test("does not publish a cache proof from a stale program-object dependency snapshot", async () => {
+    const { root, packagePath } = await fixture();
+    const programObject = join(root, "program.o");
+    const helper = join(root, "helper");
+    const output = join(root, "program");
+    const linker = join(root, "linker.mjs");
+    await Promise.all([
+      writeFile(programObject, "program object"),
+      writeFile(helper, "helper before emission"),
+      writeFile(linker, [
+        "#!/usr/bin/env node",
+        'import { writeFileSync } from "node:fs";',
+        'const outputIndex = process.argv.indexOf("-o");',
+        'writeFileSync(process.argv[outputIndex + 1], "linked executable");',
+        "",
+      ].join("\n")),
+    ]);
+    await chmod(linker, 0o755);
+    const helperDependencies = await snapshotNativeArtifactDependencies([helper]);
+    await writeFile(helper, "helper replaced during emission");
+    const plan = await createRuntimeLinkPlan({
+      target: MACOS_ARM64_TARGET,
+      programObject,
+      outPath: output,
+      features: BASE,
+      ffi: null,
+      optimization: "release",
+      programObjectDependencies: helperDependencies,
+      resolver: () => packagePath,
+    });
+    let published = false;
+
+    await linkRuntimePackExecutable(plan, {
+      linker,
+      onArtifactReady: async () => { published = true; },
+    });
+
+    expect(await readFile(output, "utf8")).toBe("linked executable");
+    expect(published).toBe(false);
+  });
+
   test.runIf(process.platform === "darwin")(
     "does not publish an executable cache proof when a dependency changes during linking",
     async () => {
@@ -275,7 +317,7 @@ describe("runtime pack manifests", () => {
         features: BASE,
         ffi: null,
         optimization: "release",
-        programObjectDependencies: [dependency],
+        programObjectDependencies: await snapshotNativeArtifactDependencies([dependency]),
         resolver: () => packagePath,
       });
       let published = false;

@@ -154,10 +154,11 @@ $ pnpm test:sandbox
 ```
 
 The normal workspace build needs no local LLVM installation. To rebuild the
-optional macOS arm64 assembly/object helper, install CMake, Ninja, and
-Homebrew `llvm@22`, then run
-`pnpm --filter @scriptc/llvm-darwin-arm64 build:native`. The macOS full test
-suite also uses that generated helper.
+optional macOS arm64 native artifacts, install CMake, Ninja, and Homebrew
+`llvm@22`, then run
+`pnpm --filter @scriptc/llvm-darwin-arm64 build:native` and
+`pnpm --filter @scriptc/runtime-darwin-arm64 build:native`. The macOS full test
+suite also uses those generated artifacts.
 
 `pnpm test:sandbox` loads `.env.local`, preflights Vercel authentication and
 project access, and uses the managed `vercel/sandbox/universal` image by

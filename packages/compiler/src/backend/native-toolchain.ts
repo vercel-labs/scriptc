@@ -3472,6 +3472,15 @@ async function snapshotLocalArtifactDependencies(
   );
 }
 
+/** Capture exact filesystem identities for inputs produced outside the C
+ * toolchain but consumed by its cache proofs. Callers carry this snapshot
+ * forward so later stages can prove the same inputs remained installed. */
+export async function snapshotNativeArtifactDependencies(
+  dependencyPaths: readonly string[],
+): Promise<NativeArtifactDependency[]> {
+  return snapshotLocalArtifactDependencies(dependencyPaths);
+}
+
 export async function nativeArtifactDependenciesStillMatch(
   dependencies: readonly NativeArtifactDependency[],
 ): Promise<boolean> {

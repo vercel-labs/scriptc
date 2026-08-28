@@ -1334,6 +1334,18 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       if (isRequireMainFilename(lowerer, expr)) {
         return { kind: "strLit", value: lowerer.entry.fileName, type: STRING, loc };
       }
+      // `import.meta.url` — the ESM module URL: a per-MODULE compile-time
+      // constant over the containing file's location, the same stance as
+      // the CJS globals above (WASI bakes the guest-visible spelling).
+      // Only the `.url` member has a value representation; other
+      // import.meta members keep the unclaimed-surface fence.
+      if (ts.isMetaProperty(expr.expression) && expr.name.text === "url") {
+        const sf = expr.getSourceFile();
+        const fileName = lowerer.targetPlatform === "wasi"
+          ? wasiGuestPath(sf.fileName) ?? sf.fileName.replace(/\\/g, "/")
+          : sf.fileName;
+        return { kind: "strLit", value: "file://" + fileName, type: STRING, loc };
+      }
       // Optional chaining `a?.b`: the guard lowers here (a tag test around
       // the plain property lowering below); the handled marker keeps this
       // re-entrant dispatch from looping.

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { release as osRelease, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
 
@@ -35,13 +35,17 @@ describe.runIf(supported)("precompiled runtime executable builds", () => {
       "",
     ].join("\n"));
     await chmod(wrapper, 0o755);
-    await execFileAsync(process.execPath, [
+    const cliArgs = [
       "--import", tsxLoader, cliEntry, "build", entry, "-o", output,
-    ], {
+    ];
+    const env = {
+      ...process.env,
+      SCRIPTC_NO_CACHE: "1",
+      SCRIPTC_LINKER: wrapper,
+    };
+    await execFileAsync(process.execPath, cliArgs, {
       env: {
-        ...process.env,
-        SCRIPTC_NO_CACHE: "1",
-        SCRIPTC_LINKER: wrapper,
+        ...env,
       },
     });
     const args = JSON.parse(await readFile(log, "utf8")) as string[];
@@ -53,5 +57,11 @@ describe.runIf(supported)("precompiled runtime executable builds", () => {
     expect(args.some((arg) => arg.includes("runtime-darwin-arm64/artifacts"))).toBe(false);
     await expect(execFileAsync(output, [], { encoding: "utf8" }))
       .resolves.toMatchObject({ stdout: "precompiled runtime\n" });
+    const firstExecutable = await readFile(output);
+    const signature = await execFileAsync("codesign", ["-dvvv", output], { encoding: "utf8" });
+    expect(signature.stderr).toContain(`Identifier=${basename(output)}`);
+
+    await execFileAsync(process.execPath, cliArgs, { env });
+    expect(await readFile(output)).toEqual(firstExecutable);
   });
 });

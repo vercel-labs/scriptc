@@ -7,7 +7,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
-import { privateSiblingPath } from "./build-cache.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
   CcCompileError,
@@ -521,7 +520,13 @@ export async function linkRuntimePackExecutable(
 ): Promise<void> {
   const linker = options.linker ?? process.env["SCRIPTC_LINKER"] ?? "clang";
   const linkerPath = await resolveExecutable(linker);
-  const privateOut = privateSiblingPath(plan.outputPath, "runtime-pack-link");
+  // ld64 derives an ad-hoc signature identifier from the output basename.
+  // Keep that basename caller-visible while a private sibling directory gives
+  // the link its own inode and preserves an atomic same-filesystem install.
+  const privateOutRoot = await mkdtemp(
+    join(dirname(plan.outputPath), ".scriptc-runtime-pack-link-"),
+  );
+  const privateOut = join(privateOutRoot, basename(plan.outputPath));
   let stagedRoot: string | null = null;
   try {
     const staged = await stageRuntimePackArtifacts(plan.runtimePack);
@@ -583,7 +588,7 @@ export async function linkRuntimePackExecutable(
     );
   } finally {
     await Promise.all([
-      rm(privateOut, { force: true }).catch(() => undefined),
+      rm(privateOutRoot, { recursive: true, force: true }).catch(() => undefined),
       stagedRoot === null
         ? Promise.resolve()
         : rm(stagedRoot, { recursive: true, force: true }).catch(() => undefined),

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import { snapshotNativeArtifactDependencies } from "./native-toolchain.js";
@@ -240,6 +240,41 @@ describe("runtime pack manifests", () => {
 
     expect(await readFile(output, "utf8")).toBe("base");
     expect(await readFile(runtimeObject, "utf8")).toBe("tampered");
+  });
+
+  test("preserves the requested basename in the private linker output path", async () => {
+    const { root, packagePath } = await fixture();
+    const programObject = join(root, "program.o");
+    const output = join(root, "requested-name");
+    const linker = join(root, "linker.mjs");
+    await Promise.all([
+      writeFile(programObject, "program object"),
+      writeFile(linker, [
+        "#!/usr/bin/env node",
+        'import { writeFileSync } from "node:fs";',
+        'const outputIndex = process.argv.indexOf("-o");',
+        'const output = process.argv[outputIndex + 1];',
+        'writeFileSync(output, JSON.stringify(output));',
+        "",
+      ].join("\n")),
+    ]);
+    await chmod(linker, 0o755);
+    const plan = await createRuntimeLinkPlan({
+      target: MACOS_ARM64_TARGET,
+      programObject,
+      outPath: output,
+      features: BASE,
+      ffi: null,
+      optimization: "release",
+      resolver: () => packagePath,
+    });
+
+    await linkRuntimePackExecutable(plan, { linker });
+
+    const privateOutput = JSON.parse(await readFile(output, "utf8")) as string;
+    expect(privateOutput).not.toBe(output);
+    expect(basename(privateOutput)).toBe(basename(output));
+    expect(dirname(dirname(privateOutput))).toBe(dirname(output));
   });
 
   test("does not publish a cache proof from a stale program-object dependency snapshot", async () => {

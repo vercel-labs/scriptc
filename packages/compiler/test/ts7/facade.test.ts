@@ -591,7 +591,7 @@ export function f(input: number): number {
         return (nodes: Node | Node[]) => {
           if (Array.isArray(nodes) && nodes.includes(poison)) {
             panics++;
-            throw new Error("synthetic checker panic");
+            throw new Error("panic: synthetic checker panic");
           }
           return (value as (nodes: Node | Node[]) => unknown).call(target, nodes);
         };
@@ -650,6 +650,7 @@ export function f(pair: Pair<string, number>, list: string[]) {
   expect(raw.isTupleType(tupleType)).toBe(true);
 
   let panics = 0;
+  let failure = "panic: interface conversion: checker.TypeData is *checker.TypeReference, not checker.TupleType";
   const panicky = new Proxy(raw, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
@@ -657,9 +658,7 @@ export function f(pair: Pair<string, number>, list: string[]) {
         return (t: Type) => {
           if (t === tupleType || t === arrayType) {
             panics++;
-            throw new Error(
-              "panic: interface conversion: checker.TypeData is *checker.TypeReference, not checker.TupleType",
-            );
+            throw new Error(failure);
           }
           return (value as (t: Type) => boolean).call(target, t);
         };
@@ -680,4 +679,10 @@ export function f(pair: Pair<string, number>, list: string[]) {
   // Healthy object types through the same poisoned facade keep real answers.
   expect(facade.isTupleType(arrayType)).toBe(false);
   expect(facade.isArrayType(tupleType)).toBe(false);
+
+  // The fence is specifically for recognized checker panics; unrelated
+  // exceptions must remain visible to callers.
+  failure = "connection lost";
+  const uncaught = new CheckerFacade(panicky);
+  expect(() => uncaught.isTupleType(tupleType)).toThrowError("connection lost");
 });

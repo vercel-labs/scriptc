@@ -1,4 +1,5 @@
 import { InternalCompilerError } from "../../errors.js";
+import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 /* The checker facade: 5.9.3-shaped TypeChecker methods over 7.0.2's sync
  * client, built around the survey's feasibility verdict. Naive per-call use
  * of the 7.0.2 client costs 0.1-0.3 ms of IPC per query; the census counted
@@ -67,7 +68,8 @@ function withPanicFence<I, O>(
 ): (O | undefined)[] {
   try {
     return [...call(chunk as I[])];
-  } catch {
+  } catch (e) {
+    if (!isCheckerPanic(e)) throw e;
     if (chunk.length === 1) return [undefined];
     const mid = chunk.length >> 1;
     return [

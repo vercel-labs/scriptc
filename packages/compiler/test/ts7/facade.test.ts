@@ -623,3 +623,61 @@ test("autoPrefetch: false degrades to per-call queries (the escape hatch works)"
   for (const n of nodes) facade.getTypeAtLocation(n);
   expect(counts["getTypeAtLocation"]).toBe(20);
 });
+
+test("tuple/array predicate round-trips wear the panic fence (2726)", () => {
+  // A REFERENCE to a tuple alias instantiation is the shape that round-trips
+  // (the client-side shape check answers false there) — exactly where tsgo's
+  // TypeReference/TupleType interface-conversion panics live. The facade
+  // must degrade the panicked query to false, memoized, like a panicked
+  // batch item — not crash the query pass.
+  const w = buildTwoWorlds({
+    "tuples.ts": `
+type Pair<A, B> = [A, B];
+export function f(pair: Pair<string, number>, list: string[]) {
+  return [pair[0], list.length];
+}
+`,
+  }, host);
+  worlds.push(w);
+  const raw = w.p7.project.checker;
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const fn = sf.statements.find(ad.isFunctionDeclaration)!;
+  const direct = new CheckerFacade(raw);
+  const tupleType = direct.getTypeAtLocation(fn.parameters[0]!)!;
+  const arrayType = direct.getTypeAtLocation(fn.parameters[1]!)!;
+  expect(tupleType).toBeDefined();
+  expect(arrayType).toBeDefined();
+  expect(raw.isTupleType(tupleType)).toBe(true);
+
+  let panics = 0;
+  const panicky = new Proxy(raw, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop === "isTupleType" || prop === "isArrayType" || prop === "isArrayLikeType") {
+        return (t: Type) => {
+          if (t === tupleType || t === arrayType) {
+            panics++;
+            throw new Error(
+              "panic: interface conversion: checker.TypeData is *checker.TypeReference, not checker.TupleType",
+            );
+          }
+          return (value as (t: Type) => boolean).call(target, t);
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as Checker;
+  const facade = new CheckerFacade(panicky);
+  expect(facade.isTupleType(tupleType)).toBe(false);
+  expect(facade.isArrayType(arrayType)).toBe(false);
+  expect(facade.isArrayLikeType(arrayType)).toBe(false);
+  // Degraded answers memoize: the panicking query never repeats.
+  const warm = panics;
+  facade.isTupleType(tupleType);
+  facade.isArrayType(arrayType);
+  facade.isArrayLikeType(arrayType);
+  expect(panics).toBe(warm);
+  // Healthy object types through the same poisoned facade keep real answers.
+  expect(facade.isTupleType(arrayType)).toBe(false);
+  expect(facade.isArrayType(tupleType)).toBe(false);
+});

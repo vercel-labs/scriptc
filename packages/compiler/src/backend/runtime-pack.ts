@@ -340,6 +340,7 @@ export async function createRuntimeLinkPlan(options: {
   features: NativeLinkFeatures;
   ffi: FfiProfile | null;
   optimization: "release" | "dev";
+  programObjectDependencies?: readonly string[];
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
 }): Promise<RuntimeLinkPlan> {
@@ -363,6 +364,7 @@ export async function createRuntimeLinkPlan(options: {
     ],
     dependencyPaths: [
       ...runtimePack.dependencyPaths,
+      ...(options.programObjectDependencies ?? []),
       ...(options.ffi?.libraries ?? []),
     ],
     runtimePack,

@@ -1050,6 +1050,7 @@ async function compileExecutableNative(
   sanitize: boolean,
   ffi: FfiProfile | null,
   programSplit: ReturnType<typeof splitLlvmProgram> = null,
+  programObjectDependencies: readonly string[] = [],
   onArtifactReady?: NonNullable<Parameters<typeof compileC>[0]["onArtifactReady"]>,
 ): Promise<void> {
   const programIsObject = /\.(?:o|obj)$/.test(cPath);
@@ -1064,6 +1065,7 @@ async function compileExecutableNative(
       features,
       ffi,
       optimization: features.optimization ?? "release",
+      programObjectDependencies,
     });
     const cacheableLinker =
       onArtifactReady !== undefined && process.env["SCRIPTC_LINKER"] === undefined && ffi === null &&
@@ -1158,7 +1160,7 @@ async function emitNativeProgramObject(
   entryPath: string,
   opts: CompileRequestOptions,
   llvm: string,
-): Promise<{ linkPath: string; artifactPath: string }> {
+): Promise<{ linkPath: string; artifactPath: string; dependencyPaths: string[] }> {
   const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const artifactPath = join(opts.outDir, `${stem}.helper.o`);
   // compileExecutableNative recognizes object inputs by suffix. The random
@@ -1166,7 +1168,7 @@ async function emitNativeProgramObject(
   // it rather than attempting to compile it as source.
   const linkPath = `${privateSiblingPath(artifactPath, "native-program-object")}.o`;
   try {
-    await emitNativeArtifact({
+    const artifact = await emitNativeArtifact({
       outputPath: linkPath,
       llvm,
       outputKind: "obj",
@@ -1174,7 +1176,7 @@ async function emitNativeProgramObject(
       optimization: opts.optimization === "dev" ? "0" : "2",
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
     });
-    return { linkPath, artifactPath };
+    return { linkPath, artifactPath, dependencyPaths: artifact.dependencyPaths };
   } catch (error) {
     await rm(linkPath, { force: true }).catch(() => undefined);
     throw error;
@@ -1329,7 +1331,9 @@ async function compileTracked(
           ? null
           : { path: opts.ffiProfilePath, bytes: ffiProfileBytes },
       target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${
-        opts.nativeProgramObject === true || (
+        opts.nativeProgramObject === true
+          ? "helper-object"
+          : (
           opts.backend !== "c" && opts.sanitize !== true &&
           process.env["SCRIPTC_RUNTIME_PACK"] !== "0" &&
           process.env["SCRIPTC_FETCH_CURL"] !== "1" &&
@@ -1383,7 +1387,11 @@ async function compileTracked(
       };
     }
     let nativeInputPath = earlyHit.cPath;
-    let nativeProgramObject: { linkPath: string; artifactPath: string } | null = null;
+    let nativeProgramObject: {
+      linkPath: string;
+      artifactPath: string;
+      dependencyPaths: string[];
+    } | null = null;
     const useRuntimePack = opts.nativeProgramObject === true ||
       usesPrecompiledRuntimePack(opts, earlyHit.native.backend);
     if (useRuntimePack) {
@@ -1416,6 +1424,7 @@ async function compileTracked(
         opts.sanitize ?? false,
         ffi,
         null,
+        nativeProgramObject?.dependencyPaths,
         opts.nativeProgramObject === true ? undefined : async ({ dependencies }) => {
           await publishEarlyExecutableCache(cacheRoot, executableCacheOptions, {
             ...earlyHit,
@@ -1707,7 +1716,11 @@ async function compileTracked(
   }
   const executableCacheOptions = earlyCacheOptions;
   let publishedExecutable = false;
-  let nativeProgramObject: { linkPath: string; artifactPath: string } | null = null;
+  let nativeProgramObject: {
+    linkPath: string;
+    artifactPath: string;
+    dependencyPaths: string[];
+  } | null = null;
   try {
     const useRuntimePack = opts.nativeProgramObject === true ||
       usesPrecompiledRuntimePack(opts, backend);
@@ -1733,6 +1746,7 @@ async function compileTracked(
       opts.sanitize ?? false,
       ffi,
       programSplit,
+      nativeProgramObject?.dependencyPaths,
       opts.nativeProgramObject === true ? undefined : async ({ dependencies }) => {
         await publishEarlyExecutableCache(cacheRoot, executableCacheOptions, {
           cPath,

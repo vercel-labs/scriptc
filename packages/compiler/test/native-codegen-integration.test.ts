@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { release as osRelease, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -249,6 +249,63 @@ describe.runIf(supported)("LLVM native helper integration", () => {
       else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
       if (oldFatal === undefined) delete process.env["SCRIPTC_LLVM_TEST_FATAL"];
       else process.env["SCRIPTC_LLVM_TEST_FATAL"] = oldFatal;
+    }
+  });
+
+  test("helper-object validation does not reuse an ordinary runtime-pack executable entry", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-helper-cache-identity-"));
+    dirs.push(dir);
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    try {
+      process.env["SCRIPTC_CACHE_DIR"] = join(dir, "cache");
+      delete process.env["SCRIPTC_NO_CACHE"];
+      const entry = join(repoRoot, "tests/corpus/001-hello.ts");
+      const options = { outDir: dir, outPath: join(dir, "program"), backend: "llvm" as const };
+      const ordinary = await compile(entry, options);
+      if (!ordinary.ok) throw new Error(ordinary.diagnostics.map((d) => d.message).join("\n"));
+
+      const validation = await compile(entry, { ...options, nativeProgramObject: true });
+      if (!validation.ok) throw new Error(validation.diagnostics.map((d) => d.message).join("\n"));
+      expect((await stat(join(dir, "001-hello.helper.o"))).size).toBeGreaterThan(0);
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    }
+  });
+
+  test("runtime-pack executable proofs include the helper package and binary", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-helper-cache-proof-"));
+    dirs.push(dir);
+    const cache = join(dir, "cache");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    try {
+      process.env["SCRIPTC_CACHE_DIR"] = cache;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      const result = await compile(join(repoRoot, "tests/corpus/001-hello.ts"), {
+        outDir: dir,
+        outPath: join(dir, "program"),
+        backend: "llvm",
+      });
+      if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+
+      const stampName = (await readdir(join(cache, "early-exe"), { recursive: true }))
+        .find((path) => path.endsWith("stamp.json"));
+      expect(stampName).toBeDefined();
+      const stamp = JSON.parse(await readFile(join(cache, "early-exe", stampName!), "utf8")) as {
+        nativeDependencies: { path: string }[];
+      };
+      const dependencies = stamp.nativeDependencies.map((entry) => entry.path);
+      expect(dependencies).toContain(helperPackage);
+      expect(dependencies).toContain(join(dirname(helperPackage), "bin", "scriptc-llvm-codegen"));
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
     }
   });
 

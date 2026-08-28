@@ -50,8 +50,14 @@ interface HelperIdentity {
 }
 
 interface ResolvedHelper {
+  packageJsonPath: string;
   binaryPath: string;
   identity: HelperIdentity;
+}
+
+export interface NativeCodegenArtifact {
+  /** Installed package inputs whose identity selected and produced the artifact. */
+  dependencyPaths: string[];
 }
 
 const resolvedHelperCache = new Map<string, Promise<ResolvedHelper>>();
@@ -206,6 +212,7 @@ async function resolveHelper(
       );
     }
     return {
+      packageJsonPath,
       binaryPath,
       identity: {
         packageName: target.helperPackage,
@@ -262,7 +269,7 @@ async function installVerifiedCache(source: string, destination: string): Promis
   }
 }
 
-export async function emitNativeArtifact(options: NativeCodegenOptions): Promise<void> {
+export async function emitNativeArtifact(options: NativeCodegenOptions): Promise<NativeCodegenArtifact> {
   const target = options.target ?? nativeCodegenTarget();
   if (target === null) {
     throw new NativeCodegenError(
@@ -287,8 +294,11 @@ export async function emitNativeArtifact(options: NativeCodegenOptions): Promise
     ? null
     : join(root, "native-codegen-v1", key.slice(0, 2), `${key}.${options.outputKind === "obj" ? "o" : "s"}`);
   await mkdir(dirname(options.outputPath), { recursive: true });
+  const artifact = {
+    dependencyPaths: [helper.packageJsonPath, helper.binaryPath],
+  } satisfies NativeCodegenArtifact;
   if (cached !== null && await validCachedFile(cached) &&
-      await installVerifiedCache(cached, options.outputPath)) return;
+      await installVerifiedCache(cached, options.outputPath)) return artifact;
 
   const stage = privateSiblingPath(options.outputPath, `native-${options.outputKind}`);
   const input = privateSiblingPath(options.outputPath, "native-input");
@@ -320,6 +330,7 @@ export async function emitNativeArtifact(options: NativeCodegenOptions): Promise
     if (cached !== null) await publishCachedFile(stage, cached).catch(() => undefined);
     await rename(stage, options.outputPath);
     await pruneBuildCache(root);
+    return artifact;
   } finally {
     await Promise.all([
       rm(stage, { force: true }).catch(() => undefined),

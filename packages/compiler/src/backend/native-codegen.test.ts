@@ -76,14 +76,16 @@ test("resolves a package helper, emits atomically, and caches by all native inpu
   const pkg = await fakePackage();
   const first = join(pkg.root, "first.o");
   const second = join(pkg.root, "second.o");
-  await emitNativeArtifact(request(pkg.root, pkg.packageJson, first));
-  await emitNativeArtifact(request(pkg.root, pkg.packageJson, second));
+  const firstArtifact = await emitNativeArtifact(request(pkg.root, pkg.packageJson, first));
+  const secondArtifact = await emitNativeArtifact(request(pkg.root, pkg.packageJson, second));
   expect(await readFile(first, "utf8")).toContain("define i32 @answer");
   expect(await readFile(second)).toEqual(await readFile(first));
   const expectedMode = 0o666 & ~process.umask();
   expect((await stat(first)).mode & 0o777).toBe(expectedMode);
   expect((await stat(second)).mode & 0o777).toBe(expectedMode);
   expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
+  expect(firstArtifact.dependencyPaths).toEqual([pkg.packageJson, pkg.bin]);
+  expect(secondArtifact.dependencyPaths).toEqual(firstArtifact.dependencyPaths);
 });
 
 test("cache publication failures do not discard a valid requested artifact", async () => {

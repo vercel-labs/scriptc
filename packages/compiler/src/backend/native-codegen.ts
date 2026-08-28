@@ -5,7 +5,14 @@ import { createRequire } from "node:module";
 import { access, chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { buildCacheRoot, prepareBuildCacheRoot, pruneBuildCache } from "./native-toolchain.js";
+import {
+  buildCacheRoot,
+  nativeArtifactDependenciesStillMatch,
+  prepareBuildCacheRoot,
+  pruneBuildCache,
+  snapshotNativeArtifactDependencies,
+  type NativeArtifactDependency,
+} from "./native-toolchain.js";
 import {
   copyValidCachedFile,
   privateSiblingPath,
@@ -50,8 +57,15 @@ interface HelperIdentity {
 }
 
 interface ResolvedHelper {
+  packageJsonPath: string;
   binaryPath: string;
   identity: HelperIdentity;
+  dependencies: NativeArtifactDependency[];
+}
+
+export interface NativeCodegenArtifact {
+  /** Exact installed inputs observed before the helper identity and emission. */
+  dependencies: NativeArtifactDependency[];
 }
 
 const resolvedHelperCache = new Map<string, Promise<ResolvedHelper>>();
@@ -181,7 +195,17 @@ async function resolveHelper(
       "unusable_binary",
     );
   }
-  const cacheKey = `${binaryPath}\0${binaryStat.size}\0${binaryStat.mtimeMs}`;
+  let dependencies: NativeArtifactDependency[];
+  try {
+    dependencies = await snapshotNativeArtifactDependencies([packageJsonPath, binaryPath]);
+  } catch {
+    throw new NativeCodegenError(
+      "SC3003",
+      `LLVM native helper package ${target.helperPackage} changed while its inputs were being inspected; retry the build or reinstall scriptc`,
+      "helper_changed",
+    );
+  }
+  const cacheKey = JSON.stringify(dependencies);
   const load = async (): Promise<ResolvedHelper> => {
     let stdout: string;
     let binary: Buffer;
@@ -205,8 +229,17 @@ async function resolveHelper(
         "invalid_version_response",
       );
     }
+    if (!(await nativeArtifactDependenciesStillMatch(dependencies).catch(() => false))) {
+      throw new NativeCodegenError(
+        "SC3003",
+        `LLVM native helper package ${target.helperPackage} changed during its identity check; retry the build or reinstall scriptc`,
+        "helper_changed",
+      );
+    }
     return {
+      packageJsonPath,
       binaryPath,
+      dependencies,
       identity: {
         packageName: target.helperPackage,
         binaryDigest: createHash("sha256").update(binary).digest("hex"),
@@ -262,7 +295,7 @@ async function installVerifiedCache(source: string, destination: string): Promis
   }
 }
 
-export async function emitNativeArtifact(options: NativeCodegenOptions): Promise<void> {
+export async function emitNativeArtifact(options: NativeCodegenOptions): Promise<NativeCodegenArtifact> {
   const target = options.target ?? nativeCodegenTarget();
   if (target === null) {
     throw new NativeCodegenError(
@@ -287,8 +320,11 @@ export async function emitNativeArtifact(options: NativeCodegenOptions): Promise
     ? null
     : join(root, "native-codegen-v1", key.slice(0, 2), `${key}.${options.outputKind === "obj" ? "o" : "s"}`);
   await mkdir(dirname(options.outputPath), { recursive: true });
+  const artifact = {
+    dependencies: helper.dependencies,
+  } satisfies NativeCodegenArtifact;
   if (cached !== null && await validCachedFile(cached) &&
-      await installVerifiedCache(cached, options.outputPath)) return;
+      await installVerifiedCache(cached, options.outputPath)) return artifact;
 
   const stage = privateSiblingPath(options.outputPath, `native-${options.outputKind}`);
   const input = privateSiblingPath(options.outputPath, "native-input");
@@ -317,9 +353,13 @@ export async function emitNativeArtifact(options: NativeCodegenOptions): Promise
     // Cache publication is an optimization boundary. The helper has already
     // produced a valid caller artifact, so a read-only/full cache must not
     // discard it or turn an otherwise successful build into an exception.
-    if (cached !== null) await publishCachedFile(stage, cached).catch(() => undefined);
+    if (
+      cached !== null &&
+      await nativeArtifactDependenciesStillMatch(helper.dependencies).catch(() => false)
+    ) await publishCachedFile(stage, cached).catch(() => undefined);
     await rename(stage, options.outputPath);
     await pruneBuildCache(root);
+    return artifact;
   } finally {
     await Promise.all([
       rm(stage, { force: true }).catch(() => undefined),

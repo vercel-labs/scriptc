@@ -59,8 +59,10 @@ object, performs no link, and prints a versioned JSON recipe with the target,
 libraries. It never reports private scriptc cache paths. See
 <a href="/native-objects">Native Program Objects</a> for complete C-driver and
 direct-linker examples.
-<code>--emit=exe</code> is the default and retains the existing executable
-behavior.
+<code>--emit=exe</code> is the default. On macOS 15+ arm64, LLVM-tier builds
+emit the program object through the helper and link release-built runtime
+objects; explicit C, LLVM fallback, and sanitizer builds retain runtime C
+compilation.
 
 ## scriptc run
 
@@ -79,7 +81,7 @@ Analyzes the program without producing a binary and reports, statement by statem
 
 ## scriptc cache warm
 
-Prebuilds the release runtime objects and native TLS/dynamic-engine archives against the currently selected compiler, SDK, and target. npm installations run this best-effort automatically; use the explicit command when preparing a container image, CI runner, or installation whose lifecycle scripts were disabled. Pass one or more of `runtime`, `tls`, and `dynamic` to seed only those families. Warming applies to persistently cached native executable targets; WASI and mobile library targets report a target-level error. It also reports an error when mutable toolchain inputs have disabled persistent caching, rather than doing disposable work. The entries use the ordinary strict cache identities, and later builds still revalidate their compiler and dependency inputs.
+Prebuilds release runtime objects and native TLS/dynamic-engine archives for targets that still compile runtime C locally. macOS 15+ arm64 installations already carry the release-built runtime pack and skip automatic warming; older macOS hosts retain warming for the source-toolchain path. Use this command when preparing another supported target's container image or CI runner. Pass one or more of `runtime`, `tls`, and `dynamic` to seed only those families.
 
 ## Options
 
@@ -100,7 +102,7 @@ Prebuilds the release runtime objects and native TLS/dynamic-engine archives aga
   <dd>Bind signature-only TypeScript declarations to native C ABI symbols and link the manifest's archive, object, and system-library inputs. See <a href="/ffi">Native FFI</a>.</dd>
 
   <dt><code>--backend &lt;c|llvm&gt;</code></dt>
-  <dd>Code generator: <code>llvm</code> (default — emits LLVM IR text, compiled by the same clang) or <code>c</code> (the readable debugging backend). Unset, a native build can fall back to C when the program is outside the LLVM tier. The production <code>wasm32-wasi</code> target never falls back: a missing LLVM lowering is <code>SC3001</code>. Use <code>--backend c</code> explicitly only when inspecting generated C; on WASI that inspection lane accepts async-free programs only and reports <code>SC3001</code> for coroutine-dependent surfaces.</dd>
+  <dd>Code generator: <code>llvm</code> (default) or <code>c</code> (the readable debugging backend). On macOS arm64, LLVM-tier executable code generation uses the bundled helper and precompiled runtime pack before the platform link. Unset, a native build can fall back to C when the program is outside the LLVM tier. The production <code>wasm32-wasi</code> target never falls back: a missing LLVM lowering is <code>SC3001</code>.</dd>
 
   <dt><code>--npm-static &lt;pkg[,pkg…]|auto&gt;</code></dt>
   <dd>EXPERIMENTAL. Compile the named npm packages' shipped JS statically as program modules instead of embedding them for the engine (repeatable; <code>auto</code> opts in every eligible direct import). A package the preflight refuses falls back to the island with a coverage-report note. See <a href="/dependencies">npm Dependencies</a> for maturity notes.</dd>
@@ -154,7 +156,7 @@ fib-linux: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically
 
 ## Backends
 
-The default backend emits textual LLVM IR, compiled by the same clang that links the runtime. On native targets, a program outside that tier is never miscompiled—the build falls back to the C backend transparently and says so in one stderr line. The production <code>wasm32-wasi</code> target uses LLVM's 32-bit ABI path and never falls back; an LLVM coverage gap is a build diagnostic. Dynamic npm embedding is LLVM surface on every target.
+The default backend emits textual LLVM IR. On macOS arm64 it is lowered to an object by the bundled helper and linked with the precompiled runtime pack; other executable targets retain their existing toolchain path. A program outside the LLVM tier is never miscompiled—the native build falls back to the C backend transparently and says so in one stderr line. The production <code>wasm32-wasi</code> target uses LLVM's 32-bit ABI path and never falls back; an LLVM coverage gap is a build diagnostic. Dynamic npm embedding is LLVM surface on every target.
 
 The C backend is a debugging aid: deliberately readable, source-line-annotated output with differential tests against LLVM wherever the two overlap. Pin it when you want to inspect what your program became:
 

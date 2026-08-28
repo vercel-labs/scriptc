@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { emitNativeArtifact, NativeCodegenError } from "./native-codegen.js";
+import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
 import { MACOS_ARM64_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 
@@ -17,6 +18,7 @@ async function fakePackage(options: {
   emitFailure?: boolean;
   emptyOutput?: boolean;
   missingOutput?: boolean;
+  changePackageDuringEmit?: boolean;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-native-helper-test-"));
   dirs.push(root);
@@ -48,6 +50,7 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = --input ]; then input="$2"; shift 2; continue; fi
   shift
 done
+${options.changePackageDuringEmit === true ? `printf '\\n' >> '${packageJson}'` : ""}
 ${options.emitFailure === true
     ? "printf '%s\\n' '{\"ok\":false,\"code\":\"verification_failed\",\"message\":\"bad module\"}' >&2; exit 1"
     : options.emptyOutput === true
@@ -76,14 +79,32 @@ test("resolves a package helper, emits atomically, and caches by all native inpu
   const pkg = await fakePackage();
   const first = join(pkg.root, "first.o");
   const second = join(pkg.root, "second.o");
-  await emitNativeArtifact(request(pkg.root, pkg.packageJson, first));
-  await emitNativeArtifact(request(pkg.root, pkg.packageJson, second));
+  const firstArtifact = await emitNativeArtifact(request(pkg.root, pkg.packageJson, first));
+  const secondArtifact = await emitNativeArtifact(request(pkg.root, pkg.packageJson, second));
   expect(await readFile(first, "utf8")).toContain("define i32 @answer");
   expect(await readFile(second)).toEqual(await readFile(first));
   const expectedMode = 0o666 & ~process.umask();
   expect((await stat(first)).mode & 0o777).toBe(expectedMode);
   expect((await stat(second)).mode & 0o777).toBe(expectedMode);
   expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
+  expect(firstArtifact.dependencies.map((dependency) => dependency.path)).toEqual([
+    pkg.bin,
+    pkg.packageJson,
+  ].sort());
+  expect(secondArtifact.dependencies).toEqual(firstArtifact.dependencies);
+});
+
+test("returns the pre-emission helper snapshot when its package changes during emission", async () => {
+  const pkg = await fakePackage({ changePackageDuringEmit: true });
+
+  const artifact = await emitNativeArtifact(request(pkg.root, pkg.packageJson));
+
+  expect(await readFile(join(pkg.root, "program.o"), "utf8")).toContain("define i32 @answer");
+  expect(await nativeArtifactDependenciesStillMatch(artifact.dependencies)).toBe(false);
+  expect(await stat(join(pkg.root, "cache", "native-codegen-v1")).then(
+    () => true,
+    () => false,
+  )).toBe(false);
 });
 
 test("cache publication failures do not discard a valid requested artifact", async () => {

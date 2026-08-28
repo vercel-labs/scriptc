@@ -2111,7 +2111,7 @@ function isAppleSystemClangHandoff(
  * can safely represent that behavior. Accept direct Clang/Zig drivers (plus
  * Apple's system shim) and conservatively keep wrapper-driven builds on the
  * uncached path. */
-async function compilerDriverSupportsPersistentCache(
+export async function compilerDriverSupportsPersistentCache(
   driver: Pick<CcDriver, "argv" | "targetArgs" | "target">,
   environmentFingerprint: string,
 ): Promise<boolean> {
@@ -3210,6 +3210,22 @@ function implicitLinkerFingerprint(
   );
 }
 
+/** Resolve the exact files consumed by one compiler-driver link invocation.
+ * Runtime packs reuse the native toolchain's strict dry-run plus real linker
+ * trace so a PATH-selected Clang carries its own linker, SDK, compiler
+ * runtime, and injected inputs into the executable cache proof. */
+export async function nativeLinkerDependencyPaths(
+  linker: string,
+  linkArgs: readonly string[],
+): Promise<string[]> {
+  const fingerprint = await implicitLinkerFingerprint(
+    { argv: [linker], targetArgs: [], target: null },
+    toolchainEnvironmentFingerprint(),
+    linkArgs,
+  );
+  return fingerprintDependencyPaths(fingerprint);
+}
+
 let ccacheMemo: Promise<boolean> | null = null;
 
 /** Reset process observations whose validity is bounded to one public native
@@ -3470,6 +3486,15 @@ async function snapshotLocalArtifactDependencies(
       )
     ),
   );
+}
+
+/** Capture exact filesystem identities for inputs produced outside the C
+ * toolchain but consumed by its cache proofs. Callers carry this snapshot
+ * forward so later stages can prove the same inputs remained installed. */
+export async function snapshotNativeArtifactDependencies(
+  dependencyPaths: readonly string[],
+): Promise<NativeArtifactDependency[]> {
+  return snapshotLocalArtifactDependencies(dependencyPaths);
 }
 
 export async function nativeArtifactDependenciesStillMatch(

@@ -16,7 +16,7 @@ if (typeof version !== "string" || version.length === 0) {
   process.exit(1);
 }
 
-for (const pkg of ["runtime", "compiler", "llvm-darwin-arm64"]) {
+for (const pkg of ["runtime", "runtime-darwin-arm64", "compiler", "llvm-darwin-arm64"]) {
   const path = manifest(pkg);
   const json = read(path);
   if (json.version === version) {

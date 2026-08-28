@@ -79,9 +79,9 @@ jobs:
 
       # Publishing uses npm trusted publishing (OIDC): the job's id-token
       # permission lets npm mint short-lived credentials, so no npm token
-      # secret exists anywhere in this repo. All four packages —
-      # @scriptc/runtime, @scriptc/llvm-darwin-arm64, @scriptc/compiler,
-      # and scriptc — must each be
+      # secret exists anywhere in this repo. All five packages —
+      # @scriptc/runtime, @scriptc/runtime-darwin-arm64,
+      # @scriptc/llvm-darwin-arm64, @scriptc/compiler, and scriptc — must each be
       # configured on npmjs.com with a GitHub Actions trusted publisher
       # pointing at repository vercel-labs/scriptc, workflow release.yml,
       # environment Release. A package missing that configuration fails
@@ -92,12 +92,13 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm --filter @scriptc/llvm-darwin-arm64 build:native
+          pnpm --filter @scriptc/runtime-darwin-arm64 build:native
           pnpm -r build
 
       - name: Check version sync
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
-          for pkg in packages/runtime packages/llvm-darwin-arm64 packages/compiler packages/cli; do
+          for pkg in packages/runtime packages/runtime-darwin-arm64 packages/llvm-darwin-arm64 packages/compiler packages/cli; do
             V=$(node -p "require('./$pkg/package.json').version")
             if [ "$V" != "$VERSION" ]; then
               echo "Version mismatch: $pkg is $V, expected $VERSION"
@@ -149,6 +150,7 @@ jobs:
           }
 
           publish_dir packages/runtime
+          publish_dir packages/runtime-darwin-arm64
           publish_dir packages/llvm-darwin-arm64 "$HELPER_TARBALL"
           publish_dir packages/compiler
           publish_dir packages/cli

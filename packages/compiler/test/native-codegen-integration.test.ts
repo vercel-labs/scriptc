@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { release as osRelease, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -249,6 +249,199 @@ describe.runIf(supported)("LLVM native helper integration", () => {
       else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
       if (oldFatal === undefined) delete process.env["SCRIPTC_LLVM_TEST_FATAL"];
       else process.env["SCRIPTC_LLVM_TEST_FATAL"] = oldFatal;
+    }
+  });
+
+  test("helper-object validation does not reuse an ordinary runtime-pack executable entry", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-helper-cache-identity-"));
+    dirs.push(dir);
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    try {
+      process.env["SCRIPTC_CACHE_DIR"] = join(dir, "cache");
+      delete process.env["SCRIPTC_NO_CACHE"];
+      const entry = join(repoRoot, "tests/corpus/001-hello.ts");
+      const options = { outDir: dir, outPath: join(dir, "program"), backend: "llvm" as const };
+      const ordinary = await compile(entry, options);
+      if (!ordinary.ok) throw new Error(ordinary.diagnostics.map((d) => d.message).join("\n"));
+
+      const validation = await compile(entry, { ...options, nativeProgramObject: true });
+      if (!validation.ok) throw new Error(validation.diagnostics.map((d) => d.message).join("\n"));
+      expect((await stat(join(dir, "001-hello.helper.o"))).size).toBeGreaterThan(0);
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    }
+  });
+
+  test("runtime-pack executable proofs include the helper package and binary", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-helper-cache-proof-"));
+    dirs.push(dir);
+    const cache = join(dir, "cache");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    try {
+      process.env["SCRIPTC_CACHE_DIR"] = cache;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      const result = await compile(join(repoRoot, "tests/corpus/001-hello.ts"), {
+        outDir: dir,
+        outPath: join(dir, "program"),
+        backend: "llvm",
+      });
+      if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+
+      const stampName = (await readdir(join(cache, "early-exe"), { recursive: true }))
+        .find((path) => path.endsWith("stamp.json"));
+      expect(stampName).toBeDefined();
+      const stamp = JSON.parse(await readFile(join(cache, "early-exe", stampName!), "utf8")) as {
+        nativeDependencies: { path: string }[];
+      };
+      const dependencies = stamp.nativeDependencies.map((entry) => entry.path);
+      expect(dependencies).toContain(helperPackage);
+      expect(dependencies).toContain(join(dirname(helperPackage), "bin", "scriptc-llvm-codegen"));
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    }
+  });
+
+  test("runtime-pack FFI system libraries are relinked after an in-place rebuild", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-ffi-cache-"));
+    dirs.push(dir);
+    const entry = join(dir, "main.ts");
+    const profile = join(dir, "ffi.json");
+    const source = join(dir, "probe.c");
+    const object = join(dir, "probe.o");
+    const library = join(dir, "libscriptc_cache_probe.a");
+    const cache = join(dir, "cache");
+    const output = join(dir, "program");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const oldLibraryPath = process.env["LIBRARY_PATH"];
+    const rebuildLibrary = async (value: number) => {
+      await writeFile(source, `double scriptc_cache_probe(void) { return ${value}; }\n`);
+      await execFileAsync("clang", ["-c", source, "-o", object]);
+      await execFileAsync("ar", ["rcs", library, object]);
+    };
+    try {
+      await writeFile(entry, [
+        "declare function nativeValue(): number;",
+        "console.log(nativeValue());",
+        "",
+      ].join("\n"));
+      await writeFile(profile, JSON.stringify({
+        ffi_format: 1,
+        functions: [{
+          name: "nativeValue",
+          symbol: "scriptc_cache_probe",
+          params: [],
+          returns: "f64",
+        }],
+        libraries: [],
+        system_libraries: ["scriptc_cache_probe"],
+      }));
+      process.env["SCRIPTC_CACHE_DIR"] = cache;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      process.env["LIBRARY_PATH"] = dir;
+      const options = { outDir: dir, outPath: output, backend: "llvm" as const, ffiProfilePath: profile };
+
+      await rebuildLibrary(1);
+      const first = await compile(entry, options);
+      if (!first.ok) throw new Error(first.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout.trim()).toBe("1");
+
+      await rebuildLibrary(2);
+      const second = await compile(entry, options);
+      if (!second.ok) throw new Error(second.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout.trim()).toBe("2");
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+      if (oldLibraryPath === undefined) delete process.env["LIBRARY_PATH"];
+      else process.env["LIBRARY_PATH"] = oldLibraryPath;
+    }
+  });
+
+  test("runtime-pack PATH linker wrappers cannot restore hidden link inputs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-linker-cache-"));
+    dirs.push(dir);
+    const entry = join(dir, "main.ts");
+    const wrapper = join(dir, "clang");
+    const firstSource = join(dir, "first.c");
+    const secondSource = join(dir, "second.c");
+    const firstObject = join(dir, "first.o");
+    const secondObject = join(dir, "second.o");
+    const cache = join(dir, "cache");
+    const output = join(dir, "program");
+    const oldPath = process.env["PATH"];
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const oldLinkInput = process.env["SCRIPTC_TEST_LINK_INPUT"];
+    try {
+      await Promise.all([
+        writeFile(entry, 'console.log("program");\n'),
+        writeFile(firstSource, [
+          "#include <unistd.h>",
+          '__attribute__((constructor)) static void marker(void) { write(1, "first\\n", 6); }',
+          "",
+        ].join("\n")),
+        writeFile(secondSource, [
+          "#include <unistd.h>",
+          '__attribute__((constructor)) static void marker(void) { write(1, "second\\n", 7); }',
+          "",
+        ].join("\n")),
+        writeFile(wrapper, [
+          "#!/bin/sh",
+          'for arg in "$@"; do',
+          '  if [ "$arg" = "-c" ]; then exec /usr/bin/clang "$@"; fi',
+          "done",
+          'has_output=""',
+          'for arg in "$@"; do [ "$arg" = "-o" ] && has_output=1; done',
+          'if [ -n "$has_output" ] && [ -n "$SCRIPTC_TEST_LINK_INPUT" ]; then',
+          '  exec /usr/bin/clang "$@" "$SCRIPTC_TEST_LINK_INPUT"',
+          "fi",
+          'exec /usr/bin/clang "$@"',
+          "",
+        ].join("\n")),
+      ]);
+      await chmod(wrapper, 0o755);
+      await Promise.all([
+        execFileAsync("/usr/bin/clang", [
+          "-target", MACOS_ARM64_TARGET.llvmTriple, "-c", firstSource, "-o", firstObject,
+        ]),
+        execFileAsync("/usr/bin/clang", [
+          "-target", MACOS_ARM64_TARGET.llvmTriple, "-c", secondSource, "-o", secondObject,
+        ]),
+      ]);
+      process.env["PATH"] = `${dir}:${oldPath ?? "/usr/bin:/bin"}`;
+      process.env["SCRIPTC_CACHE_DIR"] = cache;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      const options = { outDir: dir, outPath: output, backend: "llvm" as const };
+
+      process.env["SCRIPTC_TEST_LINK_INPUT"] = firstObject;
+      const first = await compile(entry, options);
+      if (!first.ok) throw new Error(first.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout).toBe("first\nprogram\n");
+
+      process.env["SCRIPTC_TEST_LINK_INPUT"] = secondObject;
+      const second = await compile(entry, options);
+      if (!second.ok) throw new Error(second.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout).toBe("second\nprogram\n");
+    } finally {
+      if (oldPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = oldPath;
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+      if (oldLinkInput === undefined) delete process.env["SCRIPTC_TEST_LINK_INPUT"];
+      else process.env["SCRIPTC_TEST_LINK_INPUT"] = oldLinkInput;
     }
   });
 

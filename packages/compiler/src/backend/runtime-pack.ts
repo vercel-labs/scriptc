@@ -11,6 +11,7 @@ import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
   CcCompileError,
   nativeArtifactDependenciesStillMatch,
+  nativeLinkerDependencyPaths,
   subprocessFailureDetail,
   type NativeArtifactDependency,
 } from "./native-toolchain.js";
@@ -472,45 +473,6 @@ async function snapshotDependencies(paths: readonly string[]): Promise<NativeArt
   }));
 }
 
-async function resolveExecutable(command: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
-  if (command.includes("/") || command.includes("\\")) return resolve(command);
-  const path = env["PATH"] ?? "";
-  const { access } = await import("node:fs/promises");
-  const { delimiter } = await import("node:path");
-  for (const directory of path.split(delimiter)) {
-    if (directory === "") continue;
-    const candidate = join(directory, command);
-    try {
-      await access(candidate);
-      return await realpath(candidate).catch(() => candidate);
-    } catch {
-      continue;
-    }
-  }
-  return command;
-}
-
-async function linkToolchainDependencies(linker: string): Promise<string[]> {
-  if (process.platform !== "darwin") return [linker];
-  const sdkRoot = process.env["SDKROOT"] ??
-    (await execFileAsync("xcrun", ["--sdk", "macosx", "--show-sdk-path"])).stdout.trim();
-  const platformLinker = (await execFileAsync("xcrun", ["--sdk", "macosx", "--find", "ld"])).stdout.trim();
-  const compilerRuntime = (await execFileAsync(linker, ["-print-file-name=libclang_rt.osx.a"]))
-    .stdout.trim();
-  const candidates = [
-    linker,
-    platformLinker,
-    compilerRuntime,
-    join(sdkRoot, "SDKSettings.json"),
-    join(sdkRoot, "usr", "lib", "libSystem.tbd"),
-    join(sdkRoot, "usr", "lib", "libm.tbd"),
-    join(sdkRoot, "usr", "lib", "libz.tbd"),
-  ];
-  const present = await Promise.all(candidates.map(async (path) =>
-    await stat(path).then(() => path, () => null)));
-  return present.filter((path): path is string => path !== null);
-}
-
 export async function linkRuntimePackExecutable(
   plan: RuntimeLinkPlan,
   options: {
@@ -519,7 +481,6 @@ export async function linkRuntimePackExecutable(
   } = {},
 ): Promise<void> {
   const linker = options.linker ?? process.env["SCRIPTC_LINKER"] ?? "clang";
-  const linkerPath = await resolveExecutable(linker);
   // ld64 derives an ad-hoc signature identifier from the output basename.
   // Keep that basename caller-visible while a private sibling directory gives
   // the link its own inode and preserves an atomic same-filesystem install.
@@ -554,7 +515,10 @@ export async function linkRuntimePackExecutable(
     const preLinkDependencies = options.onArtifactReady === undefined ||
         !(await nativeArtifactDependenciesStillMatch(inheritedDependencies).catch(() => false))
       ? null
-      : await linkToolchainDependencies(linkerPath)
+      : await nativeLinkerDependencyPaths(linker, [
+          ...plan.driverFlags,
+          ...plan.systemLibraries.map((name) => `-l${name}`),
+        ])
         .then(async (toolchain) => [
           ...inheritedDependencies,
           ...await snapshotDependencies([...toolchain, ...additionalDependencyPaths]),

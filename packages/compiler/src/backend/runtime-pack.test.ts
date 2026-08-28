@@ -318,7 +318,85 @@ describe("runtime pack manifests", () => {
     expect(published).toBe(false);
   });
 
-  test.runIf(process.platform === "darwin")(
+  test(
+    "cache proofs follow the selected driver to its linker, SDK, and compiler runtime",
+    async () => {
+      const { root, packagePath } = await fixture();
+      const programObject = join(root, "program.o");
+      const output = join(root, "program");
+      const driver = join(root, "clang.mjs");
+      const platformLinker = join(root, "toolchain", "ld");
+      const sdkSettings = join(root, "driver-sdk", "SDKSettings.json");
+      const systemStub = join(root, "driver-sdk", "usr", "lib", "libSystem.tbd");
+      const compilerRuntime = join(root, "toolchain", "libclang_rt.osx.a");
+      await Promise.all([
+        mkdir(dirname(platformLinker), { recursive: true }),
+        mkdir(dirname(systemStub), { recursive: true }),
+        writeFile(programObject, "program object"),
+      ]);
+      await Promise.all([
+        writeFile(platformLinker, "selected platform linker"),
+        writeFile(sdkSettings, "selected SDK settings"),
+        writeFile(systemStub, "selected System stub"),
+        writeFile(compilerRuntime, "selected compiler runtime"),
+        writeFile(driver, [
+          "#!/usr/bin/env node",
+          'import { writeFileSync } from "node:fs";',
+          `const dependencies = ${JSON.stringify([
+            platformLinker,
+            sdkSettings,
+            systemStub,
+            compilerRuntime,
+          ])};`,
+          'const args = process.argv.slice(2);',
+          'const outputIndex = args.indexOf("-o");',
+          'if (args.includes("-print-prog-name=ld")) {',
+          `  process.stdout.write(${JSON.stringify(`${platformLinker}\n`)});`,
+          "  process.exit(0);",
+          "}",
+          'if (args.includes("-###")) {',
+          '  process.stderr.write(`${dependencies.map(JSON.stringify).join(" ")}\\n`);',
+          "  process.exit(0);",
+          "}",
+          'if (args.includes("-Wl,-t")) {',
+          '  process.stdout.write(`${dependencies.join("\\n")}\\n`);',
+          '  writeFileSync(args[outputIndex + 1], "link trace output");',
+          "  process.exit(0);",
+          "}",
+          'writeFileSync(args[outputIndex + 1], args.includes("-c") ? "probe object" : "linked executable");',
+          "",
+        ].join("\n")),
+      ]);
+      await chmod(driver, 0o755);
+      const plan = await createRuntimeLinkPlan({
+        target: MACOS_ARM64_TARGET,
+        programObject,
+        outPath: output,
+        features: BASE,
+        ffi: null,
+        optimization: "release",
+        resolver: () => packagePath,
+      });
+      let dependencyPaths: string[] = [];
+
+      await linkRuntimePackExecutable(plan, {
+        linker: driver,
+        onArtifactReady: async ({ dependencies }) => {
+          dependencyPaths = dependencies.map((dependency) => dependency.path);
+        },
+      });
+
+      expect(await readFile(output, "utf8")).toBe("linked executable");
+      expect(dependencyPaths).toEqual(expect.arrayContaining([
+        platformLinker,
+        sdkSettings,
+        systemStub,
+        compilerRuntime,
+      ]));
+    },
+  );
+
+  test(
     "does not publish an executable cache proof when a dependency changes during linking",
     async () => {
       const { root, packagePath } = await fixture();
@@ -326,21 +404,38 @@ describe("runtime pack manifests", () => {
       const dependency = join(root, "link-dependency.a");
       const output = join(root, "program");
       const linker = join(root, "linker.mjs");
+      const platformLinker = join(root, "ld");
       await Promise.all([
         writeFile(programObject, "program object"),
         writeFile(dependency, "before link"),
+        writeFile(platformLinker, "selected platform linker"),
         writeFile(linker, [
           "#!/usr/bin/env node",
           'import { writeFileSync } from "node:fs";',
           `const dependency = ${JSON.stringify(dependency)};`,
-          'if (process.argv[2]?.startsWith("-print-file-name=")) {',
-          '  process.stdout.write(`${dependency}\\n`);',
+          `const platformLinker = ${JSON.stringify(platformLinker)};`,
+          'const args = process.argv.slice(2);',
+          'const outputIndex = args.indexOf("-o");',
+          'if (args.includes("-print-prog-name=ld")) {',
+          '  process.stdout.write(`${platformLinker}\\n`);',
           "  process.exit(0);",
           "}",
-          'const outputIndex = process.argv.indexOf("-o");',
+          'if (args.includes("-###")) {',
+          '  process.stderr.write(`${JSON.stringify(platformLinker)} ${JSON.stringify(dependency)}\\n`);',
+          "  process.exit(0);",
+          "}",
+          'if (args.includes("-Wl,-t")) {',
+          '  process.stdout.write(`${platformLinker}\\n${dependency}\\n`);',
+          '  writeFileSync(args[outputIndex + 1], "link trace output");',
+          "  process.exit(0);",
+          "}",
           'if (outputIndex < 0) process.exit(2);',
+          'if (args.includes("-c")) {',
+          '  writeFileSync(args[outputIndex + 1], "probe object");',
+          "  process.exit(0);",
+          "}",
           'writeFileSync(dependency, "changed during link");',
-          'writeFileSync(process.argv[outputIndex + 1], "linked executable");',
+          'writeFileSync(args[outputIndex + 1], "linked executable");',
           "",
         ].join("\n")),
       ]);

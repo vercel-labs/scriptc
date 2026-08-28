@@ -2560,15 +2560,13 @@
       "id": "stdlib.math.E",
       "kind": "stdlib",
       "name": "Math.E",
-      "status": "dynamic-only",
-      "code": "SC2012"
+      "status": "static"
     },
     {
       "id": "stdlib.math.PI",
       "kind": "stdlib",
       "name": "Math.PI",
-      "status": "dynamic-only",
-      "code": "SC2012"
+      "status": "static"
     },
     {
       "id": "stdlib.math.abs",

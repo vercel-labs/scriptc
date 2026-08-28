@@ -462,8 +462,7 @@ export const boundaryOutOfIslandMsg = (typeName: string): string =>
  * own declarations — a drifted entry fails a test instead of surprising a
  * user. */
 export const ISLAND_SURFACE = {
-  /** `Math.<fn>(...)` lowers to callMethod(globalGet("Math"), fn, args);
-   * the readonly number props (`Math.PI`) to getProp(globalGet("Math")).
+  /** `Math.<fn>(...)` lowers to callMethod(globalGet("Math"), fn, args).
    * min/max/atan2/hypot/pow are declared with exactly two parameters
    * (rest/optional parameters aren't representable). */
   math: {
@@ -476,7 +475,7 @@ export const ISLAND_SURFACE = {
       round: ISL_N1,
       sign: ISL_N1, sin: ISL_N1, sqrt: ISL_N1, tan: ISL_N1, trunc: ISL_N1,
     } as Record<string, IslandFnEntry | undefined>,
-    props: { PI: F64, E: F64 } as Record<string, IrType | undefined>,
+    props: {} as Record<string, IrType | undefined>,
   },
   /** Methods on `number` receivers. The receiver marshals by value; the
    * engine auto-boxes primitives on method calls, so `this` binds the
@@ -508,6 +507,11 @@ export const ISLAND_SURFACE = {
     parseFloat: { args: [STRING], ret: F64 },
     isFinite: { args: [F64], ret: BOOL },
   } as Record<string, IslandFnEntry | undefined>,
+};
+
+export const STATIC_MATH_PROPS: Record<string, number | undefined> = {
+  E: Math.E,
+  PI: Math.PI,
 };
 
 /** Math members with a STATIC lowering — each is one C call that IS the

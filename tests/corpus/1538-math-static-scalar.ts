@@ -5,6 +5,9 @@
 // this whole program compiles statically.
 console.log(Math.min(2, -9), Math.max(2, -9), Math.min(1.5, 1.5), Math.max(-3, -3));
 console.log(Math.min(Infinity, 7), Math.max(-Infinity, 7), Math.min(-Infinity, Infinity));
+const pi = Math.PI;
+const e = Math.E;
+console.log(pi.toFixed(12), e.toFixed(12), (pi + e).toFixed(12), (pi * e).toFixed(12));
 const nan = 0 / 0; // NaN-as-a-value stays fenced; the arithmetic form compiles
 console.log(Math.min(nan, 1), Math.max(1, nan), Math.min(nan, nan));
 // ±0: detect the sign through division (String(-0) is "0" either way).
@@ -30,3 +33,8 @@ console.log(ok, low < 0.5, high >= 0.5, low !== high);
 const a = Math.random();
 const b = Math.random();
 console.log(typeof a, a === b);
+
+{
+  const Math = { PI: 4, E: 3 };
+  console.log(Math.PI, Math.E);
+}

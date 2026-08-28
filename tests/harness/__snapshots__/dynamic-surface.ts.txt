@@ -1,53 +1,43 @@
-dynamic-surface.ts:10:12 - error SC2012: 'Math.sqrt' runs in the embedded dynamic engine, which this build does not include
+dynamic-surface.ts:1:12 - error SC2012: 'Math.sqrt' runs in the embedded dynamic engine, which this build does not include
 
-   9 | // appear here.)
-  10 | const up = Math.sqrt(2);
-     |            ^~~~~~~~~~~~
-  11 | const tau = Math.PI * 2;
-
-  hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
-
-dynamic-surface.ts:11:13 - error SC2012: 'Math.PI' runs in the embedded dynamic engine, which this build does not include
-
-  10 | const up = Math.sqrt(2);
-  11 | const tau = Math.PI * 2;
-     |             ^~~~~~~
-  12 | const price = (19.99).toPrecision(4);
+  1 | const up = Math.sqrt(2);
+    |            ^~~~~~~~~~~~
+  2 | const price = (19.99).toPrecision(4);
 
   hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
 
-dynamic-surface.ts:12:15 - error SC2012: '.toPrecision()' on numbers runs in the embedded dynamic engine, which this build does not include
+dynamic-surface.ts:2:15 - error SC2012: '.toPrecision()' on numbers runs in the embedded dynamic engine, which this build does not include
 
-  11 | const tau = Math.PI * 2;
-  12 | const price = (19.99).toPrecision(4);
-     |               ^~~~~~~~~~~~~~~~~~~~~~
-  13 | const swapped = "banana".replace("an", "AN");
-
-  hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
-
-dynamic-surface.ts:13:17 - error SC2012: '.replace()' on strings runs in the embedded dynamic engine, which this build does not include
-
-  12 | const price = (19.99).toPrecision(4);
-  13 | const swapped = "banana".replace("an", "AN");
-     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  14 | const ch = "hello".at(0);
+  1 | const up = Math.sqrt(2);
+  2 | const price = (19.99).toPrecision(4);
+    |               ^~~~~~~~~~~~~~~~~~~~~~
+  3 | const swapped = "banana".replace("an", "AN");
 
   hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
 
-dynamic-surface.ts:14:12 - error SC2012: '.at()' on strings runs in the embedded dynamic engine, which this build does not include
+dynamic-surface.ts:3:17 - error SC2012: '.replace()' on strings runs in the embedded dynamic engine, which this build does not include
 
-  13 | const swapped = "banana".replace("an", "AN");
-  14 | const ch = "hello".at(0);
-     |            ^~~~~~~~~~~~~
-  15 | const n = Number.parseFloat("3.14");
+  2 | const price = (19.99).toPrecision(4);
+  3 | const swapped = "banana".replace("an", "AN");
+    |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  4 | const ch = "hello".at(0);
 
   hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
 
-dynamic-surface.ts:15:11 - error SC2012: 'Number.parseFloat' runs in the embedded dynamic engine, which this build does not include
+dynamic-surface.ts:4:12 - error SC2012: '.at()' on strings runs in the embedded dynamic engine, which this build does not include
 
-  14 | const ch = "hello".at(0);
-  15 | const n = Number.parseFloat("3.14");
-     |           ^~~~~~~~~~~~~~~~~~~~~~~~~
-  16 | 
+  3 | const swapped = "banana".replace("an", "AN");
+  4 | const ch = "hello".at(0);
+    |            ^~~~~~~~~~~~~
+  5 | const n = Number.parseFloat("3.14");
+
+  hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it
+
+dynamic-surface.ts:5:11 - error SC2012: 'Number.parseFloat' runs in the embedded dynamic engine, which this build does not include
+
+  4 | const ch = "hello".at(0);
+  5 | const n = Number.parseFloat("3.14");
+    |           ^~~~~~~~~~~~~~~~~~~~~~~~~
+  6 | void up;
 
   hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it

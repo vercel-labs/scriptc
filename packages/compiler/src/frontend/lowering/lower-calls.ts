@@ -4893,8 +4893,17 @@ const DYN_STRING_ONLY_METHODS = new Set([
         `Array.isArray on '${lowerer.fmt(arg.type)}' values (narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms)`,
       );
     }
-    if (arg.type.kind === "jsval" || arg.type.kind === "caught") return null;
-    return { kind: "boolLit", value: lowerer.isArrayValueType(arg.type), type: BOOL, loc };
+    if (arg.kind === "varRef" || arg.kind === "recordGet" || arg.kind === "fieldGet") {
+      return { kind: "boolLit", value: lowerer.isArrayValueType(arg.type), type: BOOL, loc };
+    }
+    const val = lowerer.isArrayValueType(arg.type);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: arg, loc }],
+      result: { kind: "boolLit", value: val, type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
   }
 
 /** Predicate declarations currently being inlined — re-entrancy guard

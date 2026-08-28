@@ -2351,7 +2351,7 @@ class LlEmitter {
       const join = B.newLabel("ut.j");
       this.unionTagSwitch(v.name, def, (arm) => {
         let valueName = "false";
-        if (arm.kind === "f64") {
+        if (arm.kind === "f64" || arm.kind === "date") {
           valueName = B.tmp();
           this.declare(`declare double @scr_union_get_f64(ptr)`);
           B.line(`${valueName} = call double @scr_union_get_f64(ptr ${v.name})`);
@@ -2480,7 +2480,7 @@ class LlEmitter {
    * a retained peek. */
   private unionExtract(uName: string, arm: IrType): string {
     const B = this.B;
-    if (arm.kind === "f64") {
+    if (arm.kind === "f64" || arm.kind === "date") {
       const t = B.tmp();
       this.declare(`declare double @scr_union_get_f64(ptr)`);
       B.line(`${t} = call double @scr_union_get_f64(ptr ${uName})`);
@@ -2501,7 +2501,7 @@ class LlEmitter {
   private unionNewOwned(tag: number, v: LlValue): string {
     const B = this.B;
     const t = B.tmp();
-    if (v.type.kind === "f64") {
+    if (v.type.kind === "f64" || v.type.kind === "date") {
       this.declare(`declare ptr @scr_union_new_f64(i32, double)`);
       B.line(`${t} = call ptr @scr_union_new_f64(i32 ${tag}, double ${v.name})`);
       return t;

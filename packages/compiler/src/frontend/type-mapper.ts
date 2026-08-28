@@ -1,4 +1,5 @@
 import { InternalCompilerError } from "../errors.js";
+import { isCheckerPanic } from "../diagnostics/diagnostic.js";
 import * as ts from "./ts7/adapter.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../ir/ir.js";
 import { arrayOf, BOOL, bytesOf, canConvertToDyn, CHILD_T, DATE_T, DYN, F64, funcOf, isSupportedArrayElem, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, JSVAL, mapOf, NULL_T, PROCSTREAM_T, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, setOf, STRING, SYMBOL_T, typeEquals, typeKey, UNDEFINED_T, VOID } from "../ir/ir.js";
@@ -862,6 +863,30 @@ function classExprNeverRegisters(decl: ts.ClassLikeDeclaration): boolean {
   return false;
 }
 
+/** The tuple SHAPE behind an isTupleType-true checker type, narrowed before
+ * any cast: the type ITSELF when it carries elementFlags (a direct tuple
+ * shape), its checker-resolved TARGET when it is a TypeReference
+ * (`Pair<number, string>` — the facade's 5.9.3 contract answers
+ * isTupleType true for references to tuples too), and undefined when
+ * neither holds (the facade edge where a 0-arg object reads as a tuple).
+ * getTarget() round-trips the checker (getTargetOfType), and upstream tsgo
+ * panics on exactly these shape mixups (the checker.TypeData-is-
+ * *TypeReference interface-conversion family, SC0004): the panic degrades
+ * to "no shape" — the caller's null mapping, an actionable unsupported-
+ * shape diagnostic — instead of crashing the mapping pass. Anything that
+ * is not a checker panic is not ours to swallow. */
+export function tupleShapeOf(widened: ts.Type): ts.TupleType | undefined {
+  const ref = widened as ts.TupleTypeReference;
+  if ((ref.elementFlags as ts.ElementFlags[] | undefined) !== undefined) return ref;
+  if (!widened.isTypeReference()) return undefined;
+  try {
+    return ref.getTarget() as ts.TupleType | undefined;
+  } catch (e) {
+    if (!isCheckerPanic(e)) throw e;
+    return undefined;
+  }
+}
+
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, unions, classNamer, resolveTypeParam } = ctx;
   if (resolveTypeParam && type.flags & ts.TypeFlags.TypeParameter) {
@@ -1136,13 +1161,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // have no fixed shape and stay unmapped; element types follow record-field
   // rules (no void/dyn).
   if (checker.isTupleType(widened)) {
-    const ref = widened as ts.TupleTypeReference;
     // elementFlags live on the tuple SHAPE: a direct tuple type carries
     // them itself; a REFERENCE to one (isTupleType still answers true —
-    // the facade's 5.9.3 contract) reads them off its target.
-    const tupleShape = (ref.elementFlags as ts.ElementFlags[] | undefined) !== undefined
-      ? ref
-      : (ref.getTarget() as ts.TupleType | undefined);
+    // the facade's 5.9.3 contract) reads them off its target. The
+    // narrowing and the target round-trip live in tupleShapeOf.
+    const tupleShape = tupleShapeOf(widened);
     // The empty tuple `[]` — a declared annotation, or the facade edge
     // where isTupleType answers true with NO element flags on the shape or
     // its target (the empty-array arm of `''.match(/x/) || []`; the
@@ -1156,7 +1179,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // FACING surfaces (JSON.stringify, spread, for-of) keep their
     // unit-element fences: no element exists, but the type-directed checks
     // see the unit arm.
-    const args = checker.getTypeArguments(ref);
+    const args = checker.getTypeArguments(widened as ts.TypeReference);
     if (args.length === 0) return arrayOf(unitOnlyUnion(unions));
     if (tupleShape?.elementFlags === undefined) return null;
     // Optional/rest elements (`[string?, number?]`, `[string, ...number[]]`)

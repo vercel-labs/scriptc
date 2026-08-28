@@ -655,7 +655,9 @@ export function funcOf(params: IrType[], ret: IrType): IrType {
  * against data arms). */
 export function unionFuncSetArmsOk(arms: IrType[]): boolean {
   return arms.every(
-    (a, i) => a.kind !== "set" || arms.every((b, j) => j === i || isUnitType(b)),
+    (a, i) =>
+      (a.kind !== "set" && a.kind !== "map" && a.kind !== "date" && a.kind !== "regex") ||
+      arms.every((b, j) => j === i || isUnitType(b)),
   );
 }
 
@@ -2173,6 +2175,7 @@ export type IrLibFn =
   | "url.protocol"
   | "url.host"
   | "url.hostname"
+  | "url.port"
   | "url.pathname"
   | "url.href"
   | "url.fileURLToPathUrl"
@@ -2706,6 +2709,9 @@ export type IrLibFn =
    * (sweep-deferred, never the registering stack). */
   | "net.sockOnFinish"
   | "net.serverEmitConnection"
+  | "net.isIP"
+  | "net.isIPv4"
+  | "net.isIPv6"
   /** node:http, the CLIENT slice (http.request/http.get over the net
    * client machinery): request/requestCb take (host, port, path, method,
    * timeoutMs, headerPairs, autoEnd[, responseCb]) — headerPairs is the
@@ -3002,6 +3008,9 @@ export type IrLibFn =
    * Buffer/typed array's bytes. Pure; never throw. */
   | "crypto.hashDigestStr"
   | "crypto.hashDigestBytes"
+  | "crypto.hashDigestStrBuf"
+  | "crypto.hashDigestBytesBuf"
+  | "crypto.timingSafeEqual"
   /** crypto.randomBytes(n) → a real u8 Buffer (+1). THROWS Node's
    * RangeError on out-of-range sizes, exactly like the composed
    * randomBytesToString (which keeps its one-libCall lowering — the two
@@ -3325,6 +3334,9 @@ export type IrLibFn =
   | "perf.now"
   | "process.availableMemory"
   | "process.constrainedMemory"
+  | "process.memoryUsageRss"
+  | "process.memoryUsageHeapTotal"
+  | "process.memoryUsageHeapUsed"
   | "process.cpuUser"
   | "process.cpuSystem"
   | "process.cpuUserDiff"

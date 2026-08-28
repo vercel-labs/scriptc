@@ -2359,6 +2359,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  if (isStdlibInterface("MemoryUsage")) {
+    const names = ["rss", "heapTotal", "heapUsed", "external", "arrayBuffers"];
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [...names].sort().map((name) => ({ name, type: F64 })),
+        false,
+        undefined,
+        names,
+      ),
+    };
+  }
   if (isStdlibInterface("ResourceUsage")) {
     const names = [
       "userCPUTime", "systemCPUTime", "maxRSS", "sharedMemorySize",
@@ -2680,27 +2692,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       if (
         arms.some(
           (a) =>
-            a.kind === "void" || a.kind === "union" ||
-            // Map/Set arms stay out (like func against data arms: no
-            // narrowing test — no discriminant fields on them). REGEX
-            // arms map: `x instanceof RegExp` is their narrowing test
-            // (the skip-utility `string | RegExp` shape), and the arm
-            // rides the ref machinery like array regex elements.
-            a.kind === "map" || a.kind === "set" || a.kind === "date" || a.kind === "dyn" ||
-            // Generator arms follow the map/set rule: no narrowing test.
+            a.kind === "void" || a.kind === "union" || a.kind === "dyn" ||
             a.kind === "generator" ||
-            // Func arms map beside ANY sibling: `typeof x === "function"`
-            // is the narrowing against data arms (typeofAnswer knows every
-            // arm kind), unit TAG tests cover the nullable-callback shape
-            // (cb !== null, cb ?? f, cb?.()), and against FUNC siblings
-            // (`StringConstructor | NumberConstructor` — the option-table
-            // field) closures compare by pointer identity per tag
-            // (unionEq), so `x === String` narrows. No restriction left.
-            // Promise arms follow the func rule (typeof gives no test
-            // against sibling data arms): only the promise-or-absent shape
-            // maps — `Promise<T> | undefined`, and `Promise<T> | void`
-            // return types whose void part became the undefined arm above.
-            (a.kind === "promise" && !arms.every((b) => b === a || isUnitType(b))),
+            ((a.kind === "map" || a.kind === "set" || a.kind === "date" || a.kind === "regex" || a.kind === "promise") &&
+              arms.some((b) => b !== a && !isUnitType(b))),
         )
       ) {
         return null;
@@ -3602,15 +3597,13 @@ function armHasUnionHome(arm: IrType, siblingCount: number): boolean {
   switch (arm.kind) {
     case "void":
     case "union":
+    case "generator":
+    case "dyn":
+      return false;
     case "map":
     case "set":
     case "regex":
     case "date":
-    case "generator":
-    case "dyn":
-      return false;
-    // Promise arms map only beside unit siblings (the promise-or-absent
-    // shape); a data sibling has no narrowing test against them.
     case "promise":
       return siblingCount === 0;
     default:

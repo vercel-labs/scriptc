@@ -322,7 +322,7 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
     const arity = {
       push: [0, Number.MAX_SAFE_INTEGER], unshift: [0, Number.MAX_SAFE_INTEGER], pop: [0, 0], indexOf: [1, 1], includes: [1, 1], join: [1, 1],
       concat: [0, Number.MAX_SAFE_INTEGER],
-      slice: [0, 2], shift: [0, 0], splice: [1, 2], at: [1, 1],
+      slice: [0, 2], shift: [0, 0], splice: [1, Number.MAX_SAFE_INTEGER], at: [1, 1],
       map: [1, 1], filter: [1, 1], forEach: [1, 1], find: [1, 1], findIndex: [1, 1], some: [1, 1],
       findLast: [1, 1], findLastIndex: [1, 1],
       every: [1, 1], flatMap: [1, 1], reduce: [1, 2], reduceRight: [1, 2],
@@ -498,14 +498,17 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
       return { kind: "arrIntrinsic", method: "slice", receiver, args, type: receiverIr, loc };
     }
     if (name === "splice") {
-      // The REMOVAL forms: splice(start) and splice(start, deleteCount) —
-      // Node-exact relative/clamped indices, the removed elements back in
-      // order (their ownership moves out of the receiver). Insertion
-      // (3+ args) fenced by arity above.
       const receiver = lowerer.lowerExpr(access.expression);
-      const args = call.arguments.map((a) => lowerer.lowerExpr(a));
-      for (let i = 0; i < args.length; i++) {
-        if (args[i]!.type.kind !== "f64") lowerer.badType(call.arguments[i]!, lowerer.typeOf(call.arguments[i]!));
+      const args: IrExpr[] = [];
+      for (let i = 0; i < call.arguments.length; i++) {
+        if (i < 2) {
+          const arg = lowerer.lowerExpr(call.arguments[i]!);
+          if (arg.type.kind !== "f64") lowerer.badType(call.arguments[i]!, lowerer.typeOf(call.arguments[i]!));
+          args.push(arg);
+        } else {
+          const arg = lowerer.lowerExprExpecting(call.arguments[i]!, elem);
+          args.push(arg);
+        }
       }
       return { kind: "arrIntrinsic", method: "splice", receiver, args, type: receiverIr, loc };
     }
@@ -2412,6 +2415,14 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken || access.questionDotToken) return null;
     if (!lowerer.isStdlibGlobal(access.expression, "Array")) return null;
+    if (access.name.text === "of") {
+      const arrT = lowerer.mapTypeOf(lowerer.typeOf(call));
+      if (arrT?.kind === "array") {
+        const loc = locOf(call);
+        const elems = call.arguments.map((a) => lowerer.lowerExprExpecting(a, arrT.elem));
+        return { kind: "arrayLit", elems, type: arrT, loc };
+      }
+    }
     if (access.name.text !== "from") return null;
     const loc = locOf(call);
     const args = call.arguments;
@@ -2449,6 +2460,15 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
     if (args.length === 1 && !ts.isObjectLiteralExpression(args[0]!)) {
       const src = lowerer.lowerExpr(args[0]!);
       if (src.type.kind === "string") return strCharsCall(lowerer, src, loc);
+      if (src.type.kind === "set") {
+        const arrT = lowerer.mapTypeOf(lowerer.typeOf(call));
+        if (arrT?.kind === "array" && typeEquals(src.type.elem, arrT.elem)) {
+          return { kind: "setIntrinsic", method: "toArray", receiver: src, args: [], type: arrT, loc };
+        }
+      }
+      if (src.type.kind === "array") {
+        return { kind: "arrIntrinsic", method: "slice", receiver: src, args: [], type: src.type, loc };
+      }
       lowerer.noLowering(
         "Array.from with this argument shape",
         call,

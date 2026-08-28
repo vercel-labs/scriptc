@@ -3729,6 +3729,82 @@ ScrStr *scr_crypto_hash_digest_bytes(ScrStr *alg, ScrBytes *data, ScrStr *enc) {
   return scr_hash_digest_raw(alg, data->data, data->len * scr_bytes_elem_size(data->elem), enc);
 }
 
+ScrBytes *scr_crypto_hash_digest_str_buf(ScrStr *alg, ScrStr *data) {
+  unsigned char out[32];
+  size_t len = scr_crypto_digest_raw(alg->data, (const unsigned char *)data->data, data->len, out);
+  ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, len);
+  memcpy(b->data, out, len);
+  return b;
+}
+
+ScrBytes *scr_crypto_hash_digest_bytes_buf(ScrStr *alg, ScrBytes *data) {
+  unsigned char out[32];
+  size_t in_len = data->len * scr_bytes_elem_size(data->elem);
+  size_t len = scr_crypto_digest_raw(alg->data, data->data, in_len, out);
+  ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, len);
+  memcpy(b->data, out, len);
+  return b;
+}
+
+bool scr_crypto_timing_safe_equal(ScrBytes *a, ScrBytes *b) {
+  size_t a_len = a->len * scr_bytes_elem_size(a->elem);
+  size_t b_len = b->len * scr_bytes_elem_size(b->elem);
+  if (a_len != b_len) {
+    scr_throw_error_msg(SCR_ERR_RANGE, "Input buffers must have the same byte length", 42);
+    return false;
+  }
+  unsigned char result = 0;
+  const unsigned char *pa = (const unsigned char *)a->data;
+  const unsigned char *pb = (const unsigned char *)b->data;
+  for (size_t i = 0; i < a_len; i++) {
+    result |= pa[i] ^ pb[i];
+  }
+  return result == 0;
+}
+
+double scr_net_is_ip(ScrStr *s) {
+  if (!s || s->len == 0) return 0;
+  char buf[INET6_ADDRSTRLEN + 8];
+  if (s->len >= sizeof(buf)) return 0;
+  memcpy(buf, s->data, s->len);
+  buf[s->len] = '\0';
+  struct in_addr addr4;
+  if (inet_pton(AF_INET, buf, &addr4) == 1) return 4;
+  struct in6_addr addr6;
+  if (inet_pton(AF_INET6, buf, &addr6) == 1) return 6;
+  return 0;
+}
+
+bool scr_net_is_ipv4(ScrStr *s) {
+  return scr_net_is_ip(s) == 4;
+}
+
+bool scr_net_is_ipv6(ScrStr *s) {
+  return scr_net_is_ip(s) == 6;
+}
+
+double scr_process_memory_rss(void) {
+  struct rusage ru;
+  if (getrusage(RUSAGE_SELF, &ru) == 0) {
+#if defined(__APPLE__)
+    return (double)ru.ru_maxrss;
+#else
+    return (double)ru.ru_maxrss * 1024.0;
+#endif
+  }
+  return 0;
+}
+
+double scr_process_memory_heap_total(void) {
+  double rss = scr_process_memory_rss();
+  return rss > 0 ? rss : 1024 * 1024;
+}
+
+double scr_process_memory_heap_used(void) {
+  double rss = scr_process_memory_rss();
+  return rss > 0 ? rss / 2 : 512 * 1024;
+}
+
 /* The composed `new crypto.X509Certificate(data).fingerprint` read, fused
  * by the compiler (no certificate handle exists). Node's .fingerprint IS
  * the SHA-1 of the certificate's DER bytes, uppercase colon-separated —

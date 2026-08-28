@@ -3948,30 +3948,33 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         "one string or Buffer argument is the lowered update (input encodings have no lowering)",
       );
     }
-    const encT = call.arguments.length === 1 ? lowerer.typeOf(call.arguments[0]!) : undefined;
-    if (!encT?.isStringLiteralType() || (encT.value !== "hex" && encT.value !== "base64")) {
-      lowerer.noLowering(
-        "Hash.digest with this encoding",
-        call,
-        'hex and base64 are the lowered digests: .digest("hex") (the bare Buffer digest has no lowering)',
-      );
+    const isBare = call.arguments.length === 0;
+    if (!isBare) {
+      const encT = call.arguments.length === 1 ? lowerer.typeOf(call.arguments[0]!) : undefined;
+      if (!encT?.isStringLiteralType() || (encT.value !== "hex" && encT.value !== "base64")) {
+        lowerer.noLowering(
+          "Hash.digest with this encoding",
+          call,
+          'hex and base64 are the lowered digests: .digest("hex")',
+        );
+      }
     }
-    // alg and enc are proven literals (fenced above), so lowering them
-    // out of source position observes nothing; the data lowers between
-    // them in its own source order.
     const alg = lowerer.lowerExprExpecting(chCall.arguments[0]!, STRING);
-    // The data picks the runtime entry by its static type, the
-    // fileURLToPath convention: strings hash their UTF-8 bytes (Node's
-    // default input encoding), Buffers/typed arrays hash their bytes.
     const dataNode = updateCall.arguments[0]!;
     const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
     if (dataIr?.kind === "bytes") {
       const data = lowerer.lowerExpr(dataNode);
+      if (isBare) {
+        return { kind: "libCall", fn: "crypto.hashDigestBytesBuf", args: [alg, data], type: BYTES_U8, loc };
+      }
       const enc = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
       return { kind: "libCall", fn: "crypto.hashDigestBytes", args: [alg, data, enc], type: STRING, loc };
     }
     if (dataIr?.kind === "string") {
       const data = lowerer.lowerExprExpecting(dataNode, STRING);
+      if (isBare) {
+        return { kind: "libCall", fn: "crypto.hashDigestStrBuf", args: [alg, data], type: BYTES_U8, loc };
+      }
       const enc = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
       return { kind: "libCall", fn: "crypto.hashDigestStr", args: [alg, data, enc], type: STRING, loc };
     }
@@ -6420,6 +6423,31 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       const fn = member === "uptime" ? "process.uptime"
         : member === "availableMemory" ? "process.availableMemory" : "process.constrainedMemory";
       return { kind: "libCall", fn, args: [], type: F64, loc };
+    }
+    if (member === "memoryUsage") {
+      if (call.arguments.length !== 0) {
+        lowerer.noLowering(`process.memoryUsage with ${call.arguments.length} arguments`, call);
+      }
+      const t = lowerer.mapTypeOf(lowerer.typeOf(call));
+      if (t?.kind !== "record") lowerer.badType(call, lowerer.typeOf(call));
+      const shape = lowerer.shapes.get(t.shapeId);
+      if (!shape) lowerer.badType(call, lowerer.typeOf(call));
+      const sampleMemField = (name: string): IrExpr => {
+        let fn: IrLibFn = "process.memoryUsageRss";
+        if (name === "heapTotal") fn = "process.memoryUsageHeapTotal";
+        else if (name === "heapUsed") fn = "process.memoryUsageHeapUsed";
+        else if (name === "rss") fn = "process.memoryUsageRss";
+        else if (name === "external" || name === "arrayBuffers") {
+          return { kind: "numLit", value: 0, type: F64, loc };
+        }
+        return { kind: "libCall", fn, args: [], type: F64, loc };
+      };
+      return {
+        kind: "recordLit",
+        fields: shape.fields.map((f) => ({ name: f.name, value: sampleMemField(f.name) })),
+        type: t,
+        loc,
+      };
     }
     // process.cpuUsage(prev?) / process.threadCpuUsage(prev?) — the
     // {user, system} microsecond records (getrusage / the thread clock).

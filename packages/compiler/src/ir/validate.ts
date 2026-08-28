@@ -132,6 +132,9 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "perf.now": { argTypes: [], result: F64 },
   "process.availableMemory": { argTypes: [], result: F64 },
   "process.constrainedMemory": { argTypes: [], result: F64 },
+  "process.memoryUsageRss": { argTypes: [], result: F64 },
+  "process.memoryUsageHeapTotal": { argTypes: [], result: F64 },
+  "process.memoryUsageHeapUsed": { argTypes: [], result: F64 },
   "process.cpuUser": { argTypes: [], result: F64 },
   "process.cpuSystem": { argTypes: [], result: F64 },
   "process.cpuUserDiff": { argTypes: [F64], result: F64 },
@@ -246,6 +249,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "url.protocol": { argTypes: [URL_T], result: STRING },
   "url.host": { argTypes: [URL_T], result: STRING },
   "url.hostname": { argTypes: [URL_T], result: STRING },
+  "url.port": { argTypes: [URL_T], result: STRING },
   "url.pathname": { argTypes: [URL_T], result: STRING },
   "url.href": { argTypes: [URL_T], result: STRING },
   "url.fileURLToPathUrl": { argTypes: [URL_T], result: STRING },
@@ -522,6 +526,9 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
   "net.sockOnFinish": { argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }], result: VOID },
   "net.serverEmitConnection": { argTypes: [NETSERVER_T, NETSOCKET_T], result: VOID },
+  "net.isIP": { argTypes: [STRING], result: F64 },
+  "net.isIPv4": { argTypes: [STRING], result: BOOL },
+  "net.isIPv6": { argTypes: [STRING], result: BOOL },
   // tls/https: cert/key/ca PEM arguments are strings OR Buffers (null =
   // both accepted; the emitter passes data+len either way).
   "tls.createServer": { argTypes: [null, null], result: NETSERVER_T },
@@ -726,6 +733,9 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "crypto.randomBytes": { argTypes: [F64], result: BYTES_U8 },
   "crypto.hashDigestStr": { argTypes: [STRING, STRING, STRING], result: STRING },
   "crypto.hashDigestBytes": { argTypes: [STRING, BYTES_U8, STRING], result: STRING },
+  "crypto.hashDigestStrBuf": { argTypes: [STRING, STRING], result: BYTES_U8 },
+  "crypto.hashDigestBytesBuf": { argTypes: [STRING, BYTES_U8], result: BYTES_U8 },
+  "crypto.timingSafeEqual": { argTypes: [BYTES_U8, BYTES_U8], result: BOOL },
   // The Buffer statics and the fs/zlib Buffer forms: fixed always-u8
   // signatures (Buffer IS a Uint8Array — one bytes kind).
   "buffer.fromStr": { argTypes: [STRING, STRING], result: BYTES_U8 },
@@ -1503,16 +1513,14 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       if (
         arm.kind === "void" ||
         arm.kind === "union" ||
-        arm.kind === "map" ||
         arm.kind === "dyn" ||
         arm.kind === "jsval" ||
-        arm.kind === "date" ||
         arm.kind === "generator"
       ) {
         errors.push({ message: `union ${u.id}: arm ${i} is ${arm.kind}`, loc: noLoc });
       }
       if (
-        (arm.kind === "func" || arm.kind === "set") &&
+        (arm.kind === "func" || arm.kind === "set" || arm.kind === "map" || arm.kind === "date" || arm.kind === "regex") &&
         !unionFuncSetArmsOk(u.arms)
       ) {
         errors.push({ message: `union ${u.id}: ${arm.kind} arm ${i} beside non-unit arms`, loc: noLoc });
@@ -2573,12 +2581,13 @@ function validateFunction(
         // omitted from the IR — backends fill the defaults); everything
         // else is exact.
         const minArgs = e.method === "slice" ? 0 : e.method === "splice" ? 1 : sig.argTypes.length;
-        if (e.args.length < minArgs || e.args.length > sig.argTypes.length) {
+        const maxArgs = e.method === "splice" ? Number.MAX_SAFE_INTEGER : sig.argTypes.length;
+        if (e.args.length < minArgs || e.args.length > maxArgs) {
           err(`arrIntrinsic ${e.method}: ${e.args.length} args, expected ${sig.argTypes.length}`, e.loc);
         }
         e.args.forEach((a, i) => {
           checkExpr(a);
-          const want = sig.argTypes[i];
+          const want = i < sig.argTypes.length ? sig.argTypes[i] : (e.receiver.type as { elem: IrType }).elem;
           if (want) expectType(a, want, `arrIntrinsic ${e.method} arg ${i}`);
         });
         if (!typeEquals(e.type, sig.result)) {

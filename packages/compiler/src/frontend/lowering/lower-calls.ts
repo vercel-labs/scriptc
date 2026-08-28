@@ -4894,14 +4894,7 @@ const DYN_STRING_ONLY_METHODS = new Set([
       );
     }
     if (arg.type.kind === "jsval" || arg.type.kind === "caught") return null;
-    if (arg.kind === "varRef" || arg.kind === "recordGet" || arg.kind === "fieldGet") {
-      return { kind: "boolLit", value: lowerer.isArrayValueType(arg.type), type: BOOL, loc };
-    }
-    lowerer.unsupported(
-      "SC1090",
-      call,
-      "statically-decided Array.isArray on computed arguments (bind the value to a variable first)",
-    );
+    return { kind: "boolLit", value: lowerer.isArrayValueType(arg.type), type: BOOL, loc };
   }
 
 /** Predicate declarations currently being inlined — re-entrancy guard

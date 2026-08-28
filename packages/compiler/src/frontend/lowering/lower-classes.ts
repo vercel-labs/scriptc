@@ -5282,6 +5282,13 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
               // Any other lowered kind falls through to the named fence
               // below — never a mistyped seed into the validator.
             }
+            if (argIr?.kind === "set" && typeEquals(argIr.elem, mapped.elem)) {
+              const src = lowerer.lowerExpr(argNode);
+              if (src.type.kind === "set") {
+                const arr: IrExpr = { kind: "setIntrinsic", method: "toArray", receiver: src, args: [], type: arrayOf(mapped.elem), loc };
+                return { kind: "setNew", seed: arr, type: mapped, loc };
+              }
+            }
           }
         }
         // JavaScript's identity-Set idiom: `new Set([setTimeout, atob,

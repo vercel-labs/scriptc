@@ -707,6 +707,7 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
     // first and the Buffer never materializes there); this entry covers
     // the bare calls and non-composed uses.
     randomBytes: { fn: "crypto.randomBytes", params: [F64], result: BYTES_U8 },
+    timingSafeEqual: { fn: "crypto.timingSafeEqual", params: [BYTES_U8, BYTES_U8], result: BOOL },
   },
   zlib: {
     // Buffer in, Buffer out, Node's default options; string inputs fence
@@ -791,6 +792,9 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
     // like Node's.
     getDefaultAutoSelectFamilyAttemptTimeout: { fn: "net.getAutoSelTimeout", params: [], result: F64 },
     setDefaultAutoSelectFamilyAttemptTimeout: { fn: "net.setAutoSelTimeout", params: [F64], result: VOID },
+    isIP: { fn: "net.isIP", params: [STRING], result: F64 },
+    isIPv4: { fn: "net.isIPv4", params: [STRING], result: BOOL },
+    isIPv6: { fn: "net.isIPv6", params: [STRING], result: BOOL },
   },
   http: {},
   // node:tls and node:https ride the same spoke (tls.createServer's

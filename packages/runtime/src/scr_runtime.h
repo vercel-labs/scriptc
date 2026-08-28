@@ -976,6 +976,7 @@ void *scr_arr_shift_ref(ScrArr *a);
  * to the end). Returns the removed elements in order as a fresh +1 array,
  * ownership MOVED out of the receiver. Borrows a. */
 ScrArr *scr_arr_splice(ScrArr *a, double start, double deleteCount);
+ScrArr *scr_arr_splice_with_items(ScrArr *a, double start, double deleteCount, const ScrArr *items);
 
 /* indexOf: first index whose element strictly equals (JS ===) the needle,
  * or -1. Per element kind: f64 by value (NaN never matches — NaN !== NaN;
@@ -2595,6 +2596,15 @@ ScrStr *scr_crypto_random_string(double n, ScrStr *enc); /* +1, or throws */
  * Never throw. */
 ScrStr *scr_crypto_hash_digest_str(ScrStr *alg, ScrStr *data, ScrStr *enc);
 ScrStr *scr_crypto_hash_digest_bytes(ScrStr *alg, ScrBytes *data, ScrStr *enc);
+ScrBytes *scr_crypto_hash_digest_str_buf(ScrStr *alg, ScrStr *data);
+ScrBytes *scr_crypto_hash_digest_bytes_buf(ScrStr *alg, ScrBytes *data);
+bool scr_crypto_timing_safe_equal(ScrBytes *a, ScrBytes *b);
+double scr_net_is_ip(ScrStr *s);
+bool scr_net_is_ipv4(ScrStr *s);
+bool scr_net_is_ipv6(ScrStr *s);
+double scr_process_memory_rss(void);
+double scr_process_memory_heap_total(void);
+double scr_process_memory_heap_used(void);
 /* One-shot raw digest/HMAC by algorithm name ("md5" | "sha1" | "sha256")
  * — the island crypto shim's bridge (scr_island.c host hooks). Digest
  * bytes into out (≥32); returns the digest length, 0 for an unknown
@@ -2717,6 +2727,7 @@ ScrStr *scr_url_protocol(ScrUrl *u); /* +1 "https:" */
 ScrStr *scr_url_host(ScrUrl *u);     /* +1 "host[:port]" (defaults stripped) */
 ScrStr *scr_url_hostname(ScrUrl *u); /* +1 port-less host ("" when none) */
 ScrStr *scr_url_pathname(ScrUrl *u); /* +1 */
+ScrStr *scr_url_port(ScrUrl *u);     /* +1 port ("" when none) */
 ScrStr *scr_url_href(ScrUrl *u);     /* +1; also toString() */
 ScrStr *scr_url_to_path(ScrUrl *u);      /* +1, or throws */
 ScrStr *scr_url_str_to_path(ScrStr *s);  /* +1, or throws */

@@ -31,6 +31,13 @@ declare namespace NodeJS {
     user: number;
     system: number;
   }
+  interface MemoryUsage {
+    rss: number;
+    heapTotal: number;
+    heapUsed: number;
+    external: number;
+    arrayBuffers: number;
+  }
   interface ResourceUsage {
     userCPUTime: number;
     systemCPUTime: number;
@@ -194,6 +201,7 @@ declare var process: {
   nextTick(callback: (...args: any[]) => void, ...args: any[]): void;
   /* The process introspection statics — Node's shapes and units. */
   uptime(): number;
+  memoryUsage(): NodeJS.MemoryUsage;
   cpuUsage(previousValue?: NodeJS.CpuUsage): NodeJS.CpuUsage;
   threadCpuUsage(previousValue?: NodeJS.CpuUsage): NodeJS.CpuUsage;
   resourceUsage(): NodeJS.ResourceUsage;
@@ -1294,6 +1302,7 @@ interface URL {
   readonly href: string;
   readonly host: string;
   readonly hostname: string;
+  readonly port: string;
   readonly search: string;
   readonly searchParams: URLSearchParams;
   toString(): string;
@@ -1346,6 +1355,7 @@ declare module "node:url" {
 declare module "crypto" {
   export function randomUUID(): string;
   export function randomBytes(size: number): Buffer;
+  export function timingSafeEqual(a: Uint8Array | Buffer, b: Uint8Array | Buffer): boolean;
   /* The lowered Hash surface is exactly the COMPOSED chain
    * createHash("sha256" | "sha1").update(data).digest("hex" | "base64")
    * — fused into one call, the Hash handle never materializes (holding
@@ -1353,6 +1363,7 @@ declare module "crypto" {
    * hash. */
   export interface Hash {
     update(data: string | Uint8Array): Hash;
+    digest(): Buffer;
     digest(encoding: "hex" | "base64"): string;
   }
   export function createHash(algorithm: string): Hash;
@@ -1976,6 +1987,9 @@ declare module "node:zlib" {
  * and an 'error' with no listener exits 1 like an unhandled EventEmitter
  * 'error'. */
 declare module "net" {
+  export function isIP(input: string): number;
+  export function isIPv4(input: string): boolean;
+  export function isIPv6(input: string): boolean;
   export interface Socket {
     readonly remoteAddress: string | undefined;
     /* true once the fd is gone (destroy() or full close) — Node's flag. */

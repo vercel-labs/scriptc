@@ -3507,7 +3507,7 @@ export function lowerOptionalChain(lowerer: Lowerer, expr: ts.CallExpression | t
       // host field verbatim (Node would keep IPv6 brackets here, but the
       // parser rejects IPv6 hosts — documented divergence — so the getter
       // never sees one).
-      if (name === "protocol" || name === "pathname" || name === "href" || name === "host" || name === "hostname" || name === "search") {
+      if (name === "protocol" || name === "pathname" || name === "href" || name === "host" || name === "hostname" || name === "port" || name === "search") {
         const receiver = lowerer.lowerExpr(expr.expression);
         const fn =
           name === "protocol"
@@ -3518,9 +3518,11 @@ export function lowerOptionalChain(lowerer: Lowerer, expr: ts.CallExpression | t
                 ? "url.host"
                 : name === "hostname"
                   ? "url.hostname"
-                  : name === "search"
-                    ? "url.search"
-                    : "url.href";
+                  : name === "port"
+                    ? "url.port"
+                    : name === "search"
+                      ? "url.search"
+                      : "url.href";
         return { kind: "libCall", fn, args: [receiver], type: STRING, loc: locOf(expr) };
       }
       // `u.searchParams`: the LIVE cached view (one identity per URL —
@@ -7106,8 +7108,8 @@ export function lowerTemplate(lowerer: Lowerer, expr: ts.TemplateExpression): Ir
       const bridged =
         narrowed &&
         (narrowed.kind === "f64" || narrowed.kind === "bool" || narrowed.kind === "string" ||
-          narrowed.kind === "object" ||
-          (narrowed.kind === "dyn" && isJsSourceFile(expr.getSourceFile())));
+          narrowed.kind === "object" || narrowed.kind === "dyn" ||
+          isJsSourceFile(expr.getSourceFile()));
       if (!bridged) lowerer.unsupported("SC1063", expr);
     }
     const inner = lowerer.lowerExpr(expr.expression);
@@ -8705,7 +8707,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // observability (instanceof Error / .message / String() — the checked-dynamic tree's
     // error encoding); other object payloads are type-erased at runtime and
     // convert to the "[object Object]" approximation — SEMANTICS.md 67.
-    if (narrowed?.kind === "dyn") {
+    if (narrowed?.kind === "dyn" || narrowed === null || narrowed === undefined) {
       return { kind: "caughtToDyn", value: ref, type: DYN, loc };
     }
     lowerer.unsupported("SC1063", node);

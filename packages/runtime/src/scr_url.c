@@ -652,6 +652,7 @@ ScrStr *scr_url_host(ScrUrl *u) {
 /* WHATWG hostname getter: the stored port-less host verbatim ("" for
  * authority-less URLs); IPv6 literals retain their brackets. */
 ScrStr *scr_url_hostname(ScrUrl *u) { return scr_str_retain(u->host); }
+ScrStr *scr_url_port(ScrUrl *u) { return scr_str_retain(u->port); }
 
 ScrStr *scr_url_href(ScrUrl *u) {
   UrlBuf b;

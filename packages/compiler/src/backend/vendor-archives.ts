@@ -13,6 +13,11 @@ const execFileAsync = promisify(execFile);
 export const QJS_COMMIT = "3c8f3d68953955950074c41c6e4d999562ae82a7";
 export const MBEDTLS_VERSION = "3.6.7";
 export const ZLIB_VERSION = "1.3.1";
+/** Exact translation-unit membership shared by cache builds and external
+ * source-pack recipes. */
+export const QJS_ENGINE_SOURCES = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"] as const;
+export const LRE_SOURCES = ["libregexp.c", "libunicode.c"] as const;
+export const ZLIB_SOURCES = ["adler32.c", "compress.c", "crc32.c", "deflate.c", "infback.c", "inffast.c", "inflate.c", "inftrees.c", "trees.c", "uncompr.c", "zutil.c"] as const;
 
 export interface VendorArchiveContext {
   runtimeSrcDir(): string;
@@ -222,7 +227,6 @@ export function createVendorArchives(context: VendorArchiveContext) {
   /** The qjs library target's source list (CMakeLists.txt `qjs_sources` with
    * QJS_BUILD_LIBC off — cutils is header-only): the cross-build recipe
    * compiles exactly these. */
-  const QJS_ENGINE_SOURCES = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   
   /** The engine archive for one target, per-TU compiler invocations plus ar.
    * The flags mirror what the former CMake
@@ -280,7 +284,6 @@ export function createVendorArchives(context: VendorArchiveContext) {
    * libregexp and its unicode tables (cutils is header-only). Deliberately
    * NOT the engine — a regex-using static binary links ~110KB of matcher,
    * never the ~620KB island. */
-  const LRE_SOURCES = ["libregexp.c", "libunicode.c"];
   
   function lreObjectPaths(
     sanitize: boolean,
@@ -341,7 +344,6 @@ export function createVendorArchives(context: VendorArchiveContext) {
    * except the gzFile file-I/O units (gz*.c — nothing in scr_zlib.c
    * references the gzFile API, and those TUs alone want unistd/io headers).
    * Host builds never touch this list — they link the system libz. */
-  const ZLIB_SOURCES = ["adler32.c", "compress.c", "crc32.c", "deflate.c", "infback.c", "inffast.c", "inflate.c", "inftrees.c", "trees.c", "uncompr.c", "zutil.c"];
   
   function zlibObjectPaths(
     sanitize: boolean,

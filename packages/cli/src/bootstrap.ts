@@ -56,6 +56,7 @@ async function tryFastPath(): Promise<number | null> {
   if (
     (command !== "build" && command !== "run") || inputArg === undefined ||
     (values.emit !== undefined && values.emit !== "exe") ||
+    values.print !== undefined ||
     values["emit-ir"] ||
     values.lib || values["from-c"] || values["provenance-sources"] ||
     (values["external-types"] ?? []).length > 0

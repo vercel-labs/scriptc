@@ -20,6 +20,8 @@ Options:
   -o, --out <path>   primary output path (default: .scriptc/<name><suffix>)
       --emit <kind>  primary output: ir, c, llvm, asm, obj, or exe
                      (default: exe). asm/obj currently support macOS 15+ arm64
+      --print <kind> print machine-readable metadata instead of the output path
+                     (native-link-info implies --emit=obj and never links)
       --backend <b>  code generator. llvm is the default and the output that
                      ships; c emits readable C for inspecting what the
                      compiler produced, and program behavior is identical
@@ -69,6 +71,7 @@ Options:
 export const CLI_OPTIONS = {
   out: { type: "string", short: "o" },
   emit: { type: "string" },
+  print: { type: "string" },
   backend: { type: "string" },
   optimization: { type: "string" },
   "from-c": { type: "boolean", default: false },

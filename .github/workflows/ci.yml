@@ -141,7 +141,11 @@ jobs:
         run: pnpm test packages/cli/test/native-output.test.ts
       - name: Helper diagnostics and object/link parity
         if: matrix.shard == 1
-        run: pnpm test packages/compiler/test/native-codegen-integration.test.ts
+        run: >-
+          pnpm test
+          packages/compiler/test/native-codegen-integration.test.ts
+          packages/cli/test/native-link-info.test.ts
+          tests/harness/native-object-example.test.ts
       - name: LLVM-tier helper object differential (${{ matrix.shard }}/3)
         env:
           SCRIPTC_LLVM_HELPER_ONLY: "1"
@@ -167,6 +171,12 @@ jobs:
           "$PREFIX/node_modules/.bin/scriptc" build tests/corpus/001-hello.ts \
             --emit=obj -o "$RUNNER_TEMP/installed.o"
           file "$RUNNER_TEMP/installed.o" | grep 'Mach-O 64-bit object arm64'
+          "$PREFIX/node_modules/.bin/scriptc" build tests/corpus/001-hello.ts \
+            --print=native-link-info -o "$RUNNER_TEMP/installed-link.o" \
+            > "$RUNNER_TEMP/installed-link.json"
+          node examples/native-object/link.mjs cc \
+            "$RUNNER_TEMP/installed-link.json" "$RUNNER_TEMP/installed-program"
+          test "$("$RUNNER_TEMP/installed-program")" = 'hello world'
 
   # Exercises the supported Windows GNU target and the built CLI end to end:
   # TS7 must open its synthetic project, ambient files must resolve across

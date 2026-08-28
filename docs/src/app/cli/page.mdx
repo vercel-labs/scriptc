@@ -52,6 +52,13 @@ outputs use the matching native helper installed with scriptc and do not
 invoke an external compiler, archiver, linker, or SDK. The object is a
 relocatable program object with undefined <code>scr_*</code> runtime symbols
 and a required <code>scr_runtime_abi_v1</code> marker, not a standalone library.
+External consumption is experimental and requires the exact runtime version
+reported by <code>--print=native-link-info</code>. That option still writes the
+object, performs no link, and prints a versioned JSON recipe with the target,
+<code>main</code> entry, installed source runtime pack, FFI inputs, and system
+libraries. It never reports private scriptc cache paths. See
+<a href="/native-objects">Native Program Objects</a> for complete C-driver and
+direct-linker examples.
 <code>--emit=exe</code> is the default and retains the existing executable
 behavior.
 
@@ -82,6 +89,9 @@ Prebuilds the release runtime objects and native TLS/dynamic-engine archives aga
 
   <dt><code>--emit &lt;ir|c|llvm|asm|obj|exe&gt;</code></dt>
   <dd>Select the invocation's one primary artifact. <code>ir</code>, <code>c</code>, and <code>llvm</code> need only Node. <code>asm</code> and <code>obj</code> use the bundled LLVM helper on macOS 15+ arm64 and emit artifacts targeting macOS 14.0. <code>exe</code> is the default.</dd>
+
+  <dt><code>--print &lt;native-link-info&gt;</code></dt>
+  <dd>Build an object (equivalent to <code>--emit=obj</code>) and print its machine-readable external link recipe as JSON instead of printing the artifact path. The document names the exact installed source runtime pack and all link inputs, but does not invoke a linker.</dd>
 
   <dt><code>--dynamic</code></dt>
   <dd>Embed the dynamic engine (~620KB) so npm dependencies and <code>any</code>-typed code can run. Static stays the default — without this flag, dynamic-tier sites are per-site compile errors. See <a href="/dependencies">npm Dependencies</a>.</dd>
@@ -181,6 +191,12 @@ An explicit <code>--backend llvm</code> pins the LLVM backend and fails with dia
       <td>Required</td>
       <td>Bundled scriptc LLVM helper</td>
       <td>Not used</td>
+    </tr>
+    <tr>
+      <td>External link of <code>--emit=obj</code> with the reported source runtime pack</td>
+      <td>Not used by the artifact</td>
+      <td>C compiler required for runtime sources</td>
+      <td>macOS linker and SDK required</td>
     </tr>
     <tr>
       <td><code>--emit=exe</code></td>

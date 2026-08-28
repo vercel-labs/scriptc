@@ -7,7 +7,8 @@ import { emitCModule } from "./backend/c/c-emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
 import { emitNativeArtifact, NativeCodegenError } from "./backend/native-codegen.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
-import { nativeCodegenTargetRefusal } from "./backend/targets.js";
+import { nativeCodegenTarget, nativeCodegenTargetRefusal } from "./backend/targets.js";
+import { createNativeLinkInfo, type NativeLinkInfo } from "./backend/native-link-info.js";
 import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
 import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "./backend/library-identity-markers.js";
 import { checkerPanicDiag, ffiNativeBuildDiag, libAsyncExportDiag, libAsyncSurfaceDiag, libExportUnresolvedDiag, libGenericExportDiag, libIntBoundaryDiag, libNpmIneligibleDiag, libSidecarDiag, libUnmappableSignatureDiag, iceDiag, isCheckerPanic, LIB_INBOUND_BYTES_TRAP_CODE, LIB_RUNTIME_TRAP_CODES, nativeCodegenDiag, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
@@ -50,6 +51,13 @@ import { publishEarlyExecutableCache, publishEarlyExecutableRoute, readEarlyExec
 import { compilerImplementationIdentity } from "./library/compiler-self-identity.js";
 
 export const VERSION = "0.0.1";
+
+export {
+  EXTERNAL_OBJECT_ABI_STABILITY,
+  RUNTIME_ABI_MARKER,
+  RUNTIME_ABI_VERSION,
+} from "./backend/runtime-abi.js";
+export type { NativeLinkInfo, NativeLinkFeatures } from "./backend/native-link-info.js";
 
 export { InternalCompilerError } from "./errors.js";
 export {
@@ -205,6 +213,9 @@ export interface CompileBaseOptions {
    * lower to direct C ABI calls. Source outputs retain those declarations;
    * archive/system-library inputs join only an executable link. */
   ffiProfilePath?: string;
+  /** Attach the machine-readable external link recipe to an object result.
+   * Valid only with outputKind "obj"; it never invokes a linker. */
+  nativeLinkInfo?: boolean;
 }
 
 /** Executable compile options. This remains the compatibility type for the
@@ -237,7 +248,7 @@ export type CompileArtifact =
   | { kind: "c"; path: string }
   | { kind: "llvm"; path: string }
   | { kind: "asm"; path: string }
-  | { kind: "obj"; path: string }
+  | { kind: "obj"; path: string; nativeLinkInfo?: NativeLinkInfo }
   | {
       kind: "exe";
       path: string;
@@ -1149,6 +1160,17 @@ async function compileTracked(
 ): Promise<CompileRequestResult> {
   entryPath = resolve(entryPath);
   const outputKind = opts.outputKind ?? "exe";
+  if (opts.nativeLinkInfo === true && outputKind !== "obj") {
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag(
+        "SC3002",
+        "native link info is available only for object output",
+        entryPath,
+      )],
+      sourceTexts: new Map(),
+    };
+  }
   if (opts.nativeProgramObject === true &&
       (outputKind !== "exe" || opts.backend !== "llvm")) {
     return {
@@ -1531,6 +1553,31 @@ async function compileTracked(
       }
     }
     await removeStaleSourceArtifacts([opts.outPath]);
+    if (outputKind === "obj" && opts.nativeLinkInfo === true) {
+      const target = nativeCodegenTarget();
+      if (target === null) {
+        throw new InternalCompilerError("native object emitted without a native target");
+      }
+      return {
+        ok: true,
+        artifact: {
+          kind: "obj",
+          path: opts.outPath,
+          nativeLinkInfo: await createNativeLinkInfo({
+            programObject: opts.outPath,
+            target,
+            features: executableNativeFeatures(
+              lowered.module,
+              "llvm",
+              opts.dynamic ?? false,
+              opts.optimization ?? "release",
+            ),
+            ffi,
+            optimization: opts.optimization ?? "release",
+          }),
+        },
+      };
+    }
     return { ok: true, artifact: { kind: outputKind, path: opts.outPath } };
   }
 

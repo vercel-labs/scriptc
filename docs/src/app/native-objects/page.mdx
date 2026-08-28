@@ -1,0 +1,84 @@
+# Native Program Objects
+
+`scriptc build --emit=obj` produces one relocatable macOS arm64 program
+object without invoking clang, a linker, or an SDK. The object defines
+`main`; it is intended to become the program in an external native link. It
+is not a host-callable library—use `scriptc build --lib --profile ...` for
+that interface.
+
+## ABI and runtime contract
+
+The external object ABI is **experimental**. Its `scr_*` function and data
+surface may change before 1.0, so consumers must use the exact
+`@scriptc/runtime` version reported by the same compiler installation. This
+is stricter than semver compatibility.
+
+The object intentionally leaves its selected runtime symbols undefined. It
+also holds a strong reference to `scr_runtime_abi_v1`, which the matching
+runtime defines. Linking an object against a runtime with another ABI marker
+fails at link time with the missing versioned symbol; it cannot become a
+latent runtime incompatibility.
+
+## Machine-readable link information
+
+Add `--print=native-link-info` to emit the object and print a JSON document
+instead of the ordinary path line:
+
+```console
+$ scriptc build main.ts --print=native-link-info -o app.o > link-info.json
+```
+
+The `scriptc.native-link-info.v1` document reports:
+
+- target triple, object format, architecture, minimum OS, and relocation model;
+- the `main` entry and versioned runtime ABI marker;
+- the matching installed `@scriptc/runtime` source-pack root and exact source
+  sets, include paths, defines, and compile flags selected by the program;
+- ordered program, FFI, runtime, and vendor inputs; and
+- required system libraries and frameworks.
+
+Paths inside each source set are relative to `runtime_pack.root`. FFI library
+paths are the manifest-resolved absolute inputs. No path points into scriptc's
+private build cache. The source pack requires a C compiler; the final link
+requires the macOS SDK and linker. Precompiled runtime packs are not shipped
+yet.
+
+## C compiler as linker driver
+
+The repository's `examples/native-object` directory is a runnable example
+with a TypeScript program, a C FFI function, and a small consumer for the JSON
+recipe:
+
+```console
+$ cd examples/native-object
+$ clang -target arm64-apple-macosx14.0.0 -O2 -c native.c -o native.o
+$ scriptc build main.ts --ffi ffi.json --print=native-link-info -o app.o > link-info.json
+$ node link.mjs cc link-info.json app-cc
+$ ./app-cc
+42
+```
+
+The script compiles each reported source set and gives clang only the link
+inputs and system libraries from the document. `--emit=obj` itself remains
+clang-free; this compiler invocation belongs to the external runtime build.
+
+## Native Apple linker
+
+The same example can invoke Apple `ld` directly after compiling the reported
+runtime source sets:
+
+```console
+$ node link.mjs ld link-info.json app-ld
+$ ./app-ld
+42
+```
+
+This lane asks `xcrun` for the selected macOS SDK and linker, then supplies
+the target's minimum OS, every ordered object/archive input, and each reported
+system library. It demonstrates the code-generation boundary precisely:
+scriptc owns `app.o`; an external toolchain owns runtime compilation and the
+platform link.
+
+Outbound FFI declarations retain the same C ABI in clang-compiled LLVM and
+helper-produced object paths. Scalar widths, string/byte pointer-plus-length
+pairs, and callback signatures follow the [Native FFI](/ffi) manifest.

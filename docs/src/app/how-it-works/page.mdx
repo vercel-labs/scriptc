@@ -14,6 +14,13 @@ TypeScript ──tsc: parse + typecheck──▶ lowering ──▶ typed IR ─
 3. **Backends** — `--emit=c` writes readable C and stops; `--emit=llvm` writes textual LLVM IR and stops. Neither source-output command discovers or invokes a native toolchain. On macOS 15+ arm64, `--emit=asm|obj` sends LLVM IR to a version-matched out-of-process helper linked to LLVM 22; it needs no clang or linker and emits macOS 14-targeted artifacts. Executable builds default to LLVM and can fall back to C on a native program outside the LLVM tier (one stderr note; `--backend llvm` pins it and fails with a diagnostic instead). The production <code>wasm32-wasi</code> target never falls back.
 4. **Link** — the runtime is a C library of link-gated feature units: binaries pay only for what they use. A hello-world links nothing but libSystem; a regex-using program links the regex engine; an `http` server links the net stack.
 
+Program objects define <code>main</code> and leave their selected
+<code>scr_*</code> runtime functions undefined. The
+<code>scr_runtime_abi_v1</code> reference is a strong link-time compatibility
+check. <code>--print=native-link-info</code> exposes the exact source runtime
+pack and link ordering for external builds; that object ABI is currently
+experimental and exact-runtime-version compatible, not semver-stable.
+
 Inspect any stage yourself:
 
 ```console

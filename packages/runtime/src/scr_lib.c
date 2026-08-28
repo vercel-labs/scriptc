@@ -149,6 +149,11 @@ static void scr_process_versions_node_cleanup(void) {
   scr_version_str = NULL;
 }
 
+static void scr_process_version_cleanup(void) {
+  scr_str_release(scr_version_str);
+  scr_version_str = NULL;
+}
+
 static void scr_process_versions_openssl_cleanup(void) {
   scr_str_release(scr_versions_openssl_str);
   scr_versions_openssl_str = NULL;
@@ -196,6 +201,7 @@ void scr_lib_session_cleanup(void) {
   scr_process_exec_path_cleanup();
   scr_process_arch_cleanup();
   scr_process_versions_node_cleanup();
+  scr_process_version_cleanup();
   scr_process_versions_openssl_cleanup();
 }
 #endif
@@ -286,6 +292,9 @@ ScrStr *scr_process_version(void) {
   if (!scr_version_str) {
     scr_version_str =
         scr_str_new("v" SCR_NODE_COMPAT_VERSION, sizeof("v" SCR_NODE_COMPAT_VERSION) - 1);
+#ifndef SCR_LIB
+    atexit(scr_process_version_cleanup);
+#endif
   }
   return scr_str_retain(scr_version_str);
 }

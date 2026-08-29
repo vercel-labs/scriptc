@@ -533,7 +533,7 @@ export function createVendorArchives(context: VendorArchiveContext) {
     cacheRoot: string = vendorBuildCacheRoot(),
   ): Promise<string> {
     const flavor = `${sanitize ? "asan" : "plain"}-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
-    const compileArgv = driver.target !== null ? driver.argv : ["clang"];
+    const compileArgv = driver.target !== null ? driver.argv : [process.env["SCRIPTC_CC"] ?? "clang"];
     const arArgv = driver.target !== null ? [...driver.argv.slice(0, 1), "ar"] : ["ar"];
     const vendor = vendorTlsDir();
     const archive = tlsArchivePath(sanitize, driver, buildIdentity, cacheRoot);

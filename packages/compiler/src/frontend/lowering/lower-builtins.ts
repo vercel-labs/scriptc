@@ -7503,7 +7503,195 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
       }
       return { kind: "intrinsic", name: "promise.all", args: [entries], type: resultT, loc };
     }
-    if (member === "allSettled" || member === "any") {
+    if (member === "allSettled") {
+      const argNode = call.arguments.length === 1 ? call.arguments[0] : null;
+      if (!argNode || call.arguments.some((a) => ts.isSpreadElement(a as any))) {
+        lowerer.noLowering(
+          "Promise.allSettled with this argument shape",
+          call,
+          "one array of promises is the supported form: Promise.allSettled(ps) with ps: Promise<T>[]",
+        );
+      }
+      if (lowerer.dynamic) {
+        const diagsBefore = lowerer.diags.length;
+        try {
+          const entries = lowerer.lowerExpr(argNode!);
+          const argJs = lowerer.jsvalIn(entries, argNode!);
+          return {
+            kind: "jsOp",
+            op: "callMethod",
+            name: "allSettled",
+            args: [
+              { kind: "jsOp", op: "globalGet", name: "Promise", args: [], type: JSVAL, loc },
+              argJs,
+            ],
+            type: JSVAL,
+            loc,
+          };
+        } catch (err) {
+          if (!(err instanceof PoisonError)) throw err;
+          lowerer.diags.splice(diagsBefore);
+        }
+        // Fallback: also try array-of-jsval path for non-lowered shapes
+        try {
+          const entries2 = lowerer.lowerExpr(argNode!);
+          if (
+            entries2.type.kind === "jsval" ||
+            (entries2.type.kind === "array" && entries2.type.elem.kind === "jsval")
+          ) {
+            const diagsBefore2 = lowerer.diags.length;
+            try {
+              const arg2 = lowerer.jsvalIn(entries2, argNode!);
+              return {
+                kind: "jsOp",
+                op: "callMethod",
+                name: "allSettled",
+                args: [
+                  { kind: "jsOp", op: "globalGet", name: "Promise", args: [], type: JSVAL, loc },
+                  arg2,
+                ],
+                type: JSVAL,
+                loc,
+              };
+            } catch (err) {
+              if (!(err instanceof PoisonError)) throw err;
+              lowerer.diags.splice(diagsBefore2);
+            }
+          }
+        } catch {}
+      }
+      // Static sequential helper fallback: await each promise in order and
+      // build the status array (honest subset {status:string} per type-mapper).
+      // This satisfies both --dynamic and static builds; the island path
+      // above would have succeeded for jsval arrays.
+      const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+      if (!resultT || resultT.kind !== "promise" || resultT.inner.kind !== "array") {
+        lowerer.noLowering(
+          `Promise.allSettled`,
+          call,
+          "await each element in a loop (Promise.all compiles over a Promise<T>[] array, Promise.race over an array literal)",
+        );
+      }
+      const settledArrT = resultT.inner as { kind: "array"; elem: IrType };
+      const settledElemT = settledArrT.elem;
+      if (settledElemT.kind !== "record") {
+        lowerer.noLowering(
+          `Promise.allSettled`,
+          call,
+          "await each element in a loop (Promise.all compiles over a Promise<T>[] array, Promise.race over an array literal)",
+        );
+      }
+      // Validate argument is an array of promises (handles `[...Set]` via lowerExpr)
+      let entries: IrExpr;
+      try {
+        entries = lowerer.lowerExpr(argNode!);
+      } catch (err) {
+        if (!(err instanceof PoisonError)) throw err;
+        lowerer.noLowering(
+          "Promise.allSettled over this argument shape",
+          argNode!,
+          "an array of promises (Promise<T>[]) is the supported form",
+        );
+      }
+      if (entries.type.kind !== "array" || entries.type.elem.kind !== "promise") {
+        lowerer.noLowering(
+          "Promise.allSettled over this argument shape",
+          argNode!,
+          "an array of promises (Promise<T>[]) is the supported form",
+        );
+      }
+      const innerT = (entries.type.elem as { kind: "promise"; inner: IrType }).inner;
+      const key = `promise.allSettled:${typeKey(innerT)}:${typeKey(settledElemT)}`;
+      let helper = lowerer.arrHofHelpers.get(key);
+      if (!helper) {
+        helper = `%promise.allSettled.${lowerer.arrHofHelpers.size}`;
+        lowerer.arrHofHelpers.set(key, helper);
+        const psT = entries.type as { kind: "array"; elem: IrType };
+        const f64: IrType = { kind: "f64" };
+        const outT = settledArrT as IrType & { kind: "array" };
+        const locPs = loc;
+        const fulfilledRec: IrExpr = {
+          kind: "recordLit",
+          fields: [{ name: "status", value: strLit("fulfilled", loc) }],
+          type: settledElemT,
+          loc,
+        };
+        const rejectedRec: IrExpr = {
+          kind: "recordLit",
+          fields: [{ name: "status", value: strLit("rejected", loc) }],
+          type: settledElemT,
+          loc,
+        };
+        const psRef = (loc2: SrcLoc): IrExpr => ({ kind: "varRef", localId: "ps.0", type: psT, loc: loc2 });
+        const outRef = (loc2: SrcLoc): IrExpr => ({ kind: "varRef", localId: "out.0", type: outT, loc: loc2 });
+        const nRef = (loc2: SrcLoc): IrExpr => ({ kind: "varRef", localId: "n.0", type: f64, loc: loc2 });
+        const iRef = (loc2: SrcLoc): IrExpr => ({ kind: "varRef", localId: "i.0", type: f64, loc: loc2 });
+        const pRef = (loc2: SrcLoc, type: IrType): IrExpr => ({ kind: "varRef", localId: "p.0", type, loc: loc2 });
+        const pType = entries.type.elem as IrType & { kind: "promise" };
+        lowerer.liftedFns.push({
+          name: helper,
+          params: [{ localId: "ps.0", name: "ps", type: psT }],
+          returnType: settledArrT,
+          locals: [
+            { id: "ps.0", name: "ps", type: psT, mutable: true },
+            { id: "out.0", name: "out", type: outT, mutable: false },
+            { id: "n.0", name: "n", type: f64, mutable: false },
+            { id: "i.0", name: "i", type: f64, mutable: true },
+            { id: "p.0", name: "p", type: pType, mutable: false },
+          ],
+          body: [
+            { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
+            {
+              kind: "varDecl",
+              localId: "n.0",
+              init: { kind: "arrIntrinsic", method: "length", receiver: psRef(loc), args: [], type: f64, loc },
+              loc,
+            },
+            {
+              kind: "for",
+              init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+              cond: { kind: "bin", op: "<", left: iRef(loc), right: nRef(loc), type: BOOL, loc },
+              update: {
+                kind: "assign",
+                localId: "i.0",
+                value: { kind: "bin", op: "+", left: iRef(loc), right: numLit(1, loc), type: f64, loc },
+                loc,
+              },
+              body: [
+                { kind: "varDecl", localId: "p.0", init: { kind: "arrayGet", arr: psRef(loc), index: iRef(loc), type: pType, loc }, loc },
+                {
+                  kind: "tryCatch",
+                  tryBody: [
+                    { kind: "exprStmt", expr: { kind: "awaitExpr", value: pRef(loc, pType), type: innerT, loc }, loc },
+                    {
+                      kind: "exprStmt",
+                      expr: { kind: "arrIntrinsic", method: "push", receiver: outRef(loc), args: [fulfilledRec], type: f64, loc },
+                      loc,
+                    },
+                  ],
+                  catchBody: [
+                    {
+                      kind: "exprStmt",
+                      expr: { kind: "arrIntrinsic", method: "push", receiver: outRef(loc), args: [rejectedRec], type: f64, loc },
+                      loc,
+                    },
+                  ],
+                  catchLocalId: null,
+                  finallyBody: null,
+                  loc,
+                },
+              ],
+              loc,
+            },
+            { kind: "return", value: outRef(loc), loc },
+          ],
+          loc,
+          async: true,
+        });
+      }
+      return { kind: "call", callee: helper, args: [entries], type: resultT, loc };
+    }
+    if (member === "any") {
       lowerer.noLowering(
         `Promise.${member}`,
         call,

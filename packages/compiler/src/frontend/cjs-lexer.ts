@@ -434,11 +434,13 @@ function byteAdjacentParen(sf: ts.SourceFile, nameEnd: number, argStart: number)
   return argStart === nameEnd + 1 && sf.text[nameEnd] === "(";
 }
 
-/** The Babel star-copy assignment: a variable statement whose FIRST
+/** The Babel/Tsc star-copy assignment: a variable statement whose FIRST
  * declarator is `ID = require('spec')` or
- * `ID = _interopRequireWildcard(require('spec'))` (the wildcard helper a
+ * `ID = _interopRequireWildcard(require('spec'))` / `ID = __importStar(require('spec'))` /
+ * `ID = __importDefault(require('spec'))` (the wildcard helper a
  * bare identifier, byte-adjacent to `(require` like the star form —
  * probed: a member-qualified helper or one space after its paren misses).
+ * Broadened for T3 maximal to handle tsc/babel interop helpers.
  * Answers [ID, spec]. */
 function starAssignOf(stmt: ts.VariableStatement, sf: ts.SourceFile): [string, string] | null {
   const decl = stmt.declarationList.declarations[0];
@@ -447,11 +449,12 @@ function starAssignOf(stmt: ts.VariableStatement, sf: ts.SourceFile): [string, s
   if (init === undefined) return null;
   const direct = bareRequireSpecOf(init);
   if (direct !== null) return [decl.name.text, direct];
+  const INTEROP_STAR_HELPERS = new Set(["_interopRequireWildcard", "__importStar", "__importDefault", "__importStarAsync"]);
   if (
     ts.isCallExpression(init) &&
     init.questionDotToken === undefined &&
     ts.isIdentifier(init.expression) &&
-    init.expression.text === "_interopRequireWildcard" &&
+    INTEROP_STAR_HELPERS.has(init.expression.text) &&
     init.arguments.length >= 1
   ) {
     const arg0 = init.arguments[0]!;
@@ -460,6 +463,43 @@ function starAssignOf(stmt: ts.VariableStatement, sf: ts.SourceFile): [string, s
     if (spec !== null) return [decl.name.text, spec];
   }
   return null;
+}
+
+/** T3 maximal: `Object.defineProperties(exports, { a: { get: ... }, b: { value: ... } })`
+ * plural form. Each property descriptor that matches scanDefineProperty's
+ * exact shapes contributes its key. Like defineProperty, only the validated
+ * forms add names; the same quirk-faithfulness (byte checks, return shape)
+ * applies per descriptor. */
+function scanDefineProperties(call: ts.CallExpression, sf: ts.SourceFile, out: Set<string>): void {
+  const callee = call.expression;
+  if (
+    !ts.isPropertyAccessExpression(callee) ||
+    callee.questionDotToken !== undefined ||
+    !ts.isIdentifier(callee.expression) ||
+    callee.expression.text !== "Object" ||
+    !ts.isIdentifier(callee.name) ||
+    callee.name.text !== "defineProperties"
+  ) {
+    return;
+  }
+  if (call.arguments.length !== 2) return;
+  const [recv, descriptors] = call.arguments as unknown as [ts.Expression, ts.Expression];
+  if ((!isExportsIdent(recv) && !isModuleExports(recv)) || !ts.isObjectLiteralExpression(descriptors)) return;
+  for (const prop of descriptors.properties) {
+    if (!ts.isPropertyAssignment(prop)) continue;
+    let key: string | null = null;
+    if (ts.isIdentifier(prop.name) && sourceSpellsIdentifier(prop.name, sf) && isIdentTokenNode(prop.name, sf)) key = prop.name.text;
+    else if (ts.isStringLiteral(prop.name)) key = prop.name.text;
+    else continue;
+    if (!ts.isObjectLiteralExpression(prop.initializer)) continue;
+    // Re-use defineProperty's descriptor validation by synthesizing a single-prop call
+    const fakeCall = ts.factory.createCallExpression(
+      ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier("Object"), "defineProperty"),
+      undefined,
+      [recv, ts.factory.createStringLiteral(key), prop.initializer],
+    );
+    scanDefineProperty(fakeCall as ts.CallExpression, sf, out);
+  }
 }
 
 /** `exports` / `module.exports` — the copy loop accepts either spelling. */
@@ -740,6 +780,7 @@ export function cjsLexedExportsOf(source: string, fileName = "module.cjs"): CjsL
       }
     } else if (ts.isCallExpression(n)) {
       scanDefineProperty(n, sf, exports);
+      scanDefineProperties(n, sf, exports);
       if (braceDepth === 0) {
         const starSpec = starExportSpecOf(n, sf);
         if (starSpec !== null) events.push({ pos: n.getStart(sf), kind: "spec", spec: starSpec });

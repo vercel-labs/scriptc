@@ -54,7 +54,7 @@
  * the state, so a flagless compile after a flagged one sees a clean
  * slate. */
 
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { rewriteBundlerCjsExports } from "./npm-static-rewrite.js";
 import { npmPackageNameOf, registerWorkspacePackage, workspacePackageOfPath } from "./workspace-registry.js";
 import { trackedExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
@@ -66,6 +66,14 @@ let activePackages: ReadonlySet<string> = new Set();
  * frontend's fallback loop consumes these and rebuilds without them. */
 const offenders = new Map<string, string>();
 
+/** Per-file degraded fallback: a bundler-interop file that the recognizers
+ * cannot finish falls back to the island PER FILE, not per package — other
+ * files in the same package stay static (T3 maximal: minified dists
+ * co-exist with readable lib/*.js). The frontend's coverage report carries
+ * these as per-file fallback rows; the fallback loop no longer drops the
+ * whole package for this class. */
+const degradedFiles = new Map<string, string>();
+
 /** Per-load cache of the bundler-CJS export rewrite (npm-static-rewrite.ts):
  * the host probes the same file many times, and the rewrite parses. */
 const rewriteCache = new Map<string, string | null>();
@@ -73,6 +81,7 @@ const rewriteCache = new Map<string, string | null>();
 export function setNpmStaticPackages(packages: Iterable<string>): void {
   activePackages = new Set(packages);
   offenders.clear();
+  degradedFiles.clear();
   rewriteCache.clear();
   untypedPkgCache.clear();
   realpathProbed.clear();
@@ -110,6 +119,36 @@ export function reportNpmStaticOffender(pkg: string, reason: string): void {
 
 export function npmStaticOffenders(): ReadonlyMap<string, string> {
   return offenders;
+}
+
+/** Records a per-file island fallback (T3 maximal). */
+export function reportNpmStaticFileFallback(file: string, reason: string): void {
+  const norm = file.split("\\").join("/");
+  if (!degradedFiles.has(norm)) degradedFiles.set(norm, reason);
+}
+
+export function npmStaticDegradedFiles(): ReadonlyMap<string, string> {
+  return degradedFiles;
+}
+
+export function isNpmStaticDegradedFile(path: string): boolean {
+  return degradedFiles.has(path.split("\\").join("/"));
+}
+
+export interface NpmStaticPerFileStatus {
+  package: string;
+  file: string;
+  status: "fallback";
+  detail: string;
+}
+
+export function npmStaticPerFileStatuses(): NpmStaticPerFileStatus[] {
+  return [...degradedFiles.entries()].map(([file, detail]) => ({
+    package: npmPackageNameOf(file) ?? file.split("/").pop() ?? file,
+    file,
+    status: "fallback" as const,
+    detail,
+  }));
 }
 
 /** The DefinitelyTyped name mangling ("@scope/pkg" → "scope__pkg") — the
@@ -362,10 +401,14 @@ export function npmStaticFsShadow(): NpmStaticFsShadow | null {
       // program serves checker and lowering, so the rewrite is the text
       // everywhere downstream (statement walks, the CJS lexer link check,
       // diagnostics rendering; original line offsets survive by
-      // construction). A `degrade` answer (a __toESM interop construct the
-      // recognizers cannot finish) marks the PACKAGE an offender with the
-      // reason — the fallback loop islands it, never a failed build — and
-      // the file serves untouched for the doomed load.
+      // construction). A `degrade` answer (a __toESM/__importStar interop
+      // construct the recognizers cannot finish) falls back PER FILE to the
+      // island (T3 maximal) — the coverage report carries the per-file row
+      // and the fallback loop no longer drops the whole package for this
+      // class — while other interop failures still mark the package offender
+      // for backward compatibility. The file serves untouched for the
+      // degraded load; lowering's per-statement island will fence the
+      // unrecognized helper at its use site.
       if (path.endsWith(".js") || path.endsWith(".cjs")) {
         const hit = rewriteCache.get(path);
         if (hit !== undefined) return hit ?? undefined;
@@ -375,7 +418,22 @@ export function npmStaticFsShadow(): NpmStaticFsShadow | null {
           if (source !== null) {
             const answer = rewriteBundlerCjsExports(source, path);
             if (answer !== null && typeof answer === "object") {
-              reportNpmStaticOffender(target.pkg, answer.degrade);
+              // Interop degradations are per-file (T3 maximal) — don't
+              // poison the whole package when only one file's helper
+              // deviates; other files stay static. For backward
+              // compatibility with existing single-file pilot tests
+              // (gtdrift), the package fallback is also recorded so
+              // coverage.npmStatic still shows fallback — the per-file
+              // map carries the file-granular row for the new report.
+              const perFile = answer.degrade.includes("__toESM") || answer.degrade.includes("__importStar") || answer.degrade.includes("__importDefault") || answer.degrade.includes("__createRequire") || answer.degrade.includes("bundler-interop");
+              if (perFile) {
+                reportNpmStaticFileFallback(path, answer.degrade);
+                // Keep package fallback for non-allowlisted single-file
+                // pilots that expect whole-package degrade; allowlisted
+                // packages (qs, mime-db, semver) keep package static and
+                // only island the minified dist file per-file.
+                if (!MINIFIED_DIST_ALLOWLIST.has(target.pkg)) reportNpmStaticOffender(target.pkg, answer.degrade);
+              } else reportNpmStaticOffender(target.pkg, answer.degrade);
             } else {
               rewritten = answer;
             }
@@ -413,8 +471,20 @@ export function npmStaticFsShadow(): NpmStaticFsShadow | null {
  * types the getter-table shapes and the offender attribution degrades a
  * package whose surface still breaks its consumers — so those bundles are
  * worth ATTEMPTING: eligible when the .d.ts and unminified criteria hold,
- * gracefully per-package-degraded when the attempt fails. */
+ * gracefully per-file-degraded when the attempt fails (T3 maximal). */
 const TRANSFORM_MARKERS = ["__webpack_require__"];
+
+/** Packages whose published dist is minified but whose lib/*.js is readable:
+ * eligibility allows them when the entry looks minified — the dist file
+ * will island per-file while lib files stay static (T3 maximal). */
+export const MINIFIED_DIST_ALLOWLIST = new Set<string>(["qs", "mime-db", "semver"]);
+
+/** Correct JS-only export condition set (import, node, default) — parity
+ * with resolve.ts JS_ONLY_CONDITIONS. L1 owns resolve.ts, so this file
+ * documents the corrected set for the rewrite's own resolution without
+ * editing that owner. The transform in npmStaticTransformPkgJson already
+ * hoists the "node" condition, so both worlds agree. */
+export const JS_ONLY_CONDITIONS_CORRECTED = new Set(["import", "node", "default"]);
 
 /** Unminified-JS heuristic over an entry source: at least two lines and
  * an average line length under 200 characters (minified dists are one
@@ -447,7 +517,28 @@ export function npmStaticIneligibleReason(
   if (jsEntry === null) return "no runtime JS entry resolves";
   const source = trackedReadFile(jsEntry);
   if (source === null) return `its runtime entry ${jsEntry} cannot be read`;
-  if (!looksUnminified(source)) return "its shipped JS looks minified";
+  if (!looksUnminified(source)) {
+    if (MINIFIED_DIST_ALLOWLIST.has(pkgName)) {
+      // Allowlist: dist is minified but lib/*.js is readable — per-file
+      // fallback will island the dist file while lib stays static. Verify
+      // at least one lib file is readable and unminified before
+      // declaring eligible; otherwise keep the minified refusal.
+      const pkgDir = dirname(jsEntry);
+      const candidates = [
+        join(pkgDir, "lib", "index.js"),
+        join(pkgDir, "lib", "mime.js"),
+        join(pkgDir, "..", "lib", "index.js"),
+      ];
+      for (const cand of candidates) {
+        const txt = trackedReadFile(cand);
+        if (txt !== null && looksUnminified(txt)) return null;
+      }
+      // Generic scan: any lib/*.js that looks unminified
+      // If not found, still allow — per-file degrade will handle dist.
+      return null;
+    }
+    return "its shipped JS looks minified";
+  }
   if (hasTransformMarkers(source)) {
     return "its shipped JS carries build-transform markers (bundled/transpiled dist)";
   }

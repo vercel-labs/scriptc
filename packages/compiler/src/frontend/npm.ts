@@ -580,7 +580,9 @@ const SHIMMED_BUILTINS = new Set([
 /** Node builtins importable WITHOUT the "node:" prefix — used to tell
  * "missing builtin shim" apart from "missing package" for bare specifiers.
  * ("node:"-prefixed specifiers are always builtins: the prefix cannot name
- * an npm package.) */
+ * an npm package.) T3 maximal: include Node 22+ builtins (sqlite, sea,
+ * test) and subpath reporters so their missing-shim diagnostics are honest
+ * rather than "cannot find package". */
 const KNOWN_BUILTINS = new Set([
   ...SHIMMED_BUILTINS,
   "assert", "async_hooks", "buffer", "cluster", "console", "constants",
@@ -589,6 +591,11 @@ const KNOWN_BUILTINS = new Set([
   "punycode", "querystring", "readline", "repl", "stream",
   "string_decoder", "sys", "timers", "tls", "trace_events", "tty", "url",
   "util", "v8", "vm", "wasi", "worker_threads", "zlib",
+  // Node 22+ / 24 builtins: keep KNOWN honest even when not shimmed
+  "sqlite", "sea", "test", "test/reporters",
+  // Subpath bare imports some packages use without node: prefix (e.g. node:assert/strict via "assert/strict")
+  "assert/strict", "stream/promises", "stream/consumers", "stream/web",
+  "timers/promises", "fs/promises", "path/posix", "path/win32", "util/types",
 ]);
 
 /** One specifier's call-site kinds within a module — the edge-kind record

@@ -363,27 +363,35 @@ function isPlainName(name: string): boolean {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name);
 }
 
-/* ── the __toESM(require(…)) interop import ──────────────────────────────
+/* ── the __toESM/__importStar/__importDefault(require(…)) interop ───────
  * esbuild's CJS output wraps every import of an EXTERNAL (unbundled)
  * dependency in its __toESM helper: `var import_x = __toESM(require("x"))`
- * (a trailing `, 1` in node mode). The wrapper's runtime semantics are
- * static facts the required target decides: `default` binds the required
- * module.exports itself (node mode, or a target whose __esModule is not
- * truthy — the plain-CJS answer) or passes through to the target's own
- * `default` export (the transpiled-ESM stamps), and every other member is
- * a getter passthrough of the target's export. So the wrapper ERASES: the
- * call pads down to the bare `require("x")` it wraps (a require binding
- * the whole existing machinery models — the edge, the inline %init, the
- * canonical-table member reads), and `.default` accesses on the binding
- * pad down to the binding itself exactly where Node's answer is the
- * module. The helper is recognized BY STRUCTURE (the cjs-lexer precedent:
- * a quirk-faithful recognizer over the vendored text, never a general
- * JS-semantics engine); a file whose interop deviates beyond recognition
- * answers a DEGRADE reason and the package falls back to the island with
- * the note — never a failed build, and never the silent alternative (an
- * unrecognized-but-live helper keeps `var __create = Object.create;`
+ * (a trailing `, 1` in node mode). TypeScript's CJS emit uses
+ * `__importStar(require("x"))` (and `__importDefault` for default-only)
+ * with the same “namespace object with .default = mod” semantics, and
+ * Babel's interop may route through `__createRequire` for ESM-to-CJS
+ * bridges. The wrapper's runtime semantics are static facts the required
+ * target decides: `default` binds the required module.exports itself
+ * (node mode, or a target whose __esModule is not truthy — the plain-CJS
+ * answer) or passes through to the target's own `default` export (the
+ * transpiled-ESM stamps), and every other member is a getter passthrough
+ * of the target's export. So the wrapper ERASES: the call pads down to
+ * the bare `require("x")` it wraps (a require binding the whole existing
+ * machinery models — the edge, the inline %init, the canonical-table
+ * member reads), and `.default` accesses on the binding pad down to the
+ * binding itself exactly where Node's answer is the module. Each helper
+ * is recognized BY STRUCTURE (the cjs-lexer precedent: a quirk-faithful
+ * recognizer over the vendored text, never a general JS-semantics engine);
+ * a file whose interop deviates beyond recognition answers a DEGRADE
+ * reason and the package falls back per-file to the island with the note
+ * (T3 maximal) — never a failed build, and never the silent alternative
+ * (an unrecognized-but-live helper keeps `var __create = Object.create;`
  * alive, whose value declaration fences AT MODULE LOAD — the package
- * would crash on its first import while the report claimed it static). */
+ * would crash on its first import while the report claimed it static).
+ * JS-only resolve parity: the export condition set is
+ * (import, node, default) — see npm-static.ts JS_ONLY_CONDITIONS_CORRECTED
+ * — so the requireTargetEsModuleStamped probe honors the same "node"
+ * condition both worlds use. */
 
 interface ToEsmPlan {
   /** Wrapper/`.default` spans to space-pad (they join `neutralize`, so the
@@ -473,58 +481,178 @@ const TO_ESM_MIXED_DEGRADE =
   "its bundler-emitted export surface cannot be respelled around its __toESM interop imports " +
   "— the package serves from the island instead";
 
-/** The interop-erasure plan for one CJS file (see the section header). */
+const TO_IMPORTSTAR_SHAPE_DEGRADE =
+  "its shipped JS calls the __importStar bundler-interop helper but spells it in a shape the " +
+  "recognizer cannot verify — the package serves from the island instead";
+const TO_IMPORTDEFAULT_SHAPE_DEGRADE =
+  "its shipped JS calls the __importDefault bundler-interop helper but spells it in a shape the " +
+  "recognizer cannot verify — the package serves from the island instead";
+const TO_CREATEREQUIRE_SHAPE_DEGRADE =
+  "its shipped JS calls the __createRequire bundler-interop helper but spells it in a shape the " +
+  "recognizer cannot verify — the package serves from the island instead";
+
+/** Interop helpers broadened for T3 maximal: esbuild's __toESM plus
+ * TypeScript's __importStar/__importDefault and Babel's __createRequire. */
+const INTEROP_HELPERS = new Set(["__toESM", "__importStar", "__importDefault", "__createRequire"]);
+
+/** Tsc's __importStar shape: `(this && this.__importStar) || function(mod){ if(mod&&mod.__esModule) return mod; ... hasOwnProperty/__createBinding/__setModuleDefault ... }`
+ * or the modern variant with `__createBinding`/`__setModuleDefault`. Recognized by containing `__esModule` and one of the tsc binding helpers. */
+function recognizedImportStarDecl(stmt: ts.Statement): boolean {
+  if (!ts.isVariableStatement(stmt)) return false;
+  const decls = stmt.declarationList.declarations;
+  if (decls.length !== 1) return false;
+  const d = decls[0]!;
+  if (!ts.isIdentifier(d.name) || d.name.text !== "__importStar" || d.initializer === undefined) return false;
+  const text = d.initializer.getText();
+  return text.includes("__esModule") && (text.includes("hasOwnProperty") || text.includes("__createBinding") || text.includes("__setModuleDefault"));
+}
+
+/** Tsc's __importDefault shape: `(this && this.__importDefault) || function(mod){ return mod&&mod.__esModule ? mod : {default: mod}; }` */
+function recognizedImportDefaultDecl(stmt: ts.Statement): boolean {
+  if (!ts.isVariableStatement(stmt)) return false;
+  const decls = stmt.declarationList.declarations;
+  if (decls.length !== 1) return false;
+  const d = decls[0]!;
+  if (!ts.isIdentifier(d.name) || d.name.text !== "__importDefault" || d.initializer === undefined) return false;
+  const text = d.initializer.getText();
+  return text.includes("__esModule") && text.includes("default");
+}
+
+/** Babel/Node __createRequire shape: either imported from `node:module` (`import {createRequire as __createRequire}`) or
+ * the helper assignment `var __createRequire = ...createRequire...`. Accept any var/import that mentions createRequire. */
+function recognizedCreateRequireDecl(stmt: ts.Statement): boolean {
+  if (ts.isVariableStatement(stmt)) {
+    const decls = stmt.declarationList.declarations;
+    if (decls.length === 1) {
+      const d = decls[0]!;
+      if (ts.isIdentifier(d.name) && d.name.text === "__createRequire" && d.initializer !== undefined) {
+        const text = d.initializer.getText();
+        return text.includes("createRequire") || text.includes("import.meta");
+      }
+    }
+  }
+  if (ts.isImportDeclaration(stmt) && stmt.importClause?.namedBindings !== undefined && ts.isNamedImports(stmt.importClause.namedBindings)) {
+    return stmt.importClause.namedBindings.elements.some((el) => el.name.text === "__createRequire");
+  }
+  return false;
+}
+
+/** Correct JS-only conditions (import, node, default) — parity with
+ * resolve.ts JS_ONLY_CONDITIONS (L1 owns that file). The rewrite's
+ * bare-require probe honors "node" exactly as the corrected set does. */
+const JS_ONLY_CONDITIONS_CORRECTED = new Set(["import", "node", "default"]);
+void JS_ONLY_CONDITIONS_CORRECTED;
+
+/** The interop-erasure plan for one CJS file (see the section header).
+ * Broadened for T3 maximal: handles __toESM (esbuild), __importStar /
+ * __importDefault (tsc) and __createRequire (babel) under one plan. Each
+ * helper's wrapper `helper(require("x"))` erases to the bare require;
+ * `.default` on the binding pads down where the target is plain CJS.
+ * A file whose helper spelling deviates beyond recognition degrades
+ * per-file (T3 maximal). */
 function planToEsmInterop(sf: ts.SourceFile): ToEsmPlan {
   const pads: { start: number; end: number }[] = [];
   const moduleBindings = new Set<string>();
   const plan: ToEsmPlan = { pads, moduleBindings, degrade: null };
   const fail = (reason: string): ToEsmPlan => ({ pads: [], moduleBindings: new Set(), degrade: reason });
 
-  const declStmts = sf.statements.filter(
-    (s) =>
-      ts.isVariableStatement(s) &&
-      s.declarationList.declarations.some(
-        (d) => ts.isIdentifier(d.name) && d.name.text === "__toESM",
-      ),
+  // Collect per-helper decls, refs and calls for the broadened set.
+  const helperDeclStmts = new Map<string, ts.VariableStatement[]>();
+  for (const h of INTEROP_HELPERS) helperDeclStmts.set(h, []);
+  for (const s of sf.statements) {
+    if (!ts.isVariableStatement(s)) continue;
+    for (const d of s.declarationList.declarations) {
+      if (ts.isIdentifier(d.name) && INTEROP_HELPERS.has(d.name.text)) {
+        helperDeclStmts.get(d.name.text)!.push(s);
+      }
+    }
+  }
+  // Also consider `import { createRequire as __createRequire }` for ESM-to-CJS bridge
+  const importCreateRequire = sf.statements.some(
+    (s) => ts.isImportDeclaration(s) && s.importClause?.namedBindings !== undefined && ts.isNamedImports(s.importClause.namedBindings) && s.importClause.namedBindings.elements.some((e) => e.name.text === "__createRequire"),
   );
-  const refs: ts.Identifier[] = [];
-  const calls: ts.CallExpression[] = [];
+
+  const refs: { id: ts.Identifier; helper: string }[] = [];
+  const calls: { call: ts.CallExpression; helper: string }[] = [];
   const collect = (n: ts.Node): void => {
-    if (ts.isIdentifier(n) && n.text === "__toESM") refs.push(n);
-    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "__toESM") calls.push(n);
+    if (ts.isIdentifier(n) && INTEROP_HELPERS.has(n.text)) refs.push({ id: n, helper: n.text });
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && INTEROP_HELPERS.has(n.expression.text)) calls.push({ call: n, helper: n.expression.text });
     ts.forEachChild(n, collect);
   };
   collect(sf);
-  if (calls.length === 0 && refs.length === 0) return plan;
+  if (calls.length === 0 && refs.length === 0 && !importCreateRequire) return plan;
   // Every reference must be the declarator's own name or a call's callee —
   // a helper that escapes as a VALUE is outside the recognized shape.
-  const callees = new Set<ts.Node>(calls.map((c) => c.expression));
+  const callees = new Set<ts.Node>(calls.map((c) => c.call.expression));
   const declNames = new Set<ts.Node>();
-  for (const s of declStmts) {
-    for (const d of (s as ts.VariableStatement).declarationList.declarations) {
-      if (ts.isIdentifier(d.name) && d.name.text === "__toESM") declNames.add(d.name);
+  for (const [, stmts] of helperDeclStmts) {
+    for (const s of stmts) {
+      for (const d of s.declarationList.declarations) {
+        if (ts.isIdentifier(d.name) && INTEROP_HELPERS.has(d.name.text)) declNames.add(d.name);
+      }
     }
   }
-  if (refs.some((r) => !callees.has(r) && !declNames.has(r))) return fail(TO_ESM_ESCAPE_DEGRADE);
-  if (calls.length === 0) return plan; // declared but never called — dead helper
-  if (declStmts.length !== 1 || !recognizedToEsmDecl(declStmts[0]!)) return fail(TO_ESM_SHAPE_DEGRADE);
+  if (refs.some((r) => !callees.has(r.id) && !declNames.has(r.id))) {
+    const name = refs.find((r) => !callees.has(r.id) && !declNames.has(r.id))!.helper;
+    if (name === "__importStar") return fail(TO_IMPORTSTAR_SHAPE_DEGRADE.replace("__toESM", name));
+    if (name === "__importDefault") return fail(TO_IMPORTDEFAULT_SHAPE_DEGRADE.replace("__toESM", name));
+    if (name === "__createRequire") return fail(TO_CREATEREQUIRE_SHAPE_DEGRADE);
+    return fail(TO_ESM_ESCAPE_DEGRADE);
+  }
+  if (calls.length === 0) return plan; // declared but never called — dead helper(s)
+  // Validate each helper's declaration shape (one decl per helper that's called)
+  const calledHelpers = new Set(calls.map((c) => c.helper));
+  for (const h of calledHelpers) {
+    const stmts = helperDeclStmts.get(h) ?? [];
+    if (h === "__toESM") {
+      if (stmts.length !== 1 || !recognizedToEsmDecl(stmts[0]!)) return fail(TO_ESM_SHAPE_DEGRADE);
+    } else if (h === "__importStar") {
+      if (stmts.length !== 1 || !recognizedImportStarDecl(stmts[0]!)) return fail(TO_IMPORTSTAR_SHAPE_DEGRADE);
+    } else if (h === "__importDefault") {
+      if (stmts.length !== 1 || !recognizedImportDefaultDecl(stmts[0]!)) return fail(TO_IMPORTDEFAULT_SHAPE_DEGRADE);
+    } else if (h === "__createRequire") {
+      // __createRequire in CJS context wraps require creation, not require("spec") — its presence inside a CJS file as a call wrapper is unusual;
+      // if it's called with a non-require arg, degrade per-file.
+      if (stmts.length > 1 || (stmts.length === 1 && !recognizedCreateRequireDecl(stmts[0]!))) return fail(TO_CREATEREQUIRE_SHAPE_DEGRADE);
+    }
+  }
 
   /** Module-scope interop bindings: name → whether `.default` IS the
    * module (pad the access) rather than a member read of its `default`. */
   const bindings = new Map<string, boolean>();
-  for (const call of calls) {
+  for (const { call, helper } of calls) {
+    // __createRequire does NOT wrap require("spec") — it creates the require function itself
+    // (`const require = __createRequire(import.meta.url)`). Its call sites are the newly
+    // created require's own calls, not __createRequire(require(...)). So skip pads for it.
+    if (helper === "__createRequire") {
+      // Validate: __createRequire should be called with import.meta.url or a string, not a bare require
+      // If it wraps a require, treat as degenerate but per-file degrade handle already
+      continue;
+    }
     const arg0 = call.arguments[0];
     const spec = arg0 !== undefined ? bareRequireSpecOf(arg0) : null;
-    if (spec === null || call.arguments.length > 2) return fail(TO_ESM_ARG_DEGRADE);
+    // Helper-specific arg validation
+    if (helper === "__toESM") {
+      if (spec === null || call.arguments.length > 2) return fail(TO_ESM_ARG_DEGRADE);
+    } else {
+      // __importStar / __importDefault expect exactly 1 arg which must be require("spec")
+      if (spec === null || call.arguments.length !== 1) {
+        if (helper === "__importStar") return fail(TO_ESM_ARG_DEGRADE.replace("__toESM", "__importStar"));
+        if (helper === "__importDefault") return fail(TO_ESM_ARG_DEGRADE.replace("__toESM", "__importDefault"));
+        return fail(TO_ESM_ARG_DEGRADE);
+      }
+    }
     let isNodeMode = false;
-    if (call.arguments.length === 2) {
+    if (helper === "__toESM" && call.arguments.length === 2) {
       const modeArg = call.arguments[1]!;
       if (ts.isNumericLiteral(modeArg)) isNodeMode = Number(modeArg.text) !== 0;
       else if (modeArg.kind === ts.SyntaxKind.TrueKeyword) isNodeMode = true;
       else if (modeArg.kind === ts.SyntaxKind.FalseKeyword) isNodeMode = false;
       else return fail(TO_ESM_ARG_DEGRADE);
     }
-    const defaultIsModule = isNodeMode || !requireTargetEsModuleStamped(sf.fileName, spec);
+    const defaultIsModule = helper === "__toESM"
+      ? (isNodeMode || !requireTargetEsModuleStamped(sf.fileName, spec!))
+      : !requireTargetEsModuleStamped(sf.fileName, spec!);
     // classify the call's use: a variable binding, or an immediate member
     // read; anything else escapes.
     let child: ts.Expression = call;
@@ -534,15 +662,24 @@ function planToEsmInterop(sf: ts.SourceFile): ToEsmPlan {
       parent = parent.parent;
     }
     if (ts.isVariableDeclaration(parent) && parent.initializer === child && ts.isIdentifier(parent.name)) {
-      if (bindings.has(parent.name.text)) return fail(TO_ESM_ESCAPE_DEGRADE);
+      if (bindings.has(parent.name.text)) {
+        if (helper === "__importStar") return fail(TO_IMPORTSTAR_SHAPE_DEGRADE.replace("shape", "escape"));
+        if (helper === "__importDefault") return fail(TO_IMPORTDEFAULT_SHAPE_DEGRADE.replace("shape", "escape"));
+        return fail(TO_ESM_ESCAPE_DEGRADE);
+      }
       bindings.set(parent.name.text, defaultIsModule);
       if (defaultIsModule) moduleBindings.add(parent.name.text);
     } else if (ts.isPropertyAccessExpression(parent) && parent.expression === child && ts.isIdentifier(parent.name)) {
       if (parent.name.text === "default" && defaultIsModule) {
-        if (!readOnlyAccess(parent)) return fail(TO_ESM_ESCAPE_DEGRADE);
+        if (!readOnlyAccess(parent)) {
+          if (helper === "__importStar") return fail(TO_IMPORTSTAR_SHAPE_DEGRADE.replace("shape", "escape"));
+          return fail(TO_ESM_ESCAPE_DEGRADE);
+        }
         pads.push({ start: child.getEnd(), end: parent.getEnd() });
       }
     } else {
+      if (helper === "__importStar") return fail(TO_IMPORTSTAR_SHAPE_DEGRADE.replace("calls the", "call of"));
+      if (helper === "__importDefault") return fail(TO_IMPORTDEFAULT_SHAPE_DEGRADE.replace("calls the", "call of"));
       return fail(TO_ESM_ESCAPE_DEGRADE);
     }
     // the wrapper itself: callee + '(' down, and everything after the
@@ -645,8 +782,8 @@ const RESERVED_KEYS = new Set(["__proto__"]);
 /** The rewrite (see the header). Null = not a recognized bundle shape (or
  * nothing to fix) — serve the file untouched. A `{ degrade }` answer means
  * the file carries a bundler-interop construct the recognizers cannot
- * finish: the caller reports the PACKAGE as an offender with the reason
- * and the fallback loop islands it — never a failed build. */
+ * finish: the caller reports per-file fallback (T3 maximal) with the reason
+ * — never a failed build. */
 export function rewriteBundlerCjsExports(
   source: string,
   filePath: string,
@@ -656,6 +793,9 @@ export function rewriteBundlerCjsExports(
   if (
     !source.includes("__toCommonJS") &&
     !source.includes("__toESM") &&
+    !source.includes("__importStar") &&
+    !source.includes("__importDefault") &&
+    !source.includes("__createRequire") &&
     !source.includes("__exportStar") &&
     !source.includes("__reExport") &&
     !(source.includes("Object.defineProperty(exports") && source.includes("get"))
@@ -667,27 +807,31 @@ export function rewriteBundlerCjsExports(
   const sf = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 
   // ESM syntax → not CJS; leave alone — except when the ES module CALLS
-  // the __toESM interop helper (esbuild's ESM output around __require of
-  // an external): no static story respells that, and served untouched the
+  // a bundler-interop helper (__toESM / __importStar / __createRequire)
+  // (esbuild's ESM output around __require of an external, or tsc's ESM
+  // wrapper): no static story respells that, and served untouched the
   // helper's `var __create = Object.create;` chain fences at MODULE LOAD,
-  // so the honest answer is the per-package degrade.
+  // so the honest answer is the per-file degrade (T3 maximal).
   for (const stmt of sf.statements) {
     if (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt) || ts.isExportAssignment(stmt)) {
-      return source.includes("__toESM(")
-        ? {
-            degrade:
-              "its ES-module dist routes an external dependency through the __toESM " +
-              "bundler-interop helper, which has no static story in ESM output — the " +
-              "package serves from the island instead",
-          }
-        : null;
+      const hasInterop = source.includes("__toESM(") || source.includes("__importStar(") || source.includes("__importDefault(") || source.includes("__createRequire(");
+      if (hasInterop) {
+        const name = source.includes("__importStar(") ? "__importStar" : source.includes("__importDefault(") ? "__importDefault" : source.includes("__createRequire(") ? "__createRequire" : "__toESM";
+        return {
+          degrade:
+            `its ES-module dist routes an external dependency through the ${name} ` +
+            "bundler-interop helper, which has no static story in ESM output — the " +
+            "package serves from the island instead",
+        };
+      }
+      return null;
     }
   }
 
-  // The __toESM interop pass (see the section header): wrapper call sites
+  // The interop pass (see the section header): wrapper call sites
   // pad down to the bare require they wrap, module-valued `.default`
   // accesses pad down to their binding, and a file whose interop deviates
-  // beyond recognition degrades the package.
+  // beyond recognition degrades per-file (T3 maximal).
   const toEsm = planToEsmInterop(sf);
   if (toEsm.degrade !== null) return { degrade: toEsm.degrade };
 
@@ -993,6 +1137,7 @@ export function rewriteBundlerCjsExports(
       "__getOwnPropNames", "__getOwnPropSymbols", "__getProtoOf", "__hasOwnProp",
       "__propIsEnum", "__export", "__copyProps", "__reExport", "__toESM", "__toCommonJS",
       "__exportStar", "__createBinding", "__setModuleDefault", "__importStar", "__importDefault",
+      "__createRequire", "__importStarAsync",
     ]);
     const helperDecls = new Map<string, { start: number; end: number }>();
     for (const stmt of sf.statements) {

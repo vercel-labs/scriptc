@@ -9,6 +9,8 @@
  * this registry: real package directory → package name, filled by the
  * resolver as workspace links are discovered and reset per load. */
 
+import { trackedRealpath } from "./input-tracker.js";
+
 const workspacePackageDirs = new Map<string, string>();
 
 export function registerWorkspacePackage(name: string, realDir: string): void {
@@ -61,15 +63,41 @@ export function packageNameOfSpecifier(specifier: string): string {
  * segment (nested installs blame the innermost package), scoped-aware:
  * ".../node_modules/@scope/pkg/dist/x.d.ts" → "@scope/pkg". Paths with no
  * node_modules segment answer their registered workspace package (the
- * realpath'd home of a symlinked workspace install), else null. */
+ * realpath'd home of a symlinked workspace install), else null.
+ * pnpm symlink farming: dependencies live next to the REAL location
+ * (node_modules/.pnpm/pkg@ver/node_modules/pkg) — the walk must start
+ * from the realpath so the store's isolated node_modules is visible,
+ * while workspace symlinks escape node_modules entirely and fall back
+ * to the registry. */
 export function npmPackageNameOf(file: string): string | null {
-  const parts = file.split("/");
-  const i = parts.lastIndexOf("node_modules");
-  if (i < 0 || i + 1 >= parts.length) return workspacePackageOfPath(file);
-  const first = parts[i + 1]!;
-  if (first.startsWith("@")) {
-    const second = parts[i + 2];
-    return second ? `${first}/${second}` : first;
+  // Prefer the realpath for pnpm virtual-store and workspace symlinks;
+  // fall back to the logical path when realpath is unavailable (file
+  // not yet on disk during probe) so both install shapes classify.
+  const candidates = (() => {
+    const real = trackedRealpath(file);
+    if (real !== null) {
+      const normReal = real.split("\\").join("/");
+      const normFile = file.split("\\").join("/");
+      return normReal !== normFile ? [normReal, normFile] : [normFile];
+    }
+    return [file.split("\\").join("/")];
+  })();
+  for (const cand of candidates) {
+    const parts = cand.split("/");
+    const i = parts.lastIndexOf("node_modules");
+    if (i >= 0 && i + 1 < parts.length) {
+      const first = parts[i + 1]!;
+      // pnpm's content-addressable store uses `.../.pnpm/<name@ver>/node_modules/<name>`
+      // — the intermediate `.pnpm` directory is not a package.
+      if (first === ".pnpm") continue;
+      if (first.startsWith("@")) {
+        const second = parts[i + 2];
+        return second ? `${first}/${second}` : first;
+      }
+      return first;
+    }
+    const ws = workspacePackageOfPath(cand);
+    if (ws !== null) return ws;
   }
-  return first;
+  return workspacePackageOfPath(file.split("\\").join("/"));
 }

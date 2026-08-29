@@ -16,7 +16,7 @@ importers:
         version: 24.13.3
       eslint:
         specifier: ^9.20.0
-        version: 9.39.5
+        version: 9.39.5(supports-color@7.2.0)
       tsx:
         specifier: ^4.19.0
         version: 4.23.0
@@ -25,13 +25,16 @@ importers:
         version: 5.9.3
       typescript-eslint:
         specifier: ^8.24.0
-        version: 8.63.0(eslint@9.39.5)(typescript@5.9.3)
+        version: 8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
       vercel:
         specifier: 58.1.0
-        version: 58.1.0(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(rollup@4.62.2)
+        version: 58.1.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(rollup@4.62.2)(supports-color@7.2.0)
       vitest:
         specifier: ^3.0.0
-        version: 3.2.7(@edge-runtime/vm@3.2.0)(@types/node@24.13.3)(tsx@4.23.0)
+        version: 3.2.7(@edge-runtime/vm@3.2.0)(@types/node@24.13.3)(supports-color@7.2.0)(tsx@4.23.0)
+      zod:
+        specifier: ^3.22.4
+        version: 3.22.4
 
   packages/cli:
     dependencies:
@@ -89,14 +92,14 @@ packages:
     resolution: {integrity: sha512-0dEVyRLM/lG4gp1R/Ik5bfPl/1wX00xFwd5KcNH602tzBa09oF7pbTKETEhR1GjZ75K6OJnYFu8II2dyMhONMw==}
     engines: {node: '>=16'}
 
-  '@emnapi/core@2.0.0-alpha.3':
-    resolution: {integrity: sha512-AZypUeJ/yByuxyS7BlSNRDOMLMlROYtjYdIAuBmJssVz1UJDSeYxLrdizhXCFYhedC5bqd/ASy8EuNXbVVXp9g==}
+  '@emnapi/core@1.11.3':
+    resolution: {integrity: sha512-zLpS5asjEb7lq8jYLq37N6XKaE41DIexlY1rF/z4/tIl3wo13Sqm28fRyfIsKZD+NZ8mM5RoKkpW/rBcuoSZSg==}
 
-  '@emnapi/runtime@2.0.0-alpha.3':
-    resolution: {integrity: sha512-hFPAhMUjJD9BSyCANEISPOogeXC9Zo9ZQl7L6vKnaVsMkCtzznaW/naYypeyl0Gv5rYfWYsZbpixTMpjDJzQeA==}
+  '@emnapi/runtime@1.11.3':
+    resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
 
-  '@emnapi/wasi-threads@2.0.1':
-    resolution: {integrity: sha512-9DsSk+o5NBX0CCJT8s0EROGSGxjR/tKu6aBTaVyq+SjAEQH4XcdcRxPBRzsBLizTTJ49MJjF+jgu3qnO9GLQcQ==}
+  '@emnapi/wasi-threads@1.2.3':
+    resolution: {integrity: sha512-ELEBe8PsLvvJ6QMr0zLt8ffvOHW/dc1m3CEzNMg7aJUv3bMaoDtw2TXyDAwkYBuroxxuHEwhRTLJSe5sya547g==}
 
   '@esbuild/aix-ppc64@0.27.0':
     resolution: {integrity: sha512-KuZrd2hRjz01y5JK9mEBSD3Vj3mbCvemhT466rSuJYeE/hjuBrHfjjcjMdTm/sz7au+++sdbJZJmuBwQLuw68A==}
@@ -1567,6 +1570,7 @@ packages:
   eslint@9.39.5:
     resolution: {integrity: sha512-DgZS62aPLXKlnxILS/AYCoRvHaZeXceIzlXPkkGGzJWSow1aEk0lbTlxUSlyjC8jcaKxAdOnTDz+o1JFSBsyjw==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     peerDependencies:
       jiti: '*'
@@ -2552,6 +2556,9 @@ packages:
   zod@4.1.11:
     resolution: {integrity: sha512-WPsqwxITS2tzx1bzhIKsEs19ABD5vmCVa4xBo2tq/SrV4RNZtfws1EnCWQXM6yh8bD08a1idvkB5MZSBiZsjwg==}
 
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
 snapshots:
 
   '@bytecodealliance/preview2-shim@0.17.6': {}
@@ -2568,18 +2575,18 @@ snapshots:
     dependencies:
       '@edge-runtime/primitives': 4.1.0
 
-  '@emnapi/core@2.0.0-alpha.3':
+  '@emnapi/core@1.11.3':
     dependencies:
-      '@emnapi/wasi-threads': 2.0.1
+      '@emnapi/wasi-threads': 1.2.3
       tslib: 2.8.1
     optional: true
 
-  '@emnapi/runtime@2.0.0-alpha.3':
+  '@emnapi/runtime@1.11.3':
     dependencies:
       tslib: 2.8.1
     optional: true
 
-  '@emnapi/wasi-threads@2.0.1':
+  '@emnapi/wasi-threads@1.2.3':
     dependencies:
       tslib: 2.8.1
     optional: true
@@ -2740,17 +2747,17 @@ snapshots:
   '@esbuild/win32-x64@0.28.1':
     optional: true
 
-  '@eslint-community/eslint-utils@4.9.1(eslint@9.39.5)':
+  '@eslint-community/eslint-utils@4.9.1(eslint@9.39.5(supports-color@7.2.0))':
     dependencies:
-      eslint: 9.39.5
+      eslint: 9.39.5(supports-color@7.2.0)
       eslint-visitor-keys: 3.4.3
 
   '@eslint-community/regexpp@4.12.2': {}
 
-  '@eslint/config-array@0.21.2':
+  '@eslint/config-array@0.21.2(supports-color@7.2.0)':
     dependencies:
       '@eslint/object-schema': 2.1.7
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
       minimatch: 3.1.5
     transitivePeerDependencies:
       - supports-color
@@ -2763,10 +2770,10 @@ snapshots:
     dependencies:
       '@types/json-schema': 7.0.15
 
-  '@eslint/eslintrc@3.3.6':
+  '@eslint/eslintrc@3.3.6(supports-color@7.2.0)':
     dependencies:
       ajv: 6.15.0
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
       espree: 10.4.0
       globals: 14.0.0
       ignore: 5.3.2
@@ -2816,11 +2823,11 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
-  '@mapbox/node-pre-gyp@2.0.3':
+  '@mapbox/node-pre-gyp@2.0.3(supports-color@7.2.0)':
     dependencies:
       consola: 3.4.2
       detect-libc: 2.1.2
-      https-proxy-agent: 7.0.6
+      https-proxy-agent: 7.0.6(supports-color@7.2.0)
       node-fetch: 2.7.0
       nopt: 8.1.0
       semver: 7.8.5
@@ -2880,10 +2887,10 @@ snapshots:
       '@napi-rs/keyring-win32-ia32-msvc': 1.2.0
       '@napi-rs/keyring-win32-x64-msvc': 1.2.0
 
-  '@napi-rs/wasm-runtime@1.1.6(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)':
+  '@napi-rs/wasm-runtime@1.1.6(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)':
     dependencies:
-      '@emnapi/core': 2.0.0-alpha.3
-      '@emnapi/runtime': 2.0.0-alpha.3
+      '@emnapi/core': 1.11.3
+      '@emnapi/runtime': 1.11.3
       '@tybys/wasm-util': 0.10.3
     optional: true
 
@@ -2949,9 +2956,9 @@ snapshots:
   '@oxc-transform/binding-openharmony-arm64@0.111.0':
     optional: true
 
-  '@oxc-transform/binding-wasm32-wasi@0.111.0(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)':
+  '@oxc-transform/binding-wasm32-wasi@0.111.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)':
     dependencies:
-      '@napi-rs/wasm-runtime': 1.1.6(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)
+      '@napi-rs/wasm-runtime': 1.1.6(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
     transitivePeerDependencies:
       - '@emnapi/core'
       - '@emnapi/runtime'
@@ -2998,9 +3005,9 @@ snapshots:
   '@rolldown/binding-openharmony-arm64@1.0.0-rc.1':
     optional: true
 
-  '@rolldown/binding-wasm32-wasi@1.0.0-rc.1(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)':
+  '@rolldown/binding-wasm32-wasi@1.0.0-rc.1(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)':
     dependencies:
-      '@napi-rs/wasm-runtime': 1.1.6(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)
+      '@napi-rs/wasm-runtime': 1.1.6(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
     transitivePeerDependencies:
       - '@emnapi/core'
       - '@emnapi/runtime'
@@ -3132,15 +3139,15 @@ snapshots:
     dependencies:
       undici-types: 7.18.2
 
-  '@typescript-eslint/eslint-plugin@8.63.0(@typescript-eslint/parser@8.63.0(eslint@9.39.5)(typescript@5.9.3))(eslint@9.39.5)(typescript@5.9.3)':
+  '@typescript-eslint/eslint-plugin@8.63.0(@typescript-eslint/parser@8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3))(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)':
     dependencies:
       '@eslint-community/regexpp': 4.12.2
-      '@typescript-eslint/parser': 8.63.0(eslint@9.39.5)(typescript@5.9.3)
+      '@typescript-eslint/parser': 8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
       '@typescript-eslint/scope-manager': 8.63.0
-      '@typescript-eslint/type-utils': 8.63.0(eslint@9.39.5)(typescript@5.9.3)
-      '@typescript-eslint/utils': 8.63.0(eslint@9.39.5)(typescript@5.9.3)
+      '@typescript-eslint/type-utils': 8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
+      '@typescript-eslint/utils': 8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
       '@typescript-eslint/visitor-keys': 8.63.0
-      eslint: 9.39.5
+      eslint: 9.39.5(supports-color@7.2.0)
       ignore: 7.0.6
       natural-compare: 1.4.0
       ts-api-utils: 2.5.0(typescript@5.9.3)
@@ -3148,23 +3155,23 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@typescript-eslint/parser@8.63.0(eslint@9.39.5)(typescript@5.9.3)':
+  '@typescript-eslint/parser@8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)':
     dependencies:
       '@typescript-eslint/scope-manager': 8.63.0
       '@typescript-eslint/types': 8.63.0
-      '@typescript-eslint/typescript-estree': 8.63.0(typescript@5.9.3)
+      '@typescript-eslint/typescript-estree': 8.63.0(supports-color@7.2.0)(typescript@5.9.3)
       '@typescript-eslint/visitor-keys': 8.63.0
-      debug: 4.4.3
-      eslint: 9.39.5
+      debug: 4.4.3(supports-color@7.2.0)
+      eslint: 9.39.5(supports-color@7.2.0)
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
 
-  '@typescript-eslint/project-service@8.63.0(typescript@5.9.3)':
+  '@typescript-eslint/project-service@8.63.0(supports-color@7.2.0)(typescript@5.9.3)':
     dependencies:
       '@typescript-eslint/tsconfig-utils': 8.63.0(typescript@5.9.3)
       '@typescript-eslint/types': 8.63.0
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
@@ -3178,13 +3185,13 @@ snapshots:
     dependencies:
       typescript: 5.9.3
 
-  '@typescript-eslint/type-utils@8.63.0(eslint@9.39.5)(typescript@5.9.3)':
+  '@typescript-eslint/type-utils@8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)':
     dependencies:
       '@typescript-eslint/types': 8.63.0
-      '@typescript-eslint/typescript-estree': 8.63.0(typescript@5.9.3)
-      '@typescript-eslint/utils': 8.63.0(eslint@9.39.5)(typescript@5.9.3)
-      debug: 4.4.3
-      eslint: 9.39.5
+      '@typescript-eslint/typescript-estree': 8.63.0(supports-color@7.2.0)(typescript@5.9.3)
+      '@typescript-eslint/utils': 8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
+      debug: 4.4.3(supports-color@7.2.0)
+      eslint: 9.39.5(supports-color@7.2.0)
       ts-api-utils: 2.5.0(typescript@5.9.3)
       typescript: 5.9.3
     transitivePeerDependencies:
@@ -3192,13 +3199,13 @@ snapshots:
 
   '@typescript-eslint/types@8.63.0': {}
 
-  '@typescript-eslint/typescript-estree@8.63.0(typescript@5.9.3)':
+  '@typescript-eslint/typescript-estree@8.63.0(supports-color@7.2.0)(typescript@5.9.3)':
     dependencies:
-      '@typescript-eslint/project-service': 8.63.0(typescript@5.9.3)
+      '@typescript-eslint/project-service': 8.63.0(supports-color@7.2.0)(typescript@5.9.3)
       '@typescript-eslint/tsconfig-utils': 8.63.0(typescript@5.9.3)
       '@typescript-eslint/types': 8.63.0
       '@typescript-eslint/visitor-keys': 8.63.0
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
       minimatch: 10.2.5
       semver: 7.8.5
       tinyglobby: 0.2.17
@@ -3207,13 +3214,13 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@typescript-eslint/utils@8.63.0(eslint@9.39.5)(typescript@5.9.3)':
+  '@typescript-eslint/utils@8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)':
     dependencies:
-      '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.5)
+      '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.5(supports-color@7.2.0))
       '@typescript-eslint/scope-manager': 8.63.0
       '@typescript-eslint/types': 8.63.0
-      '@typescript-eslint/typescript-estree': 8.63.0(typescript@5.9.3)
-      eslint: 9.39.5
+      '@typescript-eslint/typescript-estree': 8.63.0(supports-color@7.2.0)(typescript@5.9.3)
+      eslint: 9.39.5(supports-color@7.2.0)
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
@@ -3283,18 +3290,18 @@ snapshots:
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
 
-  '@vercel/backends@0.8.27(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(rollup@4.62.2)':
+  '@vercel/backends@0.8.27(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
       '@vercel/build-utils': 13.36.0
-      '@vercel/nft': 1.10.0(rollup@4.62.2)
+      '@vercel/nft': 1.10.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/static-config': 3.4.0
       execa: 3.2.0
       fs-extra: 11.1.0
       get-port: 5.1.1
-      oxc-transform: 0.111.0(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)
+      oxc-transform: 0.111.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
       path-to-regexp: 8.3.0
       resolve.exports: 2.0.3
-      rolldown: 1.0.0-rc.1(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)
+      rolldown: 1.0.0-rc.1(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
       srvx: 0.11.16
       ts-morph: 12.0.0
       tsx: 4.21.0
@@ -3320,9 +3327,9 @@ snapshots:
       cjs-module-lexer: 1.2.3
       es-module-lexer: 1.5.0
 
-  '@vercel/cervel@0.1.35(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(rollup@4.62.2)':
+  '@vercel/cervel@0.1.35(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
-      '@vercel/backends': 0.8.27(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(rollup@4.62.2)
+      '@vercel/backends': 0.8.27(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(rollup@4.62.2)(supports-color@7.2.0)
     transitivePeerDependencies:
       - '@emnapi/core'
       - '@emnapi/runtime'
@@ -3347,9 +3354,9 @@ snapshots:
 
   '@vercel/detect-agent@1.2.3': {}
 
-  '@vercel/elysia@0.1.104(rollup@4.62.2)':
+  '@vercel/elysia@0.1.104(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
-      '@vercel/node': 5.9.0(rollup@4.62.2)
+      '@vercel/node': 5.9.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/static-config': 3.4.0
     transitivePeerDependencies:
       - encoding
@@ -3358,11 +3365,11 @@ snapshots:
 
   '@vercel/error-utils@2.2.0': {}
 
-  '@vercel/express@0.1.118(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(rollup@4.62.2)':
+  '@vercel/express@0.1.118(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
-      '@vercel/cervel': 0.1.35(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(rollup@4.62.2)
-      '@vercel/nft': 1.10.0(rollup@4.62.2)
-      '@vercel/node': 5.9.0(rollup@4.62.2)
+      '@vercel/cervel': 0.1.35(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(rollup@4.62.2)(supports-color@7.2.0)
+      '@vercel/nft': 1.10.0(rollup@4.62.2)(supports-color@7.2.0)
+      '@vercel/node': 5.9.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/static-config': 3.4.0
       fs-extra: 11.1.0
       path-to-regexp: 8.3.0
@@ -3375,20 +3382,20 @@ snapshots:
       - rollup
       - supports-color
 
-  '@vercel/fastify@0.1.107(rollup@4.62.2)':
+  '@vercel/fastify@0.1.107(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
-      '@vercel/node': 5.9.0(rollup@4.62.2)
+      '@vercel/node': 5.9.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/static-config': 3.4.0
     transitivePeerDependencies:
       - encoding
       - rollup
       - supports-color
 
-  '@vercel/fun@1.3.0':
+  '@vercel/fun@1.3.0(supports-color@7.2.0)':
     dependencies:
       '@tootallnate/once': 2.0.0
       async-listen: 1.2.0
-      debug: 4.3.4
+      debug: 4.3.4(supports-color@7.2.0)
       generic-pool: 3.4.2
       micro: 9.3.5-canary.3
       ms: 2.1.1
@@ -3422,19 +3429,19 @@ snapshots:
 
   '@vercel/go@3.10.2': {}
 
-  '@vercel/h3@0.1.113(rollup@4.62.2)':
+  '@vercel/h3@0.1.113(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
-      '@vercel/node': 5.9.0(rollup@4.62.2)
+      '@vercel/node': 5.9.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/static-config': 3.4.0
     transitivePeerDependencies:
       - encoding
       - rollup
       - supports-color
 
-  '@vercel/hono@0.2.107(rollup@4.62.2)':
+  '@vercel/hono@0.2.107(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
-      '@vercel/nft': 1.10.0(rollup@4.62.2)
-      '@vercel/node': 5.9.0(rollup@4.62.2)
+      '@vercel/nft': 1.10.0(rollup@4.62.2)(supports-color@7.2.0)
+      '@vercel/node': 5.9.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/static-config': 3.4.0
       fs-extra: 11.1.0
       path-to-regexp: 8.3.0
@@ -3450,35 +3457,35 @@ snapshots:
       '@vercel/static-config': 3.4.0
       ts-morph: 12.0.0
 
-  '@vercel/koa@0.1.87(rollup@4.62.2)':
+  '@vercel/koa@0.1.87(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
-      '@vercel/node': 5.9.0(rollup@4.62.2)
+      '@vercel/node': 5.9.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/static-config': 3.4.0
     transitivePeerDependencies:
       - encoding
       - rollup
       - supports-color
 
-  '@vercel/nestjs@0.2.108(rollup@4.62.2)':
+  '@vercel/nestjs@0.2.108(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
-      '@vercel/node': 5.9.0(rollup@4.62.2)
+      '@vercel/node': 5.9.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/static-config': 3.4.0
     transitivePeerDependencies:
       - encoding
       - rollup
       - supports-color
 
-  '@vercel/next@4.20.4(rollup@4.62.2)':
+  '@vercel/next@4.20.4(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
-      '@vercel/nft': 1.10.0(rollup@4.62.2)
+      '@vercel/nft': 1.10.0(rollup@4.62.2)(supports-color@7.2.0)
     transitivePeerDependencies:
       - encoding
       - rollup
       - supports-color
 
-  '@vercel/nft@1.10.0(rollup@4.62.2)':
+  '@vercel/nft@1.10.0(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
-      '@mapbox/node-pre-gyp': 2.0.3
+      '@mapbox/node-pre-gyp': 2.0.3(supports-color@7.2.0)
       '@rollup/pluginutils': 5.4.0(rollup@4.62.2)
       acorn: 8.17.0
       acorn-import-attributes: 1.9.5(acorn@8.17.0)
@@ -3495,7 +3502,7 @@ snapshots:
       - rollup
       - supports-color
 
-  '@vercel/node@5.9.0(rollup@4.62.2)':
+  '@vercel/node@5.9.0(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
       '@edge-runtime/node-utils': 2.3.0
       '@edge-runtime/primitives': 4.1.0
@@ -3503,7 +3510,7 @@ snapshots:
       '@types/node': 20.11.0
       '@vercel/build-utils': 13.36.0
       '@vercel/error-utils': 2.2.0
-      '@vercel/nft': 1.10.0(rollup@4.62.2)
+      '@vercel/nft': 1.10.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/static-config': 3.4.0
       async-listen: 3.0.0
       cjs-module-lexer: 1.2.3
@@ -3542,9 +3549,9 @@ snapshots:
     dependencies:
       '@vercel/python-analysis': 0.12.0
 
-  '@vercel/redwood@2.5.0(rollup@4.62.2)':
+  '@vercel/redwood@2.5.0(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
-      '@vercel/nft': 1.10.0(rollup@4.62.2)
+      '@vercel/nft': 1.10.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/static-config': 3.4.0
       semver: 6.3.1
       ts-morph: 12.0.0
@@ -3553,10 +3560,10 @@ snapshots:
       - rollup
       - supports-color
 
-  '@vercel/remix-builder@5.9.1(rollup@4.62.2)':
+  '@vercel/remix-builder@5.9.1(rollup@4.62.2)(supports-color@7.2.0)':
     dependencies:
       '@vercel/error-utils': 2.2.0
-      '@vercel/nft': 1.10.0(rollup@4.62.2)
+      '@vercel/nft': 1.10.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/static-config': 3.4.0
       path-to-regexp: 6.1.0
       path-to-regexp-updated: path-to-regexp@6.3.0
@@ -3586,7 +3593,7 @@ snapshots:
       tar-stream: 3.1.7
       undici: 7.29.0
       xdg-app-paths: 5.1.0
-      zod: 4.1.11
+      zod: 4.4.3
     transitivePeerDependencies:
       - bare-abort-controller
       - react-native-b4a
@@ -3778,13 +3785,17 @@ snapshots:
       shebang-command: 2.0.0
       which: 2.0.2
 
-  debug@4.3.4:
+  debug@4.3.4(supports-color@7.2.0):
     dependencies:
       ms: 2.1.2
+    optionalDependencies:
+      supports-color: 7.2.0
 
-  debug@4.4.3:
+  debug@4.4.3(supports-color@7.2.0):
     dependencies:
       ms: 2.1.3
+    optionalDependencies:
+      supports-color: 7.2.0
 
   deep-eql@5.0.2: {}
 
@@ -3893,14 +3904,14 @@ snapshots:
 
   eslint-visitor-keys@5.0.1: {}
 
-  eslint@9.39.5:
+  eslint@9.39.5(supports-color@7.2.0):
     dependencies:
-      '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.5)
+      '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.5(supports-color@7.2.0))
       '@eslint-community/regexpp': 4.12.2
-      '@eslint/config-array': 0.21.2
+      '@eslint/config-array': 0.21.2(supports-color@7.2.0)
       '@eslint/config-helpers': 0.4.2
       '@eslint/core': 0.17.0
-      '@eslint/eslintrc': 3.3.6
+      '@eslint/eslintrc': 3.3.6(supports-color@7.2.0)
       '@eslint/js': 9.39.5
       '@eslint/plugin-kit': 0.4.1
       '@humanfs/node': 0.16.8
@@ -3910,7 +3921,7 @@ snapshots:
       ajv: 6.15.0
       chalk: 4.1.2
       cross-spawn: 7.0.6
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
       escape-string-regexp: 4.0.0
       eslint-scope: 8.4.0
       eslint-visitor-keys: 4.2.1
@@ -4100,10 +4111,10 @@ snapshots:
       statuses: 1.5.0
       toidentifier: 1.0.0
 
-  https-proxy-agent@7.0.6:
+  https-proxy-agent@7.0.6(supports-color@7.2.0):
     dependencies:
       agent-base: 7.1.4
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -4322,7 +4333,7 @@ snapshots:
 
   os-paths@4.4.0: {}
 
-  oxc-transform@0.111.0(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3):
+  oxc-transform@0.111.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3):
     optionalDependencies:
       '@oxc-transform/binding-android-arm-eabi': 0.111.0
       '@oxc-transform/binding-android-arm64': 0.111.0
@@ -4340,7 +4351,7 @@ snapshots:
       '@oxc-transform/binding-linux-x64-gnu': 0.111.0
       '@oxc-transform/binding-linux-x64-musl': 0.111.0
       '@oxc-transform/binding-openharmony-arm64': 0.111.0
-      '@oxc-transform/binding-wasm32-wasi': 0.111.0(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)
+      '@oxc-transform/binding-wasm32-wasi': 0.111.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
       '@oxc-transform/binding-win32-arm64-msvc': 0.111.0
       '@oxc-transform/binding-win32-ia32-msvc': 0.111.0
       '@oxc-transform/binding-win32-x64-msvc': 0.111.0
@@ -4443,7 +4454,7 @@ snapshots:
 
   reusify@1.1.0: {}
 
-  rolldown@1.0.0-rc.1(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3):
+  rolldown@1.0.0-rc.1(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3):
     dependencies:
       '@oxc-project/types': 0.110.0
       '@rolldown/pluginutils': 1.0.0-rc.1
@@ -4458,7 +4469,7 @@ snapshots:
       '@rolldown/binding-linux-x64-gnu': 1.0.0-rc.1
       '@rolldown/binding-linux-x64-musl': 1.0.0-rc.1
       '@rolldown/binding-openharmony-arm64': 1.0.0-rc.1
-      '@rolldown/binding-wasm32-wasi': 1.0.0-rc.1(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)
+      '@rolldown/binding-wasm32-wasi': 1.0.0-rc.1(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
       '@rolldown/binding-win32-arm64-msvc': 1.0.0-rc.1
       '@rolldown/binding-win32-x64-msvc': 1.0.0-rc.1
     transitivePeerDependencies:
@@ -4502,13 +4513,13 @@ snapshots:
 
   safer-buffer@2.1.2: {}
 
-  sandbox@3.4.0:
+  sandbox@3.4.0(supports-color@7.2.0):
     dependencies:
       '@vercel/sandbox': 2.4.0
       async-retry: 1.3.3
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
       ws: 8.21.1
-      zod: 4.1.11
+      zod: 4.4.3
     transitivePeerDependencies:
       - bare-abort-controller
       - bufferutil
@@ -4676,13 +4687,13 @@ snapshots:
     dependencies:
       prelude-ls: 1.2.1
 
-  typescript-eslint@8.63.0(eslint@9.39.5)(typescript@5.9.3):
+  typescript-eslint@8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3):
     dependencies:
-      '@typescript-eslint/eslint-plugin': 8.63.0(@typescript-eslint/parser@8.63.0(eslint@9.39.5)(typescript@5.9.3))(eslint@9.39.5)(typescript@5.9.3)
-      '@typescript-eslint/parser': 8.63.0(eslint@9.39.5)(typescript@5.9.3)
-      '@typescript-eslint/typescript-estree': 8.63.0(typescript@5.9.3)
-      '@typescript-eslint/utils': 8.63.0(eslint@9.39.5)(typescript@5.9.3)
-      eslint: 9.39.5
+      '@typescript-eslint/eslint-plugin': 8.63.0(@typescript-eslint/parser@8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3))(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
+      '@typescript-eslint/parser': 8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
+      '@typescript-eslint/typescript-estree': 8.63.0(supports-color@7.2.0)(typescript@5.9.3)
+      '@typescript-eslint/utils': 8.63.0(eslint@9.39.5(supports-color@7.2.0))(supports-color@7.2.0)(typescript@5.9.3)
+      eslint: 9.39.5(supports-color@7.2.0)
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
@@ -4738,31 +4749,31 @@ snapshots:
     dependencies:
       punycode: 2.3.1
 
-  vercel@58.1.0(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(rollup@4.62.2):
+  vercel@58.1.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(rollup@4.62.2)(supports-color@7.2.0):
     dependencies:
-      '@vercel/backends': 0.8.27(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(rollup@4.62.2)
+      '@vercel/backends': 0.8.27(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/blob': 2.4.0
       '@vercel/build-utils': 13.36.0
       '@vercel/cli-auth': 0.3.1
       '@vercel/cli-config': 0.2.1
       '@vercel/container': 0.1.0
       '@vercel/detect-agent': 1.2.3
-      '@vercel/elysia': 0.1.104(rollup@4.62.2)
-      '@vercel/express': 0.1.118(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(rollup@4.62.2)
-      '@vercel/fastify': 0.1.107(rollup@4.62.2)
-      '@vercel/fun': 1.3.0
+      '@vercel/elysia': 0.1.104(rollup@4.62.2)(supports-color@7.2.0)
+      '@vercel/express': 0.1.118(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(rollup@4.62.2)(supports-color@7.2.0)
+      '@vercel/fastify': 0.1.107(rollup@4.62.2)(supports-color@7.2.0)
+      '@vercel/fun': 1.3.0(supports-color@7.2.0)
       '@vercel/go': 3.10.2
-      '@vercel/h3': 0.1.113(rollup@4.62.2)
-      '@vercel/hono': 0.2.107(rollup@4.62.2)
+      '@vercel/h3': 0.1.113(rollup@4.62.2)(supports-color@7.2.0)
+      '@vercel/hono': 0.2.107(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/hydrogen': 1.4.0
-      '@vercel/koa': 0.1.87(rollup@4.62.2)
-      '@vercel/nestjs': 0.2.108(rollup@4.62.2)
-      '@vercel/next': 4.20.4(rollup@4.62.2)
-      '@vercel/node': 5.9.0(rollup@4.62.2)
+      '@vercel/koa': 0.1.87(rollup@4.62.2)(supports-color@7.2.0)
+      '@vercel/nestjs': 0.2.108(rollup@4.62.2)(supports-color@7.2.0)
+      '@vercel/next': 4.20.4(rollup@4.62.2)(supports-color@7.2.0)
+      '@vercel/node': 5.9.0(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/prepare-flags-definitions': 0.3.0
       '@vercel/python': 6.53.0
-      '@vercel/redwood': 2.5.0(rollup@4.62.2)
-      '@vercel/remix-builder': 5.9.1(rollup@4.62.2)
+      '@vercel/redwood': 2.5.0(rollup@4.62.2)(supports-color@7.2.0)
+      '@vercel/remix-builder': 5.9.1(rollup@4.62.2)(supports-color@7.2.0)
       '@vercel/ruby': 2.5.1
       '@vercel/rust': 1.4.0
       '@vercel/static-build': 2.11.10
@@ -4771,7 +4782,7 @@ snapshots:
       jose: 5.9.6
       jsonc-parser: 3.3.1
       luxon: 3.7.2
-      sandbox: 3.4.0
+      sandbox: 3.4.0(supports-color@7.2.0)
       smol-toml: 1.5.2
       undici: 5.29.0
       zod: 4.1.11
@@ -4786,10 +4797,10 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  vite-node@3.2.4(@types/node@24.13.3)(tsx@4.23.0):
+  vite-node@3.2.4(@types/node@24.13.3)(supports-color@7.2.0)(tsx@4.23.0):
     dependencies:
       cac: 6.7.14
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
       es-module-lexer: 1.7.0
       pathe: 2.0.3
       vite: 7.3.6(@types/node@24.13.3)(tsx@4.23.0)
@@ -4820,7 +4831,7 @@ snapshots:
       fsevents: 2.3.3
       tsx: 4.23.0
 
-  vitest@3.2.7(@edge-runtime/vm@3.2.0)(@types/node@24.13.3)(tsx@4.23.0):
+  vitest@3.2.7(@edge-runtime/vm@3.2.0)(@types/node@24.13.3)(supports-color@7.2.0)(tsx@4.23.0):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.7
@@ -4831,7 +4842,7 @@ snapshots:
       '@vitest/spy': 3.2.7
       '@vitest/utils': 3.2.7
       chai: 5.3.3
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
       expect-type: 1.4.0
       magic-string: 0.30.21
       pathe: 2.0.3
@@ -4843,7 +4854,7 @@ snapshots:
       tinypool: 1.1.1
       tinyrainbow: 2.0.0
       vite: 7.3.6(@types/node@24.13.3)(tsx@4.23.0)
-      vite-node: 3.2.4(@types/node@24.13.3)(tsx@4.23.0)
+      vite-node: 3.2.4(@types/node@24.13.3)(supports-color@7.2.0)(tsx@4.23.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@edge-runtime/vm': 3.2.0
@@ -4922,3 +4933,5 @@ snapshots:
   zod@3.22.4: {}
 
   zod@4.1.11: {}
+
+  zod@4.4.3: {}

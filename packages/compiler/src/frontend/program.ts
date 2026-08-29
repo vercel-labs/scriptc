@@ -338,6 +338,8 @@ function loadProgram7(
   // just resolved) — without maxNodeModuleJsDepth, node_modules JS types as
   // an implicit-any module (TS7016) and nothing infers. Only flagged
   // compiles pay this; flagless builds keep the exact historical options.
+  // L1 transitive: depth 4 covers chains like express → qs → debug when the
+  // index.ts fixpoint has grown the opted-in set transitively.
   if (npmStaticActive()) options.maxNodeModuleJsDepth = 4;
   // --provenance-sources: the registered entries become tsconfig "paths"
   // so tsgo's OWN resolution of the bare specifiers lands on the same
@@ -1833,6 +1835,11 @@ function preflight7(load: LoadResult): {
   // structure wave includes declaration headers and top-level code;
   // reachable bodies are added by lowering's worklists.
   const ambient = ambientDtsPath();
+  // L1: node_modules files reachable from the entry join programFiles
+  // transitively when --npm-static auto's fixpoint (index.ts) has opted
+  // them in — pnpm realpaths and workspace symlinks are attributed via
+  // npmStaticPackageOfPath/workspacePackageOfPath so the same filter
+  // covers both install shapes.
   const programFiles = program
     .getSourceFiles()
     .filter(

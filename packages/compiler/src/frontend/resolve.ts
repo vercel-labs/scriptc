@@ -757,7 +757,10 @@ export function resolveBareModule(
   };
 
   const passOnce = (pass: ResolutionPass): BareResolution | null => {
-    for (let dir = dirname(resolve(fromFile)); ; ) {
+    // pnpm symlink farming: a package's dependencies live next to its REAL
+    // location (node_modules/.pnpm), not its symlink. Walk from the realpath
+    // so the store's node_modules is probed before the project's.
+    for (let dir = dirname(realpathOr(resolve(fromFile))); ; ) {
       const nm = join(dir, "node_modules");
       if (isDirectory(nm)) {
         // 1. The package directory.

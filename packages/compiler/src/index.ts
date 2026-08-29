@@ -570,12 +570,12 @@ function detectAutoPackages(
   // walk-up) answers "no runtime JS" for perfectly ordinary installs.
   const seen = new Map<string, { typesFile: string; fromFile: string }>();
   for (const sf of [...load.moduleOrder, load.entry]) {
-    if (mode === "auto" && sf.fileName.includes("/node_modules/")) continue;
+    if (mode === "auto" && sf.fileName.includes("/node_modules/") && npmStaticPackageOfPath(sf.fileName) === null) continue;
     const edges: { spec: string; loc: SrcLoc }[] = [];
     for (const stmt of sf.statements) {
       if (ts7IsImportWithStringSpec(stmt)) {
         edges.push({ spec: (stmt as { moduleSpecifier: { text: string } }).moduleSpecifier.text, loc: locOf(stmt) });
-      } else if (mode === "lib") {
+      } else if (mode === "lib" || (mode === "auto" && npmStaticPackageOfPath(sf.fileName) !== null)) {
         // CJS packages spell their dep edges as top-level requires; the
         // import-statement scan alone would miss every one of them.
         for (const req of requiresOf(stmt)) edges.push({ spec: req.spec, loc: locOf(req.node) });
@@ -677,7 +677,7 @@ function runFrontend(
       requested =
         npmStatic === "lib"
           ? detectAutoPackages(scout, statuses, "lib", judged, npmSites)
-          : detectAutoPackages(scout, statuses);
+          : detectAutoPackages(scout, statuses, "auto", judged, npmSites);
       // With no package to opt in, the scout already IS the final frontend:
       // same roots, resolution posture, preflight, and module order. Retain it
       // instead of spawning a second tsgo server and checking the whole graph
@@ -747,9 +747,12 @@ function runFrontend(
   // reloads; ineligible ones record the fallback status compileLibrary
   // refuses on. Bounded by the dependency count (every iteration settles
   // at least one new package for good).
-  if (npmStatic === "lib") {
+  // L1 transitive closure for --npm-static auto (exe lane): same fixpoint
+  // as lib, re-using judged/sites so express → qs → debug all join.
+  if (npmStatic === "lib" || npmStatic === "auto") {
+    const fixMode = npmStatic === "lib" ? "lib" : "auto";
     for (;;) {
-      const grown = detectAutoPackages(load, statuses, "lib", judged, npmSites);
+      const grown = detectAutoPackages(load, statuses, fixMode, judged, npmSites);
       if (grown.length === 0) break;
       requested = [...requested, ...grown];
       load.dispose();

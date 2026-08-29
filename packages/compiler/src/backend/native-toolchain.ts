@@ -432,6 +432,25 @@ export interface CcOptions {
    * compiles scr_net.c into the binary — the events gating precedent, so
    * net-free binaries keep their exact link line. */
   net?: boolean;
+  /** The program uses the node:crypto surface (moduleUsesCrypto on the
+   * IR — static libCalls AND embedded-graph imports both answer, so a
+   * dep compiled through --npm-static flips this without any embedded
+   * edge): compiles scr_crypto.c into the binary — the net gating
+   * precedent, so crypto-free binaries keep their exact link line. The
+   * island's crypto shim and the native libCall lowerings share the same
+   * scr_crypto_* natives, so one switch serves both callers. Until the
+   * runtime's crypto slice moves out of scr_lib.c the natives ride the
+   * unconditional units and this gate is the merge-ready switch for that
+   * split. */
+  crypto?: boolean;
+  /** The program uses the fs/promises surface (moduleUsesFsPromises on
+   * the IR — static fsp.* libCalls AND embedded-graph imports both
+   * answer): compiles the fs-promises unit, scr_file_handle.c
+   * (scr_fsp_open and the FileHandle adapters live there), alongside the
+   * narrower fileHandle gate — a program can reach the promises surface
+   * through a dyn-typed handle the type walk cannot see. fs-promises-free
+   * binaries keep their exact link line. */
+  fsPromises?: boolean;
   /** The program uses the node:http server surface (moduleUsesHttpServer
    * on the IR): compiles scr_http.c — always alongside scr_net.c, which
    * moduleUsesNet answers true for whenever this does. */
@@ -4420,7 +4439,15 @@ async function compileCInternal(
     "-I", rtDir,
     ...runtimeSources.map((f) => rt(join(rtDir, f))),
     ...(opts.copying ? [rt(join(rtDir, "scr_copying.c"))] : []),
-    ...(opts.fileHandle ? [rt(join(rtDir, "scr_file_handle.c"))] : []),
+    // The fs-promises unit: the fileHandle TYPE gate, plus the wider
+    // fsPromises surface switch (moduleUsesFsPromises — an fsp.* call
+    // through a dyn-typed handle never shows the type). Same unit either
+    // way; the union only decides whether it joins the link.
+    ...(opts.fileHandle || opts.fsPromises ? [rt(join(rtDir, "scr_file_handle.c"))] : []),
+    // The crypto unit (moduleUsesCrypto on the IR — static libCalls and
+    // embedded node:crypto edges both flip it; scr_island.c's crypto shim
+    // and the emitted crypto.* lowerings share the scr_crypto_* natives).
+    ...(opts.crypto ? [rt(join(rtDir, "scr_crypto.c"))] : []),
     // win32 targets compile the libc-shim TU (stpcpy, arc4random_buf,
     // gmtime_r, strcasestr — the _WIN32 block in scr_runtime.h declares
     // them) and link advapi32 (the CSPRNG RtlGenRandom/SystemFunction036,

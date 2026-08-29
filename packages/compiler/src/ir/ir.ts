@@ -6415,6 +6415,63 @@ export function moduleUsesNet(mod: IrModule): boolean {
   return found;
 }
 
+/** True when the module contains any crypto libCall OR the embedded npm
+ * graph imports node:crypto — the link switch that pulls the crypto unit
+ * into the binary (native-toolchain.ts; the moduleUsesZlib shape — the
+ * embedded edge keeps the island's crypto shim natives linked under
+ * --dynamic, while the walk keeps STATIC npm-module use covered with no
+ * embedded edge at all: a dep compiled through --npm-static lowers its
+ * crypto calls into ordinary crypto.* libCalls right here). Crypto-free
+ * programs pay zero bytes and keep their exact link line. Same
+ * generic-walk shape as moduleUsesNet. */
+export function moduleUsesCrypto(mod: IrModule): boolean {
+  if (moduleEmbedsBuiltin(mod, "node:crypto")) return true;
+  let found = false;
+  const visit = (v: unknown): void => {
+    if (found || v === null || typeof v !== "object") return;
+    if (Array.isArray(v)) {
+      for (const item of v) visit(item);
+      return;
+    }
+    const node = v as { kind?: unknown; fn?: unknown };
+    if (node.kind === "libCall" && typeof node.fn === "string" && node.fn.startsWith("crypto.")) {
+      found = true;
+      return;
+    }
+    for (const key of Object.keys(v)) visit((v as Record<string, unknown>)[key]);
+  };
+  visit(mod);
+  return found;
+}
+
+/** True when the module contains any fsp.* libCall OR the embedded npm
+ * graph imports node:fs/promises — the link switch for the fs-promises
+ * unit (native-toolchain.ts; the moduleUsesCrypto shape — the embedded
+ * edge covers the island's fs/promises shim, the walk covers STATIC
+ * npm-module use, where a dep's `require("fs/promises")` lowers into fsp.*
+ * libCalls). Sync/callback fs rides the unconditional units; only the
+ * promises surface answers here. Same generic-walk shape as
+ * moduleUsesNet. */
+export function moduleUsesFsPromises(mod: IrModule): boolean {
+  if (moduleEmbedsBuiltin(mod, "node:fs/promises")) return true;
+  let found = false;
+  const visit = (v: unknown): void => {
+    if (found || v === null || typeof v !== "object") return;
+    if (Array.isArray(v)) {
+      for (const item of v) visit(item);
+      return;
+    }
+    const node = v as { kind?: unknown; fn?: unknown };
+    if (node.kind === "libCall" && typeof node.fn === "string" && node.fn.startsWith("fsp.")) {
+      found = true;
+      return;
+    }
+    for (const key of Object.keys(v)) visit((v as Record<string, unknown>)[key]);
+  };
+  visit(mod);
+  return found;
+}
+
 /** True when the module contains any sym.* libCall or a symbol-kind type
  * anywhere in the IR — the link switch that pulls scr_symbol.c into the
  * binary (native-toolchain.ts; the scr_net gating precedent — no install call, the

@@ -944,11 +944,21 @@ export class CEmitter {
       // scr_zlib_island.c (native-toolchain.ts compiles it on the same predicate), so
       // zlib-free dynamic builds keep the island's clear refusal.
       ...(moduleEmbedsBuiltin(this.mod, "node:zlib") ? [`  scr_zlib_island_install();`] : []),
-      // Embedded graphs that import node:http/https register the island's
-      // http client bridge (scr_net_island.c — native-toolchain.ts compiles it and the
-      // socket units on the same predicate; native-fetch builds also
-      // register it from scr_fetch_install, idempotently).
-      ...(moduleEmbedsBuiltin(this.mod, "node:http") || moduleEmbedsBuiltin(this.mod, "node:https")
+      // Embedded graphs that import the net client family (http/https/
+      // net/tls — exactly the family native-toolchain.ts's netIsland flag
+      // compiles scr_net_island.c and the socket units for; native-fetch
+      // builds also register it from scr_fetch_install, idempotently)
+      // register the island's client bridge. The moduleUses* walks WIN
+      // over this embedded-edge check for the NATIVE installs below: a
+      // dep compiled through --npm-static lowers its net calls into
+      // ordinary libCalls right here, so moduleUsesNet flips
+      // scr_net_install with no embedded edge at all — and the island
+      // bridge's own install (scr_net_island_install → scr_net_install)
+      // fills the same loop hooks when only the embedded half is present.
+      ...(moduleEmbedsBuiltin(this.mod, "node:http") ||
+        moduleEmbedsBuiltin(this.mod, "node:https") ||
+        moduleEmbedsBuiltin(this.mod, "node:net") ||
+        moduleEmbedsBuiltin(this.mod, "node:tls")
         ? [`  scr_net_island_install();`]
         : []),
       // Event-surface programs (signal/exit listeners, stdin events) fill

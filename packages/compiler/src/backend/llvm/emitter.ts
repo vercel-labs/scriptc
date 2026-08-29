@@ -851,6 +851,13 @@ class LlEmitter {
     // compiles scr_fetch.c on the same predicate.
     const usesFetch = moduleUsesFetch(this.mod);
     const embedsZlib = moduleEmbedsBuiltin(this.mod, "node:zlib");
+    // The island client bridge's family — exactly what native-toolchain.ts's
+    // netIsland flag compiles scr_net_island.c for (its install fills the
+    // loop's native net hooks too). The moduleUses* walks WIN over this
+    // embedded-edge check for the native install below: a dep compiled
+    // through --npm-static lowers its net calls into ordinary libCalls
+    // right here, so usesNet flips scr_net_install with no embedded edge
+    // at all.
     const embedsNet =
       moduleEmbedsBuiltin(this.mod, "node:http") ||
       moduleEmbedsBuiltin(this.mod, "node:https") ||

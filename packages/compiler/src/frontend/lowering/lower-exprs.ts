@@ -1175,6 +1175,44 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       // Preflight guarantees no unresolved identifiers; anything else here
       // is a blocked declaration's binding (the SC2004 cascade) or a
       // binding form we don't model yet.
+      // A CJS export-table ENTRY reached through a require-spread or a
+      // `module.exports = require(...)` forwarding tail: the importer's
+      // transient alias lands on the TARGET module's table property
+      // (the checker chases the spread/forward to the target's own
+      // exports). When the target module registered a global, the
+      // ordinary paths above already served the read; when it did not —
+      // the spread-position require is a graph-collection shape, so the
+      // target file may carry no compiled module at all — the entry's own
+      // initializer still answers for snapshot-safe values (Node's table
+      // value IS that initializer's value; a re-read of a constant is the
+      // snapshot). Identifier entries recurse into their value binding's
+      // own initializer; anything mutable from an uncompiled module keeps
+      // the fence.
+      {
+        const sym = lowerer.resolveValueSymbol(expr);
+        if (sym !== null && !lowerer.globalOf(expr)) {
+          for (const d of lowerer.checker.declarationsOf(sym)) {
+            if (
+              (ts.isPropertyAssignment(d) || ts.isShorthandPropertyAssignment(d)) &&
+              ts.isObjectLiteralExpression(d.parent) &&
+              isCjsExportTableLiteral(d.parent)
+            ) {
+              if (ts.isPropertyAssignment(d)) {
+                if (ts.isComputedPropertyName(d.name)) continue;
+                const chase = cjsTableEntryValueChase(lowerer, d.initializer);
+                if (chase) return chase;
+              } else {
+                if (!ts.isIdentifier(d.name)) continue;
+                const chase = cjsTableEntryValueChase(lowerer, d.name);
+                if (chase) return chase;
+              }
+            }
+          }
+        }
+      }
+      // Preflight guarantees no unresolved identifiers; anything else here
+      // is a blocked declaration's binding (the SC2004 cascade) or a
+      // binding form we don't model yet.
       lowerer.rejectUnresolved(expr, `the reference to '${expr.text}' (a binding form with no lowering)`);
     }
     if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) {
@@ -1646,6 +1684,13 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             (sym ? lowerer.globalsBySymbol.get(sym) : undefined) ??
             (resolved ? lowerer.globalsBySymbol.get(resolved) : undefined);
           if (g) return { kind: "varRef", localId: g.id, type: g.type, loc };
+          // No registered global: a defineProperty export definition
+          // (getter tables — the getter lifts; data descriptors answer
+          // their snapshot-safe initializer). Writes keep the fence.
+          if (sym !== undefined || resolved !== undefined) {
+            const dp = cjsDefinePropertyExportRead(lowerer, (sym ?? resolved)!, expr.name.text, loc);
+            if (dp) return dp;
+          }
         }
       }
       // Namespace-qualified reads (`N.x`, `A.B.C.f`, import= alias
@@ -8777,11 +8822,179 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr | null {
     const symbol = lowerer.resolveValueSymbol(ident);
     const getter = symbol ? lowerer.checker.declarationsOf(symbol).find(ts.isGetAccessorDeclaration) : undefined;
-    if (!getter) return null;
-    if (!ts.isObjectLiteralExpression(getter.parent) || !isCjsExportTableLiteral(getter.parent)) {
+    if (getter) {
+      if (!ts.isObjectLiteralExpression(getter.parent) || !isCjsExportTableLiteral(getter.parent)) {
+        return null;
+      }
+      return cjsAccessorCall(lowerer, getter, locOf(ident));
+    }
+    // The defineProperty spelling of the same accessor
+    // (`Object.defineProperty(exports, "x", { get() {...} })` — the
+    // bundler-emitted getter tables): the checker declares the export AT
+    // the defineProperty call, and the read answers the lifted getter's
+    // per-read call, exactly the object-literal table's stance.
+    if (symbol) {
+      const read = cjsDefinePropertyExportRead(lowerer, symbol, ident.text, locOf(ident));
+      if (read) return read;
+    }
+    return null;
+  }
+
+/** The getter/value arm of a recognized `Object.defineProperty(exports,
+   * "<name>", <descriptor>)` export definition, or null. Supported
+   * descriptors: a getter (`get: fn` / `get <name>() {}` methods) and
+   * data descriptors (`value: expr`) plus the metadata flags
+   * (enumerable/configurable/writable) the bundler tables always carry;
+   * anything else declines (the callers keep their existing fences). */
+  export function cjsDefinePropertyExportOf(
+    lowerer: Lowerer,
+    call: ts.CallExpression,
+  ): { name: string; sf: ts.SourceFile; get?: ts.FunctionExpression | ts.ArrowFunction | ts.MethodDeclaration; value?: ts.Expression } | null {
+    if (call.questionDotToken) return null;
+    if (!ts.isPropertyAccessExpression(call.expression) || call.expression.questionDotToken) return null;
+    const access = call.expression;
+    if (!lowerer.isStdlibGlobal(access.expression, "Object") || access.name.text !== "defineProperty") return null;
+    if (call.arguments.length !== 3 || call.arguments.some(ts.isSpreadElement)) return null;
+    const [target, nameArg, desc] = call.arguments as unknown as [ts.Expression, ts.Expression, ts.Expression];
+    // The exports object only: the plain `exports` identifier (a user
+    // binding of that name is not the export table) or `module.exports`.
+    const isExportsTarget =
+      (ts.isIdentifier(target) && target.text === "exports" && !lowerer.peekLocal(target) && !lowerer.globalOf(target)) ||
+      isModuleExportsAccess(target);
+    if (!isExportsTarget) return null;
+    let name: string | null = null;
+    if (ts.isStringLiteralLike(nameArg)) name = nameArg.text;
+    else if (ts.isNumericLiteral(nameArg)) name = nameArg.text;
+    if (name === null) return null;
+    if (!ts.isObjectLiteralExpression(desc)) return null;
+    const sf = call.getSourceFile();
+    if (!isCjsJsFile(sf)) return null;
+    let get: ts.FunctionExpression | ts.ArrowFunction | ts.MethodDeclaration | undefined;
+    let value: ts.Expression | undefined;
+    for (const prop of desc.properties) {
+      if (ts.isMethodDeclaration(prop) && prop.body && ts.isIdentifier(prop.name) && prop.name.text === "get") {
+        get = prop;
+        continue;
+      }
+      if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) {
+        const key = prop.name.text;
+        if (key === "get") {
+          if (ts.isFunctionExpression(prop.initializer) || ts.isArrowFunction(prop.initializer)) {
+            get = prop.initializer;
+            continue;
+          }
+          return null;
+        }
+        if (key === "value") {
+          value = prop.initializer;
+          continue;
+        }
+        if (key === "enumerable" || key === "configurable" || key === "writable") continue;
+        return null;
+      }
       return null;
     }
-    return cjsAccessorCall(lowerer, getter, locOf(ident));
+    if (get !== undefined && value !== undefined) return null;
+    if (get === undefined && value === undefined) return null;
+    return { name, sf, ...(get !== undefined ? { get } : {}), ...(value !== undefined ? { value } : {}) };
+  }
+
+/** The lifted-getter call / pure-value read behind a defineProperty
+   * export symbol. Getters intern per function node (module-level
+   * WeakMap — nodes die with the load) and answer per-read calls; value
+   * descriptors re-lower their (pure) initializer per read — a snapshot
+   * of a pure expression IS the expression's value. Impure value
+   * initializers decline (a re-evaluation would diverge from Node's
+   * one-time snapshot). */
+  const cjsDefinePropertyGetterFns = new WeakMap<ts.FunctionExpression | ts.ArrowFunction | ts.MethodDeclaration, { fnName: string; type: IrType & { kind: "func" } }>();
+
+  function cjsDefinePropertyExportRead(lowerer: Lowerer, symbol: ts.Symbol, name: string, loc: SrcLoc): IrExpr | null {
+    for (const decl of lowerer.checker.declarationsOf(symbol)) {
+      if (!ts.isCallExpression(decl)) continue;
+      const parsed = cjsDefinePropertyExportOf(lowerer, decl);
+      if (parsed === null || parsed.name !== name) continue;
+      if (parsed.get !== undefined) {
+        const fn = parsed.get;
+        let entry = cjsDefinePropertyGetterFns.get(fn);
+        if (!entry) {
+          const closure = lowerer.lowerLambda(fn);
+          if (closure.kind !== "closure" || closure.type.kind !== "func") return null;
+          entry = { fnName: closure.fnName, type: closure.type };
+          cjsDefinePropertyGetterFns.set(fn, entry);
+        }
+        const closureVal: IrExpr = { kind: "closure", fnName: entry.fnName, captures: [], type: entry.type, loc };
+        return { kind: "callValue", callee: closureVal, args: [], type: entry.type.ret, loc };
+      }
+      const value = parsed.value!;
+      if (definePropertyValueIsSnapshotSafe(lowerer, value)) return lowerer.lowerExpr(value);
+      return null;
+    }
+    return null;
+  }
+
+/** Node snapshots a data descriptor's `value` ONCE, at the defineProperty
+   * call; a re-lowered read may only stand in for that snapshot when the
+   * expression cannot change between reads: literals, and identifiers
+   * naming immutable storage (const locals / const module globals — the
+   * exporting module's own const tables). Everything else declines (the
+   * read keeps its fence rather than diverge). */
+  function definePropertyValueIsSnapshotSafe(lowerer: Lowerer, expr: ts.Expression): boolean {
+    let cur = expr;
+    while (
+      ts.isParenthesizedExpression(cur) ||
+      ts.isAsExpression(cur) ||
+      ts.isTypeAssertion(cur) ||
+      ts.isNonNullExpression(cur)
+    ) {
+      cur = cur.expression;
+    }
+    if (ts.isStringLiteralLike(cur) || ts.isNumericLiteral(cur)) return true;
+    if (
+      cur.kind === ts.SyntaxKind.TrueKeyword ||
+      cur.kind === ts.SyntaxKind.FalseKeyword ||
+      cur.kind === ts.SyntaxKind.NullKeyword
+    ) {
+      return true;
+    }
+    if (!ts.isIdentifier(cur)) return false;
+    if (cur.text === "undefined") return true;
+    const local = lowerer.resolveLocal(cur);
+    if (local) return !local.mutable;
+    const g = lowerer.globalOf(cur);
+    return g !== null && !g.mutable;
+  }
+
+/** The value behind a CJS export-table entry whose module did not compile:
+   * snapshot-safe initializers lower inline (a re-read of a constant IS
+   * Node's snapshot), and an identifier value chases its OWN declaration —
+   * a const's initializer (snapshot-safe), the next table entry down a
+   * forwarding chain. Null everywhere else (mutable state, function values
+   * — a fresh function per read would diverge from Node's single
+   * snapshot). */
+  function cjsTableEntryValueChase(lowerer: Lowerer, value: ts.Expression): IrExpr | null {
+    let cur = value;
+    while (
+      ts.isParenthesizedExpression(cur) ||
+      ts.isAsExpression(cur) ||
+      ts.isTypeAssertion(cur) ||
+      ts.isNonNullExpression(cur)
+    ) {
+      cur = cur.expression;
+    }
+    if (definePropertyValueIsSnapshotSafe(lowerer, cur)) return lowerer.lowerExpr(cur);
+    if (!ts.isIdentifier(cur)) return null;
+    const valueSym = lowerer.resolveValueSymbol(cur);
+    if (valueSym === null) return null;
+    for (const decl of lowerer.checker.declarationsOf(valueSym)) {
+      if (ts.isVariableDeclaration(decl) && decl.initializer !== undefined) {
+        if (definePropertyValueIsSnapshotSafe(lowerer, decl.initializer)) {
+          return lowerer.lowerExpr(decl.initializer);
+        }
+        const nested = cjsTableEntryValueChase(lowerer, decl.initializer);
+        if (nested) return nested;
+      }
+    }
+    return null;
   }
 
 /** The interned lifted-getter call both accessor-read paths share. */

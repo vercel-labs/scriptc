@@ -16,8 +16,8 @@ import { ffiBindingDiag, ffiSignatureDiag, libCallbackDiag, requiresDynamicDiag 
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { mixinFnShapeOf } from "./lower-mixins.js";
 import { bufEncoding, dynStringReceiver, lowerArrayFromCall, lowerDynArrayFilterCall, lowerDynArrayFlatMapCall, lowerGroupByStaticCall, lowerIteratorHelperCall, lowerObjectAssignIndexShape, lowerObjectFromEntriesCall, lowerObjectIterOverIndexShape, lowerRegexMethodCall, lowerStringMethodCall, lowerTupleReadMethodCall } from "./lower-containers.js";
-import { lowerChildStreamMethodCall, lowerCreateRequireCall, lowerDirentMethodCall, lowerFileHandleMethodCall, lowerPerfHooksCall, lowerProcStreamMethodCall, lowerReflectApplyCall, lowerWatcherMethodCall } from "./lower-builtins.js";
-import { droppableStatic, lowerAbsenceProbe, lowerPromiseAllTupleCall, lowerPromiseRejectCall, probeLower, templateRawTextOf } from "./lower-exprs.js";
+import { lowerAmbientRequireCall, lowerChildStreamMethodCall, lowerCreateRequireCall, lowerDirentMethodCall, lowerFileHandleMethodCall, lowerPerfHooksCall, lowerProcStreamMethodCall, lowerReflectApplyCall, lowerWatcherMethodCall } from "./lower-builtins.js";
+import { droppableStatic, cjsDefinePropertyExportOf, lowerAbsenceProbe, lowerPromiseAllTupleCall, lowerPromiseRejectCall, probeLower, templateRawTextOf } from "./lower-exprs.js";
 import { httpClientFnBindingOf, isStreamUndefCallExpr, lowerCompatReqStreamOptionalCall, lowerHttpClientFnCall } from "./lower-server.js";
 import { EMITTER_API_MEMBERS, exactInstanceClassOf, findGenericMethodOn, lowerClassGenericMethodCall, lowerStaticMethodCall, type ClassInfo } from "./lower-classes.js";
 import { emitterRooted, lowerEmitterMethodCall } from "./lower-event-emitter.js";
@@ -3008,6 +3008,16 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     {
       const crServed = lowerCreateRequireCall(lowerer, expr, loc);
       if (crServed) return crServed;
+    }
+    // The AMBIENT CommonJS require with a runtime-computed specifier
+    // (`require(path.join(__dirname, name))` / `require(variable)`):
+    // statement and declarator positions erase through the module graph
+    // (lower-modules), so the calls reaching here are the VALUE positions
+    // — and the per-site island is their only lowering (lowerRequire —
+    // lowerRequireIslandCall). Static builds keep the per-site fence.
+    {
+      const reqServed = lowerAmbientRequireCall(lowerer, expr, loc);
+      if (reqServed) return reqServed;
     }
 
     // `process.getuid?.()` — intercepted BEFORE the optional-chain
@@ -7153,6 +7163,71 @@ export function lowerPromiseMethodCall(lowerer: Lowerer, call: ts.CallExpression
     if (call.questionDotToken || access.questionDotToken) return null;
     if (!lowerer.isStdlibGlobal(access.expression, "Object")) return null;
     const member = access.name.text;
+    // `Object.defineProperty(exports, "<name>", <descriptor>)` in a
+    // CommonJS JS module — the bundler-emitted getter tables
+    // (npm-static-rewrite's definePropEntries) and the data-descriptor
+    // stamps around them. The getter lifts at its READ sites
+    // (cjsDefinePropertyExportRead — per-read evaluation, Node's accessor
+    // semantics) and a snapshot-safe `value` re-reads its initializer, so
+    // the statement itself evaluates nothing Node could observe: a no-op,
+    // exactly the __esModule stamp's stance. Everything else (used as a
+    // value — defineProperty returns the target object — computed names,
+    // descriptors beyond the tables' shapes) keeps the generic fence.
+    if (member === "defineProperty") {
+      const parsed = cjsDefinePropertyExportOf(lowerer, call);
+      if (parsed !== null && ts.isExpressionStatement(call.parent)) {
+        if (parsed.get === undefined) {
+          // Data descriptor: Node snapshots the value ONCE at this call.
+          // The export global registers here (collectGlobals never saw the
+          // defineProperty shape) and the statement assigns it — importer
+          // reads land on the snapshot through the ordinary global path.
+          const nameArg = call.arguments[1]!;
+          const symbol = lowerer.checker.getSymbolAtLocation(nameArg);
+          let g = symbol ? lowerer.globalsBySymbol.get(symbol) : undefined;
+          if (g === undefined && symbol !== undefined) {
+            const strict = lowerer.checker.getTypeOfSymbol(symbol);
+            const t = lowerer.mapTypeOf(strict);
+            if (t === null || t.kind === "void") lowerer.badType(nameArg, strict);
+            const rawTag = lowerer.fileTag.get(parsed.sf) ?? "";
+            const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
+            g = { id: `%g.${tag}${parsed.name}`, name: parsed.name, type: t, mutable: false };
+            lowerer.globalsBySymbol.set(symbol, g);
+            for (const d of lowerer.checker.declarationsOf(symbol)) lowerer.globalsByDeclNode.set(d, g);
+            lowerer.globalsList.push(g);
+          }
+          if (g !== undefined) {
+            const value = lowerer.lowerExprExpecting(parsed.value!, g.type);
+            return {
+              kind: "seqExpr",
+              stmts: [{ kind: "assign", localId: g.id, value, loc: value.loc }],
+              result: { kind: "libCall", fn: "timers.clearNoop", args: [], type: VOID, loc: locOf(call) },
+              type: VOID,
+              loc: locOf(call),
+            };
+          }
+          // No symbol to key storage on: a snapshot-safe initializer still
+          // serves (the read re-answers it — cjsDefinePropertyExportRead);
+          // anything else falls to the generic fence.
+          const valueEval = lowerer.lowerExpr(parsed.value!);
+          if (droppableStatic(valueEval)) {
+            return { kind: "libCall", fn: "timers.clearNoop", args: [], type: VOID, loc: locOf(call) };
+          }
+          return {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: valueEval, loc: valueEval.loc }],
+            result: { kind: "libCall", fn: "timers.clearNoop", args: [], type: VOID, loc: locOf(call) },
+            type: VOID,
+            loc: locOf(call),
+          };
+        }
+        // Getter descriptor: the getter lifts at its READ sites
+        // (cjsDefinePropertyExportRead — per-read evaluation, Node's
+        // accessor semantics); defining it observes nothing. A no-op,
+        // exactly the __esModule stamp's stance.
+        return { kind: "libCall", fn: "timers.clearNoop", args: [], type: VOID, loc: locOf(call) };
+      }
+      return null;
+    }
     // Object.is — the spec's SameValue over the static kinds. Number
     // pairs take the runtime SameValue (NaN equals NaN, +0 differs from
     // -0 — the two divergences from ===); every other supported pair

@@ -28,6 +28,7 @@ import {
   isChildSurfaceMember,
 } from "./surfaces.js";
 import { conditionalSpreadOf, droppableStatic, lowerDynObjectLiteral } from "./lower-exprs.js";
+import { requireDynamicApi } from "./lower-island.js";
 import { HTTP2_CONSTANTS } from "./http2-constants.js";
 import { CRYPTO_CIPHERS, CRYPTO_CONSTANTS, CRYPTO_CURVES, CRYPTO_HASHES } from "./crypto-tables.js";
 import { timerStyleCallback } from "./lower-calls.js";
@@ -374,6 +375,13 @@ function lowerBuiltinOptionalDefault(
     const cr = createRequireSpecOf(lowerer, call);
     if (cr === null) return null;
     if (cr.spec === null) {
+      // A computed specifier (`require(path.join(__dirname, name))`) has
+      // nothing to resolve at build time — under --dynamic the per-site
+      // island answers it at runtime exactly like Node; static builds keep
+      // the per-site fence (lowerRequireIslandCall's diagnostic). Wrong
+      // arities keep the named fence (the island serves the one-argument
+      // form only).
+      if (call.arguments.length === 1) return lowerRequireIslandCall(lowerer, call, cr.baseFile, loc);
       lowerer.noLowering(
         "createRequire's require with this argument shape",
         call,
@@ -473,6 +481,210 @@ function lowerBuiltinOptionalDefault(
       loc,
     };
   }
+
+/* ── require() with a runtime-computed specifier — the per-site island ──
+ * `require(path.join(__dirname, name))` / `require(variable)` through the
+ * ambient CommonJS require or a createRequire binding. The compiled module
+ * graph is a BUILD-time artifact, so a specifier known only at runtime has
+ * nothing embedded to load — but under --dynamic the embedded engine can
+ * answer the require exactly like Node: the site lowers to a jsOp island
+ * that resolves the computed specifier against the requiring file's baked
+ * directory and loads the module from disk through the engine's own fs
+ * (readFileSync + JSON.parse for documents, the CJS wrapper for .js/.cjs,
+ * `node:` builtins through __scr_require), with Node's module cache
+ * (identity across calls, partial-exports cycles) and Node's exact
+ * MODULE_NOT_FOUND shape on a miss. Static builds keep the per-site fence
+ * (the island engine is not embedded there). */
+/** The per-site loader body (`new Function("spec", "base", SOURCE)`).
+ * Stateless over the spec/base parameters; the module cache lives on
+ * globalThis so rebuilt loaders share one cache. */
+const REQUIRE_ISLAND_LOADER_SOURCE = `
+  var cache = globalThis.__scr_site_require_cache;
+  if (!cache) cache = globalThis.__scr_site_require_cache = {};
+  var scrRequire = globalThis.__scr_require;
+  var fs = scrRequire('node:fs');
+  function join(from, rel) {
+    var raw = (from + '/' + rel).split('/');
+    var abs = raw[0] === '';
+    var out = [];
+    for (var i = abs ? 1 : 0; i < raw.length; i++) {
+      var p = raw[i];
+      if (p === '' || p === '.') continue;
+      if (p === '..') { if (out.length > 0) out.pop(); continue; }
+      out.push(p);
+    }
+    return (abs ? '/' : raw[0] + '/') + out.join('/');
+  }
+  function dirnameOf(p) { var i = p.lastIndexOf('/'); return i <= 0 ? '/' : p.slice(0, i); }
+  function requireKeyErr(specText, from) {
+    var err = new Error("Cannot find module '" + specText + "'\\nRequire stack:\\n- " + from);
+    err.code = 'MODULE_NOT_FOUND';
+    err.requireStack = [from];
+    return err;
+  }
+  function tryExtensions(p) {
+    var candidates = [p, p + '.js', p + '.json', p + '.cjs', p + '.node', join(p, 'index.js'), join(p, 'index.json')];
+    for (var i = 0; i < candidates.length; i++) {
+      if (fs.existsSync(candidates[i])) return candidates[i];
+    }
+    return null;
+  }
+  function resolvePackage(root) {
+    var pkgJson = join(root, 'package.json');
+    if (fs.existsSync(pkgJson)) {
+      try {
+        var main = JSON.parse(fs.readFileSync(pkgJson, 'utf8')).main;
+        if (typeof main === 'string') {
+          var hit = tryExtensions(join(root, main));
+          if (hit !== null) return hit;
+        }
+      } catch (e) { /* a malformed package.json falls through to index probing */ }
+    }
+    return tryExtensions(root);
+  }
+  function resolveSpec(specText, from) {
+    if (specText.startsWith('node:')) return specText;
+    if (specText.startsWith('./') || specText.startsWith('../') || specText.startsWith('/')) {
+      var joined = specText.startsWith('/') ? join(specText, '.') : join(from, specText);
+      return tryExtensions(joined);
+    }
+    var parts = specText.split('/');
+    var pkgName = parts[0].startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+    var sub = parts.slice(parts[0].startsWith('@') ? 2 : 1).join('/');
+    var dir = from;
+    for (;;) {
+      var root = join(dir, 'node_modules/' + pkgName);
+      if (fs.existsSync(root)) {
+        if (sub === '') return resolvePackage(root);
+        return tryExtensions(join(root, sub));
+      }
+      if (dir === '/') return null;
+      dir = dirnameOf(dir);
+    }
+  }
+  function loadByKey(key, from) {
+    if (key.startsWith('node:')) return scrRequire(key);
+    var hit = cache[key];
+    if (hit !== undefined) return hit;
+    if (/\\.json$/.test(key)) {
+      var value = JSON.parse(fs.readFileSync(key, 'utf8'));
+      cache[key] = value;
+      return value;
+    }
+    var src = fs.readFileSync(key, 'utf8');
+    var mod = { exports: {} };
+    cache[key] = mod.exports;
+    var req = function (nested) { return requireFrom(dirnameOf(key), nested, key); };
+    req.cache = cache;
+    req.resolve = function (nested) { return resolveSpec(nested, dirnameOf(key)); };
+    var body = new Function('exports', 'require', 'module', '__filename', '__dirname', src);
+    try {
+      body.call(mod.exports, mod.exports, req, mod, key, dirnameOf(key));
+    } catch (e) {
+      delete cache[key];
+      throw e;
+    }
+    // Node's cache holds the module's FINAL exports: a module that
+    // reassigned module.exports during execution replaces what the first
+    // pre-execution store seeded.
+    cache[key] = mod.exports;
+    return mod.exports;
+  }
+  function requireFrom(from, specText, stackTop) {
+    var key = resolveSpec(specText, from);
+    if (key === null) throw requireKeyErr(specText, stackTop !== undefined ? stackTop : from);
+    return loadByKey(key, from);
+  }
+  return requireFrom(base, spec);
+`;
+
+/** The AMBIENT CommonJS require (`require` — stdlib-global provenance, so a
+ * user's own require function never matches) with a runtime-computed
+ * specifier: the per-site island (lowerRequireIslandCall). Literal
+ * specifiers keep their existing erasure paths (statement/declarator
+ * positions) or fences — this claims the VALUE positions nothing else
+ * serves. Null for every other callee shape, so the call dispatch keeps
+ * trying. */
+export function lowerAmbientRequireCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr | null {
+  if (call.questionDotToken) return null;
+  if (!ts.isIdentifier(call.expression) || call.expression.text !== "require") return null;
+  if (!lowerer.isStdlibGlobal(call.expression, "require")) return null;
+  if (call.arguments.length !== 1 || ts.isSpreadElement(call.arguments[0]!)) return null;
+  if (ts.isStringLiteralLike(call.arguments[0]!)) return null;
+  return lowerRequireIslandCall(lowerer, call, call.getSourceFile(), loc);
+}
+
+/** The lowered computed require: build the loader once in the engine (the
+ * built function caches on globalThis), then answer the call — the spec
+ * argument marshals in as a string, the base directory bakes as the
+ * requiring file's own. */
+export function lowerRequireIslandCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  baseFile: ts.SourceFile,
+  loc: SrcLoc,
+): IrExpr {
+  requireDynamicApi(lowerer, "require() of a runtime-computed specifier", call);
+  ensureRequireIslandBootModule(lowerer);
+  const specNode = call.arguments[0]!;
+  const spec = lowerer.jsvalIn(lowerer.lowerExprExpecting(specNode, STRING), specNode);
+  const base: IrExpr = {
+    kind: "strLit",
+    value: dirname(baseFile.fileName),
+    type: STRING,
+    loc,
+  };
+  const globalObj: IrExpr = { kind: "jsOp", op: "globalGet", name: "globalThis", args: [], type: JSVAL, loc };
+  const source: IrExpr = { kind: "strLit", value: REQUIRE_ISLAND_LOADER_SOURCE, type: STRING, loc };
+  const built: IrExpr = {
+    kind: "jsOp",
+    op: "construct",
+    args: [
+      { kind: "jsOp", op: "globalGet", name: "Function", args: [], type: JSVAL, loc },
+      { kind: "jsMarshal", value: { kind: "strLit", value: "spec", type: STRING, loc }, type: JSVAL, loc },
+      { kind: "jsMarshal", value: { kind: "strLit", value: "base", type: STRING, loc }, type: JSVAL, loc },
+      { kind: "jsMarshal", value: source, type: JSVAL, loc },
+    ],
+    type: JSVAL,
+    loc,
+  };
+  // Straight-line per call: rebuild the loader function from the baked
+  // source each evaluation (seqExpr statements are straight-line — no
+  // lazy-init branch at the IR level). Semantically free: the loader is
+  // stateless and the module cache lives on globalThis, so every rebuild
+  // observes the same cached modules; requires are cold module loads, so
+  // the reparse costs nothing observable.
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: { kind: "jsOp", op: "setProp", name: "__scr_site_require", args: [globalObj, built], type: VOID, loc },
+        loc,
+      },
+    ],
+    result: { kind: "jsOp", op: "callFn", args: [built, spec, { kind: "jsMarshal", value: base, type: JSVAL, loc }], type: JSVAL, loc },
+    type: JSVAL,
+    loc,
+  };
+}
+
+/** The loader reads documents and .js modules from disk through the
+ * engine's fs shim, which the module bootstrap installs — and the
+ * bootstrap runs only when the build carries embedded-module tables
+ * (isl_mods). A computed-require program usually embeds nothing, so the
+ * first island-require site seeds the embedded graph with a boot module:
+ * the tables materialize, the bootstrap runs, `globalThis.__scr_require`
+ * and the builtins (fs included) come up, and the loader serves from real
+ * disk paths at runtime. */
+function ensureRequireIslandBootModule(lowerer: Lowerer): void {
+  const embedded = lowerer.npmEmbedded ?? { modules: [], edges: [] };
+  lowerer.npmEmbedded = embedded;
+  const bootKey = "/__scr_site_boot__.cjs";
+  if (!embedded.modules.some((m) => m.key === bootKey)) {
+    embedded.modules.push({ key: bootKey, source: "module.exports = 0;\n", format: "cjs" });
+  }
+}
 
 /** The builtin modules whose `constants` object bakes as literals at
    * every access site (the fs.constants precedent, scaled up): http2's

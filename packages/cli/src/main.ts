@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { analyze, buildTargetPlatform, compile, compileExternalC, compileLibrary, isExactExternalTypeSpecifier, renderDiagnostics, renderCoverage, resolveProvenanceSources, setProvenanceSources, warmNativeCaches, type NativeCacheWarmProfile } from "@scriptc/compiler";
+import { analyze, buildTargetPlatform, compile, compileExternalC, compileLibrary, isExactExternalTypeSpecifier, renderDiagnostics, renderCoverage, resolveProvenanceSources, setProvenanceSources, warmNativeCaches, type CoverageInput, type NativeCacheWarmProfile } from "@scriptc/compiler";
 import { LEGACY_C_EXECUTABLE_WARNING, shouldWarnLegacyCExecutable } from "./legacy-c-warning.js";
 import { resolveOutputOptions } from "./output-options.js";
 import { selectOutputPaths } from "./paths.js";
@@ -52,6 +52,256 @@ function parseCli(): ReturnType<typeof parseArgs<{ options: typeof CLI_OPTIONS; 
     const msg = raw.split("\n")[0]!.split(". ")[0]!;
     fail(`scriptc: ${msg}\n\n${USAGE}`);
   }
+}
+
+/** The coverage report's per-package --npm-static rows (structural view:
+ * the compiler owns the nominal type). */
+type NpmStaticStatuses = NonNullable<CoverageInput["npmStatic"]>;
+
+interface AutoExpansion {
+  /** The opt-in set the real run receives: the transitive closure of the
+   * auto-detected packages, or plain "auto" when nothing transitive
+   * appeared (the compiler's own auto posture, byte-identical to a
+   * single-detection run). */
+  npmStatic: string[] | "auto";
+  /** Fallback rows the growth probes recorded but the final EXPLICIT-list
+   * run cannot re-derive (explicit lists skip auto detection, so a
+   * package auto refused — minified dist, no .d.ts — would lose its
+   * coverage row). The coverage command splices these back in. */
+  fallbacks: NpmStaticStatuses;
+}
+
+/* --npm-static auto's transitive closure, CLI-side.
+ *
+ * The compiler's auto detection reads only the program's own files, so an
+ * opted-in package's own bare deps never got judged: `express` joined
+ * statically while its `require("qs")` edges kept serving from the island
+ * (or blocking a flagless build). The library lane closes this fixpoint
+ * inside the compiler (the growing graph's edges are re-judged every
+ * reload); the executable lane gets the same closure HERE — the CLI grows
+ * the set from the opted-in packages' shipped-JS edges and lets the
+ * compiler judge every round, so the eligibility bar, the graceful
+ * per-package fallbacks, and the inferred-surface probing all stay the
+ * compiler's, never re-implemented here.
+ *
+ * Bounded like the lib lane: every round settles at least one new package
+ * for good, and the round cap only guards against pathological graphs. */
+const AUTO_EXPANSION_ROUNDS = 8;
+/** Shipped-JS scan bounds: entry-reachable files only, and a package that
+ * ships more than this much reachable JS is scanned no less partially than
+ * the island it would otherwise serve — the candidates found so far still
+ * join. */
+const AUTO_SCAN_FILE_LIMIT = 64;
+const AUTO_SCAN_BYTES_LIMIT = 1 << 20;
+const SHIPPED_JS = /\.(?:js|mjs|cjs)$/;
+/** require("x") / import("x") / import x from "x" / export x from "x" —
+ * the textual edge shapes shipped CJS/ESM declares. Over-approximation is
+ * fine: every candidate is resolved on disk and then judged by the
+ * compiler's own eligibility bar. */
+const MODULE_SPECIFIER = /(?:\brequire\s*\(|\bimport\s*\(|\bfrom\s+)["']([^"']+)["']/g;
+
+function realpathSafe(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** node_modules walk-up for a bare specifier's package directory, probed
+ * from each base in turn (the importing file's dir first, then the
+ * package's own realpath — pnpm farms deps next to the real location, not
+ * the symlink). Unresolvable candidates are skipped: an explicit opt-in of
+ * a missing package is a different diagnostic than an island edge. */
+function resolvePackageDir(name: string, bases: readonly string[]): string | null {
+  for (const base of bases) {
+    for (let dir = base; ; dir = dirname(dir)) {
+      const candidate = join(dir, "node_modules", name);
+      if (isDirectory(candidate)) return realpathSafe(candidate);
+      if (dirname(dir) === dir) break;
+    }
+  }
+  return null;
+}
+
+/** The bare package name of a module specifier ("qs", "@scope/pkg",
+ * subpaths resolved to their package) — null for non-bare shapes. */
+function packageNameOfSpecifier(spec: string): string | null {
+  if (spec.startsWith(".") || spec.startsWith("/") || spec.startsWith("#") || spec.startsWith("node:")) return null;
+  const parts = spec.split("/");
+  if (parts[0] === "") return null;
+  if (parts[0]!.startsWith("@")) return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
+  return parts[0]!;
+}
+
+/** Entry-reachable shipped JS of a package: the manifest's main/module/
+ * exports answers plus everything their RELATIVE requires reach, staying
+ * inside the package (nested node_modules belong to the nested package)
+ * and inside the scan bounds. */
+function shippedFilesOf(pkgDir: string): string[] {
+  const files: string[] = [];
+  const seen = new Set<string>();
+  const queue: string[] = [];
+  const push = (path: string): void => {
+    const norm = path.split("\\").join("/");
+    if (seen.has(norm) || files.length >= AUTO_SCAN_FILE_LIMIT) return;
+    seen.add(norm);
+    files.push(path);
+    queue.push(path);
+  };
+  const resolveRelative = (fromFile: string, spec: string): string | null => {
+    const base = join(dirname(fromFile), spec);
+    const stem = base.replace(/\.js$/, "");
+    for (const candidate of [base, `${stem}.js`, `${stem}.cjs`, `${stem}.mjs`, join(stem, "index.js"), join(stem, "index.cjs"), join(stem, "index.mjs")]) {
+      if (!candidate.startsWith(pkgDir)) continue;
+      try {
+        if (statSync(candidate).isFile()) return candidate;
+      } catch {
+        /* probe on */
+      }
+    }
+    return null;
+  };
+  let entryAnswers: string[] = ["index.js"];
+  try {
+    const manifest = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")) as {
+      main?: string;
+      module?: string;
+      exports?: unknown;
+    };
+    const flat: string[] = [];
+    const walkExports = (value: unknown): void => {
+      if (typeof value === "string") flat.push(value);
+      else if (value !== null && typeof value === "object") for (const v of Object.values(value)) walkExports(v);
+    };
+    walkExports(manifest.exports);
+    entryAnswers = [...(manifest.main !== undefined ? [manifest.main] : []), ...(manifest.module !== undefined ? [manifest.module] : []), ...flat, "index.js"];
+  } catch {
+    /* no readable manifest: the index.js default stands */
+  }
+  for (const answer of entryAnswers) {
+    if (!SHIPPED_JS.test(answer)) continue;
+    const entry = resolveRelative(join(pkgDir, "package.json"), answer);
+    if (entry !== null) push(entry);
+  }
+  let readBytes = 0;
+  for (let head = 0; head < queue.length; head++) {
+    const file = queue[head]!;
+    let source: string;
+    try {
+      source = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    readBytes += source.length;
+    if (readBytes > AUTO_SCAN_BYTES_LIMIT) break;
+    for (const m of source.matchAll(/(?:\brequire\s*\(|\bimport\s*\(|\bfrom\s+)["'](\.[^"']+)["']/g)) {
+      const target = resolveRelative(file, m[1]!);
+      if (target !== null) push(target);
+    }
+  }
+  return files;
+}
+
+/** The bare npm packages a static package's shipped JS declares as edges
+ * (its "dependencies" as the code actually spells them) that resolve on
+ * disk from the package's own realm. */
+function bareDependencyEdges(pkg: string, entryDir: string): string[] {
+  const pkgDir = resolvePackageDir(pkg, [entryDir]);
+  if (pkgDir === null) return [];
+  const realPkgDir = realpathSafe(pkgDir);
+  const edges = new Set<string>();
+  for (const file of shippedFilesOf(pkgDir)) {
+    let source: string;
+    try {
+      source = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    for (const m of source.matchAll(MODULE_SPECIFIER)) {
+      const name = packageNameOfSpecifier(m[1]!);
+      if (name === null || name === pkg || edges.has(name)) continue;
+      if (resolvePackageDir(name, [dirname(file), realPkgDir, entryDir]) !== null) edges.add(name);
+    }
+  }
+  return [...edges];
+}
+
+async function expandNpmStaticAuto(
+  input: string,
+  base: { dynamic?: boolean; ffiProfilePath?: string; externalTypes?: Record<string, string> },
+): Promise<AutoExpansion> {
+  try {
+    const probe = (npmStatic: string[] | "auto"): ReturnType<typeof analyze> =>
+      analyze(input, { ...base, npmStatic });
+    const first = probe("auto");
+    const initial = first.coverage.npmStatic ?? [];
+    const statics = initial.filter((s) => s.status === "static").map((s) => s.package);
+    if (statics.length === 0) return { npmStatic: "auto", fallbacks: [] };
+    const entryDir = dirname(input);
+    const opted = new Set(statics);
+    const refused = new Set<string>();
+    const fallbacks = new Map<string, NpmStaticStatuses[number]>();
+    for (const s of initial) if (s.status === "fallback") { refused.add(s.package); fallbacks.set(s.package, s); }
+    let grew = false;
+    for (let round = 0; round < AUTO_EXPANSION_ROUNDS; round++) {
+      const candidates = new Set<string>();
+      for (const pkg of opted) {
+        for (const dep of bareDependencyEdges(pkg, entryDir)) {
+          if (!opted.has(dep) && !refused.has(dep)) candidates.add(dep);
+        }
+      }
+      if (candidates.size === 0) break;
+      const next = probe([...opted, ...candidates]);
+      for (const s of next.coverage.npmStatic ?? []) {
+        if (s.status === "static") {
+          if (!opted.has(s.package)) {
+            opted.add(s.package);
+            grew = true;
+          }
+        } else {
+          refused.add(s.package);
+          fallbacks.set(s.package, s);
+        }
+      }
+    }
+    if (!grew) return { npmStatic: "auto", fallbacks: [] };
+    return { npmStatic: [...opted], fallbacks: [...fallbacks.values()] };
+  } catch {
+    // The probes are a heuristic front-run of the real compile: any
+    // surprise (an unreadable manifest, an analysis panic) falls back to
+    // plain auto, and the real run reports whatever is true.
+    return { npmStatic: "auto", fallbacks: [] };
+  }
+}
+
+/** Auto-posture bookkeeping for the coverage render after a GROWN run:
+ * the final analyze received an explicit list, so rows the compiler would
+ * derive under auto (detection-order refusals like a minified dist) must
+ * ride in from the probes, and every fallback detail names the auto
+ * posture — these packages are the flag's discoveries, not user opt-ins. */
+function mergeAutoFallbacks(final: NpmStaticStatuses | undefined, probes: NpmStaticStatuses): NpmStaticStatuses {
+  const merged: NpmStaticStatuses = [...(final ?? [])];
+  const seen = new Set(merged.map((s) => s.package));
+  for (const s of probes) {
+    if (seen.has(s.package)) continue;
+    seen.add(s.package);
+    merged.push(s);
+  }
+  for (const s of merged) {
+    if (s.status === "fallback" && s.detail !== undefined && !s.detail.startsWith("auto: ")) {
+      merged[merged.indexOf(s)] = { ...s, detail: `auto: ${s.detail}` };
+    }
+  }
+  return merged;
 }
 
 async function main(): Promise<number> {
@@ -223,11 +473,27 @@ async function main(): Promise<number> {
   // is rejected — the shapes answer different questions).
   const npmStaticRaw = (values["npm-static"] ?? []).flatMap((v) => v.split(",")).map((v) => v.trim()).filter((v) => v !== "");
   let npmStatic: string[] | "auto" | undefined;
+  let autoExpansion: AutoExpansion = { npmStatic: "auto", fallbacks: [] };
   if (npmStaticRaw.includes("auto")) {
     if (npmStaticRaw.length > 1) fail(`--npm-static auto cannot be combined with package names\n\n${USAGE}`);
     npmStatic = "auto";
   } else if (npmStaticRaw.length > 0) {
     npmStatic = npmStaticRaw;
+  }
+
+  // Auto's transitive closure runs BEFORE the real work: the grown opt-in
+  // set (express pulling its qs/send edges, and so on down) replaces the
+  // bare "auto" for build/run/coverage alike, and the probes' fallback
+  // notes ride along for the coverage render. Anything the compiler refused
+  // along the way islands exactly as before — growth never turns a working
+  // build into a failure.
+  if (npmStatic === "auto") {
+    autoExpansion = await expandNpmStaticAuto(input, {
+      dynamic: values.dynamic,
+      ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
+      ...(Object.keys(externalTypes).length > 0 ? { externalTypes } : {}),
+    });
+    if (autoExpansion.npmStatic !== "auto") npmStatic = autoExpansion.npmStatic;
   }
 
   // --provenance-sources resolves BEFORE the program loads (tsgo needs the
@@ -252,8 +518,19 @@ async function main(): Promise<number> {
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(Object.keys(externalTypes).length > 0 ? { externalTypes } : {}),
     });
+    // The grown run's probe-recorded refusals join the render: an explicit
+    // opt-in list cannot re-derive them (auto detection never runs), and
+    // the report must stay honest about every package the flag judged.
+    const npmRows =
+      autoExpansion.fallbacks.length > 0 && !coverage.preflightFailed
+        ? mergeAutoFallbacks(coverage.npmStatic, autoExpansion.fallbacks)
+        : coverage.npmStatic;
     const color = process.stdout.isTTY ?? false;
-    process.stdout.write(renderCoverage(coverage, { color, sourceTexts }) + "\n");
+    const rendered =
+      npmRows !== undefined && npmRows !== coverage.npmStatic
+        ? renderCoverage({ ...coverage, npmStatic: npmRows }, { color, sourceTexts })
+        : renderCoverage(coverage, { color, sourceTexts });
+    process.stdout.write(rendered + "\n");
     return coverage.preflightFailed ? 1 : 0;
   }
 

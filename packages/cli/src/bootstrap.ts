@@ -74,7 +74,11 @@ async function tryFastPath(): Promise<number | null> {
   let npmStatic: string[] | "auto" | null = null;
   if (npmRaw.includes("auto")) {
     if (npmRaw.length !== 1) return null;
-    npmStatic = "auto";
+    // auto's transitive closure is a property of the INSTALLED tree, and
+    // main re-derives it on every run — a routed cache hit keyed on the
+    // bare word could serve a binary from before an install changed what
+    // auto pulls in. Explicit lists are the user's own closure: cached.
+    return null;
   } else if (npmRaw.length > 0) {
     npmStatic = npmRaw;
   }

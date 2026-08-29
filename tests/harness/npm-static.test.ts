@@ -22,7 +22,7 @@ import { globSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import { analyze, compile } from "@scriptc/compiler";
+import { analyze, compile, renderCoverage } from "@scriptc/compiler";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -463,4 +463,87 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(all).not.toContain("nothing installed resolves");
     expect(all).not.toContain("implicitly has an 'any' type");
   }, 120_000);
+
+  /* ── the CLI's transitive auto closure (T3 L6) ────────────────────────
+   * main.ts grows the auto-detected set over the opted-in packages' own
+   * dependency edges (the compiler's lib-lane fixpoint, driven from the
+   * CLI), so `express` pulls its qs/send lib requires into the static
+   * graph. The ai-core smoke corpus program is the integration fixture:
+   * express + zod + pg, with qs/send reachable ONLY through express's
+   * shipped files and pg failing the eligibility bar (minified dist). */
+
+  async function runCli(args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    const cli = join(repoRoot, "packages/cli/dist/bootstrap.js");
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [cli, ...args], { encoding: "utf8" });
+      return { stdout, stderr: "", exitCode: 0 };
+    } catch (err) {
+      const e = err as { code?: unknown; stdout?: string | Buffer; stderr?: string | Buffer };
+      if (typeof e.code !== "number") throw err;
+      return {
+        stdout: Buffer.isBuffer(e.stdout) ? e.stdout.toString("utf8") : (e.stdout ?? ""),
+        stderr: Buffer.isBuffer(e.stderr) ? e.stderr.toString("utf8") : (e.stderr ?? ""),
+        exitCode: e.code,
+      };
+    }
+  }
+
+  function npmRowsOf(report: string): Map<string, string> {
+    const rows = new Map<string, string>();
+    for (const line of report.split("\n")) {
+      const m = /^\s+(\S+)\s+(static|island fallback(?: .*?)?)$/.exec(line);
+      if (m) rows.set(m[1]!, m[2]!);
+    }
+    return rows;
+  }
+
+  test("the CLI's --npm-static auto closes transitively and keeps auto posture honest", async () => {
+    const entry = join(repoRoot, "tests/corpus/2733-ai-core-smoke/main.ts");
+    const { stdout, stderr, exitCode } = await runCli(["coverage", entry, "--dynamic", "--npm-static", "auto"]);
+    expect(stderr).toBe("");
+    expect(exitCode).toBe(0);
+    const rows = npmRowsOf(stdout);
+    // express joins, and its OWN lib edges (qs, send) join with it — the
+    // pair nothing in the program imports directly.
+    expect(rows.get("express")).toBe("static");
+    expect(rows.get("qs")).toBe("static");
+    expect(rows.get("send")).toBe("static");
+    expect(rows.get("zod")).toBe("static");
+    // pg misses the eligibility bar: the row survives the grown run (the
+    // final explicit-list analysis cannot re-derive it — the probes'
+    // auto-posture bookkeeping splices it in) with the auto-prefixed
+    // refusal the report renders yellow.
+    expect(rows.get("pg")).toMatch(/^island fallback \(auto: its shipped JS looks minified\)$/);
+  }, 240_000);
+
+  // The report splits a package's outcome per file: `static` versus
+  // `island fallback (reason)` rows under the package line, so a
+  // part-static part-island package never hides behind its package row.
+  test("the coverage report renders per-file status under the package row", () => {
+    const report = renderCoverage({
+      file: "server.ts",
+      stats: { statementsTotal: 6, statementsFailed: 0, statementsIsland: 1, functionsSkipped: 0 },
+      diagnostics: [],
+      npmStatic: [
+        {
+          package: "mime",
+          status: "static",
+          files: [
+            { file: "lib/mime.js", status: "static" },
+            { file: "dist/mime-types.js", status: "fallback", detail: "unrecognized bundler interop (__toESM helper)" },
+          ],
+        },
+        { package: "pg", status: "fallback", detail: "auto: its shipped JS looks minified" },
+      ],
+      preflightFailed: false,
+    });
+    const flat = report.split("\n").map((l) => l.trim().replace(/\s+/g, " "));
+    expect(flat).toContain("mime static");
+    expect(flat).toContain("lib/mime.js static");
+    expect(flat).toContain("dist/mime-types.js island fallback (unrecognized bundler interop (__toESM helper))");
+    expect(flat).toContain("pg island fallback (auto: its shipped JS looks minified)");
+    // Package-granular rows render exactly as before — no phantom file
+    // rows for a package the frontend judged whole.
+    expect(report.match(/pg\s+island fallback/g)?.length).toBe(1);
+  });
 });

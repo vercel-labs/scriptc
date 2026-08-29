@@ -1054,15 +1054,34 @@ export function libCallbackDiag(name: string, detail: string, loc: SrcLoc): ScrD
  * had to refuse. Library mode is STATIC-OR-REFUSE by construction: the
  * island/dynamic tier the executable lane falls back to does not exist on
  * this path (SC4006's ground), so the refusal names the package, the
- * specific bar it missed, and the remedy. */
-export function libNpmIneligibleDiag(pkg: string, reason: string, loc: SrcLoc): ScrDiagnostic {
+ * specific bar it missed, and the remedy.
+ *
+ * Per FILE, not per package: every import site of the refused package —
+ * and, once the frontend reports file-granular degradation, every degraded
+ * file of a partially-static package — anchors its OWN diagnostic, each
+ * carrying the package, the bar it missed, and the `detail` string the
+ * coverage report would render yellow. A package reached from three files
+ * refuses in three messages, one per site, never one package-level summary
+ * that hides which file pulled it in. */
+export function libNpmIneligibleDiag(pkg: string, reason: string, loc: SrcLoc, detail?: string): ScrDiagnostic {
   return {
     code: "SC4020",
-    message: `library mode compiles npm packages statically or not at all, and '${pkg}' cannot compile statically: ${reason}`,
+    message:
+      `library mode compiles npm packages statically or not at all, and '${pkg}' cannot compile statically: ${reason}` +
+      (detail !== undefined && detail !== reason ? ` (${detail})` : ""),
     loc,
     hint:
       "library artifacts have no island/dynamic tier to fall back to — vendor the code you need from the package as project modules, or drop the dependency",
   };
+}
+
+/** The per-file SC4020 fan-out: one diagnostic per site, each anchored at
+ * ITS import (or degraded file) with the package-level refusal reason and
+ * the file-specific detail string the coverage report renders yellow.
+ * Sites arrive in first-import order; duplicates are the caller's
+ * business (the frontend's site map already dedups). */
+export function libNpmIneligibleDiags(pkg: string, reason: string, sites: readonly SrcLoc[], detail?: string): ScrDiagnostic[] {
+  return sites.map((loc) => libNpmIneligibleDiag(pkg, reason, loc, detail));
 }
 
 /** SC4021/SC4022/SC4023 — the ask-4 integer-boundary refusals, one code

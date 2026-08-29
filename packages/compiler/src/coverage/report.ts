@@ -56,12 +56,28 @@ export interface CoverageInput {
   preflightFailed: boolean;
 }
 
+/** One file of a --npm-static package's outcome (package rows split per
+ * file when the frontend judges files, not just packages). */
+export interface NpmStaticFileStatus {
+  /** The file's path relative to the package root — the report renders
+   * package-relative names so a dist/lib split reads at a glance. */
+  file: string;
+  status: "static" | "fallback";
+  /** The fallback's first refusal reason (fallback rows only). */
+  detail?: string;
+}
+
 /** One --npm-static package's outcome for the report. */
 export interface NpmStaticStatus {
   package: string;
   status: "static" | "fallback";
   /** The fallback's first refusal reason (fallback rows only). */
   detail?: string;
+  /** File-granular outcomes inside the package: a static package whose
+   * minified dist islanded per file while its readable lib stayed static
+   * reports one row per judged file. Absent = the package is
+   * package-granular (every file shares the package's status). */
+  files?: NpmStaticFileStatus[];
 }
 
 const GREEN = "\x1b[32m";
@@ -169,17 +185,27 @@ export function renderCoverage(input: CoverageInput, opts: { color?: boolean; so
 
   // --npm-static outcomes: which opted-in packages compiled statically as
   // program modules and which fell back to the island (with the first
-  // refusal reason) — the flag's honesty section.
+  // refusal reason) — the flag's honesty section. A package carrying
+  // file-granular outcomes renders its files beneath the package row:
+  // `static` versus `island fallback (reason)` per FILE, so a package
+  // that is part-static part-island never hides behind its package row.
   const npmStatic = input.npmStatic ?? [];
   if (npmStatic.length > 0) {
     out.push(`  ${c(DIM, "npm packages compiled statically (--npm-static):")}`);
     const widestP = Math.max(...npmStatic.map((s) => s.package.length));
+    const statusText = (s: { status: "static" | "fallback"; detail?: string }): string =>
+      s.status === "static"
+        ? c(GREEN, "static")
+        : c(YELLOW, "island fallback") + (s.detail !== undefined ? ` ${c(DIM, `(${s.detail})`)}` : "");
     for (const s of npmStatic) {
-      const status =
-        s.status === "static"
-          ? c(GREEN, "static")
-          : c(YELLOW, "island fallback") + (s.detail !== undefined ? ` ${c(DIM, `(${s.detail})`)}` : "");
-      out.push(`    ${s.package.padEnd(widestP)}  ${status}`);
+      out.push(`    ${s.package.padEnd(widestP)}  ${statusText(s)}`);
+      const files = s.files ?? [];
+      if (files.length > 0) {
+        const widestF = Math.max(...files.map((f) => f.file.length));
+        for (const f of files) {
+          out.push(`        ${f.file.padEnd(widestF)}  ${statusText(f)}`);
+        }
+      }
     }
     out.push("");
   }

@@ -79,6 +79,15 @@ function wantsDynamic(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @dynamic\s*$/.test(l));
 }
 
+/** `// @npm-static` in the entry file's directive head: compile through the
+ * CLI with --npm-static auto — the flag's user-facing path, where the CLI
+ * owns auto's transitive closure (express pulling its qs/send edges).
+ * The bare compile() API takes a literal package list, so pinning the
+ * closure through it would test the lane's own guess, not the product. */
+function wantsNpmStatic(file: string): boolean {
+  return directiveHead(file).some((l) => /^\/\/ @npm-static\s*$/.test(l));
+}
+
 /** `// @transform-types` in the entry file's directive head: the Node
  * side runs with --experimental-transform-types — for corpus programs
  * using non-erasable TypeScript syntax (namespaces) that Node's default
@@ -338,32 +347,63 @@ async function compileAndRun(file: string): Promise<RunResult> {
   // Directory tests hash every sibling file so edits to imports bust the cache.
   const inputs = programInputs(file);
   const dynamic = wantsDynamic(file);
+  const npmStatic = wantsNpmStatic(file);
   const hash = createHash("sha256");
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash
     .update(sanitize ? "san" : "plain")
     .update(dynamic ? "dyn" : "")
+    .update(npmStatic ? "npm-auto" : "")
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, key);
   mkdirSync(outDir, { recursive: true });
-  const result = await compile(file, {
-    outPath: join(outDir, "program"),
-    outDir,
-    sanitize,
-    dynamic,
-    // Pinned: this suite IS the C-reference lane — its meaning is "the C
-    // backend matches Node", regardless of what the product default does.
-    // llvm-differential.test.ts owns the LLVM lane over the same corpus.
-    backend: "c",
-  });
-  if (!result.ok) {
-    throw new Error(
-      "corpus program failed to compile:\n" +
-        result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
-    );
+  let binaryPath: string;
+  if (npmStatic) {
+    // The CLI builds it: --npm-static auto rides main.ts's expansion, and
+    // the C backend keeps this suite's pinned reference lane.
+    const cliEntry = join(repoRoot, "packages/cli/dist/bootstrap.js");
+    const res = await runBinary(process.execPath, [
+      cliEntry,
+      "build",
+      file,
+      "--backend",
+      "c",
+      "--out",
+      join(outDir, "program"),
+      "--npm-static",
+      "auto",
+      ...(dynamic ? ["--dynamic"] : []),
+      ...(sanitize ? ["--sanitize"] : []),
+    ]);
+    if (res.exitCode !== 0) {
+      throw new Error(
+        `corpus program failed to compile via the CLI (--npm-static auto):\n` +
+          res.stderr.toString("utf8") +
+          res.stdout.toString("utf8"),
+      );
+    }
+    binaryPath = res.stdout.toString("utf8").trim();
+  } else {
+    const result = await compile(file, {
+      outPath: join(outDir, "program"),
+      outDir,
+      sanitize,
+      dynamic,
+      // Pinned: this suite IS the C-reference lane — its meaning is "the C
+      // backend matches Node", regardless of what the product default does.
+      // llvm-differential.test.ts owns the LLVM lane over the same corpus.
+      backend: "c",
+    });
+    if (!result.ok) {
+      throw new Error(
+        "corpus program failed to compile:\n" +
+          result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+      );
+    }
+    binaryPath = result.binaryPath;
   }
-  return runBinary(result.binaryPath, []);
+  return runBinary(binaryPath, []);
 }
 
 describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized" : ""}${shardSuffix()})`, () => {

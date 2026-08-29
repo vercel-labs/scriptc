@@ -50,7 +50,9 @@ Options:
                      compile the named npm packages' shipped JS statically as
                      program modules (repeatable; "auto" opts in every eligible
                      direct import: own .d.ts, unminified JS, no build-transform
-                     markers). A package preflight refuses falls back to the
+                     markers — and then closes transitively over the opted-in
+                     packages' own dependency edges, so express pulls its qs/
+                     send along). A package preflight refuses falls back to the
                      island (--dynamic) with a coverage-report note — opt-in,
                      experimental
       --provenance-sources

@@ -2641,6 +2641,49 @@ size_t scr_crypto_digest_raw(const char *alg, const unsigned char *data, size_t 
                              unsigned char out[32]);
 size_t scr_crypto_hmac_raw(const char *alg, const unsigned char *key, size_t keylen,
                            const unsigned char *data, size_t len, unsigned char out[32]);
+/* ── the T3 crypto slice (T3 maximal: zero island) ────────────────────
+ * The extended one-shot digest/HMAC: the legacy algorithms above plus
+ * "sha224" (either form) and "sha384" | "sha512" (_ex only — their
+ * 64-byte digests do not fit the legacy out[32] contract; HMAC carries
+ * their 128-byte block size). cap must cover the digest; 0 = unknown
+ * algorithm or undersized cap. */
+size_t scr_crypto_digest_ex_raw(const char *alg, const unsigned char *data, size_t len,
+                                unsigned char *out, size_t cap);
+size_t scr_crypto_hmac_ex_raw(const char *alg, const unsigned char *key, size_t keylen,
+                              const unsigned char *data, size_t len, unsigned char *out,
+                              size_t cap);
+/* pbkdf2Sync's core (RFC 8018): ALG over PASS/SALT at ITERATIONS into
+ * OUT (cap ≥ DKLEN). Returns DKLEN; 0 for an unknown algorithm.
+ * Out-of-range iterations/keylen throw Node's ERR_OUT_OF_RANGE here. */
+size_t scr_crypto_pbkdf2_sync_raw(const char *alg, const unsigned char *pass, size_t passlen,
+                                  const unsigned char *salt, size_t saltlen,
+                                  double iterations, double dklen, unsigned char *out,
+                                  size_t cap);
+/* scryptSync's core (RFC 7914): PBKDF2-HMAC-SHA256 → ROMix at cost
+ * N/R/P → PBKDF2, into OUT (cap ≥ DKLEN). MAXMEM ≤ 0 means Node's 32
+ * MiB default; exceeding it throws Error("memory limit exceeded"),
+ * invalid cost shapes throw ERR_CRYPTO_INVALID_SCRYPT_PARAMS. Returns
+ * DKLEN, or 0 on allocation failure after a throw. */
+size_t scr_crypto_scrypt_sync_raw(const unsigned char *pass, size_t passlen,
+                                  const unsigned char *salt, size_t saltlen, double n,
+                                  double r, double p, double dklen, double maxmem,
+                                  unsigned char *out, size_t cap);
+/* The asymmetric slice over the vendored mbedTLS PK layer — present
+ * ONLY in feature builds that link mbedtls (tls/fetch); absent
+ * otherwise, so the frontend must keep fencing the JS surface there.
+ * Keys are PEM (Node's .sign(keyPem) shorthand): private to sign,
+ * public or private to verify. sign digests ALG ("sha1"|"sha224"|
+ * "sha256"|"sha384"|"sha512", the Node default PKCS-1 v1.5 for RSA and
+ * DER ECDSA) and returns the DER signature length; 0 = unknown
+ * algorithm, OOM, or a thrown failure (bad key material throws Node-
+ * shaped Errors with the mbedTLS detail). verify answers 1 (valid),
+ * 0 (invalid signature), -1 (unknown algorithm or thrown failure). */
+size_t scr_crypto_sign_raw(const char *alg, const unsigned char *key, size_t keylen,
+                           const unsigned char *data, size_t len, unsigned char *out,
+                           size_t cap);
+int scr_crypto_verify_raw(const char *alg, const unsigned char *key, size_t keylen,
+                          const unsigned char *sig, size_t siglen,
+                          const unsigned char *data, size_t len);
 /* The composed `new crypto.X509Certificate(data).fingerprint` read (the
  * handle never materializes): the SHA-1 of the DER, uppercase
  * colon-separated — PEM or raw-DER input; anything else throws Node's
@@ -6225,6 +6268,23 @@ void scr_dgram_msg_thunk1(ScrClosure *cb, ScrBytes *msg, ScrStr *addr, ScrStr *f
  * SEMANTICS.md); delivery defers to the next loop turn. */
 void scr_dns_lookup(ScrStr *hostname /*borrowed*/, double family, ScrClosure *cb /*moves*/, ScrDnsLookupFn fn);
 void scr_dns_thunk0(ScrClosure *cb, ScrStr *errmsg, ScrStr *addr, double family);
+/* ── dns.resolve4/resolve6/reverse (the T3 native slice) ─────────────
+ * The netdb call runs on the resolve threadpool (POSIX) or inline at
+ * call time (Windows/WASI); the FN delivery happens on a later sweep
+ * with (errmsg, addrs): errmsg NULL + a fresh string[] (+1) on success,
+ * Node's message string (+1) and a NULL list on failure ("getaddrinfo
+ * ENOTFOUND <host>" / "getnameinfo ENOTFOUND <ip>"). resolve4/resolve6
+ * answer every unique address in answer order; reverse validates the IP
+ * synchronously (throws Node's ERR_INVALID_IP_ADDRESS TypeError).
+ * The callback moves. */
+typedef void (*ScrDnsResolveFn)(ScrClosure *cb, ScrStr *errmsg, ScrArr *addrs);
+void scr_dns_resolve(ScrStr *hostname /*borrowed*/, double family, ScrClosure *cb /*moves*/,
+                     ScrDnsResolveFn fn);
+void scr_dns_reverse(ScrStr *ip /*borrowed*/, ScrClosure *cb /*moves*/, ScrDnsResolveFn fn);
+/* Resolve/reverse work in flight or awaiting delivery — the loop's
+ * liveness and sleep-cap read it (a pending resolution keeps the
+ * process alive, like Node's ref'd resolver request). */
+bool scr_dns_jobs_pending(void);
 void scr_dgram_install(void);
 #ifdef SCR_RC_AUDIT
 long scr_dgram_live_count(void);
@@ -6232,6 +6292,10 @@ long scr_dgram_live_count(void);
 /* The loop-side registration (scr_async.c, always linked) — the net
  * hook's exact shape, one more nullable slot set. */
 void scr_loop_set_dgram(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void));
+/* The dns resolve and reverse threadpool pending-only hook (scr_dgram.c,
+ * when linked): in-flight jobs keep the loop alive and cap the idle
+ * sleep at the child-reap granularity — the fs rename worker's story. */
+void scr_loop_set_dns_jobs(bool (*jobs_pending)(void));
 
 /* ── fs.watch (scr_watch.c — compiled only when the program uses it;
  * design note atop the file). FSWatcher handles over the unit's own

@@ -3776,6 +3776,139 @@ static size_t scr_md5_digest(const unsigned char *data, size_t len, unsigned cha
   return 16;
 }
 
+/* ── SHA-224 (FIPS 180-4) — the SHA-256 compression with its own IV,
+ * truncated to 28 bytes; the KDF slice's 224-bit digest. ───────────── */
+static size_t scr_sha224_digest(const unsigned char *data, size_t len, unsigned char out[32]) {
+  uint32_t h[8] = {0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939,
+                   0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4};
+  size_t i = 0;
+  for (; i + 64 <= len; i += 64) scr_sha256_block(h, data + i);
+  unsigned char tail[128];
+  size_t rem = len - i;
+  memcpy(tail, data + i, rem);
+  tail[rem] = 0x80;
+  size_t pad = (rem + 1 + 8 <= 64) ? 64 : 128;
+  memset(tail + rem + 1, 0, pad - rem - 1 - 8);
+  uint64_t bits = (uint64_t)len * 8;
+  for (int b = 0; b < 8; b++) tail[pad - 1 - b] = (unsigned char)(bits >> (8 * b));
+  scr_sha256_block(h, tail);
+  if (pad == 128) scr_sha256_block(h, tail + 64);
+  for (int j = 0; j < 7; j++) {
+    for (int b = 0; b < 4; b++) out[j * 4 + b] = (unsigned char)(h[j] >> (24 - 8 * b));
+  }
+  return 28;
+}
+
+/* ── SHA-512 family (FIPS 180-4) — 64-bit compression, 128-byte blocks;
+ * sha512 is the 64-byte digest, sha384 its first 48 (own IV). These
+ * back the KDF slice's sha384/sha512 algorithms and HMAC's 128-byte
+ * block form. ──────────────────────────────────────────────────────── */
+
+static const uint64_t scr_sha512_k[80] = {
+    0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL, 0xb5c0fbcfec4d3b2fULL,
+    0xe9b5dba58189dbbcULL, 0x3956c25bf348b538ULL, 0x59f111f1b605d019ULL,
+    0x923f82a4af194f9bULL, 0xab1c5ed5da6d8118ULL, 0xd807aa98a3030242ULL,
+    0x12835b0145706fbeULL, 0x243185be4ee4b28cULL, 0x550c7dc3d5ffb4e2ULL,
+    0x72be5d74f27b896fULL, 0x80deb1fe3b1696b1ULL, 0x9bdc06a725c71235ULL,
+    0xc19bf174cf692694ULL, 0xe49b69c19ef14ad2ULL, 0xefbe4786384f25e3ULL,
+    0x0fc19dc68b8cd5b5ULL, 0x240ca1cc77ac9c65ULL, 0x2de92c6f592b0275ULL,
+    0x4a7484aa6ea6e483ULL, 0x5cb0a9dcbd41fbd4ULL, 0x76f988da831153b5ULL,
+    0x983e5152ee66dfabULL, 0xa831c66d2db43210ULL, 0xb00327c898fb213fULL,
+    0xbf597fc7beef0ee4ULL, 0xc6e00bf33da88fc2ULL, 0xd5a79147930aa725ULL,
+    0x06ca6351e003826fULL, 0x142929670a0e6e70ULL, 0x27b70a8546d22ffcULL,
+    0x2e1b21385c26c926ULL, 0x4d2c6dfc5ac42aedULL, 0x53380d139d95b3dfULL,
+    0x650a73548baf63deULL, 0x766a0abb3c77b2a8ULL, 0x81c2c92e47edaee6ULL,
+    0x92722c851482353bULL, 0xa2bfe8a14cf10364ULL, 0xa81a664bbc423001ULL,
+    0xc24b8b70d0f89791ULL, 0xc76c51a30654be30ULL, 0xd192e819d6ef5218ULL,
+    0xd69906245565a910ULL, 0xf40e35855771202aULL, 0x106aa07032bbd1b8ULL,
+    0x19a4c116b8d2d0c8ULL, 0x1e376c085141ab53ULL, 0x2748774cdf8eeb99ULL,
+    0x34b0bcb5e19b48a8ULL, 0x391c0cb3c5c95a63ULL, 0x4ed8aa4ae3418acbULL,
+    0x5b9cca4f7763e373ULL, 0x682e6ff3d6b2b8a3ULL, 0x748f82ee5defb2fcULL,
+    0x78a5636f43172f60ULL, 0x84c87814a1f0ab72ULL, 0x8cc702081a6439ecULL,
+    0x90befffa23631e28ULL, 0xa4506cebde82bde9ULL, 0xbef9a3f7b2c67915ULL,
+    0xc67178f2e372532bULL, 0xca273eceea26619cULL, 0xd186b8c721c0c207ULL,
+    0xeada7dd6cde0eb1eULL, 0xf57d4f7fee6ed178ULL, 0x06f067aa72176fbaULL,
+    0x0a637dc5a2c898a6ULL, 0x113f9804bef90daeULL, 0x1b710b35131c471bULL,
+    0x28db77f523047d84ULL, 0x32caab7b40c72493ULL, 0x3c9ebe0a15c9bebcULL,
+    0x431d67c49c100d4cULL, 0x4cc5d4becb3e42b6ULL, 0x597f299cfc657e2aULL,
+    0x5fcb6fab3ad6faecULL, 0x6c44198c4a475817ULL};
+
+static uint64_t scr_sha512_rotr(uint64_t x, unsigned n) {
+  return (x >> n) | (x << (64 - n));
+}
+
+static void scr_sha512_block(uint64_t h[8], const unsigned char *p) {
+  uint64_t w[80];
+  for (int i = 0; i < 16; i++) {
+    w[i] = ((uint64_t)p[i * 8] << 56) | ((uint64_t)p[i * 8 + 1] << 48) |
+           ((uint64_t)p[i * 8 + 2] << 40) | ((uint64_t)p[i * 8 + 3] << 32) |
+           ((uint64_t)p[i * 8 + 4] << 24) | ((uint64_t)p[i * 8 + 5] << 16) |
+           ((uint64_t)p[i * 8 + 6] << 8) | (uint64_t)p[i * 8 + 7];
+  }
+  for (int i = 16; i < 80; i++) {
+    uint64_t s0 = scr_sha512_rotr(w[i - 15], 1) ^ scr_sha512_rotr(w[i - 15], 8) ^ (w[i - 15] >> 7);
+    uint64_t s1 = scr_sha512_rotr(w[i - 2], 19) ^ scr_sha512_rotr(w[i - 2], 61) ^ (w[i - 2] >> 6);
+    w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+  }
+  uint64_t a = h[0], b = h[1], c = h[2], d = h[3];
+  uint64_t e = h[4], f = h[5], g = h[6], hh = h[7];
+  for (int i = 0; i < 80; i++) {
+    uint64_t S1 = scr_sha512_rotr(e, 14) ^ scr_sha512_rotr(e, 18) ^ scr_sha512_rotr(e, 41);
+    uint64_t ch = (e & f) ^ (~e & g);
+    uint64_t t1 = hh + S1 + ch + scr_sha512_k[i] + w[i];
+    uint64_t S0 = scr_sha512_rotr(a, 28) ^ scr_sha512_rotr(a, 34) ^ scr_sha512_rotr(a, 39);
+    uint64_t maj = (a & b) ^ (a & c) ^ (b & c);
+    uint64_t t2 = S0 + maj;
+    hh = g; g = f; f = e; e = d + t1;
+    d = c; c = b; b = a; a = t1 + t2;
+  }
+  h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+  h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+}
+
+/* Shared SHA-512 machinery: the IV differs for sha384, the truncation
+ * too; padlen covers the 128-bit length field. */
+static size_t scr_sha512_core(const unsigned char *data, size_t len, unsigned char *out,
+                              const uint64_t iv[8], size_t outlen) {
+  uint64_t h[8];
+  memcpy(h, iv, sizeof h);
+  size_t i = 0;
+  for (; i + 128 <= len; i += 128) scr_sha512_block(h, data + i);
+  unsigned char tail[256];
+  size_t rem = len - i;
+  memcpy(tail, data + i, rem);
+  tail[rem] = 0x80;
+  size_t pad = (rem + 1 + 16 <= 128) ? 128 : 256;
+  memset(tail + rem + 1, 0, pad - rem - 1 - 16);
+  uint64_t bits = (uint64_t)len * 8;
+  for (int b = 0; b < 8; b++) tail[pad - 1 - b] = (unsigned char)(bits >> (8 * b));
+  /* The high 64 length bits are zero for every input the runtime can
+   * address; FIPS reserves them anyway. */
+  memset(tail + pad - 16, 0, 8);
+  scr_sha512_block(h, tail);
+  if (pad == 256) scr_sha512_block(h, tail + 128);
+  for (size_t j = 0; j < outlen / 8; j++) {
+    for (int b = 0; b < 8; b++) out[j * 8 + b] = (unsigned char)(h[j] >> (56 - 8 * b));
+  }
+  return outlen;
+}
+
+static size_t scr_sha512_digest(const unsigned char *data, size_t len, unsigned char *out) {
+  static const uint64_t iv[8] = {0x6a09e667f3bcc908ULL, 0xbb67ae8584caa73bULL,
+                                 0x3c6ef372fe94f82bULL, 0xa54ff53a5f1d36f1ULL,
+                                 0x510e527fade682d1ULL, 0x9b05688c2b3e6c1fULL,
+                                 0x1f83d9abfb41bd6bULL, 0x5be0cd19137e2179ULL};
+  return scr_sha512_core(data, len, out, iv, 64);
+}
+
+static size_t scr_sha384_digest(const unsigned char *data, size_t len, unsigned char *out) {
+  static const uint64_t iv[8] = {0xcbbb9d5dc1059ed8ULL, 0x629a292a367cd507ULL,
+                                 0x9159015a3070dd17ULL, 0x152fecd8f70e5939ULL,
+                                 0x67332667ffc00b31ULL, 0x8eb44a8768581511ULL,
+                                 0xdb0c2e0d64f98fa7ULL, 0x47b5481dbefa4fa4ULL};
+  return scr_sha512_core(data, len, out, iv, 48);
+}
+
 /* One-shot digest by algorithm name — the island crypto shim's bridge
  * (createHash concatenates its update() chunks JS-side). Returns the
  * digest length, 0 for an unknown algorithm. */
@@ -3784,36 +3917,409 @@ size_t scr_crypto_digest_raw(const char *alg, const unsigned char *data, size_t 
   if (strcmp(alg, "sha256") == 0) return scr_sha256_digest(data, len, out);
   if (strcmp(alg, "sha1") == 0) return scr_sha1_digest(data, len, out);
   if (strcmp(alg, "md5") == 0) return scr_md5_digest(data, len, out);
+  if (strcmp(alg, "sha224") == 0) return scr_sha224_digest(data, len, out);
+  return 0;
+}
+
+/* The extended digest: the same dispatch with the 64-byte-output SHA-2
+ * members (sha384/sha512) that do not fit the legacy out[32] contract.
+ * cap must be >= the algorithm's digest length. */
+size_t scr_crypto_digest_ex_raw(const char *alg, const unsigned char *data, size_t len,
+                                unsigned char *out, size_t cap) {
+  if (strcmp(alg, "sha384") == 0) return cap >= 48 ? scr_sha384_digest(data, len, out) : 0;
+  if (strcmp(alg, "sha512") == 0) return cap >= 64 ? scr_sha512_digest(data, len, out) : 0;
+  if (cap < 32) return 0;
+  return scr_crypto_digest_raw(alg, data, len, out);
+}
+
+/* The algorithm's HMAC block size and one-shot digest (the shared HMAC
+ * core's PRF). 0 for an unknown algorithm. */
+static size_t scr_crypto_alg_prf(const char *alg, const unsigned char *data, size_t len,
+                                 unsigned char *out, size_t *block) {
+  if (strcmp(alg, "sha256") == 0) { *block = 64; return scr_sha256_digest(data, len, out); }
+  if (strcmp(alg, "sha1") == 0) { *block = 64; return scr_sha1_digest(data, len, out); }
+  if (strcmp(alg, "md5") == 0) { *block = 64; return scr_md5_digest(data, len, out); }
+  if (strcmp(alg, "sha224") == 0) { *block = 64; return scr_sha224_digest(data, len, out); }
+  if (strcmp(alg, "sha384") == 0) { *block = 128; return scr_sha384_digest(data, len, out); }
+  if (strcmp(alg, "sha512") == 0) { *block = 128; return scr_sha512_digest(data, len, out); }
+  *block = 0;
   return 0;
 }
 
 /* HMAC (RFC 2104) over the same digests — block size 64 for all three. */
+size_t scr_crypto_hmac_ex_raw(const char *alg, const unsigned char *key, size_t keylen,
+                              const unsigned char *data, size_t len, unsigned char *out,
+                              size_t cap);
 size_t scr_crypto_hmac_raw(const char *alg, const unsigned char *key, size_t keylen,
                            const unsigned char *data, size_t len, unsigned char out[32]) {
-  unsigned char kblock[64];
-  unsigned char kd[32];
-  if (keylen > 64) {
-    size_t kn = scr_crypto_digest_raw(alg, key, keylen, kd);
-    if (kn == 0) return 0;
-    memset(kblock, 0, 64);
-    memcpy(kblock, kd, kn);
+  return scr_crypto_hmac_ex_raw(alg, key, keylen, data, len, out, 32);
+}
+
+/* The extended HMAC: same dispatch with the 64-byte-output SHA-2 members
+ * (their 128-byte block size handled here). */
+size_t scr_crypto_hmac_ex_raw(const char *alg, const unsigned char *key, size_t keylen,
+                              const unsigned char *data, size_t len, unsigned char *out,
+                              size_t cap) {
+  unsigned char kblock[128];
+  unsigned char kd[64];
+  size_t block;
+  size_t kn = scr_crypto_alg_prf(alg, (const unsigned char *)"", 0, kd, &block);
+  if (kn == 0 || block == 0 || cap < kn) return 0;
+  if (keylen > block) {
+    size_t hn = scr_crypto_alg_prf(alg, key, keylen, kd, &block);
+    if (hn == 0) return 0;
+    memset(kblock, 0, block);
+    memcpy(kblock, kd, hn);
   } else {
-    memset(kblock, 0, 64);
+    memset(kblock, 0, block);
     memcpy(kblock, key, keylen);
   }
-  unsigned char *inner = malloc(64 + len);
+  unsigned char *inner = malloc(block + len);
   if (!inner) return 0;
-  for (int i = 0; i < 64; i++) inner[i] = kblock[i] ^ 0x36;
-  memcpy(inner + 64, data, len);
-  unsigned char ih[32];
-  size_t in = scr_crypto_digest_raw(alg, inner, 64 + len, ih);
+  for (size_t i = 0; i < block; i++) inner[i] = (unsigned char)(kblock[i] ^ 0x36);
+  memcpy(inner + block, data, len);
+  unsigned char ih[64];
+  size_t in = scr_crypto_alg_prf(alg, inner, block + len, ih, &block);
   free(inner);
   if (in == 0) return 0;
-  unsigned char outer[96];
-  for (int i = 0; i < 64; i++) outer[i] = kblock[i] ^ 0x5c;
-  memcpy(outer + 64, ih, in);
-  return scr_crypto_digest_raw(alg, outer, 64 + in, out);
+  unsigned char outer[192];
+  for (size_t i = 0; i < block; i++) outer[i] = (unsigned char)(kblock[i] ^ 0x5c);
+  memcpy(outer + block, ih, in);
+  return scr_crypto_alg_prf(alg, outer, block + in, out, &block);
 }
+
+/* ── PBKDF2 (RFC 8018) — pbkdf2Sync's core. Each output block is the
+ * XOR of c iterates of the PRF; U1's message (salt ‖ big-endian block
+ * index) and every later U is at most one digest's length plus the
+ * block, so the one-shot HMAC needs no streaming state. Unknown
+ * algorithms answer 0 (the frontend shapes Node's "Digest method not
+ * supported"); out-of-range iterations/keylen throw Node's
+ * ERR_OUT_OF_RANGE RangeErrors here. ───────────────────────────────── */
+size_t scr_crypto_pbkdf2_sync_raw(const char *alg, const unsigned char *pass, size_t passlen,
+                                  const unsigned char *salt, size_t saltlen,
+                                  double iterations, double dklen, unsigned char *out,
+                                  size_t cap) {
+  if (!(iterations >= 1 && iterations <= 2147483647)) {
+    char num[32];
+    size_t numlen = scr_f64_to_str(iterations, num);
+    char msg[160];
+    int mlen = snprintf(msg, sizeof msg,
+                        "The value of \"iterations\" is out of range. It must be >= 1 && <= 2147483647. Received %.*s",
+                        (int)numlen, num);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  if (!(dklen >= 0 && dklen <= 2147483647)) {
+    char num[32];
+    size_t numlen = scr_f64_to_str(dklen, num);
+    char msg[160];
+    int mlen = snprintf(msg, sizeof msg,
+                        "The value of \"keylen\" is out of range. It must be >= 0 && <= 2147483647. Received %.*s",
+                        (int)numlen, num);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  unsigned char prb[64];
+  size_t block = 0;
+  size_t hlen = scr_crypto_alg_prf(alg, (const unsigned char *)"", 0, prb, &block);
+  if (hlen == 0 || block == 0) return 0; /* unknown digest — honest 0 */
+  size_t dk = (size_t)dklen;
+  if (dk > cap) return 0; /* caller's buffer governs */
+  unsigned long blocks = (unsigned long)((dk + hlen - 1) / hlen);
+  if (blocks > 0xffffffffUL) return 0;
+  unsigned char u[64], t[64];
+  unsigned char *msgbuf = malloc(saltlen + 4);
+  if (!msgbuf) return 0;
+  memcpy(msgbuf, salt, saltlen);
+  unsigned long done = 0;
+  for (unsigned long i = 1; done < dk; i++, done += hlen) {
+    msgbuf[saltlen] = (unsigned char)(i >> 24);
+    msgbuf[saltlen + 1] = (unsigned char)(i >> 16);
+    msgbuf[saltlen + 2] = (unsigned char)(i >> 8);
+    msgbuf[saltlen + 3] = (unsigned char)i;
+    if (!scr_crypto_hmac_ex_raw(alg, pass, passlen, msgbuf, saltlen + 4, u, sizeof u)) {
+      free(msgbuf);
+      return 0;
+    }
+    memcpy(t, u, hlen);
+    for (unsigned long c = 1; c < (unsigned long)iterations; c++) {
+      if (!scr_crypto_hmac_ex_raw(alg, pass, passlen, u, hlen, u, sizeof u)) {
+        free(msgbuf);
+        return 0;
+      }
+      for (size_t k = 0; k < hlen; k++) t[k] ^= u[k];
+    }
+    size_t chunk = dk - done < hlen ? dk - done : hlen;
+    memcpy(out + done, t, chunk);
+  }
+  free(msgbuf);
+  return dk;
+}
+
+/* ── scrypt (RFC 7914) — scryptSync's core: PBKDF2-HMAC-SHA256 to the
+ * p·128·r-byte initial blocks, ROMix (Salsa20/8 BlockMix) over each at
+ * cost N, then one more PBKDF2 pass to the derived length. The V array
+ * is the dominant allocation (128·N·r bytes), checked against maxmem
+ * first — Node's "memory limit exceeded" Error. Invalid cost shapes
+ * throw Node's ERR_CRYPTO_INVALID_SCRYPT_PARAMS RangeError. ────────── */
+
+/* The Salsa20/8 core over 64-byte words (RFC 7914 §3), in place. */
+static void scr_salsa20_8(uint32_t b[16]) {
+  uint32_t x[16];
+  memcpy(x, b, 64);
+  for (int i = 0; i < 8; i += 2) {
+#define SCR_SALSA_ROT(a, n) (((a) << (n)) | ((a) >> (32 - (n))))
+    x[4] ^= SCR_SALSA_ROT(x[0] + x[12], 7);  x[8] ^= SCR_SALSA_ROT(x[4] + x[0], 9);
+    x[12] ^= SCR_SALSA_ROT(x[8] + x[4], 13); x[0] ^= SCR_SALSA_ROT(x[12] + x[8], 18);
+    x[9] ^= SCR_SALSA_ROT(x[5] + x[1], 7);   x[13] ^= SCR_SALSA_ROT(x[9] + x[5], 9);
+    x[1] ^= SCR_SALSA_ROT(x[13] + x[9], 13); x[5] ^= SCR_SALSA_ROT(x[1] + x[13], 18);
+    x[14] ^= SCR_SALSA_ROT(x[10] + x[6], 7); x[2] ^= SCR_SALSA_ROT(x[14] + x[10], 9);
+    x[6] ^= SCR_SALSA_ROT(x[2] + x[14], 13); x[10] ^= SCR_SALSA_ROT(x[6] + x[2], 18);
+    x[3] ^= SCR_SALSA_ROT(x[15] + x[11], 7); x[7] ^= SCR_SALSA_ROT(x[3] + x[15], 9);
+    x[11] ^= SCR_SALSA_ROT(x[7] + x[3], 13); x[15] ^= SCR_SALSA_ROT(x[11] + x[7], 18);
+    x[1] ^= SCR_SALSA_ROT(x[0] + x[3], 7);   x[2] ^= SCR_SALSA_ROT(x[1] + x[0], 9);
+    x[3] ^= SCR_SALSA_ROT(x[2] + x[1], 13);  x[0] ^= SCR_SALSA_ROT(x[3] + x[2], 18);
+    x[6] ^= SCR_SALSA_ROT(x[5] + x[4], 7);   x[7] ^= SCR_SALSA_ROT(x[6] + x[5], 9);
+    x[4] ^= SCR_SALSA_ROT(x[7] + x[6], 13);  x[5] ^= SCR_SALSA_ROT(x[4] + x[7], 18);
+    x[11] ^= SCR_SALSA_ROT(x[10] + x[9], 7); x[8] ^= SCR_SALSA_ROT(x[11] + x[10], 9);
+    x[9] ^= SCR_SALSA_ROT(x[8] + x[11], 13); x[10] ^= SCR_SALSA_ROT(x[9] + x[8], 18);
+    x[12] ^= SCR_SALSA_ROT(x[15] + x[14], 7); x[13] ^= SCR_SALSA_ROT(x[12] + x[15], 9);
+    x[14] ^= SCR_SALSA_ROT(x[13] + x[12], 13); x[15] ^= SCR_SALSA_ROT(x[14] + x[13], 18);
+#undef SCR_SALSA_ROT
+  }
+  for (int i = 0; i < 16; i++) b[i] += x[i];
+}
+
+/* BlockMix_salsa8: B (2r 64-byte blocks) scrambles through Y in place. */
+static void scr_scrypt_blockmix(uint32_t *b, uint32_t *y, size_t r) {
+  uint32_t x[16];
+  memcpy(x, &b[(2 * r - 1) * 16], 64);
+  for (size_t i = 0; i < 2 * r; i++) {
+    for (size_t k = 0; k < 16; k++) x[k] ^= b[i * 16 + k];
+    scr_salsa20_8(x);
+    memcpy(&y[i * 16], x, 64);
+  }
+  for (size_t i = 0; i < r; i++) memcpy(&b[i * 16], &y[2 * i * 16], 64);
+  for (size_t i = 0; i < r; i++) memcpy(&b[(r + i) * 16], &y[(2 * i + 1) * 16], 64);
+}
+
+/* ROMix_salsa8: N-fold chain over V with the last block's first word
+ * picking the next V slot (the integerify of RFC 7914 §4). */
+static void scr_scrypt_romix(uint32_t *b, size_t r, uint64_t n, uint32_t *v, uint32_t *y) {
+  size_t words = 32 * r; /* 2r blocks × 16 words */
+  for (uint64_t i = 0; i < n; i++) {
+    memcpy(&v[i * words], b, words * 4);
+    scr_scrypt_blockmix(b, y, r);
+  }
+  for (uint64_t i = 0; i < n; i++) {
+    uint64_t j = (uint64_t)b[(2 * r - 1) * 16] & (n - 1);
+    for (size_t k = 0; k < words; k++) b[k] ^= v[j * words + k];
+    scr_scrypt_blockmix(b, y, r);
+  }
+}
+
+size_t scr_crypto_scrypt_sync_raw(const unsigned char *pass, size_t passlen,
+                                  const unsigned char *salt, size_t saltlen, double n,
+                                  double r, double p, double dklen, double maxmem,
+                                  unsigned char *out, size_t cap) {
+  bool bad = !(n >= 2 && n <= 4294967296.0 && r >= 1 && p >= 1 && dklen >= 0 &&
+               dklen <= 2147483647.0);
+  if (!bad && n != floor(n)) bad = true;
+  if (!bad && (r != floor(r) || p != floor(p))) bad = true;
+  if (!bad) {
+    /* N is a power of two > 1: exactly one set bit. */
+    double lg = log2(n);
+    if (lg != floor(lg)) bad = true;
+  }
+  if (bad) {
+    scr_throw_error_msg_code(SCR_ERR_RANGE, "Invalid scrypt parameters", 24,
+                             "ERR_CRYPTO_INVALID_SCRYPT_PARAMS");
+    return 0;
+  }
+  uint64_t N = (uint64_t)n, R = (uint64_t)r, P = (uint64_t)p;
+  if (R > 0xffffffffU / 128 || P > 0xffffffffU / (128 * (unsigned)R)) {
+    scr_throw_error_msg_code(SCR_ERR_RANGE, "Invalid scrypt parameters", 24,
+                             "ERR_CRYPTO_INVALID_SCRYPT_PARAMS");
+    return 0;
+  }
+  double need = 128.0 * (double)R * ((double)N + (double)P) + 128.0 * (double)R;
+  if (maxmem <= 0) maxmem = 33554432.0; /* Node's 32 MiB default */
+  if (need > maxmem) {
+    scr_throw_error_msg(SCR_ERR_ERROR, "memory limit exceeded", 22);
+    return 0;
+  }
+  if ((size_t)dklen > cap) return 0;
+  size_t blen = (size_t)(128 * R * P);
+  unsigned char *b = malloc(blen > 0 ? blen : 1);
+  if (!b) return 0;
+  if (scr_crypto_pbkdf2_sync_raw("sha256", pass, passlen, salt, saltlen, 1.0,
+                                 (double)blen, b, blen) != blen) {
+    free(b);
+    return 0;
+  }
+  uint32_t *v = malloc((size_t)(128 * R * N));
+  uint32_t *y = malloc((size_t)(128 * R));
+  if (!v || !y) {
+    free(b);
+    free(v);
+    free(y);
+    return 0;
+  }
+  for (uint64_t i = 0; i < P; i++) {
+    scr_scrypt_romix((uint32_t *)(b + i * 128 * R), (size_t)R, N, v, y);
+  }
+  free(v);
+  free(y);
+  size_t rc = scr_crypto_pbkdf2_sync_raw("sha256", pass, passlen, b, blen, 1.0, dklen,
+                                         out, cap);
+  free(b);
+  return rc;
+}
+
+/* ── sign / verify — the asymmetric slice, over the vendored mbedTLS
+ * PK layer (the same stack scr_tls.c serves https with). The frontend
+ * currently fences createSign/createVerify (no KeyObject value model),
+ * so this raw API is the runtime-side contract the future lowering
+ * rides: digest ALG locally, then PKCS-1 v1.5 (RSA) or DER ECDSA sign /
+ * verify over the digest — Node's default signatures. Key material is
+ * PEM (private key to sign; public or private to verify), Node's
+ * .sign(pem) shorthand. mbedtls is feature-linked (the tls/fetch set);
+ * without it these are ABSENT, so the gates below compile them out and
+ * the frontend must keep fencing them there. ──────────────────────── */
+
+#if defined(__has_include)
+#if __has_include(<mbedtls/pk.h>)
+#define SCR_HAVE_MBEDTLS_PK 1
+#endif
+#endif
+
+#ifdef SCR_HAVE_MBEDTLS_PK
+
+#include <mbedtls/pk.h>
+#include <mbedtls/md.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/error.h>
+
+static mbedtls_entropy_context scr_pk_entropy;
+static mbedtls_ctr_drbg_context scr_pk_drbg;
+static bool scr_pk_rng_ready = false;
+
+static void scr_pk_rng_init(void) {
+  if (scr_pk_rng_ready) return;
+  mbedtls_entropy_init(&scr_pk_entropy);
+  mbedtls_ctr_drbg_init(&scr_pk_drbg);
+  if (mbedtls_ctr_drbg_seed(&scr_pk_drbg, mbedtls_entropy_func, &scr_pk_entropy, NULL, 0) != 0) {
+    scr_trap("scriptc: crypto rng failure\n");
+  }
+  scr_pk_rng_ready = true;
+}
+
+/* The PEM bytes need NUL termination for mbedTLS's parser. */
+static char *scr_pk_pem_dup(const unsigned char *key, size_t keylen) {
+  char *buf = malloc(keylen + 1);
+  if (!buf) scr_trap("scriptc: out of memory\n");
+  memcpy(buf, key, keylen);
+  buf[keylen] = 0;
+  return buf;
+}
+
+/* ALG name → the digest mbedTLS names (for RSA's DigestInfo wrapper);
+ * NULL for the algorithms the sign surface does not carry. */
+static mbedtls_md_type_t scr_pk_md_type(const char *alg) {
+  if (strcmp(alg, "sha256") == 0) return MBEDTLS_MD_SHA256;
+  if (strcmp(alg, "sha1") == 0) return MBEDTLS_MD_SHA1;
+  if (strcmp(alg, "sha224") == 0) return MBEDTLS_MD_SHA224;
+  if (strcmp(alg, "sha384") == 0) return MBEDTLS_MD_SHA384;
+  if (strcmp(alg, "sha512") == 0) return MBEDTLS_MD_SHA512;
+  return MBEDTLS_MD_NONE;
+}
+
+static size_t scr_pk_digest(const char *alg, const unsigned char *data, size_t len,
+                            unsigned char *d, size_t cap) {
+  if (cap < 64) return 0;
+  return scr_crypto_digest_ex_raw(alg, data, len, d, cap);
+}
+
+static void scr_pk_throw(const char *op, int err) {
+  char detail[128];
+  mbedtls_strerror(err, detail, sizeof detail);
+  char msg[192];
+  int mlen = snprintf(msg, sizeof msg, "%s failure: %s", op, detail);
+  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)mlen);
+}
+
+size_t scr_crypto_sign_raw(const char *alg, const unsigned char *key, size_t keylen,
+                           const unsigned char *data, size_t len, unsigned char *out,
+                           size_t cap) {
+  mbedtls_md_type_t md = scr_pk_md_type(alg);
+  if (md == MBEDTLS_MD_NONE) return 0;
+  unsigned char d[64];
+  size_t dn = scr_pk_digest(alg, data, len, d, sizeof d);
+  if (dn == 0) return 0;
+  scr_pk_rng_init();
+  char *pem = scr_pk_pem_dup(key, keylen);
+  mbedtls_pk_context pk;
+  mbedtls_pk_init(&pk);
+  int err = mbedtls_pk_parse_key(&pk, pem, keylen + 1, NULL, 0, mbedtls_ctr_drbg_random,
+                                 &scr_pk_drbg);
+  free(pem);
+  if (err != 0) {
+    mbedtls_pk_free(&pk);
+    scr_pk_throw("sign key", err);
+    return 0;
+  }
+  size_t siglen = 0;
+  err = mbedtls_pk_sign(&pk, md, d, dn, out, cap, &siglen, mbedtls_ctr_drbg_random,
+                        &scr_pk_drbg);
+  mbedtls_pk_free(&pk);
+  if (err != 0) {
+    scr_pk_throw("sign", err);
+    return 0;
+  }
+  return siglen;
+}
+
+int scr_crypto_verify_raw(const char *alg, const unsigned char *key, size_t keylen,
+                          const unsigned char *sig, size_t siglen,
+                          const unsigned char *data, size_t len) {
+  mbedtls_md_type_t md = scr_pk_md_type(alg);
+  if (md == MBEDTLS_MD_NONE) return -1;
+  unsigned char d[64];
+  size_t dn = scr_pk_digest(alg, data, len, d, sizeof d);
+  if (dn == 0) return -1;
+  char *pem = scr_pk_pem_dup(key, keylen);
+  mbedtls_pk_context pk;
+  mbedtls_pk_init(&pk);
+  /* Node's verify accepts either key form; public first (a private PEM
+   * verifies too — the parser below is the fallback). */
+  int err = mbedtls_pk_parse_public_key(&pk, pem, keylen + 1);
+  if (err != 0) {
+    mbedtls_pk_free(&pk);
+    mbedtls_pk_init(&pk);
+    err = mbedtls_pk_parse_key(&pk, pem, keylen + 1, NULL, 0, mbedtls_ctr_drbg_random,
+                               &scr_pk_drbg);
+  }
+  free(pem);
+  if (err != 0) {
+    mbedtls_pk_free(&pk);
+    scr_pk_throw("verify key", err);
+    return -1;
+  }
+  err = mbedtls_pk_verify(&pk, md, d, dn, sig, siglen);
+  mbedtls_pk_free(&pk);
+  if (err == 0) return 1;
+  if (err == MBEDTLS_ERR_PK_SIG_LEN_MISMATCH || err == MBEDTLS_ERR_ECP_BAD_INPUT_DATA ||
+      err == MBEDTLS_ERR_RSA_VERIFY_FAILED || err == MBEDTLS_ERR_RSA_BAD_INPUT_DATA ||
+      err == MBEDTLS_ERR_ECP_VERIFY_FAILED) {
+    return 0; /* well-formed key, wrong signature — Node answers false */
+  }
+  scr_pk_throw("verify", err);
+  return -1;
+}
+
+#endif /* SCR_HAVE_MBEDTLS_PK */
+
 
 static ScrStr *scr_hash_digest_raw(const ScrStr *alg, const unsigned char *data, size_t len,
                                     const ScrStr *enc) {

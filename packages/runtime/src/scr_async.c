@@ -2185,6 +2185,15 @@ void scr_loop_set_dgram(bool (*pending)(void), void (*dispatch)(void), int (*pol
   scr_dgram_pollfd_fn = pollfd;
 }
 
+/* The dns resolve and reverse threadpool hook (scr_dgram.c, when linked):
+ * a nullable pending-only slot — in-flight jobs hold the loop alive and
+ * cap the idle sleep at the child-reap granularity (the fs rename
+ * worker's exact story: no platform poll handle, so completion is
+ * noticed by the next short turn). */
+static bool (*scr_dns_jobs_fn)(void) = NULL;
+
+void scr_loop_set_dns_jobs(bool (*jobs_pending)(void)) { scr_dns_jobs_fn = jobs_pending; }
+
 /* The fs.watch hook (scr_watch.c, when linked) — the net hook's exact
  * shape: one more set of nullable slots, byte-identical loop behavior
  * when unset. */
@@ -2404,6 +2413,7 @@ bool scr_loop_run(ScrPromise *top_level) {
     bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
     bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
     bool dgram = scr_dgram_pending_fn != NULL && scr_dgram_pending_fn();
+    bool dnsq = scr_dns_jobs_fn != NULL && scr_dns_jobs_fn();
     bool watch = scr_watch_pending_fn != NULL && scr_watch_pending_fn();
     bool ffi = scr_ffi_pending_fn != NULL && scr_ffi_pending_fn();
     bool renames = scr_fs_renames_pending();
@@ -2413,7 +2423,7 @@ bool scr_loop_run(ScrPromise *top_level) {
      * Children follow the same rule: an unref'd child is still REAPED
      * while the loop runs (kids drives the sweeps and sleeps above) but
      * only reffed ones keep the process alive. */
-    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !scr_children_reffed_pending() && !io && !events && !net && !dgram && !watch && !ffi && !renames) break;
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !scr_children_reffed_pending() && !io && !events && !net && !dgram && !dnsq && !watch && !ffi && !renames) break;
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -2438,6 +2448,7 @@ bool scr_loop_run(ScrPromise *top_level) {
      * wait exactly like the portable child fallback so completion is noticed
      * promptly even when another poller owns the sleep. */
     if (renames && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
+    if (dnsq && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
     /* An armed island timer (AbortSignal.timeout) caps the sleep: it must
      * fire on time even while the poller waits on socket readiness. */
     if (scr_island_deadline_fn != NULL) {

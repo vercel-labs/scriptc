@@ -156,6 +156,8 @@ struct ScrHttpReq {
   bool enc_utf8; /* setEncoding('utf8'): 'data' delivers strings */
   bool http10;   /* the parsed request/status line's version (httpVersion) */
   bool http2;    /* an h2 compat request (httpVersion "2.0") */
+  bool keep_alive; /* the response's verdict (client heads): HTTP/1.1
+                    * keeps unless Connection: close — the pool's read */
   bool aborted;  /* h2: the stream died with our writable side open */
   bool close_queued;
   bool close_emitted; /* settled: err/close listeners dropped */
@@ -2350,6 +2352,9 @@ struct ScrHttpClientReq {
   bool had_error;
   bool close_queued;
   bool close_emitted; /* settled: listeners dropped, off the registry */
+  bool poolable; /* a keep-alive agent owns it over a plain (http) socket:
+                  * the response-done verdict may hand the connection to
+                  * the agent's free pool instead of destroying it */
   ScrHttpReq *res; /* +1 once the head parses */
   ScrNetLs resp_ls, err_ls, timeout_ls, close_ls, upgrade_ls;
   /* the owning Agent (+1; the agent's entry holds this client +1 too —
@@ -2425,6 +2430,15 @@ static void scr_http_client_unregister(ScrHttpClientReq *c) {
 static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpClientReq *c);
 static struct ScrHttpAgent *scr_http_agent_release_p(struct ScrHttpAgent *ag);
 static void scr_http_client_agent_detach(struct ScrHttpClientReq *c);
+static ScrStr *scr_http_agent_name(const char *host, size_t host_len, const char *port,
+                                    size_t port_len, const char *laddr, size_t laddr_len,
+                                    int family, const char *spath, size_t spath_len);
+/* The keep-alive pool (implementations with the Agent unit): the settle
+ * path offers the connection; the request path adopts; teardown evicts. */
+static void scr_http_agent_pool_put(struct ScrHttpAgent *ag, struct ScrHttpClientReq *c,
+                                    bool res_keep);
+static ScrNetSocket *scr_http_agent_pool_take(struct ScrHttpAgent *ag, const ScrStr *name);
+static void scr_http_agent_pool_teardown(struct ScrHttpAgent *ag, bool destroy_sockets);
 
 /* The queue's CLIENT_CLOSE emit: 'close' fires, the handle settles
  * (listeners drop — the cycle story) and leaves the registry. */
@@ -2727,6 +2741,20 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len) {
     return true;
   }
 
+  /* The response's keep-alive verdict (RFC 7230 §6.6; the pool decision
+   * reads it at settle): HTTP/1.1 keeps unless Connection: close,
+   * HTTP/1.0 closes unless Connection: keep-alive — the request line's
+   * version is the baseline. */
+  res->keep_alive = !res->http10;
+  for (size_t i = 0; i < res->nheaders; i++) {
+    const ScrStr *n = res->hnames[i];
+    const ScrStr *v = res->hvalues[i];
+    if (n->len == 10 && memcmp(n->data, "connection", 10) == 0) {
+      if (strcasestr(v->data, "close") != NULL) res->keep_alive = false;
+      else if (strcasestr(v->data, "keep-alive") != NULL) res->keep_alive = true;
+    }
+  }
+
   /* framing: HEAD requests and 204/304 responses have NO body; chunked
    * wins over Content-Length; neither means EOF-delimited */
   bool chunked = false;
@@ -2836,6 +2864,7 @@ static void scr_http_client_response_done(ScrHttpConn *conn) {
   ScrHttpReq *res = conn->req;
   if (!c || c->response_done) return;
   c->response_done = true;
+  bool res_keep = res != NULL && res->keep_alive;
   if (res) {
     scr_http_req_retain(res);
     scr_http_req_finish(res, true); /* fires 'end' */
@@ -2850,6 +2879,17 @@ static void scr_http_client_response_done(ScrHttpConn *conn) {
      * (res→sock→ctx→res) past every settle */
     conn->req = NULL;
     scr_http_req_release(res);
+  }
+  /* Keep-alive pool: a keepAlive agent's plain-socket connection with a
+   * keep-alive verdict moves to the agent's free pool (the socket's +1
+   * moves too) instead of the quiet close. Node's order: the client
+   * leaves the agent's lists first — a freed slot pumps the FIFO queue —
+   * then the socket idles in freeSockets. */
+  if (c->sock != NULL && res_keep && c->poolable) {
+    struct ScrHttpAgent *ag = c->agent;
+    scr_http_client_agent_detach(c); /* frees the slot; may dial the next */
+    scr_http_agent_pool_put(ag, c, res_keep);
+    return;
   }
   if (c->sock) scr_net_sock_destroy(c->sock); /* quiet close, no pooling */
 }
@@ -3115,15 +3155,27 @@ ScrHttpClientReq *scr_http_request(ScrStr *host /*borrowed*/, double port,
  * Options, getName, destroy, and REAL maxSockets accounting over the
  * one-dial-per-request connection model: an over-limit request's socket
  * defers its dial (scr_net_connect_deferred) and queues; a dying
- * active connection frees the slot and starts the next dial. What the
- * runtime cannot express stays a NAMED fence: keep-alive socket POOLING
- * (keepAlive: true) fences at construction — agent.freeSockets is
- * always empty; the runtime does not emulate a pool.
+ * active connection frees the slot and starts the next dial.
+ *
+ * KEEP-ALIVE POOLING (keepAlive: true, the T3 native slice): when the
+ * response settles keep-alive over a plain (non-TLS) agent socket, the
+ * connection moves to the agent's free pool — its parser detaches, the
+ * socket's idle clock re-arms at the agent's keepAliveMsecs, and the
+ * next same-name request adopts the socket in place of a dial (the
+ * createConnection pre-made-socket path). Idle pooled sockets evict on
+ * the idle clock, a server FIN, or an error; maxFreeSockets evicts the
+ * oldest on put. HTTPS keep-alive agents accept construction but keep
+ * the per-request dial (the TLS layer wraps at dial; re-wrapping a
+ * pooled socket would corrupt it) — the honest v1 bound. Pooled idle
+ * sockets hold the loop like any open socket until their clock fires
+ * (Node unrefs its free sockets; the net unit has no socket unref yet —
+ * the next runtime lane's item).
  *
  * Ownership: the agent registers (+1, atexit-swept); entries hold their
  * client +1 and the client holds the agent +1 — the cycle breaks when
  * the client's socket dies (scr_http_client_agent_detach) or at the
- * atexit sweep. */
+ * atexit sweep. Pool entries hold their socket +1 and their parser's
+ * memory; the entry dies with the socket or at adopt/evict/sweep. */
 
 typedef struct ScrHttpAgentEnt {
   ScrStr *name; /* getName's shape: "host:port:" */
@@ -3132,10 +3184,21 @@ typedef struct ScrHttpAgentEnt {
   struct ScrHttpAgentEnt *next;
 } ScrHttpAgentEnt;
 
+/* One idle keep-alive connection: the socket (+1) and its detached
+ * parser (freed here — never mid-pump: adopt/evict run outside the
+ * parser's call frame). */
+typedef struct ScrHttpAgentPoolEnt {
+  ScrStr *name;
+  ScrNetSocket *sock; /* +1 while pooled */
+  ScrHttpConn *conn;  /* the detached parser's remains */
+  bool dead;          /* reentrancy guard: destroy→closed chains */
+  struct ScrHttpAgentPoolEnt *next;
+} ScrHttpAgentPoolEnt;
+
 typedef struct ScrHttpAgent {
   size_t rc;
   bool secure;      /* https.Agent: protocol/defaultPort answers */
-  bool keep_alive;  /* always false here (true fences at construction) */
+  bool keep_alive;  /* keepAlive: pooling on (TLS dials stay per-request) */
   double ka_msecs;
   double max_sockets; /* INFINITY = Node's default */
   double max_free;
@@ -3143,6 +3206,8 @@ typedef struct ScrHttpAgent {
   double default_port; /* settable (agent.defaultPort = p) */
   bool destroyed;
   ScrHttpAgentEnt *ents; /* append order — Node's FIFO queue */
+  ScrHttpAgentPoolEnt *frees; /* idle keep-alive sockets, FIFO */
+  size_t nfrees;
   bool in_registry;
   struct ScrHttpAgent *next;
 } ScrHttpAgent;
@@ -3156,6 +3221,7 @@ static ScrHttpAgent *scr_http_agent_retain(ScrHttpAgent *a) {
 
 static void scr_http_agent_release(ScrHttpAgent *a) {
   if (!a || --a->rc > 0) return;
+  scr_http_agent_pool_teardown(a, false); /* release-only: no event fan-out */
   ScrHttpAgentEnt *e = a->ents;
   while (e) {
     ScrHttpAgentEnt *next = e->next;
@@ -3174,6 +3240,185 @@ static struct ScrHttpAgent *scr_http_agent_release_p(struct ScrHttpAgent *ag) {
 
 static void *scr_http_agent_retain_v(void *p) { return scr_http_agent_retain((ScrHttpAgent *)p); }
 static void scr_http_agent_release_v(void *p) { scr_http_agent_release((ScrHttpAgent *)p); }
+
+/* ── the keep-alive free pool ──────────────────────────────────────────── */
+
+/* The pooled socket's native hooks: idle connections consume stray
+ * bytes, answer a server FIN or an error with eviction, and ride the
+ * socket's idle clock (keepAliveMsecs) to their close. ctx is the
+ * entry; the entry owns the detached parser's memory. */
+
+static void scr_http_pool_data(void *ctx, const char *buf, size_t n) {
+  (void)ctx; (void)buf; (void)n; /* the exchange is over: discard */
+}
+
+static void scr_http_pool_evict(struct ScrHttpAgentPoolEnt *e, bool destroy_sock);
+
+static void scr_http_pool_eof(void *ctx) {
+  ScrHttpAgentPoolEnt *e = (ScrHttpAgentPoolEnt *)ctx;
+  scr_http_pool_evict(e, true); /* the server closed its side */
+}
+
+static void scr_http_pool_closed(void *ctx) {
+  ScrHttpAgentPoolEnt *e = (ScrHttpAgentPoolEnt *)ctx;
+  scr_http_pool_evict(e, false); /* already closed: release only */
+}
+
+static bool scr_http_pool_err(void *ctx, ScrStr *msg) {
+  (void)msg; /* consumed: idle-socket errors are the pool's business */
+  ScrHttpAgentPoolEnt *e = (ScrHttpAgentPoolEnt *)ctx;
+  scr_http_pool_evict(e, true);
+  return true;
+}
+
+static void scr_http_pool_timeout(void *ctx) {
+  ScrHttpAgentPoolEnt *e = (ScrHttpAgentPoolEnt *)ctx;
+  scr_http_pool_evict(e, true); /* keepAliveMsecs elapsed idle */
+}
+
+static void scr_http_pool_free(void *ctx) {
+  ScrHttpAgentPoolEnt *e = (ScrHttpAgentPoolEnt *)ctx;
+  scr_http_pool_evict(e, false); /* the socket died under us */
+}
+
+/* Unlink and free. The socket's native hooks CLEAR before any
+ * release/destroy (the upgrade handover's precedent) so the dying
+ * socket can never call back into the freed entry; the dead guard
+ * folds the destroy→closed→free chain into one eviction. */
+static void scr_http_pool_evict(struct ScrHttpAgentPoolEnt *e, bool destroy_sock) {
+  if (e->dead) return;
+  e->dead = true;
+  ScrHttpAgent *ag = scr_http_agents; /* singly-linked: find the owner */
+  for (; ag != NULL; ag = ag->next) {
+    ScrHttpAgentPoolEnt **link = &ag->frees;
+    while (*link && *link != e) link = &(*link)->next;
+    if (*link) {
+      *link = e->next;
+      ag->nfrees--;
+      break;
+    }
+  }
+  ScrHttpConn *conn = e->conn;
+  e->conn = NULL;
+  ScrNetSocket *sock = e->sock;
+  e->sock = NULL;
+  if (sock != NULL) {
+    scr_net_sock_clear_native_reader(sock);
+    scr_net_sock_set_native_events(sock, NULL, NULL);
+    if (destroy_sock) scr_net_sock_destroy(sock);
+    else scr_net_sock_release(sock);
+  }
+  scr_str_release(e->name);
+  free(e);
+  if (conn != NULL) {
+    /* Detached parser remains: its edges were cleared at pool-put. */
+    free(conn->buf);
+    free(conn);
+  }
+}
+
+/* The settle path's offer: RES_KEEP is the response's keep-alive
+ * verdict; C's socket (+1) moves into the pool on acceptance. The
+ * client left its agent's lists BEFORE this (the freed slot pumps the
+ * queue first, Node's order). */
+static void scr_http_agent_pool_put(struct ScrHttpAgent *ag, struct ScrHttpClientReq *c,
+                                    bool res_keep) {
+  if (ag == NULL || ag->destroyed || !ag->keep_alive || !c->poolable || !res_keep ||
+      c->sock == NULL) {
+    return;
+  }
+  ScrHttpConn *conn = c->conn;
+  c->conn = NULL;
+  if (conn != NULL) {
+    conn->client = NULL; /* the parser detaches; the entry frees its memory */
+    scr_http_client_release(c); /* the conn's +1 */
+  }
+  ScrHttpAgentPoolEnt *e = calloc(1, sizeof *e);
+  if (!e) scr_http_oom();
+  char portbuf[16];
+  int portn = snprintf(portbuf, sizeof portbuf, "%d", c->port);
+  e->name = scr_http_agent_name(c->host->data, c->host->len, portbuf, (size_t)portn,
+                                NULL, 0, 0, NULL, 0);
+  e->sock = c->sock; /* +1 moves */
+  e->conn = conn;
+  c->sock = NULL;
+  /* maxFreeSockets: FIFO evict of the oldest beyond the cap */
+  while (ag->max_free >= 0 && ag->nfrees >= (size_t)ag->max_free && ag->frees != NULL) {
+    ScrHttpAgentPoolEnt *oldest = ag->frees;
+    scr_http_pool_evict(oldest, true);
+  }
+  ScrHttpAgentPoolEnt **link = &ag->frees;
+  while (*link) link = &(*link)->next;
+  *link = e;
+  ag->nfrees++;
+  /* the socket's idle clock is the eviction timer (Node unrefs instead;
+   * no socket unref yet — the section note) */
+  scr_net_sock_clear_native_reader(e->sock);
+  scr_net_sock_set_native_reader(e->sock, &scr_http_pool_data, &scr_http_pool_eof,
+                                 &scr_http_pool_closed, e, &scr_http_pool_free);
+  scr_net_sock_set_native_events(e->sock, &scr_http_pool_timeout, &scr_http_pool_err);
+  scr_net_sock_set_timeout(e->sock, ag->ka_msecs > 0 ? ag->ka_msecs : 1000);
+}
+
+/* The request path's adoption: a same-name idle socket (+1) in place of
+ * a dial; NULL when none. The entry (and the detached parser's memory)
+ * dies here, outside any parser call frame. */
+static ScrNetSocket *scr_http_agent_pool_take(struct ScrHttpAgent *ag, const ScrStr *name) {
+  if (ag == NULL || !ag->keep_alive || ag->destroyed) return NULL;
+  ScrHttpAgentPoolEnt **link = &ag->frees;
+  while (*link) {
+    ScrHttpAgentPoolEnt *e = *link;
+    if (e->name->len == name->len && memcmp(e->name->data, name->data, name->len) == 0) {
+      *link = e->next;
+      ag->nfrees--;
+      ScrNetSocket *sock = e->sock;
+      ScrHttpConn *conn = e->conn;
+      e->sock = NULL;
+      e->conn = NULL;
+      e->dead = true;
+      scr_str_release(e->name);
+      free(e);
+      scr_net_sock_clear_native_reader(sock); /* the request re-arms its own */
+      scr_net_sock_set_native_events(sock, NULL, NULL);
+      scr_net_sock_set_timeout(sock, 0); /* disarm the pool clock */
+      if (conn != NULL) {
+        free(conn->buf);
+        free(conn);
+      }
+      return sock; /* +1 moves to the request */
+    }
+    link = &e->next;
+  }
+  return NULL;
+}
+
+/* Teardown: agent.destroy() destroys pooled sockets (Node destroys its
+ * free pool too); the atexit sweep releases them (the clean-heap story
+ * the other exits follow). */
+static void scr_http_agent_pool_teardown(struct ScrHttpAgent *ag, bool destroy_sockets) {
+  while (ag->frees) {
+    ScrHttpAgentPoolEnt *e = ag->frees;
+    ag->frees = e->next;
+    ag->nfrees--;
+    ScrNetSocket *sock = e->sock;
+    ScrHttpConn *conn = e->conn;
+    e->sock = NULL;
+    e->conn = NULL;
+    e->dead = true;
+    if (sock != NULL) {
+      scr_net_sock_clear_native_reader(sock);
+      scr_net_sock_set_native_events(sock, NULL, NULL);
+      if (destroy_sockets) scr_net_sock_destroy(sock);
+      else scr_net_sock_release(sock);
+    }
+    scr_str_release(e->name);
+    free(e);
+    if (conn != NULL) {
+      free(conn->buf);
+      free(conn);
+    }
+  }
+}
 
 /* Actives (dialed, not settled) under a name. */
 static size_t scr_http_agent_active(const ScrHttpAgent *a, const ScrStr *name) {
@@ -3240,20 +3485,12 @@ static ScrStr *scr_http_agent_name(const char *host, size_t host_len, const char
 ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
                             double max_sockets, double max_free, double timeout_ms,
                             double port /* < 0 = unset */) {
-  if (keep_alive) {
-    static const char msg[] =
-        "an http Agent with keepAlive: true (socket pooling and reuse — compiled clients "
-        "dial one connection per request and close it with the response) is not supported "
-        "yet — construct the Agent without keepAlive, or drop the agent option";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
-    return NULL;
-  }
   scr_http_install();
   ScrHttpAgent *a = calloc(1, sizeof *a);
   if (!a) scr_http_oom();
   a->rc = 1;
   a->secure = secure;
-  a->keep_alive = false;
+  a->keep_alive = keep_alive;
   a->ka_msecs = ka_msecs >= 0 ? ka_msecs : 1000;
   a->max_sockets = max_sockets >= 0 ? max_sockets : (double)INFINITY;
   a->max_free = max_free >= 0 ? max_free : 256;
@@ -3274,9 +3511,10 @@ ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
 
 /* agent.destroy(): tears down every listed connection (actives destroy
  * their sockets, queued dials never start) — Node destroys in-use
- * sockets too; there is no free pool here. */
+ * sockets and its free pool too; pooled idle sockets go with it. */
 static void scr_http_agent_destroy(ScrHttpAgent *a) {
   a->destroyed = true;
+  scr_http_agent_pool_teardown(a, true);
   /* destroying sockets detaches entries re-entrantly — walk a snapshot */
   for (;;) {
     ScrHttpClientReq *victim = NULL;
@@ -3349,15 +3587,27 @@ ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double po
   int portn = snprintf(portbuf, sizeof portbuf, "%d", (int)p);
   ScrStr *name = scr_http_agent_name(host->data, host->len, portbuf, (size_t)portn,
                                       NULL, 0, 0, NULL, 0);
-  bool queue = scr_http_agent_active(ag, name) >= ag->max_sockets;
-  ScrNetSocket *presock = queue ? scr_net_connect_deferred(p, host) : NULL;
+  /* Keep-alive adoption first: a same-name idle pooled socket replaces
+   * the dial (the createConnection pre-made-socket path rides it in).
+   * TLS agents keep the per-request dial — the transport wraps at dial,
+   * and a pooled socket's handshake is already done. */
+  bool plain = wrap == NULL;
+  ScrNetSocket *pooled = plain ? scr_http_agent_pool_take(ag, name) : NULL;
+  bool queue = false;
+  if (pooled == NULL && scr_http_agent_active(ag, name) >= ag->max_sockets) {
+    queue = true;
+  }
+  ScrNetSocket *presock = pooled;
+  if (queue) presock = scr_net_connect_deferred(p, host);
   ScrHttpClientReq *c = scr_http_request_impl(host, p, path, method, timeout_ms, header_pairs,
                                                auto_end, cb, fn, default_port, wrap, wrap_ctx,
                                                presock);
   if (c == NULL) { /* the method-token throw: nothing registered */
     scr_str_release(name);
+    if (pooled != NULL) scr_net_sock_release(pooled);
     return NULL;
   }
+  c->poolable = plain && ag->keep_alive; /* the settle path's pool verdict */
   if (ag->timeout_ms >= 0 && timeout_ms <= 0) scr_net_sock_set_timeout(c->sock, ag->timeout_ms);
   c->agent = scr_http_agent_retain(ag);
   ScrHttpAgentEnt *e = calloc(1, sizeof *e);
@@ -3390,18 +3640,19 @@ static void scr_http_agents_cleanup(void) {
     ScrHttpAgentEnt *e = a->ents;
     a->ents = NULL;
     while (e) {
-      ScrHttpAgentEnt *next = e->next;
-      if (e->client->agent) {
-        scr_http_agent_release(e->client->agent);
-        e->client->agent = NULL;
-      }
-      scr_str_release(e->name);
-      scr_http_client_release(e->client);
-      free(e);
-      e = next;
+    ScrHttpAgentEnt *next = e->next;
+    if (e->client->agent) {
+      scr_http_agent_release(e->client->agent);
+      e->client->agent = NULL;
     }
-    scr_http_agent_release(a);
+    scr_str_release(e->name);
+    scr_http_client_release(e->client);
+    free(e);
+    e = next;
   }
+  scr_http_agent_pool_teardown(a, false); /* release-only (the clean-heap story) */
+  scr_http_agent_release(a);
+}
 }
 
 /* Exit-time registry cleanup (the net-unit precedent): clients a program
@@ -4522,15 +4773,28 @@ static ScrDyn *scr_http_dynh_agent_get(void *h, const char *key, size_t key_len)
   if (strcmp(key, "sockets") == 0) return scr_http_dynh_agent_table(a, false);
   if (strcmp(key, "requests") == 0) return scr_http_dynh_agent_table(a, true);
   if (strcmp(key, "freeSockets") == 0) {
-    /* Always empty: the runtime pools nothing (keepAlive fences). */
-    return scr_dyn_new_obj();
+    /* The idle keep-alive pool: per-name socket lists, like Node's. */
+    ScrDyn *obj = scr_dyn_new_obj();
+    for (ScrHttpAgentPoolEnt *p = a->frees; p; p = p->next) {
+      if (p->sock == NULL) continue;
+      ScrDyn *item = scr_dyn_new_handle(p->sock, SCR_DYNH_NET_SOCKET);
+      ScrDyn *arr = scr_dyn_obj_get(obj, p->name->data, p->name->len); /* borrowed */
+      if (arr == NULL || arr->kind != SCR_DYN_ARR) {
+        ScrDyn *fresh = scr_dyn_new_arr();
+        scr_dyn_arr_push(fresh, item); /* moves */
+        scr_dyn_obj_set(obj, p->name->data, p->name->len, fresh); /* moves */
+      } else {
+        scr_dyn_arr_push(arr, item); /* moves */
+      }
+    }
+    return obj;
   }
   if (strcmp(key, "totalSocketCount") == 0) {
     size_t n = 0;
     for (ScrHttpAgentEnt *e = a->ents; e; e = e->next) {
       if (!e->queued) n++;
     }
-    return scr_dyn_new_num((double)n);
+    return scr_dyn_new_num((double)(n + a->nfrees));
   }
   {
     static const char *const known[] = { "options", "maxTotalSockets", "scheduling", NULL };

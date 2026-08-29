@@ -69,6 +69,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifndef _WIN32
+#ifndef __wasi__
+#include <pthread.h> /* the resolve threadpool (the fs rename pool's shape) */
+#endif
+#endif
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h> /* getaddrinfo/EAI_*, inet_pton/ntop, socklen_t */
@@ -365,6 +370,217 @@ typedef struct ScrDnsPending {
 } ScrDnsPending;
 
 static ScrDnsPending *scr_dns_pending = NULL;
+
+/* ── the dns resolve and reverse threadpool (T3 native slice) ────────────
+ * resolve4/resolve6/reverse run their netdb call (getaddrinfo with the
+ * pinned family, or getnameinfo for reverse) on a small pool of worker
+ * threads — the fs rename pool's exact shape (a real threadpool, NOT
+ * the synchronous-at-call dns.lookup above: c-ares-equivalent timing,
+ * a slow resolver cannot stall the runtime thread). Completions land on
+ * a mutex-guarded done list; the loop's sweep delivers them FIFO on the
+ * runtime thread. Windows and WASI have no usable thread story here
+ * (no threads at all on WASI), so those arms run the netdb call at
+ * call time and queue the delivery — the dns.lookup arm's stance. */
+typedef struct ScrDnsJob {
+  int family;     /* 4 | 6 resolve; 0 = reverse */
+  char *host;     /* malloc'd NUL-terminated copy */
+  ScrClosure *cb; /* +1 */
+  ScrDnsResolveFn fn;
+  struct ScrDnsJob *next;
+} ScrDnsJob;
+
+/* A completed resolution awaiting its runtime-thread delivery. */
+typedef struct ScrDnsDone {
+  ScrClosure *cb; /* +1 */
+  ScrDnsResolveFn fn;
+  ScrStr *errmsg; /* +1 (failure) or NULL (success) */
+  ScrArr *addrs;  /* +1 (success: string[]) or NULL (failure) */
+  struct ScrDnsDone *next;
+} ScrDnsDone;
+
+static ScrDnsJob *scr_dns_jobq = NULL;   /* guarded */
+static ScrDnsDone *scr_dns_doneq = NULL; /* guarded */
+static size_t scr_dns_inflight = 0;      /* guarded */
+#if !defined(_WIN32) && !defined(__wasi__)
+#define SCR_DNS_WORKERS 3
+static pthread_mutex_t scr_dns_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t scr_dns_cv = PTHREAD_COND_INITIALIZER;
+static pthread_t scr_dns_workers[SCR_DNS_WORKERS];
+static bool scr_dns_workers_up = false;
+#else
+/* The sync arms are single-threaded: no pthread dependency (the
+ * scr_async.c arm convention), the lock calls fold away. */
+static void scr_dns_lock_enter(void) {}
+static void scr_dns_lock_leave(void) {}
+#endif
+
+#if !defined(_WIN32) && !defined(__wasi__)
+static void scr_dns_lock_enter(void) { (void)pthread_mutex_lock(&scr_dns_lock); }
+static void scr_dns_lock_leave(void) { (void)pthread_mutex_unlock(&scr_dns_lock); }
+#endif
+
+/* Node's EAI_* → code name mapping (the dns.lookup arm's exact table). */
+static const char *scr_dns_eai_code(int rc) {
+  return (rc == EAI_NONAME
+#ifdef EAI_NODATA
+          || rc == EAI_NODATA
+#endif
+          )
+             ? "ENOTFOUND"
+         : rc == EAI_AGAIN ? "EAI_AGAIN"
+                           : "EAI_FAIL";
+}
+
+/* The done-node builder: takes ownership of errmsg/addrs as they sit. */
+static void scr_dns_done_push(ScrClosure *cb, ScrDnsResolveFn fn, ScrStr *errmsg,
+                              ScrArr *addrs) {
+  ScrDnsDone *d = calloc(1, sizeof *d);
+  if (!d) scr_dgram_oom();
+  d->cb = cb;
+  d->fn = fn;
+  d->errmsg = errmsg;
+  d->addrs = addrs;
+  scr_dns_lock_enter();
+  ScrDnsDone **link = &scr_dns_doneq;
+  while (*link) link = &(*link)->next;
+  *link = d;
+  scr_dns_lock_leave();
+}
+
+/* The blocking netdb call — the worker's whole body, and the sync
+ * arms' inline path. Produces the address list (unique, in answer
+ * order) or Node's message shape. */
+static void scr_dns_job_run(const ScrDnsJob *j, ScrStr **errmsg, ScrArr **addrs) {
+  *errmsg = NULL;
+  *addrs = NULL;
+  if (j->family == 0) {
+    /* reverse: the validated IP becomes a sockaddr for getnameinfo. */
+    struct sockaddr_in sa4;
+    struct sockaddr_in6 sa6;
+    const struct sockaddr *sa;
+    socklen_t salen;
+    memset(&sa4, 0, sizeof sa4);
+    memset(&sa6, 0, sizeof sa6);
+    if (inet_pton(AF_INET, j->host, &sa4.sin_addr) == 1) {
+      sa4.sin_family = AF_INET;
+      sa = (struct sockaddr *)&sa4;
+      salen = sizeof sa4;
+    } else {
+      sa6.sin6_family = AF_INET6;
+      (void)inet_pton(AF_INET6, j->host, &sa6.sin6_addr);
+      sa = (struct sockaddr *)&sa6;
+      salen = sizeof sa6;
+    }
+    char hostbuf[1025];
+    int rc = getnameinfo(sa, salen, hostbuf, sizeof hostbuf, NULL, 0, 0);
+    if (rc == 0) {
+      *addrs = scr_arr_new(SCR_ELEM_STR, 1);
+      if (!*addrs) scr_dgram_oom();
+      scr_arr_push_ref(*addrs, scr_str_new(hostbuf, strlen(hostbuf)));
+    } else {
+      const char *code = scr_dns_eai_code(rc);
+      char msg[192];
+      int mlen = snprintf(msg, sizeof msg, "getnameinfo %s %s", code, j->host);
+      *errmsg = scr_str_new(msg, (size_t)mlen);
+    }
+    return;
+  }
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof hints);
+  hints.ai_family = j->family == 6 ? AF_INET6 : AF_INET;
+  hints.ai_socktype = SOCK_DGRAM; /* the dns.lookup arm's hints */
+  struct addrinfo *res = NULL;
+  int rc = getaddrinfo(j->host, NULL, &hints, &res);
+  if (rc == 0 && res) {
+    *addrs = scr_arr_new(SCR_ELEM_STR, 4);
+    if (!*addrs) scr_dgram_oom();
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+      char ip[64];
+      if (ai->ai_family == AF_INET6) {
+        inet_ntop(AF_INET6, &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr, ip, sizeof ip);
+      } else {
+        inet_ntop(AF_INET, &((struct sockaddr_in *)ai->ai_addr)->sin_addr, ip, sizeof ip);
+      }
+      size_t n = strlen(ip);
+      /* Dedup: getaddrinfo may answer one address several times. */
+      bool seen = false;
+      for (size_t i = 0; i < scr_arr_len(*addrs) && !seen; i++) {
+        ScrStr *have = (ScrStr *)scr_arr_get_ref(*addrs, (double)i);
+        seen = have->len == n && memcmp(have->data, ip, n) == 0;
+      }
+      if (!seen) scr_arr_push_ref(*addrs, scr_str_new(ip, n));
+    }
+  } else {
+    const char *code = scr_dns_eai_code(rc);
+    char msg[192];
+    int mlen = snprintf(msg, sizeof msg, "getaddrinfo %s %s", code, j->host);
+    *errmsg = scr_str_new(msg, (size_t)mlen);
+  }
+  if (res) freeaddrinfo(res);
+}
+
+#if !defined(_WIN32) && !defined(__wasi__)
+static void *scr_dns_worker(void *unused) {
+  (void)unused;
+  for (;;) {
+    scr_dns_lock_enter();
+    while (scr_dns_jobq == NULL) (void)pthread_cond_wait(&scr_dns_cv, &scr_dns_lock);
+    ScrDnsJob *j = scr_dns_jobq;
+    scr_dns_jobq = j->next;
+    scr_dns_lock_leave();
+    /* The blocking call runs OUTSIDE the lock. */
+    ScrStr *errmsg = NULL;
+    ScrArr *addrs = NULL;
+    scr_dns_job_run(j, &errmsg, &addrs);
+    scr_dns_done_push(j->cb, j->fn, errmsg, addrs);
+    free(j->host);
+    free(j);
+    scr_dns_lock_enter();
+    scr_dns_inflight--;
+    scr_dns_lock_leave();
+  }
+  return NULL;
+}
+
+/* Bring the pool up on first use. A failed spawn leaves one fewer
+ * worker; the jobs still complete when any worker survives, and the
+ * queue is drained at process exit (the threads die with it). */
+static void scr_dns_workers_start(void) {
+  if (scr_dns_workers_up) return;
+  scr_dns_workers_up = true;
+  for (int i = 0; i < SCR_DNS_WORKERS; i++) {
+    (void)pthread_create(&scr_dns_workers[i], NULL, scr_dns_worker, NULL);
+  }
+}
+#endif /* !_WIN32 && !__wasi__ */
+
+/* The public entry's shared enqueue: takes cb (+1) and host (malloc'd).
+ * POSIX runs it on the pool; Windows/WASI run the call inline and queue
+ * the delivery only. */
+static void scr_dns_job_push(int family, char *host, ScrClosure *cb, ScrDnsResolveFn fn) {
+  ScrDnsJob *j = calloc(1, sizeof *j);
+  if (!j) scr_dgram_oom();
+  j->family = family;
+  j->host = host;
+  j->cb = cb;
+  j->fn = fn;
+#if !defined(_WIN32) && !defined(__wasi__)
+  scr_dns_lock_enter();
+  ScrDnsJob **link = &scr_dns_jobq;
+  while (*link) link = &(*link)->next;
+  *link = j;
+  scr_dns_inflight++;
+  scr_dns_lock_leave();
+  (void)pthread_cond_broadcast(&scr_dns_cv);
+#else
+  ScrStr *errmsg = NULL;
+  ScrArr *addrs = NULL;
+  scr_dns_job_run(j, &errmsg, &addrs);
+  scr_dns_done_push(j->cb, j->fn, errmsg, addrs);
+  free(j->host);
+  free(j);
+#endif
+}
 
 /* ── RC ──────────────────────────────────────────────────────────────── */
 
@@ -855,10 +1071,87 @@ void scr_dns_thunk0(ScrClosure *cb, ScrStr *errmsg, ScrStr *addr, double family)
   ((void (*)(ScrClosure *))cb->fn)(cb);
 }
 
+/* ── dns.resolve4 / resolve6 / reverse (the T3 native slice) ──────────
+ * The threadpool arm above carries the netdb call; this is the entry:
+ * queue the job, delivery via FN on a later sweep. The callback shape
+ * is (err, addresses): errmsg NULL + a string[] on success, Node's
+ * message string on failure (the frontend's adapter wraps it). An IP
+ * that fails inet_pton validation throws synchronously like Node's
+ * ERR_INVALID_IP_ADDRESS. */
+static void scr_dns_resolve_impl(int family, ScrStr *hostname, ScrClosure *cb,
+                                 ScrDnsResolveFn fn) {
+  char *host = malloc(hostname->len + 1);
+  if (!host) scr_dgram_oom();
+  memcpy(host, hostname->data, hostname->len);
+  host[hostname->len] = 0;
+  scr_dns_job_push(family, host, cb, fn); /* takes cb (+1) and host */
+#if !defined(_WIN32) && !defined(__wasi__)
+  scr_dns_workers_start();
+#endif
+}
+
+void scr_dns_resolve(ScrStr *hostname, double family, ScrClosure *cb, ScrDnsResolveFn fn) {
+  scr_dns_resolve_impl(family == 6 ? 6 : 4, hostname, cb, fn);
+}
+
+void scr_dns_reverse(ScrStr *ip, ScrClosure *cb, ScrDnsResolveFn fn) {
+  /* Validate NOW (the throw is synchronous, Node's stance): the worker
+   * thread cannot throw into the runtime. */
+  unsigned char v6[16];
+  unsigned char v4[4];
+  bool ok = inet_pton(AF_INET, ip->data, v4) == 1 ||
+            inet_pton(AF_INET6, ip->data, v6) == 1;
+  if (!ok) {
+    scr_closure_release(cb);
+    char msg[64 + 64];
+    int mlen = snprintf(msg, sizeof msg, "Invalid IP address: %.*s", (int)ip->len, ip->data);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)mlen, "ERR_INVALID_IP_ADDRESS");
+    return;
+  }
+#ifdef _WIN32
+  /* getnameinfo needs winsock started (WSANOTINITIALISED otherwise). */
+  (void)scr_dgram_poller_init();
+#endif
+  char *host = malloc(ip->len + 1);
+  if (!host) scr_dgram_oom();
+  memcpy(host, ip->data, ip->len);
+  host[ip->len] = 0;
+  scr_dns_job_push(0, host, cb, fn); /* takes cb (+1) and host */
+#if !defined(_WIN32) && !defined(__wasi__)
+  scr_dns_workers_start();
+#endif
+}
+
+/* In-flight or undelivered resolve work — the loop's liveness and the
+ * sleep cap both read this (the callback owns no runtime liveness). */
+bool scr_dns_jobs_pending(void) {
+  scr_dns_lock_enter();
+  bool pending = scr_dns_jobq != NULL || scr_dns_doneq != NULL || scr_dns_inflight > 0;
+  scr_dns_lock_leave();
+  return pending;
+}
+
+/* The sweep's resolve deliveries: FIFO, on the runtime thread. */
+static void scr_dns_drain_done(void) {
+  for (;;) {
+    scr_dns_lock_enter();
+    ScrDnsDone *d = scr_dns_doneq;
+    if (d) scr_dns_doneq = d->next;
+    scr_dns_lock_leave();
+    if (!d) return;
+    if (!scr_exc_pending()) d->fn(d->cb, d->errmsg, d->addrs);
+    scr_closure_release(d->cb);
+    scr_str_release(d->errmsg);
+    if (d->addrs) scr_arr_release(d->addrs);
+    free(d);
+    if (scr_exc_pending()) return; /* the rest wait for a calmer sweep */
+  }
+}
+
 /* ── the sweep: deferred emits ───────────────────────────────────────── */
 
 static bool scr_dgram_flags_pending(void) {
-  if (scr_dns_pending) return true;
+  if (scr_dns_pending || scr_dns_jobs_pending()) return true;
   for (ScrDgramSocket *s = scr_dgram_socks; s; s = s->next) {
     if (s->pending_err || s->emit_listening || s->emit_connect) return true;
     if (s->closing && !s->close_emitted) return true;
@@ -945,12 +1238,16 @@ static void scr_dgram_sweep(void) {
     free(p);
     if (scr_exc_pending()) return;
   }
+  /* resolve and reverse deliveries after both (a worker may have landed a
+   * completion while the lookup sweeps ran — FIFO per queue, queues in
+   * call order). */
+  scr_dns_drain_done();
 }
 
 /* ── the loop hooks (scr_async.c) ────────────────────────────────────── */
 
 static bool scr_dgram_pending(void) {
-  if (scr_dns_pending) return true;
+  if (scr_dns_pending || scr_dns_jobs_pending()) return true;
   for (ScrDgramSocket *s = scr_dgram_socks; s; s = s->next) {
     /* Undelivered emits hold the loop even on an unref'd socket (they
      * are due NOW); otherwise an open registered socket holds it unless
@@ -969,7 +1266,7 @@ static int scr_dgram_pollfd(void) {
 }
 
 static void scr_dgram_dispatch(void) {
-  if (!scr_dgram_socks && !scr_dns_pending) return;
+  if (!scr_dgram_socks && !scr_dns_pending && !scr_dns_jobs_pending()) return;
   for (;;) {
     scr_dgram_sweep();
     if (scr_exc_pending()) return;
@@ -1016,6 +1313,7 @@ void scr_dgram_install(void) {
   installed = true;
   atexit(scr_dgram_cleanup_atexit);
   scr_loop_set_dgram(&scr_dgram_pending, &scr_dgram_dispatch, &scr_dgram_pollfd);
+  scr_loop_set_dns_jobs(&scr_dns_jobs_pending);
 }
 
 /* ── the send argument-validation ladder (checked-dynamic lane) ─────────

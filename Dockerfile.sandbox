@@ -40,6 +40,7 @@ WORKDIR /workspace
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/cli/package.json packages/cli/package.json
 COPY packages/cli/scripts/warm-cache.mjs packages/cli/scripts/warm-cache.mjs
+COPY packages/cli/scripts/runtime-pack-host.mjs packages/cli/scripts/runtime-pack-host.mjs
 COPY packages/compiler/package.json packages/compiler/package.json
 COPY packages/runtime/package.json packages/runtime/package.json
 

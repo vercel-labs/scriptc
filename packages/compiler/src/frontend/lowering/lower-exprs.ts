@@ -229,9 +229,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // Type-level wrappers: `satisfies` and `!` erase completely; the runtime
     // value is the inner expression's. `as` erases too UNLESS the inner
     // value is dyn ('unknown') — then the cast is THE dynamic boundary and
-    // compiles to a runtime validation (see lowerAsExpression). A cast
-    // between non-dyn IR types can't change representation (the inner
-    // expression's own lowering/mapType already rejects what doesn't map).
+    // compiles to a runtime validation (see lowerAsExpression). The one
+    // static exception is a record assertion that changes monomorphic
+    // shape: it uses the established copy/reshape path so subsequent
+    // record reads name the representation the assertion selected.
     // `x!` erases the TYPE but must NARROW the VALUE: tsc types the
     // assertion as the non-nullish type, so a union-typed inner bridges to
     // the asserted arm (`groups.get(k)!.push(v)` — the Map get-or-init
@@ -7047,7 +7048,9 @@ export function lowerTemplate(lowerer: Lowerer, expr: ts.TemplateExpression): Ir
     return pieces.reduce((acc, p) => ({ kind: "strConcat", left: acc, right: p, type: STRING, loc }));
   }
 
-/** `x as T`. Non-dyn inner values keep today's pure-erasure semantics.
+/** `x as T`. Non-dyn inner values ordinarily erase; a record assertion
+   * changing monomorphic shape rebuilds through the established width-copy
+   * path so its represented value agrees with its asserted type.
    * A dyn ('unknown') inner value makes this THE dynamic boundary:
    * - `as unknown` (dyn → dyn) stays erasure;
    * - dyn → a JSON-representable target type T compiles to `dynCheck`, a
@@ -7119,6 +7122,19 @@ export function lowerTemplate(lowerer: Lowerer, expr: ts.TemplateExpression): Ir
       if (targetTs0.flags & ts.TypeFlags.Any && lowerer.dynamic) {
         return lowerer.jsvalIn(inner, expr.expression);
       }
+      const target = lowerer.mapTypeOf(targetTs0);
+      // Static assertions normally erase, but record layouts are
+      // monomorphic: a consumer selected from the asserted shape must see
+      // that shape physically. Reuse the ordinary slot coercion so plain
+      // widths and index-signature captures share their established copy
+      // semantics (and unsupported pairs report SC2002 at this assertion).
+      if (
+        inner.type.kind === "record" &&
+        target?.kind === "record" &&
+        inner.type.shapeId !== target.shapeId
+      ) {
+        return lowerer.coerceInto(expr, inner, target);
+      }
       // `u as Arm` on a UNION value is `u!`'s spelling with a named arm
       // (`req.headers[h] as string`): the CHECKED single-arm extraction —
       // the asserted arm's payload comes out, any other arm throws the
@@ -7127,7 +7143,6 @@ export function lowerTemplate(lowerer: Lowerer, expr: ts.TemplateExpression): Ir
       // opaque union-mismatch fence). Sub-union targets and same-type
       // casts keep the historic erasure.
       if (inner.type.kind === "union") {
-        const target = lowerer.mapTypeOf(targetTs0);
         if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
           const helper = lowerer.narrowedArmHelper(inner.type.unionId, target, locOf(expr));
           if (helper) {

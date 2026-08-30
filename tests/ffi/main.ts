@@ -41,6 +41,20 @@ declare function nativeRetainedRawPump(value: number): void;
 declare function nativeRetainedRawSetFlush(callback: (value: number) => void): void;
 
 console.log(nativeScale(21));
+
+const boundScale = nativeScale(2);
+let boundInvert = nativeInvert(false);
+var boundVarScale = nativeScale(3);
+console.log(boundScale, boundInvert, boundVarScale);
+
+function printFunctionBoundResults() {
+  const localScale = nativeScale(4);
+  let localInvert = nativeInvert(true);
+  var localVarScale = nativeScale(5);
+  console.log(localScale, localInvert, localVarScale);
+}
+printFunctionBoundResults();
+
 console.log(nativeInvert(false), nativeInvert(true));
 console.log(nativeU8(258), nativeU32(-1), nativeI32(4294967295));
 console.log(nativeTextSum("A\0é"));

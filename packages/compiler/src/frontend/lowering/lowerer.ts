@@ -1709,6 +1709,28 @@ export class Lowerer {
     return symbol;
   }
 
+  /** Whether this exact direct call belongs to a manifest-validated native
+   * binding. Declaration classification uses this as a probe before normal
+   * expression lowering: resolving must not flush deferred diagnostics or
+   * trigger the merged-namespace fence just because it is asking ownership.
+   * Call lowering remains the authority for every ABI and call-shape
+   * diagnostic once this answers true. */
+  ownsFfiCall(expr: ts.CallExpression): boolean {
+    if (!ts.isIdentifier(expr.expression)) return false;
+    const binding = this.ffiImportsByName.get(expr.expression.text);
+    if (binding === undefined || this.ffiBindingSymbols === null) return false;
+    const validSymbols = this.ffiBindingSymbols.get(binding.name);
+    if (validSymbols === undefined) return false;
+    const wasCollecting = this.collecting;
+    this.collecting = true;
+    try {
+      const symbol = this.resolveValueSymbol(expr.expression);
+      return symbol !== null && validSymbols.has(symbol);
+    } finally {
+      this.collecting = wasCollecting;
+    }
+  }
+
   /** The configured external host module owning an expression's runtime
    * value, or null. Alias chains are followed to their declaration file so
    * direct imports and local re-export facades classify identically. Type

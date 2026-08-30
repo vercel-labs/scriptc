@@ -649,9 +649,27 @@ ScrStr *scr_url_host(ScrUrl *u) {
   return ub_take(&b);
 }
 
+ScrStr *scr_url_origin(ScrUrl *u) {
+  if (u->scheme->len == 4 && memcmp(u->scheme->data, "file", 4) == 0) {
+    return scr_str_new("null", 4);
+  }
+  if (!is_special_scheme(u->scheme->data, u->scheme->len)) {
+    return scr_str_new("null", 4);
+  }
+  ScrStr *h = scr_url_host(u);
+  UrlBuf b;
+  ub_init(&b);
+  ub_append(&b, u->scheme->data, u->scheme->len);
+  ub_append(&b, "://", 3);
+  ub_append(&b, h->data, h->len);
+  scr_str_release(h);
+  return ub_take(&b);
+}
+
 /* WHATWG hostname getter: the stored port-less host verbatim ("" for
  * authority-less URLs); IPv6 literals retain their brackets. */
 ScrStr *scr_url_hostname(ScrUrl *u) { return scr_str_retain(u->host); }
+ScrStr *scr_url_port(ScrUrl *u) { return scr_str_retain(u->port); }
 
 ScrStr *scr_url_href(ScrUrl *u) {
   UrlBuf b;

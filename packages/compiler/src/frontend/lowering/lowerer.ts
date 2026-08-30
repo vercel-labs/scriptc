@@ -99,7 +99,7 @@ import { ParamShape, FnSig, GenericFnInfo, GenericInstance, bindingNeverReassign
 import { lowerArrayMethodCall, lowerBufferStaticCall, lowerBytesMethodCall, lowerBytesNew, lowerMapMethodCall, lowerMapForEachCall, buildMapForEachFn, lowerRecordOvfCaptureHelper, lowerEnvToPairsHelper, lowerSetMethodCall, lowerSetForEachCall, buildSetForEachFn, lowerRegexMethodCall, lowerStringMethodCall } from "./lower-containers.js";
 import { lowerStreamModuleCall } from "./lower-stream.js";
 import { lowerEmitOverrideSpec, type EmitSpecCtx, type EmitSpecRequest } from "./lower-event-emitter.js";
-import { builtinImportOf, createRequireBindingDecl, createRequireNamespaceDecl, createRequireSpecOf, stripTypeCasts, lowerBuiltinModuleCall, lowerFsToUnixTimestampCall, lowerFsLadderCall, lowerChildArgsArg, lowerSpawnSyncCall, lowerSpawnCall, lowerExecSyncCall, recordToEnvPairs, lowerJsonMethodCall, fencedBuiltinImportOf, lowerCryptoComposedCall, lowerUrlMethodCall, lowerSearchParamsMethodCall, lowerStatsMethodCall, lowerChildMethodCall, lowerAtomicsCall, lowerBuiltinExtraProperty, promisifiedExecFileDecl, lowerExecFileAsyncCall, execFileAsyncHelper, lowerStringDecoderMethodCall, strdecHelper, lowerReadlineMethodCall, lowerDcChannelMethodCall, lowerDcChannelProperty, lowerAlsMethodCall, lowerDcTracingChannelMethodCall, lowerDcTracingChannelProperty, lowerJsonProperty, lowerErrorCodeProperty, lowerProcessProperty, isProcessEnv, envValueType, lowerProcessEnvGet, lowerProcessMethodCall, lowerProcessOptionalMethodCall, lowerTimeoutMethodCall, envSnapshotHelper, isConsoleLog, consoleCallMember, lowerNumberStaticCall, lowerNumberStaticProperty, lowerDateCall, lowerTextCodecCall, lowerCryptoModuleCall, lowerFsConstantsProperty, lowerBuiltinConstantsProperty, builtinConstantBindingOf, builtinConstantsDestructureDecl, lowerProcessStreamProperty, lowerStringStaticCall, lowerStringLastIndexOfCall, lowerPromiseStaticCall, textCodecBindingClassOf } from "./lower-builtins.js";
+import { builtinImportOf, createRequireBindingDecl, createRequireNamespaceDecl, createRequireSpecOf, stripTypeCasts, lowerBuiltinModuleCall, lowerFsToUnixTimestampCall, lowerFsLadderCall, lowerChildArgsArg, lowerSpawnSyncCall, lowerSpawnCall, lowerExecSyncCall, recordToEnvPairs, lowerJsonMethodCall, fencedBuiltinImportOf, lowerCryptoComposedCall, lowerUrlMethodCall, lowerSearchParamsMethodCall, lowerStatsMethodCall, lowerChildMethodCall, lowerAtomicsCall, lowerBuiltinExtraProperty, promisifiedExecFileDecl, lowerExecFileAsyncCall, execFileAsyncHelper, lowerStringDecoderMethodCall, strdecHelper, lowerReadlineMethodCall, lowerDcChannelMethodCall, lowerDcChannelProperty, lowerAlsMethodCall, lowerDcTracingChannelMethodCall, lowerDcTracingChannelProperty, lowerJsonProperty, lowerErrorCodeProperty, lowerErrorStackProperty, lowerProcessProperty, isProcessEnv, envValueType, lowerProcessEnvGet, lowerProcessMethodCall, lowerProcessOptionalMethodCall, lowerTimeoutMethodCall, envSnapshotHelper, isConsoleLog, consoleCallMember, lowerNumberStaticCall, lowerNumberStaticProperty, lowerDateCall, lowerTextCodecCall, lowerCryptoModuleCall, lowerFsConstantsProperty, lowerBuiltinConstantsProperty, builtinConstantBindingOf, builtinConstantsDestructureDecl, lowerProcessStreamProperty, lowerStringStaticCall, lowerStringLastIndexOfCall, lowerPromiseStaticCall, textCodecBindingClassOf } from "./lower-builtins.js";
 import { fenceFetchObjectAssignment, fenceFetchObjectBinding, fenceStaticAbortControllerMemberRead, fenceStaticHeadersIteration, fenceStaticHeadersMember, fenceStaticReadableStreamMember, fenceStaticResponseMember, fenceUnsupportedFetchConstructorMember, isIslandExpr, islandFuncValueFence, islandRegexpOf, jsvalIn, requireDynamicApi, islandGlobalFnOf, lowerAbortControllerNew, lowerDynamicHeadersIteratorCall, lowerDynamicHeadersSpread, lowerDynamicImportCall, lowerFetchCall, lowerFetchElementMethodCall, lowerResponseNew, lowerStaticFetchCompanionCall, lowerStaticAbortControllerCall, lowerStaticAbortSignalListenerCall, lowerStaticReadableStreamCancelCall, lowerStaticReadableStreamControllerCall, lowerStaticReadableStreamNew, lowerStaticReadableStreamReaderCall, lowerStaticResponseCall, lowerIslandMethodCall, lowerMathProperty, npmPackageOf, npmMemberFence, npmPackageOfSymbol } from "./lower-island.js";
 import { lowerHttpHeadersElement, lowerNetModuleCall, lowerServerMethodCall, lowerServerProperty, lowerTlsRootCertificates } from "./lower-server.js";
 import { lowerDgramDnsModuleCall, lowerDgramMethodCall } from "./lower-dgram.js";
@@ -4996,13 +4996,23 @@ export class Lowerer {
    * projects into a record shape (tsc's structural view of classes makes
    * `new Point(0,0)` flow into `{x: number; y: number}` slots). Every
    * target field must be a plain instance FIELD on the class (inherited
-   * included) whose type lifts, or a missing optional-flavored field
-   * completing to its undefined arm — but never a field the class
-   * satisfies through a METHOD or accessor (bound method references have
-   * no lowering; the plan declines instead of projecting a lie). Builtin
-   * runtime layouts (the Error/EventEmitter/stream chains) decline: their
-   * fields aren't plain emitted storage. */
-  objToRecordPlan(className: string, toId: string): Map<string, { src: IrType; lift: WidthLift } | { absent: true; utag: number }> | null {
+   * included) whose type lifts, a METHOD satisfied through the class's
+   * own method surface (the width copy captures the bound closure —
+   * required params only, concrete implementations: the projected value
+   * calls the method with the instance as `this`, exactly JS's bound
+   * reference), or a missing optional-flavored field completing to its
+   * undefined arm — but never a field the class satisfies through an
+   * accessor or a generic method. Builtin runtime layouts (the
+   * Error/EventEmitter/stream chains) decline: their fields aren't plain
+   * emitted storage. */
+  objToRecordPlan(
+    className: string,
+    toId: string,
+  ): Map<
+    string,
+    | { src: IrType; lift: WidthLift; method?: { declarer: string; name: string; virtual: boolean; params: { type: IrType; mode: string }[]; ret: IrType; receiverInfo: ClassInfo } }
+    | { absent: true; utag: number }
+  > | null {
     const info = this.classes.get(className);
     const to = this.shapes.get(toId);
     if (!info || !to || to.indexValue || to.tuple) return null;
@@ -5016,12 +5026,45 @@ export class Lowerer {
     if (this.widthPlanning.has(key)) return new Map();
     this.widthPlanning.add(key);
     try {
-      const plan = new Map<string, { src: IrType; lift: WidthLift } | { absent: true; utag: number }>();
+      const plan = new Map<
+        string,
+        | { src: IrType; lift: WidthLift; method?: { declarer: string; name: string; virtual: boolean; params: { type: IrType; mode: string }[]; ret: IrType; receiverInfo: ClassInfo } }
+        | { absent: true; utag: number }
+      >();
       for (const tf of to.fields) {
-        // A method/accessor satisfying the checker has no projectable
-        // value — decline the whole plan, field or not.
+        const m = findMethodOn(this, info, tf.name);
+        if (m) {
+          // The method-satisfied field projects as a BOUND closure over
+          // the concrete implementation: required params only (value-form
+          // completion stays out of coercions, like the statics
+          // projection), never an abstract declaration, and never a
+          // generator surface.
+          if (m.sig.abstract === true || m.sig.gen) return null;
+          if (m.sig.params.some((p) => p.mode !== "required")) return null;
+          const funcType: IrType = {
+            kind: "func",
+            params: m.sig.params.map((p) => p.type),
+            ret: m.sig.ret,
+          };
+          const lift = this.widthLiftPlan(funcType, tf.type);
+          if (!lift) return null;
+          plan.set(tf.name, {
+            src: funcType,
+            lift,
+            method: {
+              declarer: m.declarer.def.name,
+              name: tf.name,
+              virtual: this.overrideBelow(info, tf.name),
+              params: m.sig.params,
+              ret: m.sig.ret,
+              receiverInfo: info,
+            },
+          });
+          continue;
+        }
+        // An accessor or generic method satisfying the checker has no
+        // projectable value — decline the whole plan, field or not.
         if (
-          findMethodOn(this, info, tf.name) ||
           findMethodOn(this, info, `get:${tf.name}`) ||
           findGenericMethodOn(this, info, tf.name)
         ) {
@@ -5049,7 +5092,10 @@ export class Lowerer {
   /** Interned `%obj.width.<n>(o)` — builds a record from a class
    * instance's fields under objToRecordPlan: the width-copy stance
    * (divergence 305 — a fresh record, mutations don't alias, extra class
-   * members drop). */
+   * members drop). Method-satisfied fields capture the BOUND closure: a
+   * wrapper lifted fn whose `this` is the captured instance, so the
+   * projected value calls the method with the instance as receiver
+   * (dispatch virtual or direct exactly like a source call). */
   objRecordWidthHelper(className: string, toId: string, loc: SrcLoc): string | null {
     const to = this.shapes.get(toId);
     if (!to) return null;
@@ -5062,12 +5108,16 @@ export class Lowerer {
     this.widthHelpers.set(key, name);
     const fromT: IrType = { kind: "object", className };
     const toT: IrType = { kind: "record", shapeId: toId };
+    const capturesMethod = to.fields.some((f) => {
+      const p = plan.get(f.name);
+      return p !== undefined && !("absent" in p) && p.method !== undefined;
+    });
     const o: IrExpr = { kind: "varRef", localId: "o.0", type: fromT, loc };
     this.liftedFns.push({
       name,
       params: [{ localId: "o.0", name: "o", type: fromT }],
       returnType: toT,
-      locals: [{ id: "o.0", name: "o", type: fromT, mutable: true }],
+      locals: [{ id: "o.0", name: "o", type: fromT, mutable: true, ...(capturesMethod ? { boxed: true as const } : {}) }],
       body: [
         {
           kind: "return",
@@ -5089,6 +5139,13 @@ export class Lowerer {
                   } satisfies IrExpr,
                 };
               }
+              if (lift.method) {
+                const bound = this.methodBoundWidthClosure(className, lift.method, loc);
+                return {
+                  name: f.name,
+                  value: this.applyWidthLift(lift.lift, { kind: "closure", fnName: bound, captures: ["o.0"], type: lift.src, loc }, f.type, loc),
+                };
+              }
               const get: IrExpr = { kind: "fieldGet", obj: o, className, field: f.name, type: lift.src, loc };
               return { name: f.name, value: this.applyWidthLift(lift.lift, get, f.type, loc) };
             }),
@@ -5097,6 +5154,56 @@ export class Lowerer {
           },
           loc,
         },
+      ],
+      loc,
+    });
+    return name;
+  }
+
+  /** Interned `%obj.mbind.<n>` — the bound-method wrapper the width copy
+   * captures for a class's method-satisfied record field: the method's
+   * required parameters, the captured instance as `this`, dispatched
+   * direct or virtual exactly like a source method call. */
+  methodBoundWidthClosure(
+    className: string,
+    method: { declarer: string; name: string; virtual: boolean; params: { type: IrType; mode: string }[]; ret: IrType; receiverInfo: ClassInfo },
+    loc: SrcLoc,
+  ): string {
+    const key = `objmbind:${className}:${method.declarer}:${method.name}`;
+    const existing = this.widthHelpers.get(key);
+    if (existing) return existing;
+    const name = `%obj.mbind.${this.widthHelpers.size}`;
+    this.widthHelpers.set(key, name);
+    const fromT: IrType = { kind: "object", className };
+    const params = method.params.map((p, i) => ({ localId: `p.${i}`, name: `p${i}`, type: p.type }));
+    const call: IrExpr = method.virtual
+      ? {
+          kind: "virtualCall",
+          className,
+          method: method.name,
+          args: [this.upcastTo({ kind: "varRef", localId: "o.0", type: fromT, loc }, className), ...params.map((p) => ({ kind: "varRef", localId: p.localId, type: p.type, loc } as IrExpr))],
+          type: method.ret,
+          loc,
+        }
+      : {
+          kind: "call",
+          callee: `%${method.declarer}.${method.name}`,
+          args: [this.upcastTo({ kind: "varRef", localId: "o.0", type: fromT, loc }, method.declarer), ...params.map((p) => ({ kind: "varRef", localId: p.localId, type: p.type, loc } as IrExpr))],
+          type: method.ret,
+          loc,
+        };
+    if (!method.virtual) this.noteEdge(`%${method.declarer}.${method.name}`);
+    else this.noteVirtualEdge(method.receiverInfo, method.name);
+    this.liftedFns.push({
+      name,
+      params,
+      returnType: method.ret,
+      captures: [{ localId: "o.0", name: "o", type: fromT }],
+      locals: [{ id: "o.0", name: "o", type: fromT, mutable: false, boxed: true }],
+      body: [
+        ...(method.ret.kind === "void"
+          ? [{ kind: "exprStmt", expr: call, loc } satisfies IrStmt, { kind: "return", value: null, loc } satisfies IrStmt]
+          : [{ kind: "return", value: call, loc } satisfies IrStmt]),
       ],
       loc,
     });
@@ -8978,6 +9085,10 @@ export class Lowerer {
 
   lowerErrorCodeProperty(expr: ts.PropertyAccessExpression): IrExpr | null {
     return lowerErrorCodeProperty(this, expr);
+  }
+
+  lowerErrorStackProperty(expr: ts.PropertyAccessExpression): IrExpr | null {
+    return lowerErrorStackProperty(this, expr);
   }
 
   lowerStringDecoderMethodCall(call: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr | null {

@@ -518,6 +518,7 @@ export function isSupportedArrayElem(t: IrType): boolean {
     case "netServer":
     case "symbol":
     case "classval":
+    case "dyn":
       return true;
     default:
       return false;
@@ -561,7 +562,15 @@ export function isSupportedMapKey(t: IrType): boolean {
  * sentinel-registry idiom) is the same honest hashed storage with no
  * cycle risk at all (symbols hold only strings). */
 export function isSupportedSetElem(t: IrType): boolean {
-  return isSupportedMapKey(t) || t.kind === "netServer" || t.kind === "symbol";
+  return (
+    isSupportedMapKey(t) ||
+    t.kind === "netServer" ||
+    t.kind === "symbol" ||
+    t.kind === "promise" ||
+    t.kind === "object" ||
+    t.kind === "record" ||
+    t.kind === "dyn"
+  );
 }
 
 /** The Map VALUE fence: scalars plus every refcounted kind EXCEPT
@@ -655,7 +664,9 @@ export function funcOf(params: IrType[], ret: IrType): IrType {
  * against data arms). */
 export function unionFuncSetArmsOk(arms: IrType[]): boolean {
   return arms.every(
-    (a, i) => a.kind !== "set" || arms.every((b, j) => j === i || isUnitType(b)),
+    (a, i) =>
+      (a.kind !== "set" && a.kind !== "map" && a.kind !== "date" && a.kind !== "regex") ||
+      arms.every((b, j) => j === i || isUnitType(b)),
   );
 }
 
@@ -2095,6 +2106,7 @@ export type IrLibFn =
    * strings, and util.format %d over strings lower here. Borrows; never
    * throws. */
   | "num.fromString"
+  | "num.fromDyn"
   /** The static URI component codecs (scr_string.c), ECMA-262 Encode/
    * Decode with the component sets over the runtime's UTF-8 strings.
    * str.encodeUriComponent percent-encodes every byte outside the
@@ -2171,8 +2183,10 @@ export type IrLibFn =
    * path (getcwd) and never throws. */
   | "url.new"
   | "url.protocol"
+  | "url.origin"
   | "url.host"
   | "url.hostname"
+  | "url.port"
   | "url.pathname"
   | "url.href"
   | "url.fileURLToPathUrl"
@@ -2706,6 +2720,9 @@ export type IrLibFn =
    * (sweep-deferred, never the registering stack). */
   | "net.sockOnFinish"
   | "net.serverEmitConnection"
+  | "net.isIP"
+  | "net.isIPv4"
+  | "net.isIPv6"
   /** node:http, the CLIENT slice (http.request/http.get over the net
    * client machinery): request/requestCb take (host, port, path, method,
    * timeoutMs, headerPairs, autoEnd[, responseCb]) — headerPairs is the
@@ -3002,6 +3019,9 @@ export type IrLibFn =
    * Buffer/typed array's bytes. Pure; never throw. */
   | "crypto.hashDigestStr"
   | "crypto.hashDigestBytes"
+  | "crypto.hashDigestStrBuf"
+  | "crypto.hashDigestBytesBuf"
+  | "crypto.timingSafeEqual"
   /** crypto.randomBytes(n) → a real u8 Buffer (+1). THROWS Node's
    * RangeError on out-of-range sizes, exactly like the composed
    * randomBytesToString (which keeps its one-libCall lowering — the two
@@ -3142,6 +3162,7 @@ export type IrLibFn =
   | "fileHandle.stat"
   | "process.argv"
   | "process.platform"
+  | "process.version"
   /** getenv(3): one string key arg → the interned `string | undefined`
    * union (present: +1 string wrapped into the string arm; absent: the
    * interned undefined-arm instance). BOTH source forms — `process.env.FOO`
@@ -3202,6 +3223,10 @@ export type IrLibFn =
   | "os.type"
   /** os.totalmem(): total physical memory in bytes. Never throws. */
   | "os.totalmem"
+  /** os.freemem(): free physical memory in bytes. Never throws. */
+  | "os.freemem"
+  /** os.loadavg(): 1, 5, 15 minute load averages as [f64, f64, f64]. Never throws. */
+  | "os.loadavg"
   /** net's process-wide happy-eyeballs attempt budget (Node's default
    * 250ms): one runtime double in the core unit, so reading/writing it
    * never forces the net unit into the link. Never throw. */
@@ -3325,6 +3350,9 @@ export type IrLibFn =
   | "perf.now"
   | "process.availableMemory"
   | "process.constrainedMemory"
+  | "process.memoryUsageRss"
+  | "process.memoryUsageHeapTotal"
+  | "process.memoryUsageHeapUsed"
   | "process.cpuUser"
   | "process.cpuSystem"
   | "process.cpuUserDiff"
@@ -3705,6 +3733,10 @@ export type IrLibFn =
    * process.kill, the spawn 'error' event), the undefined arm everywhere
    * else. Never throws. */
   | "error.code"
+  /** `Error.stack` (and subclasses) — borrowed `%Error`-typed receiver,
+   * → +1 string (the stack trace; empty when not captured — the runtime
+   * returns the `name: message` rendering). Never throws. */
+  | "error.stack"
   /** node:assert (scr_assert.c; assert.match in scr_regex.c — every call
    * site carries a regex value, so the regex link switch is already on).
    * Failures throw a catchable AssertionError — a runtime %Error whose
@@ -3998,6 +4030,10 @@ export type IrLibFn =
   | "number.isNaN"
   | "number.isInteger"
   | "number.isSafeInteger"
+  | "number.isFiniteDyn"
+  | "number.isNaNDyn"
+  | "number.isIntegerDyn"
+  | "number.isSafeIntegerDyn"
   /** Date (scr_lib.c). Values are TimeClip'd epoch-millisecond scalars:
    * construction/store/pass/getters are exact while identity and mutation
    * remain fenced. date.now is Node's integer milliseconds since epoch;
@@ -4011,6 +4047,7 @@ export type IrLibFn =
   | "date.newNow"
   | "date.newMs"
   | "date.newString"
+  | "date.newDyn"
   | "date.getTime"
   | "date.valueOf"
   | "date.toISOString"
@@ -5517,6 +5554,13 @@ export function isIslandCallbackParamType(
   getUnion: (unionId: string) => IrUnionDef | undefined,
 ): boolean {
   if (t.kind === "jsval") return true;
+  // The %Error callback param (the EventEmitter-style boundary: a package
+  // API's `(err: Error) => void` handler crossing into the island): the
+  // engine argument converts through the boundary-thunk extraction — a
+  // real engine Error or the %error-encoded data object — exactly the
+  // dynCheck %Error domain, so a lying argument throws the catchable
+  // TypeError at the call.
+  if (t.kind === "object" && t.className === "%Error") return true;
   if (isJsonSafeType(t, getRecord, getUnion)) return true;
   if (t.kind === "union") {
     // A bare undefined-armed union: every non-undefined arm must be

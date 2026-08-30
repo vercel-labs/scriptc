@@ -592,6 +592,7 @@ void scr_undef_global_read(ScrStr *name);
  * thrower is scr_throw_error_msg with the code stamped on the payload. */
 void scr_error_set_code(ScrError *e, const char *code);
 ScrStr *scr_error_code(ScrError *e);
+ScrStr *scr_error_stack(ScrError *e);
 void scr_throw_error_msg_code(int kind, const char *message, size_t len, const char *code);
 /* The compiler-resolved Node-parity throw (error.nodeThrow): builtin
  * error of `kind`, `code` stamped when non-empty. Borrows both. */
@@ -976,6 +977,7 @@ void *scr_arr_shift_ref(ScrArr *a);
  * to the end). Returns the removed elements in order as a fresh +1 array,
  * ownership MOVED out of the receiver. Borrows a. */
 ScrArr *scr_arr_splice(ScrArr *a, double start, double deleteCount);
+ScrArr *scr_arr_splice_with_items(ScrArr *a, double start, double deleteCount, const ScrArr *items);
 
 /* indexOf: first index whose element strictly equals (JS ===) the needle,
  * or -1. Per element kind: f64 by value (NaN never matches — NaN !== NaN;
@@ -2110,6 +2112,8 @@ ScrStr *scr_process_exec_path(void);
 /* process.arch: the binary's OWN architecture ("arm64", "x64") — Node's
  * answer for its own build on the same machine. +1 interned. */
 ScrStr *scr_process_arch(void);
+/* process.version: "v" + process.versions.node */
+ScrStr *scr_process_version(void);
 /* process.versions.node: the runtime's Node COMPATIBILITY TARGET — no
  * Node exists under a compiled binary, so this reports the version whose
  * semantics the runtime implements (SEMANTICS.md divergence 60). +1
@@ -2595,6 +2599,15 @@ ScrStr *scr_crypto_random_string(double n, ScrStr *enc); /* +1, or throws */
  * Never throw. */
 ScrStr *scr_crypto_hash_digest_str(ScrStr *alg, ScrStr *data, ScrStr *enc);
 ScrStr *scr_crypto_hash_digest_bytes(ScrStr *alg, ScrBytes *data, ScrStr *enc);
+ScrBytes *scr_crypto_hash_digest_str_buf(ScrStr *alg, ScrStr *data);
+ScrBytes *scr_crypto_hash_digest_bytes_buf(ScrStr *alg, ScrBytes *data);
+bool scr_crypto_timing_safe_equal(ScrBytes *a, ScrBytes *b);
+double scr_net_is_ip(ScrStr *s);
+bool scr_net_is_ipv4(ScrStr *s);
+bool scr_net_is_ipv6(ScrStr *s);
+double scr_process_memory_rss(void);
+double scr_process_memory_heap_total(void);
+double scr_process_memory_heap_used(void);
 /* One-shot raw digest/HMAC by algorithm name ("md5" | "sha1" | "sha256")
  * — the island crypto shim's bridge (scr_island.c host hooks). Digest
  * bytes into out (≥32); returns the digest length, 0 for an unknown
@@ -2714,9 +2727,11 @@ void scr_url_release(ScrUrl *u);
 void *scr_url_retain_v(void *p);
 void scr_url_release_v(void *p);
 ScrStr *scr_url_protocol(ScrUrl *u); /* +1 "https:" */
+ScrStr *scr_url_origin(ScrUrl *u);   /* +1 "https://host[:port]" or "null" */
 ScrStr *scr_url_host(ScrUrl *u);     /* +1 "host[:port]" (defaults stripped) */
 ScrStr *scr_url_hostname(ScrUrl *u); /* +1 port-less host ("" when none) */
 ScrStr *scr_url_pathname(ScrUrl *u); /* +1 */
+ScrStr *scr_url_port(ScrUrl *u);     /* +1 port ("" when none) */
 ScrStr *scr_url_href(ScrUrl *u);     /* +1; also toString() */
 ScrStr *scr_url_to_path(ScrUrl *u);      /* +1, or throws */
 ScrStr *scr_url_str_to_path(ScrStr *s);  /* +1, or throws */
@@ -2803,6 +2818,8 @@ ScrStr *scr_os_tmpdir(void);
 ScrStr *scr_os_release(void); /* uname(2) release — +1 fresh */
 ScrStr *scr_os_type(void);    /* uname(2) sysname — +1 fresh */
 double scr_os_totalmem(void); /* total physical memory, bytes */
+double scr_os_freemem(void);  /* free physical memory, bytes */
+ScrArr *scr_os_loadavg(void); /* 1, 5, 15m load averages as +1 array */
 /* os.userInfo()'s field trio (pw_name / pw_shell / pw_dir — the passwd
  * home, not the $HOME cascade). +1 fresh; abort on lookup failure. */
 ScrStr *scr_os_user_name(void);
@@ -3285,6 +3302,10 @@ ScrDyn *scr_dyn_from_error(const ScrError *e);
  * out-and-back crossings compare reference-equal); alien %error objects
  * rebuild once and enter the cache. Borrows d. */
 ScrError *scr_error_from_dyn(const ScrDyn *d); /* scr_async_dyn.c (gated) */
+/* The island boundary-thunk's %Error extraction (scr_island.c, gated on
+ * the island): an engine Error instance or the %error-encoded data object
+ * converts to the native error. +1, or NULL with the TypeError pending. */
+ScrError *scr_error_from_jsval(ScrJsval *cell);
 /* The cache's runtime-internal access pair (scr_json.c owns the storage;
  * the gated extraction reads/writes through these). */
 ScrError *scr_errdyn_err_of(const ScrDyn *d); /* +1 or NULL */
@@ -4680,10 +4701,15 @@ double scr_str_last_index_of(ScrStr *s, ScrStr *needle);
  * JS-exact by construction: Number.isFinite/isNaN/isInteger/isSafeInteger
  * never coerce, and the compiler only routes f64-typed arguments here.
  * None throws. */
+double scr_num_from_dyn(const struct ScrDyn *d);
 bool scr_num_is_finite(double x);
 bool scr_num_is_nan(double x);
 bool scr_num_is_integer(double x);
 bool scr_num_is_safe_integer(double x);
+bool scr_num_is_finite_dyn(const struct ScrDyn *d);
+bool scr_num_is_nan_dyn(const struct ScrDyn *d);
+bool scr_num_is_integer_dyn(const struct ScrDyn *d);
+bool scr_num_is_safe_integer_dyn(const struct ScrDyn *d);
 /* Number.prototype formatters: toExponential() is the fraction-digits-free
  * shortest correctly-rounded mantissa; toFixed0 is the non-throwing omitted
  * argument form. toFixed implements an explicit 0..100 fractionDigits with
@@ -4711,6 +4737,7 @@ ScrStr *scr_intl_num_format_en_us(double x);
  * formatting are exact over this representation. */
 double scr_date_now(void); /* integer ms since epoch, like Node */
 double scr_date_new_ms(double ms); /* TimeClip (NaN when invalid) */
+double scr_date_new_dyn(const struct ScrDyn *d);
 double scr_date_get_time(double ms);
 /* Node's exact ISO 8601 UTC format (expanded ±YYYYYY years outside
  * 0–9999). THROWS Node's "Invalid time value" RangeError on NaN or

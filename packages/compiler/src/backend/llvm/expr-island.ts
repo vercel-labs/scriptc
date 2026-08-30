@@ -619,9 +619,21 @@ export function islandTypedAdapter(host: LlvmEmitterContext, fn: IrType & { kind
           d.push(`  store ptr %sx${i}, ptr %sl${i}`);
           break;
         }
+        case "object": {
+          // The %Error callback param (the EventEmitter-style boundary):
+          // the boundary-thunk extraction rebuilds the native error from
+          // the engine argument — a real engine Error or the %error-
+          // encoded data object. NULL = the catchable TypeError pending.
+          if (p.className !== "%Error") {
+            throw new InternalCompilerError(`llvm emitter bug: typed island adapter param of class ${p.className}`);
+          }
+          host.declare(`declare ptr @scr_error_from_jsval(ptr)`);
+          d.push(`  ${`%ev${i}`} = call ptr @scr_error_from_jsval(ptr %av${i})`);
+          failCheckPtr(`%ev${i}`);
+          d.push(`  store ptr %ev${i}, ptr %sl${i}`);
+          break;
+        }
         default: {
-          // Composite (record/array/union): the jsExit pipeline — engine
-          // JSON.stringify, json.parse, the interned dynCheck builder.
           canFail = true;
           host.declare(`declare ptr @scr_jsval_to_json(ptr)`);
           host.declare(`declare ptr @scr_json_parse(ptr)`);

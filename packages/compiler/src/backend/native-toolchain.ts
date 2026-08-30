@@ -752,16 +752,16 @@ export function resolveCc(
   const cc = env["SCRIPTC_CC"] ?? "";
   const target = env["SCRIPTC_TARGET"] ?? "";
   const hostArgs = nativePlatformArgs(hostPlatform);
-  if (cc === "" || cc === "clang") {
+  if (cc === "" || cc === "clang" || cc === "gcc") {
     if (target !== "") {
       throw new Error(
         `SCRIPTC_TARGET=${target} requires SCRIPTC_CC=zigcc — the default clang path has no cross-target sysroots.`,
       );
     }
-    return { argv: ["clang"], target: null, zigTarget: null, ...hostArgs };
+    return { argv: [cc || "clang"], target: null, zigTarget: null, ...hostArgs };
   }
   if (cc !== "zigcc") {
-    throw new Error(`unknown SCRIPTC_CC '${cc}' (supported: clang, zigcc)`);
+    throw new Error(`unknown SCRIPTC_CC '${cc}' (supported: clang, gcc, zigcc)`);
   }
   if (target === "") return { argv: ["zig", "cc"], target: null, zigTarget: null, ...hostArgs };
   // Validate the target spelling before any SDK/sysroot discovery. Source

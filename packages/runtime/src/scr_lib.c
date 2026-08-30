@@ -112,6 +112,7 @@ static SCR_TL ScrStr *scr_platform_str = NULL; /* interned process.platform */
 static SCR_TL ScrStr *scr_exec_path_str = NULL; /* interned process.execPath */
 static SCR_TL ScrStr *scr_arch_str = NULL;      /* interned process.arch */
 static SCR_TL ScrStr *scr_versions_node_str = NULL; /* interned process.versions.node */
+static SCR_TL ScrStr *scr_version_str = NULL;       /* interned process.version */
 static SCR_TL ScrStr *scr_versions_openssl_str = NULL; /* interned process.versions.openssl */
 
 static void scr_lib_cleanup(void) {
@@ -125,6 +126,8 @@ static void scr_lib_cleanup(void) {
   scr_arch_str = NULL;
   scr_str_release(scr_versions_node_str);
   scr_versions_node_str = NULL;
+  scr_str_release(scr_version_str);
+  scr_version_str = NULL;
   scr_str_release(scr_versions_openssl_str);
   scr_versions_openssl_str = NULL;
 }
@@ -239,6 +242,14 @@ ScrStr *scr_process_versions_node(void) {
         scr_str_new(SCR_NODE_COMPAT_VERSION, sizeof(SCR_NODE_COMPAT_VERSION) - 1);
   }
   return scr_str_retain(scr_versions_node_str);
+}
+
+ScrStr *scr_process_version(void) {
+  if (!scr_version_str) {
+    scr_version_str =
+        scr_str_new("v" SCR_NODE_COMPAT_VERSION, sizeof("v" SCR_NODE_COMPAT_VERSION) - 1);
+  }
+  return scr_str_retain(scr_version_str);
 }
 
 /* process.versions.openssl — the compat target's crypto-provider version
@@ -714,6 +725,22 @@ double scr_os_totalmem(void) {
   return (double)ms.ullTotalPhys;
 }
 
+double scr_os_freemem(void) {
+  MEMORYSTATUSEX ms;
+  memset(&ms, 0, sizeof ms);
+  ms.dwLength = sizeof ms;
+  if (!GlobalMemoryStatusEx(&ms)) return 0;
+  return (double)ms.ullAvailPhys;
+}
+
+ScrArr *scr_os_loadavg(void) {
+  ScrArr *a = scr_arr_new(SCR_ELEM_F64, 3);
+  scr_arr_push_f64(a, 0);
+  scr_arr_push_f64(a, 0);
+  scr_arr_push_f64(a, 0);
+  return a;
+}
+
 ScrStr *scr_os_tmpdir(void) {
   /* GetTempPathA is libuv's source (TMP → TEMP → USERPROFILE → windir),
    * with Node's one-trailing-separator trim. */
@@ -743,6 +770,14 @@ ScrStr *scr_os_user_homedir(void) { return scr_os_homedir(); }
 ScrStr *scr_os_release(void) { return scr_str_new("", 0); }
 ScrStr *scr_os_type(void) { return scr_str_new("WASI", 4); }
 double scr_os_totalmem(void) { return 0; }
+double scr_os_freemem(void) { return 0; }
+ScrArr *scr_os_loadavg(void) {
+  ScrArr *a = scr_arr_new(SCR_ELEM_F64, 3);
+  scr_arr_push_f64(a, 0);
+  scr_arr_push_f64(a, 0);
+  scr_arr_push_f64(a, 0);
+  return a;
+}
 /* The guest temp namespace is stable across hosts. `scriptc run` preopens
  * the host's /tmp at this path; other WASI hosts can provide the same
  * capability without leaking a host-specific TMPDIR into the module. */
@@ -823,6 +858,24 @@ double scr_os_totalmem(void) {
   long psize = sysconf(_SC_PAGE_SIZE);
   if (pages <= 0 || psize <= 0) return 0;
   return (double)pages * (double)psize;
+}
+
+double scr_os_freemem(void) {
+  /* Free physical memory in bytes (sysconf available pages × page size). */
+  long pages = sysconf(_SC_AVPHYS_PAGES);
+  long psize = sysconf(_SC_PAGE_SIZE);
+  if (pages <= 0 || psize <= 0) return 0;
+  return (double)pages * (double)psize;
+}
+
+ScrArr *scr_os_loadavg(void) {
+  ScrArr *a = scr_arr_new(SCR_ELEM_F64, 3);
+  double loads[3] = {0, 0, 0};
+  getloadavg(loads, 3);
+  scr_arr_push_f64(a, loads[0]);
+  scr_arr_push_f64(a, loads[1]);
+  scr_arr_push_f64(a, loads[2]);
+  return a;
 }
 
 ScrStr *scr_os_tmpdir(void) {
@@ -3729,6 +3782,82 @@ ScrStr *scr_crypto_hash_digest_bytes(ScrStr *alg, ScrBytes *data, ScrStr *enc) {
   return scr_hash_digest_raw(alg, data->data, data->len * scr_bytes_elem_size(data->elem), enc);
 }
 
+ScrBytes *scr_crypto_hash_digest_str_buf(ScrStr *alg, ScrStr *data) {
+  unsigned char out[32];
+  size_t len = scr_crypto_digest_raw(alg->data, (const unsigned char *)data->data, data->len, out);
+  ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, len);
+  memcpy(b->data, out, len);
+  return b;
+}
+
+ScrBytes *scr_crypto_hash_digest_bytes_buf(ScrStr *alg, ScrBytes *data) {
+  unsigned char out[32];
+  size_t in_len = data->len * scr_bytes_elem_size(data->elem);
+  size_t len = scr_crypto_digest_raw(alg->data, data->data, in_len, out);
+  ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, len);
+  memcpy(b->data, out, len);
+  return b;
+}
+
+bool scr_crypto_timing_safe_equal(ScrBytes *a, ScrBytes *b) {
+  size_t a_len = a->len * scr_bytes_elem_size(a->elem);
+  size_t b_len = b->len * scr_bytes_elem_size(b->elem);
+  if (a_len != b_len) {
+    scr_throw_error_msg(SCR_ERR_RANGE, "Input buffers must have the same byte length", 42);
+    return false;
+  }
+  unsigned char result = 0;
+  const unsigned char *pa = (const unsigned char *)a->data;
+  const unsigned char *pb = (const unsigned char *)b->data;
+  for (size_t i = 0; i < a_len; i++) {
+    result |= pa[i] ^ pb[i];
+  }
+  return result == 0;
+}
+
+double scr_net_is_ip(ScrStr *s) {
+  if (!s || s->len == 0) return 0;
+  char buf[INET6_ADDRSTRLEN + 8];
+  if (s->len >= sizeof(buf)) return 0;
+  memcpy(buf, s->data, s->len);
+  buf[s->len] = '\0';
+  struct in_addr addr4;
+  if (inet_pton(AF_INET, buf, &addr4) == 1) return 4;
+  struct in6_addr addr6;
+  if (inet_pton(AF_INET6, buf, &addr6) == 1) return 6;
+  return 0;
+}
+
+bool scr_net_is_ipv4(ScrStr *s) {
+  return scr_net_is_ip(s) == 4;
+}
+
+bool scr_net_is_ipv6(ScrStr *s) {
+  return scr_net_is_ip(s) == 6;
+}
+
+double scr_process_memory_rss(void) {
+  struct rusage ru;
+  if (getrusage(RUSAGE_SELF, &ru) == 0) {
+#if defined(__APPLE__)
+    return (double)ru.ru_maxrss;
+#else
+    return (double)ru.ru_maxrss * 1024.0;
+#endif
+  }
+  return 0;
+}
+
+double scr_process_memory_heap_total(void) {
+  double rss = scr_process_memory_rss();
+  return rss > 0 ? rss : 1024 * 1024;
+}
+
+double scr_process_memory_heap_used(void) {
+  double rss = scr_process_memory_rss();
+  return rss > 0 ? rss / 2 : 512 * 1024;
+}
+
 /* The composed `new crypto.X509Certificate(data).fingerprint` read, fused
  * by the compiler (no certificate handle exists). Node's .fingerprint IS
  * the SHA-1 of the certificate's DER bytes, uppercase colon-separated —
@@ -4095,6 +4224,22 @@ double scr_date_new_ms(double ms) {
   if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return NAN;
   double clipped = trunc(ms);
   return clipped == 0 ? 0 : clipped;
+}
+
+double scr_date_new_dyn(const ScrDyn *d) {
+  if (!d) return NAN;
+  switch (d->kind) {
+    case SCR_DYN_NUM:
+      return scr_date_new_ms(d->v.num);
+    case SCR_DYN_STR:
+      return scr_date_parse_get_time(d->v.str);
+    case SCR_DYN_BOOL:
+      return scr_date_new_ms(d->v.b ? 1.0 : 0.0);
+    case SCR_DYN_NULL:
+      return scr_date_new_ms(0.0);
+    default:
+      return NAN;
+  }
 }
 
 double scr_date_get_time(double ms) { return ms; }
@@ -4787,6 +4932,42 @@ bool scr_num_is_integer(double x) { return isfinite(x) && trunc(x) == x; }
 
 bool scr_num_is_safe_integer(double x) {
   return isfinite(x) && trunc(x) == x && fabs(x) <= 9007199254740991.0;
+}
+
+double scr_num_from_dyn(const ScrDyn *d) {
+  if (!d) return NAN;
+  switch (d->kind) {
+    case SCR_DYN_NUM:
+      return d->v.num;
+    case SCR_DYN_BOOL:
+      return d->v.b ? 1.0 : 0.0;
+    case SCR_DYN_STR:
+      return scr_string_to_number(d->v.str);
+    case SCR_DYN_NULL:
+      return 0.0;
+    default:
+      return NAN;
+  }
+}
+
+bool scr_num_is_finite_dyn(const ScrDyn *d) {
+  if (!d || d->kind != SCR_DYN_NUM) return false;
+  return isfinite(d->v.num) != 0;
+}
+
+bool scr_num_is_nan_dyn(const ScrDyn *d) {
+  if (!d || d->kind != SCR_DYN_NUM) return false;
+  return isnan(d->v.num) != 0;
+}
+
+bool scr_num_is_integer_dyn(const ScrDyn *d) {
+  if (!d || d->kind != SCR_DYN_NUM) return false;
+  return isfinite(d->v.num) && trunc(d->v.num) == d->v.num;
+}
+
+bool scr_num_is_safe_integer_dyn(const ScrDyn *d) {
+  if (!d || d->kind != SCR_DYN_NUM) return false;
+  return isfinite(d->v.num) && trunc(d->v.num) == d->v.num && fabs(d->v.num) <= 9007199254740991.0;
 }
 
 /* ── bitwise operators ─────────────────────────────────────────────────

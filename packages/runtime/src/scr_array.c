@@ -366,7 +366,7 @@ void *scr_arr_shift_ref(ScrArr *a) { return scr_slot_to_ptr(scr_arr_shift_slot(a
  * elements come back as a fresh +1 array IN ORDER, their ownership MOVED
  * out of the receiver (no retain/release churn); the tail slides down.
  * Borrows a. */
-ScrArr *scr_arr_splice(ScrArr *a, double start, double deleteCount) {
+ScrArr *scr_arr_splice_with_items(ScrArr *a, double start, double deleteCount, const ScrArr *items) {
   double len = (double)a->len;
   double s0 = isnan(start) ? 0 : trunc(start);
   if (s0 < 0) s0 += len;
@@ -381,10 +381,27 @@ ScrArr *scr_arr_splice(ScrArr *a, double start, double deleteCount) {
   if (n > 0) {
     memcpy(out->data, a->data + from, n * sizeof(uint64_t));
     out->len = n;
-    memmove(a->data + from, a->data + from + n, (a->len - from - n) * sizeof(uint64_t));
-    a->len -= n;
   }
+  size_t items_len = items ? items->len : 0;
+  size_t tail_len = a->len - from - n;
+  size_t new_len = a->len - n + items_len;
+  if (new_len > a->cap) {
+    scr_arr_grow(a, new_len);
+  }
+  if (items_len != n && tail_len > 0) {
+    memmove(a->data + from + items_len, a->data + from + n, tail_len * sizeof(uint64_t));
+  }
+  if (items_len > 0) {
+    for (size_t i = 0; i < items_len; i++) {
+      a->data[from + i] = scr_elem_retain_slot(a, items->data[i]);
+    }
+  }
+  a->len = new_len;
   return out;
+}
+
+ScrArr *scr_arr_splice(ScrArr *a, double start, double deleteCount) {
+  return scr_arr_splice_with_items(a, start, deleteCount, NULL);
 }
 
 /* ── indexOf / includes ────────────────────────────────────────────────

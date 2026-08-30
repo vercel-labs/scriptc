@@ -19,7 +19,7 @@ type BoxNewPointerType = Extract<IrType, {
   kind: Exclude<PointerKind, "string" | "array" | "func" | "dyn" | "jsval" | "caught" | "promise" | "generator">
 }>;
 type RejectedArrayPointerType = Extract<IrType, {
-  kind: Exclude<PointerKind, "string" | "array" | "bytes" | "record" | "object" | "union" | "jsval" | "child" | "netServer" | "symbol" | "classval" | "func">
+  kind: Exclude<PointerKind, "string" | "array" | "bytes" | "record" | "object" | "union" | "jsval" | "child" | "netServer" | "symbol" | "classval" | "func" | "dyn" | "promise" | "regex">
 }>;
 
 export function cType(t: IrType): string {
@@ -259,7 +259,8 @@ export function elemKindC(elem: IrType): string {
       elem.kind !== "string" && elem.kind !== "array" && elem.kind !== "bytes" &&
       elem.kind !== "record" && elem.kind !== "object" && elem.kind !== "union" &&
       elem.kind !== "jsval" && elem.kind !== "child" && elem.kind !== "netServer" &&
-      elem.kind !== "symbol" && elem.kind !== "classval" && elem.kind !== "func") {
+      elem.kind !== "symbol" && elem.kind !== "classval" && elem.kind !== "func" &&
+      elem.kind !== "dyn" && elem.kind !== "promise" && elem.kind !== "regex") {
     throw new InternalCompilerError(`emitter bug: array of ${elem.kind} (frontend rejects these)`);
   }
   switch (elem.kind) {
@@ -280,6 +281,9 @@ export function elemKindC(elem: IrType): string {
     // release adapters) — `any[]` under --dynamic is a native array of
     // handles, one element per island value.
     case "jsval":
+    case "dyn":
+    case "promise":
+    case "regex":
     // Spawned child handles (ChildProcess[] — the running-apps list):
     // ordinary refcounted pointers, no trace (they drop their closures at
     // reap, so never part of a cycle).
@@ -391,7 +395,14 @@ export function mapKeyAccess(key: IrType): "f64" | "str" | "ref" {
   if (key.kind === "string") return "str";
   // Handle-kind SET elements (identity hashing — isSupportedSetElem);
   // Map keys proper stay f64/string.
-  if (key.kind === "netServer" || key.kind === "symbol") return "ref";
+  if (
+    key.kind === "netServer" ||
+    key.kind === "symbol" ||
+    key.kind === "promise" ||
+    key.kind === "object" ||
+    key.kind === "record" ||
+    key.kind === "dyn"
+  ) return "ref";
   throw new InternalCompilerError(`emitter bug: map key of ${key.kind} (frontend rejects these)`);
 }
 

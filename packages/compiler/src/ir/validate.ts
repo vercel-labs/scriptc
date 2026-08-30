@@ -132,6 +132,9 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "perf.now": { argTypes: [], result: F64 },
   "process.availableMemory": { argTypes: [], result: F64 },
   "process.constrainedMemory": { argTypes: [], result: F64 },
+  "process.memoryUsageRss": { argTypes: [], result: F64 },
+  "process.memoryUsageHeapTotal": { argTypes: [], result: F64 },
+  "process.memoryUsageHeapUsed": { argTypes: [], result: F64 },
   "process.cpuUser": { argTypes: [], result: F64 },
   "process.cpuSystem": { argTypes: [], result: F64 },
   "process.cpuUserDiff": { argTypes: [F64], result: F64 },
@@ -193,6 +196,8 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "os.release": { argTypes: [], result: STRING },
   "os.type": { argTypes: [], result: STRING },
   "os.totalmem": { argTypes: [], result: F64 },
+  "os.freemem": { argTypes: [], result: F64 },
+  "os.loadavg": { argTypes: [], result: { kind: "array", elem: F64 } },
   "process.umask": { argTypes: [F64], result: F64 },
   "process.chdir": { argTypes: [STRING], result: VOID },
   "process.exiting": { argTypes: [], result: BOOL },
@@ -219,6 +224,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "num.parseInt": { argTypes: [STRING, F64], result: F64 },
   "num.parseFloat": { argTypes: [STRING], result: F64 },
   "num.fromString": { argTypes: [STRING], result: F64 },
+  "num.fromDyn": { argTypes: [DYN], result: F64 },
   "num.isNaN": { argTypes: [F64], result: BOOL },
   "str.encodeUriComponent": { argTypes: [STRING], result: STRING },
   // The base64 globals: the argument is a dyn value (WebIDL ToString
@@ -244,8 +250,10 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "sym.toString": { argTypes: [SYMBOL_T], result: STRING },
   "url.new": { argTypes: [STRING], result: URL_T },
   "url.protocol": { argTypes: [URL_T], result: STRING },
+  "url.origin": { argTypes: [URL_T], result: STRING },
   "url.host": { argTypes: [URL_T], result: STRING },
   "url.hostname": { argTypes: [URL_T], result: STRING },
+  "url.port": { argTypes: [URL_T], result: STRING },
   "url.pathname": { argTypes: [URL_T], result: STRING },
   "url.href": { argTypes: [URL_T], result: STRING },
   "url.fileURLToPathUrl": { argTypes: [URL_T], result: STRING },
@@ -522,6 +530,9 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
   "net.sockOnFinish": { argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }], result: VOID },
   "net.serverEmitConnection": { argTypes: [NETSERVER_T, NETSOCKET_T], result: VOID },
+  "net.isIP": { argTypes: [STRING], result: F64 },
+  "net.isIPv4": { argTypes: [STRING], result: BOOL },
+  "net.isIPv6": { argTypes: [STRING], result: BOOL },
   // tls/https: cert/key/ca PEM arguments are strings OR Buffers (null =
   // both accepted; the emitter passes data+len either way).
   "tls.createServer": { argTypes: [null, null], result: NETSERVER_T },
@@ -726,6 +737,9 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "crypto.randomBytes": { argTypes: [F64], result: BYTES_U8 },
   "crypto.hashDigestStr": { argTypes: [STRING, STRING, STRING], result: STRING },
   "crypto.hashDigestBytes": { argTypes: [STRING, BYTES_U8, STRING], result: STRING },
+  "crypto.hashDigestStrBuf": { argTypes: [STRING, STRING], result: BYTES_U8 },
+  "crypto.hashDigestBytesBuf": { argTypes: [STRING, BYTES_U8], result: BYTES_U8 },
+  "crypto.timingSafeEqual": { argTypes: [BYTES_U8, BYTES_U8], result: BOOL },
   // The Buffer statics and the fs/zlib Buffer forms: fixed always-u8
   // signatures (Buffer IS a Uint8Array — one bytes kind).
   "buffer.fromStr": { argTypes: [STRING, STRING], result: BYTES_U8 },
@@ -794,6 +808,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
   "process.argv": { argTypes: [], result: arrayOf(STRING) },
   "process.platform": { argTypes: [], result: STRING },
+  "process.version": { argTypes: [], result: STRING },
   // The one libCall whose result type is program-dependent (union ids are
   // per-module): the `result` here is a placeholder — the libCall case
   // checks the union's ARMS ([string, undefinedT] in canonical order)
@@ -832,6 +847,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   // Receiver (any error-hierarchy object) and the program-dependent
   // `string | undefined` result are checked in the libCall case.
   "error.code": { argTypes: [null], result: VOID },
+  "error.stack": { argTypes: [null], result: STRING },
   // DOMException: construction takes the two dyn args (WebIDL's
   // resolution runs in the runtime); the %DOMException result is a
   // program-dependent object type, checked in the libCall case. The
@@ -1085,10 +1101,15 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "number.isNaN": { argTypes: [F64], result: BOOL },
   "number.isInteger": { argTypes: [F64], result: BOOL },
   "number.isSafeInteger": { argTypes: [F64], result: BOOL },
+  "number.isFiniteDyn": { argTypes: [DYN], result: BOOL },
+  "number.isNaNDyn": { argTypes: [DYN], result: BOOL },
+  "number.isIntegerDyn": { argTypes: [DYN], result: BOOL },
+  "number.isSafeIntegerDyn": { argTypes: [DYN], result: BOOL },
   "date.now": { argTypes: [], result: F64 },
   "date.newNow": { argTypes: [], result: DATE_T },
   "date.newMs": { argTypes: [F64], result: DATE_T },
   "date.newString": { argTypes: [STRING], result: DATE_T },
+  "date.newDyn": { argTypes: [DYN], result: DATE_T },
   "date.getTime": { argTypes: [DATE_T], result: F64 },
   "date.valueOf": { argTypes: [DATE_T], result: F64 },
   "date.toISOString": { argTypes: [F64], result: STRING },
@@ -1503,16 +1524,14 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       if (
         arm.kind === "void" ||
         arm.kind === "union" ||
-        arm.kind === "map" ||
         arm.kind === "dyn" ||
         arm.kind === "jsval" ||
-        arm.kind === "date" ||
         arm.kind === "generator"
       ) {
         errors.push({ message: `union ${u.id}: arm ${i} is ${arm.kind}`, loc: noLoc });
       }
       if (
-        (arm.kind === "func" || arm.kind === "set") &&
+        (arm.kind === "func" || arm.kind === "set" || arm.kind === "map" || arm.kind === "date" || arm.kind === "regex") &&
         !unionFuncSetArmsOk(u.arms)
       ) {
         errors.push({ message: `union ${u.id}: ${arm.kind} arm ${i} beside non-unit arms`, loc: noLoc });
@@ -2573,12 +2592,13 @@ function validateFunction(
         // omitted from the IR — backends fill the defaults); everything
         // else is exact.
         const minArgs = e.method === "slice" ? 0 : e.method === "splice" ? 1 : sig.argTypes.length;
-        if (e.args.length < minArgs || e.args.length > sig.argTypes.length) {
+        const maxArgs = e.method === "splice" ? Number.MAX_SAFE_INTEGER : sig.argTypes.length;
+        if (e.args.length < minArgs || e.args.length > maxArgs) {
           err(`arrIntrinsic ${e.method}: ${e.args.length} args, expected ${sig.argTypes.length}`, e.loc);
         }
         e.args.forEach((a, i) => {
           checkExpr(a);
-          const want = sig.argTypes[i];
+          const want = i < sig.argTypes.length ? sig.argTypes[i] : (e.receiver.type as { elem: IrType }).elem;
           if (want) expectType(a, want, `arrIntrinsic ${e.method} arg ${i}`);
         });
         if (!typeEquals(e.type, sig.result)) {

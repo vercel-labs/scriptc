@@ -31,6 +31,13 @@ declare namespace NodeJS {
     user: number;
     system: number;
   }
+  interface MemoryUsage {
+    rss: number;
+    heapTotal: number;
+    heapUsed: number;
+    external: number;
+    arrayBuffers: number;
+  }
   interface ResourceUsage {
     userCPUTime: number;
     systemCPUTime: number;
@@ -130,6 +137,7 @@ declare const console: {
 declare var process: {
   argv: string[];
   platform: string;
+  readonly version: string;
   /* The binary's OWN architecture ("arm64", "x64") — Node's answer for
    * its own build on the same machine. */
   readonly arch: string;
@@ -194,6 +202,7 @@ declare var process: {
   nextTick(callback: (...args: any[]) => void, ...args: any[]): void;
   /* The process introspection statics — Node's shapes and units. */
   uptime(): number;
+  memoryUsage(): NodeJS.MemoryUsage;
   cpuUsage(previousValue?: NodeJS.CpuUsage): NodeJS.CpuUsage;
   threadCpuUsage(previousValue?: NodeJS.CpuUsage): NodeJS.CpuUsage;
   resourceUsage(): NodeJS.ResourceUsage;
@@ -1228,6 +1237,7 @@ declare module "node:path/win32" {
  * both type worlds map to the same IR structure). */
 declare module "os" {
   export function platform(): string;
+  export function arch(): string;
   export function homedir(): string;
   export function tmpdir(): string;
   /* uname(2)'s release field — Node's own implementation. */
@@ -1236,6 +1246,10 @@ declare module "os" {
   export function type(): string;
   /* Total system memory in bytes (sysctl hw.memsize / sysconf). */
   export function totalmem(): number;
+  /* Free system memory in bytes. */
+  export function freemem(): number;
+  /* 1, 5, and 15 minute load averages. */
+  export function loadavg(): number[];
   /* The passwd-entry snapshot (uv_os_get_passwd): shell is `string |
    * null` to match @types/node (POSIX always answers the string arm);
    * homedir is pw_dir — NOT os.homedir()'s $HOME-first cascade. The type
@@ -1290,10 +1304,12 @@ declare module "node:os" {
  * documented in SEMANTICS.md. */
 interface URL {
   readonly protocol: string;
+  readonly origin: string;
   readonly pathname: string;
   readonly href: string;
   readonly host: string;
   readonly hostname: string;
+  readonly port: string;
   readonly search: string;
   readonly searchParams: URLSearchParams;
   toString(): string;
@@ -1346,6 +1362,7 @@ declare module "node:url" {
 declare module "crypto" {
   export function randomUUID(): string;
   export function randomBytes(size: number): Buffer;
+  export function timingSafeEqual(a: Uint8Array | Buffer, b: Uint8Array | Buffer): boolean;
   /* The lowered Hash surface is exactly the COMPOSED chain
    * createHash("sha256" | "sha1").update(data).digest("hex" | "base64")
    * — fused into one call, the Hash handle never materializes (holding
@@ -1353,6 +1370,7 @@ declare module "crypto" {
    * hash. */
   export interface Hash {
     update(data: string | Uint8Array): Hash;
+    digest(): Buffer;
     digest(encoding: "hex" | "base64"): string;
   }
   export function createHash(algorithm: string): Hash;
@@ -1976,6 +1994,9 @@ declare module "node:zlib" {
  * and an 'error' with no listener exits 1 like an unhandled EventEmitter
  * 'error'. */
 declare module "net" {
+  export function isIP(input: string): number;
+  export function isIPv4(input: string): boolean;
+  export function isIPv6(input: string): boolean;
   export interface Socket {
     readonly remoteAddress: string | undefined;
     /* true once the fd is gone (destroy() or full close) — Node's flag. */

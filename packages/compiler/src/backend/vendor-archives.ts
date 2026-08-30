@@ -240,7 +240,7 @@ export function createVendorArchives(context: VendorArchiveContext) {
   async function buildEngineArchiveDirect(sanitize: boolean, driver: CcDriver, cacheRoot: string, cacheDir: string): Promise<string> {
     const vendor = vendorEngineDir();
     const archive = join(cacheDir, "libqjs.a");
-    const compileArgv = driver.target === null ? ["clang"] : driver.argv;
+    const compileArgv = driver.target === null ? [process.env["SCRIPTC_CC"] ?? "clang"] : driver.argv;
     const arArgv = driver.target === null ? ["ar"] : [...driver.argv.slice(0, 1), "ar"];
     const cflags = [
       "-std=gnu11",
@@ -533,7 +533,7 @@ export function createVendorArchives(context: VendorArchiveContext) {
     cacheRoot: string = vendorBuildCacheRoot(),
   ): Promise<string> {
     const flavor = `${sanitize ? "asan" : "plain"}-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
-    const compileArgv = driver.target !== null ? driver.argv : ["clang"];
+    const compileArgv = driver.target !== null ? driver.argv : [process.env["SCRIPTC_CC"] ?? "clang"];
     const arArgv = driver.target !== null ? [...driver.argv.slice(0, 1), "ar"] : ["ar"];
     const vendor = vendorTlsDir();
     const archive = tlsArchivePath(sanitize, driver, buildIdentity, cacheRoot);

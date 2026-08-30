@@ -1,4 +1,5 @@
 import { InternalCompilerError } from "../../errors.js";
+import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 /* The checker facade: 5.9.3-shaped TypeChecker methods over 7.0.2's sync
  * client, built around the survey's feasibility verdict. Naive per-call use
  * of the 7.0.2 client costs 0.1-0.3 ms of IPC per query; the census counted
@@ -67,7 +68,8 @@ function withPanicFence<I, O>(
 ): (O | undefined)[] {
   try {
     return [...call(chunk as I[])];
-  } catch {
+  } catch (e) {
+    if (!isCheckerPanic(e)) throw e;
     if (chunk.length === 1) return [undefined];
     const mid = chunk.length >> 1;
     return [
@@ -687,7 +689,7 @@ export class CheckerFacade {
     if (!(type.flags & TypeFlags.Object)) return false;
     let answer = this.arrayTypeAnswer.get(type);
     if (answer === undefined) {
-      answer = this.raw.isArrayType(type);
+      answer = withPanicFence([type], (c) => c.map((t) => this.raw.isArrayType(t)))[0] ?? false;
       this.arrayTypeAnswer.set(type, answer);
     }
     return answer;
@@ -698,13 +700,17 @@ export class CheckerFacade {
    * The 7.0.2 client-side Type.isTupleType() sees only the shape — a
    * reference answers false there (measured; the facade suite pins it) —
    * so shape-true and non-object-false resolve locally and only object
-   * types that are not visibly tuples round-trip, memoized. */
+   * types that are not visibly tuples round-trip, memoized. The round-trip
+   * wears the panic fence: upstream has panicked on exactly these
+   * tuple/reference shape mixups, and one bad type must not crash the
+   * query pass — it degrades to false (the not-a-tuple answer) memoized,
+   * like a panicked batch item. */
   isTupleType(type: Type): boolean {
     if (type.isTupleType()) return true;
     if (!(type.flags & TypeFlags.Object)) return false;
     let answer = this.tupleTypeAnswer.get(type);
     if (answer === undefined) {
-      answer = this.raw.isTupleType(type);
+      answer = withPanicFence([type], (c) => c.map((t) => this.raw.isTupleType(t)))[0] ?? false;
       this.tupleTypeAnswer.set(type, answer);
     }
     return answer;
@@ -713,7 +719,7 @@ export class CheckerFacade {
   isArrayLikeType(type: Type): boolean {
     let answer = this.arrayLikeAnswer.get(type);
     if (answer === undefined) {
-      answer = this.raw.isArrayLikeType(type);
+      answer = withPanicFence([type], (c) => c.map((t) => this.raw.isArrayLikeType(t)))[0] ?? false;
       this.arrayLikeAnswer.set(type, answer);
     }
     return answer;

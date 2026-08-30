@@ -5022,12 +5022,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         if (arg.type.kind === "date") {
           return arg;
         }
-        lowerer.noLowering(
-          `new Date of '${lowerer.fmt(arg.type)}' values`,
-          args[0]!,
-          "pass milliseconds, a date string, or another Date value",
-          symbol,
-        );
+        const coerced = lowerer.coerceInto(args[0]!, arg, DYN);
+        return { kind: "libCall", fn: "date.newDyn", args: [coerced], type: DATE_T, loc };
       }
       // `new StringDecoder(encoding?)` (node:string_decoder): the decoder
       // is a two-field record — the CANONICAL encoding name (aliases fold
@@ -5281,6 +5277,29 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
               }
               // Any other lowered kind falls through to the named fence
               // below — never a mistyped seed into the validator.
+            }
+            if (argIr?.kind === "set" && typeEquals(argIr.elem, mapped.elem)) {
+              const src = lowerer.lowerExpr(argNode);
+              if (src.type.kind === "set") {
+                const arr: IrExpr = { kind: "setIntrinsic", method: "toArray", receiver: src, args: [], type: arrayOf(mapped.elem), loc };
+                return { kind: "setNew", seed: arr, type: mapped, loc };
+              }
+            }
+            if (argIr?.kind === "record") {
+              const shape = lowerer.shapes.get(argIr.shapeId);
+              if (shape?.tuple && shape.fields.length > 0 && shape.fields.every((f: { type: IrType }) => typeEquals(f.type, mapped.elem))) {
+                const seedVal = lowerer.lowerExpr(argNode);
+                const elems: IrExpr[] = shape.fields.map((f: { name: string; type: IrType }) => ({
+                  kind: "recordGet",
+                  obj: seedVal,
+                  shapeId: argIr.shapeId,
+                  field: f.name,
+                  type: f.type,
+                  loc,
+                }));
+                const seed: IrExpr = { kind: "arrayLit", elems, type: arrayOf(mapped.elem), loc };
+                return { kind: "setNew", seed, type: mapped, loc };
+              }
             }
           }
         }

@@ -681,6 +681,7 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
   os: {
     // One platform implementation: os.platform() === process.platform.
     platform: { fn: "process.platform", params: [], result: STRING },
+    arch: { fn: "process.arch", params: [], result: STRING },
     homedir: { fn: "os.homedir", params: [], result: STRING },
     tmpdir: { fn: "os.tmpdir", params: [], result: STRING },
     // uname(2)'s release field — Node's own implementation.
@@ -692,6 +693,8 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
     type: { fn: "os.type", params: [], result: STRING },
     // Total physical memory in bytes — same predating-pair story.
     totalmem: { fn: "os.totalmem", params: [], result: F64 },
+    freemem: { fn: "os.freemem", params: [], result: F64 },
+    loadavg: { fn: "os.loadavg", params: [], result: arrayOf(F64) },
     // Entirely special-cased (lowerOsNetworkInterfacesCall): the result is
     // the call site's mapped Dict<NetworkInterfaceInfo[]> shape, verified
     // structurally there — this entry only routes the dispatch.
@@ -707,6 +710,7 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
     // first and the Buffer never materializes there); this entry covers
     // the bare calls and non-composed uses.
     randomBytes: { fn: "crypto.randomBytes", params: [F64], result: BYTES_U8 },
+    timingSafeEqual: { fn: "crypto.timingSafeEqual", params: [BYTES_U8, BYTES_U8], result: BOOL },
   },
   zlib: {
     // Buffer in, Buffer out, Node's default options; string inputs fence
@@ -791,6 +795,9 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
     // like Node's.
     getDefaultAutoSelectFamilyAttemptTimeout: { fn: "net.getAutoSelTimeout", params: [], result: F64 },
     setDefaultAutoSelectFamilyAttemptTimeout: { fn: "net.setAutoSelTimeout", params: [F64], result: VOID },
+    isIP: { fn: "net.isIP", params: [STRING], result: F64 },
+    isIPv4: { fn: "net.isIPv4", params: [STRING], result: BOOL },
+    isIPv6: { fn: "net.isIPv6", params: [STRING], result: BOOL },
   },
   http: {},
   // node:tls and node:https ride the same spoke (tls.createServer's

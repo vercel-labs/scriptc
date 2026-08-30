@@ -192,6 +192,25 @@ export function emitNpmEmbedding(emitter: CEmitter, out: string[]): void {
           conv.push(`  ${a} = scr_jsval_exit_str(argv[${i}]);`, `  if (!${a}) goto sc_convfail;`);
           cleanup.push(`  scr_str_release(${a});`);
           break;
+        case "object": {
+          // The %Error callback param (the EventEmitter-style boundary):
+          // the engine argument is a real engine Error or the
+          // %error-encoded data object a native error marshaled through
+          // as — the boundary-thunk extraction rebuilds the native error
+          // (kind resolved from the name). Anything else throws the
+          // catchable TypeError (trust-but-verify, like every boundary).
+          if (p.className !== "%Error") {
+            throw new InternalCompilerError(`emitter bug: typed island adapter param of class ${p.className}`);
+          }
+          canFail = true;
+          decls.push(`  ${cDecl(p, a)} = NULL;`);
+          conv.push(
+            `  ${a} = scr_error_from_jsval(argv[${i}]);`,
+            `  if (!${a}) goto sc_convfail;`,
+          );
+          cleanup.push(`  ${releaseCallC(p, a)};`);
+          break;
+        }
         default: {
           // Composite (record/array/union): the jsExit pipeline — engine
           // JSON.stringify, json.parse, the interned dynCheck builder.

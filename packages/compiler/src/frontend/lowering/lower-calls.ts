@@ -3125,14 +3125,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const args = expr.arguments.map((a) => {
         const lowered = lowerer.lowerExpr(a);
         if (lowered.type.kind === "jsval") {
-          // Node prints objects with util.inspect formatting, which
-          // String() cannot match — silent divergence is banned. Templates
-          // are ToString (Node-exact), casts are validated: both honest.
-          lowerer.unsupported(
-            "SC1090",
-            a,
-            `${surface} of 'any' values (wrap it: ${surface}(\`\${v}\`), or validate with 'as <type>' first)`,
-          );
+          // 2714: console.error/warn of 'any' values via inspect (formatWithOptions depth 2)
+          // - strings still print verbatim through the inspect path, matching Node's console.
+          return lowerConsoleInspectArg(lowerer, a, lowered, surface, loc);
         }
         // Checked-dynamic values carry their own shape, so the runtime
         // renders them exactly like Node's console formatter renders a
@@ -3407,13 +3402,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       if (arg.type.kind === "string") {
         return { kind: "libCall", fn: "num.fromString", args: [arg], type: F64, loc };
       }
-      lowerer.noLowering(
-        `Number of ${lowerer.fmt(arg.type)} values`,
-        argNode,
-        arg.type.kind === "union"
-          ? "numbers, booleans, and strings lower (the full ToNumber string grammar included) — narrow the union first"
-          : undefined,
-      );
+      const coerced = lowerer.coerceInto(argNode, arg, DYN);
+      return { kind: "libCall", fn: "num.fromDyn", args: [coerced], type: F64, loc };
     }
 
     // __island_eval: the internal island testing hook (eval in the embedded
@@ -4893,15 +4883,17 @@ const DYN_STRING_ONLY_METHODS = new Set([
         `Array.isArray on '${lowerer.fmt(arg.type)}' values (narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms)`,
       );
     }
-    if (arg.type.kind === "jsval" || arg.type.kind === "caught") return null;
     if (arg.kind === "varRef" || arg.kind === "recordGet" || arg.kind === "fieldGet") {
       return { kind: "boolLit", value: lowerer.isArrayValueType(arg.type), type: BOOL, loc };
     }
-    lowerer.unsupported(
-      "SC1090",
-      call,
-      "statically-decided Array.isArray on computed arguments (bind the value to a variable first)",
-    );
+    const val = lowerer.isArrayValueType(arg.type);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: arg, loc }],
+      result: { kind: "boolLit", value: val, type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
   }
 
 /** Predicate declarations currently being inlined — re-entrancy guard

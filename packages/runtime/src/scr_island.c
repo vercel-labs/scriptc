@@ -669,6 +669,15 @@ void scr_island_host_enter(void) { isl_entry(); }
  * placed exactly where Node runs its own. Executed on the main stack;
  * isl_entry re-anchors the engine's overflow check first. */
 
+/* SCRIPTC_VERBOSE=1 (any value but "0"/""): the engine error's own .stack
+ * (script line/column frames quickjs carries) dies in the exception bridges
+ * — print it once to stderr before it does, so uncaught reports are
+ * diagnosable. Default builds are byte-identical to before. */
+static bool isl_verbose(void) {
+  const char *v = getenv("SCRIPTC_VERBOSE");
+  return v != NULL && v[0] != '\0' && !(v[0] == '0' && v[1] == '\0');
+}
+
 int scr_island_drain_jobs(void) {
   if (!isl_rt) return 0;
   isl_entry();
@@ -686,6 +695,16 @@ int scr_island_drain_jobs(void) {
       fflush(stdout);
       fprintf(stderr, "Uncaught %s\n", msg ? msg : "island job exception");
       if (msg) JS_FreeCString(jctx, msg);
+      if (isl_verbose() && JS_IsError(exc)) {
+        JSValue st = JS_GetPropertyStr(jctx, exc, "stack");
+        if (!JS_IsException(st) && !JS_IsUndefined(st)) {
+          size_t slen;
+          const char *s = JS_ToCStringLen(jctx, &slen, st);
+          if (s) fprintf(stderr, "scriptc: island stack: %.*s\n", (int)slen, s);
+          if (s) JS_FreeCString(jctx, s);
+        }
+        JS_FreeValue(jctx, st);
+      }
       JS_FreeValue(jctx, exc);
       _Exit(1);
     }
@@ -764,6 +783,13 @@ static ScrStr *isl_prop_str(JSValueConst obj, const char *prop, const char *fall
  * promise bridge (isl_bridge_settle). */
 static void isl_throw_reason(JSValueConst exc) {
   if (JS_IsError(exc)) {
+    if (isl_verbose()) {
+      ScrStr *stack = isl_prop_str(exc, "stack", "");
+      fflush(stdout);
+      fprintf(stderr, "scriptc: island stack: %.*s\n", (int)stack->len,
+              stack->data);
+      scr_str_release(stack);
+    }
     scr_throw_error_named(isl_prop_str(exc, "name", "Error"),
                            isl_prop_str(exc, "message", ""));
     return;
@@ -1400,6 +1426,51 @@ ScrDyn *scr_dyn_from_jsval(ScrJsval *cell) {
     return d;
   }
   return scr_dyn_alloc_jsval(scr_jsval_retain(cell), &isl_dynjs_ops);
+}
+
+/* The boundary-thunk %Error extraction: an island host-call argument
+ * validated as the callback's declared 'Error' parameter (the
+ * EventEmitter-style boundary — dbPool.on('error', (err) => ...)). A real
+ * engine Error instance reads name/message/code in the engine; the
+ * %error-encoded DATA object (a native error that entered the island as
+ * data) rebuilds the same way. The kind resolves from the name, so a
+ * later `instanceof TypeError` still answers. Anything else throws the
+ * catchable TypeError — the boundary's trust-but-verify rule. Returns +1,
+ * or NULL with the exception pending. */
+ScrError *scr_error_from_jsval(ScrJsval *cell) {
+  isl_entry();
+  JSValue v = cell->v;
+  if (!JS_IsError(v)) {
+    JSValue marker = JS_GetPropertyStr(isl_ctx, v, "%error");
+    bool ok = !JS_IsException(marker) && !JS_IsUndefined(marker) && !JS_IsNull(marker);
+    JS_FreeValue(isl_ctx, marker);
+    if (!ok) {
+      static const char bad[] = "expected an Error value";
+      scr_throw_error_msg(SCR_ERR_TYPE, bad, sizeof bad - 1);
+      return NULL;
+    }
+  }
+  ScrStr *name = isl_prop_str(v, "name", "Error");
+  ScrStr *message = isl_prop_str(v, "message", "");
+  int k = SCR_ERR_ERROR;
+  if (name->len == 9 && memcmp(name->data, "TypeError", 9) == 0) k = SCR_ERR_TYPE;
+  else if (name->len == 10 && memcmp(name->data, "RangeError", 10) == 0) k = SCR_ERR_RANGE;
+  else if (name->len == 11 && memcmp(name->data, "SyntaxError", 11) == 0) k = SCR_ERR_SYNTAX;
+  ScrError *e = scr_error_new(k, message);
+  scr_str_release(message); /* scr_error_new retained a copy */
+  scr_str_release(e->name);
+  e->name = name; /* moves */
+  JSValue code = JS_GetPropertyStr(isl_ctx, v, "code");
+  if (!JS_IsException(code) && !JS_IsUndefined(code) && !JS_IsNull(code)) {
+    size_t cl = 0;
+    const char *cs = JS_ToCStringLen(isl_ctx, &cl, code);
+    if (cs) {
+      e->code = scr_str_new(cs, cl);
+      JS_FreeCString(isl_ctx, cs);
+    }
+  }
+  JS_FreeValue(isl_ctx, code);
+  return e;
 }
 
 /* ── operators (through the pinned prelude helpers) ───────────────────── */
@@ -2409,7 +2480,8 @@ static const struct {
      "Stats,Dirent,promises,readFile,writeFile,appendFile,exists,realpath,"
      "mkdir,rm,rmdir,unlink,readdir,stat,lstat,access,mkdtemp,chmod,copyFile,"
      "rename,readlink,readlinkSync,createReadStream,createWriteStream,watch,"
-     "watchFile,unwatchFile,openSync,closeSync,readSync,read,open"},
+     "watchFile,unwatchFile,openSync,closeSync,readSync,read,open,"
+     "ReadStream,WriteStream"},
     {"node:fs/promises",
      "readFile,writeFile,appendFile,realpath,mkdir,rm,rmdir,unlink,readdir,"
      "stat,lstat,access,mkdtemp,chmod,copyFile,rename,readlink,constants,open"},
@@ -3143,7 +3215,7 @@ static JSValue isl_host_zlib(JSContext *ctx, JSValueConst this_val, int argc,
   JS_ToInt32(ctx, &deflating, argv[0]);
   JS_ToInt32(ctx, &mode, argv[2]);
   JS_ToFloat64(ctx, &level, argv[3]);
-  if ((deflating ? isl_zlib_deflate : isl_zlib_inflate) == NULL) {
+  if (deflating ? isl_zlib_deflate == NULL : isl_zlib_inflate == NULL) {
     return JS_ThrowReferenceError(ctx, "zlib is not linked into this binary");
   }
   size_t len = 0;
@@ -3151,8 +3223,9 @@ static JSValue isl_host_zlib(JSContext *ctx, JSValueConst this_val, int argc,
   if (!data && len) return JS_EXCEPTION;
   ScrBytes *in = scr_bytes_new(SCR_BYTES_U8, (double)len);
   memcpy(in->data, data, len);
-  ScrBytes *out = deflating ? isl_zlib_deflate(in, (double)mode, level)
-                            : isl_zlib_inflate(in, (double)mode);
+  ScrBytes *out;
+  if (deflating) out = isl_zlib_deflate(in, (double)mode, level);
+  else out = isl_zlib_inflate(in, (double)mode);
   scr_bytes_release(in);
   if (!out) return isl_throw_pending(ctx);
   JSValue r = JS_NewUint8ArrayCopy(ctx, out->data, (size_t)scr_bytes_len(out));
@@ -4126,11 +4199,61 @@ static const char isl_modules_bootstrap[] =
     "      reject(err);\n"
     "    }\n"
     "  });\n"
+    /* fs.ReadStream/fs.WriteStream: Node's module-level constructor names
+     * (the `import { ReadStream } from "node:fs"` shape and the
+     * `fs.ReadStream` CJS shape). Same whole-file-backed behavior the
+     * createReadStream/createWriteStream factories always had; the
+     * factories now construct these so instanceof agrees. */
+    "  class ReadStream extends env.Readable {\n"
+    "    constructor(p, options) {\n"
+    "      const enc = typeof options === \"string\" ? options : options && options.encoding;\n"
+    "      super({\n"
+    "        read() {\n"
+    "          if (this._started) return;\n"
+    "          this._started = true;\n"
+    "          try {\n"
+    "            const buf = readFileSync(p);\n"
+    "            for (let i = 0; i < buf.length; i += 65536) this.push(buf.subarray(i, Math.min(i + 65536, buf.length)));\n"
+    "            this.push(null);\n"
+    "          } catch (err) {\n"
+    "            this.destroy(err);\n"
+    "          }\n"
+    "        },\n"
+    "      });\n"
+    "      if (enc) this.setEncoding(enc);\n"
+    "      this.path = typeof p === \"string\" ? p : pathOf(p);\n"
+    "    }\n"
+    "  }\n"
+    "  class WriteStream extends env.Writable {\n"
+    "    constructor(p, options) {\n"
+    "      const chunks = [];\n"
+    "      super({\n"
+    "        write(chunk, e, cb) {\n"
+    "          chunks.push(chunk);\n"
+    "          cb();\n"
+    "        },\n"
+    "        final(cb) {\n"
+    "          try {\n"
+    "            const flags = options && options.flags;\n"
+    "            const data = Buffer.concat(chunks.map((c) => (typeof c === \"string\" ? Buffer.from(c) : c)));\n"
+    "            if (flags === \"a\") appendFileSync(p, data);\n"
+    "            else writeFileSync(p, data);\n"
+    "            cb();\n"
+    "          } catch (err) {\n"
+    "            cb(err);\n"
+    "          }\n"
+    "        },\n"
+    "      });\n"
+    "      this.path = typeof p === \"string\" ? p : pathOf(p);\n"
+    "    }\n"
+    "  }\n"
     "  const fs = {\n"
     "    ...sync,\n"
     "    constants,\n"
     "    Stats,\n"
     "    Dirent,\n"
+    "    ReadStream,\n"
+    "    WriteStream,\n"
     "    readFile: callbackify(readFileSync),\n"
     "    writeFile: callbackify(writeFileSync),\n"
     "    appendFile: callbackify(appendFileSync),\n"
@@ -4151,47 +4274,8 @@ static const char isl_modules_bootstrap[] =
     "    copyFile: callbackify(copyFileSync),\n"
     "    rename: callbackify(renameSync),\n"
     "    readlink: callbackify(readlinkSync),\n"
-    "    createReadStream: (p, options) => {\n"
-    "      const enc = typeof options === \"string\" ? options : options && options.encoding;\n"
-    "      const r = new env.Readable({\n"
-    "        read() {\n"
-    "          if (this._started) return;\n"
-    "          this._started = true;\n"
-    "          try {\n"
-    "            const buf = readFileSync(p);\n"
-    "            for (let i = 0; i < buf.length; i += 65536) this.push(buf.subarray(i, Math.min(i + 65536, buf.length)));\n"
-    "            this.push(null);\n"
-    "          } catch (err) {\n"
-    "            this.destroy(err);\n"
-    "          }\n"
-    "        },\n"
-    "      });\n"
-    "      if (enc) r.setEncoding(enc);\n"
-    "      r.path = typeof p === \"string\" ? p : pathOf(p);\n"
-    "      return r;\n"
-    "    },\n"
-    "    createWriteStream: (p, options) => {\n"
-    "      const chunks = [];\n"
-    "      const w = new env.Writable({\n"
-    "        write(chunk, e, cb) {\n"
-    "          chunks.push(chunk);\n"
-    "          cb();\n"
-    "        },\n"
-    "        final(cb) {\n"
-    "          try {\n"
-    "            const flags = options && options.flags;\n"
-    "            const data = Buffer.concat(chunks.map((c) => (typeof c === \"string\" ? Buffer.from(c) : c)));\n"
-    "            if (flags === \"a\") appendFileSync(p, data);\n"
-    "            else writeFileSync(p, data);\n"
-    "            cb();\n"
-    "          } catch (err) {\n"
-    "            cb(err);\n"
-    "          }\n"
-    "        },\n"
-    "      });\n"
-    "      w.path = typeof p === \"string\" ? p : pathOf(p);\n"
-    "      return w;\n"
-    "    },\n"
+    "    createReadStream: (p, options) => new ReadStream(p, options),\n"
+    "    createWriteStream: (p, options) => new WriteStream(p, options),\n"
     "    watch: () => {\n"
     "      throw new Error(\"fs.watch is not available in the scriptc island\");\n"
     "    },\n"
@@ -8962,7 +9046,27 @@ static const char isl_modules_bootstrap[] =
     "        }\n"
     "        return h;\n"
     "      };\n"
-    "      class Agent { constructor(options) { this.options = options || {}; } destroy() {} }\n"
+    /* Agent is construction-compat only: island requests go through
+     * host.httpStart and never consult an agent, but npm subclasses
+     * (agentkeepalive — openai's default agent) extend Agent and wire
+     * EventEmitter listeners in their constructors, so it must BE an
+     * EventEmitter carrying Node's option/shape surface. */
+    "      class Agent extends EventEmitter {\n"
+    "        constructor(options) {\n"
+    "          super();\n"
+    "          const o = options || {};\n"
+    "          this.options = o;\n"
+    "          this.keepAlive = o.keepAlive === undefined ? true : !!o.keepAlive;\n"
+    "          this.keepAliveMsecs = Number(o.keepAliveMsecs) || 1000;\n"
+    "          this.maxSockets = o.maxSockets === undefined ? Infinity : o.maxSockets;\n"
+    "          this.maxFreeSockets = o.maxFreeSockets === undefined ? 256 : o.maxFreeSockets;\n"
+    "          this.sockets = [];\n"
+    "          this.freeSockets = [];\n"
+    "          this.requests = [];\n"
+    "          this.destroyed = false;\n"
+    "        }\n"
+    "        destroy() { this.destroyed = true; return this; }\n"
+    "      }\n"
     "      class IncomingMessage extends EventEmitter {\n"
     "        constructor(req, status, statusText, raw) {\n"
     "          super();\n"
@@ -9343,6 +9447,94 @@ static const char isl_modules_bootstrap[] =
     "    c.warn = to(2);\n"
     "    c.error = to(2);\n"
     "    c.trace = to(2, 'Trace: ');\n"
+    "  }\n"
+    /* V8 stack-inspection surface: Error.captureStackTrace(obj, ctor?)
+     * materializes obj.stack as a getter over parsed engine frames, so
+     * Error.prepareStackTrace consumers (depd — express/body-parser's
+     * deprecation logger) receive CallSite objects with the V8 method
+     * surface while default consumers keep the engine's string form.
+     * prepareStackTrace is honored at capture time AND first access
+     * (depd sets it before and restores it after captureStackTrace, so
+     * the capture-time read is the load-bearing one). Divergence: the
+     * shim's own frame is trimmed instead of honoring ctor? exactly. */
+    "  class IslCallSite {\n"
+    "    constructor(name, file, line, col) {\n"
+    "      this._n = name;\n"
+    "      this._f = file;\n"
+    "      this._l = line;\n"
+    "      this._c = col;\n"
+    "    }\n"
+    "    getFileName() { return this._f; }\n"
+    "    getLineNumber() { return this._l; }\n"
+    "    getColumnNumber() { return this._c; }\n"
+    "    getFunctionName() { return this._n; }\n"
+    "    getThis() { return undefined; }\n"
+    "    getTypeName() { return undefined; }\n"
+    "    getFunction() { return undefined; }\n"
+    "    getEvalOrigin() { return undefined; }\n"
+    "    isEval() { return false; }\n"
+    "    isNative() { return false; }\n"
+    "    isToplevel() { return true; }\n"
+    "    isConstructor() { return false; }\n"
+    "    toString() { return this._n ? 'at ' + this._n + ' (' + this._f + ':' + this._l + ':' + this._c + ')' : 'at ' + this._f + ':' + this._l + ':' + this._c; }\n"
+    "  }\n"
+    "  const islParseFrame = (line) => {\n"
+    "    const m = /^\\s*at\\s+(.*?)\\s+\\((.*):(\\d+):(\\d+)\\)$/.exec(line) || /^\\s*at\\s+(.*):(\\d+):(\\d+)$/.exec(line);\n"
+    "    if (!m) return null;\n"
+    "    if (m.length === 5) return new IslCallSite(m[1], m[2], Number(m[3]), Number(m[4]));\n"
+    "    return new IslCallSite(undefined, m[1], Number(m[2]), Number(m[3]));\n"
+    "  };\n"
+    "  Error.captureStackTrace = (obj) => {\n"
+    "    if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) {\n"
+    "      const e = new TypeError('The \"target\" argument must be of type object');\n"
+    "      e.code = 'ERR_INVALID_ARG_TYPE';\n"
+    "      throw e;\n"
+    "    }\n"
+    "    const rawErr = new Error();\n"
+    "    const raw = typeof rawErr.stack === 'string' ? rawErr.stack : '';\n"
+    "    const lines = raw.split('\\n');\n"
+    "    const frames = [];\n"
+    "    for (let i = 0; i < lines.length; i++) {\n"
+    "      const cs = islParseFrame(lines[i]);\n"
+    "      if (cs !== null) frames.push(cs);\n"
+    "    }\n"
+    "    if (frames.length > 0) frames.shift(); /* the shim's own new Error frame */\n"
+    "    if (builtins.process().env.SCRIPTC_VERBOSE === '1') {\n"
+    "      host.write(2, 'scriptc: captureTrace raw=' + JSON.stringify(raw) + '\\n');\n"
+    "      host.write(2, 'scriptc: captureTrace parsed=' + frames.length + ' prep=' + (prepAtCapture === null ? 'null' : 'fn') + '\\n');\n"
+    "      for (const f of frames) host.write(2, 'scriptc:   pf ' + JSON.stringify(String(f)) + '\\n');\n"
+    "    }\n"
+    "    const prepAtCapture = typeof Error.prepareStackTrace === 'function' ? Error.prepareStackTrace : null;\n"
+    "    let materialized;\n"
+    "    let hasMaterialized = false;\n"
+    "    Object.defineProperty(obj, 'stack', {\n"
+    "      configurable: true,\n"
+    "      enumerable: false,\n"
+    "      get() {\n"
+    "        const prep = prepAtCapture !== null ? prepAtCapture : (typeof Error.prepareStackTrace === 'function' ? Error.prepareStackTrace : null);\n"
+    "        if (prep === null) return raw;\n"
+    "        if (!hasMaterialized) { materialized = prep(obj, frames); hasMaterialized = true; }\n"
+    "        return materialized;\n"
+    "      },\n"
+    "      set(v) {\n"
+    "        Object.defineProperty(obj, 'stack', { value: v, writable: true, configurable: true, enumerable: false });\n"
+    "      },\n"
+    "    });\n"
+    "  };\n"
+    "  try {\n"
+    "    if (builtins.process().env.SCRIPTC_VERBOSE === '1') {\n"
+    "      const probeFrames = () => {\n"
+    "        const e = new Error();\n"
+    "        host.write(2, 'scriptc: probe raw=' + JSON.stringify(typeof e.stack === 'string' ? e.stack : String(e.stack)) + '\\n');\n"
+    "        const p = {};\n"
+    "        Error.captureStackTrace(p);\n"
+    "        const st = p.stack;\n"
+    "        host.write(2, 'scriptc: probe captured typeof=' + typeof st + ' arr=' + Array.isArray(st) + (Array.isArray(st) ? ' len=' + st.length + ' f0=' + JSON.stringify(st.length > 0 ? String(st[0]) : '') + ' f1=' + JSON.stringify(st.length > 1 ? String(st[1]) : '') : ' raw=' + JSON.stringify(st)) + '\\n');\n"
+    "      };\n"
+    "      probeFrames();\n"
+    "    }\n"
+    "  } catch (pe) {\n"
+    "    host.write(2, 'scriptc: probe failed ' + String(pe) + '\\n');\n"
     "  }\n"
     "  if (globalThis.global === undefined) globalThis.global = globalThis;\n"
     "  globalThis.__scr_require = requireKey;\n"

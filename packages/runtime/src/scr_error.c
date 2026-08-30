@@ -225,6 +225,10 @@ ScrStr *scr_error_code(ScrError *e) {
   return e->code ? scr_str_retain(e->code) : NULL;
 }
 
+ScrStr *scr_error_stack(ScrError *e) {
+  return scr_error_to_string(e);
+}
+
 /* scr_throw_error_msg with the code stamped on the payload — the fs and
  * exec throwers' one-call spelling. */
 void scr_throw_error_msg_code(int kind, const char *message, size_t len,

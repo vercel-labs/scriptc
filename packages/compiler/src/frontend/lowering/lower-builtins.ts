@@ -3948,30 +3948,33 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         "one string or Buffer argument is the lowered update (input encodings have no lowering)",
       );
     }
-    const encT = call.arguments.length === 1 ? lowerer.typeOf(call.arguments[0]!) : undefined;
-    if (!encT?.isStringLiteralType() || (encT.value !== "hex" && encT.value !== "base64")) {
-      lowerer.noLowering(
-        "Hash.digest with this encoding",
-        call,
-        'hex and base64 are the lowered digests: .digest("hex") (the bare Buffer digest has no lowering)',
-      );
+    const isBare = call.arguments.length === 0;
+    if (!isBare) {
+      const encT = call.arguments.length === 1 ? lowerer.typeOf(call.arguments[0]!) : undefined;
+      if (!encT?.isStringLiteralType() || (encT.value !== "hex" && encT.value !== "base64")) {
+        lowerer.noLowering(
+          "Hash.digest with this encoding",
+          call,
+          'hex and base64 are the lowered digests: .digest("hex")',
+        );
+      }
     }
-    // alg and enc are proven literals (fenced above), so lowering them
-    // out of source position observes nothing; the data lowers between
-    // them in its own source order.
     const alg = lowerer.lowerExprExpecting(chCall.arguments[0]!, STRING);
-    // The data picks the runtime entry by its static type, the
-    // fileURLToPath convention: strings hash their UTF-8 bytes (Node's
-    // default input encoding), Buffers/typed arrays hash their bytes.
     const dataNode = updateCall.arguments[0]!;
     const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
     if (dataIr?.kind === "bytes") {
       const data = lowerer.lowerExpr(dataNode);
+      if (isBare) {
+        return { kind: "libCall", fn: "crypto.hashDigestBytesBuf", args: [alg, data], type: BYTES_U8, loc };
+      }
       const enc = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
       return { kind: "libCall", fn: "crypto.hashDigestBytes", args: [alg, data, enc], type: STRING, loc };
     }
     if (dataIr?.kind === "string") {
       const data = lowerer.lowerExprExpecting(dataNode, STRING);
+      if (isBare) {
+        return { kind: "libCall", fn: "crypto.hashDigestStrBuf", args: [alg, data], type: BYTES_U8, loc };
+      }
       const enc = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
       return { kind: "libCall", fn: "crypto.hashDigestStr", args: [alg, data, enc], type: STRING, loc };
     }
@@ -5220,6 +5223,19 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     };
   }
 
+  export function lowerErrorStackProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+    if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
+    if (expr.name.text !== "stack") return null;
+    const recvT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    if (recvT?.kind !== "object") return null;
+    let info = lowerer.classes.get(recvT.className) ?? null;
+    while (info && info.base) info = info.base;
+    if (!info || info.def.name !== "%Error") return null;
+    if (!lowerer.isStdlibMember(expr)) return null;
+    const receiver = lowerer.lowerExpr(expr.expression);
+    return { kind: "libCall", fn: "error.stack", args: [receiver], type: STRING, loc: locOf(expr) };
+  }
+
 /** `JSON.parse` / `JSON.stringify` referenced without a call: rejected
    * specifically, like process methods as values. Null for non-JSON
    * receivers (the property chain keeps trying other lowerings). */
@@ -5387,6 +5403,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     }
     if (member === "platform") {
       return { kind: "libCall", fn: "process.platform", args: [], type: STRING, loc };
+    }
+    if (member === "version") {
+      return { kind: "libCall", fn: "process.version", args: [], type: STRING, loc };
     }
     // process.arch: the compiled binary's OWN architecture ("arm64",
     // "x64") — the same answer Node gives for its own build on the same
@@ -6421,6 +6440,31 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         : member === "availableMemory" ? "process.availableMemory" : "process.constrainedMemory";
       return { kind: "libCall", fn, args: [], type: F64, loc };
     }
+    if (member === "memoryUsage") {
+      if (call.arguments.length !== 0) {
+        lowerer.noLowering(`process.memoryUsage with ${call.arguments.length} arguments`, call);
+      }
+      const t = lowerer.mapTypeOf(lowerer.typeOf(call));
+      if (t?.kind !== "record") lowerer.badType(call, lowerer.typeOf(call));
+      const shape = lowerer.shapes.get(t.shapeId);
+      if (!shape) lowerer.badType(call, lowerer.typeOf(call));
+      const sampleMemField = (name: string): IrExpr => {
+        let fn: IrLibFn = "process.memoryUsageRss";
+        if (name === "heapTotal") fn = "process.memoryUsageHeapTotal";
+        else if (name === "heapUsed") fn = "process.memoryUsageHeapUsed";
+        else if (name === "rss") fn = "process.memoryUsageRss";
+        else if (name === "external" || name === "arrayBuffers") {
+          return { kind: "numLit", value: 0, type: F64, loc };
+        }
+        return { kind: "libCall", fn, args: [], type: F64, loc };
+      };
+      return {
+        kind: "recordLit",
+        fields: shape.fields.map((f) => ({ name: f.name, value: sampleMemField(f.name) })),
+        type: t,
+        loc,
+      };
+    }
     // process.cpuUsage(prev?) / process.threadCpuUsage(prev?) — the
     // {user, system} microsecond records (getrusage / the thread clock).
     // The prev form validates Node-style (prevValue.user then .system,
@@ -6692,6 +6736,16 @@ const NUMBER_CONSTANTS: Record<string, number | undefined> = {
         return { kind: "jsExit", value: raw, type: BOOL, loc };
       }
       if (arg.type.kind !== "f64") {
+        const dynFn = ({
+          isFinite: "number.isFiniteDyn",
+          isNaN: "number.isNaNDyn",
+          isInteger: "number.isIntegerDyn",
+          isSafeInteger: "number.isSafeIntegerDyn",
+        } as const)[member as "isFinite" | "isNaN" | "isInteger" | "isSafeInteger"];
+        if (dynFn !== undefined) {
+          const coerced = lowerer.coerceInto(argNode, arg, DYN);
+          return { kind: "libCall", fn: dynFn, args: [coerced], type: BOOL, loc };
+        }
         lowerer.noLowering(
           `Number.${member} of '${lowerer.fmt(arg.type)}' values`,
           argNode,
@@ -7449,7 +7503,195 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
       }
       return { kind: "intrinsic", name: "promise.all", args: [entries], type: resultT, loc };
     }
-    if (member === "allSettled" || member === "any") {
+    if (member === "allSettled") {
+      const argNode = call.arguments.length === 1 ? call.arguments[0] : null;
+      if (!argNode || call.arguments.some((a) => ts.isSpreadElement(a as any))) {
+        lowerer.noLowering(
+          "Promise.allSettled with this argument shape",
+          call,
+          "one array of promises is the supported form: Promise.allSettled(ps) with ps: Promise<T>[]",
+        );
+      }
+      if (lowerer.dynamic) {
+        const diagsBefore = lowerer.diags.length;
+        try {
+          const entries = lowerer.lowerExpr(argNode!);
+          const argJs = lowerer.jsvalIn(entries, argNode!);
+          return {
+            kind: "jsOp",
+            op: "callMethod",
+            name: "allSettled",
+            args: [
+              { kind: "jsOp", op: "globalGet", name: "Promise", args: [], type: JSVAL, loc },
+              argJs,
+            ],
+            type: JSVAL,
+            loc,
+          };
+        } catch (err) {
+          if (!(err instanceof PoisonError)) throw err;
+          lowerer.diags.splice(diagsBefore);
+        }
+        // Fallback: also try array-of-jsval path for non-lowered shapes
+        try {
+          const entries2 = lowerer.lowerExpr(argNode!);
+          if (
+            entries2.type.kind === "jsval" ||
+            (entries2.type.kind === "array" && entries2.type.elem.kind === "jsval")
+          ) {
+            const diagsBefore2 = lowerer.diags.length;
+            try {
+              const arg2 = lowerer.jsvalIn(entries2, argNode!);
+              return {
+                kind: "jsOp",
+                op: "callMethod",
+                name: "allSettled",
+                args: [
+                  { kind: "jsOp", op: "globalGet", name: "Promise", args: [], type: JSVAL, loc },
+                  arg2,
+                ],
+                type: JSVAL,
+                loc,
+              };
+            } catch (err) {
+              if (!(err instanceof PoisonError)) throw err;
+              lowerer.diags.splice(diagsBefore2);
+            }
+          }
+        } catch {}
+      }
+      // Static sequential helper fallback: await each promise in order and
+      // build the status array (honest subset {status:string} per type-mapper).
+      // This satisfies both --dynamic and static builds; the island path
+      // above would have succeeded for jsval arrays.
+      const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+      if (!resultT || resultT.kind !== "promise" || resultT.inner.kind !== "array") {
+        lowerer.noLowering(
+          `Promise.allSettled`,
+          call,
+          "await each element in a loop (Promise.all compiles over a Promise<T>[] array, Promise.race over an array literal)",
+        );
+      }
+      const settledArrT = resultT.inner as { kind: "array"; elem: IrType };
+      const settledElemT = settledArrT.elem;
+      if (settledElemT.kind !== "record") {
+        lowerer.noLowering(
+          `Promise.allSettled`,
+          call,
+          "await each element in a loop (Promise.all compiles over a Promise<T>[] array, Promise.race over an array literal)",
+        );
+      }
+      // Validate argument is an array of promises (handles `[...Set]` via lowerExpr)
+      let entries: IrExpr;
+      try {
+        entries = lowerer.lowerExpr(argNode!);
+      } catch (err) {
+        if (!(err instanceof PoisonError)) throw err;
+        lowerer.noLowering(
+          "Promise.allSettled over this argument shape",
+          argNode!,
+          "an array of promises (Promise<T>[]) is the supported form",
+        );
+      }
+      if (entries.type.kind !== "array" || entries.type.elem.kind !== "promise") {
+        lowerer.noLowering(
+          "Promise.allSettled over this argument shape",
+          argNode!,
+          "an array of promises (Promise<T>[]) is the supported form",
+        );
+      }
+      const innerT = (entries.type.elem as { kind: "promise"; inner: IrType }).inner;
+      const key = `promise.allSettled:${typeKey(innerT)}:${typeKey(settledElemT)}`;
+      let helper = lowerer.arrHofHelpers.get(key);
+      if (!helper) {
+        helper = `%promise.allSettled.${lowerer.arrHofHelpers.size}`;
+        lowerer.arrHofHelpers.set(key, helper);
+        const psT = entries.type as { kind: "array"; elem: IrType };
+        const f64: IrType = { kind: "f64" };
+        const outT = settledArrT as IrType & { kind: "array" };
+        const locPs = loc;
+        const fulfilledRec: IrExpr = {
+          kind: "recordLit",
+          fields: [{ name: "status", value: strLit("fulfilled", loc) }],
+          type: settledElemT,
+          loc,
+        };
+        const rejectedRec: IrExpr = {
+          kind: "recordLit",
+          fields: [{ name: "status", value: strLit("rejected", loc) }],
+          type: settledElemT,
+          loc,
+        };
+        const psRef = (loc2: SrcLoc): IrExpr => ({ kind: "varRef", localId: "ps.0", type: psT, loc: loc2 });
+        const outRef = (loc2: SrcLoc): IrExpr => ({ kind: "varRef", localId: "out.0", type: outT, loc: loc2 });
+        const nRef = (loc2: SrcLoc): IrExpr => ({ kind: "varRef", localId: "n.0", type: f64, loc: loc2 });
+        const iRef = (loc2: SrcLoc): IrExpr => ({ kind: "varRef", localId: "i.0", type: f64, loc: loc2 });
+        const pRef = (loc2: SrcLoc, type: IrType): IrExpr => ({ kind: "varRef", localId: "p.0", type, loc: loc2 });
+        const pType = entries.type.elem as IrType & { kind: "promise" };
+        lowerer.liftedFns.push({
+          name: helper,
+          params: [{ localId: "ps.0", name: "ps", type: psT }],
+          returnType: settledArrT,
+          locals: [
+            { id: "ps.0", name: "ps", type: psT, mutable: true },
+            { id: "out.0", name: "out", type: outT, mutable: false },
+            { id: "n.0", name: "n", type: f64, mutable: false },
+            { id: "i.0", name: "i", type: f64, mutable: true },
+            { id: "p.0", name: "p", type: pType, mutable: false },
+          ],
+          body: [
+            { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
+            {
+              kind: "varDecl",
+              localId: "n.0",
+              init: { kind: "arrIntrinsic", method: "length", receiver: psRef(loc), args: [], type: f64, loc },
+              loc,
+            },
+            {
+              kind: "for",
+              init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+              cond: { kind: "bin", op: "<", left: iRef(loc), right: nRef(loc), type: BOOL, loc },
+              update: {
+                kind: "assign",
+                localId: "i.0",
+                value: { kind: "bin", op: "+", left: iRef(loc), right: numLit(1, loc), type: f64, loc },
+                loc,
+              },
+              body: [
+                { kind: "varDecl", localId: "p.0", init: { kind: "arrayGet", arr: psRef(loc), index: iRef(loc), type: pType, loc }, loc },
+                {
+                  kind: "tryCatch",
+                  tryBody: [
+                    { kind: "exprStmt", expr: { kind: "awaitExpr", value: pRef(loc, pType), type: innerT, loc }, loc },
+                    {
+                      kind: "exprStmt",
+                      expr: { kind: "arrIntrinsic", method: "push", receiver: outRef(loc), args: [fulfilledRec], type: f64, loc },
+                      loc,
+                    },
+                  ],
+                  catchBody: [
+                    {
+                      kind: "exprStmt",
+                      expr: { kind: "arrIntrinsic", method: "push", receiver: outRef(loc), args: [rejectedRec], type: f64, loc },
+                      loc,
+                    },
+                  ],
+                  catchLocalId: null,
+                  finallyBody: null,
+                  loc,
+                },
+              ],
+              loc,
+            },
+            { kind: "return", value: outRef(loc), loc },
+          ],
+          loc,
+          async: true,
+        });
+      }
+      return { kind: "call", callee: helper, args: [entries], type: resultT, loc };
+    }
+    if (member === "any") {
       lowerer.noLowering(
         `Promise.${member}`,
         call,

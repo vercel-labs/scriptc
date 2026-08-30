@@ -1531,6 +1531,8 @@ function emitContainerExpr(
           const def = emitter.unionsById.get(elem.unionId);
           const tag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
           if (tag >= 0) fill = emitter.unitInstanceRef(elem.unionId, tag);
+        } else if (elem.kind === "dyn") {
+          fill = "scr_dyn_undefined()";
         }
         const i = `sc_i${emitter.tempCounter++}`;
         emitter.line(`for (double ${i} = 0; ${i} <= ${n.name} - 1; ${i} += 1) {`);
@@ -1669,12 +1671,18 @@ function emitContainerExpr(
             return out;
           }
           case "splice": {
-            // The removal splice: the removed elements come back as a
-            // fresh +1 array, their ownership MOVED out of the receiver
-            // (no retain/release churn). An omitted count removes to the
-            // end (+Infinity, the slice convention).
             const start = emitter.emitExpr(e.args[0]!);
             const cnt = e.args[1] ? emitter.emitExpr(e.args[1]).name : "INFINITY";
+            if (e.args.length > 2) {
+              const itemsExpr: IrExpr = {
+                kind: "arrayLit",
+                elems: e.args.slice(2),
+                type: e.receiver.type,
+                loc: e.loc,
+              };
+              const items = emitter.emitExpr(itemsExpr);
+              return emitter.newTemp(e.type, `scr_arr_splice_with_items(${r.name}, ${start.name}, ${cnt}, ${items.name})`);
+            }
             return emitter.newTemp(e.type, `scr_arr_splice(${r.name}, ${start.name}, ${cnt})`);
           }
           case "shift": {
@@ -2734,7 +2742,7 @@ function emitDynamicExpr(
             `scr_union_new_ref(${e.tag}, ${v.name}, &${rc.retain}, &${rc.release}, ${emitter.traceArgC(arm)})`,
           );
         }
-        if (arm.kind === "f64") return emitter.newTemp(e.type, `scr_union_new_f64(${e.tag}, ${v.name})`);
+        if (arm.kind === "f64" || arm.kind === "date") return emitter.newTemp(e.type, `scr_union_new_f64(${e.tag}, ${v.name})`);
         if (arm.kind === "bool") return emitter.newTemp(e.type, `scr_union_new_bool(${e.tag}, ${v.name})`);
         throw new InternalCompilerError(`emitter bug: unionWrap of ${arm.kind}`);
       }
@@ -2747,7 +2755,7 @@ function emitDynamicExpr(
         const u = emitter.emitExpr(e.value);
         const arm = e.type;
         if (isUnitType(arm)) throw new InternalCompilerError(`emitter bug: unionNarrow to unit arm ${arm.kind}`);
-        if (arm.kind === "f64") return emitter.newTemp(arm, `scr_union_get_f64(${u.name})`);
+        if (arm.kind === "f64" || arm.kind === "date") return emitter.newTemp(arm, `scr_union_get_f64(${u.name})`);
         if (arm.kind === "bool") return emitter.newTemp(arm, `scr_union_get_bool(${u.name})`);
         const payload = `(${cType(arm).trim()})scr_union_peek(${u.name})`;
         return emitter.newTemp(arm, retainCallC(arm, payload));
@@ -4493,6 +4501,10 @@ function emitPathUrlLibCall(state: LibCallState): Temp {
             return finish(`scr_os_type()`);
           case "os.totalmem":
             return finish(`scr_os_totalmem()`);
+          case "os.freemem":
+            return finish(`scr_os_freemem()`);
+          case "os.loadavg":
+            return finish(`scr_os_loadavg()`);
           case "os.release":
             return finish(`scr_os_release()`);
           case "os.userName":
@@ -4616,10 +4628,14 @@ function emitPathUrlLibCall(state: LibCallState): Temp {
             return finish(`scr_url_new(${arg(0)})`);
           case "url.protocol":
             return finish(`scr_url_protocol(${arg(0)})`);
+          case "url.origin":
+            return finish(`scr_url_origin(${arg(0)})`);
           case "url.host":
             return finish(`scr_url_host(${arg(0)})`);
           case "url.hostname":
             return finish(`scr_url_hostname(${arg(0)})`);
+          case "url.port":
+            return finish(`scr_url_port(${arg(0)})`);
           case "url.pathname":
             return finish(`scr_url_pathname(${arg(0)})`);
           case "url.href":
@@ -4788,6 +4804,8 @@ function emitPrimitiveLibCall(state: LibCallState): Temp {
             return finish(`scr_parse_float(${arg(0)})`);
           case "num.fromString":
             return finish(`scr_string_to_number(${arg(0)})`);
+          case "num.fromDyn":
+            return finish(`scr_num_from_dyn(${arg(0)})`);
           case "num.isNaN":
             return finish(`(bool)isnan(${arg(0)})`);
           // The URI codecs (scr_string.c). Borrow; results +1. decode
@@ -4875,6 +4893,14 @@ function emitPrimitiveLibCall(state: LibCallState): Temp {
             return finish(`scr_num_is_integer(${arg(0)})`);
           case "number.isSafeInteger":
             return finish(`scr_num_is_safe_integer(${arg(0)})`);
+          case "number.isFiniteDyn":
+            return finish(`scr_num_is_finite_dyn(${arg(0)})`);
+          case "number.isNaNDyn":
+            return finish(`scr_num_is_nan_dyn(${arg(0)})`);
+          case "number.isIntegerDyn":
+            return finish(`scr_num_is_integer_dyn(${arg(0)})`);
+          case "number.isSafeIntegerDyn":
+            return finish(`scr_num_is_safe_integer_dyn(${arg(0)})`);
           case "date.now":
             // Node's integer milliseconds since epoch. Never throws.
             return finish(`scr_date_now()`);
@@ -4884,6 +4910,8 @@ function emitPrimitiveLibCall(state: LibCallState): Temp {
             return finish(`scr_date_new_ms(${arg(0)})`);
           case "date.newString":
             return finish(`scr_date_parse_get_time(${arg(0)})`);
+          case "date.newDyn":
+            return finish(`scr_date_new_dyn(${arg(0)})`);
           case "date.getTime":
           case "date.valueOf":
             return finish(`${arg(0)}`);
@@ -5014,6 +5042,12 @@ function emitCryptoBytesLibCall(state: LibCallState): Temp {
             return finish(`scr_crypto_hash_digest_str(${arg(0)}, ${arg(1)}, ${arg(2)})`);
           case "crypto.hashDigestBytes":
             return finish(`scr_crypto_hash_digest_bytes(${arg(0)}, ${arg(1)}, ${arg(2)})`);
+          case "crypto.hashDigestStrBuf":
+            return finish(`scr_crypto_hash_digest_str_buf(${arg(0)}, ${arg(1)})`);
+          case "crypto.hashDigestBytesBuf":
+            return finish(`scr_crypto_hash_digest_bytes_buf(${arg(0)}, ${arg(1)})`);
+          case "crypto.timingSafeEqual":
+            return finish(`scr_crypto_timing_safe_equal(${arg(0)}, ${arg(1)})`);
           // The Buffer statics (scr_bytes.c): fromStr decodes Node-
           // leniently (never throws), concat copies its borrowed list.
           case "buffer.fromStr":
@@ -5461,6 +5495,12 @@ function emitNetworkLibCall(state: LibCallState): Temp {
             return finish(`scr_net_sock_resume(${arg(0)})`);
           case "net.sockSetNoDelay":
             return finish(`scr_net_sock_set_nodelay(${arg(0)}, ${arg(1)})`);
+          case "net.isIP":
+            return finish(`scr_net_is_ip(${arg(0)})`);
+          case "net.isIPv4":
+            return finish(`scr_net_is_ipv4(${arg(0)})`);
+          case "net.isIPv6":
+            return finish(`scr_net_is_ipv6(${arg(0)})`);
           case "net.sockDestroySoon":
             emitter.line(`scr_net_sock_destroy_soon(${arg(0)});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
@@ -6935,6 +6975,12 @@ function emitProcessLibCall(state: LibCallState): Temp {
             return finish(`scr_process_stdout_write_bytes(${arg(0)}, ${arg(1)})`);
           case "process.stderrWriteBytes":
             return finish(`scr_process_stderr_write_bytes(${arg(0)}, ${arg(1)})`);
+          case "process.memoryUsageRss":
+            return finish(`scr_process_memory_rss()`);
+          case "process.memoryUsageHeapTotal":
+            return finish(`scr_process_memory_heap_total()`);
+          case "process.memoryUsageHeapUsed":
+            return finish(`scr_process_memory_heap_used()`);
           case "process.stdoutWriteBytesCb":
           case "process.stderrWriteBytesCb": {
             // Submit the bytes only after every call argument evaluated,
@@ -7051,6 +7097,8 @@ function emitProcessLibCall(state: LibCallState): Temp {
             return finish(`scr_process_exec_path()`);
           case "process.arch":
             return finish(`scr_process_arch()`);
+          case "process.version":
+            return finish(`scr_process_version()`);
           case "process.versionsNode":
             return finish(`scr_process_versions_node()`);
           case "process.versionsOpenssl":
@@ -7378,7 +7426,7 @@ function emitErrorsEventsLibCall(state: LibCallState): Temp {
           case "emitter.getDefaultMax":
             return finish(`scr_emitter_get_default_max()`);
           case "error.code": {
-            // `string | undefined`, constructed type-directedly like
+            // `string | undefined`, constructed type-directly like
             // process.envGet: a stamped code wraps the string arm (+1
             // moves into the box); absent yields the interned
             // undefined-arm instance. The receiver may be a user subclass
@@ -7398,6 +7446,9 @@ function emitErrorsEventsLibCall(state: LibCallState): Temp {
             const present = `scr_union_new_ref(${strTag}, ${s.name}, &scr_str_retain_v, &scr_str_release_v, NULL)`;
             const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
             return emitter.newTemp(e.type, `${s.name} ? ${present} : ${absent}`);
+          }
+          case "error.stack": {
+            return emitter.newTemp(e.type, `scr_error_stack((ScrError *)${arg(0)})`);
           }
     default:
       throw new InternalCompilerError(`emitter bug: errorsEvents libCall dispatch for ${fn}`);

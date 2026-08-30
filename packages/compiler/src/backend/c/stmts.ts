@@ -11,7 +11,7 @@ import { boxAccess, cDecl, cStringLiteral, elemAccess, vAdapters } from "./types
 import { OVERFLOW_MEMBER } from "./shapes.js";
 import { emitBytesReceiver } from "./exprs.js";
 import { matchIntegerBytesForLoop } from "../../ir/integer-loops.js";
-import { endsWithJump } from "../../ir/analysis.js";
+import { endsWithJump, matchStringSelfConcat } from "../../ir/analysis.js";
 
 
 
@@ -219,6 +219,36 @@ export function emitStmt(emitter: CEmitter, s: IrStmt): void {
       }
       case "assign": {
         const local = emitter.currentLocals.get(s.localId);
+        const concat = s.value;
+        const suffix = matchStringSelfConcat(s.localId, concat);
+        if (suffix && concat.kind === "strConcat") {
+          // Snapshot the old left value before evaluating the suffix.  The
+          // snapshot is a normal frame-owned +1: the suffix may reassign the
+          // destination or throw, in which case unwinding must still release
+          // it while leaving the original binding intact.
+          const snapshot = emitter.emitExpr(concat.left);
+          const right = emitter.emitExpr(suffix);
+          const target = local ? mangleLocal(s.localId) : mangleGlobal(s.localId);
+          if (local?.boxed) {
+            // set_ref unlinks then releases the binding's CURRENT value. It
+            // may differ from snapshot when the suffix itself assigned target.
+            emitter.line(`scr_box_set_ref(${target}, NULL);`);
+          } else {
+            const old = `sc_t${emitter.tempCounter++}`;
+            emitter.line(`ScrStr *${old} = ${target};`);
+            emitter.line(`${target} = NULL;`);
+            emitter.releaseValue(old, snapshot.type);
+          }
+          const result = emitter.newTemp(s.value.type, `scr_str_concat(${snapshot.name}, ${right.name})`);
+          if (local?.boxed) {
+            emitter.moveTemp(result); // the box takes the concat result's +1
+            emitter.line(`scr_box_set_ref(${target}, ${result.name});${emitter.srcComment(s.loc)}`);
+          } else {
+            emitter.moveTemp(result); // binding takes the concat result's +1
+            emitter.line(`${target} = ${result.name};${emitter.srcComment(s.loc)}`);
+          }
+          break;
+        }
         if (!local) {
           // Module global: plain static storage, never boxed. Old-value
           // release is NULL-tolerant (statics start NULL).

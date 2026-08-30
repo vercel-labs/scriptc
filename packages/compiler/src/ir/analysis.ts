@@ -9,6 +9,31 @@ import {
   type IrUnionDef,
 } from "./ir.js";
 
+/**
+ * Recognize the one concat shape whose destination binding can temporarily
+ * hand off its ownership to the left operand:
+ *
+ *     target = target + suffix
+ *
+ * Both native emitters use this rather than attempting a wider purity or
+ * alias analysis.  In particular, fields, nested concat trees, dynamic
+ * operations, and a different destination all retain the ordinary borrowed
+ * concat lowering.
+ */
+export function matchStringSelfConcat(targetLocalId: string, value: IrExpr): IrExpr | null {
+  if (
+    value.kind !== "strConcat" ||
+    value.type.kind !== "string" ||
+    value.left.kind !== "varRef" ||
+    value.left.type.kind !== "string" ||
+    value.left.localId !== targetLocalId ||
+    value.right.type.kind !== "string"
+  ) {
+    return null;
+  }
+  return value.right;
+}
+
 /** The class-graph surface needed by backend-independent hierarchy queries. */
 export interface IrClassGraphNode {
   readonly def: { readonly name: string };

@@ -147,6 +147,77 @@ static void divergence_asserts(void) {
   scr_str_release(s);
 }
 
+/* Model the compiler's canonical `s = s + suffix` ownership handoff. The
+ * retained snapshot survives suffix evaluation; the binding then gives up
+ * whichever value it currently holds, and concat returns the new binding
+ * value. The snapshot's release balances concat's second reference when it
+ * appends in place. */
+static void handoff_append(ScrStr **binding, ScrStr *suffix) {
+  ScrStr *snapshot = scr_str_retain(*binding);
+  ScrStr *old = *binding;
+  *binding = NULL;
+  scr_str_release(old);
+  *binding = scr_str_concat(snapshot, suffix);
+  scr_str_release(snapshot);
+}
+
+static void accumulation_asserts(void) {
+  ScrStr *piece = scr_str_new("x", 1);
+  ScrStr *acc = scr_str_new("", 0);
+  size_t relocations = 0;
+  enum { APPENDS = 8192 };
+  for (size_t i = 0; i < APPENDS; i++) {
+    ScrStr *before = acc;
+    handoff_append(&acc, piece);
+    if (acc != before) relocations++;
+  }
+  if (acc->len != APPENDS || relocations > 2 + 2 * 13) {
+    failed++;
+    fprintf(stderr, "ACCUMULATION: len=%zu relocations=%zu\n", acc->len,
+            relocations);
+  }
+  scr_str_release(acc);
+  scr_str_release(piece);
+
+  /* A real alias keeps rc > 1, so concat copies and the alias sees its old
+   * bytes. Prime slack first to ensure this checks ownership rather than an
+   * unavoidable first growth. */
+  ScrStr *seed = scr_str_new("seed", 4);
+  ScrStr *x = scr_str_new("x", 1);
+  handoff_append(&seed, x);
+  ScrStr *alias = scr_str_retain(seed);
+  ScrStr *before = seed;
+  ScrStr *bang = scr_str_new("!", 1);
+  handoff_append(&seed, bang);
+  if (seed == alias || alias != before || alias->len != 5 ||
+      memcmp(alias->data, "seedx", 5) != 0 || seed->len != 6 ||
+      memcmp(seed->data, "seedx!", 6) != 0) {
+    failed++;
+    fprintf(stderr, "ACCUMULATION: alias was mutated or not copied\n");
+  }
+  scr_str_release(bang);
+  scr_str_release(alias);
+  scr_str_release(seed);
+  scr_str_release(x);
+
+  /* Populate the UTF-16 cache, then take an in-place multibyte append. The
+   * cached length must be invalidated while its byte/unit cursor remains a
+   * valid prefix cursor. */
+  ScrStr *unicode = scr_str_new("\xC3\xA9", 2); /* é */
+  handoff_append(&unicode, x = scr_str_new("x", 1));
+  (void)scr_str_utf16_len(unicode); /* cache: éx is two UTF-16 units */
+  ScrStr *astral = scr_str_new("\xF0\x9F\x98\x80", 4); /* 😀 */
+  ScrStr *unicode_before = unicode;
+  handoff_append(&unicode, astral);
+  if (unicode != unicode_before || scr_str_utf16_len(unicode) != 4) {
+    failed++;
+    fprintf(stderr, "ACCUMULATION: UTF-16 cache was not invalidated\n");
+  }
+  scr_str_release(astral);
+  scr_str_release(x);
+  scr_str_release(unicode);
+}
+
 int main(int argc, char **argv) {
   if (argc > 1 && strncmp(argv[1], "--crash-repeat", 14) == 0) {
     ScrStr *s = scr_str_new("ab", 2);
@@ -301,6 +372,7 @@ int main(int argc, char **argv) {
   if (in != stdin) fclose(in);
 
   divergence_asserts();
+  accumulation_asserts();
 
 #ifdef SCR_RC_AUDIT
   if (scr_str_live_count() != 0) {

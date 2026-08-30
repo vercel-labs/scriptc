@@ -10,7 +10,7 @@ import { OVERFLOW_MEMBER } from "./shapes.js";
 import { dynDestrCheckHelper, dynIterNHelper, dynKeyGetHelper } from "./walkers.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
 import { genResultThunkFor } from "./async.js";
-import { isStableBytesOperand, newValueMayThrow, streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
+import { isStableBytesOperand, matchStringSelfConcat, newValueMayThrow, streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
 
 function streamTypedRefCommitAdapter(
   emitter: CEmitter,
@@ -799,6 +799,37 @@ function emitOperatorExpr(
         // and the temp is the expression's value. Mirrors the `assign`
         // statement's old-value release / boxed-set behavior exactly.
         const local = emitter.currentLocals.get(e.localId);
+        const concat = e.value;
+        const suffix = matchStringSelfConcat(e.localId, concat);
+        if (suffix && concat.kind === "strConcat") {
+          // Keep the old left value alive across suffix evaluation, then
+          // detach whichever value the binding holds at that point. This is
+          // the expression-position twin of stmt assign's ownership handoff.
+          const snapshot = emitter.emitExpr(concat.left);
+          const right = emitter.emitExpr(suffix);
+          if (!local && !emitter.globalsById.has(e.localId)) {
+            throw new InternalCompilerError(`emitter bug: assignExpr to unknown binding ${e.localId}`);
+          }
+          const target = local ? mangleLocal(e.localId) : mangleGlobal(e.localId);
+          if (local?.boxed) {
+            emitter.line(`scr_box_set_ref(${target}, NULL);`);
+          } else {
+            const old = `sc_t${emitter.tempCounter++}`;
+            emitter.line(`ScrStr *${old} = ${target};`);
+            emitter.line(`${target} = NULL;`);
+            emitter.releaseValue(old, snapshot.type);
+          }
+          const result = emitter.newTemp(e.type, `scr_str_concat(${snapshot.name}, ${right.name})`);
+          // An assignment expression yields its own +1, so give the binding
+          // a retained sibling reference rather than moving result out.
+          const stored = retainCallC(result.type, result.name);
+          if (local?.boxed) {
+            emitter.line(`scr_box_set_ref(${target}, ${stored});`);
+          } else {
+            emitter.line(`${target} = ${stored};`);
+          }
+          return result;
+        }
         const v = emitter.emitExpr(e.value);
         if (local?.boxed) {
           // box_set takes ownership of the passed reference, so hand it a

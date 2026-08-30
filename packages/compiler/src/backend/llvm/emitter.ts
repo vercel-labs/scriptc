@@ -62,7 +62,7 @@ import { InternalCompilerError } from "../../errors.js";
  * lazy-inflate representation as the C debugging backend.
  */
 import { deflateRawSync } from "node:zlib";
-import { endsWithJump } from "../../ir/analysis.js";
+import { endsWithJump, matchStringSelfConcat } from "../../ir/analysis.js";
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 import type {
   IrBytesElem,
@@ -3081,6 +3081,12 @@ class LlEmitter {
         break;
       }
       case "assign": {
+        const concat = s.value;
+        const suffix = matchStringSelfConcat(s.localId, concat);
+        if (suffix && concat.kind === "strConcat") {
+          this.emitStringSelfConcatAssign(s.localId, concat.left, suffix, false);
+          break;
+        }
         const b = this.binding(s.localId);
         const v = this.emitExpr(s.value);
         if (b.kind === "boxed") {
@@ -3942,6 +3948,47 @@ class LlEmitter {
 
   private emitStringExpr(e: ExprOf<"strConcat" | "strEq" | "strCmp" | "toString" | "strIntrinsic" | "regexLit" | "templateStrings" | "regexIntrinsic">): LlValue {
     return emitStringExpr(this.expressionContext(), e);
+  }
+
+  /**
+   * Lower canonical `target = target + suffix` after evaluating the old
+   * left side and suffix in JavaScript order.  The snapshot stays owned by
+   * the statement frame while the destination relinquishes its CURRENT
+   * value, making the snapshot unique unless a real observable alias exists.
+   */
+  private emitStringSelfConcatAssign(
+    localId: string,
+    left: IrExpr,
+    suffix: IrExpr,
+    retainForYield: boolean,
+  ): LlValue {
+    const snapshot = this.emitExpr(left);
+    const right = this.emitExpr(suffix);
+    const b = this.binding(localId);
+    const B = this.B;
+    if (b.kind === "boxed") {
+      // set_ref(NULL) unlinks then releases the binding's post-suffix value.
+      this.boxSet(this.loadBox(b.slot), b.type, "null");
+    } else {
+      const old = B.tmp();
+      B.line(`${old} = load ptr, ptr ${b.slot}`);
+      B.line(`store ptr null, ptr ${b.slot}`);
+      this.releaseValue(old, b.type);
+    }
+    this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
+    const raw = B.tmp();
+    B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
+    const result = this.own({ name: raw, type: left.type });
+    if (retainForYield) {
+      const stored = this.retainValue(result.name, result.type);
+      if (b.kind === "boxed") this.boxSet(this.loadBox(b.slot), b.type, stored);
+      else B.line(`store ptr ${stored}, ptr ${b.slot}`);
+    } else {
+      this.moveTemp(result);
+      if (b.kind === "boxed") this.boxSet(this.loadBox(b.slot), b.type, result.name);
+      else B.line(`store ptr ${result.name}, ptr ${b.slot}`);
+    }
+    return result;
   }
 
   private emitContainerExpr(e: ExprOf<"arrayLit" | "arrayNewLen" | "arrayGet" | "arrIntrinsic" | "bytesNew" | "bytesIntrinsic" | "mapNew" | "mapIntrinsic" | "setIntrinsic" | "setNew">): LlValue {

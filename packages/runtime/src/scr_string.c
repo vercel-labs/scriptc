@@ -83,12 +83,12 @@ ScrStr *scr_str_new(const char *bytes, size_t len) {
   return s;
 }
 
-/* One-slot free-block cache for append loops: `s += x` compiles to
- * concat + release-of-the-old-string every iteration, so the block freed
- * on iteration n is (with the geometric slack below) big enough for the
- * allocation on iteration n+1 — the loop ping-pongs between two warm
- * blocks instead of paging in fresh zero-filled memory 40k times. Disabled
- * in the audit lane so ASan sees every logical free as a real free. */
+/* One-slot free-block cache for concat callers that must copy: observable
+ * aliases, `s = s + s`, and non-canonical concat shapes still allocate a
+ * replacement result. The compiler's canonical self-assignment handoff
+ * leaves its left snapshot uniquely owned, so it instead uses the in-place
+ * path below; this cache remains useful for the copy cases. Disabled in the
+ * audit lane so ASan sees every logical free as a real free. */
 #ifndef SCR_RC_AUDIT
 static SCR_TL ScrStr *scr_str_spare;
 #endif
@@ -166,12 +166,11 @@ ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
     a->rc = 2; /* +1 for the returned reference, beside the caller's borrow */
     return a;
   }
-  /* Copy path. Geometric slack keeps appenders amortized: a uniquely-owned
-   * left side that outgrew its capacity is a concat chain, and any sizable
-   * result is presumed an append loop's accumulator (`s += x` reaches here
-   * with rc == 2 — the variable plus the emitted temp — every iteration;
-   * the slack is what lets the free-block cache above satisfy the next
-   * iteration's slightly-larger allocation). */
+  /* Copy path. Geometric slack keeps uniquely-owned concat chains and the
+   * optimized self-assignment handoff amortized when they outgrow capacity.
+   * Aliases and `s = s + s` deliberately arrive with rc > 1 and stay on this
+   * path, preserving string immutability; their sizable replacement results
+   * can still benefit from the spare-block cache above. */
   size_t newcap = newlen;
   if (a->rc == 1) {
     size_t grown = a->cap + (a->cap >> 1) + 16;

@@ -1,6 +1,6 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
-import { undefinedArmTag } from "../../ir/analysis.js";
+import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
 import { isRefCounted } from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
@@ -171,6 +171,11 @@ export function emitOperatorExpr(host: LlvmEmitterContext, e: ExprOf<"bin" | "un
         // `x = e` in expression position: the binding takes its OWN
         // reference (retain for ref kinds), the temp stays the yielded
         // value — CEmitter's order exactly (release old, store retained).
+        const concat = e.value;
+        const suffix = matchStringSelfConcat(e.localId, concat);
+        if (suffix && concat.kind === "strConcat") {
+          return host.emitStringSelfConcatAssign(e.localId, concat.left, suffix, true);
+        }
         const b = host.binding(e.localId);
         const v = host.emitExpr(e.value);
         if (b.kind === "boxed") {

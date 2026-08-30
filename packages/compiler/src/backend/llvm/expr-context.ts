@@ -105,6 +105,7 @@ export interface LlvmEmitterContext extends ShapeHost {
   emitStrIntrinsic(e: IrExpr & { kind: "strIntrinsic" }): LlValue;
   emitStreamLibCall(e: LibCallExpr): LlValue;
   emitStringExpr(e: ExprOf<"strConcat" | "strEq" | "strCmp" | "toString" | "strIntrinsic" | "regexLit" | "templateStrings" | "regexIntrinsic">): LlValue;
+  emitStringSelfConcatAssign(localId: string, left: IrExpr, suffix: IrExpr, retainForYield: boolean): LlValue;
   emitThrowValue(v: LlValue): void;
   emitWasiSuspend(promise: string | null): void;
   emitWasiSuspendPrepared(): void;

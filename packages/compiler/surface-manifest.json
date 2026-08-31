@@ -2560,15 +2560,15 @@
       "id": "stdlib.math.E",
       "kind": "stdlib",
       "name": "Math.E",
-      "status": "dynamic-only",
-      "code": "SC2012"
+      "status": "static",
+      "note": "compiles to a static number literal (the IEEE Math constant)"
     },
     {
       "id": "stdlib.math.PI",
       "kind": "stdlib",
       "name": "Math.PI",
-      "status": "dynamic-only",
-      "code": "SC2012"
+      "status": "static",
+      "note": "compiles to a static number literal (the IEEE Math constant)"
     },
     {
       "id": "stdlib.math.abs",

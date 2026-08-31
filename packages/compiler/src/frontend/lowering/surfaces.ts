@@ -468,7 +468,8 @@ export const ISLAND_SURFACE = {
    * (rest/optional parameters aren't representable). */
   math: {
     // floor, min/max (two-arg), and random are STATIC now
-    // (STATIC_MATH_FNS below).
+    // (STATIC_MATH_FNS below), and PI/E fold statically too
+    // (STATIC_MATH_CONSTS). The dynamic-only members remain here.
     fns: {
       abs: ISL_N1, acos: ISL_N1, asin: ISL_N1, atan: ISL_N1, atan2: ISL_N2,
       cbrt: ISL_N1, ceil: ISL_N1, cos: ISL_N1, exp: ISL_N1,
@@ -532,6 +533,19 @@ export const STATIC_MATH_FNS: Record<string, { fn: IrLibFn; arity: number } | un
   min: { fn: "math.min", arity: 2 },
   max: { fn: "math.max", arity: 2 },
   random: { fn: "math.random", arity: 0 },
+};
+
+/** The READONLY IEEE Math constants that fold to static number literals —
+ * Math.PI and Math.E are FIXED doubles (not methods), so a plain read
+ * lowers to an f64 numLit. Checked BEFORE the island props table
+ * (lowerMathProperty): under --dynamic the read is still identical, so it
+ * compiles statically in either build. The exact values are Node's own
+ * ES-spec IEEE doubles, so the C and LLVM backends' literal emission (the
+ * shortest-roundtrip / bit-pattern paths used for every numLit) reproduces
+ * them exactly. */
+export const STATIC_MATH_CONSTS: Record<string, number | undefined> = {
+  PI: Math.PI,
+  E: Math.E,
 };
 
 /** Number prototype methods with dedicated STATIC lowering paths. The

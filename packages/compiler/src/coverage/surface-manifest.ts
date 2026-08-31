@@ -52,6 +52,7 @@ import {
   MAP_METHODS,
   SET_COMBINE_METHODS,
   SET_METHODS,
+  STATIC_MATH_CONSTS,
   STATIC_MATH_FNS,
   STATIC_NUMBER_METHODS,
   STR_METHODS,
@@ -223,7 +224,14 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
     }
   }
   for (const name of Object.keys(ISLAND_SURFACE.math.props)) {
-    add({ id: `stdlib.math.${name}`, kind: "stdlib", name: `Math.${name}`, status: "dynamic-only", code: "SC2012" });
+    // PI/E are the STATIC IEEE constants now (STATIC_MATH_CONSTS) — they
+    // fold to f64 literals, so they're static even though they drove the
+    // props table the island surface reads.
+    if (STATIC_MATH_CONSTS[name] !== undefined) {
+      add({ id: `stdlib.math.${name}`, kind: "stdlib", name: `Math.${name}`, status: "static", note: "compiles to a static number literal (the IEEE Math constant)" });
+    } else {
+      add({ id: `stdlib.math.${name}`, kind: "stdlib", name: `Math.${name}`, status: "dynamic-only", code: "SC2012" });
+    }
   }
   const numberNames = new Set([
     ...Object.keys(STATIC_NUMBER_METHODS),

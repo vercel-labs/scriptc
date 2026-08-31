@@ -6,7 +6,7 @@ import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { BOOL, BYTES_U8, DYN, F64, IrExpr, IrStmt, IrType, JSVAL, MAX_ISLAND_CALLBACK_ARITY, STRING, VOID, canConvertToDyn, canMarshalTypedFuncIntoIsland, islandPromisePayloadTag, isUnitType } from "../../ir/ir.js";
-import { ISLAND_SURFACE, IslandFnEntry, STATIC_MATH_FNS, boundaryIntoIslandMsg } from "./surfaces.js";
+import { ISLAND_SURFACE, IslandFnEntry, STATIC_MATH_CONSTS, STATIC_MATH_FNS, boundaryIntoIslandMsg } from "./surfaces.js";
 import { requiresDynamicApiDiag, requiresDynamicPackageDiag } from "../../diagnostics/diagnostic.js";
 import { isCjsJsFile, isJsSourceFile, locOf, npmPackageNameOf } from "../program.js";
 import { foldedStringKeyOf, lowerDynObjectLiteral, pureReemittable } from "./lower-exprs.js";
@@ -3218,14 +3218,24 @@ export function lowerStaticReadableStreamReaderCall(
     return finish(lowerer.jsvalIn(lowerer.lowerExpr(access.expression), access.expression), entry);
   }
 
-/** `Math.PI` / `Math.E` property READS: getProp off globalGet("Math"),
-   * exiting to the declared number type. Math methods referenced without a
+/** `Math.PI` / `Math.E` property READS (and the island-backed remaining
+   * readonly props): the two IEEE constants fold to static f64 literals
+   * (STATIC_MATH_CONSTS, no --dynamic); the island props exit to the
+   * declared number type via the engine. Math methods referenced without a
    * call are rejected specifically (no value form exists, --dynamic or
    * not). Null for non-Math receivers (the property chain keeps trying). */
   export function lowerMathProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
     const member = lowerer.stdlibGlobalMember(expr, "Math");
     if (member === null) return null;
     const loc = locOf(expr);
+    // The readonly IEEE constants (Math.PI, Math.E) fold to static f64
+    // literals — no island, no --dynamic (the ES-spec doubles are exactly
+    // representable; emitted through the same numLit path as every other
+    // literal, so --dynamic or not the value is identical).
+    const constValue = own(STATIC_MATH_CONSTS, member);
+    if (constValue !== undefined) {
+      return { kind: "numLit", value: constValue, type: F64, loc };
+    }
     const propType = own(ISLAND_SURFACE.math.props, member);
     if (propType !== undefined) {
       lowerer.requireDynamicApi(`'Math.${member}'`, expr);

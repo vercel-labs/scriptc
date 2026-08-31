@@ -5344,10 +5344,18 @@ void scr_net_sock_release_v(void *p);
 
 ScrNetServer *scr_net_create_server(ScrClosure *handler /*moves, nullable*/, ScrNetConnFn fn); /* +1 */
 void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullable*/);
-/* listen({ port, host, ipv6Only }): host is an IP literal ("" = the
- * dual-stack any default); ipv6Only sets IPV6_V6ONLY before the bind. */
+/* listen({ port, host, ipv6Only, reusePort }): host is an IP literal ("" =
+ * the dual-stack any default); ipv6Only sets IPV6_V6ONLY before the bind.
+ * The old entry point ignores reusePort and is retained for old IR. */
 void scr_net_listen_opts(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
                           bool ipv6_only, ScrClosure *cb /*moves, nullable*/);
+/* Additive ABI for listen({ port, host, ipv6Only, reusePort }): reuse_port
+ * requests the platform matrix documented in scr_net.c. Unsupported
+ * platforms and kernels fail asynchronously; they never fall back to an
+ * ordinary single listener. */
+void scr_net_listen_opts_reuse_port(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
+                                    bool ipv6_only, bool reuse_port,
+                                    ScrClosure *cb /*moves, nullable*/);
 double scr_net_server_port(ScrNetServer *s); /* address().port */
 /* Writable http.Server timeout property storage. `field` is the compiler
  * ABI selector: timeout, keepAliveTimeout, headersTimeout, requestTimeout,

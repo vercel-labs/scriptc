@@ -2398,10 +2398,18 @@ export type IrLibFn =
    * (portless's listenOnProxyInterface): args [server, port, host,
    * ipv6Only]. host is an IP literal string ("" = the host-less
    * dual-stack any default); ipv6Only sets IPV6_V6ONLY before the bind.
-   * Failures are the async 'error', message in Node's listen shape with
-   * the requested host. Never throws. */
+   * These are the old-shaped calls, retained for omitted reusePort so
+   * serialized IR remains compatible. Failures are the async 'error',
+   * message in Node's listen shape with the requested host. Never throws. */
   | "net.listenOpts"
   | "net.listenOptsCb"
+  /** Additive ABI for listen({ ..., reusePort }) — args
+   * [server, port, host, ipv6Only, reusePort], with the callback following
+   * those values in the callback form. The final BOOL is the requested
+   * kernel connection-distribution option; old spellings remain
+   * four/five-argument calls so serialized IR stays compatible. */
+  | "net.listenOptsReusePort"
+  | "net.listenOptsReusePortCb"
   | "net.serverPort"
   /** server.address() as the full AddressInfo record (the dgram.address
    * materialization pattern: the emitter builds the record from the three

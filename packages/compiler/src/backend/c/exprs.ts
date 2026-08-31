@@ -5369,6 +5369,10 @@ function emitNetworkLibCall(state: LibCallState): Temp {
             emitter.usesTimers = true;
             emitter.line(`scr_net_listen_opts(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, NULL);${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
+          case "net.listenOptsReusePort":
+            emitter.usesTimers = true;
+            emitter.line(`scr_net_listen_opts_reuse_port(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, NULL);${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
           case "net.listenOptsCb": {
             emitter.usesTimers = true;
             // The callback slot may be the `(() => void) | undefined`
@@ -5394,6 +5398,32 @@ function emitNetworkLibCall(state: LibCallState): Temp {
               cbExpr = t.name;
             }
             emitter.line(`scr_net_listen_opts(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${cbExpr});${emitter.srcComment(e.loc)}`);
+            return { name: "", type: e.type };
+          }
+          case "net.listenOptsReusePortCb": {
+            emitter.usesTimers = true;
+            // The callback slot follows reusePort in the additive ABI and
+            // may be the `(() => void) | undefined` optional-binding union.
+            const cbT = e.args[5]!.type;
+            let cbExpr: string;
+            if (cbT.kind === "func") {
+              const cb = args[5]!;
+              emitter.moveTemp(cb);
+              cbExpr = cb.name;
+            } else {
+              if (cbT.kind !== "union") throw new InternalCompilerError("emitter bug: net.listenOptsReusePortCb callback shape");
+              const def = emitter.unionsById.get(cbT.unionId);
+              const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
+              if (funcTag < 0) throw new InternalCompilerError("emitter bug: net.listenOptsReusePortCb union lacks its func arm");
+              const u = args[5]!;
+              const t = emitter.newTemp(
+                def!.arms[funcTag]!,
+                `${u.name}->tag == ${funcTag} ? scr_closure_retain((ScrClosure *)scr_union_peek(${u.name})) : NULL`,
+              );
+              emitter.moveTemp(t);
+              cbExpr = t.name;
+            }
+            emitter.line(`scr_net_listen_opts_reuse_port(${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)}, ${cbExpr});${emitter.srcComment(e.loc)}`);
             return { name: "", type: e.type };
           }
           case "net.serverPort":

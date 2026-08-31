@@ -697,6 +697,7 @@ export const USES_TIMERS_LIB_FNS = new Set<string>([
   "sp.finished", "sp.pipeline",
   "sc.text", "sc.json", "sc.buffer",
   "net.listen", "net.listenCb", "net.listenOpts", "net.listenOptsCb",
+  "net.listenOptsReusePort", "net.listenOptsReusePortCb",
   "net.connect", "net.connectCb", "net.connectLookup", "net.connectAttempt",
   "fs.existsChk",
   "http.createServer", "http.createServerEmpty",

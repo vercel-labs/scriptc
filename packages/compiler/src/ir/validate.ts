@@ -356,6 +356,10 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   // The callback slot is a zero-param void closure OR its
   // `(() => void) | undefined` optional-binding union (checked specially).
   "net.listenOptsCb": { argTypes: [NETSERVER_T, F64, STRING, BOOL, null], result: VOID },
+  "net.listenOptsReusePort": { argTypes: [NETSERVER_T, F64, STRING, BOOL, BOOL], result: VOID },
+  // The callback is a zero-param void closure OR its optional-binding union;
+  // the callback follows the reusePort BOOL in this additive ABI.
+  "net.listenOptsReusePortCb": { argTypes: [NETSERVER_T, F64, STRING, BOOL, BOOL, null], result: VOID },
   "net.serverPort": { argTypes: [NETSERVER_T], result: F64 },
   // net.serverAddress's record result is shape-checked in the libCall case
   // (the dgram.address sentinel pattern).
@@ -3977,8 +3981,9 @@ function validateFunction(
           }
           break;
         }
-        if (e.fn === "net.listenOptsCb") {
-          const t = e.args[4]?.type;
+        if (e.fn === "net.listenOptsCb" || e.fn === "net.listenOptsReusePortCb") {
+          const cbIndex = e.fn === "net.listenOptsReusePortCb" ? 5 : 4;
+          const t = e.args[cbIndex]?.type;
           const funcOk = (x: IrType | undefined): boolean =>
             x?.kind === "func" && x.params.length === 0 && x.ret.kind === "void";
           let ok = funcOk(t);
@@ -3988,7 +3993,7 @@ function validateFunction(
               def.arms.some((a) => a.kind === "undefinedT");
           }
           if (!ok) {
-            err(`libCall net.listenOptsCb callback shape (frontend must fence)`, e.loc);
+            err(`libCall ${e.fn} callback shape (frontend must fence)`, e.loc);
           }
           break;
         }

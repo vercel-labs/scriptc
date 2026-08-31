@@ -61,6 +61,101 @@ function requireStatementPosition(lowerer: Lowerer, call: ts.CallExpression, wha
   );
 }
 
+/** Node enables net.Server's reusePort socket option only for the exact
+ * boolean value true. This is intentionally different from the ordinary
+ * condition lowering used by ipv6Only: JavaScript values such as 1 and
+ * "true" are truthy, but Node leaves reusePort disabled for them.
+ *
+ * Typed boolean-or-undefined option bindings are represented by the normal
+ * tagged union. Initializers narrow that union to its boolean arm; shorthand
+ * properties are required to have the concrete BOOL shape below, matching
+ * ipv6Only's static option-record fence. Other static values still evaluate
+ * once, then produce false; checked-dynamic and island values use strict
+ * equality against the boolean true. */
+function lowerExactReusePort(lowerer: Lowerer, value: IrExpr, node: ts.Node): IrExpr {
+  const loc = locOf(node);
+  const falseValue = (): IrExpr => boolLit(false, loc);
+
+  if (value.type.kind === "bool") return value;
+  if (value.type.kind === "dyn") {
+    return {
+      kind: "dynScalarEq",
+      left: value,
+      right: boolLit(true, loc),
+      type: BOOL,
+      loc,
+    };
+  }
+  if (value.type.kind === "jsval") {
+    return {
+      kind: "jsOp",
+      op: "eq",
+      args: [value, lowerer.jsvalIn(boolLit(true, loc), node)],
+      type: BOOL,
+      loc,
+    };
+  }
+  if (value.type.kind === "union") {
+    const def = lowerer.unions.get(value.type.unionId);
+    const boolTag = def?.arms.findIndex((arm) => arm.kind === "bool") ?? -1;
+    if (boolTag >= 0) {
+      const local = lowerer.declareHiddenLocal("%listenReusePort", value.type);
+      const ref = (): IrExpr => ({ kind: "varRef", localId: local.id, type: value.type, loc });
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+        result: {
+          kind: "ternary",
+          cond: {
+            kind: "unionIsTag",
+            unionId: value.type.unionId,
+            tag: boolTag,
+            negated: false,
+            value: ref(),
+            type: BOOL,
+            loc,
+          },
+          then: {
+            kind: "unionNarrow",
+            unionId: value.type.unionId,
+            tag: boolTag,
+            value: ref(),
+            type: BOOL,
+            loc,
+          },
+          else_: falseValue(),
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+  }
+
+  // Static non-boolean values cannot equal true, but their initializer may
+  // have observable effects (for example, a getter-backed expression).
+  // Keep that evaluation in the IR while disabling the kernel option.
+  if (value.type.kind === "void") {
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc }],
+      result: falseValue(),
+      type: BOOL,
+      loc,
+    };
+  }
+  if (value.kind === "unitLit") return falseValue();
+  const local = lowerer.declareHiddenLocal("%listenReusePort", value.type);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+    result: falseValue(),
+    type: BOOL,
+    loc,
+  };
+}
+
 /** The %Error param shape the error-listener slots carry. */
 const ERROR_T: IrType = { kind: "object", className: "%Error" };
 
@@ -954,16 +1049,20 @@ function lowerNetServerMethodCall(lowerer: Lowerer, call: ts.CallExpression,
       return receiverReturningCall(lowerer, fn, callArgs, NETSERVER_T, loc);
     };
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
-    // The options-object form — listen({ port, host?, ipv6Only? }[, cb]),
+    // The options-object form — listen({ port, host?, ipv6Only?, reusePort? }[, cb]),
     // the portless listenOnProxyInterface shape: host binds that ONE
     // address (an IP literal — the runtime has no resolver here; absent
     // = Node's host-less dual-stack any), ipv6Only sets IPV6_V6ONLY
     // (truthiness, like Node's option handling — `boolean | undefined`
-    // flows). Every other key fences by name.
+    // flows). reusePort is different: Node enables it only for exact true,
+    // while its presence selects the additive ABI even when the value is
+    // false.
+    // Every other key fences by name.
     if (ts.isObjectLiteralExpression(args[0]!)) {
       let port: IrExpr | null = null;
       let host: IrExpr | null = null;
       let v6only: IrExpr | null = null;
+      let reusePort: IrExpr | null = null;
       for (const prop of (args[0] as ts.ObjectLiteralExpression).properties) {
         let initializer: ts.Expression | null;
         if (ts.isPropertyAssignment(prop) &&
@@ -1007,6 +1106,20 @@ function lowerNetServerMethodCall(lowerer: Lowerer, call: ts.CallExpression,
             }
             v6only = v;
           }
+        } else if (key === "reusePort") {
+          if (initializer !== null) {
+            reusePort = lowerExactReusePort(lowerer, lowerer.lowerExpr(initializer), prop);
+          } else {
+            const v = lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+            if (v.type.kind !== "bool") {
+              lowerer.noLowering(
+                `a listen 'reusePort' option of '${lowerer.fmt(v.type)}' values`,
+                prop,
+                "spell the option out (reusePort: value) so optional values can narrow",
+              );
+            }
+            reusePort = v;
+          }
         } else if (key === "signal" && ts.isPropertyAssignment(prop) &&
                    isJsSourceFile(call.getSourceFile())) {
           // A provably-non-AbortSignal signal (the invalid-input probes:
@@ -1032,13 +1145,13 @@ function lowerNetServerMethodCall(lowerer: Lowerer, call: ts.CallExpression,
           lowerer.noLowering(
             `listen option 'signal'`,
             prop,
-            "abort-driven close has no lowering yet — port, host, and ipv6Only are the supported listen options",
+            "abort-driven close has no lowering yet — port, host, ipv6Only, and reusePort are the supported listen options",
           );
         } else {
           lowerer.noLowering(
             `listen option '${key}'`,
             prop,
-            "port, host, and ipv6Only are the supported listen options",
+            "port, host, ipv6Only, and reusePort are the supported listen options",
           );
         }
       }
@@ -1046,13 +1159,17 @@ function lowerNetServerMethodCall(lowerer: Lowerer, call: ts.CallExpression,
         lowerer.noLowering(
           "listen options without a port",
           args[0]!,
-          "the supported options object is { port, host?, ipv6Only? } — port 0 binds an ephemeral port",
+          "the supported options object is { port, host?, ipv6Only?, reusePort? } — port 0 binds an ephemeral port",
         );
       }
       host ??= { kind: "strLit", value: "", type: STRING, loc }; /* "" = the dual-stack any default */
       v6only ??= boolLit(false, loc);
+      const listenOptsFn: IrLibFn = reusePort === null ? "net.listenOpts" : "net.listenOptsReusePort";
+      const listenOptsCbFn: IrLibFn = reusePort === null ? "net.listenOptsCb" : "net.listenOptsReusePortCb";
       if (args.length === 1) {
-        return listenResult("net.listenOpts", [receiver, port, host, v6only]);
+        return listenResult(listenOptsFn, reusePort === null
+          ? [receiver, port, host, v6only]
+          : [receiver, port, host, v6only, reusePort]);
       }
       // The callback may be an OPTIONAL binding — `(() => void) |
       // undefined`, portless's listenOnProxyInterface pass-through: the
@@ -1085,7 +1202,9 @@ function lowerNetServerMethodCall(lowerer: Lowerer, call: ts.CallExpression,
           `listen callbacks of type '${lowerer.fmt(cbV.type)}' (use () — an optional \`(() => void) | undefined\` binding also flows)`,
         );
       }
-      return listenResult("net.listenOptsCb", [receiver, port, host, v6only, cbV]);
+      return listenResult(listenOptsCbFn, reusePort === null
+        ? [receiver, port, host, v6only, cbV]
+        : [receiver, port, host, v6only, reusePort, cbV]);
     }
     const port = lowerer.lowerExprExpecting(args[0]!, F64);
     // The optional middle host — listen(port, '127.0.0.1'[, cb]): a

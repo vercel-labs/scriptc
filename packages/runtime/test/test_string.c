@@ -341,6 +341,38 @@ static void sparse_index_asserts(void) {
   scr_str_release(s);
   scr_sidx_test_reset_cache();
 }
+
+/* Do not wait for the first non-ASCII byte before proving this access shape.
+ * A string can have megabytes of ordinary ASCII followed by one emoji: no
+ * `.length` prime is involved here, and alternating distant reads in that
+ * prefix must retain identity checkpoints instead of repeatedly walking the
+ * distance between the two hot-cursor positions. */
+static void sparse_ascii_prefix_asserts(void) {
+  enum { PREFIX = 4 * 1024 * 1024, QUERIES = 8 };
+  const size_t first = (size_t)1024 * 1024 + 137;
+  const size_t second = (size_t)3 * 1024 * 1024 + 271;
+  char *raw = malloc((size_t)PREFIX + 4);
+  if (!raw) { sidx_fail("ASCII-prefix test allocation"); return; }
+  memset(raw, 'a', PREFIX);
+  memcpy(raw + PREFIX, "\xF0\x9F\x98\x80", 4); /* terminal emoji */
+  ScrStr *s = scr_str_new(raw, (size_t)PREFIX + 4);
+  free(raw);
+
+  scr_sidx_test_reset_cache();
+  scr_sidx_test_reset_steps();
+  for (size_t q = 0; q < QUERIES; q++) {
+    size_t at = q & 1 ? second : first;
+    if (scr_str_char_code_at(s, (double)at) != 97.0)
+      sidx_fail("ASCII-prefix charCodeAt result");
+  }
+  if (scr_sidx_test_points() == 0)
+    sidx_fail("ASCII-prefix identity checkpoints were not retained");
+  if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 4200)
+    sidx_fail("ASCII-prefix lookup exceeded sparse stride bound");
+
+  scr_str_release(s);
+  scr_sidx_test_reset_cache();
+}
 #endif
 
 int main(int argc, char **argv) {
@@ -507,6 +539,7 @@ int main(int argc, char **argv) {
   accumulation_asserts();
 #ifdef SCR_SIDX_TEST
   sparse_index_asserts();
+  sparse_ascii_prefix_asserts();
 #endif
 
 #ifdef SCR_RC_AUDIT

@@ -555,6 +555,21 @@ static void scr_sidx_extend_to_u16(const ScrStr *s, ScrSidx *e, size_t u16) {
   scr_sidx_finish(s, e);
 }
 
+/* A large, not-yet-complete string can have a long proven-ASCII prefix
+ * before its first non-ASCII byte. That prefix is an exact identity map, but
+ * merely advancing indexed_{cu,cb} through it leaves alternating on-demand
+ * lookups with only the hot cursor and therefore linear backtracks. Once an
+ * indexed conversion reaches such a prefix, retain its arithmetic stride
+ * anchors too. A later full scan still drops them if the whole string proves
+ * ASCII, so the all-ASCII steady state remains the allocation-free identity
+ * fast path. */
+static void scr_sidx_materialize_identity_prefix(const ScrStr *s, ScrSidx *e) {
+  if (e->npoints == 0 && e->indexed_cb != 0 &&
+      e->indexed_cb == e->indexed_cu) {
+    (void)scr_sidx_prepare_points(s, e);
+  }
+}
+
 /* Cached UTF-16 length. Large strings extend from their exact previously
  * indexed prefix, retaining sparse start/end anchors; short strings keep the
  * historical single word-wise scan. `u16len == byte len` proves ASCII and
@@ -660,6 +675,7 @@ static size_t scr_u16_to_byte_c(const ScrStr *s, ScrSidx *e, size_t u16,
     return u16 < s->len ? u16 : s->len;
   }
   scr_sidx_extend_to_u16(s, e, u16);
+  scr_sidx_materialize_identity_prefix(s, e);
   ScrSidxPoint near = scr_sidx_near_u16(s, e, u16);
   size_t cu = near.cu, cb = near.cb;
   while (cu > u16) scr_sidx_back(s, &cu, &cb);
@@ -692,6 +708,7 @@ static size_t scr_byte_to_u16_c(const ScrStr *s, ScrSidx *e,
     while (e->indexed_cb < byte_off) scr_sidx_extend_one(s, e);
     scr_sidx_finish(s, e);
   }
+  scr_sidx_materialize_identity_prefix(s, e);
   ScrSidxPoint near = scr_sidx_near_byte(s, e, byte_off);
   size_t cu = near.cu, cb = near.cb;
   while (cb > byte_off) scr_sidx_back(s, &cu, &cb);

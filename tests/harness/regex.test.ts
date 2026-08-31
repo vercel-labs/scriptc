@@ -165,16 +165,16 @@ console.log(/${"(a)".repeat(300)}/.test("a"));
     // and mutable constructed Headers added another page to both Darwin
     // classes; the Linux bounds were rebased by the same 16KB while
     // preserving their existing cushion.
-    // The canonical Ubuntu 24.04/clang Sandbox measures 387,600 bytes for
-    // the plain binary and 540,232 with regex linked. The Linux bounds leave
-    // roughly one ELF page of growth. Current Mach-O toolchains measure
-    // 398,024 bytes for the plain binary, whose bound likewise leaves about
-    // one native page; neither cushion can hide an engine-sized jump.
+    // The sparse UTF-16 string index adds its cache/allocator path to the
+    // always-linked string unit: the Ubuntu 24.04/clang Sandbox measures
+    // 423,488 bytes for the plain binary and 580,264 with regex linked.
+    // The bounds retain roughly one native page of growth; neither cushion
+    // can hide an engine-sized jump.
     expect(statSync(plainBuild.binaryPath).size).toBeLessThan(
-      process.platform === "linux" ? 408_000 : 415_000,
+      process.platform === "linux" ? 440_000 : 450_000,
     );
     expect(statSync(regexBuild.binaryPath).size).toBeLessThan(
-      process.platform === "linux" ? 561_000 : 545_000,
+      process.platform === "linux" ? 601_000 : 590_000,
     );
   });
 });

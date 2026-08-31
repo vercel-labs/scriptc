@@ -27,6 +27,16 @@
 long scr_str_live_count(void); /* provided by scr_string.c */
 #endif
 
+#ifdef SCR_SIDX_TEST
+/* Test-only sparse-index observability, deliberately absent from the normal
+ * runtime ABI. The walker count is code-point steps after a cache prime. */
+void scr_sidx_test_reset_steps(void);
+size_t scr_sidx_test_walk_steps(void);
+void scr_sidx_test_reset_cache(void);
+size_t scr_sidx_test_entries(void);
+size_t scr_sidx_test_points(void);
+#endif
+
 #define MAX_FIELD 8192
 
 static int hex_val(char c) {
@@ -216,7 +226,277 @@ static void accumulation_asserts(void) {
   scr_str_release(astral);
   scr_str_release(x);
   scr_str_release(unicode);
+
+  /* A sparse-indexed non-ASCII prefix must survive in-place appends: old
+   * prefix checkpoints remain safe while length/end facts extend lazily. */
+  static const char mixed[] = "\xC3\xA9\xF0\x9F\x98\x80"; /* é😀: 3 units */
+  ScrStr *large = scr_str_new(mixed, sizeof(mixed) - 1);
+  ScrStr *many = scr_str_repeat(large, 12000); /* 72 KiB: sparse-indexed */
+  ScrStr *tail_x = scr_str_new("x", 1);
+  handoff_append(&many, tail_x); /* first growth creates spare capacity */
+  size_t old_units = (size_t)scr_str_utf16_len(many);
+  ScrStr *han = scr_str_new("\xE4\xB8\xAD", 3); /* 中 */
+  ScrStr *face = scr_str_new("\xF0\x9F\x98\x80", 4); /* 😀 */
+  ScrStr *many_before = many;
+#ifdef SCR_SIDX_TEST
+  scr_sidx_test_reset_steps();
+#endif
+  handoff_append(&many, han);
+  handoff_append(&many, face);
+  if (many != many_before || scr_str_utf16_len(many) != old_units + 3 ||
+      scr_str_char_code_at(many, (double)(old_units - 1)) != 120.0 ||
+      scr_str_char_code_at(many, (double)old_units) != 0x4E2D ||
+      scr_str_char_code_at(many, (double)(old_units + 1)) != 0xD83D ||
+      scr_str_char_code_at(many, (double)(old_units + 2)) != 0xDE00) {
+    failed++;
+    fprintf(stderr, "ACCUMULATION: sparse UTF-16 index did not extend\n");
+  }
+#ifdef SCR_SIDX_TEST
+  /* The former end is now an internal anchor, so these boundary lookups do
+   * not walk back through the final pre-append checkpoint interval. */
+  if (scr_sidx_test_walk_steps() > 8) {
+    failed++;
+    fprintf(stderr, "ACCUMULATION: append discarded its boundary checkpoint\n");
+  }
+#endif
+  scr_str_release(face);
+  scr_str_release(han);
+  scr_str_release(tail_x);
+  scr_str_release(many);
+  scr_str_release(large);
 }
+
+#ifdef SCR_SIDX_TEST
+static void sidx_fail(const char *what) {
+  failed++;
+  fprintf(stderr, "SIDX: %s\n", what);
+}
+
+/* The counter is deliberately about code-point decoder steps, not elapsed
+ * time. After length primes sparse anchors, alternating distant UTF-16
+ * operations must stay proportional to query count × the 4 KiB stride. */
+static void sparse_index_asserts(void) {
+  enum { REPS = 24000, QUERIES = 48 };
+  static const char piece[] = "a\xC3\xA9\xF0\x9F\x98\x80" "e\xCC\x81";
+  static const double codes[] = {97, 233, 0xD83D, 0xDE00, 101, 769};
+  size_t bytes = (sizeof(piece) - 1) * (size_t)REPS;
+  char *raw = malloc(bytes);
+  if (!raw) { sidx_fail("test allocation"); return; }
+  for (size_t i = 0; i < REPS; i++)
+    memcpy(raw + i * (sizeof(piece) - 1), piece, sizeof(piece) - 1);
+  ScrStr *s = scr_str_new(raw, bytes);
+  free(raw);
+  ScrStr *face = scr_str_new("\xF0\x9F\x98\x80", 4);
+  ScrStr *e_face = scr_str_new("\xC3\xA9\xF0\x9F\x98\x80", 6);
+  size_t units = (size_t)scr_str_utf16_len(s);
+  if (units != (size_t)REPS * 6) sidx_fail("large mixed length");
+  scr_sidx_test_reset_steps();
+
+  for (size_t q = 0; q < QUERIES; q++) {
+    size_t rep = (q * 7919) % REPS;
+    size_t base = rep * 6;
+    size_t unit = base + (q % 6);
+    if (scr_str_char_code_at(s, (double)unit) != codes[q % 6])
+      sidx_fail("charCodeAt result");
+
+    ScrStr *ch = scr_str_char_at(s, (double)(base + 2));
+    if (ch->len != 3 || memcmp(ch->data, "\xEF\xBF\xBD", 3) != 0)
+      sidx_fail("charAt surrogate result");
+    scr_str_release(ch);
+
+    ScrStr *slice = scr_str_slice(s, (double)(base + 1), (double)(base + 4));
+    if (slice->len != 6 || memcmp(slice->data, e_face->data, 6) != 0)
+      sidx_fail("slice result");
+    scr_str_release(slice);
+
+    ScrStr *sub = scr_str_substring(s, (double)(base + 2), (double)(base + 4));
+    if (sub->len != 4 || memcmp(sub->data, face->data, 4) != 0)
+      sidx_fail("substring result");
+    scr_str_release(sub);
+
+    if (scr_str_index_of(s, e_face, (double)base) != (double)(base + 1))
+      sidx_fail("positioned indexOf result");
+    if (scr_str_last_index_of(s, face) != (double)((REPS - 1) * 6 + 2))
+      sidx_fail("lastIndexOf result");
+  }
+  /* Each query maps at most a handful of locations. A mapping walks no
+   * farther than the 4 KiB interval plus a small UTF-8-boundary margin. */
+  if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 8 * 4200)
+    sidx_fail("non-local lookup exceeded sparse stride bound");
+
+  /* Sparse state has fixed four-entry residency by design. A fifth large
+   * receiver evicts one entry (rather than joining an unbounded registry),
+   * and release/address reuse clear only the bounded table. */
+  ScrStr *live[5];
+  for (size_t i = 0; i < 5; i++) {
+    live[i] = scr_str_new(piece, sizeof(piece) - 1);
+    ScrStr *grown = scr_str_repeat(live[i], 7000);
+    scr_str_release(live[i]);
+    live[i] = grown;
+    (void)scr_str_utf16_len(live[i]);
+  }
+  if (scr_sidx_test_entries() != 4 || scr_sidx_test_points() == 0)
+    sidx_fail("five live sparse indexes did not evict to four entries");
+  /* Fresh tiny indexed calls use the separate cursor tier. They must not
+   * evict the four warmed sparse entries merely because the short receivers
+   * happen to have different addresses on every iteration. */
+  for (size_t i = 0; i < 4096; i++) {
+    ScrStr *tiny = scr_str_new("x", 1);
+    if (scr_str_utf16_len(tiny) != 1.0 ||
+        scr_str_char_code_at(tiny, 0) != 120.0)
+      sidx_fail("tiny indexed operation result");
+    scr_str_release(tiny);
+  }
+  if (scr_sidx_test_entries() != 4 || scr_sidx_test_points() == 0)
+    sidx_fail("tiny indexed operations evicted sparse entries");
+  scr_sidx_test_reset_steps();
+  for (size_t q = 0; q < QUERIES; q++) {
+    /* Mirror ordinary production traffic: each far lookup has one fresh,
+     * tiny indexed receiver immediately before it. The sparse points must
+     * remain resident throughout, not merely survive a release-only churn. */
+    ScrStr *tiny = scr_str_new("x", 1);
+    if (scr_str_utf16_len(tiny) != 1.0 ||
+        scr_str_char_code_at(tiny, 0) != 120.0)
+      sidx_fail("interleaved tiny indexed operation result");
+    scr_str_release(tiny);
+    if (scr_str_char_code_at(live[1 + q % 4], 41999.0) != 769.0)
+      sidx_fail("post-tiny sparse charCodeAt result");
+    if (scr_sidx_test_points() == 0)
+      sidx_fail("interleaved tiny operation discarded sparse checkpoints");
+  }
+  if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 4200)
+    sidx_fail("tiny indexed operations lost sparse stride bound");
+  scr_str_release(live[4]);
+  if (scr_sidx_test_entries() != 3) sidx_fail("release did not purge entry");
+  ScrStr *reused = scr_str_alloc_raw((sizeof(piece) - 1) * 7000,
+                                     (sizeof(piece) - 1) * 7000);
+  for (size_t i = 0; i < 7000; i++)
+    memcpy(reused->data + i * (sizeof(piece) - 1), piece, sizeof(piece) - 1);
+  reused->data[reused->len] = '\0';
+  if (scr_str_char_code_at(reused, 2) != 0xD83D) sidx_fail("reused address result");
+  scr_str_release(reused);
+  for (size_t i = 0; i < 4; i++) scr_str_release(live[i]);
+  if (scr_sidx_test_entries() != 0) sidx_fail("all sparse entries did not purge");
+  scr_str_release(e_face);
+  scr_str_release(face);
+  scr_str_release(s);
+  scr_sidx_test_reset_cache();
+}
+
+/* Do not wait for the first non-ASCII byte before proving this access shape.
+ * A string can have megabytes of ordinary ASCII followed by one emoji: no
+ * `.length` prime is involved here, and alternating distant reads in that
+ * prefix must retain identity checkpoints instead of repeatedly walking the
+ * distance between the two hot-cursor positions. A lookup at the ASCII
+ * prefix's far end must retain those checkpoints too; otherwise a later
+ * non-local lookup silently falls back to a linear restart. */
+static void sparse_ascii_prefix_asserts(void) {
+  enum { PREFIX = 4 * 1024 * 1024, QUERIES = 8 };
+  const size_t first = (size_t)1024 * 1024 + 137;
+  const size_t second = (size_t)3 * 1024 * 1024 + 271;
+  char *raw = malloc((size_t)PREFIX + 4);
+  if (!raw) { sidx_fail("ASCII-prefix test allocation"); return; }
+  memset(raw, 'a', PREFIX);
+  memcpy(raw + PREFIX, "\xF0\x9F\x98\x80", 4); /* terminal emoji */
+  ScrStr *s = scr_str_new(raw, (size_t)PREFIX + 4);
+  free(raw);
+
+  scr_sidx_test_reset_cache();
+  scr_sidx_test_reset_steps();
+  for (size_t q = 0; q < QUERIES; q++) {
+    size_t at = q & 1 ? second : first;
+    if (scr_str_char_code_at(s, (double)at) != 97.0)
+      sidx_fail("ASCII-prefix charCodeAt result");
+  }
+  if (scr_sidx_test_points() == 0)
+    sidx_fail("ASCII-prefix identity checkpoints were not retained");
+  if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 4200)
+    sidx_fail("ASCII-prefix lookup exceeded sparse stride bound");
+
+  /* This is still an ASCII character, but it is at the far end of the
+   * prefix immediately before the terminal emoji. Completing the interval
+   * must not mistake the prefix for a wholly ASCII string and discard the
+   * anchors accumulated above. */
+  if (scr_str_char_code_at(s, (double)(PREFIX - 1)) != 97.0)
+    sidx_fail("ASCII-prefix end charCodeAt result");
+  if (scr_sidx_test_points() == 0)
+    sidx_fail("ASCII-prefix end lookup discarded checkpoints");
+
+  scr_sidx_test_reset_steps();
+  for (size_t q = 0; q < QUERIES; q++) {
+    size_t at = q & 1 ? second : first;
+    if (scr_str_char_code_at(s, (double)at) != 97.0)
+      sidx_fail("ASCII-prefix warmed charCodeAt result");
+  }
+  if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 4200)
+    sidx_fail("ASCII-prefix end lookup lost sparse stride bound");
+
+  scr_str_release(s);
+  scr_sidx_test_reset_cache();
+}
+
+/* A far-end lookup initially has to scan an unknown all-ASCII string, but
+ * that completed scan proves byte and UTF-16 offsets identical. It must not
+ * then allocate the prefix checkpoints useful only for a still-unknown
+ * ASCII prefix before non-ASCII content. */
+static void sparse_all_ascii_end_asserts(void) {
+  enum { BYTES = 4 * 1024 * 1024 };
+  char *raw = malloc(BYTES);
+  if (!raw) { sidx_fail("all-ASCII test allocation"); return; }
+  memset(raw, 'z', BYTES);
+  ScrStr *s = scr_str_new(raw, BYTES);
+  free(raw);
+
+  scr_sidx_test_reset_cache();
+  if (scr_str_char_code_at(s, (double)(BYTES - 1)) != 122.0)
+    sidx_fail("all-ASCII end charCodeAt result");
+  if (scr_str_utf16_len(s) != (double)BYTES)
+    sidx_fail("all-ASCII length result");
+  if (scr_sidx_test_points() != 0)
+    sidx_fail("all-ASCII end lookup retained checkpoints");
+
+  scr_str_release(s);
+  scr_sidx_test_reset_cache();
+}
+
+/* Crossing the sparse threshold is not necessarily what first introduces
+ * non-ASCII data: a mixed 63KiB receiver can be length-indexed while still
+ * small, then grow in place. The completed non-identity cache must
+ * materialize every checkpoint interval at that transition rather than
+ * retaining only the hot cursor or an old-end anchor. */
+static void sparse_append_threshold_asserts(void) {
+  enum { BEFORE = 32700, EXTRA = 200, QUERIES = 8 };
+  ScrStr *eacute = scr_str_new("\xC3\xA9", 2);
+  ScrStr *s = scr_str_repeat(eacute, BEFORE); /* 65,400 bytes: below 64KiB */
+  ScrStr *one = scr_str_new("x", 1);
+  handoff_append(&s, one); /* copy once to make slack, still below threshold */
+  if (scr_str_utf16_len(s) != (double)(BEFORE + 1) ||
+      scr_sidx_test_points() != 0) {
+    sidx_fail("small mixed prefix unexpectedly indexed");
+  }
+  ScrStr *more = scr_str_repeat(eacute, EXTRA);
+  handoff_append(&s, more); /* in-place non-ASCII threshold crossing */
+  if (scr_str_utf16_len(s) != (double)(BEFORE + 1 + EXTRA) ||
+      scr_sidx_test_points() == 0) {
+    sidx_fail("mixed threshold append did not materialize checkpoints");
+  }
+
+  scr_sidx_test_reset_steps();
+  for (size_t q = 0; q < QUERIES; q++) {
+    size_t at = q & 1 ? (size_t)BEFORE - 1 : (size_t)BEFORE / 3;
+    if (scr_str_char_code_at(s, (double)at) != 233.0)
+      sidx_fail("mixed threshold append charCodeAt result");
+  }
+  if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 4200)
+    sidx_fail("mixed threshold append lost sparse stride bound");
+
+  scr_str_release(more);
+  scr_str_release(one);
+  scr_str_release(s);
+  scr_str_release(eacute);
+  scr_sidx_test_reset_cache();
+}
+#endif
 
 int main(int argc, char **argv) {
   if (argc > 1 && strncmp(argv[1], "--crash-repeat", 14) == 0) {
@@ -347,6 +627,13 @@ int main(int argc, char **argv) {
       check_f64(op, args, input, scr_str_index_of(input, needle, from),
                 expected_bytes, exp_len);
       scr_str_release(needle);
+    } else if (strcmp(op, "lastIndexOf") == 0) {
+      size_t nee_len = hex_decode(args, needle_bytes);
+      if (nee_len == (size_t)-1) goto badline_release;
+      ScrStr *needle = scr_str_new(needle_bytes, nee_len);
+      check_f64(op, args, input, scr_str_last_index_of(input, needle),
+                expected_bytes, exp_len);
+      scr_str_release(needle);
     } else if (strcmp(op, "includes") == 0 || strcmp(op, "startsWith") == 0 ||
                strcmp(op, "endsWith") == 0) {
       size_t nee_len = hex_decode(args, needle_bytes);
@@ -373,6 +660,12 @@ int main(int argc, char **argv) {
 
   divergence_asserts();
   accumulation_asserts();
+#ifdef SCR_SIDX_TEST
+  sparse_index_asserts();
+  sparse_ascii_prefix_asserts();
+  sparse_all_ascii_end_asserts();
+  sparse_append_threshold_asserts();
+#endif
 
 #ifdef SCR_RC_AUDIT
   if (scr_str_live_count() != 0) {

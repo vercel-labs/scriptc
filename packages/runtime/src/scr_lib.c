@@ -4154,7 +4154,7 @@ ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem) {
   return scr_x509_validity_raw((const uint8_t *)pem->data, pem->len, true);
 }
 
-/* ── String surface (fromCharCode / lastIndexOf) ─────────────────────── */
+/* ── String surface (fromCharCode) ────────────────────────────────────── */
 
 /* String.fromCharCode core over n UTF-16 code units read through
  * `unit(src, i)` (already ToUint16'd): combine adjacent surrogate pairs,
@@ -4220,34 +4220,6 @@ static uint32_t scr_fcc_bytes_unit(void *src, size_t i) {
  * ToUint16 the packed-array form applies. */
 ScrStr *scr_str_from_char_code_bytes(ScrBytes *codes) {
   return scr_str_from_units(codes->len, scr_fcc_bytes_unit, codes);
-}
-
-/* UTF-16 unit count of the UTF-8 prefix ending at byte offset `end`
- * (ScrStr storage is well-formed, so lead bytes decide the advance). */
-static size_t scr_lib_u16_units(const char *s, size_t end) {
-  size_t units = 0;
-  for (size_t i = 0; i < end;) {
-    unsigned char b = (unsigned char)s[i];
-    size_t adv = b < 0x80 ? 1 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4;
-    units += adv == 4 ? 2 : 1;
-    i += adv;
-  }
-  return units;
-}
-
-/* lastIndexOf(needle), the one-argument form: last occurrence as a UTF-16
- * index, -1 when absent; the empty needle finds the length (per spec's
- * clamped +Infinity fromIndex). A byte-wise reverse scan is boundary-safe:
- * a well-formed needle's first byte is never a continuation byte. */
-double scr_str_last_index_of(ScrStr *s, ScrStr *needle) {
-  if (needle->len == 0) return (double)scr_lib_u16_units(s->data, s->len);
-  if (needle->len > s->len) return -1.0;
-  for (size_t i = s->len - needle->len + 1; i-- > 0;) {
-    if (memcmp(s->data + i, needle->data, needle->len) == 0) {
-      return (double)scr_lib_u16_units(s->data, i);
-    }
-  }
-  return -1.0;
 }
 
 /* ── Date, the read-only value slice ───────────────────────────────────

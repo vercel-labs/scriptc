@@ -285,6 +285,7 @@ wrap empty: len 2 bytes 60 62
   const SESSION = `session start counter=0
 bump: 1 2
 note: 1 2
+indexed: 72100
 recall: a,b
 `;
 

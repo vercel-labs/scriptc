@@ -21,45 +21,174 @@ static void scr_oom(void) {
 /* ── UTF-16 index cache ───────────────────────────────────────────────
  * JS string semantics are UTF-16 indices over our UTF-8 storage, so
  * .length, charCodeAt, charAt, indexOf and slice all need unit↔byte
- * conversions. Computed from scratch each is O(len), which turns the
- * canonical `for (i = 0; i < s.length; i++) s.charCodeAt(i)` loop into
- * O(len²). This small direct cache remembers, per recently-touched string,
- * the UTF-16 length (computed once) and one unit↔byte cursor that walking
- * code advances incrementally — sequential scans in either direction
- * become O(1) amortized per access.
+ * conversions. A four-entry direct cursor cache keeps the old hot cursor for
+ * tiny and allocation-failure traffic. A separate four-entry sparse cache
+ * owns `{ UTF-16 unit, UTF-8 byte }` checkpoints, so a warmed non-local
+ * lookup decodes at most one checkpoint interval instead of a prefix
+ * proportional to its requested index.
  *
- * Correctness: entries are keyed by pointer, so any path that frees a
- * string MUST purge its entry (all frees go through scr_str_release) and
- * the in-place concat below invalidates the cached length (the prefix —
- * and therefore the cursor — stays valid). Strings are immutable in every
- * other respect. The runtime is single-threaded by design.
+ * Checkpoints are owned by the entry, not the ScrStr ABI: the representation
+ * remains the three-word UTF-8 ScrStr used by literals, FFI and generated
+ * code. Checkpoints cost two size_ts every 4 KiB (about 0.39% of indexed
+ * bytes). There are exactly four sparse entries per runtime instance;
+ * eviction, release, realloc, executable exit, and every library reset free
+ * retained metadata. The cursor and sparse tiers are deliberately separate:
+ * fresh short receivers never evict a retained large-string index. This
+ * fixed residency is intentional: registry lookup and the release of
+ * unrelated strings never scale with the number of live indexed receivers.
+ * SCR_TL makes both tables and owned buffers instance-local for
+ * SCR_THREAD_INSTANCES. Metadata allocation is strictly an optimization:
+ * overflow or malloc failure falls back to the cursor mapper.
  */
 #define SCR_SIDX_N 4
 #define SCR_U16_UNKNOWN SIZE_MAX
+#define SCR_SIDX_MIN_BYTES ((size_t)64 * 1024)
+#define SCR_SIDX_STRIDE_BYTES ((size_t)4 * 1024)
 typedef struct {
-  const ScrStr *s; /* NULL = empty slot */
-  size_t u16len;   /* SCR_U16_UNKNOWN until computed */
-  size_t cu, cb;   /* cursor: byte offset cb starts the char at unit cu */
+  size_t cu; /* UTF-16 code-unit offset, always a code-point boundary */
+  size_t cb; /* matching UTF-8 byte offset, never a continuation byte */
+} ScrSidxPoint;
+typedef struct ScrSidx {
+  const ScrStr *s;       /* NULL = empty slot */
+  size_t u16len;         /* SCR_U16_UNKNOWN until the whole current string */
+  size_t cu, cb;         /* hot cursor: cb starts the char at unit cu */
+  ScrSidxPoint *points;  /* sparse, ordered code-point-boundary anchors */
+  size_t npoints, cap;   /* owned points length/capacity */
+  size_t indexed_cu;     /* exact contiguous prefix indexed from byte zero */
+  size_t indexed_cb;
+  bool no_more_points;   /* metadata allocation failed/overflowed: fail open */
+  bool points_complete;  /* points cover every stride of indexed prefix */
 } ScrSidx;
-static SCR_TL ScrSidx scr_sidx_tab[SCR_SIDX_N];
-static SCR_TL unsigned scr_sidx_clock;
+/* Keep short-string cursor traffic out of the sparse cache. A short-lived
+ * one-byte receiver can be far more common than a large indexed one; sharing
+ * the round-robin slots would otherwise rebuild a warm index every few calls.
+ */
+static SCR_TL ScrSidx scr_sidx_sparse_tab[SCR_SIDX_N];
+static SCR_TL ScrSidx scr_sidx_cursor_tab[SCR_SIDX_N];
+static SCR_TL unsigned scr_sidx_sparse_clock;
+static SCR_TL unsigned scr_sidx_cursor_clock;
+static SCR_TL bool scr_sidx_cleanup_registered;
 
-static void scr_sidx_purge(const ScrStr *s) {
+static void scr_sidx_clear(ScrSidx *e) {
+  free(e->points);
+  memset(e, 0, sizeof(*e));
+}
+
+static void scr_sidx_reset_all(void) {
   for (int i = 0; i < SCR_SIDX_N; i++) {
-    if (scr_sidx_tab[i].s == s) scr_sidx_tab[i].s = NULL;
+    scr_sidx_clear(&scr_sidx_sparse_tab[i]);
+    scr_sidx_clear(&scr_sidx_cursor_tab[i]);
+  }
+  scr_sidx_sparse_clock = 0;
+  scr_sidx_cursor_clock = 0;
+}
+
+static void scr_sidx_register_cleanup(void) {
+  if (!scr_sidx_cleanup_registered) {
+    scr_sidx_cleanup_registered = true;
+    scr_atexit(scr_sidx_reset_all);
   }
 }
 
-static ScrSidx *scr_sidx(const ScrStr *s) {
+#ifdef SCR_SIDX_TEST
+static SCR_TL size_t scr_sidx_walk_steps;
+void scr_sidx_test_reset_steps(void) { scr_sidx_walk_steps = 0; }
+size_t scr_sidx_test_walk_steps(void) { return scr_sidx_walk_steps; }
+void scr_sidx_test_reset_cache(void) { scr_sidx_reset_all(); }
+size_t scr_sidx_test_entries(void) {
+  size_t n = 0;
+  for (int i = 0; i < SCR_SIDX_N; i++)
+    n += scr_sidx_sparse_tab[i].s != NULL;
+  return n;
+}
+size_t scr_sidx_test_points(void) {
+  size_t n = 0;
+  for (int i = 0; i < SCR_SIDX_N; i++)
+    n += scr_sidx_sparse_tab[i].npoints;
+  return n;
+}
+#define SCR_SIDX_STEP() (scr_sidx_walk_steps++)
+#else
+#define SCR_SIDX_STEP() ((void)0)
+#endif
+
+static void scr_sidx_purge(const ScrStr *s) {
+  /* These are deliberately fixed four-entry tables, never an unbounded
+   * receiver registry. Releasing an unrelated temporary therefore does at
+   * most eight pointer comparisons and cannot grow with live strings. */
   for (int i = 0; i < SCR_SIDX_N; i++) {
-    if (scr_sidx_tab[i].s == s) return &scr_sidx_tab[i];
+    if (scr_sidx_sparse_tab[i].s == s)
+      scr_sidx_clear(&scr_sidx_sparse_tab[i]);
+    if (scr_sidx_cursor_tab[i].s == s)
+      scr_sidx_clear(&scr_sidx_cursor_tab[i]);
   }
-  ScrSidx *e = &scr_sidx_tab[scr_sidx_clock++ % SCR_SIDX_N];
+}
+
+static void scr_sidx_init(ScrSidx *e, const ScrStr *s) {
+  memset(e, 0, sizeof(*e));
   e->s = s;
   e->u16len = SCR_U16_UNKNOWN;
-  e->cu = 0;
-  e->cb = 0;
+}
+
+/* Short strings retain the historical hot cursor without contending with the
+ * sparse residency. Large strings claim only the sparse tier; an in-place
+ * append that crosses the threshold moves its exact cursor frontier into
+ * that tier rather than scanning the unchanged prefix again. All-ASCII
+ * receivers still shed their point buffer after proving identity mapping.
+ * Both tiers remain fixed-size and allocation-free until a non-ASCII sparse
+ * receiver actually needs checkpoints. */
+static ScrSidx *scr_sidx(const ScrStr *s) {
+  if (s->len >= SCR_SIDX_MIN_BYTES) {
+    for (int i = 0; i < SCR_SIDX_N; i++) {
+      if (scr_sidx_sparse_tab[i].s == s) return &scr_sidx_sparse_tab[i];
+    }
+    /* The only in-place mutation is append. A formerly short receiver can
+     * therefore cross the threshold with an exact, useful cursor frontier
+     * already in the cursor tier; transfer it before evicting a sparse slot.
+     * No checkpoint buffer can exist below the threshold, but moving the
+     * whole record also preserves the fail-open allocation state. */
+    for (int i = 0; i < SCR_SIDX_N; i++) {
+      ScrSidx *old = &scr_sidx_cursor_tab[i];
+      if (old->s != s) continue;
+      ScrSidx *e = &scr_sidx_sparse_tab[
+          scr_sidx_sparse_clock++ % SCR_SIDX_N];
+      scr_sidx_clear(e);
+      *e = *old;
+      memset(old, 0, sizeof(*old)); /* ownership moved to the sparse tier */
+      return e;
+    }
+    ScrSidx *e =
+        &scr_sidx_sparse_tab[scr_sidx_sparse_clock++ % SCR_SIDX_N];
+    scr_sidx_clear(e);
+    scr_sidx_init(e, s);
+    return e;
+  }
+  ScrSidx *tab = scr_sidx_cursor_tab;
+  unsigned *clock = &scr_sidx_cursor_clock;
+  for (int i = 0; i < SCR_SIDX_N; i++) {
+    if (tab[i].s == s) return &tab[i];
+  }
+  ScrSidx *e = &tab[(*clock)++ % SCR_SIDX_N];
+  scr_sidx_clear(e);
+  scr_sidx_init(e, s);
   return e;
+}
+
+/* In-place concat changes only the suffix. Keep every exact prefix anchor
+ * (including the former end, which is now an ordinary boundary), but remove
+ * the sole fact that described the old complete string. A threshold-crossing
+ * receiver may move from the cursor tier to the sparse tier on its next
+ * lookup, so invalidate either possible entry. */
+static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
+  for (int i = 0; i < SCR_SIDX_N; i++) {
+    ScrSidx *entries[] = {&scr_sidx_sparse_tab[i], &scr_sidx_cursor_tab[i]};
+    for (size_t j = 0; j < sizeof(entries) / sizeof(entries[0]); j++) {
+      ScrSidx *e = entries[j];
+      if (e->s != s) continue;
+      e->u16len = SCR_U16_UNKNOWN;
+      if (e->indexed_cb > oldlen) e->indexed_cb = oldlen;
+    }
+  }
 }
 
 /* ── allocation ─────────────────────────────────────────────────────── */
@@ -156,13 +285,17 @@ ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
    * result reaches the next concat as a sole-reference temp. Any string
    * with rc > 1 might be aliased and is copied, never mutated. */
   if (a->rc == 1 && a != b && a->cap >= newlen) {
+    size_t oldlen = a->len;
     memcpy(a->data + a->len, b->data, b->len);
     a->len = newlen;
     a->data[newlen] = '\0';
-    /* A cached UTF-16 length for a is stale now; its cursor still valid. */
-    for (int i = 0; i < SCR_SIDX_N; i++) {
-      if (scr_sidx_tab[i].s == a) scr_sidx_tab[i].u16len = SCR_U16_UNKNOWN;
-    }
+    /* A cached UTF-16 length for a is stale now; checkpoints and the exact
+     * old prefix remain valid. Its old terminal point is no longer an END
+     * fact (u16len is invalidated below), but remains an excellent ordinary
+     * checkpoint for accesses around the append boundary. The next mapper
+     * lazily continues from oldlen rather than scanning the unchanged prefix
+     * again. */
+    scr_sidx_concat_append(a, oldlen);
     a->rc = 2; /* +1 for the returned reference, beside the caller's borrow */
     return a;
   }
@@ -329,16 +462,17 @@ static uint32_t scr_utf8_decode(const char *p, size_t *adv) {
          ((unsigned char)p[3] & 0x3F);
 }
 
-/* Number of UTF-16 code units in s (BMP char = 1, astral char = 2).
- * Byte-classification is position-independent (well-formed UTF-8):
- * units = #bytes - #continuation-bytes + #4-byte-leads, so the word-wise
- * loop counts eight bytes at a time — bits 10xxxxxx mark a continuation,
- * 11110xxx an astral lead — with an all-ASCII early out per word. */
-static size_t scr_utf16_units(const ScrStr *s) {
-  const unsigned char *d = (const unsigned char *)s->data;
+/* Number of UTF-16 code units in a valid UTF-8 span (BMP char = 1, astral
+ * char = 2). Byte classification is position-independent, so sparse-index
+ * construction can count one checkpoint interval at a time without giving
+ * up the word-at-a-time length fast path. */
+static size_t scr_utf16_units_span(const char *data, size_t len,
+                                   bool *all_ascii) {
+  const unsigned char *d = (const unsigned char *)data;
   const uint64_t hibits = 0x8080808080808080ull;
   size_t units = 0, i = 0;
-  while (i + 8 <= s->len) {
+  bool ascii = true;
+  while (i + 8 <= len) {
     uint64_t w;
     memcpy(&w, d + i, 8);
     i += 8;
@@ -346,55 +480,313 @@ static size_t scr_utf16_units(const ScrStr *s) {
       units += 8;
       continue;
     }
+    ascii = false;
     uint64_t cont = w & ~(w << 1) & hibits;
     uint64_t lead4 = w & (w << 1) & (w << 2) & (w << 3) & hibits;
     units += 8 - (size_t)__builtin_popcountll(cont) +
              (size_t)__builtin_popcountll(lead4);
   }
-  while (i < s->len) {
+  while (i < len) {
     unsigned char c = d[i++];
     if ((c & 0xC0) == 0x80) continue;  /* continuation byte */
+    if (c >= 0x80) ascii = false;
     units += c >= 0xF0 ? 2 : 1;
   }
+  if (all_ascii) *all_ascii = ascii;
   return units;
 }
 
-/* Cached UTF-16 length; computes and remembers on first use. Note that
- * u16len == byte len is exactly "all ASCII" — the walkers below use that
- * to answer conversions in O(1) without a cursor. */
+/* Keep a start anchor, every stride crossed, and an exact final/prefix
+ * anchor. All calls arrive at character boundaries. Returning false simply
+ * means allocation failed and the hot cursor should handle this string. */
+static bool scr_sidx_add_point(ScrSidx *e, size_t cu, size_t cb,
+                               bool force) {
+  if (e->no_more_points) return false;
+  if (e->npoints != 0) {
+    ScrSidxPoint last = e->points[e->npoints - 1];
+    if (last.cb == cb) return true;
+    if (!force && cb - last.cb < SCR_SIDX_STRIDE_BYTES) return true;
+  }
+  if (e->npoints == e->cap) {
+    size_t cap = e->cap == 0 ? 16 : e->cap;
+    if (e->cap != 0) {
+      if (cap > SIZE_MAX / 2) {
+        e->no_more_points = true;
+        return false;
+      }
+      cap *= 2;
+    }
+    if (cap > SIZE_MAX / sizeof(*e->points)) {
+      e->no_more_points = true;
+      return false;
+    }
+    ScrSidxPoint *points = realloc(e->points, cap * sizeof(*points));
+    if (!points) {
+      e->no_more_points = true;
+      return false;
+    }
+    e->points = points;
+    e->cap = cap;
+    scr_sidx_register_cleanup();
+  }
+  e->points[e->npoints++] = (ScrSidxPoint){cu, cb};
+  return true;
+}
+
+/* Enable sparse state only where a 16-byte checkpoint buffer is a much
+ * better trade than repeatedly walking a short string. If a completed
+ * ASCII scan later proves identity mapping, all of this storage is freed. */
+static bool scr_sidx_prepare_points(const ScrStr *s, ScrSidx *e) {
+  if (s->len < SCR_SIDX_MIN_BYTES || e->no_more_points) return false;
+  if (e->npoints == 0) {
+    if (!scr_sidx_add_point(e, 0, 0, true)) return false;
+    /* concat may have left an exact old end/frontier without a previous
+     * buffer (notably an all-ASCII prefix). Backfill that known identity
+     * span arithmetically — never rescan it just to create anchors. Exact
+     * identity means every stride is also a UTF-16/code-point boundary. */
+    if (e->indexed_cb != 0 && e->indexed_cb == e->indexed_cu) {
+      for (size_t at = SCR_SIDX_STRIDE_BYTES; at < e->indexed_cb;) {
+        if (!scr_sidx_add_point(e, at, at, true)) return false;
+        if (at > e->indexed_cb - SCR_SIDX_STRIDE_BYTES) break;
+        at += SCR_SIDX_STRIDE_BYTES;
+      }
+    }
+    if (e->indexed_cb != 0 &&
+        !scr_sidx_add_point(e, e->indexed_cu, e->indexed_cb, true)) {
+      return false;
+    }
+    /* A pre-existing mixed prefix can only belong to a receiver that grew
+     * across the admission threshold while it was in the cursor tier. Its
+     * exact terminal anchor is useful immediately, but it does not promise
+     * a stride-bounded route through that old prefix. On completion, rebuild
+     * once from zero rather than mistaking this short-history anchor for a
+     * fully formed sparse index. */
+    e->points_complete = e->indexed_cb == e->indexed_cu;
+  }
+  return true;
+}
+
+/* The first code-point boundary at or after cb + SCR_SIDX_STRIDE_BYTES. */
+static size_t scr_sidx_next_boundary(const ScrStr *s, size_t cb) {
+  size_t remain = s->len - cb;
+  size_t end = cb + (remain < SCR_SIDX_STRIDE_BYTES
+                         ? remain : SCR_SIDX_STRIDE_BYTES);
+  while (end < s->len && ((unsigned char)s->data[end] & 0xC0) == 0x80) end++;
+  return end;
+}
+
+/* Extend the exact prefix frontier by one sparse interval. The span helper
+ * retains the old length throughput; the resulting point is always a real
+ * UTF-8 character boundary. */
+static bool scr_sidx_extend_one(const ScrStr *s, ScrSidx *e) {
+  if (e->indexed_cb == s->len) return false;
+  size_t end = scr_sidx_next_boundary(s, e->indexed_cb);
+  bool ascii;
+  size_t units = scr_utf16_units_span(s->data + e->indexed_cb,
+                                      end - e->indexed_cb, &ascii);
+  /* Defer metadata until a large string proves it needs UTF-8 navigation.
+   * A long ASCII prefix is already an exact identity map; when this is the
+   * first mixed interval, prepare_points backfills that prefix arithmetically
+   * before it is ever rescanned. */
+  if (ascii && e->npoints == 0 && !e->no_more_points) {
+    e->indexed_cu += units;
+    e->indexed_cb = end;
+    return true;
+  }
+  if (e->npoints == 0) (void)scr_sidx_prepare_points(s, e);
+  e->indexed_cu += units;
+  e->indexed_cb = end;
+  if (e->npoints != 0) (void)scr_sidx_add_point(e, e->indexed_cu,
+                                                  e->indexed_cb, true);
+  return true;
+}
+
+/* A formerly small mixed string can cross the sparse-index threshold through
+ * an ASCII in-place append. Its exact prefix already covers the whole new
+ * string, so the ordinary extension path has no non-ASCII interval that
+ * would cause prepare_points() to allocate anchors. Rebuild once in that
+ * narrow transition instead of leaving a threshold-sized non-ASCII string
+ * with only the hot cursor. This is still fail-open: an allocation failure
+ * leaves the completed length/cursor cache fully usable. */
+static void scr_sidx_rebuild_points(const ScrStr *s, ScrSidx *e) {
+  if (s->len < SCR_SIDX_MIN_BYTES || e->points_complete ||
+      e->no_more_points)
+    return;
+  free(e->points);
+  e->points = NULL;
+  e->npoints = 0;
+  e->cap = 0;
+  size_t cu = 0, cb = 0;
+  if (!scr_sidx_add_point(e, cu, cb, true)) return;
+  while (cb < s->len) {
+    size_t end = scr_sidx_next_boundary(s, cb);
+    cu += scr_utf16_units_span(s->data + cb, end - cb, NULL);
+    cb = end;
+    if (!scr_sidx_add_point(e, cu, cb, true)) return;
+  }
+  e->points_complete = true;
+}
+
+static void scr_sidx_finish(const ScrStr *s, ScrSidx *e) {
+  if (e->indexed_cb != s->len) return;
+  e->u16len = e->indexed_cu;
+  if (e->u16len == s->len) { /* proven all ASCII: identity needs no index */
+    free(e->points);
+    e->points = NULL;
+    e->npoints = 0;
+    e->cap = 0;
+    e->points_complete = false;
+  } else {
+    scr_sidx_rebuild_points(s, e);
+  }
+}
+
+/* Index complete 4 KiB spans until the requested unit lies inside the
+ * indexed prefix. It deliberately completes that interval: a lookup just
+ * before an anchor and the next distant lookup both reuse the same work. */
+static void scr_sidx_extend_to_u16(const ScrStr *s, ScrSidx *e, size_t u16) {
+  if (u16 <= e->indexed_cu) return;
+  while (e->indexed_cb < s->len) {
+    size_t start_cu = e->indexed_cu;
+    scr_sidx_extend_one(s, e);
+    if (u16 <= e->indexed_cu || e->indexed_cu == start_cu) break;
+  }
+  scr_sidx_finish(s, e);
+}
+
+/* A large, not-yet-complete string can have a long proven-ASCII prefix
+ * before its first non-ASCII byte. That prefix is an exact identity map, but
+ * merely advancing indexed_{cu,cb} through it leaves alternating on-demand
+ * lookups with only the hot cursor and therefore linear backtracks. Once an
+ * indexed conversion reaches such a prefix, retain its arithmetic stride
+ * anchors too. A later full scan still drops them if the whole string proves
+ * ASCII, so the all-ASCII steady state remains the allocation-free identity
+ * fast path. */
+static void scr_sidx_materialize_identity_prefix(const ScrStr *s, ScrSidx *e) {
+  if (e->npoints == 0 && e->indexed_cb != 0 &&
+      e->indexed_cb == e->indexed_cu) {
+    (void)scr_sidx_prepare_points(s, e);
+  }
+}
+
+/* Cached UTF-16 length. Large strings extend from their exact previously
+ * indexed prefix, retaining sparse start/end anchors; short strings keep the
+ * historical single word-wise scan. `u16len == byte len` proves ASCII and
+ * restores identity mapping with zero retained checkpoint memory. */
 static size_t scr_sidx_len(const ScrStr *s, ScrSidx *e) {
-  if (e->u16len == SCR_U16_UNKNOWN) e->u16len = scr_utf16_units(s);
+  if (e->u16len != SCR_U16_UNKNOWN) return e->u16len;
+  while (e->indexed_cb < s->len) scr_sidx_extend_one(s, e);
+  scr_sidx_finish(s, e);
   return e->u16len;
 }
 
 /* Step the cursor back one char (cb must be > 0 and on a boundary). */
 static void scr_sidx_back(const ScrStr *s, size_t *cu, size_t *cb) {
+  SCR_SIDX_STEP();
   size_t p = *cb - 1;
   while (p > 0 && ((unsigned char)s->data[p] & 0xC0) == 0x80) p--;
   *cu -= scr_utf8_seq_len((unsigned char)s->data[p]) == 4 ? 2 : 1;
   *cb = p;
 }
 
-/* Convert a UTF-16 index to a byte offset, walking from the cached cursor
- * (either direction). If u16 addresses the second (low-surrogate) unit of
+static size_t scr_sidx_abs_diff(size_t a, size_t b) {
+  return a < b ? b - a : a - b;
+}
+
+/* Pick the nearest known UTF-16 anchor. The sparse list is ordered both by
+ * unit and byte, so the predecessor/successor binary-search candidates are
+ * sufficient; the hot cursor retains sequential-access locality. */
+static ScrSidxPoint scr_sidx_near_u16(const ScrStr *s, const ScrSidx *e,
+                                      size_t u16) {
+  ScrSidxPoint best = {0, 0};
+  size_t best_dist = u16;
+  if (e->npoints != 0) {
+    size_t lo = 0, hi = e->npoints;
+    while (lo < hi) {
+      size_t m = lo + (hi - lo) / 2;
+      if (e->points[m].cu < u16) lo = m + 1;
+      else hi = m;
+    }
+    if (lo < e->npoints &&
+        scr_sidx_abs_diff(e->points[lo].cu, u16) < best_dist) {
+      best = e->points[lo];
+      best_dist = scr_sidx_abs_diff(best.cu, u16);
+    }
+    if (lo != 0 &&
+        scr_sidx_abs_diff(e->points[lo - 1].cu, u16) < best_dist) {
+      best = e->points[lo - 1];
+      best_dist = scr_sidx_abs_diff(best.cu, u16);
+    }
+  }
+  if (e->cb <= s->len && scr_sidx_abs_diff(e->cu, u16) < best_dist) {
+    best = (ScrSidxPoint){e->cu, e->cb};
+    best_dist = scr_sidx_abs_diff(best.cu, u16);
+  }
+  if (e->u16len != SCR_U16_UNKNOWN &&
+      scr_sidx_abs_diff(e->u16len, u16) < best_dist) {
+    best = (ScrSidxPoint){e->u16len, s->len};
+  }
+  return best;
+}
+
+static ScrSidxPoint scr_sidx_near_byte(const ScrStr *s, const ScrSidx *e,
+                                       size_t byte_off) {
+  ScrSidxPoint best = {0, 0};
+  size_t best_dist = byte_off;
+  if (e->npoints != 0) {
+    size_t lo = 0, hi = e->npoints;
+    while (lo < hi) {
+      size_t m = lo + (hi - lo) / 2;
+      if (e->points[m].cb < byte_off) lo = m + 1;
+      else hi = m;
+    }
+    if (lo < e->npoints &&
+        scr_sidx_abs_diff(e->points[lo].cb, byte_off) < best_dist) {
+      best = e->points[lo];
+      best_dist = scr_sidx_abs_diff(best.cb, byte_off);
+    }
+    if (lo != 0 &&
+        scr_sidx_abs_diff(e->points[lo - 1].cb, byte_off) < best_dist) {
+      best = e->points[lo - 1];
+      best_dist = scr_sidx_abs_diff(best.cb, byte_off);
+    }
+  }
+  if (e->cb <= s->len && scr_sidx_abs_diff(e->cb, byte_off) < best_dist) {
+    best = (ScrSidxPoint){e->cu, e->cb};
+    best_dist = scr_sidx_abs_diff(best.cb, byte_off);
+  }
+  if (e->u16len != SCR_U16_UNKNOWN &&
+      scr_sidx_abs_diff(s->len, byte_off) < best_dist) {
+    best = (ScrSidxPoint){e->u16len, s->len};
+  }
+  return best;
+}
+
+/* Convert a UTF-16 index to a byte offset from the closest sparse anchor or
+ * hot cursor. If u16 addresses the second (low-surrogate) unit of
  * an astral char, *mid is set and the returned offset is the START of that
  * 4-byte sequence. u16 at or past the end returns s->len with *mid false.
- * Same contract as a from-scratch scan; O(distance from cursor). */
+ * Same contract as a from-scratch scan. */
 static size_t scr_u16_to_byte_c(const ScrStr *s, ScrSidx *e, size_t u16,
                                  bool *mid) {
   if (e->u16len == s->len) { /* all ASCII: identity mapping */
     *mid = false;
     return u16 < s->len ? u16 : s->len;
   }
-  size_t cu = e->cu, cb = e->cb;
-  /* Restart from whichever end is closer than the cursor. */
-  if (u16 < cu && cu - u16 > u16) {
-    cu = 0;
-    cb = 0;
+  scr_sidx_extend_to_u16(s, e, u16);
+  /* Extending a far-end lookup can just have proved identity. Do not
+   * materialize an index that the identity fast path will never consult. */
+  if (e->u16len == s->len) {
+    *mid = false;
+    return u16 < s->len ? u16 : s->len;
   }
+  scr_sidx_materialize_identity_prefix(s, e);
+  ScrSidxPoint near = scr_sidx_near_u16(s, e, u16);
+  size_t cu = near.cu, cb = near.cb;
   while (cu > u16) scr_sidx_back(s, &cu, &cb);
   bool m = false;
   while (cu < u16 && cb < s->len) {
+    SCR_SIDX_STEP();
     size_t seq = scr_utf8_seq_len((unsigned char)s->data[cb]);
     size_t w = seq == 4 ? 2 : 1;
     if (cu + w > u16) { /* u16 lands between the halves of an astral char */
@@ -410,18 +802,26 @@ static size_t scr_u16_to_byte_c(const ScrStr *s, ScrSidx *e, size_t u16,
   return cb;
 }
 
-/* Convert a byte offset (must be a char boundary) to a UTF-16 index,
- * walking from the cached cursor. */
+/* Convert a byte offset (must be a char boundary) to a UTF-16 index from
+ * the closest sparse anchor or hot cursor. */
 static size_t scr_byte_to_u16_c(const ScrStr *s, ScrSidx *e,
                                  size_t byte_off) {
   if (e->u16len == s->len) return byte_off; /* all ASCII */
-  size_t cu = e->cu, cb = e->cb;
-  if (byte_off < cb && cb - byte_off > byte_off) {
-    cu = 0;
-    cb = 0;
+  /* A byte search result may be far beyond the existing prefix. Build the
+   * same sparse intervals first, then choose the closest boundary anchor. */
+  if (byte_off > e->indexed_cb) {
+    while (e->indexed_cb < byte_off) scr_sidx_extend_one(s, e);
+    scr_sidx_finish(s, e);
   }
+  /* As above, a completed all-ASCII scan is its own index. In particular,
+   * do not rebuild points that scr_sidx_finish() deliberately discarded. */
+  if (e->u16len == s->len) return byte_off;
+  scr_sidx_materialize_identity_prefix(s, e);
+  ScrSidxPoint near = scr_sidx_near_byte(s, e, byte_off);
+  size_t cu = near.cu, cb = near.cb;
   while (cb > byte_off) scr_sidx_back(s, &cu, &cb);
   while (cb < byte_off) {
+    SCR_SIDX_STEP();
     size_t seq = scr_utf8_seq_len((unsigned char)s->data[cb]);
     cu += seq == 4 ? 2 : 1;
     cb += seq;
@@ -450,6 +850,23 @@ static const char *scr_byte_find(const char *hay, size_t hay_len,
       return hay + i;
   }
   return NULL;
+}
+
+/* lastIndexOf(needle), the one-argument form: last occurrence as a UTF-16
+ * index, -1 when absent; the empty needle finds the length. A byte-wise
+ * reverse scan is boundary-safe because a well-formed needle's first byte
+ * is never a continuation byte. Its result routes through the same sparse
+ * byte→unit mapper as indexOf rather than re-counting the whole prefix. */
+double scr_str_last_index_of(ScrStr *s, ScrStr *needle) {
+  ScrSidx *e = scr_sidx(s);
+  if (needle->len == 0) return (double)scr_sidx_len(s, e);
+  if (needle->len > s->len) return -1.0;
+  for (size_t i = s->len - needle->len + 1; i-- > 0;) {
+    if (memcmp(s->data + i, needle->data, needle->len) == 0) {
+      return (double)scr_byte_to_u16_c(s, e, i);
+    }
+  }
+  return -1.0;
 }
 
 double scr_str_utf16_len(ScrStr *s) {

@@ -618,9 +618,11 @@ void scr_throw_error_msg_code(int kind, const char *message, size_t len, const c
 void scr_throw_node_coded(double kind, const ScrStr *code, const ScrStr *msg);
 
 /* ── string methods ─────────────────────────────────────────────────
- * ECMA-262 observable semantics (UTF-16 code units) computed over the
- * UTF-8 storage by scanning — O(n) per call, correctness first. All double
- * index/count arguments go through ToIntegerOrInfinity (NaN → 0, trunc
+ * ECMA-262 observable semantics over UTF-8 storage with UTF-16 code-unit
+ * indices. A per-instance side cache keeps length/cursor state and sparse
+ * navigation checkpoints for large strings, making warmed
+ * non-local indexed operations bounded by one checkpoint interval. All
+ * double index/count arguments go through ToIntegerOrInfinity (NaN → 0, trunc
  * toward zero, ±Infinity kept), exactly like JS. Every function borrows its
  * ScrStr arguments; functions returning ScrStr* return a +1 reference.
  *
@@ -645,6 +647,10 @@ double scr_str_char_code_at(ScrStr *s, double i);
  * after fromIndex (clamped to [0, length]), or -1. Empty needle returns the
  * clamped fromIndex per spec. */
 double scr_str_index_of(ScrStr *s, ScrStr *needle, double fromIndex);
+
+/* lastIndexOf(needle): the one-argument form returns the last occurrence's
+ * UTF-16 index, or -1. Empty needle returns length. */
+double scr_str_last_index_of(ScrStr *s, ScrStr *needle);
 
 /* includes(needle) — no position argument. Empty needle → true. */
 bool scr_str_includes(ScrStr *s, ScrStr *needle);
@@ -4707,14 +4713,12 @@ ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
 /* ── String surface (scr_lib.c) ───────────────────────────────────────
  * fromCharCode: ONE packed f64[] of UTF-16 code units — ToUint16 each,
  * adjacent surrogate pairs combine, lone surrogates become U+FFFD
- * (divergence 1's policy). lastIndexOf: last occurrence as a UTF-16
- * index (-1 absent; empty needle finds the length). Borrowed args; the
- * string result is +1; neither throws. */
+ * (divergence 1's policy). Borrowed args; the string result is +1; neither
+ * throws. */
 ScrStr *scr_str_from_char_code(ScrArr *codes);
 /* The spread-typed-array form (String.fromCharCode(...bytes) — the
  * magic-number ASCII probe); same semantics per element. */
 ScrStr *scr_str_from_char_code_bytes(ScrBytes *codes);
-double scr_str_last_index_of(ScrStr *s, ScrStr *needle);
 
 /* ── Number statics (scr_lib.c) ───────────────────────────────────────
  * JS-exact by construction: Number.isFinite/isNaN/isInteger/isSafeInteger

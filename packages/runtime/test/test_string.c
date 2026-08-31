@@ -346,7 +346,9 @@ static void sparse_index_asserts(void) {
  * A string can have megabytes of ordinary ASCII followed by one emoji: no
  * `.length` prime is involved here, and alternating distant reads in that
  * prefix must retain identity checkpoints instead of repeatedly walking the
- * distance between the two hot-cursor positions. */
+ * distance between the two hot-cursor positions. A lookup at the ASCII
+ * prefix's far end must retain those checkpoints too; otherwise a later
+ * non-local lookup silently falls back to a linear restart. */
 static void sparse_ascii_prefix_asserts(void) {
   enum { PREFIX = 4 * 1024 * 1024, QUERIES = 8 };
   const size_t first = (size_t)1024 * 1024 + 137;
@@ -369,6 +371,24 @@ static void sparse_ascii_prefix_asserts(void) {
     sidx_fail("ASCII-prefix identity checkpoints were not retained");
   if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 4200)
     sidx_fail("ASCII-prefix lookup exceeded sparse stride bound");
+
+  /* This is still an ASCII character, but it is at the far end of the
+   * prefix immediately before the terminal emoji. Completing the interval
+   * must not mistake the prefix for a wholly ASCII string and discard the
+   * anchors accumulated above. */
+  if (scr_str_char_code_at(s, (double)(PREFIX - 1)) != 97.0)
+    sidx_fail("ASCII-prefix end charCodeAt result");
+  if (scr_sidx_test_points() == 0)
+    sidx_fail("ASCII-prefix end lookup discarded checkpoints");
+
+  scr_sidx_test_reset_steps();
+  for (size_t q = 0; q < QUERIES; q++) {
+    size_t at = q & 1 ? second : first;
+    if (scr_str_char_code_at(s, (double)at) != 97.0)
+      sidx_fail("ASCII-prefix warmed charCodeAt result");
+  }
+  if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 4200)
+    sidx_fail("ASCII-prefix end lookup lost sparse stride bound");
 
   scr_str_release(s);
   scr_sidx_test_reset_cache();

@@ -138,7 +138,6 @@ sourceToolchainTest("static hello strips unreachable runtime families while feat
     expect(helloSymbols, `hello retains ${family}`).not.toContain(family);
   }
 
-  const built = [] as { fixture: Fixture; binaryPath: string }[];
   for (const fixture of FIXTURES) {
     // /bin/echo is the portable POSIX child fixture. The Windows child
     // surface remains covered by its cross-target corpus contracts.
@@ -147,16 +146,16 @@ sourceToolchainTest("static hello strips unreachable runtime families while feat
     await expectNodeParity(result.sourcePath, result.binaryPath);
     const nativeSymbols = await symbols(result.binaryPath);
     expect(nativeSymbols, `${fixture.name} lost ${fixture.anchor}`).toContain(fixture.anchor);
-    built.push({ fixture, binaryPath: result.binaryPath });
   }
 
-  // Page-sized slack makes this a directional regression check rather than a
-  // linker-version byte-count pin. Child is a representative formerly-base
-  // payload and must remain materially larger than a no-feature executable.
-  const child = built.find(({ fixture }) => fixture.name === "child");
-  if (child !== undefined) {
-    expect(statSync(hello.binaryPath).size + 16 * 1024).toBeLessThan(statSync(child.binaryPath).size);
-  }
+  // Symbol absence is the primary reachability contract. Keep a deliberately
+  // roomy, platform-specific hello-world ceiling too: it catches losing
+  // section GC without pinning an exact linker/SDK byte count. The canonical
+  // Linux C build is about 41KB and current Mach-O builds are about 70KB;
+  // these limits leave several native pages of linker-version slack while
+  // remaining far below the former roughly-400KB always-linked runtime.
+  const helloSizeLimit = process.platform === "linux" ? 64 * 1024 : 96 * 1024;
+  expect(statSync(hello.binaryPath).size).toBeLessThan(helloSizeLimit);
 });
 
 sourceToolchainTest("fetch response JSON retains the URL and parser runtime", async () => {

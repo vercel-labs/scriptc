@@ -324,10 +324,9 @@ static void sparse_index_asserts(void) {
   if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 8 * 4200)
     sidx_fail("non-local lookup exceeded sparse stride bound");
 
-  /* The four inline cursor slots must not evict sparse indexes for a fifth
-   * live large receiver. Prime five, then cycle far-end reads across all of
-   * them: every lookup stays checkpoint-bounded rather than restarting from
-   * zero after each inline-slot replacement. */
+  /* Sparse state has fixed four-entry residency by design. A fifth large
+   * receiver evicts one entry (rather than joining an unbounded registry),
+   * and release/address reuse clear only the bounded table. */
   ScrStr *live[5];
   for (size_t i = 0; i < 5; i++) {
     live[i] = scr_str_new(piece, sizeof(piece) - 1);
@@ -336,17 +335,20 @@ static void sparse_index_asserts(void) {
     live[i] = grown;
     (void)scr_str_utf16_len(live[i]);
   }
-  if (scr_sidx_test_entries() != 6 || scr_sidx_test_points() == 0)
-    sidx_fail("five live sparse indexes were not retained");
-  scr_sidx_test_reset_steps();
-  for (size_t q = 0; q < 20; q++) {
-    if (scr_str_char_code_at(live[q % 5], 41999.0) != 769.0)
-      sidx_fail("five-receiver far-end charCodeAt result");
+  if (scr_sidx_test_entries() != 4 || scr_sidx_test_points() == 0)
+    sidx_fail("five live sparse indexes did not evict to four entries");
+  /* Keep churning one-byte temporaries while the four large indexes remain
+   * live. This is a lifecycle guard for the review's bounded-registry
+   * requirement: short releases must never retain/visit a growing owner
+   * registry, and they must not disturb the fixed sparse entries. */
+  for (size_t i = 0; i < 4096; i++) {
+    ScrStr *tiny = scr_str_new("x", 1);
+    scr_str_release(tiny);
   }
-  if (scr_sidx_test_walk_steps() > (size_t)20 * 4200)
-    sidx_fail("five-receiver lookup exceeded sparse stride bound");
+  if (scr_sidx_test_entries() != 4)
+    sidx_fail("short releases disturbed bounded sparse entries");
   scr_str_release(live[4]);
-  if (scr_sidx_test_entries() != 5) sidx_fail("release did not purge entry");
+  if (scr_sidx_test_entries() != 3) sidx_fail("release did not purge entry");
   ScrStr *reused = scr_str_alloc_raw((sizeof(piece) - 1) * 7000,
                                      (sizeof(piece) - 1) * 7000);
   for (size_t i = 0; i < 7000; i++)
@@ -355,6 +357,7 @@ static void sparse_index_asserts(void) {
   if (scr_str_char_code_at(reused, 2) != 0xD83D) sidx_fail("reused address result");
   scr_str_release(reused);
   for (size_t i = 0; i < 4; i++) scr_str_release(live[i]);
+  if (scr_sidx_test_entries() != 0) sidx_fail("all sparse entries did not purge");
   scr_str_release(e_face);
   scr_str_release(face);
   scr_str_release(s);

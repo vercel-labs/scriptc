@@ -35,6 +35,18 @@ fib.exe: PE32+ executable (console) x86-64, for MS Windows
 
 The full corpus runs in a differential lane against Windows Node, including `--dynamic` programs and `child_process`. The Windows fixture lanes also exercise real loopback traffic through `net`, `http`, `https`, `tls`, `http2`, `dgram`, and `dns`, plus the native `fetch` implementation (including redirects, streaming bodies, compression, cancellation, and proxy handling).
 
+Console is the default executable subsystem. Build a GUI program with <code>--subsystem=windows</code>; this selects the PE GUI subsystem while keeping scriptc's ordinary <code>main</code> entry point:
+
+```console
+$ SCRIPTC_CC=zigcc SCRIPTC_TARGET=x86_64-windows-gnu scriptc build fib.ts --subsystem=windows -o fib-gui.exe
+$ llvm-readobj --file-headers fib-gui.exe | grep Subsystem
+  MajorSubsystemVersion: 6
+  MinorSubsystemVersion: 0
+  Subsystem: IMAGE_SUBSYSTEM_WINDOWS_GUI (0x2)
+```
+
+Only the two subsystem values are supported; scriptc does not expose arbitrary linker-flag passthrough.
+
 ### iOS and Android (arm64, library mode)
 
 Three mobile triples build **library-mode static archives** for an embedding app to link — a mobile app is the executable, so `scriptc build` without `--lib` rejects these targets with `SC3002`:

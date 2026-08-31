@@ -1,8 +1,9 @@
-import type { CompileOutputKind } from "@scriptc/compiler";
+import type { CompileOutputKind, ExecutableSubsystem } from "@scriptc/compiler";
 import type { CliOutputKind } from "./paths.js";
 
 export interface OutputOptionValues {
   emit?: string;
+  subsystem?: string;
   emitIr: boolean;
   backend?: string;
   fromC: boolean;
@@ -18,6 +19,7 @@ export type OutputOptionResolution =
       outputKind: CompileOutputKind;
       cliOutputKind: CliOutputKind;
       backend?: "c" | "llvm";
+      executableSubsystem?: ExecutableSubsystem;
       emitIr: boolean;
       deprecateEmitIr: boolean;
     }
@@ -46,6 +48,18 @@ export function resolveOutputOptions(
     };
   }
   const emit = (rawEmit ?? "exe") as CliOutputKind;
+  if (values.subsystem !== undefined && values.subsystem !== "console" && values.subsystem !== "windows") {
+    return {
+      ok: false,
+      message: `unknown subsystem "${values.subsystem}" (supported: console, windows)`,
+    };
+  }
+  if (values.subsystem !== undefined && emit !== "exe") {
+    return {
+      ok: false,
+      message: "--subsystem is supported only for executable output (--emit=exe)",
+    };
+  }
   if (command === "run" && emit !== "exe") {
     return { ok: false, message: `scriptc run requires --emit=exe` };
   }
@@ -91,6 +105,11 @@ export function resolveOutputOptions(
       : emit === "llvm" || NATIVE_ARTIFACT_KINDS.has(emit)
         ? { backend: "llvm" as const }
         : backend === undefined ? {} : { backend }),
+    ...(values.subsystem === "windows"
+      ? { executableSubsystem: "windows" as const }
+      : values.subsystem === "console"
+        ? { executableSubsystem: "console" as const }
+        : {}),
     emitIr: values.emitIr && emit === "exe",
     deprecateEmitIr: values.emitIr,
   };

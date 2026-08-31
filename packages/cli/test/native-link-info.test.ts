@@ -42,6 +42,8 @@ test("print option validation is explicit", async () => {
     .rejects.toMatchObject({ stderr: expect.stringContaining("requires --emit=obj") });
   await expect(cli(["run", entry, "--print=native-link-info"]))
     .rejects.toMatchObject({ stderr: expect.stringContaining("is a build option") });
+  await expect(cli(["build", entry, "--print=native-link-info", "--subsystem=windows"]))
+    .rejects.toMatchObject({ stderr: expect.stringContaining("subsystem is supported only for executable output") });
 });
 
 describe.runIf(supported)("macOS arm64 native link info", () => {

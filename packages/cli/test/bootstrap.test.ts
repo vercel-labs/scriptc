@@ -9,6 +9,15 @@ const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../../..");
 const bootstrap = join(repoRoot, "packages/cli/dist/bootstrap.js");
 
+function peSubsystem(bytes: Buffer): number {
+  expect(bytes.subarray(0, 2)).toEqual(Buffer.from("MZ"));
+  const peOffset = bytes.readUInt32LE(0x3c);
+  expect(bytes.subarray(peOffset, peOffset + 4)).toEqual(Buffer.from("PE\0\0"));
+  const optionalHeader = peOffset + 4 + 20;
+  expect(bytes.readUInt16LE(optionalHeader)).toBe(0x20b);
+  return bytes.readUInt16LE(optionalHeader + 0x44);
+}
+
 test("bootstrap serves version and help without loading the compiler graph", async () => {
   const preloadDir = await mkdtemp(join(tmpdir(), "scriptc-bootstrap-preload-"));
   const preload = join(preloadDir, "preload.mjs");
@@ -92,3 +101,55 @@ test("bootstrap exact builds use the routed cache and source edits fall through"
     await rm(dir, { recursive: true, force: true });
   }
 }, 120_000);
+
+test.skipIf(process.platform !== "win32")(
+  "bootstrap routed cache keeps Windows GUI subsystem artifacts separate",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-bootstrap-subsystem-"));
+    const cacheRoot = join(dir, "cache");
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.exe");
+    const preload = join(dir, "reject-full-compiler.mjs");
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      SCRIPTC_CACHE_DIR: cacheRoot,
+      SCRIPTC_CC: "zigcc",
+      SCRIPTC_TARGET: "x86_64-windows-gnu",
+    };
+    delete env.SCRIPTC_NO_CACHE;
+    const build = (subsystem?: "windows", rejectFullCompiler = false) => execFileAsync(process.execPath, [
+      ...(rejectFullCompiler ? ["--import", preload] : []),
+      bootstrap,
+      "build",
+      entry,
+      "-o",
+      outPath,
+      ...(subsystem === undefined ? [] : ["--subsystem=windows"]),
+    ], { env, maxBuffer: 16 * 1024 * 1024 });
+    try {
+      await mkdir(cacheRoot, { mode: 0o700 });
+      await Promise.all([
+        writeFile(entry, "process.exit(0);\n"),
+        writeFile(preload, [
+          "import { registerHooks } from 'node:module';",
+          "registerHooks({ load(url, context, nextLoad) {",
+          "  if (url.includes('/packages/compiler/dist/index.js')) throw new Error('compiler graph loaded');",
+          "  return nextLoad(url, context);",
+          "}});",
+          "",
+        ].join("\n")),
+      ]);
+      await build();
+      expect(peSubsystem(await readFile(outPath))).toBe(3);
+      await build("windows");
+      expect(peSubsystem(await readFile(outPath))).toBe(2);
+      await expect(build("windows", true)).resolves.toMatchObject({ stderr: "" });
+      await expect(execFileAsync(outPath, [], { windowsHide: true, encoding: "utf8" })).resolves.toMatchObject({
+        stderr: "",
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  120_000,
+);

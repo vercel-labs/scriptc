@@ -266,6 +266,8 @@ export async function executableNativeEnvironmentFingerprint(
   return hash.digest("hex");
 }
 
+export type ExecutableSubsystem = "console" | "windows";
+
 export interface CcOptions {
   /** Path of the generated (or hand-written) program TU: a .c file, or the
    * LLVM backend's .ll — clang compiles IR text natively on the same
@@ -273,6 +275,9 @@ export interface CcOptions {
   cPath: string;
   /** Path of the native executable to produce. */
   outPath: string;
+  /** Windows PE executable subsystem. `windows` selects GUI startup; omitted
+   * and `console` retain the existing console executable behavior. */
+  executableSubsystem?: ExecutableSubsystem;
   /** Additional identity for a translation unit whose complete non-system
    * dependency graph is owned by the caller. Persistent caching is disabled
    * when omitted: arbitrary C can depend on same-path edited headers and on
@@ -3696,7 +3701,8 @@ function localArtifactIdentity(
       // instead of materializing a second giant JSON string solely for this
       // output-local fast-path identity.
       .filter(([key, value]) =>
-        value !== undefined && key !== "programShards" && key !== "programPublicSymbols"
+        value !== undefined && key !== "programShards" && key !== "programPublicSymbols" &&
+        !(key === "executableSubsystem" && value === "console")
       )
       .sort(([a], [b]) => a.localeCompare(b)),
   );
@@ -4005,6 +4011,16 @@ async function compileCInternal(
   const tls = (opts.tls ?? false) || nativeFetch || netIsland;
   const tlsCa = (opts.tlsCa ?? false) || tls;
   const driver = resolveCc();
+  if (opts.executableSubsystem !== undefined &&
+      opts.executableSubsystem !== "console" && opts.executableSubsystem !== "windows") {
+    throw new Error("executable subsystem must be console or windows");
+  }
+  if (opts.executableSubsystem !== undefined && targetPlatform(driver) !== "win32") {
+    throw new Error("--subsystem is supported only for Windows executable builds");
+  }
+  const executableSubsystemLinkArgs = opts.executableSubsystem === "windows"
+    ? ["-Wl,--subsystem,windows"]
+    : [];
   const shardNames = new Set<string>();
   const programShardsValid = opts.programShards?.every((shard) => {
     if (
@@ -4580,6 +4596,7 @@ async function compileCInternal(
     // from left to right.
     ...driver.linkArgs,
     ...executableSectionFlags.link,
+    ...executableSubsystemLinkArgs,
     "-o", build.outPath ?? opts.outPath,
   ];
   // Compile-only flags shared by runtime-object population and the caller-TU
@@ -4778,6 +4795,7 @@ async function compileCInternal(
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...driver.linkArgs,
     ...executableSectionFlags.link,
+    ...executableSubsystemLinkArgs,
   ];
   // Both the wrapper dry run and dependency trace need the real build's
   // compile/link flag shape: wrappers commonly inject flags or native inputs
@@ -4798,6 +4816,7 @@ async function compileCInternal(
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...driver.linkArgs,
     ...executableSectionFlags.link,
+    ...executableSubsystemLinkArgs,
   ];
   // A complete hit is checked before cross-target curl's generated import stub
   // is materialized. Its -L spelling still joins the dry-run identity, while

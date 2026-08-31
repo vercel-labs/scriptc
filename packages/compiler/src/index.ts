@@ -2,7 +2,7 @@ import { InternalCompilerError } from "./errors.js";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, compilerDriverSupportsPersistentCache, configuredTargetPlatform, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform, toolchainEnvironmentCachePolicy, toolchainEnvironmentFingerprint, type NativeArtifactDependency } from "./backend/native-toolchain.js";
+import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, compilerDriverSupportsPersistentCache, configuredTargetPlatform, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform, toolchainEnvironmentCachePolicy, toolchainEnvironmentFingerprint, type ExecutableSubsystem, type NativeArtifactDependency } from "./backend/native-toolchain.js";
 import { emitCModule } from "./backend/c/c-emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
 import { emitNativeArtifact, NativeCodegenError } from "./backend/native-codegen.js";
@@ -59,6 +59,7 @@ export {
   RUNTIME_ABI_VERSION,
 } from "./backend/runtime-abi.js";
 export type { NativeLinkInfo, NativeLinkFeatures } from "./backend/native-link-info.js";
+export type { ExecutableSubsystem } from "./backend/native-toolchain.js";
 
 export { InternalCompilerError } from "./errors.js";
 export {
@@ -224,6 +225,9 @@ export interface CompileBaseOptions {
  * historical compile() API, whose omitted output kind means executable. */
 export interface CompileOptions extends CompileBaseOptions {
   outputKind?: "exe";
+  /** Windows PE executable subsystem. Omit (or use `console`) for the
+   * historical console executable; `windows` emits a GUI executable. */
+  executableSubsystem?: ExecutableSubsystem;
   /** Internal validation lane retained for helper-object artifact tests.
    * Supported ordinary LLVM executable builds select this path automatically. */
   nativeProgramObject?: boolean;
@@ -238,6 +242,9 @@ export interface CompileSourceOptions extends CompileBaseOptions {
  * Statically executable/source callers should prefer the narrower interfaces. */
 export interface CompileRequestOptions extends CompileBaseOptions {
   outputKind?: CompileOutputKind;
+  /** Dynamic callers may set this only when outputKind resolves to `exe` and
+   * the effective build target is Windows. */
+  executableSubsystem?: ExecutableSubsystem;
   /** Internal validation lane for executable requests. */
   nativeProgramObject?: boolean;
 }
@@ -1048,6 +1055,7 @@ async function compileExecutableNative(
   cPath: string,
   outPath: string,
   sanitize: boolean,
+  executableSubsystem: ExecutableSubsystem | undefined,
   ffi: FfiProfile | null,
   programSplit: ReturnType<typeof splitLlvmProgram> = null,
   programObjectDependencies: readonly NativeArtifactDependency[] = [],
@@ -1109,6 +1117,7 @@ async function compileExecutableNative(
             programPublicSymbols: effectiveProgramSplit.publicSymbols,
           }),
       sanitize,
+      ...(executableSubsystem === "windows" ? { executableSubsystem } : {}),
       dynamic: features.dynamic,
       regex: features.regex,
       copying: features.copying,
@@ -1207,6 +1216,25 @@ async function compileTracked(
 ): Promise<CompileRequestResult> {
   entryPath = resolve(entryPath);
   const outputKind = opts.outputKind ?? "exe";
+  if (opts.executableSubsystem !== undefined &&
+      opts.executableSubsystem !== "console" && opts.executableSubsystem !== "windows") {
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag("SC3002", "executable subsystem must be console or windows", entryPath)],
+      sourceTexts: new Map(),
+    };
+  }
+  if (opts.executableSubsystem !== undefined && outputKind !== "exe") {
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag(
+        "SC3002",
+        "executable subsystem is supported only for Windows executable builds",
+        entryPath,
+      )],
+      sourceTexts: new Map(),
+    };
+  }
   if (opts.nativeLinkInfo === true && outputKind !== "obj") {
     return {
       ok: false,
@@ -1244,6 +1272,17 @@ async function compileTracked(
   let buildPlatform: string;
   if (outputKind === "exe") {
     buildPlatform = buildTargetPlatform();
+    if (opts.executableSubsystem !== undefined && buildPlatform !== "win32") {
+      return {
+        ok: false,
+        diagnostics: [nativeCodegenDiag(
+          "SC3002",
+          "executable subsystem is supported only for Windows executable builds",
+          entryPath,
+        )],
+        sourceTexts: new Map(),
+      };
+    }
   } else {
     try {
       buildPlatform = sourceTargetPlatform();
@@ -1324,6 +1363,9 @@ async function compileTracked(
       sanitize: opts.sanitize ?? false,
       dynamic: opts.dynamic ?? false,
       backend: opts.backend ?? "auto",
+      ...(opts.executableSubsystem === "windows"
+        ? { executableSubsystem: "windows" as const }
+        : {}),
       ...(opts.optimization === "dev" ? { optimization: "dev" as const } : {}),
       npmStatic: opts.npmStatic ?? null,
       ffiProfile:
@@ -1422,6 +1464,7 @@ async function compileTracked(
         nativeInputPath,
         opts.outPath,
         opts.sanitize ?? false,
+        opts.executableSubsystem,
         ffi,
         null,
         nativeProgramObject?.dependencies,
@@ -1744,6 +1787,7 @@ async function compileTracked(
       nativeProgramObject?.linkPath ?? cPath,
       opts.outPath,
       opts.sanitize ?? false,
+      opts.executableSubsystem,
       ffi,
       programSplit,
       nativeProgramObject?.dependencies,

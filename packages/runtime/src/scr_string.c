@@ -21,21 +21,23 @@ static void scr_oom(void) {
 /* ── UTF-16 index cache ───────────────────────────────────────────────
  * JS string semantics are UTF-16 indices over our UTF-8 storage, so
  * .length, charCodeAt, charAt, indexOf and slice all need unit↔byte
- * conversions. The four-entry direct cache keeps the old hot cursor for
- * tiny and allocation-failure traffic. Each entry owns sparse
- * `{ UTF-16 unit, UTF-8 byte }` checkpoints, so a warmed non-local lookup
- * decodes at most one checkpoint interval instead of a prefix proportional
- * to its requested index.
+ * conversions. A four-entry direct cursor cache keeps the old hot cursor for
+ * tiny and allocation-failure traffic. A separate four-entry sparse cache
+ * owns `{ UTF-16 unit, UTF-8 byte }` checkpoints, so a warmed non-local
+ * lookup decodes at most one checkpoint interval instead of a prefix
+ * proportional to its requested index.
  *
  * Checkpoints are owned by the entry, not the ScrStr ABI: the representation
  * remains the three-word UTF-8 ScrStr used by literals, FFI and generated
  * code. Checkpoints cost two size_ts every 4 KiB (about 0.39% of indexed
- * bytes). There are exactly four entries per runtime instance: eviction,
- * release, realloc, executable exit, and every library reset free retained
- * metadata. This fixed residency is intentional: registry lookup and the
- * release of unrelated strings must never scale with the number of live
- * indexed receivers. SCR_TL makes the table and owned buffers instance-local
- * for SCR_THREAD_INSTANCES. Metadata allocation is strictly an optimization:
+ * bytes). There are exactly four sparse entries per runtime instance;
+ * eviction, release, realloc, executable exit, and every library reset free
+ * retained metadata. The cursor and sparse tiers are deliberately separate:
+ * fresh short receivers never evict a retained large-string index. This
+ * fixed residency is intentional: registry lookup and the release of
+ * unrelated strings never scale with the number of live indexed receivers.
+ * SCR_TL makes both tables and owned buffers instance-local for
+ * SCR_THREAD_INSTANCES. Metadata allocation is strictly an optimization:
  * overflow or malloc failure falls back to the cursor mapper.
  */
 #define SCR_SIDX_N 4
@@ -55,9 +57,16 @@ typedef struct ScrSidx {
   size_t indexed_cu;     /* exact contiguous prefix indexed from byte zero */
   size_t indexed_cb;
   bool no_more_points;   /* metadata allocation failed/overflowed: fail open */
+  bool points_complete;  /* points cover every stride of indexed prefix */
 } ScrSidx;
-static SCR_TL ScrSidx scr_sidx_tab[SCR_SIDX_N];
-static SCR_TL unsigned scr_sidx_clock;
+/* Keep short-string cursor traffic out of the sparse cache. A short-lived
+ * one-byte receiver can be far more common than a large indexed one; sharing
+ * the round-robin slots would otherwise rebuild a warm index every few calls.
+ */
+static SCR_TL ScrSidx scr_sidx_sparse_tab[SCR_SIDX_N];
+static SCR_TL ScrSidx scr_sidx_cursor_tab[SCR_SIDX_N];
+static SCR_TL unsigned scr_sidx_sparse_clock;
+static SCR_TL unsigned scr_sidx_cursor_clock;
 static SCR_TL bool scr_sidx_cleanup_registered;
 
 static void scr_sidx_clear(ScrSidx *e) {
@@ -66,8 +75,12 @@ static void scr_sidx_clear(ScrSidx *e) {
 }
 
 static void scr_sidx_reset_all(void) {
-  for (int i = 0; i < SCR_SIDX_N; i++) scr_sidx_clear(&scr_sidx_tab[i]);
-  scr_sidx_clock = 0;
+  for (int i = 0; i < SCR_SIDX_N; i++) {
+    scr_sidx_clear(&scr_sidx_sparse_tab[i]);
+    scr_sidx_clear(&scr_sidx_cursor_tab[i]);
+  }
+  scr_sidx_sparse_clock = 0;
+  scr_sidx_cursor_clock = 0;
 }
 
 static void scr_sidx_register_cleanup(void) {
@@ -84,12 +97,14 @@ size_t scr_sidx_test_walk_steps(void) { return scr_sidx_walk_steps; }
 void scr_sidx_test_reset_cache(void) { scr_sidx_reset_all(); }
 size_t scr_sidx_test_entries(void) {
   size_t n = 0;
-  for (int i = 0; i < SCR_SIDX_N; i++) n += scr_sidx_tab[i].s != NULL;
+  for (int i = 0; i < SCR_SIDX_N; i++)
+    n += scr_sidx_sparse_tab[i].s != NULL;
   return n;
 }
 size_t scr_sidx_test_points(void) {
   size_t n = 0;
-  for (int i = 0; i < SCR_SIDX_N; i++) n += scr_sidx_tab[i].npoints;
+  for (int i = 0; i < SCR_SIDX_N; i++)
+    n += scr_sidx_sparse_tab[i].npoints;
   return n;
 }
 #define SCR_SIDX_STEP() (scr_sidx_walk_steps++)
@@ -98,11 +113,14 @@ size_t scr_sidx_test_points(void) {
 #endif
 
 static void scr_sidx_purge(const ScrStr *s) {
-  /* This is deliberately the fixed four-entry table, never an unbounded
+  /* These are deliberately fixed four-entry tables, never an unbounded
    * receiver registry. Releasing an unrelated temporary therefore does at
-   * most four pointer comparisons and cannot grow with live strings. */
+   * most eight pointer comparisons and cannot grow with live strings. */
   for (int i = 0; i < SCR_SIDX_N; i++) {
-    if (scr_sidx_tab[i].s == s) scr_sidx_clear(&scr_sidx_tab[i]);
+    if (scr_sidx_sparse_tab[i].s == s)
+      scr_sidx_clear(&scr_sidx_sparse_tab[i]);
+    if (scr_sidx_cursor_tab[i].s == s)
+      scr_sidx_clear(&scr_sidx_cursor_tab[i]);
   }
 }
 
@@ -112,14 +130,45 @@ static void scr_sidx_init(ScrSidx *e, const ScrStr *s) {
   e->u16len = SCR_U16_UNKNOWN;
 }
 
-/* All receivers share the fixed table so short/sequential traffic keeps the
- * historical hot cursor. Only large non-ASCII strings allocate checkpoints;
- * every lookup and cleanup remains bounded by SCR_SIDX_N. */
+/* Short strings retain the historical hot cursor without contending with the
+ * sparse residency. Large strings claim only the sparse tier; an in-place
+ * append that crosses the threshold moves its exact cursor frontier into
+ * that tier rather than scanning the unchanged prefix again. All-ASCII
+ * receivers still shed their point buffer after proving identity mapping.
+ * Both tiers remain fixed-size and allocation-free until a non-ASCII sparse
+ * receiver actually needs checkpoints. */
 static ScrSidx *scr_sidx(const ScrStr *s) {
-  for (int i = 0; i < SCR_SIDX_N; i++) {
-    if (scr_sidx_tab[i].s == s) return &scr_sidx_tab[i];
+  if (s->len >= SCR_SIDX_MIN_BYTES) {
+    for (int i = 0; i < SCR_SIDX_N; i++) {
+      if (scr_sidx_sparse_tab[i].s == s) return &scr_sidx_sparse_tab[i];
+    }
+    /* The only in-place mutation is append. A formerly short receiver can
+     * therefore cross the threshold with an exact, useful cursor frontier
+     * already in the cursor tier; transfer it before evicting a sparse slot.
+     * No checkpoint buffer can exist below the threshold, but moving the
+     * whole record also preserves the fail-open allocation state. */
+    for (int i = 0; i < SCR_SIDX_N; i++) {
+      ScrSidx *old = &scr_sidx_cursor_tab[i];
+      if (old->s != s) continue;
+      ScrSidx *e = &scr_sidx_sparse_tab[
+          scr_sidx_sparse_clock++ % SCR_SIDX_N];
+      scr_sidx_clear(e);
+      *e = *old;
+      memset(old, 0, sizeof(*old)); /* ownership moved to the sparse tier */
+      return e;
+    }
+    ScrSidx *e =
+        &scr_sidx_sparse_tab[scr_sidx_sparse_clock++ % SCR_SIDX_N];
+    scr_sidx_clear(e);
+    scr_sidx_init(e, s);
+    return e;
   }
-  ScrSidx *e = &scr_sidx_tab[scr_sidx_clock++ % SCR_SIDX_N];
+  ScrSidx *tab = scr_sidx_cursor_tab;
+  unsigned *clock = &scr_sidx_cursor_clock;
+  for (int i = 0; i < SCR_SIDX_N; i++) {
+    if (tab[i].s == s) return &tab[i];
+  }
+  ScrSidx *e = &tab[(*clock)++ % SCR_SIDX_N];
   scr_sidx_clear(e);
   scr_sidx_init(e, s);
   return e;
@@ -127,14 +176,18 @@ static ScrSidx *scr_sidx(const ScrStr *s) {
 
 /* In-place concat changes only the suffix. Keep every exact prefix anchor
  * (including the former end, which is now an ordinary boundary), but remove
- * the sole fact that described the old complete string. Side-registry
- * records need the same treatment as inline cursor entries. */
+ * the sole fact that described the old complete string. A threshold-crossing
+ * receiver may move from the cursor tier to the sparse tier on its next
+ * lookup, so invalidate either possible entry. */
 static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
   for (int i = 0; i < SCR_SIDX_N; i++) {
-    ScrSidx *e = &scr_sidx_tab[i];
-    if (e->s != s) continue;
-    e->u16len = SCR_U16_UNKNOWN;
-    if (e->indexed_cb > oldlen) e->indexed_cb = oldlen;
+    ScrSidx *entries[] = {&scr_sidx_sparse_tab[i], &scr_sidx_cursor_tab[i]};
+    for (size_t j = 0; j < sizeof(entries) / sizeof(entries[0]); j++) {
+      ScrSidx *e = entries[j];
+      if (e->s != s) continue;
+      e->u16len = SCR_U16_UNKNOWN;
+      if (e->indexed_cb > oldlen) e->indexed_cb = oldlen;
+    }
   }
 }
 
@@ -502,6 +555,13 @@ static bool scr_sidx_prepare_points(const ScrStr *s, ScrSidx *e) {
         !scr_sidx_add_point(e, e->indexed_cu, e->indexed_cb, true)) {
       return false;
     }
+    /* A pre-existing mixed prefix can only belong to a receiver that grew
+     * across the admission threshold while it was in the cursor tier. Its
+     * exact terminal anchor is useful immediately, but it does not promise
+     * a stride-bounded route through that old prefix. On completion, rebuild
+     * once from zero rather than mistaking this short-history anchor for a
+     * fully formed sparse index. */
+    e->points_complete = e->indexed_cb == e->indexed_cu;
   }
   return true;
 }
@@ -549,8 +609,13 @@ static bool scr_sidx_extend_one(const ScrStr *s, ScrSidx *e) {
  * with only the hot cursor. This is still fail-open: an allocation failure
  * leaves the completed length/cursor cache fully usable. */
 static void scr_sidx_rebuild_points(const ScrStr *s, ScrSidx *e) {
-  if (s->len < SCR_SIDX_MIN_BYTES || e->npoints != 0 || e->no_more_points)
+  if (s->len < SCR_SIDX_MIN_BYTES || e->points_complete ||
+      e->no_more_points)
     return;
+  free(e->points);
+  e->points = NULL;
+  e->npoints = 0;
+  e->cap = 0;
   size_t cu = 0, cb = 0;
   if (!scr_sidx_add_point(e, cu, cb, true)) return;
   while (cb < s->len) {
@@ -559,6 +624,7 @@ static void scr_sidx_rebuild_points(const ScrStr *s, ScrSidx *e) {
     cb = end;
     if (!scr_sidx_add_point(e, cu, cb, true)) return;
   }
+  e->points_complete = true;
 }
 
 static void scr_sidx_finish(const ScrStr *s, ScrSidx *e) {
@@ -569,6 +635,7 @@ static void scr_sidx_finish(const ScrStr *s, ScrSidx *e) {
     e->points = NULL;
     e->npoints = 0;
     e->cap = 0;
+    e->points_complete = false;
   } else {
     scr_sidx_rebuild_points(s, e);
   }

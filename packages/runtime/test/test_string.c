@@ -337,16 +337,35 @@ static void sparse_index_asserts(void) {
   }
   if (scr_sidx_test_entries() != 4 || scr_sidx_test_points() == 0)
     sidx_fail("five live sparse indexes did not evict to four entries");
-  /* Keep churning one-byte temporaries while the four large indexes remain
-   * live. This is a lifecycle guard for the review's bounded-registry
-   * requirement: short releases must never retain/visit a growing owner
-   * registry, and they must not disturb the fixed sparse entries. */
+  /* Fresh tiny indexed calls use the separate cursor tier. They must not
+   * evict the four warmed sparse entries merely because the short receivers
+   * happen to have different addresses on every iteration. */
   for (size_t i = 0; i < 4096; i++) {
     ScrStr *tiny = scr_str_new("x", 1);
+    if (scr_str_utf16_len(tiny) != 1.0 ||
+        scr_str_char_code_at(tiny, 0) != 120.0)
+      sidx_fail("tiny indexed operation result");
     scr_str_release(tiny);
   }
-  if (scr_sidx_test_entries() != 4)
-    sidx_fail("short releases disturbed bounded sparse entries");
+  if (scr_sidx_test_entries() != 4 || scr_sidx_test_points() == 0)
+    sidx_fail("tiny indexed operations evicted sparse entries");
+  scr_sidx_test_reset_steps();
+  for (size_t q = 0; q < QUERIES; q++) {
+    /* Mirror ordinary production traffic: each far lookup has one fresh,
+     * tiny indexed receiver immediately before it. The sparse points must
+     * remain resident throughout, not merely survive a release-only churn. */
+    ScrStr *tiny = scr_str_new("x", 1);
+    if (scr_str_utf16_len(tiny) != 1.0 ||
+        scr_str_char_code_at(tiny, 0) != 120.0)
+      sidx_fail("interleaved tiny indexed operation result");
+    scr_str_release(tiny);
+    if (scr_str_char_code_at(live[1 + q % 4], 41999.0) != 769.0)
+      sidx_fail("post-tiny sparse charCodeAt result");
+    if (scr_sidx_test_points() == 0)
+      sidx_fail("interleaved tiny operation discarded sparse checkpoints");
+  }
+  if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 4200)
+    sidx_fail("tiny indexed operations lost sparse stride bound");
   scr_str_release(live[4]);
   if (scr_sidx_test_entries() != 3) sidx_fail("release did not purge entry");
   ScrStr *reused = scr_str_alloc_raw((sizeof(piece) - 1) * 7000,
@@ -442,9 +461,9 @@ static void sparse_all_ascii_end_asserts(void) {
 
 /* Crossing the sparse threshold is not necessarily what first introduces
  * non-ASCII data: a mixed 63KiB receiver can be length-indexed while still
- * small, then grow in place by ASCII-only bytes. The completed non-identity
- * cache must materialize its checkpoints at that transition rather than
- * retaining only the hot cursor. */
+ * small, then grow in place. The completed non-identity cache must
+ * materialize every checkpoint interval at that transition rather than
+ * retaining only the hot cursor or an old-end anchor. */
 static void sparse_append_threshold_asserts(void) {
   enum { BEFORE = 32700, EXTRA = 200, QUERIES = 8 };
   ScrStr *eacute = scr_str_new("\xC3\xA9", 2);
@@ -455,8 +474,8 @@ static void sparse_append_threshold_asserts(void) {
       scr_sidx_test_points() != 0) {
     sidx_fail("small mixed prefix unexpectedly indexed");
   }
-  ScrStr *more = scr_str_repeat(one, EXTRA);
-  handoff_append(&s, more); /* in-place ASCII-only threshold crossing */
+  ScrStr *more = scr_str_repeat(eacute, EXTRA);
+  handoff_append(&s, more); /* in-place non-ASCII threshold crossing */
   if (scr_str_utf16_len(s) != (double)(BEFORE + 1 + EXTRA) ||
       scr_sidx_test_points() == 0) {
     sidx_fail("mixed threshold append did not materialize checkpoints");

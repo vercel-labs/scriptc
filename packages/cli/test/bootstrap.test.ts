@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
 
@@ -30,9 +31,9 @@ test("bootstrap serves version and help without loading the compiler graph", asy
       "}});",
       "",
     ].join("\n"));
-    const version = await execFileAsync(process.execPath, ["--import", preload, bootstrap, "--version"]);
+    const version = await execFileAsync(process.execPath, ["--import", pathToFileURL(preload).href, bootstrap, "--version"]);
     expect(version.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
-    const help = await execFileAsync(process.execPath, ["--import", preload, bootstrap, "--help"]);
+    const help = await execFileAsync(process.execPath, ["--import", pathToFileURL(preload).href, bootstrap, "--help"]);
     expect(help.stdout).toContain("scriptc build <file.ts|.js>");
   } finally {
     await rm(preloadDir, { recursive: true, force: true }).catch(() => undefined);
@@ -49,7 +50,7 @@ test("bootstrap exact builds use the routed cache and source edits fall through"
   const env = { ...process.env, SCRIPTC_CACHE_DIR: cacheRoot, SCRIPTC_TIMING: "1" };
   const build = (rejectFullCompiler = false): Promise<{ stderr: string }> =>
     execFileAsync(process.execPath, [
-      ...(rejectFullCompiler ? ["--import", preload] : []),
+      ...(rejectFullCompiler ? ["--import", pathToFileURL(preload).href] : []),
       bootstrap,
       "build",
       entry,
@@ -118,7 +119,7 @@ test.skipIf(process.platform !== "win32")(
     };
     delete env.SCRIPTC_NO_CACHE;
     const build = (subsystem?: "windows", rejectFullCompiler = false) => execFileAsync(process.execPath, [
-      ...(rejectFullCompiler ? ["--import", preload] : []),
+      ...(rejectFullCompiler ? ["--import", pathToFileURL(preload).href] : []),
       bootstrap,
       "build",
       entry,

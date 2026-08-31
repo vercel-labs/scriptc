@@ -23,6 +23,9 @@ first.listen({ port: 0, host: "127.0.0.1" }, () => {
   // single-listener EADDRINUSE behavior.
   second.listen({ port, host: "127.0.0.1", reusePort: false }, () => {
     console.log("bound twice?!");
-    second.close();
+    // Some BSD kernels accept this SO_REUSEADDR combination. Keep the
+    // conflict probe platform-safe even on that path: the first listener
+    // must not be left alive while the harness waits for process exit.
+    second.close(() => first.close(() => console.log("released")));
   });
 });

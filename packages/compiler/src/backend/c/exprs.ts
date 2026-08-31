@@ -2095,7 +2095,9 @@ function emitCallExpr(
         // channel (the library lane loads no native-FFI manifest). The
         // dispatch fetches the slot's registered pointer — or delivers the
         // channel's unregistered-call trap through the funnel (SC4025) —
-        // then makes the typed indirect call, opaque context first.
+        // then brackets only the typed indirect call, opaque context first.
+        // The bracket makes callback-time ABI re-entry a deterministic
+        // SC4026 trap before an inner entry can mutate runtime state.
         // Marshalling matches the native ffiCall's value classes exactly:
         // buffers are borrowed (ptr, len) for the call's duration, the
         // u8/u32/i32 plumbing classes ride JS's ToUint32/ToInt32, and a
@@ -2105,35 +2107,56 @@ function emitCallExpr(
         if (libCb !== undefined) {
           const cbArgs = e.args.map((arg) => emitter.emitExpr(arg));
           const natTypes: string[] = ["void *"];
-          const natArgs: string[] = [`scr_library_cb_ctx(${libCb.slot})`];
+          const natArgs: string[] = [];
           libCb.params.forEach((cls, i) => {
             const arg = cbArgs[i]!;
+            const native = (): string => `sc_t${emitter.tempCounter++}`;
             switch (cls) {
-              case "f64":
+              case "f64": {
+                const value = native();
+                emitter.line(`double ${value} = ${arg.name};`);
                 natTypes.push("double");
-                natArgs.push(arg.name);
+                natArgs.push(value);
                 break;
-              case "bool":
+              }
+              case "bool": {
+                const value = native();
+                emitter.line(`uint8_t ${value} = (uint8_t)(${arg.name} ? 1 : 0);`);
                 natTypes.push("uint8_t");
-                natArgs.push(`(uint8_t)(${arg.name} ? 1 : 0)`);
+                natArgs.push(value);
                 break;
-              case "u8":
+              }
+              case "u8": {
+                const value = native();
+                emitter.line(`uint8_t ${value} = (uint8_t)(uint32_t)scr_bit_ushr(${arg.name}, 0.0);`);
                 natTypes.push("uint8_t");
-                natArgs.push(`(uint8_t)(uint32_t)scr_bit_ushr(${arg.name}, 0.0)`);
+                natArgs.push(value);
                 break;
-              case "u32":
+              }
+              case "u32": {
+                const value = native();
+                emitter.line(`uint32_t ${value} = (uint32_t)scr_bit_ushr(${arg.name}, 0.0);`);
                 natTypes.push("uint32_t");
-                natArgs.push(`(uint32_t)scr_bit_ushr(${arg.name}, 0.0)`);
+                natArgs.push(value);
                 break;
-              case "i32":
+              }
+              case "i32": {
+                const value = native();
+                emitter.line(`int32_t ${value} = (int32_t)scr_bit_or(${arg.name}, 0.0);`);
                 natTypes.push("int32_t");
-                natArgs.push(`(int32_t)scr_bit_or(${arg.name}, 0.0)`);
+                natArgs.push(value);
                 break;
+              }
               case "string":
-              case "bytes":
+              case "bytes": {
+                const ptr = native();
+                const len = native();
+                emitter.line(`const uint8_t *${ptr} = (const uint8_t *)${arg.name}->data;`);
+                emitter.line(`size_t ${len} = ${arg.name}->len;`);
                 natTypes.push("const uint8_t *", "size_t");
-                natArgs.push(`(const uint8_t *)${arg.name}->data`, `${arg.name}->len`);
+                natArgs.push(ptr, len);
                 break;
+              }
             }
           });
           const retC =
@@ -2143,18 +2166,42 @@ function emitCallExpr(
             : libCb.returns === "u32" ? "uint32_t"
             : "int32_t";
           const trapLit = cStringLiteral(Buffer.from(libCb.unregisteredTrap, "utf8"));
-          const target = `((${retC} (*)(${natTypes.join(", ")}))scr_library_cb_require(${libCb.slot}, ${trapLit}))`;
-          const call = `${target}(${natArgs.join(", ")})`;
+          // Materialize the pointer and context before the callback-active
+          // bracket. This keeps the existing SC4025 fetch path outside the
+          // bracket and avoids C argument evaluation-order ambiguity.
+          const fn = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`${retC} (*${fn})(${natTypes.join(", ")}) = (${retC} (*)(${natTypes.join(", ")}))scr_library_cb_require(${libCb.slot}, ${trapLit});`);
+          const ctx = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`void *${ctx} = scr_library_cb_ctx(${libCb.slot});`);
+          const call = `${fn}(${[ctx, ...natArgs].join(", ")})`;
           switch (libCb.returns) {
             case "void":
+              emitter.line(`scr_library_callback_begin();`);
               emitter.line(`${call};${emitter.srcComment(e.loc)}`);
+              emitter.line(`scr_library_callback_end();`);
               return { name: "", type: e.type };
-            case "f64":
-              return emitter.newTemp(e.type, call);
+            case "f64": {
+              const raw = `sc_t${emitter.tempCounter++}`;
+              emitter.line(`scr_library_callback_begin();`);
+              emitter.line(`${retC} ${raw} = ${call};${emitter.srcComment(e.loc)}`);
+              emitter.line(`scr_library_callback_end();`);
+              return emitter.newTemp(e.type, raw);
+            }
             case "bool":
-              return emitter.newTemp(e.type, `(${call} != 0)`);
-            default: // u8/u32/i32 — exact widenings back to f64
-              return emitter.newTemp(e.type, `(double)${call}`);
+            {
+              const raw = `sc_t${emitter.tempCounter++}`;
+              emitter.line(`scr_library_callback_begin();`);
+              emitter.line(`${retC} ${raw} = ${call};${emitter.srcComment(e.loc)}`);
+              emitter.line(`scr_library_callback_end();`);
+              return emitter.newTemp(e.type, `(${raw} != 0)`);
+            }
+            default: { // u8/u32/i32 — exact widenings back to f64
+              const raw = `sc_t${emitter.tempCounter++}`;
+              emitter.line(`scr_library_callback_begin();`);
+              emitter.line(`${retC} ${raw} = ${call};${emitter.srcComment(e.loc)}`);
+              emitter.line(`scr_library_callback_end();`);
+              return emitter.newTemp(e.type, `(double)${raw}`);
+            }
           }
         }
         const entry = emitter.ffiByName.get(e.import);

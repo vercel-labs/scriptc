@@ -998,6 +998,7 @@ class LlEmitter {
       this.declare(`declare void @scr_library_reset()`);
       this.declare(`declare void @scr_library_check_exc()`);
       this.declare(`declare void @scr_library_set_sink(ptr, ptr)`);
+      this.declare(`declare void @scr_library_callback_entry_guard(ptr)`);
       this.declare(`declare void @scr_library_arena_reset()`);
       this.declare(`declare void @scr_library_collect()`);
       if ((this.mod.lib.callbacks?.length ?? 0) > 0) {
@@ -1429,6 +1430,8 @@ class LlEmitter {
       out.push(`${symConst(sym)} = internal constant [${Buffer.byteLength(sym, "utf8") + 1} x i8] c"${llStrBytes(sym)}"`);
     };
     emitSymConst(lib.initSymbol);
+    emitSymConst(lib.sinkRegisterSymbol);
+    if (lib.callbackRegisterSymbol !== null && lib.callbackRegisterSymbol !== undefined) emitSymConst(lib.callbackRegisterSymbol);
     if (lib.resultResetSymbol !== null) emitSymConst(lib.resultResetSymbol);
     if (lib.collectSymbol !== null) emitSymConst(lib.collectSymbol);
     for (const e of lib.exports) emitSymConst(e.symbol);
@@ -1485,6 +1488,7 @@ class LlEmitter {
       ``,
       `define void @${lib.sinkRegisterSymbol}(ptr %fn, ptr %ctx) ${FN_ATTRS} {`,
       `entry:`,
+      `  call void @scr_library_callback_entry_guard(ptr ${symConst(lib.sinkRegisterSymbol)})`,
       `  call void @scr_library_set_sink(ptr %fn, ptr %ctx)`,
       `  ret void`,
       `}`,
@@ -1497,7 +1501,8 @@ class LlEmitter {
       // scr_library_cb_require operands — same bytes as the C emission by
       // construction), and the registration define: a pure store dispatch
       // (the sink registration's rule — no entry prologue, no poison
-      // guard). An unknown or NULL name is a defined -1, never a store.
+      // guard) whose first operation rejects callback-time re-entry
+      // (SC4026). An unknown or NULL name is a defined -1, never a store.
       for (const cb of lib.callbacks) {
         out.push(
           `@sc_lib_cb_name_${cb.slot} = internal constant [${Buffer.byteLength(cb.name, "utf8") + 1} x i8] c"${llStrBytes(cb.name)}"`,
@@ -1508,6 +1513,7 @@ class LlEmitter {
         ``,
         `define i32 @${lib.callbackRegisterSymbol}(ptr %name, ptr %fn, ptr %ctx) ${FN_ATTRS} {`,
         `entry:`,
+        `  call void @scr_library_callback_entry_guard(ptr ${symConst(lib.callbackRegisterSymbol!)})`,
         `  %isnull = icmp eq ptr %name, null`,
         `  br i1 %isnull, label %miss, label %try0`,
       );

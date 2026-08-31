@@ -56,7 +56,12 @@
  *                          once while B streams through and after the
  *                          window; the localized external surface is
  *                          exactly the declared set
- *   CB8 sanitized lane     CB1 and CB2 re-run under ASan
+ *   CB8 callback re-entry  every ABI entry is rejected as SC4026 while a
+ *                          host callback is active; the attempted INNER
+ *                          symbol wins, the original sink sees it, pure
+ *                          registration retains its post-poison behavior,
+ *                          and an independent thread instance survives
+ *   CB9 sanitized lane     CB1, CB2, and callback re-entry re-run under ASan
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -88,6 +93,8 @@ interface BuildOpts {
   entry?: string;
   /** Drop the callbacks surface entirely (CB6's callback-free posture). */
   stripCallbacks?: boolean;
+  /** Keep only exports the alternate callback fixture implements. */
+  stripBufferedExport?: boolean;
   tag?: string;
 }
 
@@ -111,6 +118,9 @@ async function buildLibrary(
   if (opts.stripCallbacks === true) {
     delete profile.callbacks;
     delete profile.abi["callback_register_symbol"];
+  }
+  if (opts.stripBufferedExport === true) {
+    profile.exports = (profile.exports as { export: string }[]).filter((e) => e.export !== "buffered");
   }
   const profilePath = join(outDir, "profile.json");
   writeFileSync(profilePath, JSON.stringify(profile, null, 2));
@@ -163,7 +173,16 @@ function buildProbe(
 }
 
 function runProbe(bin: string, args: string[] = []): { stdout: string; status: number | null; signal: string | null } {
-  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 60_000 });
+  // Library poison survival intentionally uses sink longjmp, which abandons
+  // the active outer operation by contract. LeakSanitizer cannot model that
+  // non-local recovery, while ASan still checks the memory-safety paths.
+  const r = spawnSync(bin, args, {
+    encoding: "utf8",
+    timeout: 60_000,
+    env: process.env["SCRIPTC_SAN"] === "1" || bin.includes("-san/")
+      ? { ...process.env, ASAN_OPTIONS: "detect_leaks=0" }
+      : undefined,
+  });
   return { stdout: r.stdout ?? "", status: r.status, signal: r.signal };
 }
 
@@ -230,9 +249,34 @@ survived, sink_calls=1
 `;
 
 const CALLBACK_SYMBOLS = [
-  "cb_init", "cb_set_panic_sink", "cb_collect", "cb_set_callback",
-  "cb_stream", "cb_ask_host", "cb_poke_orphan",
+  "cb_init", "cb_set_panic_sink", "cb_collect", "cb_reset_results", "cb_set_callback",
+  "cb_stream", "cb_buffered", "cb_ask_host", "cb_poke_orphan",
 ];
+
+const REENTRY_SYMBOLS: Record<string, string> = {
+  "reenter-export": "cb_stream",
+  "reenter-init": "cb_init",
+  "reenter-reset": "cb_reset_results",
+  "reenter-collect": "cb_collect",
+  "reenter-sink": "cb_set_panic_sink",
+  "reenter-callback-unknown": "cb_set_callback",
+};
+
+function reentryExpected(symbol: string, overlay = false): string {
+  const text = overlay ? "return from the callback before calling the library" : `scriptc: library entry '${symbol}' invoked from a host callback\n`;
+  const remediation = overlay ? "schedule the operation for a later host-loop turn" : undefined;
+  return `callbacks ready
+sink[1]:
+text=[${text}]
+code=[SC4026]
+symbol=[${symbol}]
+${remediation === undefined ? "" : `remediation=[${remediation}]\n`}fields=${overlay ? 4 : 3} text_printable=1
+addr: nonzero
+post-poison register: 0
+replacement-sink-calls=0
+saved-result=[buffer 7]
+`;
+}
 
 describe.each(EMISSIONS)("library host callbacks, %s emission", (emission) => {
   platformTest("CB1/CB4: the acceptance run, symbol exactness, ambient audit", async () => {
@@ -296,6 +340,31 @@ survived, sink_calls=1
 `);
   });
 
+  platformTest("CB8: callback-time entries trap SC4026 before mutation and poison the instance", async () => {
+    const { archive, outDir } = await buildLibrary(emission, { tag: "reentry" });
+    const probe = buildProbe("probe.c", archive, outDir, { pthread: true });
+    for (const [mode, symbol] of Object.entries(REENTRY_SYMBOLS)) {
+      const run = runProbe(probe, [mode]);
+      expect(run.signal, mode).toBe("SIGABRT");
+      expect(run.stdout, mode).toBe(reentryExpected(symbol));
+      expect(run.stdout.includes("UNREACHABLE"), mode).toBe(false);
+    }
+  });
+
+  platformTest("CB8: SC4026 rides the teaching overlay table with its inner symbol", async () => {
+    const { archive, outDir } = await buildLibrary(emission, {
+      tag: "reentry-teach",
+      determinism: {
+        teachings: { SC4026: "return from the callback before calling the library" },
+        remediations: { SC4026: "schedule the operation for a later host-loop turn" },
+      },
+    });
+    const probe = buildProbe("probe.c", archive, outDir, { pthread: true });
+    const run = runProbe(probe, ["reenter-reset"]);
+    expect(run.signal).toBe("SIGABRT");
+    expect(run.stdout).toBe(reentryExpected("cb_reset_results", true));
+  });
+
   test("CB6: an undeclared host-callback reference refuses SC4024 with the profile teaching", async () => {
     const diags = await buildRefusal(emission, {
       tag: "undeclared",
@@ -357,6 +426,7 @@ survived, sink_calls=1
       tag: "no-callbacks",
       entry: "lib_undeclared.ts",
       stripCallbacks: true,
+      stripBufferedExport: true,
     });
     const probe = buildProbe("probe_referror.c", archive, outDir);
     const run = runProbe(probe);
@@ -374,7 +444,7 @@ survived, sink_calls=1
     // lib_unused.ts never mentions 'orphan' (or the other channels); the
     // build succeeds and the registration symbol still answers for every
     // declared name.
-    const { archive, outDir } = await buildLibrary(emission, { tag: "unused", entry: "lib_unused.ts" });
+    const { archive, outDir } = await buildLibrary(emission, { tag: "unused", entry: "lib_unused.ts", stripBufferedExport: true });
     const probe = buildProbe("probe_unused.c", archive, outDir);
     const run = runProbe(probe);
     expect(run.signal).toBeNull();
@@ -405,6 +475,7 @@ keyword: 7.5
     const { archive, outDir } = await buildLibrary(emission, {
       tag: "project-dts",
       entry: "lib_project_dts.ts",
+      stripBufferedExport: true,
     });
     const probe = buildProbe("probe_project_dts.c", archive, outDir);
     const run = runProbe(probe);
@@ -445,9 +516,22 @@ B: r1=31 r2=6 chunks=4 thread_ok=1 sink_calls=0
     expect([...undef].filter((s) => s.startsWith("cbt_"))).toEqual([]);
   });
 
-  /* ── CB8: the sanitized lane ─────────────────────────────────────────── */
+  localizationTest("CB8: callback re-entry poisons only the active thread instance", async () => {
+    const { archive, outDir } = await buildLibrary(emission, { tag: "threads-reentry", profileFile: "profile_t.json" });
+    const probe = buildProbe("probe_threads_reentry.c", archive, outDir, { pthread: true });
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(`callbacks ready
+callbacks ready
+A: result=0 chunks=0 thread_ok=1 sink_calls=1 code=SC4026 symbol=cbt_stream ctx_ok=1
+B: result=5 chunks=1 thread_ok=1 sink_calls=0
+`);
+  });
 
-  platformTest("CB8: CB1/CB2 under ASan", async () => {
+  /* ── CB9: the sanitized lane ─────────────────────────────────────────── */
+
+  platformTest("CB9: CB1/CB2/CB8 under ASan", async () => {
     const { archive, outDir } = await buildLibrary(emission, { sanitize: true });
     const probe = buildProbe("probe.c", archive, outDir, { sanitize: true, pthread: true });
     const run = runProbe(probe, ["run"]);
@@ -457,5 +541,8 @@ B: r1=31 r2=6 chunks=4 thread_ok=1 sink_calls=0
     const orphan = runProbe(probe, ["orphan"]);
     expect(orphan.signal).toBe("SIGABRT");
     expect(orphan.stdout).toBe(ORPHAN_EXPECTED);
+    const reentry = runProbe(probe, ["reenter-reset"]);
+    expect(reentry.signal).toBe("SIGABRT");
+    expect(reentry.stdout).toBe(reentryExpected("cb_reset_results"));
   });
 });

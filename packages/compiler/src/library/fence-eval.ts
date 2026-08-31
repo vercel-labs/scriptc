@@ -55,6 +55,7 @@ import {
   BUILTIN_MODULE_CONSTS,
   BUILTIN_MODULE_FNS,
   BUILTIN_MODULE_FN_ALIASES,
+  STATIC_MATH_CONSTS,
   STATIC_MATH_FNS,
   STATIC_NUMBER_METHODS,
   STR_METHODS,
@@ -165,6 +166,15 @@ function fenceTaxonomy(): FenceTaxonomy {
   for (const [mod, members] of Object.entries(BUILTIN_MODULE_CONSTS)) {
     for (const member of Object.keys(members!)) foldedIds.add(`${builtinRootId(mod)}.${member}`);
   }
+  // The stdlib Math constants (Math.PI, Math.E) fold the same way: a read
+  // is lowered to a per-binary f64 literal (STATIC_MATH_CONSTS in
+  // surfaces.ts), so the compiled artifact performs no runtime read a fence
+  // could deny. Registering them in foldedIds both yields the accurate
+  // "folds to a constant" message for an id fence and — critically — the
+  // prefix-sweep exemption below, so { prefix: "stdlib.math." } stays
+  // loadable now that these members are static. Their manifest ids are the
+  // stdlib.math.<member> spelling.
+  for (const member of Object.keys(STATIC_MATH_CONSTS)) foldedIds.add(`stdlib.math.${member}`);
   const ambientFns = new Map(AMBIENT_SURFACE_FNS.map((row) => [row.id, row.fns as readonly string[]]));
   taxonomy = { byId, ids: manifest.entries.map((e) => e.id), builtinFns, builtinRoots, foldedIds, ambientFns };
   return taxonomy;

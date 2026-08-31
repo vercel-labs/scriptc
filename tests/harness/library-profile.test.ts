@@ -548,6 +548,36 @@ describe("library profile fences", () => {
     expect(r.profile.fences[0]!.surfaces.map((s) => s.id)).toContain("node-builtin.os.homedir");
   });
 
+  test("the stdlib Math constants fold, so an id fence refuses with the folded reason and a math prefix stays loadable", () => {
+    // Math.PI and Math.E are static IEEE constants (STATIC_MATH_CONSTS):
+    // a read lowers to a per-binary f64 literal, so the compiled artifact
+    // performs no runtime read a fence could deny. An id fence naming one
+    // must refuse with the folded-constant reason — never the misleading
+    // 'no fence detector exists' — while a whole stdlib.math. prefix sweep
+    // stays usable (the fold IS the exemption, as with node-builtin os.EOL).
+    for (const id of ["stdlib.math.PI", "stdlib.math.E"]) {
+      expectSc4001(
+        { ...good, determinism: { fences: [{ id }] } },
+        "constant at compile time",
+      );
+    }
+    // The prefix sweep still resolves and exempts the folded constants.
+    const r = loadLibraryProfile(
+      writeProfile({ ...good, determinism: { fences: [{ prefix: "stdlib.math." }] } }),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const mathIds = r.profile.fences[0]!.surfaces.map((s) => s.id);
+    expect(mathIds).not.toContain("stdlib.math.PI");
+    expect(mathIds).not.toContain("stdlib.math.E");
+    // The reachable static members (random, floor, min ...) still carry
+    // detectors, so the family fence has something real to deny; dynamic-only
+    // math members (sin, cos ...) resolve as refusals carrying no detector.
+    expect(mathIds).toContain("stdlib.math.random");
+    const random = r.profile.fences[0]!.surfaces.find((s) => s.id === "stdlib.math.random");
+    expect(random?.detector).toBeDefined();
+  });
+
   test("a desugared surface no detector can police refuses, id and prefix alike", () => {
     expectSc4001(
       { ...good, determinism: { fences: [{ id: "stdlib.array.map" }] } },

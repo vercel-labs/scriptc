@@ -10,6 +10,7 @@ import {
   ccVersion,
   compileC,
   compileLibArchive,
+  executableSectionEliminationFlags,
   executableNativeEnvironmentFingerprint,
   implicitDependencyProbeIncludes,
   parseLinkTraceFiles,
@@ -130,6 +131,22 @@ test("the production cache root follows overrides, platform defaults, and the ha
   expect(resolveBuildCacheRoot({ LOCALAPPDATA: "/Users/tester/AppData/Local" }, "win32", "/Users/tester")).toBe(
     "/Users/tester/AppData/Local/scriptc/cache/build",
   );
+});
+
+test("executable section elimination flags are target-aware and never enter library recipes", () => {
+  expect(executableSectionEliminationFlags("darwin")).toEqual({
+    compile: [],
+    link: ["-Wl,-dead_strip"],
+  });
+  expect(executableSectionEliminationFlags("linux")).toEqual({
+    compile: ["-ffunction-sections", "-fdata-sections"],
+    link: ["-Wl,--gc-sections"],
+  });
+  expect(executableSectionEliminationFlags("win32")).toEqual({
+    compile: ["-ffunction-sections", "-fdata-sections"],
+    link: ["-Wl,--gc-sections"],
+  });
+  expect(executableSectionEliminationFlags("wasi")).toEqual({ compile: [], link: [] });
 });
 
 test.skipIf(process.platform === "win32")(
@@ -2741,7 +2758,14 @@ exec "$SCRIPTC_TEST_REAL_CLANG" "$@"
 `,
       );
       await chmod(wrapper, 0o755);
-      await writeFile(cPath, "int main(void) { return 0; }\n");
+      // Keep the injected datum reachable. With executable section GC an
+      // unreferenced test-only global is rightly removed before the binary
+      // assertion below can observe it.
+      await writeFile(
+        cPath,
+        "extern int scriptc_runtime_race_marker(void);\n" +
+          "int main(void) { return scriptc_runtime_race_marker(); }\n",
+      );
       process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
       process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"] = fakeRuntime;
       process.env["SCRIPTC_TEST_REAL_CLANG"] = realClang!;
@@ -2768,7 +2792,11 @@ exec "$SCRIPTC_TEST_REAL_CLANG" "$@"
       }
       await writeFile(
         raceSource,
-        `${originalRuntimeSource}\nconst char scriptc_runtime_race_marker[] = "${marker}";\n`,
+        `${originalRuntimeSource}\n` +
+          `volatile const char scriptc_runtime_race_marker_data[] = "${marker}";\n` +
+          "int scriptc_runtime_race_marker(void) {\n" +
+          "  return scriptc_runtime_race_marker_data[0] == '\\0';\n" +
+          "}\n",
       );
       await writeFile(release, "go");
       await firstBuild;

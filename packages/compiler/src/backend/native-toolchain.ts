@@ -81,6 +81,46 @@ function stableTestMemo<T>(
 
 export const EXECUTABLE_RUNTIME_SOURCES = ["scr_number.c", "scr_string.c", "scr_array.c", "scr_bytes.c", "scr_bytes_io.c", "scr_map.c", "scr_closure.c", "scr_ffi.c", "scr_object.c", "scr_union.c", "scr_exception.c", "scr_error.c", "scr_console.c", "scr_lib.c", "scr_path.c", "scr_url.c", "scr_json.c", "scr_async.c", "scr_child.c", "scr_cycle.c"] as const;
 
+/**
+ * Per-executable section-elimination recipe. This belongs beside the native
+ * driver rather than a particular build path: one-shot compilation, cached
+ * runtime objects, external object recipes, and runtime packs must all agree
+ * on what their final executable linker is allowed to discard.
+ *
+ * Archives and compile-only object/library recipes deliberately do not use
+ * the link half. In particular, `--lib` preserves its established object and
+ * archive contract; section GC is an executable-link optimization only.
+ */
+export function executableSectionEliminationFlags(platform: string): {
+  compile: string[];
+  link: string[];
+} {
+  switch (platform) {
+    case "darwin":
+      // ld64's symbol subsections make this sufficient for ordinary C/LLVM
+      // objects. Do not attach it only to --dynamic: static programs have the
+      // same unreachable runtime sections.
+      return { compile: [], link: ["-Wl,-dead_strip"] };
+    case "linux":
+      return {
+        compile: ["-ffunction-sections", "-fdata-sections"],
+        link: ["-Wl,--gc-sections"],
+      };
+    case "win32":
+      // clang's MinGW driver forwards this to GNU-flavor ld/lld. A direct
+      // local lld-link invocation instead uses /OPT:REF, but scriptc only
+      // drives the compiler's GNU-flavor route here.
+      return {
+        compile: ["-ffunction-sections", "-fdata-sections"],
+        link: ["-Wl,--gc-sections"],
+      };
+    // WASI has a distinct linker/runtime contract. Keep its existing object
+    // layout until its linker invocation is validated separately.
+    default:
+      return { compile: [], link: [] };
+  }
+}
+
 /** Environment variables consumed by clang, its linker/subtools, or the
  * platform SDK selection. They are implicit command-line inputs: changing one
  * must never reuse an artifact produced under the old toolchain posture. */
@@ -3649,15 +3689,21 @@ function localArtifactIdentity(
       )
       .sort(([a], [b]) => a.localeCompare(b)),
   );
+  const executableSectionFlags = executableSectionEliminationFlags(targetPlatform(driver));
   const hash = createHash("sha256")
-    .update("local-artifact-v1\0")
+    // v2 adds the executable section-GC recipe. A v1 output-local stamp can
+    // name a same-source binary from before unused runtime sections were
+    // eliminated, so it must never short-circuit the new linker invocation.
+    .update("local-artifact-v2\0")
     .update(cacheTargetIdentity(driver)).update("\0")
     .update(environmentFingerprint).update("\0")
     .update(compilerIdentity).update("\0")
     .update(runtimeHash).update("\0")
     .update(driver.argv.join("\x1f")).update("\0")
     .update(driver.targetArgs.join("\x1f")).update("\0")
-    .update(driver.linkArgs.join("\x1f")).update("\0");
+    .update(driver.linkArgs.join("\x1f")).update("\0")
+    .update(executableSectionFlags.compile.join("\x1f")).update("\0")
+    .update(executableSectionFlags.link.join("\x1f")).update("\0");
   if (programShardMerge !== null) {
     updateProgramShardCacheIdentity(
       hash,
@@ -3981,6 +4027,7 @@ async function compileCInternal(
   const runtimeSources = targetPlatform(driver) === "wasi"
     ? EXECUTABLE_RUNTIME_SOURCES.filter((source) => source !== "scr_child.c")
     : EXECUTABLE_RUNTIME_SOURCES;
+  const executableSectionFlags = executableSectionEliminationFlags(targetPlatform(driver));
   // scr_async.c submits callback-style filesystem work to a native worker.
   // POSIX drivers need the thread compile/link mode; win32 uses CreateThread.
   const threadArgs = targetPlatform(driver) === "win32" || targetPlatform(driver) === "wasi"
@@ -4343,6 +4390,7 @@ async function compileCInternal(
     ...(sanitize
       ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
+    ...executableSectionFlags.compile,
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
     "-fno-math-errno",
     // The emitted object model is deliberately type-punned C: a hierarchy
@@ -4483,11 +4531,6 @@ async function compileCInternal(
           // left-to-right archive resolution. Other dynamic targets keep
           // the historical engine-adjacent spelling.
           ...(driver.linkArgs.includes("-lm") ? [] : ["-lm"]),
-          // ld64 dead-stripping claws back a chunk of the engine archive;
-          // harmless elsewhere but only spelled this way on macOS. Keyed on
-          // the TARGET platform (= the host on the default path, where this
-          // expression is byte-identical to the historical one).
-          ...(targetPlatform(driver) === "darwin" ? ["-Wl,-dead_strip"] : []),
           // The PE stack reserve, pinned to the 8MB POSIX main-stack
           // geometry ISL_MAIN_STACK_BUDGET is sized against (4MB engine
           // budget + 4MB excursion margin) — quickjs-ng's own CMake makes
@@ -4525,6 +4568,7 @@ async function compileCInternal(
     // program and every native FFI input because GNU ld resolves archives
     // from left to right.
     ...driver.linkArgs,
+    ...executableSectionFlags.link,
     "-o", build.outPath ?? opts.outPath,
   ];
   // Compile-only flags shared by runtime-object population and the caller-TU
@@ -4537,6 +4581,7 @@ async function compileCInternal(
     ...(sanitize
       ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
+    ...executableSectionFlags.compile,
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
     "-fno-math-errno",
     "-fno-strict-aliasing", // the emitted object model type-puns — see buildArgs
@@ -4721,6 +4766,7 @@ async function compileCInternal(
     ...(dynamic && !driver.linkArgs.includes("-lm") ? ["-lm"] : []),
     ...(((opts.zlib ?? false) || nativeFetch) && driver.target === null ? ["-lz"] : []),
     ...driver.linkArgs,
+    ...executableSectionFlags.link,
   ];
   // Both the wrapper dry run and dependency trace need the real build's
   // compile/link flag shape: wrappers commonly inject flags or native inputs
@@ -4735,12 +4781,12 @@ async function compileCInternal(
     ...(curlStubDir !== null ? [`-L${curlStubDir}`] : []),
     ...(curlFetch && driver.target === null ? ["-lcurl"] : []),
     ...(dynamic && !driver.linkArgs.includes("-lm") ? ["-lm"] : []),
-    ...(dynamic && targetPlatform(driver) === "darwin" ? ["-Wl,-dead_strip"] : []),
     ...(dynamic && targetPlatform(driver) === "win32"
       ? ["-Wl,--stack,8388608"]
       : []),
     ...(((opts.zlib ?? false) || nativeFetch) && driver.target === null ? ["-lz"] : []),
     ...driver.linkArgs,
+    ...executableSectionFlags.link,
   ];
   // A complete hit is checked before cross-target curl's generated import stub
   // is materialized. Its -L spelling still joins the dry-run identity, while

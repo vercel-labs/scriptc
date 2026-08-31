@@ -2,7 +2,11 @@ import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
-import { EXECUTABLE_RUNTIME_SOURCES, runtimeSrcDir } from "./native-toolchain.js";
+import {
+  EXECUTABLE_RUNTIME_SOURCES,
+  executableSectionEliminationFlags,
+  runtimeSrcDir,
+} from "./native-toolchain.js";
 import {
   EXTERNAL_OBJECT_ABI_STABILITY,
   RUNTIME_ABI_MARKER,
@@ -113,6 +117,10 @@ function runtimeSourceRecipe(
   env: NodeJS.ProcessEnv,
   optimization: "release" | "dev",
 ): { sets: NativeSourceSet[]; systemLibraries: string[]; driverFlags: string[] } {
+  // Native link info currently describes the supported Mach-O external-object
+  // recipe. Keep this in the same target-aware helper as compileC so a
+  // consumer's link has the identical executable reachability semantics.
+  const executableSectionFlags = executableSectionEliminationFlags("darwin");
   const dynamic = features.dynamic;
   const curlFetch = dynamic && features.fetch && env["SCRIPTC_FETCH_CURL"] === "1";
   const nativeFetch = features.fetch && !curlFetch;
@@ -185,6 +193,7 @@ function runtimeSourceRecipe(
     c_flags: [
       "-std=c11", ...commonTargetFlags, "-pthread",
       optimization === "dev" ? "-O0" : "-O2",
+      ...executableSectionFlags.compile,
       "-fno-math-errno", "-fno-strict-aliasing", "-Wno-deprecated-declarations",
     ],
   }];
@@ -239,7 +248,7 @@ function runtimeSourceRecipe(
     driverFlags: [
       ...commonTargetFlags,
       "-pthread",
-      ...(dynamic ? ["-Wl,-dead_strip"] : []),
+      ...executableSectionFlags.link,
     ],
   };
 }

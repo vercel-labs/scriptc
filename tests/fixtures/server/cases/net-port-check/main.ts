@@ -16,7 +16,9 @@ first.listen(0, () => {
     }
     first.close(() => console.log("released"));
   });
-  second.listen(port, () => {
+  // Explicit false follows the new options ABI but must retain the ordinary
+  // single-listener EADDRINUSE behavior.
+  second.listen({ port, host: "127.0.0.1", reusePort: false }, () => {
     console.log("bound twice?!");
     second.close();
   });

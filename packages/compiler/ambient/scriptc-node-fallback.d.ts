@@ -2036,8 +2036,9 @@ declare module "net" {
      * spelling). */
     listen(port: number, host: string, callback?: () => void): Server;
     /* The explicit-interface bind: host is an IP literal (absent = the
-     * host-less dual-stack any); ipv6Only sets IPV6_V6ONLY. */
-    listen(options: { port: number; host?: string; ipv6Only?: boolean }, callback?: () => void): Server;
+     * host-less dual-stack any); ipv6Only sets IPV6_V6ONLY and reusePort
+     * requests kernel connection distribution where Node supports it. */
+    listen(options: { port: number; host?: string; ipv6Only?: boolean; reusePort?: boolean }, callback?: () => void): Server;
     close(callback?: () => void): void;
     /* The bound AddressInfo (Node answers null before listen — this
      * surface answers the record with port 0 there, the serverPort

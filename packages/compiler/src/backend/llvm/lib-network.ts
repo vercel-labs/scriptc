@@ -40,28 +40,34 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       B.line(`call void @scr_net_listen(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${cb})`);
       return { name: "", type: e.type };
     }
-    if (e.fn === "net.listenOpts" || e.fn === "net.listenOptsCb") {
+    if (e.fn === "net.listenOpts" || e.fn === "net.listenOptsCb" ||
+        e.fn === "net.listenOptsReusePort" || e.fn === "net.listenOptsReusePortCb") {
       // The callback slot may be the `(() => void) | undefined` optional-
       // binding union: unwrap to a nullable closure.
       const args = e.args.map((a) => host.emitExpr(a));
       let cb = "null";
-      if (e.fn === "net.listenOptsCb") {
-        const cbT = e.args[4]!.type;
+      const reusePort = e.fn === "net.listenOptsReusePort" || e.fn === "net.listenOptsReusePortCb";
+      const withCallback = e.fn === "net.listenOptsCb" || e.fn === "net.listenOptsReusePortCb";
+      const cbIndex = reusePort ? 5 : 4;
+      if (withCallback) {
+        const cbT = e.args[cbIndex]!.type;
         if (cbT.kind === "func") {
-          host.moveTemp(args[4]!);
-          cb = args[4]!.name;
+          host.moveTemp(args[cbIndex]!);
+          cb = args[cbIndex]!.name;
         } else {
-          if (cbT.kind !== "union") throw new InternalCompilerError("llvm emitter bug: net.listenOptsCb callback shape");
+          if (cbT.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback shape`);
           const def = host.unionsById.get(cbT.unionId);
           const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
-          if (funcTag < 0) throw new InternalCompilerError("llvm emitter bug: net.listenOptsCb union lacks its func arm");
-          cb = host.unwrapNullableClosure(args[4]!.name, funcTag);
+          if (funcTag < 0) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its func arm`);
+          cb = host.unwrapNullableClosure(args[cbIndex]!.name, funcTag);
         }
       }
-      const decls = e.args.slice(0, 4).map((a) => (host.llType(a.type) === "i1" ? "i1 zeroext" : host.llType(a.type)));
-      host.declare(`declare void @scr_net_listen_opts(${decls.join(", ")}, ptr)`);
+      const valueCount = reusePort ? 5 : 4;
+      const decls = e.args.slice(0, valueCount).map((a) => (host.llType(a.type) === "i1" ? "i1 zeroext" : host.llType(a.type)));
+      const runtimeFn = reusePort ? "scr_net_listen_opts_reuse_port" : "scr_net_listen_opts";
+      host.declare(`declare void @${runtimeFn}(${decls.join(", ")}, ptr)`);
       B.line(
-        `call void @scr_net_listen_opts(${args.slice(0, 4).map((a) => `${host.llType(a.type)} ${a.name}`).join(", ")}, ptr ${cb})`,
+        `call void @${runtimeFn}(${args.slice(0, valueCount).map((a) => `${host.llType(a.type)} ${a.name}`).join(", ")}, ptr ${cb})`,
       );
       return { name: "", type: e.type };
     }

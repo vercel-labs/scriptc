@@ -107,6 +107,20 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#if defined(__FreeBSD__) || defined(__DragonFly__) || defined(_AIX) || defined(__sun)
+#include <sys/param.h>
+#endif
+#endif
+
+/* MinGW's errno headers do not expose ENOTSUP on every supported toolchain.
+ * Keep a stable internal value for the Node/libuv unsupported reuse-port
+ * result, while preserving the platform's EOPNOTSUPP spelling when present. */
+#ifndef ENOTSUP
+#ifdef EOPNOTSUPP
+#define ENOTSUP EOPNOTSUPP
+#else
+#define ENOTSUP 4095
+#endif
 #endif
 
 static void scr_net_oom(void) {
@@ -275,6 +289,10 @@ static const char *scr_net_errname(int err) {
   case EHOSTDOWN: return "EHOSTDOWN"; /* absent from the win32 CRT */
 #endif
   case EINVAL: return "EINVAL";
+  case ENOTSUP: return "ENOTSUP";
+#if defined(EOPNOTSUPP) && (!defined(ENOTSUP) || EOPNOTSUPP != ENOTSUP)
+  case EOPNOTSUPP: return "EOPNOTSUPP";
+#endif
   default: return "EUNKNOWN";
   }
 }
@@ -708,6 +726,62 @@ static void scr_net_listen_reuseaddr(int fd) {
   int one = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
 #endif
+}
+
+/* Node/libuv's TCP reuse-port matrix. SO_REUSEPORT is deliberately NOT
+ * selected merely because a platform header happens to expose it: macOS's
+ * meaning is not the required TCP load-balancing contract, and Windows'
+ * SO_REUSEADDR is port hijacking rather than reuse-port support. FreeBSD's
+ * ordinary SO_REUSEPORT does not distribute connections, so FreeBSD 12+
+ * uses the load-balancing spelling instead. A setsockopt failure is returned
+ * to the caller so an unsupported kernel cannot silently become a singleton. */
+static int scr_net_listen_reuseport(int fd) {
+  int rc;
+#if defined(__FreeBSD__) && defined(__FreeBSD_version) && __FreeBSD_version >= 1200000 && defined(SO_REUSEPORT_LB)
+  int one = 1;
+  rc = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT_LB, &one, sizeof one);
+#elif (defined(__linux__) || defined(_AIX73) || \
+       (defined(__DragonFly__) && defined(__DragonFly_version) && __DragonFly_version >= 300600) || \
+       (defined(__sun) && !defined(__illumos__) && defined(SO_FLOW_NAME))) && \
+      defined(SO_REUSEPORT)
+  int one = 1;
+  rc = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof one);
+#else
+  (void)fd;
+  errno = ENOTSUP;
+  return -1;
+#endif
+#if defined(__linux__) && defined(ENOPROTOOPT)
+  /* Linux kernels predating 3.9 expose no reuse-port TCP support. Keep
+   * Node's stable unsupported result instead of leaking ENOPROTOOPT. */
+  if (rc != 0 && errno == ENOPROTOOPT) errno = ENOTSUP;
+#endif
+  return rc;
+}
+
+/* Shared bind setup for both host-less and explicit-interface listeners.
+ * SO_REUSEADDR remains first, reuse-port is requested next, and both are
+ * complete before bind/listen. The returned errno is the native failure. */
+static int scr_net_bind_listen(int fd, const struct sockaddr *sa, socklen_t salen,
+                               bool reuse_port) {
+  scr_net_listen_reuseaddr(fd);
+  if (reuse_port && scr_net_listen_reuseport(fd) != 0) return -1;
+  scr_net_nonblock(fd);
+  int rc = bind(fd, sa, salen);
+  if (rc == 0) rc = listen(fd, 511); /* Node's default backlog */
+  return rc;
+}
+
+static const char *scr_net_listen_reason(int err, bool explicit_host) {
+  if (err == EADDRINUSE) return "address already in use";
+#ifdef EADDRNOTAVAIL
+  if (explicit_host && err == EADDRNOTAVAIL) return "address not available";
+#endif
+  if (err == ENOTSUP) return "operation not supported";
+#if defined(EOPNOTSUPP) && (!defined(ENOTSUP) || EOPNOTSUPP != ENOTSUP)
+  if (err == EOPNOTSUPP) return "operation not supported";
+#endif
+  return "permission denied";
 }
 
 /* write(2) to a socket with SIGPIPE suppressed. macOS sets SO_NOSIGPIPE
@@ -1280,7 +1354,8 @@ ScrNetServer *scr_net_create_server(ScrClosure *handler /*moves, nullable*/, Scr
  * 'error'); success defers the listen callback ('listening') to the next
  * dispatch pass, Node's next-tick emit. Binds like Node's host-less
  * listen: IPv6 any with dual-stack when the kernel allows, IPv4 fallback. */
-void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullable*/) {
+static void scr_net_listen_any(ScrNetServer *s, double port, bool reuse_port,
+                               ScrClosure *cb /*moves, nullable*/) {
   if (cb) scr_net_ls_add(&s->listening_cbs, cb, NULL, true);
   if (s->listening || s->close_emitted) return;
   if (!scr_net_poller_init()) {
@@ -1300,8 +1375,6 @@ void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullab
     fputs("scriptc: socket() failed\n", stderr);
     abort();
   }
-  scr_net_listen_reuseaddr(fd);
-  scr_net_nonblock(fd);
   int rc;
   if (v6) {
     struct sockaddr_in6 addr;
@@ -1309,23 +1382,22 @@ void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullab
     addr.sin6_family = AF_INET6;
     addr.sin6_addr = in6addr_any;
     addr.sin6_port = htons((uint16_t)p);
-    rc = bind(fd, (struct sockaddr *)&addr, sizeof addr);
+    rc = scr_net_bind_listen(fd, (struct sockaddr *)&addr, sizeof addr, reuse_port);
   } else {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons((uint16_t)p);
-    rc = bind(fd, (struct sockaddr *)&addr, sizeof addr);
+    rc = scr_net_bind_listen(fd, (struct sockaddr *)&addr, sizeof addr, reuse_port);
   }
-  if (rc == 0) rc = listen(fd, 511); /* Node's default backlog */
   if (rc != 0) {
     int err = errno;
     close(fd);
     char msg[128];
     /* Node: "listen EADDRINUSE: address already in use :::4000" */
     snprintf(msg, sizeof msg, "listen %s: %s %s:%d", scr_net_errname(err),
-             err == EADDRINUSE ? "address already in use" : "permission denied",
+             scr_net_listen_reason(err, false),
              v6 ? "::" : "0.0.0.0", p);
     if (!s->pending_err) s->pending_err = scr_str_new(msg, strlen(msg));
     scr_net_server_register(s); /* the sweep delivers the failure */
@@ -1347,7 +1419,11 @@ void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullab
   scr_net_server_register(s);
 }
 
-/* listen({ port, host, ipv6Only }) — the explicit-interface bind
+void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullable*/) {
+  scr_net_listen_any(s, port, false, cb);
+}
+
+/* listen({ port, host, ipv6Only, reusePort }) — the explicit-interface bind
  * (portless's listenOnProxyInterface): host is an IP literal ("" = the
  * host-less dual-stack default above; "localhost" pins to 127.0.0.1, the
  * connect-side divergence); ipv6Only sets IPV6_V6ONLY before the bind
@@ -1355,10 +1431,11 @@ void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullab
  * listener, exactly the portless pair). Failures are the async 'error'
  * with Node's listen message naming the requested host; a non-IP host is
  * the async getaddrinfo ENOTFOUND (no resolver in this slice). */
-void scr_net_listen_opts(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
-                          bool ipv6_only, ScrClosure *cb /*moves, nullable*/) {
+static void scr_net_listen_opts_impl(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
+                                     bool ipv6_only, bool reuse_port,
+                                     ScrClosure *cb /*moves, nullable*/) {
   if (host == NULL || host->len == 0) {
-    scr_net_listen(s, port, cb);
+    scr_net_listen_any(s, port, reuse_port, cb);
     return;
   }
   if (cb) scr_net_ls_add(&s->listening_cbs, cb, NULL, true);
@@ -1406,18 +1483,13 @@ void scr_net_listen_opts(ScrNetServer *s, double port, ScrStr *host /*borrowed*/
     int only = ipv6_only ? 1 : 0;
     setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, sizeof only);
   }
-  scr_net_listen_reuseaddr(fd);
-  scr_net_nonblock(fd);
-  int rc = bind(fd, sa, salen);
-  if (rc == 0) rc = listen(fd, 511); /* Node's default backlog */
+  int rc = scr_net_bind_listen(fd, sa, salen, reuse_port);
   if (rc != 0) {
     int err = errno;
     close(fd);
     char msg[160];
     snprintf(msg, sizeof msg, "listen %s: %s %s:%d", scr_net_errname(err),
-             err == EADDRINUSE      ? "address already in use"
-             : err == EADDRNOTAVAIL ? "address not available"
-                                    : "permission denied",
+             scr_net_listen_reason(err, true),
              h, p);
     if (!s->pending_err) s->pending_err = scr_str_new(msg, strlen(msg));
     scr_net_server_register(s);
@@ -1438,6 +1510,17 @@ void scr_net_listen_opts(ScrNetServer *s, double port, ScrStr *host /*borrowed*/
   s->bound_host = scr_str_new(h, strlen(h));
   scr_net_watch_read(fd, s, true);
   scr_net_server_register(s);
+}
+
+void scr_net_listen_opts(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
+                          bool ipv6_only, ScrClosure *cb /*moves, nullable*/) {
+  scr_net_listen_opts_impl(s, port, host, ipv6_only, false, cb);
+}
+
+void scr_net_listen_opts_reuse_port(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
+                                    bool ipv6_only, bool reuse_port,
+                                    ScrClosure *cb /*moves, nullable*/) {
+  scr_net_listen_opts_impl(s, port, host, ipv6_only, reuse_port, cb);
 }
 
 double scr_net_server_port(ScrNetServer *s) { return (double)s->port; }

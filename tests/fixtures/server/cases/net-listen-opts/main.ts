@@ -1,5 +1,5 @@
 /* The portless listenOnProxyInterface shape: listen({ port, host,
- * ipv6Only }[, cb]) — the explicit v4/v6 listener PAIR on one port
+ * ipv6Only, reusePort }[, cb]) — the explicit v4/v6 listener PAIR on one port
  * (getProxyBindTargets' loopback targets), each family answered by its
  * own server, plus the EADDRINUSE arm (same host, same port) and the
  * host that exists on no interface. Ephemeral ports never print; the
@@ -9,10 +9,10 @@ import * as net from "node:net";
 const v4 = net.createServer((socket) => socket.end("v4\n"));
 const v6 = net.createServer((socket) => socket.end("v6\n"));
 
-type ProxyBindTarget = { host: string; ipv6Only?: boolean };
+type ProxyBindTarget = { host: string; ipv6Only?: boolean; reusePort?: boolean };
 
 /* portless's listenOnProxyInterface, verbatim shapes: the target record
- * (ipv6Only optional — `boolean | undefined` flows into the option) and
+ * (ipv6Only and reusePort optional — `boolean | undefined` flows into the option) and
  * the OPTIONAL listener binding (`(() => void) | undefined`). */
 function listenOnProxyInterface(
   server: net.Server,
@@ -20,7 +20,12 @@ function listenOnProxyInterface(
   target: ProxyBindTarget,
   listener?: () => void
 ): void {
-  server.listen({ port, host: target.host, ipv6Only: target.ipv6Only }, listener);
+  server.listen({
+    port,
+    host: target.host,
+    ipv6Only: target.ipv6Only,
+    reusePort: target.reusePort,
+  }, listener);
 }
 
 function readFrom(host: string, port: number): Promise<string> {
@@ -52,7 +57,7 @@ async function main(port: number): Promise<void> {
   });
   // The OMITTED-listener call — the undefined arm of the optional
   // callback flows through listenOnProxyInterface's pass-through.
-  listenOnProxyInterface(clash, port, { host: "127.0.0.1" });
+  listenOnProxyInterface(clash, port, { host: "127.0.0.1", reusePort: false });
 }
 
 listenOnProxyInterface(v4, 0, { host: "127.0.0.1" }, () => {

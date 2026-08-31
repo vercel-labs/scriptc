@@ -143,4 +143,29 @@ describe(`server differential (${cases.length} programs${sanitize ? ", sanitized
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
     expect(nativeRes.driverStdout).toBe(nodeRes.driverStdout);
   }, 120_000);
+
+  test("net-reuse-port emits the additive LLVM ABI", async () => {
+    const entry = join(fixturesRoot, "cases/net-reuse-port/main.ts");
+    const outDir = join(cacheDir, `server-llvm-reuse-port${sanitize ? "-san" : ""}`);
+    mkdirSync(outDir, { recursive: true });
+    const result = await compile(entry, {
+      outPath: join(outDir, "program"),
+      outDir,
+      sanitize,
+      backend: "llvm",
+    });
+    if (!result.ok) {
+      throw new Error(
+        "net-reuse-port LLVM fixture failed to compile:\n" +
+          result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+      );
+    }
+    const llvm = readFileSync(result.cPath, "utf8");
+    expect(llvm).toContain(
+      "declare void @scr_net_listen_opts_reuse_port(ptr, double, ptr, i1 zeroext, i1 zeroext, ptr)",
+    );
+    expect(llvm).toMatch(
+      /call void @scr_net_listen_opts_reuse_port\(ptr [^,]+, double [^,]+, ptr [^,]+, i1 [^,]+, i1 [^,]+, ptr [^)]+\)/,
+    );
+  });
 });

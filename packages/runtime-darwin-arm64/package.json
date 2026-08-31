@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/runtime-darwin-arm64",
-  "version": "0.0.35",
+  "version": "0.0.36",
   "description": "Precompiled scriptc runtime pack for macOS arm64",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",
@@ -9,8 +9,12 @@
     "url": "git+https://github.com/vercel-labs/scriptc.git",
     "directory": "packages/runtime-darwin-arm64"
   },
-  "os": ["darwin"],
-  "cpu": ["arm64"],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
   "files": [
     "artifacts",
     "runtime-pack.json"

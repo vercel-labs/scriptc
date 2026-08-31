@@ -15,7 +15,13 @@ import { compile } from "@scriptc/compiler";
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests/runtime-tree-shaking");
-const portableTest = process.env["SCRIPTC_PORTABLE_ONLY"] === "1" ? test.skip : test;
+// These source-toolchain contracts are safe in the Linux Sandboxes used by
+// `test:sandbox`: they deliberately use the C backend and `nm`, both of
+// which are part of that image. Keep the Windows host out of this POSIX
+// fixture (its child program uses /bin/echo), but do not use
+// SCRIPTC_PORTABLE_ONLY here: that marker means "run in a Linux Sandbox",
+// not "skip native executable assertions".
+const sourceToolchainTest = process.platform === "win32" ? test.skip : test;
 
 interface Fixture {
   name: string;
@@ -117,7 +123,7 @@ async function expectNodeParity(sourcePath: string, binaryPath: string, args: st
   expect(native).toBe(node);
 }
 
-portableTest("static hello strips unreachable runtime families while feature programs retain them", async () => {
+sourceToolchainTest("static hello strips unreachable runtime families while feature programs retain them", async () => {
   const helloSource = `console.log("hello", "world");\n`;
   const hello = await build("hello", helloSource);
   await expectNodeParity(hello.sourcePath, hello.binaryPath);
@@ -153,7 +159,7 @@ portableTest("static hello strips unreachable runtime families while feature pro
   }
 });
 
-portableTest("fetch response JSON retains the URL and parser runtime", async () => {
+sourceToolchainTest("fetch response JSON retains the URL and parser runtime", async () => {
   const server = createServer((_request, response) => {
     response.setHeader("content-type", "application/json");
     response.end('{"ok":true}');

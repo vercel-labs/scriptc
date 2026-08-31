@@ -3781,7 +3781,15 @@ async function publishLocalArtifactStamp(
       integrity: localArtifactStampIntegrity(unsigned),
     };
     await writeFile(tmp, `${JSON.stringify(stamp)}\n`, { mode: 0o600 });
-    await rename(tmp, stampPath);
+    await rename(tmp, stampPath).catch(async () => {
+      // POSIX rename replaces a previous same-output stamp, but Windows does
+      // not. A console build followed by a GUI build deliberately has a new
+      // identity at the same output path; failing to replace this metadata
+      // suppresses onArtifactReady, leaving the GUI executable unavailable to
+      // the bootstrap's routed cache on its next invocation.
+      await rm(stampPath, { force: true });
+      await rename(tmp, stampPath);
+    });
     return stamp;
   } finally {
     await rm(tmp, { force: true }).catch(() => undefined);

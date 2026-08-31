@@ -37,3 +37,13 @@ export function uptime(): number {
 export function perfNow(): number {
   return performance.now();
 }
+
+// Each calling thread builds and indexes its own large mixed-Unicode string.
+// This reaches the SCR_TL sparse-checkpoint table without sharing any owned
+// metadata between the archive's thread instances.
+export function indexedUnicode(): number {
+  const s = "aé😀é".repeat(12000);
+  const mid = Math.floor(s.length / 2 / 6) * 6;
+  return s.length + s.charCodeAt(mid + 2) + s.slice(mid + 1, mid + 4).length +
+    s.substring(mid + 2, mid + 4).length + s.indexOf("é😀", mid) + s.lastIndexOf("😀");
+}

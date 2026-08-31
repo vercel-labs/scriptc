@@ -20,4 +20,13 @@ export function recall(): string {
   return seen.join(",");
 }
 
+// Exercise the runtime's lazy sparse UTF-16 side metadata before every
+// library re-init. The heap string itself becomes unreachable at the reset;
+// the cache must release its owned checkpoints too.
+export function indexedUnicode(): number {
+  const s = "aé😀é".repeat(12000);
+  const n = Math.floor(s.length / 2);
+  return s.length + s.charCodeAt(n) + s.slice(n - 1, n + 2).length;
+}
+
 console.log(`session start counter=${counter}`);

@@ -18,6 +18,7 @@ extern double mt_bump(double x);
 extern double mt_calls_seen(void);
 extern double mt_sum_to(double n);
 extern double mt_boom(double i);
+extern double mt_indexed_unicode(void);
 
 extern void mb_init(void);
 extern void mb_set_panic_sink(void (*fn)(void *, const uint8_t *, size_t, uint64_t), void *ctx);
@@ -121,6 +122,7 @@ typedef struct {
   double last_bump;
   double calls_seen;
   int sums_ok;
+  int index_ok;
   int trap_fell_through;
   int post_ok;
 } TWorker;
@@ -134,6 +136,7 @@ static void *worker_t(void *arg) {
   b_ready_wait(); /* mb_'s init already printed; mt_ inits print nothing */
   mt_init();
   w->sums_ok = 1;
+  w->index_ok = mt_indexed_unicode() == 235359.0;
   double last = 0;
   for (int i = 0; i < w->iters; i++) {
     last = mt_bump(1);
@@ -194,11 +197,11 @@ int main(void) {
   pthread_join(ta, NULL);
   pthread_join(tb, NULL);
   pthread_join(tc, NULL);
-  printf("t0: bump x%d -> %.0f, calls_seen %.0f, sums_ok=%d, trap fell through %d\n",
-         t0.iters, t0.last_bump, t0.calls_seen, t0.sums_ok, t0.trap_fell_through);
+  printf("t0: bump x%d -> %.0f, calls_seen %.0f, sums_ok=%d, index_ok=%d, trap fell through %d\n",
+         t0.iters, t0.last_bump, t0.calls_seen, t0.sums_ok, t0.index_ok, t0.trap_fell_through);
   printf("t0 sink: calls=%d ctx_ok=%d code=[%s] symbol=[%s]\n", sink_t0.calls, sink_t0.ctx_ok, sink_t0.code, sink_t0.symbol);
-  printf("t1: bump x%d -> %.0f, calls_seen %.0f, sums_ok=%d, post_ok=%d\n",
-         t1.iters, t1.last_bump, t1.calls_seen, t1.sums_ok, t1.post_ok);
+  printf("t1: bump x%d -> %.0f, calls_seen %.0f, sums_ok=%d, index_ok=%d, post_ok=%d\n",
+         t1.iters, t1.last_bump, t1.calls_seen, t1.sums_ok, t1.index_ok, t1.post_ok);
   printf("b: sums_ok=%d adds_ok=%d post_ok=%d\n", b_sums_ok, b_adds_ok, b_post_ok);
   printf("other sinks: t1=%d b=%d\n", sink_t1.calls, sink_b.calls);
   return 0;

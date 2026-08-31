@@ -27,6 +27,16 @@
 long scr_str_live_count(void); /* provided by scr_string.c */
 #endif
 
+#ifdef SCR_SIDX_TEST
+/* Test-only sparse-index observability, deliberately absent from the normal
+ * runtime ABI. The walker count is code-point steps after a cache prime. */
+void scr_sidx_test_reset_steps(void);
+size_t scr_sidx_test_walk_steps(void);
+void scr_sidx_test_reset_cache(void);
+size_t scr_sidx_test_entries(void);
+size_t scr_sidx_test_points(void);
+#endif
+
 #define MAX_FIELD 8192
 
 static int hex_val(char c) {
@@ -216,7 +226,122 @@ static void accumulation_asserts(void) {
   scr_str_release(astral);
   scr_str_release(x);
   scr_str_release(unicode);
+
+  /* A sparse-indexed non-ASCII prefix must survive in-place appends: old
+   * prefix checkpoints remain safe while length/end facts extend lazily. */
+  static const char mixed[] = "\xC3\xA9\xF0\x9F\x98\x80"; /* é😀: 3 units */
+  ScrStr *large = scr_str_new(mixed, sizeof(mixed) - 1);
+  ScrStr *many = scr_str_repeat(large, 12000); /* 72 KiB: sparse-indexed */
+  ScrStr *tail_x = scr_str_new("x", 1);
+  handoff_append(&many, tail_x); /* first growth creates spare capacity */
+  size_t old_units = (size_t)scr_str_utf16_len(many);
+  ScrStr *han = scr_str_new("\xE4\xB8\xAD", 3); /* 中 */
+  ScrStr *face = scr_str_new("\xF0\x9F\x98\x80", 4); /* 😀 */
+  ScrStr *many_before = many;
+  handoff_append(&many, han);
+  handoff_append(&many, face);
+  if (many != many_before || scr_str_utf16_len(many) != old_units + 3 ||
+      scr_str_char_code_at(many, (double)(old_units - 1)) != 120.0 ||
+      scr_str_char_code_at(many, (double)old_units) != 0x4E2D ||
+      scr_str_char_code_at(many, (double)(old_units + 1)) != 0xD83D ||
+      scr_str_char_code_at(many, (double)(old_units + 2)) != 0xDE00) {
+    failed++;
+    fprintf(stderr, "ACCUMULATION: sparse UTF-16 index did not extend\n");
+  }
+  scr_str_release(face);
+  scr_str_release(han);
+  scr_str_release(tail_x);
+  scr_str_release(many);
+  scr_str_release(large);
 }
+
+#ifdef SCR_SIDX_TEST
+static void sidx_fail(const char *what) {
+  failed++;
+  fprintf(stderr, "SIDX: %s\n", what);
+}
+
+/* The counter is deliberately about code-point decoder steps, not elapsed
+ * time. After length primes sparse anchors, alternating distant UTF-16
+ * operations must stay proportional to query count × the 4 KiB stride. */
+static void sparse_index_asserts(void) {
+  enum { REPS = 24000, QUERIES = 48 };
+  static const char piece[] = "a\xC3\xA9\xF0\x9F\x98\x80" "e\xCC\x81";
+  static const double codes[] = {97, 233, 0xD83D, 0xDE00, 101, 769};
+  size_t bytes = (sizeof(piece) - 1) * (size_t)REPS;
+  char *raw = malloc(bytes);
+  if (!raw) { sidx_fail("test allocation"); return; }
+  for (size_t i = 0; i < REPS; i++)
+    memcpy(raw + i * (sizeof(piece) - 1), piece, sizeof(piece) - 1);
+  ScrStr *s = scr_str_new(raw, bytes);
+  free(raw);
+  ScrStr *face = scr_str_new("\xF0\x9F\x98\x80", 4);
+  ScrStr *e_face = scr_str_new("\xC3\xA9\xF0\x9F\x98\x80", 6);
+  size_t units = (size_t)scr_str_utf16_len(s);
+  if (units != (size_t)REPS * 6) sidx_fail("large mixed length");
+  scr_sidx_test_reset_steps();
+
+  for (size_t q = 0; q < QUERIES; q++) {
+    size_t rep = (q * 7919) % REPS;
+    size_t base = rep * 6;
+    size_t unit = base + (q % 6);
+    if (scr_str_char_code_at(s, (double)unit) != codes[q % 6])
+      sidx_fail("charCodeAt result");
+
+    ScrStr *ch = scr_str_char_at(s, (double)(base + 2));
+    if (ch->len != 3 || memcmp(ch->data, "\xEF\xBF\xBD", 3) != 0)
+      sidx_fail("charAt surrogate result");
+    scr_str_release(ch);
+
+    ScrStr *slice = scr_str_slice(s, (double)(base + 1), (double)(base + 4));
+    if (slice->len != 6 || memcmp(slice->data, e_face->data, 6) != 0)
+      sidx_fail("slice result");
+    scr_str_release(slice);
+
+    ScrStr *sub = scr_str_substring(s, (double)(base + 2), (double)(base + 4));
+    if (sub->len != 4 || memcmp(sub->data, face->data, 4) != 0)
+      sidx_fail("substring result");
+    scr_str_release(sub);
+
+    if (scr_str_index_of(s, e_face, (double)base) != (double)(base + 1))
+      sidx_fail("positioned indexOf result");
+    if (scr_str_last_index_of(s, face) != (double)((REPS - 1) * 6 + 2))
+      sidx_fail("lastIndexOf result");
+  }
+  /* Each query maps at most a handful of locations. A mapping walks no
+   * farther than the 4 KiB interval plus a small UTF-8-boundary margin. */
+  if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 8 * 4200)
+    sidx_fail("non-local lookup exceeded sparse stride bound");
+
+  /* Four owned cache slots are a strict residency cap. Prime five live
+   * large strings, then release one cached entry before allocating another
+   * same-shaped string: purge/eviction must leave no stale owned metadata. */
+  ScrStr *live[5];
+  for (size_t i = 0; i < 5; i++) {
+    live[i] = scr_str_new(piece, sizeof(piece) - 1);
+    ScrStr *grown = scr_str_repeat(live[i], 7000);
+    scr_str_release(live[i]);
+    live[i] = grown;
+    (void)scr_str_utf16_len(live[i]);
+  }
+  if (scr_sidx_test_entries() != 4 || scr_sidx_test_points() == 0)
+    sidx_fail("four-slot sparse residency");
+  scr_str_release(live[4]);
+  if (scr_sidx_test_entries() != 3) sidx_fail("release did not purge entry");
+  ScrStr *reused = scr_str_alloc_raw((sizeof(piece) - 1) * 7000,
+                                     (sizeof(piece) - 1) * 7000);
+  for (size_t i = 0; i < 7000; i++)
+    memcpy(reused->data + i * (sizeof(piece) - 1), piece, sizeof(piece) - 1);
+  reused->data[reused->len] = '\0';
+  if (scr_str_char_code_at(reused, 2) != 0xD83D) sidx_fail("reused address result");
+  scr_str_release(reused);
+  for (size_t i = 0; i < 4; i++) scr_str_release(live[i]);
+  scr_str_release(e_face);
+  scr_str_release(face);
+  scr_str_release(s);
+  scr_sidx_test_reset_cache();
+}
+#endif
 
 int main(int argc, char **argv) {
   if (argc > 1 && strncmp(argv[1], "--crash-repeat", 14) == 0) {
@@ -347,6 +472,13 @@ int main(int argc, char **argv) {
       check_f64(op, args, input, scr_str_index_of(input, needle, from),
                 expected_bytes, exp_len);
       scr_str_release(needle);
+    } else if (strcmp(op, "lastIndexOf") == 0) {
+      size_t nee_len = hex_decode(args, needle_bytes);
+      if (nee_len == (size_t)-1) goto badline_release;
+      ScrStr *needle = scr_str_new(needle_bytes, nee_len);
+      check_f64(op, args, input, scr_str_last_index_of(input, needle),
+                expected_bytes, exp_len);
+      scr_str_release(needle);
     } else if (strcmp(op, "includes") == 0 || strcmp(op, "startsWith") == 0 ||
                strcmp(op, "endsWith") == 0) {
       size_t nee_len = hex_decode(args, needle_bytes);
@@ -373,6 +505,9 @@ int main(int argc, char **argv) {
 
   divergence_asserts();
   accumulation_asserts();
+#ifdef SCR_SIDX_TEST
+  sparse_index_asserts();
+#endif
 
 #ifdef SCR_RC_AUDIT
   if (scr_str_live_count() != 0) {

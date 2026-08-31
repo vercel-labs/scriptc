@@ -82,6 +82,8 @@ export interface EarlyExecutableCacheOptions {
   sanitize: boolean;
   dynamic: boolean;
   backend: "auto" | "c" | "llvm";
+  /** The GUI-subsystem variant. Omitted retains the historical console key. */
+  executableSubsystem?: "windows";
   /** Omitted is the historical release posture and preserves v1 keys. */
   optimization?: "dev";
   npmStatic: readonly string[] | "auto" | null;
@@ -183,6 +185,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     options.sanitize ? "sanitize" : "plain",
     options.dynamic ? "dynamic" : "static",
     options.backend,
+    ...(options.executableSubsystem === "windows" ? ["subsystem-windows"] : []),
     ...(options.optimization === "dev" ? ["optimization-dev"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
@@ -210,6 +213,7 @@ function routeKey(options: EarlyExecutableRouteOptions): string {
     .update(options.sanitize ? "sanitize" : "plain").update("\0")
     .update(options.dynamic ? "dynamic" : "static").update("\0")
     .update(options.backend).update("\0");
+  if (options.executableSubsystem === "windows") hash.update("subsystem-windows\0");
   if (options.optimization === "dev") hash.update("optimization-dev\0");
   hash
     .update(options.npmStatic === null
@@ -309,7 +313,14 @@ async function installExecutable(bytes: Uint8Array, destination: string): Promis
   try {
     await writeFile(tmp, bytes, { mode: 0o600 });
     await chmod(tmp, 0o777 & ~process.umask());
-    await rename(tmp, destination);
+    await rename(tmp, destination).catch(async (error) => {
+      // Windows does not replace an existing executable with rename(). A
+      // routed/early cache hit may restore a different final-link variant at
+      // the same caller-visible path.
+      if (process.platform !== "win32") throw error;
+      await rm(destination, { force: true });
+      await rename(tmp, destination);
+    });
   } finally {
     await rm(tmp, { force: true }).catch(() => undefined);
   }

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { compile, deserializeModule, validateModule } from "../src/index.js";
+import { compile, deserializeModule, validateModule, type CompileRequestOptions } from "../src/index.js";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -98,6 +98,46 @@ test("an executable build never deletes same-stem assembly or object artifacts",
   if (!result.ok) throw new Error("executable build failed");
   for (const path of siblings) {
     await expect(readFile(path, "utf8")).resolves.toBe(`caller-owned ${path}\n`);
+  }
+});
+
+test("dynamic API subsystem requests reject non-executable output before creating artifacts", async () => {
+  const { entry, outDir } = await fixture();
+  const result = await compile(entry, {
+    outDir,
+    outPath: join(outDir, "main.ir.json"),
+    outputKind: "ir",
+    executableSubsystem: "windows",
+  } satisfies CompileRequestOptions);
+  expect(result).toMatchObject({
+    ok: false,
+    diagnostics: [{ code: "SC3002", message: expect.stringContaining("Windows executable builds") }],
+  });
+  await expect(readdir(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("dynamic API subsystem requests reject non-Windows targets before frontend work", async () => {
+  const { entry, outDir } = await fixture();
+  const previousCc = process.env["SCRIPTC_CC"];
+  const previousTarget = process.env["SCRIPTC_TARGET"];
+  process.env["SCRIPTC_CC"] = "zigcc";
+  process.env["SCRIPTC_TARGET"] = "wasm32-wasi";
+  try {
+    const result = await compile(entry, {
+      outDir,
+      outPath: join(outDir, "main"),
+      executableSubsystem: "windows",
+    } satisfies CompileRequestOptions);
+    expect(result).toMatchObject({
+      ok: false,
+      diagnostics: [{ code: "SC3002", message: expect.stringContaining("Windows executable builds") }],
+    });
+    await expect(readdir(outDir)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    if (previousCc === undefined) delete process.env["SCRIPTC_CC"];
+    else process.env["SCRIPTC_CC"] = previousCc;
+    if (previousTarget === undefined) delete process.env["SCRIPTC_TARGET"];
+    else process.env["SCRIPTC_TARGET"] = previousTarget;
   }
 });
 

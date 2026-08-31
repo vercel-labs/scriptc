@@ -38,7 +38,15 @@ export async function installArtifact(
   try {
     await copyFile(source, tmp);
     if (mode !== undefined) await chmod(tmp, mode);
-    await rename(tmp, destination);
+    await rename(tmp, destination).catch(async (error) => {
+      // POSIX rename replaces an existing destination, but Windows does not.
+      // Caller-visible artifacts can legitimately change identity at the same
+      // path (for example console -> GUI PE subsystem), so retain the private
+      // staging step and use the Windows-compatible replacement fallback.
+      if (process.platform !== "win32") throw error;
+      await rm(destination, { force: true });
+      await rename(tmp, destination);
+    });
   } finally {
     await rm(tmp, { force: true }).catch(() => undefined);
   }
@@ -197,8 +205,17 @@ export async function publishCachedFile(source: string, destination: string): Pr
     await copyFile(source, tmp);
     await chmod(tmp, 0o600);
     await writeFile(tmpDigest, `${await fileDigest(tmp)}\n`, { mode: 0o600 });
-    await rename(tmp, destination);
-    await rename(tmpDigest, cacheDigestPath(destination));
+    await rename(tmp, destination).catch(async (error) => {
+      if (process.platform !== "win32") throw error;
+      await rm(destination, { force: true });
+      await rename(tmp, destination);
+    });
+    const digestDestination = cacheDigestPath(destination);
+    await rename(tmpDigest, digestDestination).catch(async (error) => {
+      if (process.platform !== "win32") throw error;
+      await rm(digestDestination, { force: true });
+      await rename(tmpDigest, digestDestination);
+    });
   } finally {
     await Promise.all([
       rm(tmp, { force: true }).catch(() => undefined),

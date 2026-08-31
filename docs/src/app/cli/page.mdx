@@ -95,6 +95,9 @@ Prebuilds release runtime objects and native TLS/dynamic-engine archives for tar
   <dt><code>--print &lt;native-link-info&gt;</code></dt>
   <dd>Build an object (equivalent to <code>--emit=obj</code>) and print its machine-readable external link recipe as JSON instead of printing the artifact path. The document names the exact installed source runtime pack and all link inputs, but does not invoke a linker.</dd>
 
+  <dt><code>--subsystem &lt;console|windows&gt;</code></dt>
+  <dd>Windows executable subsystem. The default, <code>console</code>, retains the normal console PE executable. <code>windows</code> produces a GUI PE executable, so Windows does not create a console window for the program. This option is valid only for Windows <code>--emit=exe</code> builds (including <code>scriptc run</code>); it does not accept arbitrary linker flags and does not apply to object output or <code>--print=native-link-info</code>.</dd>
+
   <dt><code>--dynamic</code></dt>
   <dd>Embed the dynamic engine (~620KB) so npm dependencies and <code>any</code>-typed code can run. Static stays the default — without this flag, dynamic-tier sites are per-site compile errors. See <a href="/dependencies">npm Dependencies</a>.</dd>
 

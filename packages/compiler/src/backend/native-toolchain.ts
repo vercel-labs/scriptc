@@ -266,6 +266,8 @@ export async function executableNativeEnvironmentFingerprint(
   return hash.digest("hex");
 }
 
+export type ExecutableSubsystem = "console" | "windows";
+
 export interface CcOptions {
   /** Path of the generated (or hand-written) program TU: a .c file, or the
    * LLVM backend's .ll — clang compiles IR text natively on the same
@@ -273,6 +275,9 @@ export interface CcOptions {
   cPath: string;
   /** Path of the native executable to produce. */
   outPath: string;
+  /** Windows PE executable subsystem. `windows` selects GUI startup; omitted
+   * and `console` retain the existing console executable behavior. */
+  executableSubsystem?: ExecutableSubsystem;
   /** Additional identity for a translation unit whose complete non-system
    * dependency graph is owned by the caller. Persistent caching is disabled
    * when omitted: arbitrary C can depend on same-path edited headers and on
@@ -3655,7 +3660,14 @@ async function publishNativeMetadataStamp(
   const tmp = `${destination}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
   try {
     await writeFile(tmp, `${JSON.stringify(stamp)}\n`, { mode: 0o600 });
-    await rename(tmp, destination);
+    await rename(tmp, destination).catch(async (error) => {
+      // Windows does not replace a previous metadata stamp. Metadata is
+      // private and fully rewritten from the validated invocation, so remove
+      // only that exact destination before installing its private temp file.
+      if (process.platform !== "win32") throw error;
+      await rm(destination, { force: true });
+      await rename(tmp, destination);
+    });
   } finally {
     await rm(tmp, { force: true }).catch(() => undefined);
   }
@@ -3696,7 +3708,8 @@ function localArtifactIdentity(
       // instead of materializing a second giant JSON string solely for this
       // output-local fast-path identity.
       .filter(([key, value]) =>
-        value !== undefined && key !== "programShards" && key !== "programPublicSymbols"
+        value !== undefined && key !== "programShards" && key !== "programPublicSymbols" &&
+        !(key === "executableSubsystem" && value === "console")
       )
       .sort(([a], [b]) => a.localeCompare(b)),
   );
@@ -3832,7 +3845,15 @@ async function publishLocalArtifactStamp(
       integrity: localArtifactStampIntegrity(unsigned),
     };
     await writeFile(tmp, `${JSON.stringify(stamp)}\n`, { mode: 0o600 });
-    await rename(tmp, stampPath);
+    await rename(tmp, stampPath).catch(async () => {
+      // POSIX rename replaces a previous same-output stamp, but Windows does
+      // not. A console build followed by a GUI build deliberately has a new
+      // identity at the same output path; failing to replace this metadata
+      // suppresses onArtifactReady, leaving the GUI executable unavailable to
+      // the bootstrap's routed cache on its next invocation.
+      await rm(stampPath, { force: true });
+      await rename(tmp, stampPath);
+    });
     return stamp;
   } finally {
     await rm(tmp, { force: true }).catch(() => undefined);
@@ -4005,6 +4026,16 @@ async function compileCInternal(
   const tls = (opts.tls ?? false) || nativeFetch || netIsland;
   const tlsCa = (opts.tlsCa ?? false) || tls;
   const driver = resolveCc();
+  if (opts.executableSubsystem !== undefined &&
+      opts.executableSubsystem !== "console" && opts.executableSubsystem !== "windows") {
+    throw new Error("executable subsystem must be console or windows");
+  }
+  if (opts.executableSubsystem !== undefined && targetPlatform(driver) !== "win32") {
+    throw new Error("--subsystem is supported only for Windows executable builds");
+  }
+  const executableSubsystemLinkArgs = opts.executableSubsystem === "windows"
+    ? ["-Wl,--subsystem,windows"]
+    : [];
   const shardNames = new Set<string>();
   const programShardsValid = opts.programShards?.every((shard) => {
     if (
@@ -4580,6 +4611,7 @@ async function compileCInternal(
     // from left to right.
     ...driver.linkArgs,
     ...executableSectionFlags.link,
+    ...executableSubsystemLinkArgs,
     "-o", build.outPath ?? opts.outPath,
   ];
   // Compile-only flags shared by runtime-object population and the caller-TU
@@ -4778,6 +4810,7 @@ async function compileCInternal(
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...driver.linkArgs,
     ...executableSectionFlags.link,
+    ...executableSubsystemLinkArgs,
   ];
   // Both the wrapper dry run and dependency trace need the real build's
   // compile/link flag shape: wrappers commonly inject flags or native inputs
@@ -4798,6 +4831,7 @@ async function compileCInternal(
     ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...driver.linkArgs,
     ...executableSectionFlags.link,
+    ...executableSubsystemLinkArgs,
   ];
   // A complete hit is checked before cross-target curl's generated import stub
   // is materialized. Its -L spelling still joins the dry-run identity, while
@@ -4999,7 +5033,14 @@ async function compileCInternal(
       // Match a fresh linker output under the caller's current umask. Reusing a
       // cache entry populated by a less restrictive shell must not widen access.
       await chmod(tmpOut, 0o777 & ~process.umask());
-      await rename(tmpOut, opts.outPath);
+      await rename(tmpOut, opts.outPath).catch(async (error) => {
+        // Windows does not replace an existing executable with rename(). Keep
+        // the private staging/rename sequence and replace this exact output
+        // path when a different cached subsystem variant is selected.
+        if (process.platform !== "win32") throw error;
+        await rm(opts.outPath, { force: true });
+        await rename(tmpOut, opts.outPath);
+      });
       if (localArtifact !== null && localArtifactDependencyPaths !== null) {
         const stamp = await publishLocalArtifactStamp(
           localArtifact.stampPath,

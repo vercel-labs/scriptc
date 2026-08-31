@@ -36,6 +36,11 @@ function fail(msg: string): never {
   throw new CliExit(1);
 }
 
+function normalizeExecutableSubsystem(value: string | undefined): "console" | "windows" | undefined {
+  if (value === undefined || value === "console" || value === "windows") return value;
+  fail(`unknown subsystem "${value}" (supported: console, windows)\n\n${USAGE}`);
+}
+
 /** parseArgs, with its throw turned into the CLI's own one-line error.
  * Unparseable arguments are a USER error — an unknown flag or a missing
  * value used to reach the top level as an uncaught ERR_PARSE_ARGS_* and
@@ -67,10 +72,12 @@ async function main(): Promise<number> {
     return values.help ? 0 : 1;
   }
 
+  const subsystem = normalizeExecutableSubsystem(values.subsystem);
+
   const [command, inputArg] = positionals;
   if (command === "cache") {
     if (inputArg !== "warm") fail(`unknown cache command "${inputArg ?? ""}" (supported: warm)\n\n${USAGE}`);
-    if (values.lib || values.dynamic || values.backend !== undefined || values.emit !== undefined || values.print !== undefined || values["from-c"] || values.ffi !== undefined || values.profile !== undefined || (values["npm-static"] ?? []).length > 0 || values["provenance-sources"] || externalTypeArgs.length > 0 || values.out !== undefined || values["emit-ir"] || !values["keep-c"]) {
+    if (values.lib || values.dynamic || values.backend !== undefined || values.emit !== undefined || subsystem !== undefined || values.print !== undefined || values["from-c"] || values.ffi !== undefined || values.profile !== undefined || (values["npm-static"] ?? []).length > 0 || values["provenance-sources"] || externalTypeArgs.length > 0 || values.out !== undefined || values["emit-ir"] || !values["keep-c"]) {
       fail(`scriptc cache warm takes only native optimization/sanitizer options and profile names\n\n${USAGE}`);
     }
     const optimization = values.optimization;
@@ -118,9 +125,9 @@ async function main(): Promise<number> {
     if (inputArg) {
       fail("scriptc build --lib takes no input positional: the profile names the entry module");
     }
-    if (values.dynamic || values.backend !== undefined || values.emit !== undefined || values.print !== undefined || values.optimization !== undefined || values.ffi !== undefined || (values["npm-static"] ?? []).length > 0 || externalTypeArgs.length > 0) {
+    if (values.dynamic || values.backend !== undefined || values.emit !== undefined || subsystem !== undefined || values.print !== undefined || values.optimization !== undefined || values.ffi !== undefined || (values["npm-static"] ?? []).length > 0 || externalTypeArgs.length > 0) {
       fail(
-        "scriptc build --lib takes no --dynamic/--backend/--emit/--print/--optimization/--npm-static/--ffi/--external-types: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, and external type mappings belong to coverage",
+        "scriptc build --lib takes no --dynamic/--backend/--emit/--subsystem/--print/--optimization/--npm-static/--ffi/--external-types: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, and external type mappings belong to coverage",
       );
     }
     const profilePath = resolve(profileArg);
@@ -153,6 +160,9 @@ async function main(): Promise<number> {
   const input = resolve(inputArg);
   if (command === "coverage" && values.emit !== undefined) {
     fail(`--emit is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && subsystem !== undefined) {
+    fail(`--subsystem is supported only for Windows executable builds\n\n${USAGE}`);
   }
   if (values.print !== undefined && values.print !== "native-link-info") {
     fail(`unknown print kind "${values.print}" (supported: native-link-info)\n\n${USAGE}`);
@@ -206,6 +216,7 @@ async function main(): Promise<number> {
         ...(values.emit === undefined && !printNativeLinkInfo
           ? {}
           : { emit: values.emit ?? "obj" }),
+        ...(subsystem === undefined ? {} : { subsystem }),
         emitIr: values["emit-ir"],
         ...(values.backend === undefined ? {} : { backend: values.backend }),
         fromC: values["from-c"],
@@ -216,6 +227,10 @@ async function main(): Promise<number> {
       });
   if (output !== null && !output.ok) fail(`${output.message}\n\n${USAGE}`);
   const backend = output?.ok ? output.backend : undefined;
+  const executableSubsystem = output?.ok ? output.executableSubsystem : undefined;
+  if (executableSubsystem !== undefined && buildTargetPlatform() !== "win32") {
+    fail(`--subsystem is supported only for Windows executable builds\n\n${USAGE}`);
+  }
 
   // --npm-static: repeatable and comma-splittable; the literal "auto"
   // switches to eligibility-based detection (mixing "auto" with names
@@ -270,6 +285,7 @@ async function main(): Promise<number> {
         outPath,
         sanitize: values.sanitize,
         dynamic: values.dynamic,
+        ...(executableSubsystem === undefined ? {} : { executableSubsystem }),
         ...(optimization !== undefined ? { optimization } : {}),
       });
       return outPath;
@@ -282,6 +298,7 @@ async function main(): Promise<number> {
       emitIr: output.emitIr,
       sanitize: values.sanitize,
       dynamic: values.dynamic,
+      ...(executableSubsystem === undefined ? {} : { executableSubsystem }),
       ...(backend !== undefined ? { backend } : {}),
       ...(optimization !== undefined ? { optimization } : {}),
       ...(npmStatic !== undefined ? { npmStatic } : {}),

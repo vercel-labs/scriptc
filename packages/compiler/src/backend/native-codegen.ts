@@ -288,7 +288,13 @@ async function installVerifiedCache(source: string, destination: string): Promis
     // Cache entries are private (0600), but caller artifacts follow the
     // process umask exactly like a freshly emitted object/assembly file.
     await chmod(temporary, artifactMode());
-    await rename(temporary, destination);
+    await rename(temporary, destination).catch(async (error) => {
+      // Windows does not replace an existing output with rename(). Native
+      // artifact cache hits must still be able to refresh the same path.
+      if (process.platform !== "win32") throw error;
+      await rm(destination, { force: true });
+      await rename(temporary, destination);
+    });
     return true;
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);

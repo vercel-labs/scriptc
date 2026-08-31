@@ -313,7 +313,14 @@ async function installExecutable(bytes: Uint8Array, destination: string): Promis
   try {
     await writeFile(tmp, bytes, { mode: 0o600 });
     await chmod(tmp, 0o777 & ~process.umask());
-    await rename(tmp, destination);
+    await rename(tmp, destination).catch(async (error) => {
+      // Windows does not replace an existing executable with rename(). A
+      // routed/early cache hit may restore a different final-link variant at
+      // the same caller-visible path.
+      if (process.platform !== "win32") throw error;
+      await rm(destination, { force: true });
+      await rename(tmp, destination);
+    });
   } finally {
     await rm(tmp, { force: true }).catch(() => undefined);
   }

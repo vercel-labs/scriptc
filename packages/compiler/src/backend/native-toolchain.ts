@@ -3660,7 +3660,14 @@ async function publishNativeMetadataStamp(
   const tmp = `${destination}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
   try {
     await writeFile(tmp, `${JSON.stringify(stamp)}\n`, { mode: 0o600 });
-    await rename(tmp, destination);
+    await rename(tmp, destination).catch(async (error) => {
+      // Windows does not replace a previous metadata stamp. Metadata is
+      // private and fully rewritten from the validated invocation, so remove
+      // only that exact destination before installing its private temp file.
+      if (process.platform !== "win32") throw error;
+      await rm(destination, { force: true });
+      await rename(tmp, destination);
+    });
   } finally {
     await rm(tmp, { force: true }).catch(() => undefined);
   }
@@ -5026,7 +5033,14 @@ async function compileCInternal(
       // Match a fresh linker output under the caller's current umask. Reusing a
       // cache entry populated by a less restrictive shell must not widen access.
       await chmod(tmpOut, 0o777 & ~process.umask());
-      await rename(tmpOut, opts.outPath);
+      await rename(tmpOut, opts.outPath).catch(async (error) => {
+        // Windows does not replace an existing executable with rename(). Keep
+        // the private staging/rename sequence and replace this exact output
+        // path when a different cached subsystem variant is selected.
+        if (process.platform !== "win32") throw error;
+        await rm(opts.outPath, { force: true });
+        await rename(tmpOut, opts.outPath);
+      });
       if (localArtifact !== null && localArtifactDependencyPaths !== null) {
         const stamp = await publishLocalArtifactStamp(
           localArtifact.stampPath,

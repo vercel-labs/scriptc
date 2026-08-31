@@ -101,7 +101,13 @@ export async function installBytes(bytes: Uint8Array, destination: string): Prom
   try {
     await writeFile(tmp, bytes, { mode: 0o600 });
     await chmod(tmp, 0o666 & ~process.umask());
-    await rename(tmp, destination);
+    await rename(tmp, destination).catch(async (error) => {
+      // Windows does not replace an existing caller-visible source artifact.
+      // Cache hits can restore a new artifact at the same path.
+      if (process.platform !== "win32") throw error;
+      await rm(destination, { force: true });
+      await rename(tmp, destination);
+    });
   } finally {
     await rm(tmp, { force: true }).catch(() => undefined);
   }

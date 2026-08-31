@@ -238,6 +238,9 @@ static void accumulation_asserts(void) {
   ScrStr *han = scr_str_new("\xE4\xB8\xAD", 3); /* 中 */
   ScrStr *face = scr_str_new("\xF0\x9F\x98\x80", 4); /* 😀 */
   ScrStr *many_before = many;
+#ifdef SCR_SIDX_TEST
+  scr_sidx_test_reset_steps();
+#endif
   handoff_append(&many, han);
   handoff_append(&many, face);
   if (many != many_before || scr_str_utf16_len(many) != old_units + 3 ||
@@ -248,6 +251,14 @@ static void accumulation_asserts(void) {
     failed++;
     fprintf(stderr, "ACCUMULATION: sparse UTF-16 index did not extend\n");
   }
+#ifdef SCR_SIDX_TEST
+  /* The former end is now an internal anchor, so these boundary lookups do
+   * not walk back through the final pre-append checkpoint interval. */
+  if (scr_sidx_test_walk_steps() > 8) {
+    failed++;
+    fprintf(stderr, "ACCUMULATION: append discarded its boundary checkpoint\n");
+  }
+#endif
   scr_str_release(face);
   scr_str_release(han);
   scr_str_release(tail_x);
@@ -415,6 +426,44 @@ static void sparse_all_ascii_end_asserts(void) {
     sidx_fail("all-ASCII end lookup retained checkpoints");
 
   scr_str_release(s);
+  scr_sidx_test_reset_cache();
+}
+
+/* Crossing the sparse threshold is not necessarily what first introduces
+ * non-ASCII data: a mixed 63KiB receiver can be length-indexed while still
+ * small, then grow in place by ASCII-only bytes. The completed non-identity
+ * cache must materialize its checkpoints at that transition rather than
+ * retaining only the hot cursor. */
+static void sparse_append_threshold_asserts(void) {
+  enum { BEFORE = 32700, EXTRA = 200, QUERIES = 8 };
+  ScrStr *eacute = scr_str_new("\xC3\xA9", 2);
+  ScrStr *s = scr_str_repeat(eacute, BEFORE); /* 65,400 bytes: below 64KiB */
+  ScrStr *one = scr_str_new("x", 1);
+  handoff_append(&s, one); /* copy once to make slack, still below threshold */
+  if (scr_str_utf16_len(s) != (double)(BEFORE + 1) ||
+      scr_sidx_test_points() != 0) {
+    sidx_fail("small mixed prefix unexpectedly indexed");
+  }
+  ScrStr *more = scr_str_repeat(one, EXTRA);
+  handoff_append(&s, more); /* in-place ASCII-only threshold crossing */
+  if (scr_str_utf16_len(s) != (double)(BEFORE + 1 + EXTRA) ||
+      scr_sidx_test_points() == 0) {
+    sidx_fail("mixed threshold append did not materialize checkpoints");
+  }
+
+  scr_sidx_test_reset_steps();
+  for (size_t q = 0; q < QUERIES; q++) {
+    size_t at = q & 1 ? (size_t)BEFORE - 1 : (size_t)BEFORE / 3;
+    if (scr_str_char_code_at(s, (double)at) != 233.0)
+      sidx_fail("mixed threshold append charCodeAt result");
+  }
+  if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 4200)
+    sidx_fail("mixed threshold append lost sparse stride bound");
+
+  scr_str_release(more);
+  scr_str_release(one);
+  scr_str_release(s);
+  scr_str_release(eacute);
   scr_sidx_test_reset_cache();
 }
 #endif
@@ -585,6 +634,7 @@ int main(int argc, char **argv) {
   sparse_index_asserts();
   sparse_ascii_prefix_asserts();
   sparse_all_ascii_end_asserts();
+  sparse_append_threshold_asserts();
 #endif
 
 #ifdef SCR_RC_AUDIT

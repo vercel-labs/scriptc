@@ -204,9 +204,11 @@ ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
     a->len = newlen;
     a->data[newlen] = '\0';
     /* A cached UTF-16 length for a is stale now; checkpoints and the exact
-     * old prefix remain valid, but its old terminal point is no longer the
-     * terminal of this grown string. The next mapper call lazily continues
-     * from oldlen rather than scanning the unchanged prefix again. */
+     * old prefix remain valid. Its old terminal point is no longer an END
+     * fact (u16len is invalidated below), but remains an excellent ordinary
+     * checkpoint for accesses around the append boundary. The next mapper
+     * lazily continues from oldlen rather than scanning the unchanged prefix
+     * again. */
     for (int i = 0; i < SCR_SIDX_N; i++) {
       ScrSidx *e = &scr_sidx_tab[i];
       if (e->s != a) continue;
@@ -223,12 +225,10 @@ ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
          * end anchor. */
         continue;
       }
-      while (e->npoints != 0 && e->points[e->npoints - 1].cb > oldlen)
-        e->npoints--;
-      if (e->npoints != 0 && e->points[e->npoints - 1].cb == oldlen)
-        e->npoints--;
       /* The indexed frontier is an exact character-boundary pair. When a
-       * prior completed scan ended at oldlen it remains the extension base. */
+       * prior completed scan ended at oldlen it remains the extension base;
+       * its point stays in the list as an internal anchor, never an implied
+       * terminal (only u16len records a completed string). */
     }
     a->rc = 2; /* +1 for the returned reference, beside the caller's borrow */
     return a;
@@ -531,6 +531,26 @@ static bool scr_sidx_extend_one(const ScrStr *s, ScrSidx *e) {
   return true;
 }
 
+/* A formerly small mixed string can cross the sparse-index threshold through
+ * an ASCII in-place append. Its exact prefix already covers the whole new
+ * string, so the ordinary extension path has no non-ASCII interval that
+ * would cause prepare_points() to allocate anchors. Rebuild once in that
+ * narrow transition instead of leaving a threshold-sized non-ASCII string
+ * with only the hot cursor. This is still fail-open: an allocation failure
+ * leaves the completed length/cursor cache fully usable. */
+static void scr_sidx_rebuild_points(const ScrStr *s, ScrSidx *e) {
+  if (s->len < SCR_SIDX_MIN_BYTES || e->npoints != 0 || e->no_more_points)
+    return;
+  size_t cu = 0, cb = 0;
+  if (!scr_sidx_add_point(e, cu, cb, true)) return;
+  while (cb < s->len) {
+    size_t end = scr_sidx_next_boundary(s, cb);
+    cu += scr_utf16_units_span(s->data + cb, end - cb, NULL);
+    cb = end;
+    if (!scr_sidx_add_point(e, cu, cb, true)) return;
+  }
+}
+
 static void scr_sidx_finish(const ScrStr *s, ScrSidx *e) {
   if (e->indexed_cb != s->len) return;
   e->u16len = e->indexed_cu;
@@ -539,6 +559,8 @@ static void scr_sidx_finish(const ScrStr *s, ScrSidx *e) {
     e->points = NULL;
     e->npoints = 0;
     e->cap = 0;
+  } else {
+    scr_sidx_rebuild_points(s, e);
   }
 }
 

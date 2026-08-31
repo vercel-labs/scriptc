@@ -10,6 +10,7 @@ import { compilerReleaseVersion } from "../library/sidecar.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
   CcCompileError,
+  executableSectionEliminationFlags,
   nativeArtifactDependenciesStillMatch,
   nativeLinkerDependencyPaths,
   subprocessFailureDetail,
@@ -434,7 +435,7 @@ export async function createRuntimeLinkPlan(options: {
     ])],
     driverFlags: [
       "-target", options.target.llvmTriple, "-pthread",
-      ...(runtimePack.features.dynamic ? ["-Wl,-dead_strip"] : []),
+      ...executableSectionEliminationFlags("darwin").link,
     ],
     dependencyPaths: [
       ...runtimePack.dependencyPaths,

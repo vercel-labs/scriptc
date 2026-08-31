@@ -10,6 +10,7 @@ import {
   ccVersion,
   compileC,
   compileLibArchive,
+  executableSectionEliminationFlags,
   executableNativeEnvironmentFingerprint,
   implicitDependencyProbeIncludes,
   parseLinkTraceFiles,
@@ -130,6 +131,22 @@ test("the production cache root follows overrides, platform defaults, and the ha
   expect(resolveBuildCacheRoot({ LOCALAPPDATA: "/Users/tester/AppData/Local" }, "win32", "/Users/tester")).toBe(
     "/Users/tester/AppData/Local/scriptc/cache/build",
   );
+});
+
+test("executable section elimination flags are target-aware and never enter library recipes", () => {
+  expect(executableSectionEliminationFlags("darwin")).toEqual({
+    compile: [],
+    link: ["-Wl,-dead_strip"],
+  });
+  expect(executableSectionEliminationFlags("linux")).toEqual({
+    compile: ["-ffunction-sections", "-fdata-sections"],
+    link: ["-Wl,--gc-sections"],
+  });
+  expect(executableSectionEliminationFlags("win32")).toEqual({
+    compile: ["-ffunction-sections", "-fdata-sections"],
+    link: ["-Wl,--gc-sections"],
+  });
+  expect(executableSectionEliminationFlags("wasi")).toEqual({ compile: [], link: [] });
 });
 
 test.skipIf(process.platform === "win32")(
@@ -2741,7 +2758,14 @@ exec "$SCRIPTC_TEST_REAL_CLANG" "$@"
 `,
       );
       await chmod(wrapper, 0o755);
-      await writeFile(cPath, "int main(void) { return 0; }\n");
+      // Keep the injected datum reachable. With executable section GC an
+      // unreferenced test-only global is rightly removed before the binary
+      // assertion below can observe it.
+      await writeFile(
+        cPath,
+        "extern int scriptc_runtime_race_marker(void);\n" +
+          "int main(void) { return scriptc_runtime_race_marker(); }\n",
+      );
       process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
       process.env["SCRIPTC_TEST_RUNTIME_SRC_DIR"] = fakeRuntime;
       process.env["SCRIPTC_TEST_REAL_CLANG"] = realClang!;
@@ -2768,7 +2792,11 @@ exec "$SCRIPTC_TEST_REAL_CLANG" "$@"
       }
       await writeFile(
         raceSource,
-        `${originalRuntimeSource}\nconst char scriptc_runtime_race_marker[] = "${marker}";\n`,
+        `${originalRuntimeSource}\n` +
+          `volatile const char scriptc_runtime_race_marker_data[] = "${marker}";\n` +
+          "int scriptc_runtime_race_marker(void) {\n" +
+          "  return scriptc_runtime_race_marker_data[0] == '\\0';\n" +
+          "}\n",
       );
       await writeFile(release, "go");
       await firstBuild;
@@ -2995,6 +3023,41 @@ test("frontend-generated same-output builds no-op only while output and dependen
     if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
     else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
     process.umask(oldUmask);
+  }
+});
+
+test("pre-section-GC output-local stamps cannot restore an old executable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-section-gc-local-stamp-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const cPath = join(dir, "program.c");
+  const outPath = join(dir, "program");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  try {
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    delete process.env["SCRIPTC_NO_CACHE"];
+    await writeFile(cPath, "int main(void) { return 0; }\n");
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+
+    const stampPath = join(
+      cacheRoot,
+      "local",
+      createHash("sha256").update(outPath).digest("hex"),
+    );
+    const current = JSON.parse(await readFile(stampPath, "utf8")) as Record<string, unknown>;
+    const legacy = { ...current, key: "old-non-gc-output", version: 1 };
+    await writeFile(stampPath, `${JSON.stringify(legacy)}\n`);
+    const pinnedTime = new Date("2001-01-01T00:00:00.000Z");
+    await utimes(outPath, pinnedTime, pinnedTime);
+
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+    expect((await stat(outPath)).mtimeMs).toBeGreaterThan(pinnedTime.getTime());
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
   }
 });
 

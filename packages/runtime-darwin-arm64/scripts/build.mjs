@@ -47,6 +47,7 @@ async function build() {
   const commonFlags = [
     "-target", RUNTIME_PACK_MATRIX.target.llvm_triple,
     "-std=c11", "-pthread", "-fno-math-errno", "-fno-strict-aliasing",
+    ...RUNTIME_PACK_MATRIX.executable_section_elimination.compile_flags,
     "-Wno-deprecated-declarations", "-I", runtimeSrc,
   ];
   const quickjs = join(vendorRoot, "quickjs-ng");

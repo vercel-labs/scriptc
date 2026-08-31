@@ -84,6 +84,20 @@ describe("native link info recipes", () => {
     });
     expect(info.runtime_pack.source_sets[0]?.c_flags).toContain("-O0");
     expect(info.runtime_pack.source_sets[0]?.c_flags).not.toContain("-O2");
+    // External objects are compiled separately and the driver recipe is an
+    // executable link. The two halves must not leak into each other's recipe.
+    expect(info.runtime_pack.source_sets[0]?.c_flags).not.toContain("-Wl,-dead_strip");
+    expect(info.link.driver_flags).toContain("-Wl,-dead_strip");
+  });
+
+  test("static external-object links dead-strip just like dynamic links", async () => {
+    const info = await createNativeLinkInfo({
+      programObject: "/out/app.o",
+      target: MACOS_ARM64_TARGET,
+      features: BASE,
+      ffi: null,
+    });
+    expect(info.link.driver_flags).toContain("-Wl,-dead_strip");
   });
 
   test("FFI symbols and resolved inputs remain ordered before the runtime", async () => {

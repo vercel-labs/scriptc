@@ -16,6 +16,14 @@ const BASE_RUNTIME_SOURCES = [
   "scr_async.c", "scr_child.c", "scr_cycle.c",
 ];
 
+// ld64 dead-strips Mach-O symbol subsections without an ELF-style compile
+// flag. Keep this checked-in metadata alongside the matrix so pack build and
+// source/external linking share one documented executable recipe.
+export const EXECUTABLE_SECTION_ELIMINATION = {
+  compile_flags: [],
+  link_flags: ["-Wl,-dead_strip"],
+};
+
 const optional = [
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
@@ -95,6 +103,7 @@ export const RUNTIME_PACK_MATRIX = {
     release: { optimization: "-O2" },
     dev: { optimization: "-O0" },
   },
+  executable_section_elimination: EXECUTABLE_SECTION_ELIMINATION,
   runtime_units: [
     ...BASE_RUNTIME_SOURCES.map((source) => ({ source, predicate: true })),
     ...optional.map(([source, predicate]) => ({ source, predicate })),

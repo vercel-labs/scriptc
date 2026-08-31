@@ -137,6 +137,20 @@ describe("runtime pack manifests", () => {
     expect(evaluateRuntimePredicate({ any: ["regex", "dynamic"] }, features)).toBe(true);
   });
 
+  test("static runtime-pack executable links dead-strip too", async () => {
+    const { packagePath, root } = await fixture();
+    const plan = await createRuntimeLinkPlan({
+      target: MACOS_ARM64_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release",
+      resolver: () => packagePath,
+    });
+    expect(plan.driverFlags).toContain("-Wl,-dead_strip");
+  });
+
   test("selection chooses the most-specific variant and feature archive", async () => {
     const { packagePath } = await fixture();
     const resolver = () => packagePath;

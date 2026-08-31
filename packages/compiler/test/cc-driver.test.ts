@@ -17,12 +17,13 @@
 import { execFile, execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { EOL, tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import {
   compileC,
   configuredTargetPlatform,
+  isZigDriver,
   resolveCc,
   runtimeSrcDir,
   subprocessFailureDetail,
@@ -124,6 +125,7 @@ test.skipIf(process.platform === "win32")("iOS SDK discovery uses the resolver's
 
 test("zigcc resolves to `zig cc`; linux triples add their libc target flags", () => {
   const native = resolveCc({ SCRIPTC_CC: "zigcc" }, "darwin");
+  expect(isZigDriver(native)).toBe(true);
   expect(native.argv).toEqual(["zig", "cc"]);
   expect(native.targetArgs).toEqual([]);
   expect(native.linkArgs).toEqual([]);
@@ -175,6 +177,7 @@ test("zigcc resolves to `zig cc`; linux triples add their libc target flags", ()
   expect(wasi.linkArgs).toEqual([
     "-lwasi-emulated-signal", "-lwasi-emulated-process-clocks",
   ]);
+  expect(isZigDriver(resolveCc({}, "linux"))).toBe(false);
 });
 
 /** Runs body with SCRIPTC_CC/SCRIPTC_TARGET set, restoring the previous values. */
@@ -310,6 +313,97 @@ describe.skipIf(!zigOnPath())("zig cc builds (zig on PATH)", () => {
     const { stdout } = await execFileAsync(outPath);
     expect(stdout).toBe("zigcc says hi\n");
   });
+
+  test("host-native zigcc builds dynamic, TLS, zlib, and native fetch together", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scr-zigcc-host-features-"));
+    const cPath = join(dir, "program.c");
+    await writeFile(
+      cPath,
+      '#include <stdio.h>\nvoid scr_fetch_install(void);\nint main(void) { scr_fetch_install(); puts("zigcc host features ok"); return 0; }\n',
+    );
+    const outPath = join(dir, "program");
+    await withCcEnv("zigcc", undefined, () =>
+      compileC({ cPath, outPath, dynamic: true, tls: true, zlib: true, fetch: true }),
+    );
+    const { stdout } = await execFileAsync(outPath);
+    expect(stdout).toBe("zigcc host features ok\n");
+  }, 600_000);
+
+  test("targetless zigcc keeps vendor builds on zig cc and zig ar", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scr-zigcc-vendor-tools-"));
+    const binDir = join(dir, "bin");
+    const logPath = join(dir, "zig.log");
+    const unexpectedToolPath = join(dir, "unexpected-tool");
+    const oldPath = process.env["PATH"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const oldRealZig = process.env["SCRIPTC_TEST_REAL_ZIG"];
+    const realZig = (oldPath ?? "")
+      .split(delimiter)
+      .map((entry) => join(entry === "" ? process.cwd() : entry, "zig"))
+      .find((candidate) => {
+        try {
+          execFileSync(candidate, ["version"], { stdio: "ignore" });
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    expect(realZig).toBeDefined();
+
+    try {
+      await mkdir(binDir);
+      await writeFile(
+        join(binDir, "zig"),
+        `#!/bin/sh
+printf '%s\n' "$*" >> "$SCRIPTC_TEST_ZIG_LOG"
+exec "$SCRIPTC_TEST_REAL_ZIG" "$@"
+`,
+      );
+      for (const tool of ["clang", "ar"]) {
+        await writeFile(
+          join(binDir, tool),
+          `#!/bin/sh
+: > "$SCRIPTC_TEST_UNEXPECTED_TOOL"
+exit 99
+`,
+        );
+      }
+      await Promise.all([
+        chmod(join(binDir, "zig"), 0o755),
+        chmod(join(binDir, "clang"), 0o755),
+        chmod(join(binDir, "ar"), 0o755),
+      ]);
+      process.env["PATH"] = `${binDir}${delimiter}${oldPath ?? ""}`;
+      process.env["SCRIPTC_TEST_ZIG_LOG"] = logPath;
+      process.env["SCRIPTC_TEST_UNEXPECTED_TOOL"] = unexpectedToolPath;
+      process.env["SCRIPTC_TEST_REAL_ZIG"] = realZig!;
+      process.env["SCRIPTC_NO_CACHE"] = "1";
+
+      const cPath = join(dir, "program.c");
+      await writeFile(cPath, "int main(void) { return 0; }\n");
+      await withCcEnv("zigcc", undefined, () =>
+        compileC({ cPath, outPath: join(dir, "program"), dynamic: true, tls: true, zlib: true }),
+      );
+
+      const invocations = (await readFile(logPath, "utf8")).trim().split(/\r?\n/);
+      expect(invocations.some((line) => /^cc .*quickjs-ng/.test(line))).toBe(true);
+      expect(invocations.some((line) => /^cc .*mbedtls.*library/.test(line))).toBe(true);
+      expect(invocations.some((line) => /^cc .*vendor.*zlib/.test(line))).toBe(true);
+      expect(invocations.some((line) => /^ar rcs .*libqjs\.a/.test(line))).toBe(true);
+      expect(invocations.some((line) => /^ar rcs .*libmbedtls\.a/.test(line))).toBe(true);
+      expect(invocations.some((line) => line.includes("-lz"))).toBe(false);
+      expect(await readFile(unexpectedToolPath).catch(() => "")).toBe("");
+    } finally {
+      if (oldPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = oldPath;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+      if (oldRealZig === undefined) delete process.env["SCRIPTC_TEST_REAL_ZIG"];
+      else process.env["SCRIPTC_TEST_REAL_ZIG"] = oldRealZig;
+      delete process.env["SCRIPTC_TEST_ZIG_LOG"];
+      delete process.env["SCRIPTC_TEST_UNEXPECTED_TOOL"];
+    }
+  }, 600_000);
 
   test("cross build for aarch64-linux-gnu produces an ELF", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scr-zigcc-cross-"));

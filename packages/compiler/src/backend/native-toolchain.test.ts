@@ -205,6 +205,97 @@ test("native cache identities separate host architectures while cross targets re
   ).toBe("x86_64-linux-gnu.2.36");
 });
 
+test.skipIf(
+  process.platform === "win32" || zigExecutable === undefined ||
+  clangExecutable === undefined || arExecutable === undefined,
+)("targetless Zig vendor caches are separate from host-clang and reusable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-zig-vendor-cache-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const vendorRoot = join(dir, "vendor-cache");
+  const cPath = join(dir, "program.c");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  const oldVendorCacheDir = process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+  const oldCc = process.env["SCRIPTC_CC"];
+  const oldTarget = process.env["SCRIPTC_TARGET"];
+
+  try {
+    await writeFile(cPath, "int main(void) { return 0; }\n");
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = vendorRoot;
+    delete process.env["SCRIPTC_NO_CACHE"];
+    delete process.env["SCRIPTC_TARGET"];
+
+    process.env["SCRIPTC_CC"] = "clang";
+    await compileC({
+      cPath,
+      outPath: join(dir, "host"),
+      cacheIdentity: TEST_CACHE_IDENTITY,
+      dynamic: true,
+      net: true,
+      http: true,
+      tls: true,
+      zlib: true,
+      // Keep the complete executable tier out of this test: the second Zig
+      // invocation must walk the vendor cache and prove its artifacts are
+      // reusable independently of the output path.
+      systemLibraries: ["m"],
+    });
+    const hostEngine = (await readdir(vendorRoot)).find((name) =>
+      /^3c8f3d689539-plain-/.test(name)
+    );
+    const hostTls = (await readdir(vendorRoot)).find((name) => name.startsWith("mbedtls-"));
+    expect(hostEngine).toBeDefined();
+    expect(hostTls).toBeDefined();
+
+    process.env["SCRIPTC_CC"] = "zigcc";
+    const zigOptions = {
+      cPath,
+      cacheIdentity: TEST_CACHE_IDENTITY,
+      dynamic: true,
+      net: true,
+      http: true,
+      tls: true,
+      zlib: true,
+      systemLibraries: ["m"],
+    } as const;
+    await compileC({ ...zigOptions, outPath: join(dir, "zig-first") });
+
+    let vendorEntries = await readdir(vendorRoot);
+    expect(vendorEntries.filter((name) => /^3c8f3d689539-plain-/.test(name))).toHaveLength(2);
+    expect(vendorEntries.filter((name) => name.startsWith("mbedtls-")).length).toBe(2);
+    // Host clang uses system zlib, so only the Zig build materializes a zlib
+    // object family in the shared vendor root.
+    expect(vendorEntries.filter((name) => name.startsWith("zlib-")).length).toBe(1);
+    // Invalidate the host archive. A targetless Zig rebuild must continue to
+    // use the separately keyed Zig archive instead of repairing or consuming
+    // the host-clang entry.
+    await writeFile(join(vendorRoot, hostEngine!, "libqjs.a"), "host archive intentionally invalid\n");
+    await writeFile(join(vendorRoot, hostTls!, "libmbedtls.a"), "host archive intentionally invalid\n");
+    await compileC({ ...zigOptions, outPath: join(dir, "zig-second") });
+    vendorEntries = await readdir(vendorRoot);
+    expect(vendorEntries.filter((name) => /^3c8f3d689539-plain-/.test(name))).toHaveLength(2);
+    expect(await readFile(join(vendorRoot, hostEngine!, "libqjs.a"), "utf8")).toBe(
+      "host archive intentionally invalid\n",
+    );
+    expect(await readFile(join(vendorRoot, hostTls!, "libmbedtls.a"), "utf8")).toBe(
+      "host archive intentionally invalid\n",
+    );
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    if (oldVendorCacheDir === undefined) delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+    else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
+    if (oldCc === undefined) delete process.env["SCRIPTC_CC"];
+    else process.env["SCRIPTC_CC"] = oldCc;
+    if (oldTarget === undefined) delete process.env["SCRIPTC_TARGET"];
+    else process.env["SCRIPTC_TARGET"] = oldTarget;
+  }
+}, 600_000);
+
 test("Zig COFF dry-run parsing retains every linker input on its single command line", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-link-trace-"));
   scratch.push(dir);

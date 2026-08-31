@@ -7198,9 +7198,8 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     return { kind: "libCall", fn: "string.fromCharCode", args: [packed], type: STRING, loc };
   }
 
-/** `s.lastIndexOf(needle)` on string receivers — a libCall routed through
- * the runtime's shared UTF-16 string mapper rather than a strIntrinsic,
- * with the same UTF-16 index semantics as
+/** `s.lastIndexOf(needle)` on string receivers — a libCall rather than a
+   * strIntrinsic, but the same UTF-16 index semantics as
    * indexOf. The lib's fromIndex parameter has no lowering (Node clamps
    * it with ToIntegerOrInfinity; nothing in the corpus wants it) and
    * fences per site. Null for non-string receivers / other members. */

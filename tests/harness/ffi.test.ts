@@ -55,6 +55,8 @@ function manifest(archive: string): string {
 
 const expected = [
   "42",
+  "4 true 6",
+  "8 false 10",
   "true false",
   "2 4294967295 -1",
   "429",
@@ -620,6 +622,18 @@ test.each([
     message: "parameter 1",
   },
   {
+    id: "called-optional-initializer",
+    name: "an optional native call stored in an initializer",
+    source: [
+      "declare function nativeScale(value: number): number;",
+      "const stored = nativeScale?.(21);",
+      "console.log(stored);",
+      "",
+    ].join("\n"),
+    code: "SC5003",
+    message: "direct, non-generic calls only",
+  },
+  {
     id: "called-body",
     name: "an ordinary function body with a configured name",
     source: [
@@ -799,7 +813,8 @@ describe.each(["c", "llvm"] as const)("FFI binding identity, %s backend", (backe
           "declare function nativeScale(value: number): number;",
           "function localUse(): number {",
           "  function nativeScale(value: number): number { return value + 1; }",
-          "  return nativeScale(21);",
+          "  const stored = nativeScale(21);",
+          "  return stored;",
           "}",
           "console.log(localUse());",
           "",

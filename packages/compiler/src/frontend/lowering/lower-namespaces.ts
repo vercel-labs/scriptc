@@ -335,9 +335,12 @@ export function ambientNsRootOf(lowerer: Lowerer, e: ts.Expression): ts.Identifi
  * null/undefined AFTER a successful read; it cannot guard the root's own
  * ReferenceError), calls and `new` (the callee evaluates before any
  * argument), instantiation expressions, and tagged templates (the tag
- * evaluates first). Callers lower the WHOLE expression to the root's
- * throw, typed by the use site — and never lower the arguments, exactly
- * the order Node dies in. Null for stdlib/@types roots (their own
+ * evaluates first). A manifest-validated direct FFI call is the narrow
+ * exception: its ambient declaration supplies a native implementation, so
+ * the call itself is not an undefined-root read and outer transparent chains
+ * retain that native result. Callers lower every other whole expression to
+ * the root's throw, typed by the use site — and never lower the arguments,
+ * exactly the order Node dies in. Null for stdlib/@types roots (their own
  * chokepoints stand) and anything declared with a value. */
 export function ambientUndefVarRootOf(lowerer: Lowerer, e: ts.Expression): ts.Identifier | null {
   let root: ts.Expression = e;
@@ -357,6 +360,10 @@ export function ambientUndefVarRootOf(lowerer: Lowerer, e: ts.Expression): ts.Id
       continue;
     }
     if (ts.isCallExpression(root) || ts.isNewExpression(root)) {
+      // A configured native binding owns this exact call node. Do not walk
+      // into its signature-only declaration: the call produces a native
+      // result, and normal call lowering must retain its ffiCall IR.
+      if (ts.isCallExpression(root) && lowerer.ownsFfiCall(root)) return null;
       root = root.expression;
       continue;
     }

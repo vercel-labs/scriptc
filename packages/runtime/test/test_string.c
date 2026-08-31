@@ -373,6 +373,30 @@ static void sparse_ascii_prefix_asserts(void) {
   scr_str_release(s);
   scr_sidx_test_reset_cache();
 }
+
+/* A far-end lookup initially has to scan an unknown all-ASCII string, but
+ * that completed scan proves byte and UTF-16 offsets identical. It must not
+ * then allocate the prefix checkpoints useful only for a still-unknown
+ * ASCII prefix before non-ASCII content. */
+static void sparse_all_ascii_end_asserts(void) {
+  enum { BYTES = 4 * 1024 * 1024 };
+  char *raw = malloc(BYTES);
+  if (!raw) { sidx_fail("all-ASCII test allocation"); return; }
+  memset(raw, 'z', BYTES);
+  ScrStr *s = scr_str_new(raw, BYTES);
+  free(raw);
+
+  scr_sidx_test_reset_cache();
+  if (scr_str_char_code_at(s, (double)(BYTES - 1)) != 122.0)
+    sidx_fail("all-ASCII end charCodeAt result");
+  if (scr_str_utf16_len(s) != (double)BYTES)
+    sidx_fail("all-ASCII length result");
+  if (scr_sidx_test_points() != 0)
+    sidx_fail("all-ASCII end lookup retained checkpoints");
+
+  scr_str_release(s);
+  scr_sidx_test_reset_cache();
+}
 #endif
 
 int main(int argc, char **argv) {
@@ -540,6 +564,7 @@ int main(int argc, char **argv) {
 #ifdef SCR_SIDX_TEST
   sparse_index_asserts();
   sparse_ascii_prefix_asserts();
+  sparse_all_ascii_end_asserts();
 #endif
 
 #ifdef SCR_RC_AUDIT

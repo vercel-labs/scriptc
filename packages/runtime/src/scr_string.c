@@ -675,6 +675,12 @@ static size_t scr_u16_to_byte_c(const ScrStr *s, ScrSidx *e, size_t u16,
     return u16 < s->len ? u16 : s->len;
   }
   scr_sidx_extend_to_u16(s, e, u16);
+  /* Extending a far-end lookup can just have proved identity. Do not
+   * materialize an index that the identity fast path will never consult. */
+  if (e->u16len == s->len) {
+    *mid = false;
+    return u16 < s->len ? u16 : s->len;
+  }
   scr_sidx_materialize_identity_prefix(s, e);
   ScrSidxPoint near = scr_sidx_near_u16(s, e, u16);
   size_t cu = near.cu, cb = near.cb;
@@ -708,6 +714,9 @@ static size_t scr_byte_to_u16_c(const ScrStr *s, ScrSidx *e,
     while (e->indexed_cb < byte_off) scr_sidx_extend_one(s, e);
     scr_sidx_finish(s, e);
   }
+  /* As above, a completed all-ASCII scan is its own index. In particular,
+   * do not rebuild points that scr_sidx_finish() deliberately discarded. */
+  if (e->u16len == s->len) return byte_off;
   scr_sidx_materialize_identity_prefix(s, e);
   ScrSidxPoint near = scr_sidx_near_byte(s, e, byte_off);
   size_t cu = near.cu, cb = near.cb;

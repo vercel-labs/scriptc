@@ -61,6 +61,101 @@ function requireStatementPosition(lowerer: Lowerer, call: ts.CallExpression, wha
   );
 }
 
+/** Node enables net.Server's reusePort socket option only for the exact
+ * boolean value true. This is intentionally different from the ordinary
+ * condition lowering used by ipv6Only: JavaScript values such as 1 and
+ * "true" are truthy, but Node leaves reusePort disabled for them.
+ *
+ * Typed boolean-or-undefined option bindings are represented by the normal
+ * tagged union. Narrow that union to its boolean arm without requiring a
+ * shorthand property to be a bare BOOL, so `reusePort` and
+ * `reusePort: value` have the same optional-binding behavior. Other static
+ * values still evaluate once, then produce false; checked-dynamic and island
+ * values use strict equality against the boolean true. */
+function lowerExactReusePort(lowerer: Lowerer, value: IrExpr, node: ts.Node): IrExpr {
+  const loc = locOf(node);
+  const falseValue = (): IrExpr => boolLit(false, loc);
+
+  if (value.type.kind === "bool") return value;
+  if (value.type.kind === "dyn") {
+    return {
+      kind: "dynScalarEq",
+      left: value,
+      right: boolLit(true, loc),
+      type: BOOL,
+      loc,
+    };
+  }
+  if (value.type.kind === "jsval") {
+    return {
+      kind: "jsOp",
+      op: "eq",
+      args: [value, lowerer.jsvalIn(boolLit(true, loc), node)],
+      type: BOOL,
+      loc,
+    };
+  }
+  if (value.type.kind === "union") {
+    const def = lowerer.unions.get(value.type.unionId);
+    const boolTag = def?.arms.findIndex((arm) => arm.kind === "bool") ?? -1;
+    if (boolTag >= 0) {
+      const local = lowerer.declareHiddenLocal("%listenReusePort", value.type);
+      const ref = (): IrExpr => ({ kind: "varRef", localId: local.id, type: value.type, loc });
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+        result: {
+          kind: "ternary",
+          cond: {
+            kind: "unionIsTag",
+            unionId: value.type.unionId,
+            tag: boolTag,
+            negated: false,
+            value: ref(),
+            type: BOOL,
+            loc,
+          },
+          then: {
+            kind: "unionNarrow",
+            unionId: value.type.unionId,
+            tag: boolTag,
+            value: ref(),
+            type: BOOL,
+            loc,
+          },
+          else_: falseValue(),
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+  }
+
+  // Static non-boolean values cannot equal true, but their initializer may
+  // have observable effects (for example, a getter-backed expression).
+  // Keep that evaluation in the IR while disabling the kernel option.
+  if (value.type.kind === "void") {
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc }],
+      result: falseValue(),
+      type: BOOL,
+      loc,
+    };
+  }
+  if (value.kind === "unitLit") return falseValue();
+  const local = lowerer.declareHiddenLocal("%listenReusePort", value.type);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+    result: falseValue(),
+    type: BOOL,
+    loc,
+  };
+}
+
 /** The %Error param shape the error-listener slots carry. */
 const ERROR_T: IrType = { kind: "object", className: "%Error" };
 
@@ -959,8 +1054,9 @@ function lowerNetServerMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     // address (an IP literal — the runtime has no resolver here; absent
     // = Node's host-less dual-stack any), ipv6Only sets IPV6_V6ONLY
     // (truthiness, like Node's option handling — `boolean | undefined`
-    // flows). reusePort follows the same truthiness path, but its presence
-    // selects the additive reuse-port ABI even when the value is false.
+    // flows). reusePort is different: Node enables it only for exact true,
+    // while its presence selects the additive ABI even when the value is
+    // false.
     // Every other key fences by name.
     if (ts.isObjectLiteralExpression(args[0]!)) {
       let port: IrExpr | null = null;
@@ -1011,19 +1107,10 @@ function lowerNetServerMethodCall(lowerer: Lowerer, call: ts.CallExpression,
             v6only = v;
           }
         } else if (key === "reusePort") {
-          if (initializer !== null) {
-            reusePort = lowerer.lowerCondition(initializer); /* truthiness: `boolean | undefined` flows */
-          } else {
-            const v = lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
-            if (v.type.kind !== "bool") {
-              lowerer.noLowering(
-                `a listen 'reusePort' option of '${lowerer.fmt(v.type)}' values`,
-                prop,
-                "spell the option out (reusePort: value) so non-boolean values can narrow",
-              );
-            }
-            reusePort = v;
-          }
+          const value = initializer !== null
+            ? lowerer.lowerExpr(initializer)
+            : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+          reusePort = lowerExactReusePort(lowerer, value, prop);
         } else if (key === "signal" && ts.isPropertyAssignment(prop) &&
                    isJsSourceFile(call.getSourceFile())) {
           // A provably-non-AbortSignal signal (the invalid-input probes:

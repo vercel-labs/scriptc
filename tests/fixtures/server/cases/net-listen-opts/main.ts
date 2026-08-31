@@ -20,11 +20,12 @@ function listenOnProxyInterface(
   target: ProxyBindTarget,
   listener?: () => void
 ): void {
+  const reusePort = target.reusePort;
   server.listen({
     port,
     host: target.host,
     ipv6Only: target.ipv6Only,
-    reusePort: target.reusePort,
+    reusePort,
   }, listener);
 }
 

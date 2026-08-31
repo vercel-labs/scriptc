@@ -20,6 +20,9 @@ Options:
   -o, --out <path>   primary output path (default: .scriptc/<name><suffix>)
       --emit <kind>  primary output: ir, c, llvm, asm, obj, or exe
                      (default: exe). asm/obj currently support macOS 15+ arm64
+      --subsystem <console|windows>
+                     Windows executable subsystem (default: console). windows
+                     creates a GUI executable; executable Windows builds only
       --print <kind> print machine-readable metadata instead of the output path
                      (native-link-info implies --emit=obj and never links)
       --backend <b>  code generator. llvm is the default and the output that
@@ -71,6 +74,7 @@ Options:
 export const CLI_OPTIONS = {
   out: { type: "string", short: "o" },
   emit: { type: "string" },
+  subsystem: { type: "string" },
   print: { type: "string" },
   backend: { type: "string" },
   optimization: { type: "string" },

@@ -30,6 +30,15 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+function peSubsystem(bytes: Buffer): number {
+  expect(bytes.subarray(0, 2)).toEqual(Buffer.from("MZ"));
+  const peOffset = bytes.readUInt32LE(0x3c);
+  expect(bytes.subarray(peOffset, peOffset + 4)).toEqual(Buffer.from("PE\0\0"));
+  const optionalHeader = peOffset + 4 + 20;
+  expect(bytes.readUInt16LE(optionalHeader)).toBe(0x20b); // PE32+
+  return bytes.readUInt16LE(optionalHeader + 0x44);
+}
+
 function zigOnPath(): boolean {
   try {
     execFileSync("zig", ["version"], { stdio: "ignore" });
@@ -85,6 +94,17 @@ test("subprocess failures retain diagnostics when stderr is empty", () => {
     stdout: "",
   });
   expect(subprocessFailureDetail(noOutput)).toBe("zig cc exited with code 1");
+});
+
+test("compileC rejects Windows subsystem selection for a non-Windows driver", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scr-subsystem-driver-"));
+  const cPath = join(dir, "program.c");
+  await writeFile(cPath, "int main(void) { return 0; }\n");
+  await expect(compileC({
+    cPath,
+    outPath: join(dir, "program"),
+    executableSubsystem: "windows",
+  })).rejects.toThrow("--subsystem is supported only for Windows executable builds");
 });
 
 test("an empty ANDROID_NDK_ROOT does not mask ANDROID_NDK_HOME", async () => {
@@ -446,6 +466,23 @@ describe.skipIf(!zigOnPath())("zig cc builds (zig on PATH)", () => {
       } finally {
         delete process.env["SCRIPTC_FETCH_CURL"];
       }
+    });
+  }, 600_000);
+
+  test("Windows executable subsystem selects console or GUI PE startup", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scr-zigcc-win-subsystem-"));
+    const cPath = join(dir, "program.c");
+    await writeFile(cPath, HELLO_C);
+    await withCcEnv("zigcc", "x86_64-windows-gnu", async () => {
+      const defaultOut = join(dir, "default.exe");
+      const consoleOut = join(dir, "console.exe");
+      const windowsOut = join(dir, "windows.exe");
+      await compileC({ cPath, outPath: defaultOut });
+      await compileC({ cPath, outPath: consoleOut, executableSubsystem: "console" });
+      await compileC({ cPath, outPath: windowsOut, executableSubsystem: "windows" });
+      expect(peSubsystem(await readFile(defaultOut))).toBe(3); // IMAGE_SUBSYSTEM_WINDOWS_CUI
+      expect(peSubsystem(await readFile(consoleOut))).toBe(3);
+      expect(peSubsystem(await readFile(windowsOut))).toBe(2); // IMAGE_SUBSYSTEM_WINDOWS_GUI
     });
   }, 600_000);
 

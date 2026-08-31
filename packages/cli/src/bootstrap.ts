@@ -62,6 +62,9 @@ async function tryFastPath(): Promise<number | null> {
     values.lib || values["from-c"] || values["provenance-sources"] ||
     (values["external-types"] ?? []).length > 0
   ) return null;
+  if (values.subsystem !== undefined && values.subsystem !== "console" && values.subsystem !== "windows") {
+    return null; // main owns exact user-error wording
+  }
   const backend = values.backend;
   if (backend !== undefined && backend !== "c" && backend !== "llvm") return null;
   const optimization = values.optimization;
@@ -88,6 +91,8 @@ async function tryFastPath(): Promise<number | null> {
   }
   const buildPlatform = startup.targetPlatform(driver);
   if (command === "run" && buildPlatform === "wasi") return null;
+  if (values.subsystem !== undefined && buildPlatform !== "win32") return null;
+  const executableSubsystem = values.subsystem === "windows" ? "windows" : undefined;
   const input = resolve(inputArg);
   const outDir = values.out ? dirname(resolve(values.out)) : join(dirname(input), ".scriptc");
   const stem = basename(input).replace(/\.(ts|mts|cts|js|mjs|cjs|c|ll)$/, "");
@@ -110,6 +115,7 @@ async function tryFastPath(): Promise<number | null> {
     emitIr: values["emit-ir"],
     sanitize: values.sanitize,
     dynamic: values.dynamic,
+    ...(executableSubsystem === undefined ? {} : { executableSubsystem }),
     backend: backend ?? "auto",
     ...(optimization === "dev" ? { optimization: "dev" as const } : {}),
     npmStatic,

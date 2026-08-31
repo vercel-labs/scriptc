@@ -85,6 +85,14 @@ const nativeShardMergeAvailable =
       : process.platform === "win32" && process.arch === "x64";
 const completeArtifacts = async (root: string, kind: "bin" | "lib"): Promise<string[]> =>
   (await readdir(join(root, kind))).filter((name) => !name.endsWith(".sha256"));
+const peSubsystem = (bytes: Buffer): number => {
+  expect(bytes.subarray(0, 2)).toEqual(Buffer.from("MZ"));
+  const peOffset = bytes.readUInt32LE(0x3c);
+  expect(bytes.subarray(peOffset, peOffset + 4)).toEqual(Buffer.from("PE\0\0"));
+  const optionalHeader = peOffset + 4 + 20;
+  expect(bytes.readUInt16LE(optionalHeader)).toBe(0x20b);
+  return bytes.readUInt16LE(optionalHeader + 0x44);
+};
 const cacheTreeBytes = async (root: string): Promise<number> => {
   let total = 0;
   const walk = async (directory: string): Promise<void> => {
@@ -1519,6 +1527,7 @@ test.skipIf(process.platform === "win32" || zigExecutable === undefined)(
       const firstOut = join(dir, "first.exe");
       await compileC({ cPath, outPath: firstOut, cacheIdentity: TEST_CACHE_IDENTITY });
       expect(await completeArtifacts(cacheRoot, "bin")).toHaveLength(1);
+      expect(peSubsystem(await readFile(firstOut))).toBe(3);
 
       // lld-link rejects GNU ld's `-t`; the Zig `-###` fallback must still
       // capture every absolute CRT/import-library input. Pin the object-cache
@@ -1536,6 +1545,34 @@ test.skipIf(process.platform === "win32" || zigExecutable === undefined)(
       for (const name of objectNames) {
         expect((await stat(join(objectDir, name))).mtimeMs).toBe(pinnedTime.getTime());
       }
+
+      const consoleOut = join(dir, "console.exe");
+      await compileC({
+        cPath,
+        outPath: consoleOut,
+        cacheIdentity: TEST_CACHE_IDENTITY,
+        executableSubsystem: "console",
+      });
+      expect(peSubsystem(await readFile(consoleOut))).toBe(3);
+      expect(await completeArtifacts(cacheRoot, "bin")).toHaveLength(1);
+      for (const name of objectNames) {
+        expect((await stat(join(objectDir, name))).mtimeMs).toBe(pinnedTime.getTime());
+      }
+
+      const windowsOut = join(dir, "windows.exe");
+      await compileC({
+        cPath,
+        outPath: windowsOut,
+        cacheIdentity: TEST_CACHE_IDENTITY,
+        executableSubsystem: "windows",
+      });
+      expect(peSubsystem(await readFile(windowsOut))).toBe(2);
+      expect(await completeArtifacts(cacheRoot, "bin")).toHaveLength(2);
+      // GUI selection changes only the final link. The complete-artifact
+      // cache therefore receives a distinct PE while the one existing
+      // runtime-object family is reused (and its LRU times are refreshed).
+      expect((await readdir(objectDir)).filter((name) => name.endsWith(".o")).sort())
+        .toEqual(objectNames.sort());
     } finally {
       if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
       else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;

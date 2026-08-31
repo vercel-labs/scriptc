@@ -160,6 +160,7 @@ test("early executable keys isolate compile modes, paths, implementation, and FF
     { ...f.options, sanitize: true },
     { ...f.options, dynamic: true },
     { ...f.options, backend: "c" },
+    { ...f.options, executableSubsystem: "windows" },
     { ...f.options, optimization: "dev" },
     { ...f.options, npmStatic: "auto" },
     { ...f.options, npmStatic: ["commander"] },
@@ -294,6 +295,10 @@ test("routed executable hits require an unchanged compiler implementation proof"
   const old = new Date("2000-01-01T00:00:00.000Z");
   await Promise.all([routePath, proofPath].map((path) => utimes(path, old, old)));
   expect(await readRoutedExecutableCache(f.root, route)).not.toBeNull();
+  expect(await readRoutedExecutableCache(f.root, {
+    ...route,
+    executableSubsystem: "windows",
+  })).toBeNull();
   for (const path of [routePath, proofPath]) {
     expect((await stat(path)).mtimeMs).toBeGreaterThan(old.getTime());
   }

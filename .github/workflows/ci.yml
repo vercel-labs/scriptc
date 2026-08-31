@@ -218,6 +218,11 @@ jobs:
       - run: pnpm build
       - name: Windows path regressions
         run: pnpm exec vitest run packages/compiler/test/ts7/program.test.ts packages/cli/test/paths.test.ts
+      - name: Windows GUI subsystem and bootstrap-cache regression
+        shell: pwsh
+        run: |
+          Remove-Item Env:SCRIPTC_NO_CACHE -ErrorAction SilentlyContinue
+          pnpm exec vitest run packages/cli/test/bootstrap.test.ts --testNamePattern "GUI subsystem"
       - name: Windows Sandbox path regression
         run: >-
           pnpm exec vitest run tests/harness/worktree-files.test.ts

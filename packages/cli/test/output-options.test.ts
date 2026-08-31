@@ -46,6 +46,12 @@ describe("output option compatibility", () => {
     [{ emit: "llvm", emitIr: true }, /emit-ir/],
     [{ emit: "ir", emitIr: true }, /same output/],
     [{ backend: "wat" }, /unknown backend/],
+    [{ subsystem: "gui" }, /unknown subsystem/],
+    [{ emit: "ir", subsystem: "windows" }, /subsystem.*executable output/],
+    [{ emit: "c", subsystem: "windows" }, /subsystem.*executable output/],
+    [{ emit: "llvm", subsystem: "windows" }, /subsystem.*executable output/],
+    [{ emit: "asm", subsystem: "windows" }, /subsystem.*executable output/],
+    [{ emit: "obj", subsystem: "windows" }, /subsystem.*executable output/],
   ] as const)("rejects %j", (override, message) => {
     const result = resolveOutputOptions("build", { ...BASE, ...override });
     expect(result).toEqual({ ok: false, message: expect.stringMatching(message) });
@@ -80,6 +86,22 @@ describe("output option compatibility", () => {
       outputKind: "exe",
       emitIr: true,
       deprecateEmitIr: true,
+    });
+  });
+
+  test.each(["console", "windows"] as const)("accepts --subsystem=%s for executable output", (subsystem) => {
+    expect(resolveOutputOptions("build", { ...BASE, emit: "exe", subsystem })).toMatchObject({
+      ok: true,
+      outputKind: "exe",
+      executableSubsystem: subsystem,
+    });
+  });
+
+  test.each(["console", "windows"] as const)("run accepts --subsystem=%s", (subsystem) => {
+    expect(resolveOutputOptions("run", { ...BASE, subsystem })).toMatchObject({
+      ok: true,
+      outputKind: "exe",
+      executableSubsystem: subsystem,
     });
   });
 

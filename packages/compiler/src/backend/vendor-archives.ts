@@ -22,6 +22,7 @@ export const ZLIB_SOURCES = ["adler32.c", "compress.c", "crc32.c", "deflate.c", 
 export interface VendorArchiveContext {
   runtimeSrcDir(): string;
   targetPlatform(driver: CcDriver): string;
+  isZigDriver(driver: Pick<CcDriver, "argv">): boolean;
   resolvedToolIdentity(command: string): Promise<string | null>;
   runtimeFingerprint(runtimeDir: string): Promise<string>;
 }
@@ -30,6 +31,7 @@ export function createVendorArchives(context: VendorArchiveContext) {
   const {
     runtimeSrcDir,
     targetPlatform,
+    isZigDriver,
     resolvedToolIdentity,
     runtimeFingerprint,
   } = context;
@@ -91,14 +93,10 @@ export function createVendorArchives(context: VendorArchiveContext) {
     driver: Pick<CcDriver, "argv" | "target">,
     environmentFingerprint: string,
   ): Promise<string> {
-    // Native vendor recipes additionally use bare clang/ar; cross
-    // recipes use the zig driver for compilation and `zig ar`. Include every
-    // executable that can affect the cached prerequisite, not just the
-    // final program's driver.
-    const commands = [
-      driver.argv[0] ?? "clang",
-      ...(driver.target === null ? ["clang", "ar"] : []),
-    ].filter((command, index, all) => all.indexOf(command) === index);
+    // Zig recipes use Zig for both compilation and archiving, including the
+    // targetless host-native path. The default host-clang recipe uses the
+    // separate bare clang and ar tools.
+    const commands = isZigDriver(driver) ? [driver.argv[0] ?? "zig"] : ["clang", "ar"];
     const identities = await Promise.all(
       commands.map(async (command) => {
         const spellingKey = `${environmentFingerprint}\0${command}`;
@@ -207,11 +205,11 @@ export function createVendorArchives(context: VendorArchiveContext) {
    * private temp dir and publish with an atomic rename — first one wins,
    * losers discard their work and use the winner's archive.
    *
-   * The qjs library target is just four TUs (QJS_ENGINE_SOURCES), so both host
-   * and cross builds use the same direct per-TU recipe. This removes CMake from
+   * The qjs library target is just four TUs (QJS_ENGINE_SOURCES), so host-clang,
+   * targetless Zig, and cross builds use the same direct per-TU recipe. This removes CMake from
    * the runtime dependency set and lets cache warming compile exactly the
-   * archive a later program consumes. Host builds use clang + ar; cross builds
-   * use the selected zig driver + zig ar. */
+   * archive a later program consumes. The default host-clang driver uses bare
+   * clang + ar; every Zig driver uses the selected zig cc + zig ar. */
   async function ensureEngineArchive(
     sanitize: boolean,
     driver: CcDriver,
@@ -340,10 +338,11 @@ export function createVendorArchives(context: VendorArchiveContext) {
     return join(runtimeSrcDir(), "..", "vendor", "zlib");
   }
   
-  /** The vendored zlib TUs behind CROSS-target zlib support: every root *.c
+  /** The vendored zlib TUs behind Zig zlib support: every root *.c
    * except the gzFile file-I/O units (gz*.c — nothing in scr_zlib.c
    * references the gzFile API, and those TUs alone want unistd/io headers).
-   * Host builds never touch this list — they link the system libz. */
+   * The default host-clang build links the system libz; Zig builds use this
+   * list so targetless and explicit-target Zig inputs stay on one toolchain. */
   
   function zlibObjectPaths(
     sanitize: boolean,
@@ -360,12 +359,12 @@ export function createVendorArchives(context: VendorArchiveContext) {
   }
   
   /** The zlib objects for one flavor, compiled lazily on the first zlib-using
-   * CROSS build (~1s) and cached like the lre objects —
+   * Zig build (~1s) and cached like the lre objects —
    * <build-cache>/vendor/zlib-<version>-<flavor>-<target>-<toolchain>/*.o — with the same atomic-rename
    * publish (parallel first builds race safely; losers discard their work).
    * Plain is -Os, asan matches the final link so the sanitized lane
    * instruments the codec too. The flavor keys the driver and target exactly
-   * like the lre flavor: only cross builds call this today, but the keying
+   * like the lre flavor: the keying
    * must never hand a zig-built object set to a clang link off a shared
    * directory. */
   async function ensureZlibObjects(
@@ -522,10 +521,10 @@ export function createVendorArchives(context: VendorArchiveContext) {
    * per-TU `-c` compiles plus one `ar rcs` — vendored-build machinery the
    * lre-objects cache already established.
    *
-   * SCRIPTC_TARGET adds a per-target cache flavor (the lre-objects story):
-   * TUs compile with `zig cc -target <triple>` and the archive is packed
+   * Zig drivers add a per-target or native cache flavor (the lre-objects story):
+   * TUs compile with the selected `zig cc` invocation and the archive is packed
    * with `zig ar` (llvm-ar — the host BSD ar has no business indexing ELF
-   * objects). Host builds keep the exact historical clang + ar recipe. */
+   * objects). The default host-clang driver keeps the exact historical clang + ar recipe. */
   async function ensureTlsArchive(
     sanitize: boolean,
     driver: CcDriver,

@@ -351,10 +351,11 @@ export interface CcOptions {
   netIsland?: boolean;
   /** The program uses zlib (index.ts detects zlib.* libCalls on the IR):
    * compiles scr_zlib.c — the regex/curl gating precedent, so zlib-free
-   * binaries keep their exact link line. Host builds link the SYSTEM libz
-   * (macOS ships it), byte-identical to the historical line; cross targets
-   * compile the vendored zlib per target instead (ensureZlibObjects — zig
-   * has no libz in its sysroots). Compressed bytes may differ between the
+   * binaries keep their exact link line. The default host-clang build links
+   * the SYSTEM libz (macOS ships it), byte-identical to the historical line;
+   * every Zig build compiles the vendored zlib with the selected driver instead
+   * (ensureZlibObjects — zig has no libz in its sysroots). Compressed bytes may
+   * differ between the
    * system and vendored libraries, which is why the corpus only ever
    * compares round-trips and fixed-blob inflation, never raw deflate
    * output. */
@@ -558,8 +559,8 @@ export function runtimeSrcDir(): string {
  * the scr_platform.h contract with kqueue and epoll backends; libregexp,
  * zlib, mbedTLS, and the engine archive (--dynamic) build per target
  * (ensureLreObjects / ensureZlibObjects / ensureTlsArchive /
- * buildEngineArchiveDirect — host zlib builds still link the system libz,
- * byte-identically).
+ * buildEngineArchiveDirect — default host-clang zlib builds still link the
+ * system libz, byte-identically; Zig builds use vendored zlib objects).
  * Windows triples (x86_64-windows-gnu, mingw-w64 headers and CRT via zig)
  * have no gates left: events, net/http, fetch, watch, zlib, dgram/dns,
  * tls, and the engine archive (--dynamic) all build per target through
@@ -592,6 +593,13 @@ export interface CcDriver {
   targetArgs: string[];
   /** Platform libraries appended after every object/archive input. */
   linkArgs: string[];
+}
+
+/** Whether the selected compiler driver is Zig. This is deliberately based on
+ * the executable prefix rather than target presence: targetless Zig is still
+ * a Zig build, while target presence is only the platform/target contract. */
+export function isZigDriver(driver: Pick<CcDriver, "argv">): boolean {
+  return driver.argv[0] === "zig";
 }
 
 /* ── mobile targets (library mode) ─────────────────────────────────────────
@@ -1181,7 +1189,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ? [...cflags, "-Wno-override-module"]
     : cflags;
   const programSourceExtension = opts.cPath.endsWith(".ll") ? ".ll" : ".c";
-  const arArgv = driver.argv[0] === "zig" ? [driver.argv[0]!, "ar"] : ["ar"];
+  const arArgv = isZigDriver(driver) ? [driver.argv[0]!, "ar"] : ["ar"];
   const cachePolicy = toolchainEnvironmentCachePolicy();
   const configuredCacheRoot = cacheRootDir();
   const toolchainEnv = toolchainEnvironmentFingerprint();
@@ -3370,6 +3378,7 @@ const {
 } = createVendorArchives({
   runtimeSrcDir,
   targetPlatform,
+  isZigDriver,
   resolvedToolIdentity,
   runtimeFingerprint,
 });
@@ -4284,11 +4293,11 @@ async function compileCInternal(
   let lreObjects = regex && !dynamic
     ? lreObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : [];
-  // Vendored zlib is the CROSS story only — host builds keep the exact
+  // Vendored zlib is the Zig story — default host-clang builds keep the exact
   // historical `-lz` system link (see CcOptions.zlib). The native fetch's
   // gzip decoder rides the same objects/link.
   let zlibObjects =
-    ((opts.zlib ?? false) || nativeFetch) && driver.target !== null
+    ((opts.zlib ?? false) || nativeFetch) && isZigDriver(driver)
       ? zlibObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
       : [];
   // The libcurl import stub is likewise CROSS-only — host builds keep the
@@ -4434,14 +4443,14 @@ async function compileCInternal(
     ...(opts.dc ? [rt(join(rtDir, "scr_dc.c"))] : []),
     ...(opts.dynAsync || opts.dynInvoke || opts.dc || nativeFetch ? [rt(join(rtDir, "scr_async_dyn.c"))] : []),
     // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the LINK (system
-    // libz on hosts, the vendored per-target objects on cross builds)
+    // libz on the default host-clang build, vendored objects on Zig builds)
     // also serves the native fetch's gzip decoder — spread exactly once.
     ...(opts.zlib
-      ? driver.target !== null
+      ? isZigDriver(driver)
         ? ["-I", vendorZlibDir(), rt(join(rtDir, "scr_zlib.c")), ...zlibObjects]
         : [rt(join(rtDir, "scr_zlib.c"))]
       : nativeFetch
-        ? driver.target !== null
+        ? isZigDriver(driver)
           ? ["-I", vendorZlibDir(), ...zlibObjects]
           : []
       : []),
@@ -4560,10 +4569,10 @@ async function compileCInternal(
     ...(opts.linkInputs ?? []),
     ...(opts.systemLibraries ?? []).map((name) => `-l${name}`),
     // GNU ld resolves libraries from left to right and commonly enables
-    // --as-needed: host libz must follow scr_zlib.c/scr_fetch.c and every
+    // --as-needed: host-clang libz must follow scr_zlib.c/scr_fetch.c and every
     // generated/native input that references inflate symbols. Cross
-    // builds use vendored zlib objects in the input section above.
-    ...(((opts.zlib ?? false) || nativeFetch) && driver.target === null
+    // and targetless Zig builds use vendored zlib objects in the input section above.
+    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver)
       ? ["-lz"]
       : []),
     // glibc keeps libm separate from libc. This must trail the generated
@@ -4766,7 +4775,7 @@ async function compileCInternal(
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
     ...(curlFetch && driver.target === null ? ["-lcurl"] : []),
     ...(dynamic && !driver.linkArgs.includes("-lm") ? ["-lm"] : []),
-    ...(((opts.zlib ?? false) || nativeFetch) && driver.target === null ? ["-lz"] : []),
+    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...driver.linkArgs,
     ...executableSectionFlags.link,
   ];
@@ -4786,7 +4795,7 @@ async function compileCInternal(
     ...(dynamic && targetPlatform(driver) === "win32"
       ? ["-Wl,--stack,8388608"]
       : []),
-    ...(((opts.zlib ?? false) || nativeFetch) && driver.target === null ? ["-lz"] : []),
+    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...driver.linkArgs,
     ...executableSectionFlags.link,
   ];
@@ -5148,7 +5157,7 @@ async function compileCInternal(
             ]);
           }));
         }
-        const arArgv = driver.argv[0] === "zig" ? [driver.argv[0]!, "ar"] : ["ar"];
+        const arArgv = isZigDriver(driver) ? [driver.argv[0]!, "ar"] : ["ar"];
         const merged = await localizeLibraryObjects(
           driver,
           arArgv,

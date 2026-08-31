@@ -374,11 +374,12 @@ console.log(greet("world"), 6 * 7);
     const staticSize = statSync(stat.binaryPath).size;
     const dynamicSize = statSync(dyn.binaryPath).size;
     // The class is toolchain-specific and page-granular. The canonical
-    // Ubuntu 24.04/clang Sandbox measures 387,600 bytes; current Mach-O
-    // toolchains measure 398,024 bytes. Each bound leaves roughly one native
-    // page of growth while staying far below the >1MB jump measured when the
-    // engine is linked.
-    expect(staticSize).toBeLessThan(process.platform === "linux" ? 392_000 : 415_000);
+    // Ubuntu 24.04/clang Sandbox measures 423,488 bytes after the sparse
+    // UTF-16 string index added its always-linked cache/allocator path;
+    // current Mach-O toolchains measure about 434KB. Each bound leaves
+    // roughly one native page of growth while staying far below the >1MB
+    // jump measured when the engine is linked.
+    expect(staticSize).toBeLessThan(process.platform === "linux" ? 440_000 : 450_000);
     expect(dynamicSize).toBeGreaterThan(500_000);
   });
 

@@ -5,7 +5,10 @@
 import { createServer } from "node:net";
 
 const first = createServer();
-first.listen(0, () => {
+// Pin both listeners to one IPv4 endpoint. A wildcard first bind can take a
+// different address-family path on BSD systems and make the second bind look
+// successful even though ordinary same-endpoint listeners must conflict.
+first.listen({ port: 0, host: "127.0.0.1" }, () => {
   const port = first.address().port;
   const second = createServer();
   second.on("error", (err) => {

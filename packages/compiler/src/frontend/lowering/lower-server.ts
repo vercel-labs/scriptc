@@ -67,11 +67,11 @@ function requireStatementPosition(lowerer: Lowerer, call: ts.CallExpression, wha
  * "true" are truthy, but Node leaves reusePort disabled for them.
  *
  * Typed boolean-or-undefined option bindings are represented by the normal
- * tagged union. Narrow that union to its boolean arm without requiring a
- * shorthand property to be a bare BOOL, so `reusePort` and
- * `reusePort: value` have the same optional-binding behavior. Other static
- * values still evaluate once, then produce false; checked-dynamic and island
- * values use strict equality against the boolean true. */
+ * tagged union. Initializers narrow that union to its boolean arm; shorthand
+ * properties are required to have the concrete BOOL shape below, matching
+ * ipv6Only's static option-record fence. Other static values still evaluate
+ * once, then produce false; checked-dynamic and island values use strict
+ * equality against the boolean true. */
 function lowerExactReusePort(lowerer: Lowerer, value: IrExpr, node: ts.Node): IrExpr {
   const loc = locOf(node);
   const falseValue = (): IrExpr => boolLit(false, loc);
@@ -1107,10 +1107,19 @@ function lowerNetServerMethodCall(lowerer: Lowerer, call: ts.CallExpression,
             v6only = v;
           }
         } else if (key === "reusePort") {
-          const value = initializer !== null
-            ? lowerer.lowerExpr(initializer)
-            : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
-          reusePort = lowerExactReusePort(lowerer, value, prop);
+          if (initializer !== null) {
+            reusePort = lowerExactReusePort(lowerer, lowerer.lowerExpr(initializer), prop);
+          } else {
+            const v = lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+            if (v.type.kind !== "bool") {
+              lowerer.noLowering(
+                `a listen 'reusePort' option of '${lowerer.fmt(v.type)}' values`,
+                prop,
+                "spell the option out (reusePort: value) so optional values can narrow",
+              );
+            }
+            reusePort = v;
+          }
         } else if (key === "signal" && ts.isPropertyAssignment(prop) &&
                    isJsSourceFile(call.getSourceFile())) {
           // A provably-non-AbortSignal signal (the invalid-input probes:

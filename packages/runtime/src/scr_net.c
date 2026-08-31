@@ -737,7 +737,7 @@ static void scr_net_listen_reuseaddr(int fd) {
  * to the caller so an unsupported kernel cannot silently become a singleton. */
 static int scr_net_listen_reuseport(int fd) {
   int rc;
-#if defined(__FreeBSD__) && defined(__FreeBSD_version) && __FreeBSD_version >= 1200000 && defined(SO_REUSEPORT_LB)
+#if defined(__FreeBSD__) && __FreeBSD__ >= 12 && defined(SO_REUSEPORT_LB)
   int one = 1;
   rc = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT_LB, &one, sizeof one);
 #elif (defined(__linux__) || defined(_AIX73) || \

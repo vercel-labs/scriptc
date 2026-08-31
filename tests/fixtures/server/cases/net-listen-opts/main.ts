@@ -25,8 +25,20 @@ function listenOnProxyInterface(
     port,
     host: target.host,
     ipv6Only: target.ipv6Only,
-    reusePort,
+    reusePort: reusePort,
   }, listener);
+}
+
+/* A concrete boolean shorthand keeps the static option-record path honest:
+ * optional bindings use the spelled-out initializer above, while a narrowed
+ * boolean may use Node's shorthand spelling. */
+function listenWithReusePortShorthand(
+  server: net.Server,
+  port: number,
+  host: string,
+  reusePort: boolean,
+): void {
+  server.listen({ port, host, reusePort });
 }
 
 function readFrom(host: string, port: number): Promise<string> {
@@ -58,7 +70,7 @@ async function main(port: number): Promise<void> {
   });
   // The OMITTED-listener call — the undefined arm of the optional
   // callback flows through listenOnProxyInterface's pass-through.
-  listenOnProxyInterface(clash, port, { host: "127.0.0.1", reusePort: false });
+  listenWithReusePortShorthand(clash, port, "127.0.0.1", false);
 }
 
 listenOnProxyInterface(v4, 0, { host: "127.0.0.1" }, () => {

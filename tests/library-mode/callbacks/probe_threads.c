@@ -137,6 +137,7 @@ static void *worker_a(void *arg) {
   cbt_set_callback("note", (cb_fn)on_note, NULL);
   cbt_set_callback("mix", (cb_fn)on_mix, NULL);
   cbt_init();
+  fflush(stdout); /* keep the two independent init logs line-separated */
   arrive(&inited, 2, 1);
   stage_wait(1);
   w->r1 = cbt_stream(3, 2); /* concurrent with B's stream */
@@ -160,6 +161,7 @@ static void *worker_b(void *arg) {
   cbt_set_callback("note", (cb_fn)on_note, NULL);
   cbt_set_callback("mix", (cb_fn)on_mix, NULL);
   cbt_init();
+  fflush(stdout); /* keep the two independent init logs line-separated */
   arrive(&inited, 2, 1);
   stage_wait(1);
   w->r1 = cbt_stream(3, 5); /* concurrent with A's stream */

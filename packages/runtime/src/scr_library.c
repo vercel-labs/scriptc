@@ -64,6 +64,10 @@ void scr_library_set_sink(ScrLibSinkFn fn, void *ctx) {
 
 static SCR_TL ScrLibCbFn scr_library_cb_fns[SCR_LIB_MAX_CALLBACKS];
 static SCR_TL void *scr_library_cb_ctxs[SCR_LIB_MAX_CALLBACKS];
+/* A typed host callback runs synchronously inside one ABI entry. Like the
+ * sink, slots, poison, arena, and current-entry symbol, this belongs to the
+ * localized / thread-instanced library copy rather than the process. */
+static SCR_TL size_t scr_library_callback_depth = 0;
 
 void scr_library_cb_set(size_t slot, ScrLibCbFn fn, void *ctx) {
   /* A pure store, the sink registration's rule: latest wins, NULL clears,
@@ -81,6 +85,15 @@ ScrLibCbFn scr_library_cb_require(size_t slot, const char *trap_msg) {
 }
 
 void *scr_library_cb_ctx(size_t slot) { return scr_library_cb_ctxs[slot]; }
+
+void scr_library_callback_begin(void) { scr_library_callback_depth++; }
+
+void scr_library_callback_end(void) {
+  /* Generated calls pair this only with a normally returned host callback.
+   * A callback that illegally unwinds leaves the depth set, so a later ABI
+   * entry fails deterministically instead of silently reusing the instance. */
+  if (scr_library_callback_depth != 0) scr_library_callback_depth--;
+}
 
 /* ── the trap funnel, library expansion ───────────────────────────────────
  * Poison first (the sink may longjmp to a host frame below the entry — the
@@ -111,8 +124,9 @@ void *scr_library_cb_ctx(size_t slot) { return scr_library_cb_ctxs[slot]; }
  * external symbol before dispatching into core code. A single static slot
  * is sound — exactly one core is live per copy of this state (the sole
  * core in a classic process; each archive's own instance under
- * abi.localize_runtime, where this slot is a per-instance local), entries
- * never nest, and a trap can only fire while an entry is on the stack.
+ * abi.localize_runtime, where this slot is a per-instance local), re-entry
+ * from a host callback is rejected before core work begins, and a trap can
+ * only fire while an entry is on the stack.
  * NULL (never entered) renders as the empty symbol field. */
 static SCR_TL const char *scr_library_entry_symbol = NULL;
 
@@ -134,6 +148,7 @@ static const struct {
   {"scriptc: out of memory", "SC4017"},     /* allocation failure */
   {"scriptc: internal error: ", "SC4018"},  /* internal invariant failure */
   {"scriptc: library callback ", "SC4025"}, /* unregistered host callback */
+  {"scriptc: library entry ", "SC4026"},    /* host callback re-entry */
 };
 
 static const char *scr_library_trap_code(const char *msg, size_t len) {
@@ -229,11 +244,28 @@ __attribute__((noinline)) _Noreturn void scr_trap_fmt(const char *fmt, ...) {
 
 /* ── entry prologues ──────────────────────────────────────────────────── */
 
+static _Noreturn void scr_library_callback_reentry(const char *entry_symbol) {
+  /* Attribute the detected trap to the attempted INNER ABI symbol. Clear
+   * depth before delivery: a conforming sink may longjmp to a host recovery
+   * frame, and its poisoned instance must not retain stale callback-active
+   * state that would change the established pure-registration behavior. */
+  scr_library_entry_symbol = entry_symbol;
+  scr_library_callback_depth = 0;
+  scr_trap_fmt("scriptc: library entry '%s' invoked from a host callback\n", entry_symbol);
+}
+
+void scr_library_callback_entry_guard(const char *entry_symbol) {
+  if (scr_library_callback_depth != 0) scr_library_callback_reentry(entry_symbol);
+}
+
 void scr_library_entry(bool reset_arena, const char *entry_symbol) {
   /* Record the entry symbol FIRST so even a poisoned-abort's core dump
-   * names the entry; a trap anywhere below (the arena reset's OOM
-   * included) then reports the right symbol. */
+  * names the entry; a trap anywhere below (the arena reset's OOM
+  * included) then reports the right symbol. */
   scr_library_entry_symbol = entry_symbol;
+  /* Re-entry must win over poison and reset: no inner ABI entry may mutate
+   * globals, release arena data, collect, or replace state from a callback. */
+  if (scr_library_callback_depth != 0) scr_library_callback_reentry(entry_symbol);
   /* A poisoned library's entries abort deterministically — never through the
    * sink again (it received its exactly-once message when the trap fired),
    * never into a heap whose invariants already failed. */

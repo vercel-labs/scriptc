@@ -108,7 +108,8 @@ typedef struct ScrBytes ScrBytes;
  * Every trap the runtime DETECTS arrives structured: the funnel assembles
  * the baseline human line into field 0 unchanged, a stable code for the
  * trap kind (the compiler registry's runtime family — SC4013–SC4019 plus
- * the SC4025 unregistered-callback trap, classified in scr_library.c), the
+ * the SC4025 unregistered-callback and SC4026 callback-re-entry traps,
+ * classified in scr_library.c), the
  * entry symbol recorded by the trapping
  * entry's prologue, and the profile's remediation for that code when the
  * program TU's overlay table declares one (the whole fourth field is
@@ -133,15 +134,22 @@ void scr_library_set_sink(ScrLibSinkFn fn, void *ctx); /* latest wins */
  *
  * Registration is a pure store like the sink's (no entry prologue, no
  * poison guard, legal before init); latest wins, NULL clears, and
- * registrations persist across init/reset. Slots are per-copy of this
+ * registrations persist across init/reset. While a host callback is active,
+ * its registration entry is rejected before name dispatch or a store, just
+ * like every runtime-touching ABI entry. Slots are per-copy of this
  * state, exactly the sink's story: per-archive under abi.localize_runtime,
  * per-thread instance under abi.instance_per_thread (SCR_TL) — a callback
  * registered on thread T fires only for T's instance. The host's callback
  * runs on the calling thread inside the entry's dynamic extent and must
- * NOT call back into any library entry (registration symbols included) or
- * unwind/longjmp across library frames: read the borrowed buffers, copy
- * what outlives the call, return. Buffer parameters are borrowed for the
- * duration of the call only. */
+ * NOT call back into any library entry (exports, init, reset, collect, sink
+ * registration, or callback registration) or unwind/longjmp across library
+ * frames: read the borrowed buffers, copy what outlives the call, return.
+ * A re-entry is a detected SC4026 trap: it poisons only this library
+ * instance, delivers exactly once to the already-registered sink, names the
+ * attempted inner ABI symbol in structured field 2, then aborts if the sink
+ * returns. A later host-loop turn may enter normally after the callback has
+ * returned. Buffer parameters are borrowed for the duration of the call
+ * only. */
 #define SCR_LIB_MAX_CALLBACKS 32 /* keep in step with LIB_MAX_CALLBACKS (library/library-profile.ts) */
 /* The stored shape: generated call sites cast a slot's pointer to the
  * channel's typed shape before calling. */
@@ -151,6 +159,15 @@ void scr_library_cb_set(size_t slot, ScrLibCbFn fn, void *ctx);
  * trap_msg (never returns NULL). */
 ScrLibCbFn scr_library_cb_require(size_t slot, const char *trap_msg);
 void *scr_library_cb_ctx(size_t slot);
+/* Generated typed call sites bracket only the actual host-function call.
+ * End is reached only after a normal return; an illegal unwind deliberately
+ * leaves the depth active so the next ABI entry is rejected. */
+void scr_library_callback_begin(void);
+void scr_library_callback_end(void);
+/* Registration wrappers bypass scr_library_entry because their normal path
+ * is a pure store. They call this first so callback-time registration is
+ * rejected before dispatch, NULL handling, or mutation. */
+void scr_library_callback_entry_guard(const char *entry_symbol);
 
 /* Entry prologue: aborts deterministically when the library is poisoned (a
  * trap already fired — no profile entry may run again; recovery is process
@@ -159,10 +176,11 @@ void *scr_library_cb_ctx(size_t slot);
  * entry_symbol is the generated entry's external symbol exactly as the
  * host linked it (a static string in the program TU): the prologue records
  * it in the funnel's current-entry slot so a detected trap's structured
- * message can name the trapping entry — sound as a single static slot
- * because exactly one core is ever live and entries never nest. Init and
- * the mode entries (reset, collect) record theirs too; the identity
- * getters and sink registration touch no runtime and never trap. */
+ * message can name the trapping entry. A host callback's attempted nested
+ * entry is rejected first and replaces this slot with that inner symbol.
+ * Init and the mode entries (reset, collect) record theirs too. The two
+ * profile identity getters are the explicit pure-data exception: they touch
+ * no mutable runtime state and remain callable before init and after poison. */
 void scr_library_entry(bool reset_arena, const char *entry_symbol);
 void scr_library_arena_reset(void);
 /* The mode-provided collect entry's body: arena reset + a full cycle
@@ -200,7 +218,8 @@ _Noreturn void scr_trap_len(const char *msg, size_t len);
  * (both emissions emit identical data) and consumed by the funnel when it
  * assembles a detected trap's structured message: flat triples of
  * (code, teaching-or-NULL, remediation-or-NULL), one per runtime trap code
- * (the SC4013–SC4019 family plus SC4025) the profile declares text for;
+ * (the SC4013–SC4019 family plus SC4025 and SC4026) the profile declares
+ * text for;
  * _len counts triples. A declared teaching replaces the baseline human line as field 0;
  * a declared remediation becomes the optional fourth field. */
 extern const char *const scr_library_trap_overlays[];

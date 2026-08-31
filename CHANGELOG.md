@@ -4,6 +4,10 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Fixes
+
+- **Library host-callback re-entry now traps deterministically.** Entering an export or library control/registration ABI symbol while a synchronous host callback is active delivers the structured `SC4026` diagnostic to the existing panic sink, attributes the attempted inner symbol, and poisons only that library instance.
+
 ### Features
 
 - **macOS arm64 executables use release-built runtime packs.** LLVM-tier builds now emit the program object through the bundled helper and link feature-selected, hashed runtime/vendor artifacts without compiling C on the user's machine. Explicit C, LLVM fallback, and sanitizer builds retain the external C-toolchain path.

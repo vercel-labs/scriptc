@@ -42,9 +42,11 @@
  *            not fit ±(2^53 − 1), or is negative at a u64 slot), the
  *            host-callback surface (SC4024 — a signature-only ambient
  *            function reference the profile's callbacks section cannot
- *            serve), and the unregistered-callback runtime trap (SC4025 —
- *            a structured trap-teaching code in the funnel-classified
- *            family, not a refusal)
+ *            serve), the unregistered-callback runtime trap (SC4025 — a
+ *            structured trap-teaching code in the funnel-classified family,
+ *            not a refusal), and callback-time library re-entry (SC4026 —
+ *            the distinct detected trap for an attempted ABI entry while a
+ *            host callback handler is active)
  *   SC5xxx  native FFI: malformed manifests (SC5001), a configured
  *            binding that is not an ambient function declaration
  *            (SC5002), and a TypeScript signature that does not match its
@@ -1002,6 +1004,10 @@ export const LIB_INBOUND_BYTES_TRAP_CODE = "SC4012";
  *           like SC4012, but the trap site is inside compiled code, so
  *           the funnel assembles it and field 2 names the entry the
  *           host called)
+ *   SC4026  library ABI entry invoked from a host callback ("scriptc:
+ *           library entry ..."): the callback-time guard poisons the
+ *           affected instance and the funnel assembles the attempted inner
+ *           ABI symbol in field 2
  *
  * There is no arithmetic/div-by-zero kind: JS division never traps, so the
  * runtime has no such site. The list here is the compile-time face of the
@@ -1016,6 +1022,7 @@ export const LIB_RUNTIME_TRAP_CODES = [
   "SC4018",
   "SC4019",
   "SC4025",
+  "SC4026",
 ] as const;
 
 /** SC4024 — a host-callback reference the profile cannot serve. Library

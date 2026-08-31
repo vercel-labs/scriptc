@@ -16,6 +16,10 @@
  *                 library aborts the next entry deterministically
  *   preregister — an unregistered-channel call BEFORE sink registration
  *                 aborts (the funnel's last resort)
+ *   reenter-*   — a handler attempts the named ABI entry. SC4026 reaches
+ *                 the original sink exactly once, names the INNER symbol,
+ *                 leaves post-poison pure registration available, then the
+ *                 next runtime-touching entry aborts.
  */
 #include <pthread.h>
 #include <setjmp.h>
@@ -26,8 +30,10 @@
 extern void cb_init(void);
 extern void cb_set_panic_sink(void (*fn)(void *, const uint8_t *, size_t, uint64_t), void *ctx);
 extern void cb_collect(void);
+extern void cb_reset_results(void);
 extern int32_t cb_set_callback(const char *name, void (*fn)(void), void *ctx);
 extern double cb_stream(double n, double base);
+extern void cb_buffered(double n, const uint8_t **out, size_t *out_len);
 extern double cb_ask_host(double x);
 extern double cb_poke_orphan(void);
 
@@ -92,6 +98,42 @@ static int32_t on_progress(void *ctx, double done, double total) {
 static uint32_t on_mix(void *ctx, uint8_t a, int32_t b) {
   (void)ctx;
   return (uint32_t)a + (uint32_t)(-b);
+}
+
+/* ── callback-time re-entry probes ───────────────────────────────────── */
+
+enum ReentryAction {
+  REENTER_EXPORT,
+  REENTER_INIT,
+  REENTER_RESET,
+  REENTER_COLLECT,
+  REENTER_SINK,
+  REENTER_CALLBACK_UNKNOWN,
+};
+
+static enum ReentryAction reentry_action;
+static int replacement_sink_calls = 0;
+
+static void replacement_sink(void *ctx, const uint8_t *msg, size_t len, uint64_t addr) {
+  (void)ctx; (void)msg; (void)len; (void)addr;
+  replacement_sink_calls++;
+  printf("REPLACEMENT SINK\n");
+}
+
+static void on_reenter(void *ctx, const uint8_t *p, size_t len, uint32_t seq) {
+  (void)ctx; (void)p; (void)len; (void)seq;
+  switch (reentry_action) {
+    case REENTER_EXPORT: cb_stream(1, 1); break;
+    case REENTER_INIT: cb_init(); break;
+    case REENTER_RESET: cb_reset_results(); break;
+    case REENTER_COLLECT: cb_collect(); break;
+    case REENTER_SINK: cb_set_panic_sink(replacement_sink, NULL); break;
+    case REENTER_CALLBACK_UNKNOWN:
+      /* The guard must precede even this unknown-name dispatch. */
+      cb_set_callback("not-a-channel", (cb_fn)on_chunk, NULL);
+      break;
+  }
+  printf("UNREACHABLE callback return\n");
 }
 
 /* ── the panic sink (the traps probe's parse rule) ───────────────────── */
@@ -160,6 +202,38 @@ int main(int argc, char **argv) {
       fflush(stdout);
       cb_stream(1, 1); /* must abort — the library is poisoned */
       printf("UNREACHABLE\n");
+    }
+    return 0;
+  }
+
+  if (strncmp(mode, "reenter-", 8) == 0) {
+    const char *which = mode + 8;
+    if (strcmp(which, "export") == 0) reentry_action = REENTER_EXPORT;
+    else if (strcmp(which, "init") == 0) reentry_action = REENTER_INIT;
+    else if (strcmp(which, "reset") == 0) reentry_action = REENTER_RESET;
+    else if (strcmp(which, "collect") == 0) reentry_action = REENTER_COLLECT;
+    else if (strcmp(which, "sink") == 0) reentry_action = REENTER_SINK;
+    else if (strcmp(which, "callback-unknown") == 0) reentry_action = REENTER_CALLBACK_UNKNOWN;
+    else return 64;
+    cb_set_panic_sink(sink, NULL);
+    cb_set_callback("emitChunk", (cb_fn)on_chunk, &log_a);
+    cb_init();
+    const uint8_t *saved = NULL;
+    size_t saved_len = 0;
+    cb_buffered(7, &saved, &saved_len); /* held by the explicit-reset arena */
+    cb_set_callback("emitChunk", (cb_fn)on_reenter, NULL);
+    if (setjmp(trap_jmp) == 0) {
+      cb_buffered(8, NULL, NULL); /* callback attempts an ABI entry; no result returns */
+      printf("UNREACHABLE outer return\n");
+    } else {
+      /* The re-entry path cleared callback-active before delivery. Pure
+       * registration therefore retains its established post-poison rule. */
+      printf("post-poison register: %d\n", (int)cb_set_callback("emitChunk", (cb_fn)on_chunk, &log_a));
+      printf("replacement-sink-calls=%d\n", replacement_sink_calls);
+      printf("saved-result=[%.*s]\n", (int)saved_len, (const char *)saved);
+      fflush(stdout);
+      cb_stream(1, 1); /* poisoned runtime-touching entry must abort */
+      printf("UNREACHABLE poisoned entry\n");
     }
     return 0;
   }

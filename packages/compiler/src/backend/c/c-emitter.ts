@@ -1135,6 +1135,7 @@ export class CEmitter {
       `}`,
       ``,
       `void ${lib.sinkRegisterSymbol}(void (*fn)(void *ctx, const uint8_t *msg, size_t msg_len, uint64_t address), void *ctx) {`,
+      `  scr_library_callback_entry_guard("${lib.sinkRegisterSymbol}");`,
       `  scr_library_set_sink(fn, ctx);`,
       `}`,
       ``,
@@ -1142,11 +1143,13 @@ export class CEmitter {
     if (lib.callbacks !== undefined && lib.callbacks.length > 0) {
       // Host-callback registration: a pure store dispatch (the sink
       // registration's rule — no entry prologue, no poison guard, legal
-      // before init). The channel name selects the slot; an unknown or
+      // before init) except the first operation rejects callback-time
+      // re-entry (SC4026). The channel name selects the slot; an unknown or
       // NULL name is a defined -1, never a store. Latest registration
       // wins; a NULL fn clears the channel.
       out.push(
         `int32_t ${lib.callbackRegisterSymbol}(const char *name, void (*fn)(void), void *ctx) {`,
+        `  scr_library_callback_entry_guard("${lib.callbackRegisterSymbol}");`,
         `  if (name == NULL) return -1;`,
       );
       for (const cb of lib.callbacks) {

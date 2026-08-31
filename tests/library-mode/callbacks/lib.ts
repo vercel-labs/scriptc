@@ -17,10 +17,7 @@ export function stream(n: number, base: number): number {
   sessions++;
   let acc = 0;
   for (let i = 0; i < n; i++) {
-    const chunk = new Uint8Array(3);
-    chunk[0] = 65 + i; // 'A' + i
-    chunk[1] = 48 + ((base + i) % 10); // a digit tied to the arguments
-    chunk[2] = 33; // '!'
+    const chunk = chunkFor(i, base);
     emitChunk(chunk, i);
     acc += (i + 1) * base; // computation between emits
     note(`chunk ${i} away`, i === n - 1);
@@ -28,8 +25,26 @@ export function stream(n: number, base: number): number {
   return acc + sessions;
 }
 
+function chunkFor(i: number, base: number): Uint8Array {
+  const chunk = new Uint8Array(3);
+  chunk[0] = 65 + i; // 'A' + i
+  chunk[1] = 48 + ((base + i) % 10); // a digit tied to the arguments
+  chunk[2] = 33; // '!'
+  return chunk;
+}
+
 export function askHost(x: number): number {
   return progress(x, 10) * 2 + mix(x + 300, 0 - x);
+}
+
+// The re-entry probe keeps one result borrowed, then enters here with a
+// callback that tries result reset/collect. Its longjmp means this outer
+// buffer can never be returned, while the earlier result proves the inner
+// control entry did not touch the arena before SC4026.
+export function buffered(n: number): string {
+  const chunk = chunkFor(n, n);
+  emitChunk(chunk, n);
+  return `buffer ${n}`;
 }
 
 export function pokeOrphan(): number {

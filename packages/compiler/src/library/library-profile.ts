@@ -206,6 +206,9 @@
  * refusal, never a store). Latest registration wins; a NULL fn clears the
  * channel; registration is a pure store — no entry prologue, no poison
  * guard, legal before init — and registrations persist across init/reset.
+ * Its first operation still rejects an active host callback, before even a
+ * NULL-name check or dispatch, so callback-time registration cannot mutate
+ * a slot or hide a re-entry error.
  * Calling a channel the host never registered is the SC4025 runtime trap
  * through the panic sink (structured, naming the channel in the text and
  * the entry the host called in the symbol field): register every channel
@@ -220,11 +223,17 @@
  *
  * Reentrancy is pinned like the sink's rule: a callback runs on the
  * calling thread, inside the entry's dynamic extent, and must NOT call
- * back into any library entry (the registration symbols included) or
- * unwind/longjmp across library frames — read the borrowed buffers, hand
- * the bytes to the embedder's own structures, return. The async_free
- * posture is unchanged: a channel adds no event loop, no threads, and no
- * reentry into the archive.
+ * back into any library entry (exports, init, result reset, collect, panic
+ * sink registration, or callback registration) or unwind/longjmp across
+ * library frames — read the borrowed buffers, hand the bytes to the
+ * embedder's own structures, return. An attempted entry is SC4026: it
+ * poisons only the affected instance, delivers once through the registered
+ * sink, and places the attempted inner ABI symbol in structured field 2;
+ * a sink that returns aborts. A later host-loop turn may enter after the
+ * callback returns. The sidecar identity getters are the explicit pure-data
+ * exception: they touch no mutable runtime state and remain callable before
+ * init and after poison. The async_free posture is unchanged: a channel
+ * adds no event loop, no threads, and no reentry into the archive.
  *
  * Marshalling classes (design §4.2 + session ruling 3 + ask 4): f64, bool,
  * string, bytes for params and returns; u8/u32/i32 are PARAM-ONLY plumbing

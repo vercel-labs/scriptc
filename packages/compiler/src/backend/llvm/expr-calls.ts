@@ -42,8 +42,9 @@ export function emitCallExpr(host: LlvmEmitterContext, e: ExprOf<"call" | "ffiCa
         // channel (the library lane loads no native-FFI manifest). Fetch
         // the slot's registered pointer — scr_library_cb_require delivers
         // the channel's trap constant through the funnel (SC4025) when the
-        // host never registered — then the typed indirect call, opaque
-        // context first. Marshalling matches the native ffiCall's value
+        // host never registered — then brackets the typed indirect call,
+        // opaque context first. The bracket makes callback-time ABI re-entry
+        // a deterministic SC4026 trap. Marshalling matches the native ffiCall's value
         // classes exactly; the host cannot raise a scriptc exception, so
         // no pending check follows.
         const libCb = host.mod.lib?.callbacks?.find((c) => c.name === e.import);
@@ -121,6 +122,8 @@ export function emitCallExpr(host: LlvmEmitterContext, e: ExprOf<"call" | "ffiCa
           });
           host.declare(`declare ptr @scr_library_cb_require(${host.sizeType}, ptr)`);
           host.declare(`declare ptr @scr_library_cb_ctx(${host.sizeType})`);
+          host.declare(`declare void @scr_library_callback_begin()`);
+          host.declare(`declare void @scr_library_callback_end()`);
           const fn = B.tmp();
           B.line(`${fn} = call ptr @scr_library_cb_require(${host.sizeType} ${libCb.slot}, ptr @sc_lib_cb_trap_${libCb.slot})`);
           const ctx = B.tmp();
@@ -128,11 +131,15 @@ export function emitCallExpr(host: LlvmEmitterContext, e: ExprOf<"call" | "ffiCa
           const retTy = ffiNativeTypeLl(libCb.returns);
           const call = `call ${retTy} ${fn}(${[`ptr ${ctx}`, ...natArgs].join(", ")})`;
           if (libCb.returns === "void") {
+            B.line(`call void @scr_library_callback_begin()`);
             B.line(call);
+            B.line(`call void @scr_library_callback_end()`);
             return { name: "", type: e.type };
           }
           const raw = B.tmp();
+          B.line(`call void @scr_library_callback_begin()`);
           B.line(`${raw} = ${call}`);
+          B.line(`call void @scr_library_callback_end()`);
           if (libCb.returns === "f64") return { name: raw, type: e.type };
           if (libCb.returns === "bool") {
             const value = B.tmp();

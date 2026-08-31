@@ -304,15 +304,17 @@ export interface CcOptions {
    * cached runtime objects. */
   systemLibraries?: readonly string[];
   /** Embed the dynamic-island engine (--dynamic): compiles scr_island.c,
-   * defines SCR_DYNAMIC, and links the cached libqjs.a. Off = the static
-   * default, byte-identical to builds predating the flag. */
+   * defines SCR_DYNAMIC, and links the cached libqjs.a. Off retains the
+   * static runtime selection; executable section GC may still remove
+   * unreachable static-runtime code. */
   dynamic?: boolean;
   /** The program contains a regex construct (index.ts detects it on the
    * IR): compiles scr_regex.c and links the vendored libregexp — as cached
    * standalone objects in static builds, from the engine archive under
    * --dynamic (one libregexp per binary; its host hooks want the island's
    * JSContext there). Off = regex-free: the command line is exactly the
-   * historical one, so regex-free binaries cannot change by a byte. */
+   * historical runtime selection; executable section GC may remove unrelated
+   * unreachable code. */
   regex?: boolean;
   /** The program uses one of the copying/typed-array bridge intrinsics
    * implemented in scr_copying.c (index.ts detects them on the IR).
@@ -3950,13 +3952,13 @@ export async function stageRuntimeObjects(
 
 /** Compiles one C program together with the runtime sources.
  * With caching disabled, the runtime (a dozen small files) is recompiled on
- * every build in one historical clang invocation — no cached-archive
+ * every build in one clang invocation — no cached-archive
  * staleness bugs. --dynamic additionally compiles
  * scr_island.c under SCR_DYNAMIC and links the cached engine archive (built
  * lazily, see above); regex-using programs additionally compile scr_regex.c
  * and link libregexp (the cached objects, or the archive's own copy under
- * --dynamic). Without either, the command line is exactly the historical
- * one — regex-free static builds must stay byte-identical.
+ * --dynamic). Executable links use the target's section-elimination recipe
+ * independently of those feature gates.
  *
  * With a caller-supplied dependency identity and an enabled cache root,
  * unchanged programs skip payload code generation/linking via the binary
@@ -4300,7 +4302,7 @@ async function compileCInternal(
     stageRoot?: string,
     materializeCacheRoot: string = vendorCacheRoot,
   ): Promise<void> => {
-    // Preserve the historical order to avoid multiplying first-build resource
+    // Preserve source order to avoid multiplying first-build resource
     // pressure when several large vendor sets are cold simultaneously.
     if (dynamic) {
       const cachedArchive = engineArchivePath(
@@ -4717,7 +4719,7 @@ async function compileCInternal(
   }
 
   if (persistentCache === null) {
-    // The exact historical command line, byte for byte.
+    // The direct uncached command is the source-of-truth executable recipe.
     await runUncachedBuild();
     return;
   }

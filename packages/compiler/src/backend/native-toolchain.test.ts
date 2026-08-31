@@ -3026,6 +3026,41 @@ test("frontend-generated same-output builds no-op only while output and dependen
   }
 });
 
+test("pre-section-GC output-local stamps cannot restore an old executable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-section-gc-local-stamp-"));
+  scratch.push(dir);
+  const cacheRoot = join(dir, "cache");
+  const cPath = join(dir, "program.c");
+  const outPath = join(dir, "program");
+  const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+  const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+  try {
+    process.env["SCRIPTC_CACHE_DIR"] = cacheRoot;
+    delete process.env["SCRIPTC_NO_CACHE"];
+    await writeFile(cPath, "int main(void) { return 0; }\n");
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+
+    const stampPath = join(
+      cacheRoot,
+      "local",
+      createHash("sha256").update(outPath).digest("hex"),
+    );
+    const current = JSON.parse(await readFile(stampPath, "utf8")) as Record<string, unknown>;
+    const legacy = { ...current, key: "old-non-gc-output", version: 1 };
+    await writeFile(stampPath, `${JSON.stringify(legacy)}\n`);
+    const pinnedTime = new Date("2001-01-01T00:00:00.000Z");
+    await utimes(outPath, pinnedTime, pinnedTime);
+
+    await compileC({ cPath, outPath, cacheIdentity: "scriptc-generated-v1" });
+    expect((await stat(outPath)).mtimeMs).toBeGreaterThan(pinnedTime.getTime());
+  } finally {
+    if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+    if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+    else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+  }
+});
+
 test("artifact-ready callbacks expose native dependencies on builds and validated hits", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-artifact-ready-"));
   scratch.push(dir);

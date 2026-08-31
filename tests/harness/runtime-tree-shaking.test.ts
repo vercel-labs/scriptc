@@ -109,10 +109,10 @@ async function output(command: string, args: string[]): Promise<string> {
 }
 
 async function symbols(binaryPath: string): Promise<string> {
-  // `nm` is supplied by Xcode/binutils on the supported native lanes. Global
-  // executable symbols are the meaningful ABI/reachability contract: local
-  // compiler bookkeeping may legitimately retain a similarly named datum.
-  return output("nm", ["-g", binaryPath]);
+  // `nm` is supplied by Xcode/binutils on the supported native lanes.  Inspect
+  // local symbols too: a static process cache, for example, is still retained
+  // payload even though it is not part of the executable's external ABI.
+  return output("nm", [binaryPath]);
 }
 
 async function expectNodeParity(sourcePath: string, binaryPath: string, args: string[] = []): Promise<void> {

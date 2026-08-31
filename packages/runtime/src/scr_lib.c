@@ -114,17 +114,39 @@ static SCR_TL ScrStr *scr_arch_str = NULL;      /* interned process.arch */
 static SCR_TL ScrStr *scr_versions_node_str = NULL; /* interned process.versions.node */
 static SCR_TL ScrStr *scr_versions_openssl_str = NULL; /* interned process.versions.openssl */
 
+/* Keep lazy process values out of the startup cleanup root.  The executable
+ * linker can discard an otherwise-unused getter, but an unconditional atexit
+ * callback that mentions every cache would still retain each cache cell (and
+ * its symbol) in a tiny hello-world.  Each getter below instead registers its
+ * own cleanup only when the value is first materialized.  That is equivalent
+ * at process exit and retains the RC-audit cleanup guarantee for the values a
+ * program actually observes. */
 static void scr_lib_cleanup(void) {
   scr_arr_release(scr_argv_arr);
   scr_argv_arr = NULL;
+}
+
+static void scr_process_platform_cleanup(void) {
   scr_str_release(scr_platform_str);
   scr_platform_str = NULL;
+}
+
+static void scr_process_exec_path_cleanup(void) {
   scr_str_release(scr_exec_path_str);
   scr_exec_path_str = NULL;
+}
+
+static void scr_process_arch_cleanup(void) {
   scr_str_release(scr_arch_str);
   scr_arch_str = NULL;
+}
+
+static void scr_process_versions_node_cleanup(void) {
   scr_str_release(scr_versions_node_str);
   scr_versions_node_str = NULL;
+}
+
+static void scr_process_versions_openssl_cleanup(void) {
   scr_str_release(scr_versions_openssl_str);
   scr_versions_openssl_str = NULL;
 }
@@ -165,7 +187,14 @@ void scr_lib_init(int argc, char **argv) {
  * atexit handlers); the interned process values above still intern lazily
  * on first read, so the library reset seam releases them here instead —
  * scr_library_reset (scr_library.c) calls this every session reset. */
-void scr_lib_session_cleanup(void) { scr_lib_cleanup(); }
+void scr_lib_session_cleanup(void) {
+  scr_lib_cleanup();
+  scr_process_platform_cleanup();
+  scr_process_exec_path_cleanup();
+  scr_process_arch_cleanup();
+  scr_process_versions_node_cleanup();
+  scr_process_versions_openssl_cleanup();
+}
 #endif
 
 /* Raw argv accessors for the island's process shim (scr_island.c): the
@@ -205,6 +234,9 @@ ScrStr *scr_process_platform(void) {
 #else
     scr_platform_str = scr_str_new("unknown", 7);
 #endif
+#ifndef SCR_LIB
+    atexit(scr_process_platform_cleanup);
+#endif
   }
   return scr_str_retain(scr_platform_str);
 }
@@ -224,6 +256,9 @@ ScrStr *scr_process_arch(void) {
 #else
     scr_arch_str = scr_str_new("unknown", 7);
 #endif
+#ifndef SCR_LIB
+    atexit(scr_process_arch_cleanup);
+#endif
   }
   return scr_str_retain(scr_arch_str);
 }
@@ -237,6 +272,9 @@ ScrStr *scr_process_versions_node(void) {
   if (!scr_versions_node_str) {
     scr_versions_node_str =
         scr_str_new(SCR_NODE_COMPAT_VERSION, sizeof(SCR_NODE_COMPAT_VERSION) - 1);
+#ifndef SCR_LIB
+    atexit(scr_process_versions_node_cleanup);
+#endif
   }
   return scr_str_retain(scr_versions_node_str);
 }
@@ -253,6 +291,9 @@ ScrStr *scr_process_versions_openssl(void) {
   if (!scr_versions_openssl_str) {
     scr_versions_openssl_str =
         scr_str_new(SCR_OPENSSL_COMPAT_VERSION, sizeof(SCR_OPENSSL_COMPAT_VERSION) - 1);
+#ifndef SCR_LIB
+    atexit(scr_process_versions_openssl_cleanup);
+#endif
   }
   return scr_str_retain(scr_versions_openssl_str);
 }
@@ -289,6 +330,9 @@ ScrStr *scr_process_exec_path(void) {
     const char *use = realpath(raw, resolved) != NULL ? resolved : raw;
 #endif
     scr_exec_path_str = scr_str_new(use, strlen(use));
+#ifndef SCR_LIB
+    atexit(scr_process_exec_path_cleanup);
+#endif
   }
   return scr_str_retain(scr_exec_path_str);
 }

@@ -14,6 +14,7 @@ import {
   createVendorArchives,
   MBEDTLS_VERSION,
   QJS_COMMIT,
+  usesVendoredZlib,
   ZLIB_VERSION,
 } from "./vendor-archives.js";
 import {
@@ -4284,11 +4285,12 @@ async function compileCInternal(
   let lreObjects = regex && !dynamic
     ? lreObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : [];
-  // Vendored zlib is the CROSS story only — host builds keep the exact
-  // historical `-lz` system link (see CcOptions.zlib). The native fetch's
-  // gzip decoder rides the same objects/link.
+  // Vendored zlib serves every cross build and every zig-driven host build;
+  // only a bare-clang host build keeps the exact historical `-lz` system
+  // link (see CcOptions.zlib). The native fetch's gzip decoder rides the
+  // same objects/link.
   let zlibObjects =
-    ((opts.zlib ?? false) || nativeFetch) && driver.target !== null
+    ((opts.zlib ?? false) || nativeFetch) && usesVendoredZlib(driver)
       ? zlibObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
       : [];
   // The libcurl import stub is likewise CROSS-only — host builds keep the
@@ -4437,11 +4439,11 @@ async function compileCInternal(
     // libz on hosts, the vendored per-target objects on cross builds)
     // also serves the native fetch's gzip decoder — spread exactly once.
     ...(opts.zlib
-      ? driver.target !== null
+      ? usesVendoredZlib(driver)
         ? ["-I", vendorZlibDir(), rt(join(rtDir, "scr_zlib.c")), ...zlibObjects]
         : [rt(join(rtDir, "scr_zlib.c"))]
       : nativeFetch
-        ? driver.target !== null
+        ? usesVendoredZlib(driver)
           ? ["-I", vendorZlibDir(), ...zlibObjects]
           : []
       : []),
@@ -4563,7 +4565,7 @@ async function compileCInternal(
     // --as-needed: host libz must follow scr_zlib.c/scr_fetch.c and every
     // generated/native input that references inflate symbols. Cross
     // builds use vendored zlib objects in the input section above.
-    ...(((opts.zlib ?? false) || nativeFetch) && driver.target === null
+    ...(((opts.zlib ?? false) || nativeFetch) && !usesVendoredZlib(driver)
       ? ["-lz"]
       : []),
     // glibc keeps libm separate from libc. This must trail the generated
@@ -4766,7 +4768,7 @@ async function compileCInternal(
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
     ...(curlFetch && driver.target === null ? ["-lcurl"] : []),
     ...(dynamic && !driver.linkArgs.includes("-lm") ? ["-lm"] : []),
-    ...(((opts.zlib ?? false) || nativeFetch) && driver.target === null ? ["-lz"] : []),
+    ...(((opts.zlib ?? false) || nativeFetch) && !usesVendoredZlib(driver) ? ["-lz"] : []),
     ...driver.linkArgs,
     ...executableSectionFlags.link,
   ];
@@ -4786,7 +4788,7 @@ async function compileCInternal(
     ...(dynamic && targetPlatform(driver) === "win32"
       ? ["-Wl,--stack,8388608"]
       : []),
-    ...(((opts.zlib ?? false) || nativeFetch) && driver.target === null ? ["-lz"] : []),
+    ...(((opts.zlib ?? false) || nativeFetch) && !usesVendoredZlib(driver) ? ["-lz"] : []),
     ...driver.linkArgs,
     ...executableSectionFlags.link,
   ];

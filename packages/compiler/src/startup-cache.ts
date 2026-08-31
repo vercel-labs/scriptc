@@ -5,8 +5,12 @@ export { readRoutedExecutableCache } from "./executable/executable-cache.js";
 export type { EarlyExecutableRouteOptions } from "./executable/executable-cache.js";
 export {
   executableNativeEnvironmentFingerprint,
-  prepareBuildCacheRoot,
-  resolveBuildCacheRoot,
+  legacyCExecutablePathRequested,
   resolveCc,
   targetPlatform,
-} from "./backend/native-toolchain.js";
+} from "./backend/external-c.js";
+export { prepareBuildCacheRoot, resolveBuildCacheRoot } from "./backend/build-cache.js";
+export {
+  executableLinkerEnvironmentFingerprint,
+  resolvePlatformLinker,
+} from "./backend/linker.js";

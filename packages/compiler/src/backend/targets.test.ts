@@ -24,4 +24,13 @@ describe("native code-generation targets", () => {
       "24.0.0",
     )).toContain("SCRIPTC_TARGET=x86_64-linux-gnu.2.36");
   });
+
+  test("owns helper executable linker arguments in the target specification", () => {
+    expect(MACOS_ARM64_TARGET.executableLinkerArgs).toEqual([
+      "-target",
+      "arm64-apple-macosx14.0.0",
+      "-pthread",
+      "-Wl,-dead_strip",
+    ]);
+  });
 });

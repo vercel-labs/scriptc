@@ -2,7 +2,7 @@
 
 ## macOS (arm64)
 
-The primary platform. clang — preinstalled with the Xcode Command Line Tools — is the only system dependency for producing executables. Source artifacts selected with <code>--emit=ir|c|llvm</code> need only Node. On macOS 15+ arm64, <code>--emit=asm|obj</code> uses the version-matched <code>@scriptc/llvm-darwin-arm64</code> helper installed with scriptc, emits <code>arm64-apple-macosx14.0.0</code> artifacts, and does not invoke a compiler, archiver, linker, or SDK. Object output retains undefined runtime references and is not a library archive. The full executable surface is supported: the language, the stdlib, the Node API surface including the server stack, `--dynamic`, and the sanitizer lane.
+The primary platform. Source artifacts selected with <code>--emit=ir|c|llvm</code> need only Node. On macOS 15+ arm64, <code>--emit=asm|obj</code> uses the version-matched <code>@scriptc/llvm-darwin-arm64</code> helper installed with scriptc, emits <code>arm64-apple-macosx14.0.0</code> artifacts, and does not invoke a compiler, archiver, linker, or SDK. Ordinary LLVM-tier executables additionally need the Xcode platform linker/SDK; the helper emits the program object and the packaged runtime supplies objects/archives, so <code>clang</code> is only a linker driver (selectable with <code>SCRIPTC_LINKER</code>) and compiles neither program nor runtime C. Explicit C builds, LLVM fallbacks, and <code>--sanitize</code> still require a C compiler. Object output retains undefined runtime references and is not a library archive. The full executable surface is supported: the language, the stdlib, the Node API surface including the server stack, `--dynamic`, and the sanitizer lane.
 
 ## Cross-compilation via zig
 

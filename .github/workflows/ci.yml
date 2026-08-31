@@ -150,6 +150,13 @@ jobs:
           packages/cli/test/native-link-info.test.ts
           packages/cli/test/runtime-pack.test.ts
           tests/harness/native-object-example.test.ts
+      - name: Default helper/runtime-pack executable does not compile C
+        if: matrix.shard == 1
+        env:
+          SCRIPTC_LEGACY_C_PIPELINE: "0"
+        run: >-
+          pnpm test packages/cli/test/runtime-pack.test.ts
+          --testNamePattern "legacy C pipeline disabled"
       - name: LLVM-tier helper object differential (${{ matrix.shard }}/3)
         env:
           SCRIPTC_LLVM_HELPER_ONLY: "1"

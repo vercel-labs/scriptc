@@ -8,7 +8,7 @@ scriptc is experimental and targets macOS, Linux, Windows, and WebAssembly via W
 
 ## Installation
 
-The compiler requires Node.js 24 or newer. `--emit=ir|c|llvm` needs only Node. On macOS 15+ arm64, `--emit=asm|obj` additionally uses the optional platform helper installed with scriptc, but needs no compiler, archiver, linker, or SDK. Executable builds need a platform linker driver and SDK; explicit C builds, LLVM fallbacks, and `--sanitize` additionally need a C compiler. The executables it produces do not require Node.
+The compiler requires Node.js 24 or newer. `--emit=ir|c|llvm` needs only Node. On macOS 15+ arm64, `--emit=asm|obj` additionally uses the optional platform helper installed with scriptc, but needs no compiler, archiver, linker, or SDK. Ordinary LLVM-tier executable builds need a platform linker driver and SDK, but use the bundled helper plus precompiled runtime pack rather than compiling generated or runtime C. Set `SCRIPTC_LINKER` to choose that driver. Explicit C builds, LLVM fallbacks, `--sanitize`, and the deprecated `SCRIPTC_CC=clang|zigcc` compatibility route additionally need a C compiler. The executables it produces do not require Node.
 
 ```console
 $ npm install -g scriptc

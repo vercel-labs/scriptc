@@ -1,25 +1,18 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { dirname, join } from "node:path";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
-  CcCompileError,
-  executableSectionEliminationFlags,
   nativeArtifactDependenciesStillMatch,
-  nativeLinkerDependencyPaths,
-  subprocessFailureDetail,
   type NativeArtifactDependency,
 } from "./native-toolchain.js";
 import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
 import type { NativeTargetSpec } from "./targets.js";
 
-const execFileAsync = promisify(execFile);
 export const RUNTIME_PACK_SCHEMA = "scriptc.runtime-pack.v1" as const;
 export const RUNTIME_PACK_FORMAT = 1 as const;
 
@@ -103,18 +96,6 @@ export interface RuntimePackSelection {
   sourceDependencies: NativeArtifactDependency[];
   selectedRuntimeArtifacts: RuntimePackArtifact[];
   selectedArchiveArtifacts: RuntimePackArtifact[];
-}
-
-export interface RuntimeLinkPlan {
-  target: NativeTargetSpec;
-  outputPath: string;
-  inputs: string[];
-  systemLibraries: string[];
-  driverFlags: string[];
-  dependencyPaths: string[];
-  /** Inputs already snapshotted by the stage that produced the program object. */
-  programObjectDependencies: NativeArtifactDependency[];
-  runtimePack: RuntimePackSelection;
 }
 
 export class RuntimePackError extends Error {
@@ -269,7 +250,36 @@ async function verifyArtifact(root: string, artifact: RuntimePackArtifact): Prom
   return path;
 }
 
-async function stageRuntimePackArtifacts(selection: RuntimePackSelection): Promise<{
+async function snapshotDependencies(paths: readonly string[]): Promise<NativeArtifactDependency[]> {
+  const { lstat, realpath, stat } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  return Promise.all([...new Set(paths.map((path) => resolve(path)))].sort().map(async (path) => {
+    const info = await lstat(path);
+    const kind = info.isFile() ? "file" : info.isDirectory() ? "directory" : "symlink";
+    const dependency: NativeArtifactDependency = {
+      path,
+      kind,
+      dev: Number(info.dev), ino: Number(info.ino), size: Number(info.size),
+      mtimeMs: Number(info.mtimeMs), ctimeMs: Number(info.ctimeMs),
+    };
+    if (kind === "symlink") {
+      const targetPath = await realpath(path);
+      const target = await stat(path);
+      const targetKind = target.isFile() ? "file" : target.isDirectory() ? "directory" : null;
+      if (targetKind === null) throw new Error(`unsupported runtime-pack dependency: ${path}`);
+      dependency.targetPath = targetPath;
+      dependency.targetKind = targetKind;
+      dependency.targetDev = Number(target.dev);
+      dependency.targetIno = Number(target.ino);
+      dependency.targetSize = Number(target.size);
+      dependency.targetMtimeMs = Number(target.mtimeMs);
+      dependency.targetCtimeMs = Number(target.ctimeMs);
+    }
+    return dependency;
+  }));
+}
+
+export async function stageRuntimePackArtifacts(selection: RuntimePackSelection): Promise<{
   root: string;
   replacements: Map<string, string>;
 }> {
@@ -406,157 +416,4 @@ export async function loadRuntimePack(options: {
     selectedRuntimeArtifacts: selectedVariants,
     selectedArchiveArtifacts: selectedArchives,
   };
-}
-
-export async function createRuntimeLinkPlan(options: {
-  target: NativeTargetSpec;
-  programObject: string;
-  outPath: string;
-  features: NativeLinkFeatures;
-  ffi: FfiProfile | null;
-  optimization: "release" | "dev";
-  programObjectDependencies?: readonly NativeArtifactDependency[];
-  env?: NodeJS.ProcessEnv;
-  resolver?: (specifier: string) => string;
-}): Promise<RuntimeLinkPlan> {
-  const runtimePack = await loadRuntimePack(options);
-  return {
-    target: options.target,
-    outputPath: options.outPath,
-    inputs: [
-      options.programObject,
-      ...(options.ffi?.libraries ?? []),
-      ...runtimePack.runtimeObjects,
-      ...runtimePack.archives,
-    ],
-    systemLibraries: [...new Set([
-      ...(options.ffi?.systemLibraries ?? []),
-      ...runtimePack.systemLibraries,
-    ])],
-    driverFlags: [
-      "-target", options.target.llvmTriple, "-pthread",
-      ...executableSectionEliminationFlags("darwin").link,
-    ],
-    dependencyPaths: [
-      ...runtimePack.dependencyPaths,
-      ...(options.ffi?.libraries ?? []),
-    ],
-    programObjectDependencies: [...(options.programObjectDependencies ?? [])],
-    runtimePack,
-  };
-}
-
-async function snapshotDependencies(paths: readonly string[]): Promise<NativeArtifactDependency[]> {
-  const { lstat } = await import("node:fs/promises");
-  return Promise.all([...new Set(paths.map((path) => resolve(path)))].sort().map(async (path) => {
-    const info = await lstat(path);
-    const kind = info.isFile() ? "file" : info.isDirectory() ? "directory" : "symlink";
-    const dependency: NativeArtifactDependency = {
-      path,
-      kind,
-      dev: Number(info.dev), ino: Number(info.ino), size: Number(info.size),
-      mtimeMs: Number(info.mtimeMs), ctimeMs: Number(info.ctimeMs),
-    };
-    if (kind === "symlink") {
-      const targetPath = await realpath(path);
-      const target = await stat(path);
-      const targetKind = target.isFile() ? "file" : target.isDirectory() ? "directory" : null;
-      if (targetKind === null) throw new Error(`unsupported linker dependency: ${path}`);
-      dependency.targetPath = targetPath;
-      dependency.targetKind = targetKind;
-      dependency.targetDev = Number(target.dev);
-      dependency.targetIno = Number(target.ino);
-      dependency.targetSize = Number(target.size);
-      dependency.targetMtimeMs = Number(target.mtimeMs);
-      dependency.targetCtimeMs = Number(target.ctimeMs);
-    }
-    return dependency;
-  }));
-}
-
-export async function linkRuntimePackExecutable(
-  plan: RuntimeLinkPlan,
-  options: {
-    linker?: string;
-    onArtifactReady?: (artifact: { dependencies: NativeArtifactDependency[] }) => Promise<void>;
-  } = {},
-): Promise<void> {
-  const linker = options.linker ?? process.env["SCRIPTC_LINKER"] ?? "clang";
-  // ld64 derives an ad-hoc signature identifier from the output basename.
-  // Keep that basename caller-visible while a private sibling directory gives
-  // the link its own inode and preserves an atomic same-filesystem install.
-  const privateOutRoot = await mkdtemp(
-    join(dirname(plan.outputPath), ".scriptc-runtime-pack-link-"),
-  );
-  const privateOut = join(privateOutRoot, basename(plan.outputPath));
-  let stagedRoot: string | null = null;
-  try {
-    const staged = await stageRuntimePackArtifacts(plan.runtimePack);
-    stagedRoot = staged.root;
-    const args = [
-      ...plan.driverFlags,
-      ...plan.inputs.map((input) => staged.replacements.get(input) ?? input),
-      ...plan.systemLibraries.map((name) => `-l${name}`),
-      "-o", privateOut,
-    ];
-    // The pack snapshots bracket both verification passes and private staging;
-    // the program-object snapshot begins before helper emission. Snapshot the
-    // remaining cache-bearing inputs before the linker consumes them, then
-    // require the complete set to remain stable through publication.
-    const inheritedDependencies = [
-      ...plan.runtimePack.sourceDependencies,
-      ...plan.programObjectDependencies,
-    ];
-    const inheritedDependencyPaths = new Set(
-      inheritedDependencies.map((dependency) => resolve(dependency.path)),
-    );
-    const additionalDependencyPaths = plan.dependencyPaths.filter(
-      (path) => !inheritedDependencyPaths.has(resolve(path)),
-    );
-    const preLinkDependencies = options.onArtifactReady === undefined ||
-        !(await nativeArtifactDependenciesStillMatch(inheritedDependencies).catch(() => false))
-      ? null
-      : await nativeLinkerDependencyPaths(linker, [
-          ...plan.driverFlags,
-          ...plan.systemLibraries.map((name) => `-l${name}`),
-        ])
-        .then(async (toolchain) => [
-          ...inheritedDependencies,
-          ...await snapshotDependencies([...toolchain, ...additionalDependencyPaths]),
-        ])
-        .catch(() => null);
-    await execFileAsync(linker, args);
-    const output = await stat(privateOut);
-    if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
-    await rename(privateOut, plan.outputPath).catch(async () => {
-      await rm(plan.outputPath, { force: true });
-      await rename(privateOut, plan.outputPath);
-    });
-    if (
-      options.onArtifactReady !== undefined && preLinkDependencies !== null &&
-      await nativeArtifactDependenciesStillMatch(preLinkDependencies).catch(() => false)
-    ) {
-      // A complete executable cache entry is published only when the driver,
-      // platform linker, compiler runtime, selected SDK stubs/settings, pack,
-      // and FFI inputs all remained unchanged across the link. Failure to
-      // prove any ambient input keeps a correct executable but no complete
-      // cache.
-      await options.onArtifactReady({ dependencies: preLinkDependencies }).catch(() => undefined);
-    }
-  } catch (error) {
-    if (error instanceof CcCompileError || error instanceof RuntimePackError) throw error;
-    const detail = subprocessFailureDetail(error);
-    throw new CcCompileError(
-      linker,
-      detail,
-      `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}`,
-    );
-  } finally {
-    await Promise.all([
-      rm(privateOutRoot, { recursive: true, force: true }).catch(() => undefined),
-      stagedRoot === null
-        ? Promise.resolve()
-        : rm(stagedRoot, { recursive: true, force: true }).catch(() => undefined),
-    ]);
-  }
 }

@@ -2,14 +2,34 @@ import { InternalCompilerError } from "./errors.js";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { buildCacheRoot, CcCompileError, clearCcCaches, compileC, compileLibArchive, compilerDriverSupportsPersistentCache, configuredTargetPlatform, executableNativeEnvironmentFingerprint, mobileLibraryTarget, mobileTargetRefusal, prepareBuildCacheRoot, pruneBuildCache, resolveCc, targetPlatform, toolchainEnvironmentCachePolicy, toolchainEnvironmentFingerprint, type NativeArtifactDependency } from "./backend/native-toolchain.js";
+import { clearCcCaches, configuredTargetPlatform, type NativeArtifactDependency } from "./backend/native-toolchain.js";
+import { buildCacheRoot, prepareBuildCacheRoot, pruneBuildCache } from "./backend/build-cache.js";
+import {
+  assertLegacyCExecutablePipelineEnabled,
+  CcCompileError,
+  compileExternalC,
+  compileExternalCLibrary,
+  executableNativeEnvironmentFingerprint,
+  legacyCExecutablePathRequested,
+  mobileLibraryTarget,
+  mobileTargetRefusal,
+  resolveCc,
+  targetPlatform,
+} from "./backend/external-c.js";
 import { emitCModule } from "./backend/c/c-emitter.js";
 import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
 import { emitNativeArtifact, NativeCodegenError } from "./backend/native-codegen.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import { nativeCodegenTarget, nativeCodegenTargetRefusal } from "./backend/targets.js";
 import { createNativeLinkInfo, type NativeLinkInfo } from "./backend/native-link-info.js";
-import { createRuntimeLinkPlan, linkRuntimePackExecutable, RuntimePackError } from "./backend/runtime-pack.js";
+import { RuntimePackError } from "./backend/runtime-pack.js";
+import { createNativeLinkPlan } from "./backend/link-plan.js";
+import {
+  executableLinkerEnvironmentFingerprint,
+  linkNativeExecutable,
+  platformLinkerSupportsPersistentCache,
+  resolvePlatformLinker,
+} from "./backend/linker.js";
 import { splitLlvmLibraryProgram, splitLlvmProgram } from "./backend/llvm/split.js";
 import { rebaseLibrarySourceComments, replaceLibraryIdentity, stripLibraryIdentity, stripLibrarySourceComments } from "./backend/library-identity-markers.js";
 import { checkerPanicDiag, ffiNativeBuildDiag, libAsyncExportDiag, libAsyncSurfaceDiag, libExportUnresolvedDiag, libGenericExportDiag, libIntBoundaryDiag, libNpmIneligibleDiag, libSidecarDiag, libUnmappableSignatureDiag, iceDiag, isCheckerPanic, LIB_INBOUND_BYTES_TRAP_CODE, LIB_RUNTIME_TRAP_CODES, nativeCodegenDiag, type ScrDiagnostic } from "./diagnostics/diagnostic.js";
@@ -62,15 +82,16 @@ export type { NativeLinkInfo, NativeLinkFeatures } from "./backend/native-link-i
 
 export { InternalCompilerError } from "./errors.js";
 export {
-  compileC,
+  compileExternalC as compileC,
+  compileExternalC,
   runtimeSrcDir,
   warmNativeCaches,
   type CcOptions,
   type NativeCacheWarmProfile,
   type WarmNativeCachesOptions,
   type WarmNativeCachesResult,
-} from "./backend/native-toolchain.js";
-export { ANDROID_MIN_API, IPHONEOS_MIN_VERSION, isAndroidTarget, isIosTarget, isMobileTarget, mobileLibraryTarget, mobileTargetRefusal } from "./backend/native-toolchain.js";
+} from "./backend/external-c.js";
+export { ANDROID_MIN_API, IPHONEOS_MIN_VERSION, isAndroidTarget, isIosTarget, isMobileTarget, mobileLibraryTarget, mobileTargetRefusal } from "./backend/external-c.js";
 export {
   emitCModule,
   emitCModule as emitModule,
@@ -1051,14 +1072,14 @@ async function compileExecutableNative(
   ffi: FfiProfile | null,
   programSplit: ReturnType<typeof splitLlvmProgram> = null,
   programObjectDependencies: readonly NativeArtifactDependency[] = [],
-  onArtifactReady?: NonNullable<Parameters<typeof compileC>[0]["onArtifactReady"]>,
+  onArtifactReady?: NonNullable<Parameters<typeof compileExternalC>[0]["onArtifactReady"]>,
 ): Promise<void> {
   const programIsObject = /\.(?:o|obj)$/.test(cPath);
   const runtimePackTarget = programIsObject && !sanitize && process.env["SCRIPTC_RUNTIME_PACK"] !== "0"
     ? nativeCodegenTarget()
     : null;
   if (runtimePackTarget !== null) {
-    const plan = await createRuntimeLinkPlan({
+    const plan = await createNativeLinkPlan({
       target: runtimePackTarget,
       programObject: cPath,
       outPath,
@@ -1068,13 +1089,8 @@ async function compileExecutableNative(
       programObjectDependencies,
     });
     const cacheableLinker =
-      onArtifactReady !== undefined && process.env["SCRIPTC_LINKER"] === undefined && ffi === null &&
-      toolchainEnvironmentCachePolicy().completeArtifacts &&
-      await compilerDriverSupportsPersistentCache(
-        resolveCc(),
-        toolchainEnvironmentFingerprint(),
-      );
-    await linkRuntimePackExecutable(plan, {
+      onArtifactReady !== undefined && ffi === null && platformLinkerSupportsPersistentCache();
+    await linkNativeExecutable(plan, {
       // A caller-selected linker can be a mutable wrapper with hidden inputs,
       // and a PATH-selected `clang` can be one too. FFI profiles and mutable
       // linker search environments likewise name transitive files that the
@@ -1097,7 +1113,8 @@ async function compileExecutableNative(
     : join(objectLinkDir, "driver.c");
   if (objectLinkDir !== null) await writeFile(linkDriverSource, "/* scriptc object link driver */\n");
   try {
-    await compileC({
+    assertLegacyCExecutablePipelineEnabled();
+    await compileExternalC({
       cPath: linkDriverSource,
       outPath,
       cacheIdentity: "scriptc-generated-v1",
@@ -1190,10 +1207,9 @@ function usesPrecompiledRuntimePack(
   if (
     backend !== "llvm" || opts.sanitize === true ||
     process.env["SCRIPTC_RUNTIME_PACK"] === "0" ||
-    process.env["SCRIPTC_FETCH_CURL"] === "1"
+    process.env["SCRIPTC_FETCH_CURL"] === "1" || legacyCExecutablePathRequested()
   ) return false;
-  const cc = process.env["SCRIPTC_CC"] ?? "";
-  return (cc === "" || cc === "clang") && nativeCodegenTarget() !== null;
+  return nativeCodegenTarget() !== null;
 }
 
 function runtimePackDiagnostic(error: RuntimePackError, entryPath: string): ScrDiagnostic {
@@ -1316,6 +1332,8 @@ async function compileTracked(
   let earlyCacheOptions: EarlyExecutableCacheOptions | null = null;
   if (outputKind === "exe") {
     const implementation = await compilerImplementationIdentity();
+    const helperObjectRoute = opts.nativeProgramObject === true ||
+      usesPrecompiledRuntimePack(opts, "llvm");
     earlyCacheOptions = {
       entryPath,
       outDir: opts.outDir,
@@ -1333,16 +1351,16 @@ async function compileTracked(
       target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${
         opts.nativeProgramObject === true
           ? "helper-object"
-          : (
-          opts.backend !== "c" && opts.sanitize !== true &&
-          process.env["SCRIPTC_RUNTIME_PACK"] !== "0" &&
-          process.env["SCRIPTC_FETCH_CURL"] !== "1" &&
-          ((process.env["SCRIPTC_CC"] ?? "") === "" || process.env["SCRIPTC_CC"] === "clang") &&
-          nativeCodegenTarget() !== null
-        ) ? "runtime-pack" : "driver-tu"
+          : helperObjectRoute ? "runtime-pack" : "driver-tu"
       }`,
-      compiler: [process.env["SCRIPTC_LINKER"] ?? process.env["SCRIPTC_CC"] ?? "clang"],
-      nativeEnvironment: await executableNativeEnvironmentFingerprint(),
+      compiler: [
+        helperObjectRoute
+          ? resolvePlatformLinker()
+          : (process.env["SCRIPTC_CC"] ?? "clang"),
+      ],
+      nativeEnvironment: helperObjectRoute
+        ? executableLinkerEnvironmentFingerprint()
+        : await executableNativeEnvironmentFingerprint(),
       nodeVersion: process.version,
       implementation: implementation.digest,
       implementationDependencies: implementation.dependencies,
@@ -2285,7 +2303,7 @@ async function compileLibraryNative(
     profile.emission === "llvm" && profile.optimization === "dev" && !sanitize && programSource !== undefined
       ? splitLlvmLibraryProgram(programSource)
       : null;
-  await compileLibArchive({
+  await compileExternalCLibrary({
     cPath,
     ...(programSource !== undefined ? { programSource } : {}),
     ...(identityCSource !== undefined ? { identityCSource } : {}),

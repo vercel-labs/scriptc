@@ -324,9 +324,10 @@ static void sparse_index_asserts(void) {
   if (scr_sidx_test_walk_steps() > (size_t)QUERIES * 8 * 4200)
     sidx_fail("non-local lookup exceeded sparse stride bound");
 
-  /* Four owned cache slots are a strict residency cap. Prime five live
-   * large strings, then release one cached entry before allocating another
-   * same-shaped string: purge/eviction must leave no stale owned metadata. */
+  /* The four inline cursor slots must not evict sparse indexes for a fifth
+   * live large receiver. Prime five, then cycle far-end reads across all of
+   * them: every lookup stays checkpoint-bounded rather than restarting from
+   * zero after each inline-slot replacement. */
   ScrStr *live[5];
   for (size_t i = 0; i < 5; i++) {
     live[i] = scr_str_new(piece, sizeof(piece) - 1);
@@ -335,10 +336,17 @@ static void sparse_index_asserts(void) {
     live[i] = grown;
     (void)scr_str_utf16_len(live[i]);
   }
-  if (scr_sidx_test_entries() != 4 || scr_sidx_test_points() == 0)
-    sidx_fail("four-slot sparse residency");
+  if (scr_sidx_test_entries() != 6 || scr_sidx_test_points() == 0)
+    sidx_fail("five live sparse indexes were not retained");
+  scr_sidx_test_reset_steps();
+  for (size_t q = 0; q < 20; q++) {
+    if (scr_str_char_code_at(live[q % 5], 41999.0) != 769.0)
+      sidx_fail("five-receiver far-end charCodeAt result");
+  }
+  if (scr_sidx_test_walk_steps() > (size_t)20 * 4200)
+    sidx_fail("five-receiver lookup exceeded sparse stride bound");
   scr_str_release(live[4]);
-  if (scr_sidx_test_entries() != 3) sidx_fail("release did not purge entry");
+  if (scr_sidx_test_entries() != 5) sidx_fail("release did not purge entry");
   ScrStr *reused = scr_str_alloc_raw((sizeof(piece) - 1) * 7000,
                                      (sizeof(piece) - 1) * 7000);
   for (size_t i = 0; i < 7000; i++)

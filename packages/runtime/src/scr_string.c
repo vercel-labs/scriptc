@@ -22,19 +22,22 @@ static void scr_oom(void) {
  * JS string semantics are UTF-16 indices over our UTF-8 storage, so
  * .length, charCodeAt, charAt, indexOf and slice all need unit↔byte
  * conversions. The four-entry direct cache keeps the old hot cursor for
- * tiny and sequential traffic, then gives large non-ASCII strings sparse
- * `{ UTF-16 unit, UTF-8 byte }` checkpoints. A warmed non-local lookup
- * decodes at most one checkpoint interval instead of a prefix proportional
- * to its requested index.
+ * tiny and allocation-failure traffic. Large strings are promoted to an
+ * owned per-thread side registry with sparse `{ UTF-16 unit, UTF-8 byte }`
+ * checkpoints, so cycling more than four live receivers does not throw
+ * away a warmed index. A non-local lookup then decodes at most one
+ * checkpoint interval instead of a prefix proportional to its requested
+ * index.
  *
  * Checkpoints are owned by the entry, not the ScrStr ABI: the representation
  * remains the three-word UTF-8 ScrStr used by literals, FFI and generated
- * code. They cost two size_ts every 4 KiB (about 0.39% of indexed bytes),
- * are retained for at most four strings per runtime instance, and are freed
- * on eviction, release/realloc, executable exit, and every library reset.
- * SCR_TL makes both the direct table and owned buffers instance-local for
+ * code. Checkpoints cost two size_ts every 4 KiB (about 0.39% of indexed
+ * bytes); their small registry records are retained only while the owning
+ * large ScrStr is live, then freed on release/realloc, executable exit, and
+ * every library reset. The four inline entries are eagerly reused. SCR_TL
+ * makes the direct table, registry, and owned buffers instance-local for
  * SCR_THREAD_INSTANCES. Metadata allocation is strictly an optimization:
- * overflow or malloc failure falls back to the cursor mapper.
+ * overflow or malloc failure falls back to the inline cursor mapper.
  */
 #define SCR_SIDX_N 4
 #define SCR_U16_UNKNOWN SIZE_MAX
@@ -44,7 +47,7 @@ typedef struct {
   size_t cu; /* UTF-16 code-unit offset, always a code-point boundary */
   size_t cb; /* matching UTF-8 byte offset, never a continuation byte */
 } ScrSidxPoint;
-typedef struct {
+typedef struct ScrSidx {
   const ScrStr *s;       /* NULL = empty slot */
   size_t u16len;         /* SCR_U16_UNKNOWN until the whole current string */
   size_t cu, cb;         /* hot cursor: cb starts the char at unit cu */
@@ -53,9 +56,11 @@ typedef struct {
   size_t indexed_cu;     /* exact contiguous prefix indexed from byte zero */
   size_t indexed_cb;
   bool no_more_points;   /* metadata allocation failed/overflowed: fail open */
+  struct ScrSidx *next;  /* large-string side-registry link (never inline) */
 } ScrSidx;
 static SCR_TL ScrSidx scr_sidx_tab[SCR_SIDX_N];
 static SCR_TL unsigned scr_sidx_clock;
+static SCR_TL ScrSidx *scr_sidx_large;
 static SCR_TL bool scr_sidx_cleanup_registered;
 
 static void scr_sidx_clear(ScrSidx *e) {
@@ -63,9 +68,26 @@ static void scr_sidx_clear(ScrSidx *e) {
   memset(e, 0, sizeof(*e));
 }
 
+static void scr_sidx_destroy(ScrSidx *e) {
+  scr_sidx_clear(e);
+  free(e);
+}
+
 static void scr_sidx_reset_all(void) {
   for (int i = 0; i < SCR_SIDX_N; i++) scr_sidx_clear(&scr_sidx_tab[i]);
+  while (scr_sidx_large) {
+    ScrSidx *e = scr_sidx_large;
+    scr_sidx_large = e->next;
+    scr_sidx_destroy(e);
+  }
   scr_sidx_clock = 0;
+}
+
+static void scr_sidx_register_cleanup(void) {
+  if (!scr_sidx_cleanup_registered) {
+    scr_sidx_cleanup_registered = true;
+    scr_atexit(scr_sidx_reset_all);
+  }
 }
 
 #ifdef SCR_SIDX_TEST
@@ -76,11 +98,13 @@ void scr_sidx_test_reset_cache(void) { scr_sidx_reset_all(); }
 size_t scr_sidx_test_entries(void) {
   size_t n = 0;
   for (int i = 0; i < SCR_SIDX_N; i++) n += scr_sidx_tab[i].s != NULL;
+  for (ScrSidx *e = scr_sidx_large; e; e = e->next) n++;
   return n;
 }
 size_t scr_sidx_test_points(void) {
   size_t n = 0;
   for (int i = 0; i < SCR_SIDX_N; i++) n += scr_sidx_tab[i].npoints;
+  for (ScrSidx *e = scr_sidx_large; e; e = e->next) n += e->npoints;
   return n;
 }
 #define SCR_SIDX_STEP() (scr_sidx_walk_steps++)
@@ -92,9 +116,19 @@ static void scr_sidx_purge(const ScrStr *s) {
   for (int i = 0; i < SCR_SIDX_N; i++) {
     if (scr_sidx_tab[i].s == s) scr_sidx_clear(&scr_sidx_tab[i]);
   }
+  ScrSidx **link = &scr_sidx_large;
+  while (*link) {
+    ScrSidx *e = *link;
+    if (e->s != s) {
+      link = &e->next;
+      continue;
+    }
+    *link = e->next;
+    scr_sidx_destroy(e);
+  }
 }
 
-static ScrSidx *scr_sidx(const ScrStr *s) {
+static ScrSidx *scr_sidx_inline(const ScrStr *s) {
   for (int i = 0; i < SCR_SIDX_N; i++) {
     if (scr_sidx_tab[i].s == s) return &scr_sidx_tab[i];
   }
@@ -103,6 +137,64 @@ static ScrSidx *scr_sidx(const ScrStr *s) {
   e->s = s;
   e->u16len = SCR_U16_UNKNOWN;
   return e;
+}
+
+/* The tiny direct table is intentionally only a hot cursor cache. Once a
+ * receiver is large enough to justify checkpoints, its navigation state is
+ * promoted into this list and survives inline-slot churn. This avoids the
+ * old five-receiver cliff while preserving the ABI and keeping small-string
+ * traffic allocation-free. If allocating the record fails, the inline cache
+ * remains a correct one-cursor fallback. */
+static ScrSidx *scr_sidx(const ScrStr *s) {
+  if (s->len < SCR_SIDX_MIN_BYTES) return scr_sidx_inline(s);
+  for (ScrSidx *e = scr_sidx_large; e; e = e->next) {
+    if (e->s == s) return e;
+  }
+  for (int i = 0; i < SCR_SIDX_N; i++) {
+    ScrSidx *inline_e = &scr_sidx_tab[i];
+    if (inline_e->s != s) continue;
+    ScrSidx *e = malloc(sizeof(*e));
+    if (!e) {
+      inline_e->no_more_points = true;
+      return inline_e;
+    }
+    *e = *inline_e;
+    memset(inline_e, 0, sizeof(*inline_e));
+    e->next = scr_sidx_large;
+    scr_sidx_large = e;
+    scr_sidx_register_cleanup();
+    return e;
+  }
+  ScrSidx *e = calloc(1, sizeof(*e));
+  if (!e) {
+    ScrSidx *inline_e = scr_sidx_inline(s);
+    inline_e->no_more_points = true;
+    return inline_e;
+  }
+  e->s = s;
+  e->u16len = SCR_U16_UNKNOWN;
+  e->next = scr_sidx_large;
+  scr_sidx_large = e;
+  scr_sidx_register_cleanup();
+  return e;
+}
+
+/* In-place concat changes only the suffix. Keep every exact prefix anchor
+ * (including the former end, which is now an ordinary boundary), but remove
+ * the sole fact that described the old complete string. Side-registry
+ * records need the same treatment as inline cursor entries. */
+static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
+  for (int i = 0; i < SCR_SIDX_N; i++) {
+    ScrSidx *e = &scr_sidx_tab[i];
+    if (e->s != s) continue;
+    e->u16len = SCR_U16_UNKNOWN;
+    if (e->indexed_cb > oldlen) e->indexed_cb = oldlen;
+  }
+  for (ScrSidx *e = scr_sidx_large; e; e = e->next) {
+    if (e->s != s) continue;
+    e->u16len = SCR_U16_UNKNOWN;
+    if (e->indexed_cb > oldlen) e->indexed_cb = oldlen;
+  }
 }
 
 /* ── allocation ─────────────────────────────────────────────────────── */
@@ -209,27 +301,7 @@ ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
      * checkpoint for accesses around the append boundary. The next mapper
      * lazily continues from oldlen rather than scanning the unchanged prefix
      * again. */
-    for (int i = 0; i < SCR_SIDX_N; i++) {
-      ScrSidx *e = &scr_sidx_tab[i];
-      if (e->s != a) continue;
-      e->u16len = SCR_U16_UNKNOWN;
-      if (e->indexed_cb > oldlen) {
-        /* This cannot normally happen (oldlen was the full string) but
-         * preserves the frontier invariant for a caller that mutates an
-         * externally-built raw string through this internal path. */
-        e->indexed_cb = oldlen;
-      }
-      if (e->indexed_cb != oldlen) {
-        /* A partial prefix has no fact about the old terminal. It is still
-         * valid; extend from that prefix on demand instead of inventing an
-         * end anchor. */
-        continue;
-      }
-      /* The indexed frontier is an exact character-boundary pair. When a
-       * prior completed scan ended at oldlen it remains the extension base;
-       * its point stays in the list as an internal anchor, never an implied
-       * terminal (only u16len records a completed string). */
-    }
+    scr_sidx_concat_append(a, oldlen);
     a->rc = 2; /* +1 for the returned reference, beside the caller's borrow */
     return a;
   }
@@ -461,10 +533,7 @@ static bool scr_sidx_add_point(ScrSidx *e, size_t cu, size_t cb,
     }
     e->points = points;
     e->cap = cap;
-    if (!scr_sidx_cleanup_registered) {
-      scr_sidx_cleanup_registered = true;
-      scr_atexit(scr_sidx_reset_all);
-    }
+    scr_sidx_register_cleanup();
   }
   e->points[e->npoints++] = (ScrSidxPoint){cu, cb};
   return true;

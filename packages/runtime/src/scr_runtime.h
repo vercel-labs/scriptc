@@ -618,8 +618,8 @@ void scr_throw_node_coded(double kind, const ScrStr *code, const ScrStr *msg);
 
 /* ── string methods ─────────────────────────────────────────────────
  * ECMA-262 observable semantics over UTF-8 storage with UTF-16 code-unit
- * indices. A small per-instance cache keeps length/cursor state and sparse
- * navigation checkpoints for large non-ASCII strings, making warmed
+ * indices. A per-instance side cache keeps length/cursor state and sparse
+ * navigation checkpoints for large strings, making warmed
  * non-local indexed operations bounded by one checkpoint interval. All
  * double index/count arguments go through ToIntegerOrInfinity (NaN → 0, trunc
  * toward zero, ±Infinity kept), exactly like JS. Every function borrows its

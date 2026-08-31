@@ -19,7 +19,7 @@ import {
   toolchainEnvironmentFingerprint,
   type NativeArtifactDependency,
 } from "./native-toolchain.js";
-import { stageRuntimePackArtifacts } from "./runtime-pack.js";
+import { RuntimePackError, stageRuntimePackArtifacts } from "./runtime-pack.js";
 import type { NativeLinkPlan } from "./link-plan.js";
 
 const execFileAsync = promisify(execFile);
@@ -231,7 +231,7 @@ export async function linkNativeExecutable(
       await options.onArtifactReady({ dependencies: preLinkDependencies }).catch(() => undefined);
     }
   } catch (error) {
-    if (error instanceof CcCompileError) throw error;
+    if (error instanceof CcCompileError || error instanceof RuntimePackError) throw error;
     const detail = subprocessFailureDetail(error);
     throw new CcCompileError(
       linker,

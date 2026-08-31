@@ -11,9 +11,6 @@
 import {
   compileC,
   compileLibArchive,
-  prepareBuildCacheRoot,
-  resolveBuildCacheRoot,
-  targetPlatform,
   type CcOptions,
   type LibArchiveOptions,
 } from "./native-toolchain.js";

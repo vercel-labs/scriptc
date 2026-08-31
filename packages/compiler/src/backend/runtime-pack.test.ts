@@ -11,6 +11,7 @@ import {
   evaluateRuntimePredicate,
   loadRuntimePack,
   parseRuntimePackManifest,
+  RuntimePackError,
   type RuntimePackManifest,
 } from "./runtime-pack.js";
 import { createNativeLinkPlan } from "./link-plan.js";
@@ -219,9 +220,7 @@ describe("runtime pack manifests", () => {
     });
     await writeFile(join(root, "artifacts/base.o"), "tampered");
 
-    await expect(linkNativeExecutable(plan, { linker })).rejects.toThrow(
-      "runtime pack changed after artifact selection",
-    );
+    await expect(linkNativeExecutable(plan, { linker })).rejects.toBeInstanceOf(RuntimePackError);
     expect(await stat(output).then(() => true, () => false)).toBe(false);
   });
 

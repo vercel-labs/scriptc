@@ -3,7 +3,7 @@ import { InternalCompilerError } from "../../errors.js";
  * scaffolding, plus the interned resolve/child-exit thunks that adapt typed
  * payloads onto the runtime's promise and child-process machinery. */
 import type { CEmitter } from "./c-emitter.js";
-import { mangleArgPack, mangleAsyncSpawn, mangleChildDataThunk, mangleChildExitThunk, mangleCloseBindThunk, mangleCloseOverrideWrap, mangleConnectResThunk, mangleConnectSockThunk, mangleDgramMsgThunk, mangleDnsLookupThunk, mangleField, mangleFsRenameThunk, mangleFunction, mangleGenDrop, mangleGenResThunk, mangleGenSpawn, mangleGlobal, mangleLocal, mangleRaceThunk, mangleRawParam, mangleNetLookupAnswerThunk, mangleEmitterInvokeThunk, mangleStreamCbThunk, mangleStreamDoneFn, mangleRecordNew, mangleRecordRelease, mangleRecordStruct, mangleResolveThunk, mangleSniAnswerThunk, mangleTrampoline } from "../mangle.js";
+import { mangleArgPack, mangleAsyncSpawn, mangleChildDataThunk, mangleChildExitThunk, mangleCloseBindThunk, mangleCloseOverrideWrap, mangleConnectResThunk, mangleConnectSockThunk, mangleDgramMsgThunk, mangleDnsLookupThunk, mangleField, mangleFsRenameThunk, mangleFunction, mangleGenDrop, mangleGenResThunk, mangleGenSpawn, mangleGlobal, mangleLocal, manglePromiseAllTuple, mangleRaceThunk, mangleRawParam, mangleNetLookupAnswerThunk, mangleEmitterInvokeThunk, mangleStreamCbThunk, mangleStreamDoneFn, mangleRecordNew, mangleRecordRelease, mangleRecordStruct, mangleResolveThunk, mangleSniAnswerThunk, mangleTrampoline } from "../mangle.js";
 import { cDecl, cType, releaseCallC, retainCallC, vAdapters } from "./types.js";
 import { IrFunction, IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/ir.js";
 
@@ -16,6 +16,12 @@ interface ArgPackAndTrampolinePrologue {
   lines: string[];
   spawnParams: string[];
   argPackLines: string[];
+}
+
+export interface PromiseAllTupleThunks {
+  store: string;
+  finish: string;
+  drop: string;
 }
 
 /** The argument-pack ABI and trampoline prefix shared by async functions
@@ -785,6 +791,71 @@ function emitArgPackAndTrampolinePrologue(
     );
     return sym;
   }
+
+/** Interned Promise.all tuple callbacks. The runtime owns the tuple record
+ * context while entries settle; each store callback writes one retained
+ * payload into its positional field, finish moves the record into the result,
+ * and drop releases it on aggregate rejection or teardown. */
+export function promiseAllTupleFor(
+  emitter: CEmitter,
+  tupleT: IrType & { kind: "record" },
+): PromiseAllTupleThunks {
+  const key = tupleT.shapeId;
+  const existing = emitter.promiseAllTupleThunks.get(key);
+  if (existing) return existing;
+  const shape = emitter.recordsById.get(tupleT.shapeId);
+  if (!shape || !shape.tuple) {
+    throw new InternalCompilerError("emitter bug: Promise.all tuple result is not a tuple record");
+  }
+  const base = manglePromiseAllTuple(emitter.promiseAllTupleThunks.size);
+  const thunks = { store: `${base}_store`, finish: `${base}_finish`, drop: `${base}_drop` };
+  emitter.promiseAllTupleThunks.set(key, thunks);
+  const struct = mangleRecordStruct(tupleT.shapeId);
+  const fieldAt = (i: number) => {
+    const field = shape.fields.find((f) => f.name === String(i));
+    if (!field) throw new InternalCompilerError(`emitter bug: missing Promise.all tuple field ${i}`);
+    return field;
+  };
+  const payloadAt = (i: number): string => {
+    const field = fieldAt(i);
+    if (field.type.kind === "f64" || field.type.kind === "date" || field.type.kind === "procStream") {
+      return `scr_promise_payload_f64(sc_src)`;
+    }
+    if (field.type.kind === "bool") return `scr_promise_payload_bool(sc_src)`;
+    if (field.type.kind === "string") return `scr_promise_payload_str(sc_src)`;
+    if (field.type.kind === "void") throw new InternalCompilerError("emitter bug: void Promise.all tuple field");
+    return `scr_promise_payload_ref(sc_src)`;
+  };
+  const storeCases = shape.fields.map((field) => {
+    const position = Number(field.name);
+    return `  case ${position}: sc_r->${mangleField(field.name)} = ${payloadAt(position)}; break;`;
+  });
+  const rc = vAdapters(tupleT);
+  emitter.walkerProtos.push(
+    `static void ${thunks.store}(void *sc_ctx, size_t sc_i, ScrPromise *sc_src);`,
+    `static void ${thunks.finish}(ScrPromise *sc_dst, void *sc_ctx);`,
+    `static void ${thunks.drop}(void *sc_ctx);`,
+  );
+  emitter.walkerDefs.push(
+    `static void ${thunks.store}(void *sc_ctx, size_t sc_i, ScrPromise *sc_src) {`,
+    `  ${struct} *sc_r = (${struct} *)sc_ctx;`,
+    `  switch (sc_i) {`,
+    ...storeCases,
+    `  default: break;`,
+    `  }`,
+    `}`,
+    ``,
+    `static void ${thunks.finish}(ScrPromise *sc_dst, void *sc_ctx) {`,
+    `  scr_promise_fulfill_ref(sc_dst, sc_ctx, ${rc.retain}, ${rc.release}, ${emitter.traceArgC(tupleT)});`,
+    `}`,
+    ``,
+    `static void ${thunks.drop}(void *sc_ctx) {`,
+    `  if (sc_ctx) ${rc.release}(sc_ctx);`,
+    `}`,
+    ``,
+  );
+  return thunks;
+}
 
 /** Interned generator-resume result builder: reads the post-resume state
    * of a generator into a fresh IteratorResult record `{ done, value }`.

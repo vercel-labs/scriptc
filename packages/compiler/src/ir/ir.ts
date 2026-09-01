@@ -5167,12 +5167,16 @@ export type IrExpr =
    * rejects it through the exception cell (scr_throw_obj +
    * scr_promise_reject_pending), so the result enters the unhandled
    * ledger until observed, exactly like a reject() call.
-   * promise.resolve: zero args (Promise<void>) or one PLAIN value of the
+    * promise.all.tuple: every arg is a PROMISE from a heterogeneous tuple
+    * literal, and the type is Promise<tuple-record>. Backends subscribe to
+    * every entry immediately, store fulfillment payloads by input position,
+    * and fulfill the tuple record once every entry succeeds.
+    * promise.resolve: zero args (Promise<void>) or one PLAIN value of the
    * result's inner type (promise arguments never reach here — the
    * frontend returns them as-is, the spec's native-promise identity;
    * thenables and promise-armed unions fence); the backend mints a fresh
    * promise and fulfills it immediately per the inner kind. */
-  | { kind: "intrinsic"; name: "console.log" | "console.error" | "promise.race" | "promise.all" | "promise.reject" | "promise.resolve" | "module.await"; args: IrExpr[]; type: IrType; loc: SrcLoc }
+   | { kind: "intrinsic"; name: "console.log" | "console.error" | "promise.race" | "promise.all" | "promise.all.tuple" | "promise.reject" | "promise.resolve" | "module.await"; args: IrExpr[]; type: IrType; loc: SrcLoc }
   /** Standard-library call (`process` members, node:fs functions). `fn` is a
    * closed union; arg/result types are fixed per member (validated against
    * LIB_FN_SIGS). Property READS (`process.argv`, `process.platform`) are

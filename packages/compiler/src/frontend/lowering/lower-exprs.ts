@@ -11058,12 +11058,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
    * every observable way, so the entries build the array directly and
    * the runtime's countdown combinator runs (the certs read-both-files
    * shape). Result Promise<T[]>; void inners collapse to Promise<void>
-    * exactly like the array path. The EMPTY tuple resolves [] through the
-    * same combinator, and a HETEROGENEOUS tuple of promises
-    * (Promise<[A, B]>) lowers through an async helper that performs
-    * sequential in-order awaits building the tuple record, so the call
-    * remains Promise-typed. Null otherwise: non-literal arguments keep the
-    * array path and its fences. */
+   * exactly like the array path. The EMPTY tuple resolves [] through the
+   * same combinator, and a HETEROGENEOUS tuple of promises
+   * (Promise<[A, B]>) lowers through a tuple intrinsic that subscribes to
+   * every entry immediately while building the tuple record by position.
+   * Null otherwise: non-literal arguments keep the array path and its
+   * fences. */
   export function lowerPromiseAllTupleCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken) return null;
@@ -11105,71 +11105,25 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       // The HETEROGENEOUS tuple (`Promise.all([Promise<string>,
       // Promise<number>])` — the checker's tuple overload, result
       // Promise<[A, B]>): the inners differ per position, so a values
-      // ARRAY cannot type the result. Await the entries in order and
-      // build the tuple record — the awaited locals keep the entry
-      // order observable and the positional types exact. Element
-      // expressions evaluate first, exactly JS (the argument array is
-      // fully built before any entry is awaited).
+      // ARRAY cannot type the result. A tuple intrinsic subscribes to all
+      // entries in one synchronous runtime call and fills a fresh record by
+      // input index. Element expressions evaluate first, exactly JS (the
+      // argument array is fully built before Promise.all observes it).
       const callT = lowerer.mapTypeOf(lowerer.typeOf(call));
       if (callT?.kind !== "promise" || callT.inner.kind !== "record") return null;
       const shape = lowerer.shapes.get(callT.inner.shapeId);
       if (!shape?.tuple || shape.fields.length !== argNode.elements.length) return null;
       const loc = locOf(call);
-      // All argument expressions are lowered and passed to the helper before
-      // its first await, so the array literal's left-to-right evaluation is
-      // preserved while the call itself remains Promise-typed.
+      // All argument expressions are lowered before the intrinsic runs, so
+      // the array literal's left-to-right evaluation is preserved while the
+      // call itself remains Promise-typed.
       const entries = argNode.elements.map((el) => lowerer.lowerExpr(el));
-      const entryTypes = entries.map((entry, i) => {
-        if (entry.type.kind !== "promise") lowerer.badType(argNode.elements[i]!, lowerer.typeOf(argNode.elements[i]!));
-        return entry.type;
-      });
-      const key = `promise.all.tuple:${typeKey(callT.inner)}:${entryTypes.map(typeKey).join(",")}`;
-      let helper = lowerer.arrHofHelpers.get(key);
-      if (!helper) {
-        helper = `%promise.all.tuple.${lowerer.arrHofHelpers.size}`;
-        lowerer.arrHofHelpers.set(key, helper);
-        const params = entryTypes.map((type, i) => ({
-          localId: `p${i}.0`,
-          name: `p${i}`,
-          type,
-        }));
-        const locals: IrLocal[] = params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false }));
-        const body: IrStmt[] = [];
-        const values: IrExpr[] = [];
-        for (const [i, type] of entryTypes.entries()) {
-          const valueType = (type as { kind: "promise"; inner: IrType }).inner;
-          const valueLocalId = `v${i}.0`;
-          const awaited: IrExpr = {
-            kind: "awaitExpr",
-            value: { kind: "varRef", localId: params[i]!.localId, type, loc },
-            type: valueType,
-            loc,
-          };
-          locals.push({ id: valueLocalId, name: `v${i}`, type: valueType, mutable: false });
-          body.push({ kind: "varDecl", localId: valueLocalId, init: awaited, loc });
-          values.push({ kind: "varRef", localId: valueLocalId, type: valueType, loc });
+      entries.forEach((entry, i) => {
+        if (entry.type.kind !== "promise") {
+          lowerer.badType(argNode.elements[i]!, lowerer.typeOf(argNode.elements[i]!));
         }
-        body.push({
-          kind: "return",
-          value: {
-            kind: "recordLit",
-            fields: shape.fields.map((field) => ({ name: field.name, value: values[Number(field.name)]! })),
-            type: callT.inner,
-            loc,
-          },
-          loc,
-        });
-        lowerer.liftedFns.push({
-          name: helper,
-          params,
-          returnType: callT.inner,
-          locals,
-          body,
-          loc,
-          async: true,
-        });
-      }
-      return { kind: "call", callee: helper, args: entries, type: callT, loc };
+      });
+      return { kind: "intrinsic", name: "promise.all.tuple", args: entries, type: callT, loc };
     }
     const loc = locOf(call);
     const inner = first.inner;

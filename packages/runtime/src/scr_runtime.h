@@ -3977,6 +3977,14 @@ void scr_promise_all_store_f64(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_bool(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_str(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_ref(ScrArr *a, double i, ScrPromise *src);
+/* Heterogeneous tuple form: BORROWS the pointer list for the duration of
+ * the call, takes ownership of `ctx`, and observes every entry immediately.
+ * `store` receives retained/by-value payloads at input indices; `finish`
+ * consumes ctx on all-fulfilled; `drop` releases ctx on rejection/teardown. */
+ScrPromise *scr_promise_all_tuple(ScrPromise *const *ps, size_t n, void *ctx,
+                                  void (*store)(void *ctx, size_t i, ScrPromise *src),
+                                  void (*finish)(ScrPromise *dst, void *ctx),
+                                  void (*drop)(void *ctx));
 void scr_promise_adapt_copy(ScrPromise *dst, ScrPromise *src);
 double scr_promise_payload_f64(ScrPromise *p);
 bool scr_promise_payload_bool(ScrPromise *p);

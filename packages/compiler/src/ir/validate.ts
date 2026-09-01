@@ -3601,6 +3601,34 @@ function validateFunction(
           }
           break;
         }
+        if (e.name === "promise.all.tuple") {
+          // Heterogeneous tuple Promise.all: each argument is one promise,
+          // and the result record's positional fields carry the exact
+          // awaited inner types. The frontend owns the tuple-overload fence;
+          // this branch keeps hand-written IR and backend assumptions honest.
+          if (e.args.length === 0) err("promise.all.tuple with no entries", e.loc);
+          if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
+            err("promise.all.tuple must be promise-typed with a tuple-record result", e.loc);
+          }
+          const tuple = e.type.kind === "promise" && e.type.inner.kind === "record"
+            ? records.get(e.type.inner.shapeId)
+            : undefined;
+          if (!tuple?.tuple || tuple.fields.length !== e.args.length) {
+            err("promise.all.tuple result must be a matching tuple record", e.loc);
+          }
+          for (const [i, a] of e.args.entries()) {
+            checkExpr(a);
+            if (a.type.kind !== "promise") {
+              err(`${a.type.kind} entry in promise.all.tuple`, a.loc);
+              continue;
+            }
+            const field = tuple?.fields.find((f) => f.name === String(i));
+            if (field && !typeEquals(a.type.inner, field.type)) {
+              err(`promise.all.tuple entry ${i} inner type does not match its result field`, a.loc);
+            }
+          }
+          break;
+        }
         if (e.name === "promise.reject") {
           // ONE argument: the %Error-rooted reason object (the rejection
           // payload shares the thrown-Error representation — the

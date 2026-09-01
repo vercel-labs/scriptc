@@ -73,6 +73,32 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
           B.line(`${t} = call ptr @scr_promise_all(ptr ${ps.name}, ptr ${vals}, ptr @${store})`);
           return host.own({ name: t, type: e.type });
         }
+        if (e.name === "promise.all.tuple") {
+          if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
+            throw new InternalCompilerError("llvm emitter bug: promise.all.tuple type");
+          }
+          const tupleT = e.type.inner;
+          const thunks = host.promiseAllTupleFor(tupleT);
+          const ps = B.slot();
+          B.entryAllocas.push(`${ps} = alloca [${e.args.length} x ptr]`);
+          for (const [i, entry] of e.args.entries()) {
+            if (entry.type.kind !== "promise") throw new InternalCompilerError("llvm emitter bug: promise.all.tuple entry");
+            const p = host.emitExpr(entry);
+            const slot = B.tmp();
+            B.line(`${slot} = getelementptr inbounds [${e.args.length} x ptr], ptr ${ps}, i64 0, ${host.sizeType} ${i}`);
+            B.line(`store ptr ${p.name}, ptr ${slot}`);
+          }
+          const tuple = B.tmp();
+          B.line(`${tuple} = call ptr @${mangleRecordNew(tupleT.shapeId)}()`);
+          const tupleValue = host.own({ name: tuple, type: tupleT });
+          host.moveTemp(tupleValue); // the combinator owns the tuple context
+          host.declare(`declare ptr @scr_promise_all_tuple(ptr, ${host.sizeType}, ptr, ptr, ptr, ptr)`);
+          const result = B.tmp();
+          B.line(
+            `${result} = call ptr @scr_promise_all_tuple(ptr ${ps}, ${host.sizeType} ${e.args.length}, ptr ${tuple}, ptr @${thunks.store}, ptr @${thunks.finish}, ptr @${thunks.drop})`,
+          );
+          return host.own({ name: result, type: e.type });
+        }
         if (e.name === "promise.reject") {
           // A fresh promise rejected through the exception cell: the
           // %Error-rooted reason moves in as the cell's OBJ payload (a

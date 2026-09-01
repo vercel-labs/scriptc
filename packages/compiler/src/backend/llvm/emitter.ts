@@ -94,7 +94,7 @@ import { emitDynamicExpr } from "./expr-dynamic.js";
 import { emitIntrinsicExpr, emitSerializationExpr, emitAsyncExpr } from "./expr-async.js";
 import { emitJsInteropExpr, emitExpr } from "./expr-dispatch.js";
 import { emitJsMarshal, emitJsOp, emitJsExit, islandAdapter, islandTypedAdapter } from "./expr-island.js";
-import { dynKind, raceAdapterFor, genResultThunkFor, childExitThunkFor, childExitSignalThunkFor, childDataThunkFor, emitterFixedAdapter, wrapEmitterListener, unwrapNullableClosure, closeBindThunkFor, closeOverrideWrapFor } from "./expr-callbacks.js";
+import { dynKind, promiseAllTupleFor, raceAdapterFor, genResultThunkFor, childExitThunkFor, childExitSignalThunkFor, childDataThunkFor, emitterFixedAdapter, wrapEmitterListener, unwrapNullableClosure, closeBindThunkFor, closeOverrideWrapFor } from "./expr-callbacks.js";
 import { streamDataAdapter, streamDoneFnFor, fsRenameThunkFor, streamCbThunkFor } from "./expr-stream-callbacks.js";
 import { resolveThunkFor, tagInSet, arrPush, emitArrayCopyLoop, emitStrIntrinsic, emitArrIntrinsic, wrapNullable, emitMapNew, mapSet, emitMapLikeIntrinsic, emitSetNew } from "./expr-containers.js";
 import { emitBytesReceiver, emitIntegerLoopIndex, emitBytesIndex, emitBytesData, emitBytesLength, emitBytesGet, emitBytesU32, emitBytesSet, emitBytesIntrinsic } from "./expr-bytes.js";
@@ -130,7 +130,7 @@ import {
   traceArg,
   vAdapters,
 } from "./shapes.js";
-import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlStreamTypedRefContext, LlValue, LlvmEmitterContext } from "./expr-context.js";
+import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlStreamTypedRefContext, LlValue, LlvmEmitterContext, PromiseAllTupleThunks } from "./expr-context.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -271,6 +271,7 @@ class LlEmitter {
    * typeKey → thunk symbol (CEmitter.resolveThunks). */
   private readonly resolveThunks = new Map<string, string>();
   private readonly resolveThunkDefs: string[] = [];
+  private readonly promiseAllTupleThunks = new Map<string, PromiseAllTupleThunks>();
   /** ReadableStream.from adapters keep typed arrays by reference and box
    * one current element per pull. */
   private readonly streamFromArrayAdapters = new Map<string, string>();
@@ -4066,6 +4067,10 @@ class LlEmitter {
 
   private raceAdapterFor(from: IrType, to: IrType): string {
     return raceAdapterFor(this.expressionContext(), from, to);
+  }
+
+  private promiseAllTupleFor(tupleT: IrType & { kind: "record" }): PromiseAllTupleThunks {
+    return promiseAllTupleFor(this.expressionContext(), tupleT);
   }
 
   private genResultThunkFor(genT: IrType & { kind: "generator" }, recT: IrType & { kind: "record" }): string {

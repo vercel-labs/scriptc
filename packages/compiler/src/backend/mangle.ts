@@ -175,6 +175,11 @@ export function mangleGenResThunk(n: number): string {
 export function mangleRaceThunk(n: number): string {
   return `sc_race_${n}`;
 }
+/** Generated Promise.all tuple callbacks: one store/finish/drop family per
+ * tuple record shape. */
+export function manglePromiseAllTuple(n: number): string {
+  return `sc_pall_${n}`;
+}
 /** Emitted child-process exit adapter (the (code: number | null) callback
  * shape), interned per union id. */
 export function mangleChildExitThunk(n: number): string {

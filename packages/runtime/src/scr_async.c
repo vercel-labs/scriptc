@@ -138,24 +138,29 @@ long scr_promise_live_count(void) { return scr_live_promises; }
 #endif
 
 /* ── Promise.all shared state ─────────────────────────────────────────
- * One per Promise.all call: the values array filled per INPUT index as
- * entries fulfill, the countdown of fulfillments still missing, and the
- * per-element-kind store helper. The state holds +1 on `values` (NULL for
- * void-element all) and is itself refcounted by the entries that still
- * point at it (parked cb waiters plus the builder while it subscribes);
- * the RESULT promise is NOT held here — each parked entry's cb.dst is the
- * retained result, so promise teardown paths need no all-specific
- * destination handling. */
+ * One per Promise.all call: either the values array or tuple context filled
+ * per INPUT index as entries fulfill, the countdown of fulfillments still
+ * missing, and the typed store/finish callbacks. The state holds +1 on its
+ * result context and is itself refcounted by the entries that still point at
+ * it (parked cb waiters plus the builder while it subscribes); the RESULT
+ * promise is NOT held here — each parked entry's cb.dst is the retained
+ * result, so promise teardown paths need no all-specific destination
+ * handling. */
 typedef struct ScrAllState {
   size_t rc;
   size_t remaining;
   ScrArr *values;
   void (*store)(ScrArr *a, double i, ScrPromise *src);
+  void *tuple;
+  void (*tuple_store)(void *ctx, size_t i, ScrPromise *src);
+  void (*tuple_finish)(ScrPromise *dst, void *ctx);
+  void (*tuple_drop)(void *ctx);
 } ScrAllState;
 
 static void scr_promise_all_state_release(ScrAllState *st) {
   if (--st->rc == 0) {
     if (st->values) scr_arr_release(st->values);
+    if (st->tuple && st->tuple_drop) st->tuple_drop(st->tuple);
     free(st);
   }
 }
@@ -966,11 +971,16 @@ void scr_promise_adapt_copy(ScrPromise *dst, ScrPromise *src) {
  * on their entries (settle_from marks them observed), exactly Node's
  * subscribe-to-everything behavior. */
 static void scr_promise_all_settle(ScrAllState *st, ScrPromise *result, size_t idx,
-                                    ScrPromise *src) {
+                                     ScrPromise *src) {
   if (src->state == SCR_PROM_FULFILLED) {
-    if (st->store) st->store(st->values, (double)idx, src);
+    if (st->tuple_store) st->tuple_store(st->tuple, idx, src);
+    else if (st->store) st->store(st->values, (double)idx, src);
     if (--st->remaining == 0 && result->state == SCR_PROM_PENDING) {
-      if (st->values) {
+      if (st->tuple_store) {
+        void *tuple = st->tuple;
+        st->tuple = NULL; /* finish consumes the state's owned +1 */
+        st->tuple_finish(result, tuple);
+      } else if (st->values) {
         scr_promise_fulfill_ref(result, scr_arr_retain(st->values), scr_arr_retain_v,
                                  scr_arr_release_v,
                                  st->values->elem_trace ? scr_arr_trace_v : NULL);
@@ -1060,6 +1070,10 @@ ScrPromise *scr_promise_all(ScrArr *ps, ScrArr *values,
   st->remaining = n;
   st->values = values ? scr_arr_retain(values) : NULL;
   st->store = store;
+  st->tuple = NULL;
+  st->tuple_store = NULL;
+  st->tuple_finish = NULL;
+  st->tuple_drop = NULL;
   for (size_t i = 0; i < n; i++) {
     ScrPromise *in = (ScrPromise *)scr_arr_get_ref(ps, (double)i); /* +1 */
     if (in->state != SCR_PROM_PENDING) {
@@ -1088,6 +1102,52 @@ ScrPromise *scr_promise_all(ScrArr *ps, ScrArr *values,
     } else {
       scr_promise_fulfill_void(result);
     }
+  }
+  scr_promise_all_state_release(st);
+  return result;
+}
+
+/* The heterogeneous tuple form mirrors scr_promise_all's subscription and
+ * rejection semantics without materializing a homogeneous values array. The
+ * pointer list is only read synchronously; the shared state keeps the typed
+ * tuple context alive until every callback has run. */
+ScrPromise *scr_promise_all_tuple(ScrPromise *const *ps, size_t n, void *ctx,
+                                  void (*store)(void *ctx, size_t i, ScrPromise *src),
+                                  void (*finish)(ScrPromise *dst, void *ctx),
+                                  void (*drop)(void *ctx)) {
+  ScrPromise *result = scr_promise_new();
+  ScrAllState *st = malloc(sizeof *st);
+  if (!st) scr_oom();
+  st->rc = 1; /* the builder's reference, dropped at the end */
+  st->remaining = n;
+  st->values = NULL;
+  st->store = NULL;
+  st->tuple = ctx;
+  st->tuple_store = store;
+  st->tuple_finish = finish;
+  st->tuple_drop = drop;
+  for (size_t i = 0; i < n; i++) {
+    ScrPromise *in = ps[i];
+    if (in->state != SCR_PROM_PENDING) {
+      scr_promise_all_settle(st, result, i, in);
+    } else {
+      if (in->ncbs == in->cbs_cap) {
+        in->cbs_cap = in->cbs_cap ? in->cbs_cap * 2 : 4;
+        in->cbs = realloc(in->cbs, in->cbs_cap * sizeof *in->cbs);
+        if (!in->cbs) scr_oom();
+      }
+      in->cbs[in->ncbs].adapt = NULL;
+      in->cbs[in->ncbs].dst = scr_promise_retain(result);
+      in->cbs[in->ncbs].all = st;
+      in->cbs[in->ncbs].all_idx = i;
+      in->ncbs++;
+      st->rc++;
+    }
+  }
+  if (st->remaining == 0 && result->state == SCR_PROM_PENDING) {
+    void *tuple = st->tuple;
+    st->tuple = NULL;
+    st->tuple_finish(result, tuple);
   }
   scr_promise_all_state_release(st);
   return result;

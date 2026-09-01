@@ -3146,6 +3146,26 @@ function emitIntrinsicExpr(
           const vals = emitter.newTemp(e.type.inner, emitter.arrNewC(elem, `(size_t)scr_arr_len(${ps.name})`));
           return emitter.newTemp(e.type, `scr_promise_all(${ps.name}, ${vals.name}, &${store})`);
         }
+        if (e.name === "promise.all.tuple") {
+          if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
+            throw new InternalCompilerError("emitter bug: promise.all.tuple type");
+          }
+          const entries = e.args.map((entry) => {
+            if (entry.type.kind !== "promise") {
+              throw new InternalCompilerError("emitter bug: promise.all.tuple entry");
+            }
+            return emitter.emitExpr(entry);
+          });
+          const ps = `sc_t${emitter.tempCounter++}`;
+          emitter.line(`ScrPromise *${ps}[${entries.length}] = { ${entries.map((entry) => entry.name).join(", ")} };`);
+          const tuple = emitter.newTemp(e.type.inner, `${mangleRecordNew(e.type.inner.shapeId)}()`);
+          const thunks = emitter.promiseAllTupleFor(e.type.inner);
+          emitter.moveTemp(tuple); // the combinator owns the tuple context
+          return emitter.newTemp(
+            e.type,
+            `scr_promise_all_tuple(${ps}, (size_t)${entries.length}, ${tuple.name}, &${thunks.store}, &${thunks.finish}, &${thunks.drop})`,
+          );
+        }
         if (e.name === "promise.reject") {
           // A fresh promise rejected through the exception cell: the
           // %Error-rooted reason moves in as the cell's OBJ payload

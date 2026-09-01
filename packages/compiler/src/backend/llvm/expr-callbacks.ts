@@ -1,10 +1,10 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/ir.js";
-import { mangleGenResThunk, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
+import { mangleGenResThunk, manglePromiseAllTuple, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { FN_ATTRS, releaseSym, retainSym, traceArg, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
-import type { LlvmEmitterContext } from "./expr-context.js";
+import type { LlvmEmitterContext, PromiseAllTupleThunks } from "./expr-context.js";
 
 export function dynKind(host: LlvmEmitterContext, d: string): string {
     const B = host.B;
@@ -137,6 +137,84 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
     );
     host.resolveThunkDefs.push(...d);
     return sym;
+  }
+
+export function promiseAllTupleFor(
+  host: LlvmEmitterContext,
+  tupleT: IrType & { kind: "record" },
+): PromiseAllTupleThunks {
+    const key = tupleT.shapeId;
+    const existing = host.promiseAllTupleThunks.get(key);
+    if (existing) return existing;
+    const shape = host.recordsById.get(tupleT.shapeId);
+    if (!shape || !shape.tuple) throw new InternalCompilerError("llvm emitter bug: Promise.all tuple result is not a tuple record");
+    const base = manglePromiseAllTuple(host.promiseAllTupleThunks.size);
+    const thunks = { store: `${base}_store`, finish: `${base}_finish`, drop: `${base}_drop` };
+    host.promiseAllTupleThunks.set(key, thunks);
+    const fieldAt = (position: number) => {
+      const fieldIndex = shape.fields.findIndex((f) => f.name === String(position));
+      if (fieldIndex < 0) throw new InternalCompilerError(`llvm emitter bug: missing Promise.all tuple field ${position}`);
+      return { field: shape.fields[fieldIndex]!, fieldIndex };
+    };
+    const storeCases: string[] = [];
+    for (const field of shape.fields) {
+      const position = Number(field.name);
+      const { fieldIndex } = fieldAt(position);
+      const fp = `%fp${position}`;
+      const value = `%v${position}`;
+      const lines = [
+        `case${position}:`,
+        `  ${fp} = getelementptr inbounds %${mangleRecordStruct(tupleT.shapeId)}, ptr %ctx, i64 0, i32 ${fieldIndex + 1}`,
+      ];
+      if (field.type.kind === "f64" || field.type.kind === "date" || field.type.kind === "procStream") {
+        host.declare(`declare double @scr_promise_payload_f64(ptr)`);
+        lines.push(`  ${value} = call double @scr_promise_payload_f64(ptr %src)`, `  store double ${value}, ptr ${fp}`);
+      } else if (field.type.kind === "bool") {
+        host.declare(`declare zeroext i1 @scr_promise_payload_bool(ptr)`);
+        lines.push(
+          `  ${value} = call zeroext i1 @scr_promise_payload_bool(ptr %src)`,
+          `  %z${position} = zext i1 ${value} to i8`,
+          `  store i8 %z${position}, ptr ${fp}`,
+        );
+      } else if (field.type.kind === "string") {
+        host.declare(`declare ptr @scr_promise_payload_str(ptr)`);
+        lines.push(`  ${value} = call ptr @scr_promise_payload_str(ptr %src)`, `  store ptr ${value}, ptr ${fp}`);
+      } else {
+        if (field.type.kind === "void") throw new InternalCompilerError("llvm emitter bug: void Promise.all tuple field");
+        host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
+        lines.push(`  ${value} = call ptr @scr_promise_payload_ref(ptr %src)`, `  store ptr ${value}, ptr ${fp}`);
+      }
+      lines.push(`  ret void`);
+      storeCases.push(...lines);
+    }
+    const indexType = host.sizeType;
+    const switchRows = shape.fields.map((field) => `${indexType} ${Number(field.name)}, label %case${Number(field.name)}`).join(" ");
+    const rc = vAdapters(host, tupleT);
+    host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
+    const defs: string[] = [
+      `define internal void @${thunks.store}(ptr %ctx, ${indexType} %idx, ptr %src) ${FN_ATTRS} { ; Promise.all tuple store`,
+      `entry:`,
+      `  switch ${indexType} %idx, label %bad [ ${switchRows} ]`,
+      ...storeCases,
+      `bad:`,
+      `  ret void`,
+      `}`,
+      ``,
+      `define internal void @${thunks.finish}(ptr %dst, ptr %ctx) ${FN_ATTRS} {`,
+      `entry:`,
+      `  call void @scr_promise_fulfill_ref(ptr %dst, ptr %ctx, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host, tupleT)})`,
+      `  ret void`,
+      `}`,
+      ``,
+      `define internal void @${thunks.drop}(ptr %ctx) ${FN_ATTRS} {`,
+      `entry:`,
+      `  call void ${rc.release}(ptr %ctx)`,
+      `  ret void`,
+      `}`,
+      ``,
+    ];
+    host.resolveThunkDefs.push(...defs);
+    return thunks;
   }
 
 export function genResultThunkFor(host: LlvmEmitterContext, genT: IrType & { kind: "generator" }, recT: IrType & { kind: "record" }): string {

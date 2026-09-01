@@ -7489,15 +7489,16 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
   }
 
 /** `Promise.race([...])` on THE Promise global: the entries lower
-   * individually (the array never materializes — promise-element arrays
-   * have no representation) into a promise.race intrinsic; the result
-   * type is the checker's combined promise, and each entry's inner type
-   * must be that inner type, one of its union arms, or a sub-union of it
-   * (the backend's interned adapters wrap/re-tag fulfillments; a wider
-   * entry would need machinery that doesn't exist and fences).
-   * Promise.all/allSettled/any fence with the sequential-await hint;
-   * resolve/reject and the rest fall to the member fence. Null for
-   * non-Promise receivers. */
+ * individually (the array never materializes — promise-element arrays
+ * have no representation) into a promise.race intrinsic; the result
+ * type is the checker's combined promise, and each entry's inner type
+ * must be that inner type, one of its union arms, or a sub-union of it
+ * (the backend's interned adapters wrap/re-tag fulfillments; a wider
+ * entry would need machinery that doesn't exist and fences).
+ * Promise.all tuple literals are handled by lowerPromiseAllTupleCall;
+ * allSettled/any still fence with the sequential-await hint;
+ * resolve/reject and the rest fall to the member fence. Null for
+ * non-Promise receivers. */
   export function lowerPromiseStaticCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken) return null;
@@ -7569,8 +7570,9 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     // and already-settled entries settle inline. Promise<void> entries
     // collapse to a `Promise<void>` result (a void[] value has no
     // representation; `await Promise.all(voids)` is the supported shape).
-    // Heterogeneous ARRAY LITERALS land on the tuple overload
-    // (Promise<[A, B]>) and fence here — one promise type is the bound.
+    // Heterogeneous ARRAY LITERALS land on the tuple overload and are
+    // handled by lowerPromiseAllTupleCall; one promise type remains the
+    // bound for this array path.
     if (member === "all") {
       const argNode = call.arguments.length === 1 ? call.arguments[0]! : null;
       if (!argNode) {

@@ -30,6 +30,12 @@ export interface LlStreamTypedRefContext {
   adapters: Map<string, LlStreamTypedRefAdapter>;
 }
 
+export interface PromiseAllTupleThunks {
+  store: string;
+  finish: string;
+  drop: string;
+}
+
 export interface LlvmEmitterContext extends ShapeHost {
   B: BlockBuilder;
   abiOffset(native64: number, wasm32: number): number;
@@ -142,6 +148,8 @@ export interface LlvmEmitterContext extends ShapeHost {
   needsBadTag: boolean;
   own(v: LlValue): LlValue;
   ownSlot(slot: string, type: IrType): void;
+  promiseAllTupleFor(tupleT: IrType & { kind: "record" }): PromiseAllTupleThunks;
+  promiseAllTupleThunks: Map<string, PromiseAllTupleThunks>;
   raceAdapterFor(from: IrType, to: IrType): string;
   recordCloneShapes: Set<string>;
   recordFieldPtr(objName: string, shapeId: string, field: string): { ptr: string; type: IrType };

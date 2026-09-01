@@ -1,17 +1,17 @@
-promise-all-fences.ts:6:34 - error SC2020: 'Promise.all over this argument shape' is part of the standard library types but has no scriptc lowering yet
+promise-all-fences.ts:5:34 - error SC2020: 'Promise.all over this argument shape' is part of the standard library types but has no scriptc lowering yet
 
-  5 | async function hetero(): Promise<void> {
-  6 |   const pair = await Promise.all([
-    |                                  ^
-  7 |     new Promise<string>((resolve) => resolve("s")),
+  4 | async function plainValues(): Promise<void> {
+  5 |   const pair = await Promise.all(["s", 1] as const);
+    |                                  ^~~~~~~~~~~~~~~~~
+  6 |   console.log(pair.length);
 
-  hint: the entries must share ONE promise type — Promise.all([p, q]) lowers when p and q are the same Promise<T>
+  hint: an array of promises (Promise<T>[]) is the supported form
 
-promise-all-fences.ts:14:9 - error SC2020: 'Promise.allSettled' is part of the standard library types but has no scriptc lowering yet
+promise-all-fences.ts:10:9 - error SC2020: 'Promise.allSettled' is part of the standard library types but has no scriptc lowering yet
 
-  13 |   const one = new Promise<number>((resolve) => resolve(1));
-  14 |   await Promise.allSettled([one]);
+   9 |   const one = new Promise<number>((resolve) => resolve(1));
+  10 |   await Promise.allSettled([one]);
      |         ^~~~~~~~~~~~~~~~~~~~~~~~~
-  15 | }
+  11 | }
 
   hint: await each element in a loop (Promise.all compiles over a Promise<T>[] array, Promise.race over an array literal)

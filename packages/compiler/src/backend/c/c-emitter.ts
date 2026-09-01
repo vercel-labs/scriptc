@@ -60,7 +60,7 @@ import { cFnPtrCast, cType, releaseCallC, cStringLiteral, cDecl } from "./types.
 import { computeMayThrow } from "./may-throw.js";
 import { unionTruthyHelper, unionEqHelper, unionToStrHelper, unionJoinHelper, jsonWriteHelper, jsonIndentHelper, dynMatchHelper, dynCheckHelper, dynFuncBoxHelper, dynToStrHelper, caughtToDynHelper, toDynHelper, recordKeyGetHelper, recordKeySetHelper } from "./walkers.js";
 import { VtSlot, ClassMeta, emitStructDefs, vtEntriesFor, vtSlotParams, emitVtableDecls, emitVtableInstances, emitVtAdapterDefs, emitHierarchyClassHelpers, emitClassObjs, emitCtorThunkDefs, errorVtStampLines, emitterVtStampLines, streamVtStampLines, traceAdapterC, traceArgC, boxNewC, arrNewC } from "./shapes.js";
-import { emitAsyncScaffolding, childDataThunkFor, childExitThunkFor, childExitSignalThunkFor, closeBindThunkFor, connectResThunkFor, connectSockThunkFor, closeOverrideWrapFor, dgramMsgThunkFor, dnsLookupThunkFor, fsRenameThunkFor, netLookupAnswerThunkFor, emitterInvokeThunkFor, streamCbThunkFor, streamDataThunkFor, raceAdapterFor, resolveThunkFor, sniAnswerThunkFor } from "./async.js";
+import { emitAsyncScaffolding, childDataThunkFor, childExitThunkFor, childExitSignalThunkFor, closeBindThunkFor, connectResThunkFor, connectSockThunkFor, closeOverrideWrapFor, dgramMsgThunkFor, dnsLookupThunkFor, fsRenameThunkFor, netLookupAnswerThunkFor, emitterInvokeThunkFor, streamCbThunkFor, streamDataThunkFor, promiseAllTupleFor, raceAdapterFor, resolveThunkFor, sniAnswerThunkFor, type PromiseAllTupleThunks } from "./async.js";
 import { emitNpmEmbedding, islandAdapter, islandTypedAdapter } from "./island.js";
 import { emitFunction, emitBlock, emitStmts, emitStmt, emitTryCatch, emitSwitch, mergeBrace, emitBranchInto, emitCondition } from "./stmts.js";
 import { emitExpr } from "./exprs.js";
@@ -249,6 +249,8 @@ export class CEmitter {
   /** Emitted Promise.race fulfillment adapters, interned per
    * `entryInner=>resultInner` typeKey pair (raceAdapterFor). */
   readonly raceThunks = new Map<string, string>();
+  /** Emitted Promise.all tuple callbacks, interned per tuple record shape. */
+  readonly promiseAllTupleThunks = new Map<string, PromiseAllTupleThunks>();
   /** setTimeout appeared somewhere: main must run the event loop even in
    * programs with no async functions. */
   usesTimers = false;
@@ -2134,6 +2136,10 @@ export class CEmitter {
 
   raceAdapterFor(from: IrType, to: IrType): string {
     return raceAdapterFor(this, from, to);
+  }
+
+  promiseAllTupleFor(tupleT: IrType & { kind: "record" }): PromiseAllTupleThunks {
+    return promiseAllTupleFor(this, tupleT);
   }
 
   resolveThunkFor(inner: IrType): string {

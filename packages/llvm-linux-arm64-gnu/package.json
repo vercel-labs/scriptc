@@ -1,0 +1,4 @@
+{
+  "name": "@scriptc/llvm-linux-arm64-gnu", "version": "0.0.36", "description": "Pinned LLVM code-generation helper for scriptc on Linux arm64", "license": "Apache-2.0 WITH LLVM-exception", "homepage": "https://scriptc.dev",
+  "repository": { "type": "git", "url": "git+https://github.com/vercel-labs/scriptc.git", "directory": "packages/llvm-linux-arm64-gnu" }, "os": ["linux"], "cpu": ["arm64"], "files": ["bin", "LICENSE", "SCRIPTC_LICENSE", "THIRD_PARTY_NOTICES"], "scripts": { "build": "true", "build:native": "node scripts/build.mjs", "prepack": "test -x bin/scriptc-llvm-codegen" }, "publishConfig": { "access": "public" }
+}

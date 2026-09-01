@@ -1,0 +1,4 @@
+{
+  "name": "@scriptc/llvm-win32-x64-msvc", "version": "0.0.36", "description": "Pinned LLVM code-generation helper for scriptc on Windows x64", "license": "Apache-2.0 WITH LLVM-exception", "homepage": "https://scriptc.dev",
+  "repository": { "type": "git", "url": "git+https://github.com/vercel-labs/scriptc.git", "directory": "packages/llvm-win32-x64-msvc" }, "os": ["win32"], "cpu": ["x64"], "files": ["bin", "LICENSE", "SCRIPTC_LICENSE", "THIRD_PARTY_NOTICES"], "scripts": { "build": "true", "build:native": "node scripts/build.mjs", "prepack": "test -f bin/scriptc-llvm-codegen.exe" }, "publishConfig": { "access": "public" }
+}

@@ -68,7 +68,7 @@ export interface NativeLinkInfo {
   target: {
     name: NativeTargetSpec["name"];
     llvm_triple: NativeTargetSpec["llvmTriple"];
-    architecture: "arm64";
+    architecture: NativeTargetSpec["architecture"];
     object_format: NativeTargetSpec["objectFormat"];
     minimum_os: NativeTargetSpec["minimumOs"];
     relocation_model: NativeTargetSpec["relocationModel"];
@@ -117,11 +117,8 @@ function runtimeSourceRecipe(
   env: NodeJS.ProcessEnv,
   optimization: "release" | "dev",
 ): { sets: NativeSourceSet[]; systemLibraries: string[]; driverFlags: string[] } {
-  // Native link info currently describes the supported Mach-O external-object
-  // recipe. Keep this in the same target-aware helper as compileC so a
-  // consumer's link has the identical executable reachability semantics.
-  const executableSectionFlags = executableSectionEliminationFlags("darwin");
   const dynamic = features.dynamic;
+  const executableSectionFlags = executableSectionEliminationFlags(target.platform);
   const curlFetch = dynamic && features.fetch && env["SCRIPTC_FETCH_CURL"] === "1";
   const nativeFetch = features.fetch && !curlFetch;
   const netIsland = dynamic && (features.netIsland || nativeFetch);
@@ -129,8 +126,19 @@ function runtimeSourceRecipe(
   const http = features.http || nativeFetch || netIsland;
   const tls = features.tls || nativeFetch || netIsland;
   const tlsCa = features.tlsCa || tls;
+  const wasiUnavailableSources = new Set([
+    "scr_child.c", "scr_dyn_handle.c", "scr_loop_kqueue.c", "scr_loop_epoll.c",
+    "scr_loop_wsapoll.c", "scr_net.c", "scr_http.c", "scr_http2.c", "scr_dgram.c",
+    "scr_watch.c", "scr_tls_ca.c", "scr_tls.c", "scr_fetch.c", "scr_net_island.c",
+  ]);
   const runtimeSources = [
-    ...EXECUTABLE_RUNTIME_SOURCES,
+    ...EXECUTABLE_RUNTIME_SOURCES.filter((source) =>
+      target.platform !== "wasi" || !wasiUnavailableSources.has(source)
+    ),
+    ...(target.platform === "win32" ? ["scr_win.c"] : []),
+    ...(target.name === "linux-x64-musl" || target.name === "linux-arm64-musl"
+      ? ["scr_musl.c"]
+      : []),
     ...(features.copying ? ["scr_copying.c"] : []),
     ...(features.fileHandle ? ["scr_file_handle.c"] : []),
     ...(features.regex ? ["scr_regex.c"] : []),
@@ -174,12 +182,14 @@ function runtimeSourceRecipe(
         ]
       : []),
   ];
-  const commonTargetFlags = ["-target", target.llvmTriple];
+  const filteredSources = target.platform === "wasi"
+    ? runtimeSources.filter((source) => !wasiUnavailableSources.has(source))
+    : runtimeSources;
   const sets: NativeSourceSet[] = [{
     name: "runtime",
     output: "objects",
     suggested_output: "runtime/*.o",
-    sources: unique(runtimeSources).map((source) => packagePath("src", source)),
+    sources: unique(filteredSources).map((source) => packagePath("src", source)),
     include_directories: unique([
       "src",
       ...(features.regex || dynamic ? ["vendor/quickjs-ng"] : []),
@@ -187,11 +197,13 @@ function runtimeSourceRecipe(
       ...(curlFetch ? ["vendor/curl/include"] : []),
     ]),
     defines: unique([
+      ...target.runtimeCompileDefines,
       ...(features.textDecoderLegacy ? ["SCR_TEXT_DECODER_LEGACY"] : []),
       ...(dynamic ? ["SCR_DYNAMIC"] : []),
     ]),
     c_flags: [
-      "-std=c11", ...commonTargetFlags, "-pthread",
+      "-std=c11", "-target", target.llvmTriple,
+      ...(target.platform === "win32" || target.platform === "wasi" ? [] : ["-pthread"]),
       optimization === "dev" ? "-O0" : "-O2",
       ...executableSectionFlags.compile,
       "-fno-math-errno", "-fno-strict-aliasing", "-Wno-deprecated-declarations",
@@ -205,7 +217,11 @@ function runtimeSourceRecipe(
       sources: LRE_SOURCES.map((source) => packagePath("vendor", "quickjs-ng", source)),
       include_directories: ["vendor/quickjs-ng"],
       defines: [],
-      c_flags: ["-std=c11", ...commonTargetFlags, "-Os"],
+      c_flags: [
+        "-std=c11", "-target", target.llvmTriple,
+        ...target.runtimeCompileDefines.map((define) => `-D${define}`),
+        "-Os",
+      ],
     });
   }
   if (dynamic) {
@@ -217,7 +233,9 @@ function runtimeSourceRecipe(
       include_directories: ["vendor/quickjs-ng"],
       defines: ["QUICKJS_NG_BUILD", "_GNU_SOURCE", "NDEBUG"],
       c_flags: [
-        "-std=gnu11", ...commonTargetFlags, "-fvisibility=hidden",
+        "-std=gnu11", "-target", target.llvmTriple,
+        ...target.runtimeCompileDefines.map((define) => `-D${define}`),
+        "-fvisibility=hidden",
         "-funsigned-char", "-Os",
       ],
     });
@@ -233,22 +251,29 @@ function runtimeSourceRecipe(
       sources: [],
       include_directories: ["vendor/mbedtls/include", "vendor/mbedtls/library"],
       defines: [],
-      c_flags: ["-std=c11", ...commonTargetFlags, "-Os"],
+      c_flags: [
+        "-std=c11", "-target", target.llvmTriple,
+        ...target.runtimeCompileDefines.map((define) => `-D${define}`),
+        "-Os",
+      ],
     });
   }
+  if (target.platform === "wasi") {
+    const blocked = features.net || features.http || features.http2 || features.dgram ||
+      features.watch || features.tls || features.tlsCa || features.fetch || features.netIsland;
+    if (blocked) throw new Error("WASI native link info requested an unavailable network/TLS runtime surface");
+  }
   const systemLibraries = unique([
-    "System",
-    ...((features.zlib || nativeFetch) ? ["z"] : []),
-    ...(dynamic ? ["m"] : []),
+    ...target.runtimeSystemLibraries,
+    ...((features.zlib || nativeFetch) && target.platform !== "win32" ? ["z"] : []),
+    ...(dynamic && target.platform !== "win32" ? ["m"] : []),
     ...(curlFetch ? ["curl"] : []),
   ]);
   return {
     sets,
     systemLibraries,
     driverFlags: [
-      ...commonTargetFlags,
-      "-pthread",
-      ...executableSectionFlags.link,
+      ...target.executableLinkerArgs,
     ],
   };
 }
@@ -293,7 +318,7 @@ export async function createNativeLinkInfo(options: {
     target: {
       name: options.target.name,
       llvm_triple: options.target.llvmTriple,
-      architecture: "arm64",
+      architecture: options.target.architecture,
       object_format: options.target.objectFormat,
       minimum_os: options.target.minimumOs,
       relocation_model: options.target.relocationModel,

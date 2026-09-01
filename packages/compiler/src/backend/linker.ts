@@ -28,8 +28,11 @@ const execFileAsync = promisify(execFile);
 /** The linker (or linker driver) is independent from SCRIPTC_CC.  A plain
  * `clang` is the initial macOS driver because it locates the selected SDK and
  * CRT inputs; it receives only objects and archives on this route. */
-export function resolvePlatformLinker(env: NodeJS.ProcessEnv = process.env): string {
-  return env["SCRIPTC_LINKER"] || "clang";
+export function resolvePlatformLinker(
+  env: NodeJS.ProcessEnv = process.env,
+  defaultLinker: string = "clang",
+): string {
+  return env["SCRIPTC_LINKER"] || defaultLinker;
 }
 
 /** Exact executable selected for a linker spelling.  The object-only route
@@ -74,8 +77,9 @@ function platformLinkerIdentity(
  * only the helper-produced program object and runtime-pack artifacts. */
 export async function executableLinkerEnvironmentFingerprint(
   env: NodeJS.ProcessEnv = process.env,
+  defaultLinker: string = "clang",
 ): Promise<string> {
-  const linker = resolvePlatformLinker(env);
+  const linker = resolvePlatformLinker(env, defaultLinker);
   const linkerIdentity = platformLinkerIdentity(env);
   let effectiveDriverIdentity: string;
   try {
@@ -112,7 +116,9 @@ export async function executableLinkerEnvironmentFingerprint(
  * a caller-selected SCRIPTC_LINKER may be a wrapper with hidden inputs. */
 export function platformLinkerSupportsPersistentCache(
   env: NodeJS.ProcessEnv = process.env,
+  target?: Pick<NativeLinkPlan["target"], "platform" | "defaultLinker">,
 ): boolean {
+  if (target !== undefined && target.platform !== "darwin") return false;
   // The Apple system shim is a stable front door to the active SDK/linker;
   // linkNativeExecutable snapshots the selected transitive inputs before it
   // publishes the final cache entry. A PATH wrapper is intentionally opaque.
@@ -198,7 +204,8 @@ export async function linkNativeExecutable(
     onArtifactReady?: (artifact: { dependencies: NativeArtifactDependency[] }) => Promise<void>;
   } = {},
 ): Promise<void> {
-  const linker = options.linker ?? resolvePlatformLinker();
+  const explicitLinker = options.linker ?? process.env["SCRIPTC_LINKER"];
+  const linker = explicitLinker ?? plan.target.defaultLinker;
   // ld64 derives an ad-hoc signature identifier from the output basename.
   // Keep that basename caller-visible while a private sibling directory gives
   // the link its own inode and preserves an atomic same-filesystem install.
@@ -211,6 +218,7 @@ export async function linkNativeExecutable(
     const staged = await stageRuntimePackArtifacts(plan.runtimePack);
     stagedRoot = staged.root;
     const args = [
+      ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
       ...plan.driverFlags,
       ...plan.inputs.map((input) => staged.replacements.get(input) ?? input),
       ...plan.systemLibraries.map((name) => `-l${name}`),

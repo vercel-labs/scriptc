@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { buildTargetPlatform, wasiGuestPath } from "@scriptc/compiler";
+import { buildTargetPlatform, sourceTargetPlatform, wasiGuestPath } from "@scriptc/compiler";
 
 export type CliOutputKind = "ir" | "c" | "llvm" | "asm" | "obj" | "exe";
 
@@ -25,7 +25,7 @@ export function defaultOutputName(
   kind: CliOutputKind,
   platform?: string,
 ): string {
-  const selectedPlatform = platform ?? (kind === "exe" ? buildTargetPlatform() : process.platform);
+  const selectedPlatform = platform ?? (kind === "exe" ? sourceTargetPlatform() : process.platform);
   if (kind === "exe" && selectedPlatform === "wasi") return `${stem}.wasm`;
   return `${stem}${(selectedPlatform === "win32" ? WINDOWS_SUFFIXES : POSIX_SUFFIXES)[kind]}`;
 }

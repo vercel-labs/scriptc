@@ -63,12 +63,25 @@ describe("surface manifest generation", () => {
   test("the version spine is the exact published version string", () => {
     const parsed = JSON.parse(committed) as SurfaceManifest;
     expect(parsed.compilerVersion).toBe(releaseVersion);
-    // The five packages publish in lockstep; a drifted stamp would make
+    // The compiler and every shipped native package publish in lockstep; a drifted stamp would make
     // the spine ambiguous for a version pin.
     expect(readJson("packages/compiler/package.json").version).toBe(releaseVersion);
     expect(readJson("packages/runtime/package.json").version).toBe(releaseVersion);
     expect(readJson("packages/runtime-darwin-arm64/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/runtime-darwin-x64/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/runtime-linux-x64-gnu/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/runtime-linux-arm64-gnu/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/runtime-linux-x64-musl/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/runtime-linux-arm64-musl/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/runtime-win32-x64-msvc/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/runtime-wasm32-wasi/package.json").version).toBe(releaseVersion);
     expect(readJson("packages/llvm-darwin-arm64/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/llvm-darwin-x64/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/llvm-linux-x64-gnu/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/llvm-linux-arm64-gnu/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/llvm-linux-x64-musl/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/llvm-linux-arm64-musl/package.json").version).toBe(releaseVersion);
+    expect(readJson("packages/llvm-win32-x64-msvc/package.json").version).toBe(releaseVersion);
   });
 
   test("schema: ids unique and sorted, enums valid, codes on every non-static entry", () => {

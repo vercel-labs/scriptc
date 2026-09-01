@@ -22,7 +22,7 @@ $ scriptc build fib.ts -o fib && ./fib
 $ npm install -g scriptc
 ```
 
-Requires Node.js 24. Executable builds require a platform linker driver and SDK. On macOS 15+ arm64, LLVM-tier executables use the matching optional helper and precompiled runtime pack, so the driver only links; select that driver with `SCRIPTC_LINKER`. Explicit C builds, LLVM fallbacks, `--sanitize`, and the deprecated `SCRIPTC_CC=clang|zigcc` compatibility route still compile C. `--emit=ir|c|llvm` requires only Node, while `--emit=asm|obj` requires neither an external compiler nor a linker.
+Requires Node.js 24. Executable builds require a platform linker driver and SDK/sysroot. On supported macOS, Linux, and Windows hosts, LLVM-tier executables use the matching optional helper and precompiled runtime pack, so the driver only links; select that driver with `SCRIPTC_LINKER`. Explicit C builds, LLVM fallbacks, `--sanitize`, and the deprecated `SCRIPTC_CC=clang|zigcc` compatibility route still compile C. `--emit=ir|c|llvm` requires only Node, while `--emit=asm|obj` requires neither an external compiler nor a linker.
 
 Builds use a bounded persistent cache by default. Exact unchanged library builds validate their recorded TypeScript/module-resolution inputs and restore the generated C/LLVM unit before starting the frontend. TypeScript comment-only edits can restore validated lowered IR instead, rebasing source locations and regenerating exact-source build identity before emission; directives, JSDoc-bearing JavaScript, token edits, configuration, package resolution, and newly appearing candidates still invalidate it. Library identity getters live in a tiny C translation unit, so build-id-only changes reuse the large compiled program object and compile only that small member before rearchiving. The native cache then applies its independent toolchain checks. Unchanged executables and library archives skip native code generation and linking after fresh compiler metadata probes, while edited builds reuse stable runtime objects. Experimental provenance-source builds bypass the early frontend tier because their fetched-source registry is process state. FFI builds with archive/object inputs or ambient `system_libraries` relink every time but still reuse runtime objects. Mutable compiler input paths such as `CPATH` and `SDKROOT`, and compiler wrappers, bypass persistent native artifacts and objects so same-path dependency edits cannot go stale. Opaque archiver wrappers rebuild library program members and archives while retaining runtime-object reuse. Direct Clang, Apple's system Clang shim, `zig cc`, trusted platform archivers, and `zig ar` retain their applicable persistent tiers. Set `SCRIPTC_NO_CACHE=1` to bypass every cache or `SCRIPTC_CACHE_DIR` to choose its location; an existing POSIX override must already be private, otherwise caching is bypassed without changing its permissions.
 
@@ -35,8 +35,8 @@ Builds use a bounded persistent cache by default. Exact unchanged library builds
 `scriptc build app.ts --emit=ir|c|llvm|asm|obj` selects serialized typed IR,
 readable C, textual LLVM IR, target assembly, or a relocatable program object
 as the one primary artifact. `--emit=exe` is the default. Assembly/object
-emission currently requires a macOS 15+ arm64 host and emits objects targeting
-macOS 14.0 (`arm64-apple-macosx14.0.0`).
+emission uses the matching helper on supported macOS, Linux, and Windows hosts
+(and produces WASI artifacts when that target is selected).
 Objects retain undefined `scr_*` runtime references plus the
 `scr_runtime_abi_v1` compatibility marker; they are not library archives.
 External consumption is experimental and requires the exact matching runtime.

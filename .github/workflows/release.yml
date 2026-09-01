@@ -49,9 +49,122 @@ jobs:
           fi
           echo "version=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
 
+  build-native-packages:
+    name: Build native package (${{ matrix.platform }})
+    needs: check-release
+    if: needs.check-release.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runner: macos-15
+            helper: llvm-darwin-arm64
+            runtime: runtime-darwin-arm64
+          - platform: darwin-x64
+            runner: macos-15-intel
+            helper: llvm-darwin-x64
+            runtime: runtime-darwin-x64
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            helper: llvm-linux-x64-gnu
+            runtime: runtime-linux-x64-gnu
+            llvm_asset: LLVM-22.1.8-Linux-X64
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            helper: llvm-linux-arm64-gnu
+            runtime: runtime-linux-arm64-gnu
+            llvm_asset: LLVM-22.1.8-Linux-ARM64
+          - platform: windows-x64
+            runner: windows-latest
+            helper: llvm-win32-x64-msvc
+            runtime: runtime-win32-x64-msvc
+          - platform: linux-x64-musl
+            runner: ubuntu-24.04
+            helper: llvm-linux-x64-musl
+            runtime: runtime-linux-x64-musl
+            llvm_asset: LLVM-22.1.8-Linux-X64
+            use_zig: true
+          - platform: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            helper: llvm-linux-arm64-musl
+            runtime: runtime-linux-arm64-musl
+            llvm_asset: LLVM-22.1.8-Linux-ARM64
+            use_zig: true
+          - platform: wasm32-wasi
+            runner: ubuntu-24.04
+            helper: llvm-linux-x64-gnu
+            runtime: runtime-wasm32-wasi
+            llvm_asset: LLVM-22.1.8-Linux-X64
+            use_zig: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+      - name: Install toolchain (macOS)
+        if: startsWith(matrix.platform, 'darwin')
+        run: brew install llvm@22
+      - name: Install pinned LLVM development distribution (Linux)
+        if: startsWith(matrix.platform, 'linux') || matrix.platform == 'wasm32-wasi'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libzstd-dev
+          curl -fL --retry 3 -o "$RUNNER_TEMP/llvm.tar.xz" "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/${{ matrix.llvm_asset }}.tar.xz"
+          tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/${{ matrix.llvm_asset }}" "$RUNNER_TEMP/llvm-22.1.8"
+          echo "LLVM_DIR=$RUNNER_TEMP/llvm-22.1.8/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/llvm-22.1.8/bin" >> "$GITHUB_PATH"
+      - uses: vercel-labs/setup-zig@v1
+        if: matrix.use_zig == true
+        with:
+          version: 0.16.0
+      - name: Install LLVM development distribution and build tools (Windows)
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: |
+          winget install --exact --id Kitware.CMake --accept-package-agreements --accept-source-agreements
+          choco install ninja --no-progress -y
+          $archive = "$env:RUNNER_TEMP\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar.xz"
+          $llvm = "$env:RUNNER_TEMP\llvm-22.1.8"
+          curl.exe -fL --retry 3 -o $archive https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
+          tar.exe -xJf $archive -C $env:RUNNER_TEMP
+          Move-Item "$env:RUNNER_TEMP\clang+llvm-22.1.8-x86_64-pc-windows-msvc" $llvm
+          echo "LLVM_DIR=$llvm\lib\cmake\llvm" >> $env:GITHUB_ENV
+          echo "$llvm\bin" >> $env:GITHUB_PATH
+          echo "C:\Program Files\CMake\bin" >> $env:GITHUB_PATH
+      - run: pnpm install --frozen-lockfile
+      - name: Build native packages (POSIX)
+        if: matrix.platform != 'windows-x64'
+        run: |
+          pnpm --filter @scriptc/${{ matrix.helper }} build:native
+          if [ "${{ matrix.use_zig }}" = true ]; then
+            CC=zig AR=zig pnpm --filter @scriptc/${{ matrix.runtime }} build:native
+          else
+            CC=clang AR=llvm-ar pnpm --filter @scriptc/${{ matrix.runtime }} build:native
+          fi
+      - name: Build native packages (Windows)
+        if: matrix.platform == 'windows-x64'
+        run: |
+          pnpm --filter @scriptc/${{ matrix.helper }} build:native
+          pnpm --filter @scriptc/${{ matrix.runtime }} build:native
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: |
+            packages/${{ matrix.helper }}
+            packages/${{ matrix.runtime }}
+          retention-days: 1
+
   publish:
     name: Publish to npm
-    needs: check-release
+    needs: [check-release, build-native-packages]
     if: needs.check-release.outputs.should_release == 'true'
     runs-on: macos-15
     timeout-minutes: 15
@@ -62,6 +175,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Download native packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native-artifacts
+          merge-multiple: true
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -74,14 +194,10 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Install pinned LLVM
-        run: brew install llvm@22
-
       # Publishing uses npm trusted publishing (OIDC): the job's id-token
       # permission lets npm mint short-lived credentials, so no npm token
-      # secret exists anywhere in this repo. All five packages —
-      # @scriptc/runtime, @scriptc/runtime-darwin-arm64,
-      # @scriptc/llvm-darwin-arm64, @scriptc/compiler, and scriptc — must each be
+      # secret exists anywhere in this repo. The runtime, every shipped
+      # platform runtime/helper package, compiler, and CLI must each be
       # configured on npmjs.com with a GitHub Actions trusted publisher
       # pointing at repository vercel-labs/scriptc, workflow release.yml,
       # environment Release. A package missing that configuration fails
@@ -91,14 +207,13 @@ jobs:
       - name: Install and build
         run: |
           pnpm install --frozen-lockfile
-          pnpm --filter @scriptc/llvm-darwin-arm64 build:native
-          pnpm --filter @scriptc/runtime-darwin-arm64 build:native
+          cp -R native-artifacts/. packages/
           pnpm -r build
 
       - name: Check version sync
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
-          for pkg in packages/runtime packages/runtime-darwin-arm64 packages/llvm-darwin-arm64 packages/compiler packages/cli; do
+          for pkg in packages/runtime packages/runtime-darwin-arm64 packages/llvm-darwin-arm64 packages/runtime-linux-x64-gnu packages/llvm-linux-x64-gnu packages/runtime-linux-arm64-gnu packages/llvm-linux-arm64-gnu packages/runtime-linux-x64-musl packages/llvm-linux-x64-musl packages/runtime-linux-arm64-musl packages/llvm-linux-arm64-musl packages/runtime-wasm32-wasi packages/runtime-win32-x64-msvc packages/llvm-win32-x64-msvc packages/compiler packages/cli; do
             V=$(node -p "require('./$pkg/package.json').version")
             if [ "$V" != "$VERSION" ]; then
               echo "Version mismatch: $pkg is $V, expected $VERSION"
@@ -152,6 +267,17 @@ jobs:
           publish_dir packages/runtime
           publish_dir packages/runtime-darwin-arm64
           publish_dir packages/llvm-darwin-arm64 "$HELPER_TARBALL"
+          publish_dir packages/runtime-linux-x64-gnu
+          publish_dir packages/llvm-linux-x64-gnu
+          publish_dir packages/runtime-linux-arm64-gnu
+          publish_dir packages/llvm-linux-arm64-gnu
+          publish_dir packages/runtime-linux-x64-musl
+          publish_dir packages/llvm-linux-x64-musl
+          publish_dir packages/runtime-linux-arm64-musl
+          publish_dir packages/llvm-linux-arm64-musl
+          publish_dir packages/runtime-wasm32-wasi
+          publish_dir packages/runtime-win32-x64-msvc
+          publish_dir packages/llvm-win32-x64-msvc
           publish_dir packages/compiler
           publish_dir packages/cli
         env:

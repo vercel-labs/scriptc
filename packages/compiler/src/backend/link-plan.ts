@@ -51,7 +51,9 @@ export async function createNativeLinkPlan(options: {
       ...(options.ffi?.systemLibraries ?? []),
       ...runtimePack.systemLibraries,
     ])],
-    driverFlags: [...options.target.executableLinkerArgs],
+    driverFlags: options.target.executableLinkerArgs.map((arg, index, args) =>
+      index > 0 && args[index - 1] === "-target" ? options.target.linkerTargetTriple : arg
+    ),
     dependencyPaths: [
       ...runtimePack.dependencyPaths,
       ...(options.ffi?.libraries ?? []),

@@ -71,10 +71,10 @@ static OptimizationLevel optimizationLevel(StringRef Level) {
 }
 
 int emit(const EmitOptions &Options) {
-  if (Options.Target != DefaultTarget)
+  if (!supportsTarget(Options.Target))
     return reportError("unsupported_target",
                        Twine("unsupported target '") + Options.Target +
-                           "' (supported: " + DefaultTarget + ")",
+                           "' (supported: " + AllowedTargets + ")",
                        Options.DiagnosticFormat);
   if (Options.FileType != "obj" && Options.FileType != "asm")
     return reportError("invalid_filetype", "filetype must be obj or asm",
@@ -113,12 +113,6 @@ int emit(const EmitOptions &Options) {
   Triple TargetTriple(Options.Target);
   Mod->setTargetTriple(TargetTriple);
   Mod->setDataLayout(Machine->createDataLayout());
-  if (Mod->getDataLayoutStr() != DefaultDataLayout)
-    return reportError("data_layout_mismatch",
-                       Twine("LLVM produced unexpected data layout '") +
-                           Mod->getDataLayoutStr() + "'",
-                       Options.DiagnosticFormat);
-
   std::string VerificationError;
   raw_string_ostream VerificationStream(VerificationError);
   if (verifyModule(*Mod, &VerificationStream))

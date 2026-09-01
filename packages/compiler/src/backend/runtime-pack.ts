@@ -51,7 +51,7 @@ export interface RuntimePackManifest {
   target: {
     name: NativeTargetSpec["name"];
     llvm_triple: NativeTargetSpec["llvmTriple"];
-    architecture: "arm64";
+    architecture: NativeTargetSpec["architecture"];
     object_format: NativeTargetSpec["objectFormat"];
     minimum_os: NativeTargetSpec["minimumOs"];
   };
@@ -157,11 +157,10 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
   if (
     manifest?.schema !== RUNTIME_PACK_SCHEMA || manifest.format !== RUNTIME_PACK_FORMAT ||
     typeof manifest.package !== "string" || typeof manifest.version !== "string" ||
-    target?.name !== "macos-arm64" || target.llvm_triple !== "arm64-apple-macosx14.0.0" ||
-    target.architecture !== "arm64" || target.object_format !== "macho" || target.minimum_os !== "14.0" ||
+    !isRuntimePackTarget(target) ||
     abi?.version !== RUNTIME_ABI_VERSION || abi.marker !== RUNTIME_ABI_MARKER ||
     typeof compiler?.command !== "string" || typeof compiler.identity !== "string" ||
-    compiler.target !== target.llvm_triple ||
+    compiler.target !== (target?.llvm_triple) ||
     !Array.isArray(macros?.executable) || !macros.executable.every((entry) => typeof entry === "string") ||
     !Array.isArray(macros.excluded) || !macros.excluded.every((entry) => typeof entry === "string") ||
     macros.sanitizer !== "external-toolchain-required" ||
@@ -180,6 +179,15 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
     })
   ) throw new RuntimePackError("installed runtime-pack.json is malformed or incompatible", "invalid");
   return manifest as unknown as RuntimePackManifest;
+}
+
+function isRuntimePackTarget(target: Record<string, unknown> | null): boolean {
+  return target !== null &&
+    typeof target.name === "string" &&
+    typeof target.llvm_triple === "string" &&
+    (target.architecture === "arm64" || target.architecture === "x64" || target.architecture === "wasm32") &&
+    (target.object_format === "macho" || target.object_format === "elf" || target.object_format === "coff" || target.object_format === "wasm") &&
+    typeof target.minimum_os === "string";
 }
 
 export function effectiveRuntimeFeatures(
@@ -324,16 +332,14 @@ export async function loadRuntimePack(options: {
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
 }): Promise<RuntimePackSelection> {
-  const packageName = options.target.name === "macos-arm64"
-    ? "@scriptc/runtime-darwin-arm64"
-    : (() => { throw new RuntimePackError(`no runtime pack supports ${options.target.name}`, "unsupported"); })();
+  const packageName = options.target.runtimePackPackage;
   const resolvePackageJson = options.resolver ?? ((specifier: string) => createRequire(import.meta.url).resolve(specifier));
   let packagePath: string;
   try {
     packagePath = resolvePackageJson(`${packageName}/package.json`);
   } catch {
     throw new RuntimePackError(
-      `precompiled runtime package ${packageName} is not installed; reinstall scriptc with optional dependencies enabled for macOS arm64`,
+      `precompiled runtime package ${packageName} is not installed; reinstall scriptc with optional dependencies enabled for ${options.target.name}`,
       "missing",
     );
   }
@@ -368,6 +374,7 @@ export async function loadRuntimePack(options: {
   if (
     manifest.target.name !== options.target.name ||
     manifest.target.llvm_triple !== options.target.llvmTriple ||
+    manifest.target.architecture !== options.target.architecture ||
     manifest.target.object_format !== options.target.objectFormat ||
     manifest.target.minimum_os !== options.target.minimumOs
   ) throw new RuntimePackError(`runtime pack does not support target ${options.target.name}`, "invalid");

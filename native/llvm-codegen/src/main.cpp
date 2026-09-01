@@ -32,13 +32,28 @@ int version(int Argc, char **Argv) {
   if (!Machine)
     return scriptc::reportError("target_machine_failed", Error);
 
+  json::Array Targets;
+  StringRef Backends = scriptc::TargetBackends;
+  while (!Backends.empty()) {
+    auto Split = Backends.split(',');
+    Targets.push_back(Split.first);
+    Backends = Split.second;
+  }
+  json::Array SupportedTargets;
+  StringRef TargetsText = scriptc::AllowedTargets;
+  while (!TargetsText.empty()) {
+    auto Split = TargetsText.split(',');
+    SupportedTargets.push_back(Split.first);
+    TargetsText = Split.second;
+  }
   json::Object Response{
       {"ok", true},
       {"protocol_version", scriptc::ProtocolVersion},
       {"scriptc_package_version", SCRIPTC_PACKAGE_VERSION},
       {"llvm_version", LLVM_VERSION_STRING},
       {"host_triple", sys::getDefaultTargetTriple()},
-      {"targets", json::Array{"AArch64"}},
+      {"targets", std::move(Targets)},
+      {"supported_targets", std::move(SupportedTargets)},
       {"default_target", scriptc::DefaultTarget},
       {"data_layout", Machine->createDataLayout().getStringRepresentation()},
   };

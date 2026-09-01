@@ -99,10 +99,7 @@ export const RUNTIME_PACK_MATRIX = {
     object_format: "macho",
     minimum_os: "14.0",
   },
-  flavors: {
-    release: { optimization: "-O2" },
-    dev: { optimization: "-O0" },
-  },
+  flavors: { release: { optimization: "-O2" }, dev: { optimization: "-O0" } },
   executable_section_elimination: EXECUTABLE_SECTION_ELIMINATION,
   runtime_units: [
     ...BASE_RUNTIME_SOURCES.map((source) => ({ source, predicate: true })),
@@ -114,8 +111,5 @@ export const RUNTIME_PACK_MATRIX = {
     { id: "zlib", predicate: "zlibEffective" },
     { id: "mbedtls", predicate: "tlsEffective" },
   ],
-  system_libraries: [
-    { name: "System", predicate: true },
-    { name: "m", predicate: "dynamic" },
-  ],
+  system_libraries: [{ name: "System", predicate: true }, { name: "m", predicate: "dynamic" }],
 };

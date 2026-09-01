@@ -1,0 +1,13 @@
+{
+  "name": "@scriptc/llvm-darwin-x64",
+  "version": "0.0.36",
+  "description": "Pinned LLVM code-generation helper for scriptc on macOS x64",
+  "license": "Apache-2.0 WITH LLVM-exception",
+  "homepage": "https://scriptc.dev",
+  "repository": { "type": "git", "url": "git+https://github.com/vercel-labs/scriptc.git", "directory": "packages/llvm-darwin-x64" },
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "files": ["bin", "LICENSE", "SCRIPTC_LICENSE", "THIRD_PARTY_NOTICES"],
+  "scripts": { "build": "true", "build:native": "node scripts/build.mjs", "prepack": "test -x bin/scriptc-llvm-codegen" },
+  "publishConfig": { "access": "public" }
+}

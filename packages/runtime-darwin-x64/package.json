@@ -1,0 +1,5 @@
+{
+  "name": "@scriptc/runtime-darwin-x64", "version": "0.0.36", "description": "Precompiled scriptc runtime pack for macOS x64", "license": "Apache-2.0", "homepage": "https://scriptc.dev",
+  "repository": { "type": "git", "url": "git+https://github.com/vercel-labs/scriptc.git", "directory": "packages/runtime-darwin-x64" }, "os": ["darwin"], "cpu": ["x64"],
+  "files": ["artifacts", "runtime-pack.json"], "scripts": { "build": "true", "build:native": "node scripts/build.mjs", "prepack": "node scripts/verify.mjs" }, "publishConfig": { "access": "public" }
+}

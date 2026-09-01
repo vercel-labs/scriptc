@@ -1,10 +1,24 @@
 cmake_minimum_required(VERSION 3.24)
 
+set(SCRIPTC_PACKAGE_VERSION "0.0.0-dev" CACHE STRING
+    "scriptc npm package version reported by the helper protocol")
+set(SCRIPTC_DEFAULT_TARGET "arm64-apple-macosx14.0.0" CACHE STRING
+    "Default target reported by the helper protocol")
+set(SCRIPTC_DEFAULT_DATA_LAYOUT
+    "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+    CACHE STRING "Data layout for SCRIPTC_DEFAULT_TARGET")
+set(SCRIPTC_TARGET_BACKENDS "AArch64" CACHE STRING
+    "Semicolon-separated LLVM target backends compiled into the helper")
+set(SCRIPTC_ALLOWED_TARGETS "arm64-apple-macosx14.0.0" CACHE STRING
+    "Comma-separated target triples accepted by this helper")
+set(SCRIPTC_HELPER_ARCH "arm64" CACHE STRING
+    "macOS architecture of the helper executable")
+
 # These must be cache variables before project() enables the Apple toolchain.
 # A target property named OSX_DEPLOYMENT_TARGET is not recognized by CMake and
 # silently leaves the executable at the build host/SDK's deployment version.
-if(CMAKE_HOST_APPLE)
-  set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING
+if(APPLE)
+  set(CMAKE_OSX_ARCHITECTURES "${SCRIPTC_HELPER_ARCH}" CACHE STRING
       "Architectures for the macOS helper" FORCE)
   # Homebrew's pinned LLVM 22 bottle is built for macOS 15. The helper must
   # tell the truth about that host requirement; the objects it emits retain
@@ -15,10 +29,12 @@ endif()
 
 project(scriptc_llvm_codegen LANGUAGES C CXX)
 
-find_package(LLVM 22.1.8 EXACT REQUIRED CONFIG)
+# Official LLVM binary distributions retain zstd as an imported dependency in
+# LLVMSupport. Resolve it before loading LLVM's exported targets so CMake never
+# leaves an unresolved `zstd::libzstd_static` edge on Linux or Windows.
+find_package(zstd CONFIG QUIET)
 
-set(SCRIPTC_PACKAGE_VERSION "0.0.0-dev" CACHE STRING
-    "scriptc npm package version reported by the helper protocol")
+find_package(LLVM 22.1.8 EXACT REQUIRED CONFIG)
 
 # LLVM's exported Support target names zstd's shared target even when the
 # selected LLVM components are static. The npm sidecar must not retain a
@@ -49,9 +65,47 @@ target_compile_definitions(scriptc-llvm-codegen PRIVATE
   ${LLVM_DEFINITIONS}
   SCRIPTC_PACKAGE_VERSION="${SCRIPTC_PACKAGE_VERSION}"
 )
+# The official Linux and Windows LLVM archives are commonly built with RTTI
+# disabled. Mixing RTTI modes turns otherwise ordinary virtual typeinfo into
+# an unresolved link symbol when the helper links those static components.
+if(NOT LLVM_ENABLE_RTTI)
+  if(MSVC)
+    target_compile_options(scriptc-llvm-codegen PRIVATE /GR-)
+  else()
+    target_compile_options(scriptc-llvm-codegen PRIVATE -fno-rtti)
+  endif()
+endif()
+
+foreach(SCRIPTC_TARGET_BACKEND IN LISTS SCRIPTC_TARGET_BACKENDS)
+  if(SCRIPTC_TARGET_BACKEND STREQUAL "AArch64")
+    list(APPEND SCRIPTC_LLVM_TARGET_LIBS AArch64CodeGen)
+    target_compile_definitions(scriptc-llvm-codegen PRIVATE SCRIPTC_ENABLE_AARCH64=1)
+  elseif(SCRIPTC_TARGET_BACKEND STREQUAL "X86")
+    list(APPEND SCRIPTC_LLVM_TARGET_LIBS X86CodeGen)
+    target_compile_definitions(scriptc-llvm-codegen PRIVATE SCRIPTC_ENABLE_X86=1)
+  elseif(SCRIPTC_TARGET_BACKEND STREQUAL "WebAssembly")
+    list(APPEND SCRIPTC_LLVM_TARGET_LIBS WebAssemblyCodeGen)
+    target_compile_definitions(scriptc-llvm-codegen PRIVATE SCRIPTC_ENABLE_WEBASSEMBLY=1)
+  else()
+    message(FATAL_ERROR "unsupported SCRIPTC_TARGET_BACKENDS entry: ${SCRIPTC_TARGET_BACKEND}")
+  endif()
+endforeach()
+
+# The WebAssembly target machine emits either an object or final wasm module,
+# but LLVM's normal `CodeGen` component remains the shared driver interface.
+# Keep the backend list canonical in the protocol rather than relying on the
+# host's installed LLVM target registry.
+
+string(REPLACE ";" "," SCRIPTC_TARGET_BACKENDS_JSON "${SCRIPTC_TARGET_BACKENDS}")
+target_compile_definitions(scriptc-llvm-codegen PRIVATE
+  SCRIPTC_DEFAULT_TARGET="${SCRIPTC_DEFAULT_TARGET}"
+  SCRIPTC_DEFAULT_DATA_LAYOUT="${SCRIPTC_DEFAULT_DATA_LAYOUT}"
+  SCRIPTC_TARGET_BACKENDS="${SCRIPTC_TARGET_BACKENDS_JSON}"
+  SCRIPTC_ALLOWED_TARGETS="${SCRIPTC_ALLOWED_TARGETS}"
+)
 
 llvm_map_components_to_libnames(SCRIPTC_LLVM_LIBS
-  AArch64CodeGen
+  ${SCRIPTC_LLVM_TARGET_LIBS}
   CodeGen
   Core
   Coroutines

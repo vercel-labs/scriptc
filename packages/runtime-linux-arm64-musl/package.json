@@ -1,0 +1,5 @@
+{
+  "name": "@scriptc/runtime-linux-arm64-musl", "version": "0.0.36", "description": "Precompiled scriptc runtime pack for Linux arm64 musl", "license": "Apache-2.0", "homepage": "https://scriptc.dev",
+  "repository": { "type": "git", "url": "git+https://github.com/vercel-labs/scriptc.git", "directory": "packages/runtime-linux-arm64-musl" }, "os": ["linux"], "cpu": ["arm64"],
+  "files": ["artifacts", "runtime-pack.json"], "scripts": { "build": "true", "build:native": "node scripts/build.mjs", "prepack": "node scripts/verify.mjs" }, "publishConfig": { "access": "public" }
+}

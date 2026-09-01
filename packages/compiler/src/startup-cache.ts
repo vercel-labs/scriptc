@@ -5,6 +5,7 @@ export { readRoutedExecutableCache } from "./executable/executable-cache.js";
 export type { EarlyExecutableRouteOptions } from "./executable/executable-cache.js";
 export {
   executableNativeEnvironmentFingerprint,
+  configuredTargetPlatform,
   legacyCExecutablePathRequested,
   resolveCc,
   targetPlatform,

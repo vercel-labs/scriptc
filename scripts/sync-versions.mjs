@@ -16,7 +16,17 @@ if (typeof version !== "string" || version.length === 0) {
   process.exit(1);
 }
 
-for (const pkg of ["runtime", "runtime-darwin-arm64", "compiler", "llvm-darwin-arm64"]) {
+for (const pkg of [
+  "runtime",
+  "runtime-darwin-arm64", "runtime-darwin-x64",
+  "runtime-linux-x64-gnu", "runtime-linux-arm64-gnu",
+  "runtime-linux-x64-musl", "runtime-linux-arm64-musl",
+  "runtime-win32-x64-msvc", "runtime-wasm32-wasi",
+  "compiler",
+  "llvm-darwin-arm64", "llvm-darwin-x64",
+  "llvm-linux-x64-gnu", "llvm-linux-arm64-gnu",
+  "llvm-linux-x64-musl", "llvm-linux-arm64-musl", "llvm-win32-x64-msvc",
+]) {
   const path = manifest(pkg);
   const json = read(path);
   if (json.version === version) {

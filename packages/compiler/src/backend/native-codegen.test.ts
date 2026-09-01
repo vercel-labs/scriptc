@@ -2,9 +2,9 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { emitNativeArtifact, NativeCodegenError } from "./native-codegen.js";
+import { emitNativeArtifact, NativeCodegenError, validateNativeCodegenVersion } from "./native-codegen.js";
 import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
-import { MACOS_ARM64_TARGET } from "./targets.js";
+import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 
 const dirs: string[] = [];
@@ -34,6 +34,7 @@ async function fakePackage(options: {
     llvm_version: "22.1.8",
     host_triple: "arm64-apple-darwin24.0.0",
     targets: ["AArch64"],
+    supported_targets: [MACOS_ARM64_TARGET.llvmTriple],
     default_target: MACOS_ARM64_TARGET.llvmTriple,
     data_layout: MACOS_ARM64_TARGET.dataLayout,
   });
@@ -63,17 +64,56 @@ ${options.emitFailure === true
   return { packageJson, bin, log, root };
 }
 
-function request(root: string, packageJson: string, output = join(root, "program.o")) {
+function request(root: string, packageJson: string, output = join(root, "program.o"), target = MACOS_ARM64_TARGET) {
   return {
     outputPath: output,
     llvm: "define i32 @answer() { ret i32 42 }\n",
     outputKind: "obj" as const,
     sourcePath: "/source/app.ts",
-    target: MACOS_ARM64_TARGET,
+    target,
     resolvePackageJson: () => packageJson,
     cacheRoot: join(root, "cache"),
   };
 }
+
+test("resolves the target's matching platform helper rather than a fixed macOS package", async () => {
+  const pkg = await fakePackage();
+  const output = join(pkg.root, "linux.o");
+  await writeFile(pkg.packageJson, JSON.stringify({ name: LINUX_X64_GNU_TARGET.helperPackage }));
+  await writeFile(pkg.bin, (await readFile(pkg.bin, "utf8"))
+    .replaceAll(MACOS_ARM64_TARGET.llvmTriple, LINUX_X64_GNU_TARGET.helper.defaultTarget)
+    .replaceAll(MACOS_ARM64_TARGET.dataLayout, LINUX_X64_GNU_TARGET.helper.defaultDataLayout)
+    .replaceAll('"targets":["AArch64"]', '"targets":["X86"]')
+    .replaceAll(`"supported_targets":["${MACOS_ARM64_TARGET.llvmTriple}"]`, `"supported_targets":["${LINUX_X64_GNU_TARGET.llvmTriple}"]`));
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, output, LINUX_X64_GNU_TARGET),
+    helperHost: { platform: "linux", arch: "x64" },
+  });
+  expect(await readFile(output, "utf8")).toContain("define i32 @answer");
+});
+
+test("requires a portable target backend in addition to the host helper backend", async () => {
+  const pkg = await fakePackage();
+  await expect(emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, join(pkg.root, "program.wasm"), WASM32_WASI_TARGET),
+    helperHost: { platform: "darwin", arch: "arm64" },
+  })).rejects.toMatchObject({ diagnosticCode: "SC3003", detailCode: "version_mismatch" });
+});
+
+test("accepts a WASI-capable helper whose default host target differs", () => {
+  const helper = WASM32_WASI_TARGET.hostHelpers?.["darwin-arm64"]!;
+  expect(validateNativeCodegenVersion({
+    ok: true,
+    protocol_version: "1",
+    scriptc_package_version: compilerReleaseVersion(),
+    llvm_version: "22.1.8",
+    host_triple: "arm64-apple-darwin25.0.0",
+    targets: ["AArch64", "WebAssembly"],
+    supported_targets: [helper.defaultTarget, WASM32_WASI_TARGET.llvmTriple],
+    default_target: helper.defaultTarget,
+    data_layout: helper.defaultDataLayout,
+  }, WASM32_WASI_TARGET, helper).targets).toContain("WebAssembly");
+});
 
 test("resolves a package helper, emits atomically, and caches by all native inputs", async () => {
   const pkg = await fakePackage();

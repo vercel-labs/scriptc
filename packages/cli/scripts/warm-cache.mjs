@@ -12,8 +12,8 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 if (
   !existsSync(join(packageRoot, "src")) &&
   process.env["SCRIPTC_NO_CACHE"] !== "1" &&
-  // A supported macOS arm64 install already carries immutable release/dev
-  // runtime artifacts. Older macOS hosts retain the source-toolchain path.
+  // A supported platform install already carries immutable release/dev
+  // runtime artifacts. Unsupported hosts retain the source-toolchain path.
   !hostSupportsRuntimePack()
 ) {
   try {

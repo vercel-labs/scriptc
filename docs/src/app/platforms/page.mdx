@@ -1,8 +1,8 @@
 # Platform Support
 
-## macOS (arm64)
+## Owned LLVM targets
 
-The primary platform. Source artifacts selected with <code>--emit=ir|c|llvm</code> need only Node. On macOS 15+ arm64, <code>--emit=asm|obj</code> uses the version-matched <code>@scriptc/llvm-darwin-arm64</code> helper installed with scriptc, emits <code>arm64-apple-macosx14.0.0</code> artifacts, and does not invoke a compiler, archiver, linker, or SDK. Ordinary LLVM-tier executables additionally need the Xcode platform linker/SDK; the helper emits the program object and the packaged runtime supplies objects/archives, so <code>clang</code> is only a linker driver (selectable with <code>SCRIPTC_LINKER</code>) and compiles neither program nor runtime C. Explicit C builds, LLVM fallbacks, and <code>--sanitize</code> still require a C compiler. Object output retains undefined runtime references and is not a library archive. The full executable surface is supported: the language, the stdlib, the Node API surface including the server stack, `--dynamic`, and the sanitizer lane.
+Source artifacts selected with <code>--emit=ir|c|llvm</code> need only Node. On supported hosts, <code>--emit=asm|obj</code> uses the version-matched platform helper installed with scriptc and does not invoke a compiler, archiver, linker, or SDK. Supported assembly/object targets are macOS arm64/x64 (macOS 14.0 artifacts; helper needs macOS 15+), Linux x64/arm64 glibc, Windows x64 MSVC, Linux x64/arm64 musl, and WASI Preview 1. Ordinary LLVM-tier executables additionally need the platform linker and SDK/sysroot; the helper emits the program object and the packaged runtime supplies objects/archives, so that driver compiles neither program nor runtime C. Explicit C builds, LLVM fallbacks, and <code>--sanitize</code> still require a C compiler. Object output retains undefined runtime references and is not a library archive.
 
 ## Cross-compilation via zig
 
@@ -83,19 +83,19 @@ The remaining executable boundary is host capability, not language coverage. WAS
   </thead>
   <tbody>
     <tr>
-      <td>macOS arm64</td>
-      <td>native</td>
-      <td>Primary: full surface, <code>--dynamic</code>, sanitizer lane</td>
+      <td>macOS arm64 / x64</td>
+      <td>native host helper + runtime pack</td>
+      <td>Full surface, <code>--dynamic</code>, sanitizer lane (external C route)</td>
     </tr>
     <tr>
       <td>Linux arm64 / x86_64</td>
-      <td><code>SCRIPTC_CC=zigcc SCRIPTC_TARGET=&lt;arch&gt;-linux-gnu.2.36</code> or <code>&lt;arch&gt;-linux-musl</code></td>
-      <td>Static and dynamic surfaces incl. servers, TLS, fetch, fs.watch, and child_process; verified against Linux Node on Bookworm and Alpine</td>
+      <td>native host helper + runtime pack; <code>SCRIPTC_TARGET=&lt;arch&gt;-linux-musl</code> selects musl</td>
+      <td>Static and dynamic surfaces incl. servers, TLS, fetch, fs.watch, and child_process; executable linking needs the matching libc/sysroot</td>
     </tr>
     <tr>
       <td>Windows x86_64</td>
-      <td><code>SCRIPTC_CC=zigcc SCRIPTC_TARGET=x86_64-windows-gnu</code></td>
-      <td>Static and dynamic surfaces incl. servers, TLS, fetch, and child_process; verified against Windows Node</td>
+      <td>native x64 MSVC helper + runtime pack</td>
+      <td>Static and dynamic surfaces incl. servers, TLS, fetch, and child_process; executable linking needs the Windows SDK/MSVC CRT</td>
     </tr>
     <tr>
       <td>iOS arm64 (device and simulator)</td>
@@ -109,7 +109,7 @@ The remaining executable boundary is host capability, not language coverage. WAS
     </tr>
     <tr>
       <td>WebAssembly / WASI Preview 1</td>
-      <td><code>SCRIPTC_CC=zigcc SCRIPTC_TARGET=wasm32-wasi</code></td>
+      <td>matching host helper + WASI runtime pack</td>
       <td>Production LLVM target; full language and dynamic tiers, bounded by WASI P1 host capabilities</td>
     </tr>
   </tbody>

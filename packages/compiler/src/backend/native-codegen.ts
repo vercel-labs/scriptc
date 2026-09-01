@@ -19,7 +19,13 @@ import {
   snapshotNativeArtifactDependencies,
   type NativeArtifactDependency,
 } from "./native-toolchain.js";
-import { nativeCodegenTarget, nativeCodegenTargetRefusal, type NativeTargetSpec } from "./targets.js";
+import {
+  nativeCodegenTarget,
+  nativeCodegenTargetRefusal,
+  nativeHelperForTarget,
+  type NativeHelperSpec,
+  type NativeTargetSpec,
+} from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 
 const execFileAsync = promisify(execFile);
@@ -46,6 +52,7 @@ export interface NativeCodegenVersion {
   llvm_version: string;
   host_triple: string;
   targets: string[];
+  supported_targets: string[];
   default_target: string;
   data_layout: string;
 }
@@ -78,6 +85,8 @@ export interface NativeCodegenOptions {
   optimization?: "0" | "1" | "2" | "3" | "s" | "z";
   sanitize?: boolean;
   target?: NativeTargetSpec;
+  /** Test seam for package selection on a simulated host. */
+  helperHost?: { platform: NodeJS.Platform; arch: string };
   /** Test seam: still resolves a package path, never searches PATH. */
   resolvePackageJson?: (specifier: string) => string;
   /** Internal/test override; omitted production calls use the shared cache. */
@@ -122,12 +131,16 @@ async function invoke(binaryPath: string, args: string[]): Promise<{ stdout: str
   }
 }
 
-function validateVersion(value: Record<string, unknown>, target: NativeTargetSpec): NativeCodegenVersion {
+export function validateNativeCodegenVersion(
+  value: Record<string, unknown>,
+  target: NativeTargetSpec,
+  helper: NativeHelperSpec,
+): NativeCodegenVersion {
   const expectedPackageVersion = compilerReleaseVersion();
   const mismatch = (field: string, expected: string): never => {
     throw new NativeCodegenError(
       "SC3003",
-      `LLVM native helper is incompatible: ${field} is ${JSON.stringify(value[field])}, expected ${JSON.stringify(expected)}; reinstall scriptc so its compiler and ${target.helperPackage} packages have matching versions`,
+      `LLVM native helper is incompatible: ${field} is ${JSON.stringify(value[field])}, expected ${JSON.stringify(expected)}; reinstall scriptc so its compiler and ${helper.packageName} packages have matching versions`,
       "version_mismatch",
     );
   };
@@ -141,14 +154,17 @@ function validateVersion(value: Record<string, unknown>, target: NativeTargetSpe
   if (value["llvm_version"] !== NATIVE_CODEGEN_LLVM_VERSION) {
     mismatch("llvm_version", NATIVE_CODEGEN_LLVM_VERSION);
   }
-  if (value["default_target"] !== target.llvmTriple) {
-    mismatch("default_target", target.llvmTriple);
+  if (value["default_target"] !== helper.defaultTarget) {
+    mismatch("default_target", helper.defaultTarget);
   }
-  if (value["data_layout"] !== target.dataLayout) {
-    mismatch("data_layout", target.dataLayout);
+  if (value["data_layout"] !== helper.defaultDataLayout) {
+    mismatch("data_layout", helper.defaultDataLayout);
   }
-  if (!Array.isArray(value["targets"]) || !value["targets"].includes("AArch64")) {
-    mismatch("targets", "an array containing AArch64");
+  if (!Array.isArray(value["targets"]) || !value["targets"].includes(target.llvmBackend)) {
+    mismatch("targets", `an array containing ${target.llvmBackend}`);
+  }
+  if (!Array.isArray(value["supported_targets"]) || !value["supported_targets"].includes(target.llvmTriple)) {
+    mismatch("supported_targets", `an array containing ${target.llvmTriple}`);
   }
   if (typeof value["host_triple"] !== "string") mismatch("host_triple", "a string");
   return value as unknown as NativeCodegenVersion;
@@ -157,20 +173,37 @@ function validateVersion(value: Record<string, unknown>, target: NativeTargetSpe
 async function resolveHelper(
   target: NativeTargetSpec,
   resolver?: (specifier: string) => string,
+  host?: { platform: NodeJS.Platform; arch: string },
 ): Promise<ResolvedHelper> {
+  const helper = nativeHelperForTarget(
+    target,
+    host?.platform,
+    host?.arch,
+  );
+  if (helper === null) {
+    throw new NativeCodegenError(
+      "SC3002",
+      `no scriptc LLVM helper supports ${target.name} on this host`,
+      "unsupported_helper_host",
+    );
+  }
   const resolvePackageJson = resolver ?? ((specifier: string) =>
     createRequire(import.meta.url).resolve(specifier));
   let packageJsonPath: string;
   try {
-    packageJsonPath = resolvePackageJson(`${target.helperPackage}/package.json`);
+    packageJsonPath = resolvePackageJson(`${helper.packageName}/package.json`);
   } catch {
     throw new NativeCodegenError(
       "SC3003",
-      `LLVM native helper package ${target.helperPackage} is not installed; reinstall scriptc with optional dependencies enabled for macOS arm64`,
+      `LLVM native helper package ${helper.packageName} is not installed; reinstall scriptc with optional dependencies enabled for this host`,
       "missing_package",
     );
   }
-  const binaryPath = join(dirname(packageJsonPath), "bin", "scriptc-llvm-codegen");
+  const binaryPath = join(
+    dirname(packageJsonPath),
+    "bin",
+    process.platform === "win32" ? "scriptc-llvm-codegen.exe" : "scriptc-llvm-codegen",
+  );
   let binaryStat;
   try {
     binaryStat = await stat(binaryPath);
@@ -178,7 +211,7 @@ async function resolveHelper(
   } catch {
     throw new NativeCodegenError(
       "SC3003",
-      `LLVM native helper package ${target.helperPackage} is incomplete: ${binaryPath} is missing; reinstall scriptc`,
+      `LLVM native helper package ${helper.packageName} is incomplete: ${binaryPath} is missing; reinstall scriptc`,
       "missing_binary",
     );
   }
@@ -191,7 +224,7 @@ async function resolveHelper(
   } catch {
     throw new NativeCodegenError(
       "SC3003",
-      `LLVM native helper package ${target.helperPackage} is incomplete: ${binaryPath} is not readable and executable; reinstall scriptc`,
+      `LLVM native helper package ${helper.packageName} is incomplete: ${binaryPath} is not readable and executable; reinstall scriptc`,
       "unusable_binary",
     );
   }
@@ -201,11 +234,15 @@ async function resolveHelper(
   } catch {
     throw new NativeCodegenError(
       "SC3003",
-      `LLVM native helper package ${target.helperPackage} changed while its inputs were being inspected; retry the build or reinstall scriptc`,
+      `LLVM native helper package ${helper.packageName} changed while its inputs were being inspected; retry the build or reinstall scriptc`,
       "helper_changed",
     );
   }
-  const cacheKey = JSON.stringify(dependencies);
+  // A single host helper can own more than one backend (for example its
+  // host-native ISA plus WebAssembly). Cache only after the target backend
+  // has also been checked; otherwise a prior X86 lookup could accidentally
+  // bless a later WASI request against an older X86-only package.
+  const cacheKey = JSON.stringify({ dependencies, targetBackend: target.llvmBackend });
   const load = async (): Promise<ResolvedHelper> => {
     let stdout: string;
     let binary: Buffer;
@@ -217,7 +254,7 @@ async function resolveHelper(
     } catch (error) {
       throw new NativeCodegenError(
         "SC3003",
-        `LLVM native helper package ${target.helperPackage} could not be read and executed for its identity check: ${error instanceof Error ? error.message : String(error)}; reinstall scriptc`,
+        `LLVM native helper package ${helper.packageName} could not be read and executed for its identity check: ${error instanceof Error ? error.message : String(error)}; reinstall scriptc`,
         "identity_probe_failed",
       );
     }
@@ -225,14 +262,14 @@ async function resolveHelper(
     if (rawVersion === null) {
       throw new NativeCodegenError(
         "SC3003",
-        `LLVM native helper returned an invalid version response; reinstall scriptc and ${target.helperPackage}`,
+        `LLVM native helper returned an invalid version response; reinstall scriptc and ${helper.packageName}`,
         "invalid_version_response",
       );
     }
     if (!(await nativeArtifactDependenciesStillMatch(dependencies).catch(() => false))) {
       throw new NativeCodegenError(
         "SC3003",
-        `LLVM native helper package ${target.helperPackage} changed during its identity check; retry the build or reinstall scriptc`,
+        `LLVM native helper package ${helper.packageName} changed during its identity check; retry the build or reinstall scriptc`,
         "helper_changed",
       );
     }
@@ -241,9 +278,9 @@ async function resolveHelper(
       binaryPath,
       dependencies,
       identity: {
-        packageName: target.helperPackage,
+        packageName: helper.packageName,
         binaryDigest: createHash("sha256").update(binary).digest("hex"),
-        version: validateVersion(rawVersion, target),
+        version: validateNativeCodegenVersion(rawVersion, target, helper),
       },
     };
   };
@@ -304,6 +341,13 @@ export async function emitNativeArtifact(options: NativeCodegenOptions): Promise
       "unsupported_target",
     );
   }
+  if (!target.supports[options.outputKind]) {
+    throw new NativeCodegenError(
+      "SC3002",
+      `--emit=${options.outputKind} is not supported for ${target.name}`,
+      "unsupported_output_kind",
+    );
+  }
   if (options.sanitize === true) {
     throw new NativeCodegenError(
       "SC3002",
@@ -311,7 +355,7 @@ export async function emitNativeArtifact(options: NativeCodegenOptions): Promise
       "sanitize_unsupported",
     );
   }
-  const helper = await resolveHelper(target, options.resolvePackageJson);
+  const helper = await resolveHelper(target, options.resolvePackageJson, options.helperHost);
   const root = await prepareBuildCacheRoot(
     options.cacheRoot === undefined ? buildCacheRoot() : options.cacheRoot,
   );

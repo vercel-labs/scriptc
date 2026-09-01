@@ -1089,7 +1089,10 @@ async function compileExecutableNative(
       programObjectDependencies,
     });
     const cacheableLinker =
-      onArtifactReady !== undefined && ffi === null && platformLinkerSupportsPersistentCache();
+      onArtifactReady !== undefined && ffi === null && platformLinkerSupportsPersistentCache(
+        process.env,
+        runtimePackTarget,
+      );
     await linkNativeExecutable(plan, {
       // A caller-selected linker can be a mutable wrapper with hidden inputs,
       // and a PATH-selected `clang` can be one too. FFI profiles and mutable
@@ -1259,7 +1262,22 @@ async function compileTracked(
   }
   let buildPlatform: string;
   if (outputKind === "exe") {
-    buildPlatform = buildTargetPlatform();
+    // Target semantics are needed before choosing the helper/runtime-pack
+    // path. Do not make them contingent on the legacy C-driver resolver:
+    // an LLVM-owned WASI build deliberately needs no SCRIPTC_CC.
+    try {
+      buildPlatform = sourceTargetPlatform();
+    } catch (err) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "SC3002",
+          message: err instanceof Error ? err.message : String(err),
+          loc: { file: entryPath, start: 0, end: 0 },
+        }],
+        sourceTexts: new Map(),
+      };
+    }
   } else {
     try {
       buildPlatform = sourceTargetPlatform();
@@ -1359,7 +1377,10 @@ async function compileTracked(
           : (process.env["SCRIPTC_CC"] ?? "clang"),
       ],
       nativeEnvironment: helperObjectRoute
-        ? await executableLinkerEnvironmentFingerprint()
+        ? await executableLinkerEnvironmentFingerprint(
+          process.env,
+          nativeCodegenTarget()?.defaultLinker,
+        )
         : await executableNativeEnvironmentFingerprint(),
       nodeVersion: process.version,
       implementation: implementation.digest,

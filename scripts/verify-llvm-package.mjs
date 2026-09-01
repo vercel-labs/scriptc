@@ -48,7 +48,9 @@ try {
     version.protocol_version !== "1" ||
     version.scriptc_package_version !== manifest.version ||
     version.llvm_version !== "22.1.8" ||
-    version.default_target !== "arm64-apple-macosx14.0.0"
+    version.default_target !== "arm64-apple-macosx14.0.0" ||
+    !Array.isArray(version.supported_targets) ||
+    !version.supported_targets.includes(version.default_target)
   ) throw new Error(`packed helper identity mismatch: ${JSON.stringify(version)}`);
   const dependencies = execFileSync("otool", ["-L", binary], { encoding: "utf8" });
   const nonSystemDependencies = dependencies.trim().split("\n").slice(1)

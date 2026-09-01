@@ -11,6 +11,7 @@
 import {
   compileC,
   compileLibArchive,
+  configuredTargetPlatform,
   type CcOptions,
   type LibArchiveOptions,
 } from "./native-toolchain.js";
@@ -20,6 +21,7 @@ export {
   compileC,
   compileLibArchive,
   compilerDriverSupportsPersistentCache,
+  configuredTargetPlatform,
   executableNativeEnvironmentFingerprint,
   isAndroidTarget,
   isIosTarget,
@@ -72,8 +74,8 @@ export function legacyCExecutablePipelineEnabled(
 }
 
 /** `SCRIPTC_CC` selects the external C compiler route during the migration.
- * An unset value lets an LLVM-tier macOS build use the helper plus runtime
- * pack and reserve `SCRIPTC_LINKER` for the platform-linker driver. */
+ * An unset value lets every supported LLVM-tier target use its helper plus
+ * runtime pack and reserve `SCRIPTC_LINKER` for the platform-linker driver. */
 export function legacyCExecutablePathRequested(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {

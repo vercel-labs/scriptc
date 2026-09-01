@@ -54,15 +54,82 @@ importers:
       '@scriptc/llvm-darwin-arm64':
         specifier: workspace:*
         version: link:../llvm-darwin-arm64
+      '@scriptc/llvm-darwin-x64':
+        specifier: workspace:*
+        version: link:../llvm-darwin-x64
+      '@scriptc/llvm-linux-arm64-gnu':
+        specifier: workspace:*
+        version: link:../llvm-linux-arm64-gnu
+      '@scriptc/llvm-linux-arm64-musl':
+        specifier: workspace:*
+        version: link:../llvm-linux-arm64-musl
+      '@scriptc/llvm-linux-x64-gnu':
+        specifier: workspace:*
+        version: link:../llvm-linux-x64-gnu
+      '@scriptc/llvm-linux-x64-musl':
+        specifier: workspace:*
+        version: link:../llvm-linux-x64-musl
+      '@scriptc/llvm-win32-x64-msvc':
+        specifier: workspace:*
+        version: link:../llvm-win32-x64-msvc
       '@scriptc/runtime-darwin-arm64':
         specifier: workspace:*
         version: link:../runtime-darwin-arm64
+      '@scriptc/runtime-darwin-x64':
+        specifier: workspace:*
+        version: link:../runtime-darwin-x64
+      '@scriptc/runtime-linux-arm64-gnu':
+        specifier: workspace:*
+        version: link:../runtime-linux-arm64-gnu
+      '@scriptc/runtime-linux-arm64-musl':
+        specifier: workspace:*
+        version: link:../runtime-linux-arm64-musl
+      '@scriptc/runtime-linux-x64-gnu':
+        specifier: workspace:*
+        version: link:../runtime-linux-x64-gnu
+      '@scriptc/runtime-linux-x64-musl':
+        specifier: workspace:*
+        version: link:../runtime-linux-x64-musl
+      '@scriptc/runtime-wasm32-wasi':
+        specifier: workspace:*
+        version: link:../runtime-wasm32-wasi
+      '@scriptc/runtime-win32-x64-msvc':
+        specifier: workspace:*
+        version: link:../runtime-win32-x64-msvc
 
   packages/llvm-darwin-arm64: {}
+
+  packages/llvm-darwin-x64: {}
+
+  packages/llvm-linux-arm64-gnu: {}
+
+  packages/llvm-linux-arm64-musl: {}
+
+  packages/llvm-linux-x64-gnu: {}
+
+  packages/llvm-linux-x64-musl: {}
+
+  packages/llvm-win32-x64-msvc: {}
 
   packages/runtime: {}
 
   packages/runtime-darwin-arm64: {}
+
+  packages/runtime-darwin-x64: {}
+
+  packages/runtime-linux-arm64-gnu: {}
+
+  packages/runtime-linux-arm64-musl: {}
+
+  packages/runtime-linux-x64-gnu: {}
+
+  packages/runtime-linux-x64-musl: {}
+
+  packages/runtime-pack-common: {}
+
+  packages/runtime-wasm32-wasi: {}
+
+  packages/runtime-win32-x64-msvc: {}
 
 packages:
 

@@ -1,7 +1,7 @@
 # Native Program Objects
 
-`scriptc build --emit=obj` produces one relocatable macOS arm64 program
-object without invoking clang, a linker, or an SDK. The object defines
+`scriptc build --emit=obj` produces one relocatable program object without
+invoking clang, a linker, or an SDK on a supported target. The object defines
 `main`; it is intended to become the program in an external native link. It
 is not a host-callable library—use `scriptc build --lib --profile ...` for
 that interface.
@@ -59,9 +59,12 @@ $ ./app-cc
 42
 ```
 
-The script compiles each reported source set and gives clang only the link
-inputs and system libraries from the document. `--emit=obj` itself remains
-clang-free; this compiler invocation belongs to the external runtime build.
+The script is the macOS external-link example: it compiles each reported
+source set and gives clang only the link inputs and system libraries from the
+document. `--emit=obj` itself remains clang-free; this compiler invocation
+belongs to the external runtime build. Linux objects need the target glibc or
+musl linker/sysroot; Windows MSVC objects need the Windows SDK/MSVC CRT; WASI
+objects need a Preview 1 linker/sysroot.
 
 ## Native Apple linker
 

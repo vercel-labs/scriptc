@@ -1,0 +1,6 @@
+{
+  "name": "@scriptc/runtime-pack-common",
+  "version": "0.0.36",
+  "private": true,
+  "type": "module"
+}

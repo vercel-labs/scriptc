@@ -38,6 +38,19 @@
   },
   "optionalDependencies": {
     "@scriptc/llvm-darwin-arm64": "workspace:*",
-    "@scriptc/runtime-darwin-arm64": "workspace:*"
+    "@scriptc/llvm-darwin-x64": "workspace:*",
+    "@scriptc/llvm-linux-x64-gnu": "workspace:*",
+    "@scriptc/llvm-linux-arm64-gnu": "workspace:*",
+    "@scriptc/llvm-linux-x64-musl": "workspace:*",
+    "@scriptc/llvm-linux-arm64-musl": "workspace:*",
+    "@scriptc/llvm-win32-x64-msvc": "workspace:*",
+    "@scriptc/runtime-darwin-arm64": "workspace:*",
+    "@scriptc/runtime-darwin-x64": "workspace:*",
+    "@scriptc/runtime-linux-x64-gnu": "workspace:*",
+    "@scriptc/runtime-linux-arm64-gnu": "workspace:*",
+    "@scriptc/runtime-linux-x64-musl": "workspace:*",
+    "@scriptc/runtime-linux-arm64-musl": "workspace:*",
+    "@scriptc/runtime-win32-x64-msvc": "workspace:*",
+    "@scriptc/runtime-wasm32-wasi": "workspace:*"
   }
 }

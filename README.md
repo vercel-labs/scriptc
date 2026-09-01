@@ -8,7 +8,7 @@ scriptc is experimental and targets macOS, Linux, Windows, and WebAssembly via W
 
 ## Installation
 
-The compiler requires Node.js 24 or newer. `--emit=ir|c|llvm` needs only Node. On macOS 15+ arm64, `--emit=asm|obj` additionally uses the optional platform helper installed with scriptc, but needs no compiler, archiver, linker, or SDK. Ordinary LLVM-tier executable builds need a platform linker driver and SDK, but use the bundled helper plus precompiled runtime pack rather than compiling generated or runtime C. Set `SCRIPTC_LINKER` to choose that driver. Explicit C builds, LLVM fallbacks, `--sanitize`, and the deprecated `SCRIPTC_CC=clang|zigcc` compatibility route additionally need a C compiler. The executables it produces do not require Node.
+The compiler requires Node.js 24 or newer. `--emit=ir|c|llvm` needs only Node. `--emit=asm|obj` uses the matching optional platform helper installed with scriptc on supported macOS, Linux, and Windows hosts (and for WASI), but needs no compiler, archiver, linker, or SDK. Ordinary LLVM-tier executable builds need a platform linker driver and SDK/sysroot, but use the bundled helper plus precompiled runtime pack rather than compiling generated or runtime C. Set `SCRIPTC_LINKER` to choose that driver. Explicit C builds, LLVM fallbacks, `--sanitize`, and the deprecated `SCRIPTC_CC=clang|zigcc` compatibility route additionally need a C compiler. The executables it produces do not require Node.
 
 ```console
 $ npm install -g scriptc
@@ -153,12 +153,11 @@ $ vercel link && vercel env pull  # writes a project-scoped VERCEL_OIDC_TOKEN
 $ pnpm test:sandbox
 ```
 
-The normal workspace build needs no local LLVM installation. To rebuild the
-optional macOS arm64 native artifacts, install CMake, Ninja, and Homebrew
-`llvm@22`, then run
-`pnpm --filter @scriptc/llvm-darwin-arm64 build:native` and
-`pnpm --filter @scriptc/runtime-darwin-arm64 build:native`. The macOS full test
-suite also uses those generated artifacts.
+The normal workspace build needs no local LLVM installation. To rebuild a
+native helper/runtime pack, install CMake, Ninja, and the pinned LLVM 22
+development package on that target host, then run the matching
+`@scriptc/llvm-<platform>` and `@scriptc/runtime-<platform>` `build:native`
+scripts. The macOS full test suite also uses those generated artifacts.
 
 `pnpm test:sandbox` loads `.env.local`, preflights Vercel authentication and
 project access, and uses the managed `vercel/sandbox/universal` image by

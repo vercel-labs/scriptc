@@ -20,6 +20,8 @@ execFileSync("cmake", [
   "-G", "Ninja",
   `-DLLVM_DIR=${llvmDir}`,
   `-DSCRIPTC_PACKAGE_VERSION=${manifest.version}`,
+  "-DSCRIPTC_TARGET_BACKENDS=AArch64;WebAssembly",
+  "-DSCRIPTC_ALLOWED_TARGETS=arm64-apple-macosx14.0.0,wasm32-unknown-wasi",
   "-DCMAKE_BUILD_TYPE=Release",
 ], { stdio: "inherit" });
 execFileSync("cmake", ["--build", buildDir, "--target", "scriptc-llvm-codegen"], {
@@ -38,7 +40,9 @@ const version = JSON.parse(execFileSync(output, ["version", "--format=json"], {
 if (
   version.protocol_version !== "1" ||
   version.scriptc_package_version !== manifest.version ||
-  version.llvm_version !== "22.1.8"
+  version.llvm_version !== "22.1.8" ||
+  !Array.isArray(version.supported_targets) ||
+  !version.supported_targets.includes("arm64-apple-macosx14.0.0")
 ) {
   throw new Error(`built helper reported an incompatible identity: ${JSON.stringify(version)}`);
 }

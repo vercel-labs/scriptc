@@ -28,7 +28,17 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const readJson = (path) => JSON.parse(readFileSync(root + path, "utf8"));
 
 const version = readJson("packages/cli/package.json").version;
-for (const pkg of ["runtime", "runtime-darwin-arm64", "llvm-darwin-arm64", "compiler"]) {
+for (const pkg of [
+  "runtime",
+  "runtime-darwin-arm64", "runtime-darwin-x64",
+  "runtime-linux-x64-gnu", "runtime-linux-arm64-gnu",
+  "runtime-linux-x64-musl", "runtime-linux-arm64-musl",
+  "runtime-win32-x64-msvc", "runtime-wasm32-wasi",
+  "llvm-darwin-arm64", "llvm-darwin-x64",
+  "llvm-linux-x64-gnu", "llvm-linux-arm64-gnu",
+  "llvm-linux-x64-musl", "llvm-linux-arm64-musl", "llvm-win32-x64-msvc",
+  "compiler",
+]) {
   const v = readJson(`packages/${pkg}/package.json`).version;
   if (v !== version) {
     console.error(

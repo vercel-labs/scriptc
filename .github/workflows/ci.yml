@@ -111,6 +111,53 @@ jobs:
           pnpm test packages/compiler/test/cc-driver.test.ts
           --testNamePattern "host-native clang static build"
 
+  llvm_artifacts_linux_x64:
+    name: test (Linux x64 LLVM artifacts, no clang)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install pinned LLVM development distribution
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libzstd-dev
+          curl -fL --retry 3 -o "$RUNNER_TEMP/llvm.tar.xz" https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz
+          tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/LLVM-22.1.8-Linux-X64" "$RUNNER_TEMP/llvm-22.1.8"
+          echo "LLVM_DIR=$RUNNER_TEMP/llvm-22.1.8/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/llvm-22.1.8/bin" >> "$GITHUB_PATH"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @scriptc/llvm-linux-x64-gnu build:native
+      - run: CC=clang AR=llvm-ar pnpm --filter @scriptc/runtime-linux-x64-gnu build:native
+      - uses: vercel-labs/setup-zig@v1
+        with:
+          version: 0.16.0
+      - run: pnpm --filter @scriptc/runtime-wasm32-wasi build:native
+      - run: pnpm build
+      - name: Linux helper object format and no-clang output contract
+        run: |
+          PATH="$RUNNER_TEMP/traps:$PATH"
+          mkdir -p "$RUNNER_TEMP/traps"
+          for tool in clang cc gcc ar ld; do printf '#!/bin/sh\nexit 97\n' > "$RUNNER_TEMP/traps/$tool"; chmod +x "$RUNNER_TEMP/traps/$tool"; done
+          node packages/cli/dist/main.js build tests/corpus/001-hello.ts --emit=obj -o "$RUNNER_TEMP/hello.o"
+          file "$RUNNER_TEMP/hello.o" | grep 'ELF 64-bit LSB relocatable, x86-64'
+      - name: Linux helper/runtime-pack executable differential smoke
+        env:
+          SCRIPTC_NO_CACHE: "1"
+          SCRIPTC_LEGACY_C_PIPELINE: "0"
+        run: |
+          node packages/cli/dist/main.js build tests/corpus/001-hello.ts -o "$RUNNER_TEMP/hello"
+          test "$("$RUNNER_TEMP/hello")" = 'hello world'
+      - name: WASI helper object/runtime-pack smoke
+        run: pnpm test packages/cli/test/wasi-runtime-pack.test.ts
+
   llvm_artifacts_macos_arm64:
     name: test (macOS arm64 LLVM artifacts, no clang, ${{ matrix.shard }}/3)
     runs-on: macos-15
@@ -191,6 +238,38 @@ jobs:
             "$RUNNER_TEMP/installed-link.json" "$RUNNER_TEMP/installed-program"
           test "$("$RUNNER_TEMP/installed-program")" = 'hello world'
 
+  llvm_artifacts_macos_x64:
+    name: test (macOS x64 LLVM artifacts, no clang)
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: brew install llvm@22
+      - run: pnpm install --frozen-lockfile
+      - run: LLVM_DIR=/usr/local/opt/llvm@22/lib/cmake/llvm pnpm --filter @scriptc/llvm-darwin-x64 build:native
+      - run: pnpm --filter @scriptc/runtime-darwin-x64 build:native
+      - run: pnpm build
+      - name: Intel Mach-O no-clang object contract
+        run: |
+          mkdir -p "$RUNNER_TEMP/traps"
+          for tool in clang cc gcc ar ld; do printf '#!/bin/sh\nexit 97\n' > "$RUNNER_TEMP/traps/$tool"; chmod +x "$RUNNER_TEMP/traps/$tool"; done
+          PATH="$RUNNER_TEMP/traps:$PATH" node packages/cli/dist/main.js build tests/corpus/001-hello.ts --emit=obj -o "$RUNNER_TEMP/hello.o"
+          file "$RUNNER_TEMP/hello.o" | grep 'Mach-O 64-bit object x86_64'
+      - name: Intel helper/runtime-pack executable smoke
+        env:
+          SCRIPTC_NO_CACHE: "1"
+          SCRIPTC_LEGACY_C_PIPELINE: "0"
+        run: |
+          node packages/cli/dist/main.js build tests/corpus/001-hello.ts -o "$RUNNER_TEMP/hello"
+          test "$($RUNNER_TEMP/hello)" = 'hello world'
+
   # Exercises the supported Windows GNU target and the built CLI end to end:
   # TS7 must open its synthetic project, ambient files must resolve across
   # slash styles, and the default executable must use the .exe suffix.
@@ -262,11 +341,50 @@ jobs:
           pnpm exec vitest run packages/compiler/test/cc-driver.test.ts
           --testNamePattern "Windows CA roots honor"
 
+  llvm_artifacts_windows_x64:
+    name: test (Windows x64 MSVC LLVM artifacts)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install pinned LLVM development distribution and build tools
+        shell: pwsh
+        run: |
+          winget install --exact --id Kitware.CMake --accept-package-agreements --accept-source-agreements
+          choco install ninja --no-progress -y
+          $archive = "$env:RUNNER_TEMP\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar.xz"
+          $llvm = "$env:RUNNER_TEMP\llvm-22.1.8"
+          curl.exe -fL --retry 3 -o $archive https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
+          tar.exe -xJf $archive -C $env:RUNNER_TEMP
+          Move-Item "$env:RUNNER_TEMP\clang+llvm-22.1.8-x86_64-pc-windows-msvc" $llvm
+          echo "LLVM_DIR=$llvm\lib\cmake\llvm" >> $env:GITHUB_ENV
+          echo "$llvm\bin" >> $env:GITHUB_PATH
+          echo "C:\Program Files\CMake\bin" >> $env:GITHUB_PATH
+      - run: pnpm install --frozen-lockfile
+      - name: Build Windows helper
+        run: pnpm --filter @scriptc/llvm-win32-x64-msvc build:native
+      - name: Build Windows runtime pack
+        run: pnpm --filter @scriptc/runtime-win32-x64-msvc build:native
+      - run: pnpm build
+      - name: Windows COFF no-clang object contract
+        shell: pwsh
+        run: |
+          node packages/cli/dist/main.js build tests/corpus/001-hello.ts --emit=obj -o "$env:RUNNER_TEMP\hello.obj"
+          $bytes = [System.IO.File]::ReadAllBytes("$env:RUNNER_TEMP\hello.obj")
+          if ($bytes[0] -ne 0x64 -or $bytes[1] -ne 0x86) { throw "expected AMD64 COFF object" }
+
   # Aggregate gate with the pre-matrix job's name, so anything keyed on the
   # single "test" check (branch protection, badges) keeps resolving. Fails
   # unless every matrix shard and both platform integration jobs succeeded.
   test:
-    needs: [tests, linux_host_clang, llvm_artifacts_macos_arm64, windows_cli]
+    needs: [tests, linux_host_clang, llvm_artifacts_linux_x64, llvm_artifacts_macos_arm64, llvm_artifacts_macos_x64, windows_cli, llvm_artifacts_windows_x64]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -274,5 +392,8 @@ jobs:
         run: |
           test "${{ needs.tests.result }}" = success
           test "${{ needs.linux_host_clang.result }}" = success
+          test "${{ needs.llvm_artifacts_linux_x64.result }}" = success
           test "${{ needs.llvm_artifacts_macos_arm64.result }}" = success
+          test "${{ needs.llvm_artifacts_macos_x64.result }}" = success
           test "${{ needs.windows_cli.result }}" = success
+          test "${{ needs.llvm_artifacts_windows_x64.result }}" = success

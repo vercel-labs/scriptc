@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { analyze, buildTargetPlatform, compile, compileExternalC, compileLibrary, isExactExternalTypeSpecifier, renderDiagnostics, renderCoverage, resolveProvenanceSources, setProvenanceSources, warmNativeCaches, type NativeCacheWarmProfile } from "@scriptc/compiler";
-import { hostSupportsRuntimePack } from "../scripts/runtime-pack-host.mjs";
+import { LEGACY_C_EXECUTABLE_WARNING, shouldWarnLegacyCExecutable } from "./legacy-c-warning.js";
 import { resolveOutputOptions } from "./output-options.js";
 import { selectOutputPaths } from "./paths.js";
 import { CLI_OPTIONS, USAGE } from "./usage.js";
@@ -263,15 +263,13 @@ async function main(): Promise<number> {
   // SCRIPTC_CC remains a migration escape hatch for explicit C, sanitizer,
   // and comparison builds. The normal LLVM executable route is controlled by
   // SCRIPTC_LINKER, which receives objects and archives only.
-  if (
-    output.outputKind === "exe" && values.backend !== "c" && !values.sanitize &&
-    (process.env["SCRIPTC_TARGET"] ?? "") === "" && hostSupportsRuntimePack() &&
-    process.env["SCRIPTC_CC"] !== undefined && process.env["SCRIPTC_CC"] !== ""
-  ) {
-    process.stderr.write(
-      "scriptc: warning: SCRIPTC_CC selects the deprecated legacy C executable path on macOS arm64; " +
-      "unset it to use the bundled LLVM helper/runtime pack, or use SCRIPTC_LINKER to select the platform linker driver\n",
-    );
+  if (shouldWarnLegacyCExecutable({
+    executable: output.outputKind === "exe",
+    fromC: values["from-c"],
+    backend: values.backend,
+    sanitize: values.sanitize,
+  })) {
+    process.stderr.write(LEGACY_C_EXECUTABLE_WARNING);
   }
 
   let nativeLinkInfo: object | undefined;

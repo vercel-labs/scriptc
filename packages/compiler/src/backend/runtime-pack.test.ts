@@ -15,7 +15,12 @@ import {
   type RuntimePackManifest,
 } from "./runtime-pack.js";
 import { createNativeLinkPlan } from "./link-plan.js";
-import { linkNativeExecutable, platformLinkerSupportsPersistentCache, resolvePlatformLinker } from "./linker.js";
+import {
+  executableLinkerEnvironmentFingerprint,
+  linkNativeExecutable,
+  platformLinkerSupportsPersistentCache,
+  resolvePlatformLinker,
+} from "./linker.js";
 import { MACOS_ARM64_TARGET } from "./targets.js";
 
 const VERSION = compilerReleaseVersion();
@@ -127,6 +132,36 @@ describe("runtime pack manifests", () => {
     expect(resolvePlatformLinker({})).toBe("clang");
     expect(resolvePlatformLinker({ SCRIPTC_LINKER: "ld-driver" })).toBe("ld-driver");
     expect(platformLinkerSupportsPersistentCache({ SCRIPTC_LINKER: "wrapper" })).toBe(false);
+    expect(platformLinkerSupportsPersistentCache({ LIBRARY_PATH: "/mutable" })).toBe(false);
+    expect(platformLinkerSupportsPersistentCache({ SDKROOT: "/mutable" })).toBe(false);
+  });
+
+  test("the linker environment follows the effective clang behind a stable driver", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scriptc-linker-environment-"));
+    const linker = join(root, "linker.mjs");
+    const selectedOne = join(root, "selected-one");
+    const selectedTwo = join(root, "selected-two");
+    await Promise.all([
+      writeFile(selectedOne, "one"),
+      writeFile(selectedTwo, "two"),
+      writeFile(linker, [
+        "#!/bin/sh",
+        'test "$1" = "-print-prog-name=clang" || exit 2',
+        'printf "%s\\n" "$SCRIPTC_TEST_SELECTED_CLANG"',
+        "",
+      ].join("\n")),
+    ]);
+    await chmod(linker, 0o755);
+
+    const first = await executableLinkerEnvironmentFingerprint({
+      SCRIPTC_LINKER: linker,
+      SCRIPTC_TEST_SELECTED_CLANG: selectedOne,
+    });
+    const second = await executableLinkerEnvironmentFingerprint({
+      SCRIPTC_LINKER: linker,
+      SCRIPTC_TEST_SELECTED_CLANG: selectedTwo,
+    });
+    expect(second).not.toBe(first);
   });
 
   test("feature implications and predicates are deterministic", () => {

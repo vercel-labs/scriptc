@@ -102,7 +102,7 @@ test("--from-c forwards the dev optimization posture", async () => {
       "}",
       "",
     ].join("\n"));
-    await execFileAsync(
+    const result = await execFileAsync(
       process.execPath,
       [
         "--import",
@@ -116,8 +116,12 @@ test("--from-c forwards the dev optimization posture", async () => {
         "-o",
         outPath,
       ],
-      { maxBuffer: 4 * 1024 * 1024 },
+      {
+        env: { ...process.env, SCRIPTC_CC: "clang" },
+        maxBuffer: 4 * 1024 * 1024,
+      },
     );
+    expect(result.stderr).not.toContain("deprecated legacy C executable path");
     await expect(execFileAsync(outPath)).resolves.toMatchObject({ stdout: "" });
   } finally {
     await rm(dir, { recursive: true, force: true });

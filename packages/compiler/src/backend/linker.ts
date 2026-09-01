@@ -5,7 +5,7 @@
  * runtime C as part of linking.
  */
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { mkdtemp, rename, rm, stat } from "node:fs/promises";
 import { delimiter } from "node:path";
@@ -16,6 +16,7 @@ import {
   nativeArtifactDependenciesStillMatch,
   parseLinkTraceFiles,
   subprocessFailureDetail,
+  toolchainEnvironmentCachePolicy,
   toolchainEnvironmentFingerprint,
   type NativeArtifactDependency,
 } from "./native-toolchain.js";
@@ -35,8 +36,10 @@ export function resolvePlatformLinker(env: NodeJS.ProcessEnv = process.env): str
  * must still invalidate an early executable when a new `clang` appears ahead
  * of an unchanged PATH entry; relying on the string "clang" would restore a
  * binary past a wrapper that injects link inputs. */
-function platformLinkerIdentity(env: NodeJS.ProcessEnv): string {
-  const linker = resolvePlatformLinker(env);
+function platformLinkerIdentity(
+  env: NodeJS.ProcessEnv,
+  linker: string = resolvePlatformLinker(env),
+): string {
   const hasSeparator = linker.includes("/") || linker.includes("\\");
   const pathEntries = hasSeparator
     ? [""]
@@ -69,13 +72,34 @@ function platformLinkerIdentity(env: NodeJS.ProcessEnv): string {
  * linker's resolved SDK/CRT inputs before it restores an executable.  This
  * deliberately performs no synthetic C compilation: the linker receives
  * only the helper-produced program object and runtime-pack artifacts. */
-export function executableLinkerEnvironmentFingerprint(
+export async function executableLinkerEnvironmentFingerprint(
   env: NodeJS.ProcessEnv = process.env,
-): string {
+): Promise<string> {
+  const linker = resolvePlatformLinker(env);
+  const linkerIdentity = platformLinkerIdentity(env);
+  let effectiveDriverIdentity: string;
+  try {
+    const selected = await execFileAsync(linker, ["-print-prog-name=clang"], {
+      env,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const selectedDriver = selected.stdout.trim();
+    if (selectedDriver === "") throw new Error("linker driver reported no effective clang");
+    effectiveDriverIdentity = platformLinkerIdentity(env, selectedDriver);
+  } catch {
+    // A driver that cannot expose its effective clang may still link correctly,
+    // but the trusted default cannot safely address an existing early
+    // executable entry. Explicit drivers never publish complete executables,
+    // so their own file identity remains a sufficient stable partial-cache key.
+    effectiveDriverIdentity = env["SCRIPTC_LINKER"] === undefined
+      ? `<unavailable:${linker}:${randomUUID()}>`
+      : `<unavailable:${linker}>`;
+  }
   const hash = createHash("sha256")
-    .update("executable-linker-environment-v1\0")
+    .update("executable-linker-environment-v2\0")
     .update(toolchainEnvironmentFingerprint(env)).update("\0")
-    .update(platformLinkerIdentity(env)).update("\0");
+    .update(linkerIdentity).update("\0")
+    .update(effectiveDriverIdentity).update("\0");
   for (const name of ["PATH", "SCRIPTC_FETCH_CURL", "SCRIPTC_TEST_RUNTIME_SRC_DIR"] as const) {
     const value = env[name];
     hash.update(name).update(value === undefined ? "\0unset\0" : "\0set\0").update(value ?? "").update("\0");
@@ -92,7 +116,9 @@ export function platformLinkerSupportsPersistentCache(
   // The Apple system shim is a stable front door to the active SDK/linker;
   // linkNativeExecutable snapshots the selected transitive inputs before it
   // publishes the final cache entry. A PATH wrapper is intentionally opaque.
-  return env["SCRIPTC_LINKER"] === undefined && platformLinkerIdentity(env).startsWith("/usr/bin/clang\0");
+  return env["SCRIPTC_LINKER"] === undefined &&
+    toolchainEnvironmentCachePolicy(env).completeArtifacts &&
+    platformLinkerIdentity(env).startsWith("/usr/bin/clang\0");
 }
 
 async function snapshotDependencies(paths: readonly string[]): Promise<NativeArtifactDependency[]> {

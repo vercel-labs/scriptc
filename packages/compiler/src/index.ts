@@ -1359,7 +1359,7 @@ async function compileTracked(
           : (process.env["SCRIPTC_CC"] ?? "clang"),
       ],
       nativeEnvironment: helperObjectRoute
-        ? executableLinkerEnvironmentFingerprint()
+        ? await executableLinkerEnvironmentFingerprint()
         : await executableNativeEnvironmentFingerprint(),
       nodeVersion: process.version,
       implementation: implementation.digest,

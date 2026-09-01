@@ -8,6 +8,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { hostSupportsRuntimePack } from "../scripts/runtime-pack-host.mjs";
+import { LEGACY_C_EXECUTABLE_WARNING, shouldWarnLegacyCExecutable } from "./legacy-c-warning.js";
 import { CLI_OPTIONS, USAGE } from "./usage.js";
 
 // Node 24 can persist V8's compiled module bytecode. scriptc's CLI imports
@@ -109,7 +110,7 @@ async function tryFastPath(): Promise<number | null> {
   let nativeEnvironment: string | null;
   try {
     nativeEnvironment = helperObjectRoute
-      ? startup.executableLinkerEnvironmentFingerprint()
+      ? await startup.executableLinkerEnvironmentFingerprint()
       : await startup.executableNativeEnvironmentFingerprint();
   } catch {
     nativeEnvironment = null;
@@ -134,6 +135,14 @@ async function tryFastPath(): Promise<number | null> {
     nodeVersion: process.version,
   });
   if (hit === null) return null;
+  if (shouldWarnLegacyCExecutable({
+    executable: true,
+    fromC: false,
+    backend,
+    sanitize: values.sanitize,
+  })) {
+    process.stderr.write(LEGACY_C_EXECUTABLE_WARNING);
+  }
   if (hit.native.llvmRefusal !== undefined) {
     process.stderr.write(`scriptc: backend c (llvm refused: ${hit.native.llvmRefusal})\n`);
   }

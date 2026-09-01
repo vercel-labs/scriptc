@@ -7251,6 +7251,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "island.castFail",
   "json.parse",
   "util.parseArgs",
+  // timingSafeEqual throws a catchable RangeError when the input byte
+  // lengths differ.
+  "crypto.timingSafeEqual",
   // decodeURIComponent throws the spec's URIError on bad hex/invalid
   // UTF-8 octets (encodeURIComponent never throws — see the IrLibFn doc).
   "str.decodeUriComponent",

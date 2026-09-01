@@ -1333,7 +1333,7 @@ async function compileTracked(
   if (outputKind === "exe") {
     const implementation = await compilerImplementationIdentity();
     const helperObjectRoute = opts.nativeProgramObject === true ||
-      usesPrecompiledRuntimePack(opts, "llvm");
+      (opts.backend !== "c" && usesPrecompiledRuntimePack(opts, "llvm"));
     earlyCacheOptions = {
       entryPath,
       outDir: opts.outDir,

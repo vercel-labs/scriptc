@@ -343,7 +343,10 @@ jobs:
 
   llvm_artifacts_windows_x64:
     name: test (Windows x64 MSVC LLVM artifacts)
-    runs-on: windows-latest
+    # The official LLVM 22 Windows archives are MSVC-built and the helper
+    # selects CMake's VS 2022 generator. `windows-latest` can move to an
+    # image without that generator, so retain the hosted VS 2022 contract.
+    runs-on: windows-2022
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

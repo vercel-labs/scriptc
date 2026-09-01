@@ -357,18 +357,30 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
-      - name: Install pinned LLVM development distribution and build tools
+      - name: Install pinned LLVM development distribution
         shell: pwsh
         run: |
-          choco install cmake ninja --no-progress -y
+          # windows-2022 already provides CMake, Ninja, VS 2022, and 7-Zip.
+          # Use the complete archive because it supplies LLVM's exported CMake
+          # targets and static libraries. Windows tar.exe takes 25+ minutes to
+          # materialize it; two-stage 7-Zip extraction takes seconds.
           $archive = "$env:RUNNER_TEMP\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar.xz"
           $llvm = "$env:RUNNER_TEMP\llvm-22.1.8"
+          $expanded = "$env:RUNNER_TEMP\llvm-expanded"
+          $sevenZip = "$env:ProgramFiles\7-Zip\7z.exe"
+          if (-not (Test-Path $sevenZip)) {
+            choco install 7zip --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (-not (Test-Path $sevenZip)) { throw "7-Zip is unavailable" }
           curl.exe -fL --retry 3 -o $archive https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
-          tar.exe -xJf $archive -C $env:RUNNER_TEMP
-          Move-Item "$env:RUNNER_TEMP\clang+llvm-22.1.8-x86_64-pc-windows-msvc" $llvm
+          & $sevenZip x -y "-o$expanded" $archive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $sevenZip x -y "-o$expanded" "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc" $llvm
           echo "LLVM_DIR=$llvm\lib\cmake\llvm" >> $env:GITHUB_ENV
           echo "$llvm\bin" >> $env:GITHUB_PATH
-          echo "C:\Program Files\CMake\bin" >> $env:GITHUB_PATH
       - run: pnpm install --frozen-lockfile
       - name: Build Windows helper
         run: pnpm --filter @scriptc/llvm-win32-x64-msvc build:native

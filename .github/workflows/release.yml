@@ -76,7 +76,7 @@ jobs:
             runtime: runtime-linux-arm64-gnu
             llvm_asset: LLVM-22.1.8-Linux-ARM64
           - platform: windows-x64
-            runner: windows-latest
+            runner: windows-2022
             helper: llvm-win32-x64-msvc
             runtime: runtime-win32-x64-msvc
           - platform: linux-x64-musl
@@ -125,20 +125,30 @@ jobs:
         if: matrix.use_zig == true
         with:
           version: 0.16.0
-      - name: Install LLVM development distribution and build tools (Windows)
+      - name: Install pinned LLVM development distribution (Windows)
         if: matrix.platform == 'windows-x64'
         shell: pwsh
         run: |
-          winget install --exact --id Kitware.CMake --accept-package-agreements --accept-source-agreements
-          choco install ninja --no-progress -y
+          # The complete archive supplies LLVM's exported CMake targets and
+          # static libraries. windows-2022 includes CMake, Ninja, VS 2022,
+          # and 7-Zip; unlike tar.exe, 7-Zip expands this archive quickly.
           $archive = "$env:RUNNER_TEMP\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar.xz"
           $llvm = "$env:RUNNER_TEMP\llvm-22.1.8"
+          $expanded = "$env:RUNNER_TEMP\llvm-expanded"
+          $sevenZip = "$env:ProgramFiles\7-Zip\7z.exe"
+          if (-not (Test-Path $sevenZip)) {
+            choco install 7zip --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (-not (Test-Path $sevenZip)) { throw "7-Zip is unavailable" }
           curl.exe -fL --retry 3 -o $archive https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
-          tar.exe -xJf $archive -C $env:RUNNER_TEMP
-          Move-Item "$env:RUNNER_TEMP\clang+llvm-22.1.8-x86_64-pc-windows-msvc" $llvm
+          & $sevenZip x -y "-o$expanded" $archive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $sevenZip x -y "-o$expanded" "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc" $llvm
           echo "LLVM_DIR=$llvm\lib\cmake\llvm" >> $env:GITHUB_ENV
           echo "$llvm\bin" >> $env:GITHUB_PATH
-          echo "C:\Program Files\CMake\bin" >> $env:GITHUB_PATH
       - run: pnpm install --frozen-lockfile
       - name: Build native packages (POSIX)
         if: matrix.platform != 'windows-x64'

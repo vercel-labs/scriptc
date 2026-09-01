@@ -355,11 +355,28 @@ export function emitArrIntrinsic(host: LlvmEmitterContext, e: IrExpr & { kind: "
         return out;
       }
       case "splice": {
-        // The removal splice: removed elements come back as a fresh +1
-        // array, ownership MOVED out of the receiver. An omitted count
-        // removes to the end (+Infinity, the slice convention).
+        // Removed elements come back as a fresh +1 array, ownership MOVED
+        // out of the receiver. Replacement arguments are evaluated into a
+        // borrowed temporary array before the receiver is mutated. An
+        // omitted count removes to the end (+Infinity, the slice convention).
         const start = host.emitExpr(e.args[0]!);
         const cnt = e.args[1] ? host.emitExpr(e.args[1]).name : F64_INF;
+        if (e.args.length > 2) {
+          const itemsExpr: IrExpr = {
+            kind: "arrayLit",
+            elems: e.args.slice(2),
+            type: e.receiver.type,
+            loc: e.loc,
+          };
+          const items = host.emitExpr(itemsExpr);
+          host.declare(`declare ptr @scr_arr_splice_with_items(ptr, double, double, ptr)`);
+          const t = B.tmp();
+          B.line(
+            `${t} = call ptr @scr_arr_splice_with_items(ptr ${r.name}, double ${start.name}, ` +
+              `double ${cnt}, ptr ${items.name})`,
+          );
+          return host.own({ name: t, type: e.type });
+        }
         host.declare(`declare ptr @scr_arr_splice(ptr, double, double)`);
         const t = B.tmp();
         B.line(`${t} = call ptr @scr_arr_splice(ptr ${r.name}, double ${start.name}, double ${cnt})`);

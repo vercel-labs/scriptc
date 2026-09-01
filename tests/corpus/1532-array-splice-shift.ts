@@ -1,8 +1,8 @@
-// Array.prototype.splice (the removal forms) and .shift — Node-exact
-// return values and index handling: relative/clamped start, clamped
-// deleteCount, splice(start) removing to the end, shift's undefined on an
-// empty array. The portless stripGlobalFlag idiom (find a flag, splice it
-// and its value out) drives the string-array shapes.
+// Array.prototype.splice (removal and replacement forms) and .shift —
+// Node-exact return values and index handling: relative/clamped start,
+// clamped deleteCount, splice(start) removing to the end, shift's undefined
+// on an empty array. The portless stripGlobalFlag idiom (find a flag, splice
+// it and its value out) drives the string-array shapes.
 const nums = [10, 20, 30, 40, 50, 60];
 console.log(JSON.stringify(nums.splice(1, 2)), JSON.stringify(nums));
 console.log(JSON.stringify(nums.splice(-2, 1)), JSON.stringify(nums));
@@ -13,6 +13,12 @@ console.log(JSON.stringify(nums.splice(1)), JSON.stringify(nums));
 console.log(JSON.stringify(nums.splice(5, 3)), JSON.stringify(nums));
 console.log(JSON.stringify(nums.splice(0, -1)), JSON.stringify(nums));
 console.log(JSON.stringify(nums.splice(0.9, 1.8)), JSON.stringify(nums));
+
+// Variadic replacement items evaluate before the receiver mutates and keep
+// source order, including zero-delete insertion.
+const spliceItems: number[] = [10, 20, 30, 40];
+console.log(JSON.stringify(spliceItems.splice(1, 2, spliceItems.length, spliceItems.length + 1)), JSON.stringify(spliceItems));
+console.log(JSON.stringify(spliceItems.splice(1, 0, 7, 8)), JSON.stringify(spliceItems));
 
 // shift: the first element out, the tail sliding down; undefined when
 // empty. Number elements exercise the union-boxed scalar path.
@@ -53,5 +59,9 @@ const keep = rows[2]!;
 const removed = rows.splice(1, 2);
 console.log(JSON.stringify(removed), JSON.stringify(rows));
 console.log(removed[1] === keep);
+const replacementRow: Row = { id: 9 };
+const replaced = rows.splice(1, 1, replacementRow);
+replacementRow.id = 10;
+console.log(JSON.stringify(replaced), JSON.stringify(rows), rows[1] === replacementRow);
 const head = rows.shift();
 console.log(head ? head.id : -1, JSON.stringify(rows), rows.length);

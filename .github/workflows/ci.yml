@@ -161,7 +161,11 @@ jobs:
   llvm_artifacts_macos_arm64:
     name: test (macOS arm64 LLVM artifacts, no clang, ${{ matrix.shard }}/3)
     runs-on: macos-15
-    timeout-minutes: 20
+    # Shard 1 additionally runs package/install and link-parity contracts
+    # before its LLVM differential slice. The slice itself can take ~10
+    # minutes on a cold hosted runner, so 20 minutes cancels an otherwise
+    # healthy job before the differential completes.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:

@@ -11060,9 +11060,10 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
    * shape). Result Promise<T[]>; void inners collapse to Promise<void>
     * exactly like the array path. The EMPTY tuple resolves [] through the
     * same combinator, and a HETEROGENEOUS tuple of promises
-    * (Promise<[A, B]>) lowers as sequential in-order awaits building the
-    * tuple record. Null otherwise: non-literal arguments keep the array
-    * path and its fences. */
+    * (Promise<[A, B]>) lowers through an async helper that performs
+    * sequential in-order awaits building the tuple record, so the call
+    * remains Promise-typed. Null otherwise: non-literal arguments keep the
+    * array path and its fences. */
   export function lowerPromiseAllTupleCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
     if (call.questionDotToken) return null;
@@ -11114,42 +11115,61 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       const shape = lowerer.shapes.get(callT.inner.shapeId);
       if (!shape?.tuple || shape.fields.length !== argNode.elements.length) return null;
       const loc = locOf(call);
-      const pending = argNode.elements.map((el) => {
-        const elem = lowerer.lowerExpr(el);
-        const local = lowerer.declareHiddenLocal("%allEntry", elem.type);
-        return { local, init: elem, loc: locOf(el) };
+      // All argument expressions are lowered and passed to the helper before
+      // its first await, so the array literal's left-to-right evaluation is
+      // preserved while the call itself remains Promise-typed.
+      const entries = argNode.elements.map((el) => lowerer.lowerExpr(el));
+      const entryTypes = entries.map((entry, i) => {
+        if (entry.type.kind !== "promise") lowerer.badType(argNode.elements[i]!, lowerer.typeOf(argNode.elements[i]!));
+        return entry.type;
       });
-      const stmts: IrStmt[] = pending.map((p) => ({
-        kind: "varDecl" as const,
-        localId: p.local.id,
-        init: p.init,
-        loc: p.loc,
-      }));
-      const awaited = pending.map((p) => {
-        const value: IrExpr = {
-          kind: "awaitExpr",
-          value: { kind: "varRef", localId: p.local.id, type: p.local.type, loc: p.loc },
-          type: (p.local.type as { kind: "promise"; inner: IrType }).inner,
-          loc: p.loc,
-        };
-        const local = lowerer.declareHiddenLocal("%allValue", value.type);
-        stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: p.loc });
-        return local;
-      });
-      const fields = shape.fields.map((f) => {
-        const local = awaited[Number(f.name)]!;
-        return {
-          name: f.name,
-          value: { kind: "varRef" as const, localId: local.id, type: local.type, loc },
-        };
-      });
-      return {
-        kind: "seqExpr",
-        stmts,
-        result: { kind: "recordLit", fields, type: callT.inner, loc },
-        type: callT.inner,
-        loc,
-      };
+      const key = `promise.all.tuple:${typeKey(callT.inner)}:${entryTypes.map(typeKey).join(",")}`;
+      let helper = lowerer.arrHofHelpers.get(key);
+      if (!helper) {
+        helper = `%promise.all.tuple.${lowerer.arrHofHelpers.size}`;
+        lowerer.arrHofHelpers.set(key, helper);
+        const params = entryTypes.map((type, i) => ({
+          localId: `p${i}.0`,
+          name: `p${i}`,
+          type,
+        }));
+        const locals: IrLocal[] = params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false }));
+        const body: IrStmt[] = [];
+        const values: IrExpr[] = [];
+        for (const [i, type] of entryTypes.entries()) {
+          const valueType = (type as { kind: "promise"; inner: IrType }).inner;
+          const valueLocalId = `v${i}.0`;
+          const awaited: IrExpr = {
+            kind: "awaitExpr",
+            value: { kind: "varRef", localId: params[i]!.localId, type, loc },
+            type: valueType,
+            loc,
+          };
+          locals.push({ id: valueLocalId, name: `v${i}`, type: valueType, mutable: false });
+          body.push({ kind: "varDecl", localId: valueLocalId, init: awaited, loc });
+          values.push({ kind: "varRef", localId: valueLocalId, type: valueType, loc });
+        }
+        body.push({
+          kind: "return",
+          value: {
+            kind: "recordLit",
+            fields: shape.fields.map((field) => ({ name: field.name, value: values[Number(field.name)]! })),
+            type: callT.inner,
+            loc,
+          },
+          loc,
+        });
+        lowerer.liftedFns.push({
+          name: helper,
+          params,
+          returnType: callT.inner,
+          locals,
+          body,
+          loc,
+          async: true,
+        });
+      }
+      return { kind: "call", callee: helper, args: entries, type: callT, loc };
     }
     const loc = locOf(call);
     const inner = first.inner;

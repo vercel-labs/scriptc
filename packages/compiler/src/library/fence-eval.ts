@@ -56,6 +56,7 @@ import {
   BUILTIN_MODULE_FNS,
   BUILTIN_MODULE_FN_ALIASES,
   STATIC_MATH_FNS,
+  STATIC_MATH_PROPS,
   STATIC_NUMBER_METHODS,
   STR_METHODS,
 } from "../frontend/lowering/surfaces.js";
@@ -165,6 +166,7 @@ function fenceTaxonomy(): FenceTaxonomy {
   for (const [mod, members] of Object.entries(BUILTIN_MODULE_CONSTS)) {
     for (const member of Object.keys(members!)) foldedIds.add(`${builtinRootId(mod)}.${member}`);
   }
+  for (const member of Object.keys(STATIC_MATH_PROPS)) foldedIds.add(`stdlib.math.${member}`);
   const ambientFns = new Map(AMBIENT_SURFACE_FNS.map((row) => [row.id, row.fns as readonly string[]]));
   taxonomy = { byId, ids: manifest.entries.map((e) => e.id), builtinFns, builtinRoots, foldedIds, ambientFns };
   return taxonomy;

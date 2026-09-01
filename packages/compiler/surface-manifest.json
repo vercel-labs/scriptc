@@ -2560,15 +2560,15 @@
       "id": "stdlib.math.E",
       "kind": "stdlib",
       "name": "Math.E",
-      "status": "dynamic-only",
-      "code": "SC2012"
+      "status": "static",
+      "note": "the constant read compiles to a numeric literal; no runtime Math read is performed"
     },
     {
       "id": "stdlib.math.PI",
       "kind": "stdlib",
       "name": "Math.PI",
-      "status": "dynamic-only",
-      "code": "SC2012"
+      "status": "static",
+      "note": "the constant read compiles to a numeric literal; no runtime Math read is performed"
     },
     {
       "id": "stdlib.math.abs",

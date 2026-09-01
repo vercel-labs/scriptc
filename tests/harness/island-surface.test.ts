@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import * as ts from "../../packages/compiler/src/frontend/ts7/adapter.js";
-import { ambientDtsPath, ir, ISLAND_SURFACE, overridesDtsPath, type IslandFnEntry } from "@scriptc/compiler";
+import { ambientDtsPath, ir, ISLAND_SURFACE, overridesDtsPath, STATIC_MATH_PROPS, type IslandFnEntry } from "@scriptc/compiler";
 import { loadProgram } from "../../packages/compiler/src/frontend/program.js";
 
 function placeholder(t: ir.IrType): string {
@@ -70,6 +70,12 @@ const propProbes = Object.entries(ISLAND_SURFACE.math.props).map(([name, propTyp
   type: propType!,
 }));
 
+const staticMathPropProbes = Object.entries(STATIC_MATH_PROPS).map(([name, value]) => ({
+  what: `Math.${name}`,
+  expr: `Math.${name}`,
+  value: value!,
+}));
+
 // One probe program through the compiler's own loader, containing every
 // table entry called in exactly the form the island lowering emits.
 const dir = mkdtempSync(join(tmpdir(), "scr-island-surface-"));
@@ -85,6 +91,7 @@ writeFileSync(
       (p, i) => `const __fn${i} = ${p.callee}(${p.entry.args.map(placeholder).join(", ")});`,
     ),
     ...propProbes.map((p, i) => `const __prop${i} = ${p.expr};`),
+    ...staticMathPropProbes.map((p, i) => `const __staticProp${i} = ${p.expr};`),
   ].join("\n"),
 );
 const load = loadProgram(probePath);
@@ -167,5 +174,20 @@ describe("every ISLAND_SURFACE entry is declared standard-library surface", () =
       checker.typeToString(checker.getTypeAtLocation(decl!.name)),
       `${probe.what}: declared property type differs from the entry`,
     ).toBe(resultText(probe.type));
+  });
+});
+
+describe("static Math properties", () => {
+  test("PI and E are declared in the static table, not the dynamic island table", () => {
+    expect(Object.keys(ISLAND_SURFACE.math.props)).not.toEqual(expect.arrayContaining(["PI", "E"]));
+    expect(STATIC_MATH_PROPS).toEqual({ PI: 3.141592653589793, E: 2.718281828459045 });
+  });
+
+  test.for(staticMathPropProbes.map((p, i) => [p.what, p, i] as const))("%s is a number", ([, probe, i]) => {
+    const decl = decls.get(`__staticProp${i}`);
+    expect(decl, `${probe.what}: probe declaration missing`).toBeDefined();
+    expect(isStdlibDeclared(calleeSymbol(decl!)), `${probe.what}: no standard-library declaration`).toBe(true);
+    expect(checker.typeToString(checker.getTypeAtLocation(decl!.name))).toBe("number");
+    expect(probe.value).toBeTypeOf("number");
   });
 });

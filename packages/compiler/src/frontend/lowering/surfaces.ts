@@ -448,7 +448,8 @@ export const boundaryOutOfIslandMsg = (typeName: string): string =>
   `and 'T | undefined' over those)`;
 
 /** The island-backed surface — standard-library APIs with no static
- * runtime implementation (Math.*, number/string methods beyond the
+ * runtime implementation (Math methods/properties beyond the compile-time
+ * constants, number/string methods beyond the
  * intrinsic set, parseFloat, ...). ONE table drives both sides of the
  * gate: under --dynamic each entry lowers to marshal → engine execution →
  * validated exit to the declared return type; without the flag each use
@@ -463,7 +464,8 @@ export const boundaryOutOfIslandMsg = (typeName: string): string =>
  * user. */
 export const ISLAND_SURFACE = {
   /** `Math.<fn>(...)` lowers to callMethod(globalGet("Math"), fn, args);
-   * the readonly number props (`Math.PI`) to getProp(globalGet("Math")).
+   * Math.PI and Math.E are compile-time numeric literals in STATIC_MATH_PROPS;
+   * remaining Math properties retain island/fence behavior.
    * min/max/atan2/hypot/pow are declared with exactly two parameters
    * (rest/optional parameters aren't representable). */
   math: {
@@ -476,7 +478,8 @@ export const ISLAND_SURFACE = {
       round: ISL_N1,
       sign: ISL_N1, sin: ISL_N1, sqrt: ISL_N1, tan: ISL_N1, trunc: ISL_N1,
     } as Record<string, IslandFnEntry | undefined>,
-    props: { PI: F64, E: F64 } as Record<string, IrType | undefined>,
+    // Math constants are compile-time literals, not island properties.
+    props: {} as Record<string, IrType | undefined>,
   },
   /** Methods on `number` receivers. The receiver marshals by value; the
    * engine auto-boxes primitives on method calls, so `this` binds the
@@ -508,6 +511,16 @@ export const ISLAND_SURFACE = {
     parseFloat: { args: [STRING], ret: F64 },
     isFinite: { args: [F64], ret: BOOL },
   } as Record<string, IslandFnEntry | undefined>,
+};
+
+/** Math properties with a STATIC lowering: each read becomes the exact
+ * JavaScript numeric constant in the typed IR. No runtime Math object read or
+ * dynamic-engine dependency is involved. Remaining Math properties retain
+ * their island/fence behavior through ISLAND_SURFACE.math.props and the
+ * generic standard-library member fence. */
+export const STATIC_MATH_PROPS: Record<string, number | undefined> = {
+  PI: 3.141592653589793,
+  E: 2.718281828459045,
 };
 
 /** Math members with a STATIC lowering — each is one C call that IS the

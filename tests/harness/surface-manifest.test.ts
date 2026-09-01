@@ -140,10 +140,11 @@ const PROBES: Probe[] = [
   { id: "node-builtin.perf_hooks.performance.now", source: "console.log(performance.now() >= 0);\n" },
   { id: "node-builtin.path.join", source: 'import { join } from "node:path";\nconsole.log(join("a", "b"));\n' },
   { id: "node-builtin.os.EOL", source: 'import { EOL } from "node:os";\nconsole.log(EOL.length);\n' },
+  { id: "stdlib.math.PI", source: "console.log(Math.PI);\n" },
+  { id: "stdlib.math.E", source: "console.log(Math.E);\n" },
   // status dynamic-only — refused with the entry's code statically,
   // analyzed clean under --dynamic
   { id: "stdlib.math.sqrt", source: "console.log(Math.sqrt(2));\n" },
-  { id: "stdlib.math.PI", source: "console.log(Math.PI);\n" },
   { id: "stdlib.string.replace", source: 'console.log("aa".replace("a", "b"));\n' },
   {
     id: "stdlib.headers.entries",

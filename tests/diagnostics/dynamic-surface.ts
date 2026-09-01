@@ -1,4 +1,4 @@
-// The island-backed ambient surface (Math beyond the static members,
+// The island-backed ambient surface (Math beyond the static PI/E members,
 // number methods, string-pattern replace/at, the Number statics, ...)
 // typechecks against real static types but executes in the embedded
 // engine: in a static build every use site is its own SC2012 naming the

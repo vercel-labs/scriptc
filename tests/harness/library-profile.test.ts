@@ -546,6 +546,22 @@ describe("library profile fences", () => {
     if (!r.ok) return;
     expect(r.profile.fences[0]!.surfaces.map((s) => s.id)).not.toContain("node-builtin.os.EOL");
     expect(r.profile.fences[0]!.surfaces.map((s) => s.id)).toContain("node-builtin.os.homedir");
+
+    // Math.PI is the same kind of per-binary numeric literal. An exact fence
+    // must refuse because there is no runtime read to deny.
+    expectSc4001(
+      { ...good, determinism: { fences: [{ id: "stdlib.math.PI" }] } },
+      "fold",
+    );
+    const math = loadLibraryProfile(
+      writeProfile({ ...good, determinism: { fences: [{ prefix: "stdlib.math." }] } }),
+    );
+    expect(math.ok).toBe(true);
+    if (!math.ok) return;
+    const mathSurfaces = math.profile.fences[0]!.surfaces;
+    expect(mathSurfaces.map((s) => s.id)).not.toContain("stdlib.math.PI");
+    expect(mathSurfaces.map((s) => s.id)).not.toContain("stdlib.math.E");
+    expect(mathSurfaces.find((s) => s.id === "stdlib.math.random")?.detector).toBeDefined();
   });
 
   test("a desugared surface no detector can police refuses, id and prefix alike", () => {

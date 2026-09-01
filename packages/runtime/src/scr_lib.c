@@ -1341,6 +1341,34 @@ double scr_thread_cpu_system(void) {
   if (!GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u)) return 0;
   return scr_filetime_us(k);
 }
+
+/* K32GetProcessMemoryInfo is in kernel32 on supported Windows versions, but
+ * avoid a static Psapi dependency so the existing Windows link surface stays
+ * unchanged. The local layout mirrors PROCESS_MEMORY_COUNTERS. */
+typedef struct {
+  DWORD cb;
+  DWORD page_fault_count;
+  SIZE_T peak_working_set_size;
+  SIZE_T working_set_size;
+  SIZE_T quota_peak_paged_pool_usage;
+  SIZE_T quota_paged_pool_usage;
+  SIZE_T quota_peak_non_paged_pool_usage;
+  SIZE_T quota_non_paged_pool_usage;
+  SIZE_T pagefile_usage;
+  SIZE_T peak_pagefile_usage;
+} ScrProcessMemoryCounters;
+typedef BOOL(WINAPI *ScrGetProcessMemoryInfoFn)(HANDLE, ScrProcessMemoryCounters *, DWORD);
+
+static bool scr_process_memory_info(ScrProcessMemoryCounters *counters) {
+  HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+  if (kernel32 == NULL) return false;
+  ScrGetProcessMemoryInfoFn fn =
+      (ScrGetProcessMemoryInfoFn)(void *)GetProcAddress(kernel32, "K32GetProcessMemoryInfo");
+  if (fn == NULL) return false;
+  memset(counters, 0, sizeof *counters);
+  counters->cb = (DWORD)sizeof *counters;
+  return fn(GetCurrentProcess(), counters, (DWORD)sizeof *counters) != FALSE;
+}
 #else
 static double scr_tv_us(struct timeval tv) {
   return (double)tv.tv_sec * 1e6 + (double)tv.tv_usec;
@@ -1423,6 +1451,18 @@ double scr_process_rusage(double idx) {
   switch ((int)idx) {
     case 0: return scr_cpu_user();
     case 1: return scr_cpu_system();
+#if defined(_WIN32)
+    case 2: { /* maxRSS (kilobytes) */
+      ScrProcessMemoryCounters pmc;
+      if (!scr_process_memory_info(&pmc)) return 0;
+      return (double)pmc.peak_working_set_size / 1024.0;
+    }
+    case 6: { /* minorPageFault */
+      ScrProcessMemoryCounters pmc;
+      if (!scr_process_memory_info(&pmc)) return 0;
+      return (double)pmc.page_fault_count;
+    }
+#endif
     default: return 0;
   }
 #else
@@ -4362,7 +4402,8 @@ bool scr_crypto_timing_safe_equal(ScrBytes *a, ScrBytes *b) {
   size_t a_len = a->len * scr_bytes_elem_size(a->elem);
   size_t b_len = b->len * scr_bytes_elem_size(b->elem);
   if (a_len != b_len) {
-    scr_throw_error_msg(SCR_ERR_RANGE, "Input buffers must have the same byte length", 42);
+    scr_throw_error_msg(SCR_ERR_RANGE, "Input buffers must have the same byte length",
+                        sizeof("Input buffers must have the same byte length") - 1);
     return false;
   }
   unsigned char result = 0;
@@ -4396,6 +4437,11 @@ bool scr_net_is_ipv6(ScrStr *s) {
 }
 
 double scr_process_memory_rss(void) {
+#if defined(_WIN32)
+  ScrProcessMemoryCounters pmc;
+  if (scr_process_memory_info(&pmc)) return (double)pmc.working_set_size;
+  return 0;
+#else
   struct rusage ru;
   if (getrusage(RUSAGE_SELF, &ru) == 0) {
 #if defined(__APPLE__)
@@ -4405,6 +4451,7 @@ double scr_process_memory_rss(void) {
 #endif
   }
   return 0;
+#endif
 }
 
 double scr_process_memory_heap_total(void) {

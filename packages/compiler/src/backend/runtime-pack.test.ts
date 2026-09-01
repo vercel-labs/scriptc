@@ -7,14 +7,20 @@ import { compilerReleaseVersion } from "../library/sidecar.js";
 import { snapshotNativeArtifactDependencies } from "./native-toolchain.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
-  createRuntimeLinkPlan,
   effectiveRuntimeFeatures,
   evaluateRuntimePredicate,
-  linkRuntimePackExecutable,
   loadRuntimePack,
   parseRuntimePackManifest,
+  RuntimePackError,
   type RuntimePackManifest,
 } from "./runtime-pack.js";
+import { createNativeLinkPlan } from "./link-plan.js";
+import {
+  executableLinkerEnvironmentFingerprint,
+  linkNativeExecutable,
+  platformLinkerSupportsPersistentCache,
+  resolvePlatformLinker,
+} from "./linker.js";
 import { MACOS_ARM64_TARGET } from "./targets.js";
 
 const VERSION = compilerReleaseVersion();
@@ -122,6 +128,42 @@ async function fixture() {
 }
 
 describe("runtime pack manifests", () => {
+  test("the object linker is configured independently from the C compiler", () => {
+    expect(resolvePlatformLinker({})).toBe("clang");
+    expect(resolvePlatformLinker({ SCRIPTC_LINKER: "ld-driver" })).toBe("ld-driver");
+    expect(platformLinkerSupportsPersistentCache({ SCRIPTC_LINKER: "wrapper" })).toBe(false);
+    expect(platformLinkerSupportsPersistentCache({ LIBRARY_PATH: "/mutable" })).toBe(false);
+    expect(platformLinkerSupportsPersistentCache({ SDKROOT: "/mutable" })).toBe(false);
+  });
+
+  test("the linker environment follows the effective clang behind a stable driver", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scriptc-linker-environment-"));
+    const linker = join(root, "linker.mjs");
+    const selectedOne = join(root, "selected-one");
+    const selectedTwo = join(root, "selected-two");
+    await Promise.all([
+      writeFile(selectedOne, "one"),
+      writeFile(selectedTwo, "two"),
+      writeFile(linker, [
+        "#!/bin/sh",
+        'test "$1" = "-print-prog-name=clang" || exit 2',
+        'printf "%s\\n" "$SCRIPTC_TEST_SELECTED_CLANG"',
+        "",
+      ].join("\n")),
+    ]);
+    await chmod(linker, 0o755);
+
+    const first = await executableLinkerEnvironmentFingerprint({
+      SCRIPTC_LINKER: linker,
+      SCRIPTC_TEST_SELECTED_CLANG: selectedOne,
+    });
+    const second = await executableLinkerEnvironmentFingerprint({
+      SCRIPTC_LINKER: linker,
+      SCRIPTC_TEST_SELECTED_CLANG: selectedTwo,
+    });
+    expect(second).not.toBe(first);
+  });
+
   test("feature implications and predicates are deterministic", () => {
     const features = effectiveRuntimeFeatures({ ...BASE, dynamic: true, fetch: true });
     expect(features).toMatchObject({
@@ -139,7 +181,7 @@ describe("runtime pack manifests", () => {
 
   test("static runtime-pack executable links dead-strip too", async () => {
     const { packagePath, root } = await fixture();
-    const plan = await createRuntimeLinkPlan({
+    const plan = await createNativeLinkPlan({
       target: MACOS_ARM64_TARGET,
       programObject: join(root, "program.o"),
       outPath: join(root, "program"),
@@ -202,7 +244,7 @@ describe("runtime pack manifests", () => {
       ].join("\n")),
     ]);
     await chmod(linker, 0o755);
-    const plan = await createRuntimeLinkPlan({
+    const plan = await createNativeLinkPlan({
       target: MACOS_ARM64_TARGET,
       programObject,
       outPath: output,
@@ -213,9 +255,7 @@ describe("runtime pack manifests", () => {
     });
     await writeFile(join(root, "artifacts/base.o"), "tampered");
 
-    await expect(linkRuntimePackExecutable(plan, { linker })).rejects.toThrow(
-      "runtime pack changed after artifact selection",
-    );
+    await expect(linkNativeExecutable(plan, { linker })).rejects.toBeInstanceOf(RuntimePackError);
     expect(await stat(output).then(() => true, () => false)).toBe(false);
   });
 
@@ -240,7 +280,7 @@ describe("runtime pack manifests", () => {
       ].join("\n")),
     ]);
     await chmod(linker, 0o755);
-    const plan = await createRuntimeLinkPlan({
+    const plan = await createNativeLinkPlan({
       target: MACOS_ARM64_TARGET,
       programObject,
       outPath: output,
@@ -250,7 +290,7 @@ describe("runtime pack manifests", () => {
       resolver: () => packagePath,
     });
 
-    await linkRuntimePackExecutable(plan, { linker });
+    await linkNativeExecutable(plan, { linker });
 
     expect(await readFile(output, "utf8")).toBe("base");
     expect(await readFile(runtimeObject, "utf8")).toBe("tampered");
@@ -273,7 +313,7 @@ describe("runtime pack manifests", () => {
       ].join("\n")),
     ]);
     await chmod(linker, 0o755);
-    const plan = await createRuntimeLinkPlan({
+    const plan = await createNativeLinkPlan({
       target: MACOS_ARM64_TARGET,
       programObject,
       outPath: output,
@@ -283,7 +323,7 @@ describe("runtime pack manifests", () => {
       resolver: () => packagePath,
     });
 
-    await linkRuntimePackExecutable(plan, { linker });
+    await linkNativeExecutable(plan, { linker });
 
     const privateOutput = JSON.parse(await readFile(output, "utf8")) as string;
     expect(privateOutput).not.toBe(output);
@@ -311,7 +351,7 @@ describe("runtime pack manifests", () => {
     await chmod(linker, 0o755);
     const helperDependencies = await snapshotNativeArtifactDependencies([helper]);
     await writeFile(helper, "helper replaced during emission");
-    const plan = await createRuntimeLinkPlan({
+    const plan = await createNativeLinkPlan({
       target: MACOS_ARM64_TARGET,
       programObject,
       outPath: output,
@@ -323,7 +363,7 @@ describe("runtime pack manifests", () => {
     });
     let published = false;
 
-    await linkRuntimePackExecutable(plan, {
+    await linkNativeExecutable(plan, {
       linker,
       onArtifactReady: async () => { published = true; },
     });
@@ -382,7 +422,7 @@ describe("runtime pack manifests", () => {
         ].join("\n")),
       ]);
       await chmod(driver, 0o755);
-      const plan = await createRuntimeLinkPlan({
+      const plan = await createNativeLinkPlan({
         target: MACOS_ARM64_TARGET,
         programObject,
         outPath: output,
@@ -393,7 +433,7 @@ describe("runtime pack manifests", () => {
       });
       let dependencyPaths: string[] = [];
 
-      await linkRuntimePackExecutable(plan, {
+      await linkNativeExecutable(plan, {
         linker: driver,
         onArtifactReady: async ({ dependencies }) => {
           dependencyPaths = dependencies.map((dependency) => dependency.path);
@@ -454,7 +494,7 @@ describe("runtime pack manifests", () => {
         ].join("\n")),
       ]);
       await chmod(linker, 0o755);
-      const plan = await createRuntimeLinkPlan({
+      const plan = await createNativeLinkPlan({
         target: MACOS_ARM64_TARGET,
         programObject,
         outPath: output,
@@ -466,7 +506,7 @@ describe("runtime pack manifests", () => {
       });
       let published = false;
 
-      await linkRuntimePackExecutable(plan, {
+      await linkNativeExecutable(plan, {
         linker,
         onArtifactReady: async () => { published = true; },
       });

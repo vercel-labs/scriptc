@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { release as osRelease, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
@@ -8,6 +8,8 @@ import { expect, test } from "vitest";
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../../..");
 const bootstrap = join(repoRoot, "packages/cli/dist/bootstrap.js");
+const runtimePackHost = process.platform === "darwin" && process.arch === "arm64" &&
+  Number.parseInt(osRelease().split(".", 1)[0] ?? "", 10) >= 24;
 
 test("bootstrap serves version and help without loading the compiler graph", async () => {
   const preloadDir = await mkdtemp(join(tmpdir(), "scriptc-bootstrap-preload-"));
@@ -92,3 +94,38 @@ test("bootstrap exact builds use the routed cache and source edits fall through"
     await rm(dir, { recursive: true, force: true });
   }
 }, 120_000);
+
+test.skipIf(!runtimePackHost)(
+  "bootstrap cache hits retain the legacy C executable warning",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-bootstrap-legacy-warning-"));
+    const cacheRoot = join(dir, "cache");
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "program");
+    const env = {
+      ...process.env,
+      SCRIPTC_CACHE_DIR: cacheRoot,
+      SCRIPTC_CC: "clang",
+      SCRIPTC_TIMING: "1",
+    };
+    delete env.SCRIPTC_NO_CACHE;
+    const build = () => execFileAsync(
+      process.execPath,
+      [bootstrap, "build", entry, "-o", outPath],
+      { env, maxBuffer: 4 * 1024 * 1024 },
+    );
+    try {
+      await writeFile(entry, 'console.log("legacy warning");\n');
+      const first = await build();
+      expect(first.stderr).toContain("deprecated legacy C executable path");
+      expect(first.stderr).toContain("scriptc lowering");
+
+      const cached = await build();
+      expect(cached.stderr).toContain("deprecated legacy C executable path");
+      expect(cached.stderr).not.toContain("scriptc lowering");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  120_000,
+);

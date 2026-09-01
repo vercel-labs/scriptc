@@ -7,18 +7,18 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   buildCacheRoot,
-  nativeArtifactDependenciesStillMatch,
+  copyValidCachedFile,
+  privateSiblingPath,
   prepareBuildCacheRoot,
+  publishCachedFile,
   pruneBuildCache,
+  validCachedFile,
+} from "./build-cache.js";
+import {
+  nativeArtifactDependenciesStillMatch,
   snapshotNativeArtifactDependencies,
   type NativeArtifactDependency,
 } from "./native-toolchain.js";
-import {
-  copyValidCachedFile,
-  privateSiblingPath,
-  publishCachedFile,
-  validCachedFile,
-} from "./build-cache.js";
 import { nativeCodegenTarget, nativeCodegenTargetRefusal, type NativeTargetSpec } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 

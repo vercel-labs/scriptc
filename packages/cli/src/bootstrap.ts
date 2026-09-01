@@ -8,6 +8,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { hostSupportsRuntimePack } from "../scripts/runtime-pack-host.mjs";
+import { LEGACY_C_EXECUTABLE_WARNING, shouldWarnLegacyCExecutable } from "./legacy-c-warning.js";
 import { CLI_OPTIONS, USAGE } from "./usage.js";
 
 // Node 24 can persist V8's compiled module bytecode. scriptc's CLI imports
@@ -79,14 +80,13 @@ async function tryFastPath(): Promise<number | null> {
   }
 
   let startup: typeof import("@scriptc/compiler/startup-cache");
-  let driver: ReturnType<typeof import("@scriptc/compiler/startup-cache")["resolveCc"]>;
+  let buildPlatform: string;
   try {
     startup = await import("@scriptc/compiler/startup-cache");
-    driver = startup.resolveCc();
+    buildPlatform = startup.targetPlatform(startup.resolveCc());
   } catch {
     return null;
   }
-  const buildPlatform = startup.targetPlatform(driver);
   if (command === "run" && buildPlatform === "wasi") return null;
   const input = resolve(inputArg);
   const outDir = values.out ? dirname(resolve(values.out)) : join(dirname(input), ".scriptc");
@@ -101,7 +101,20 @@ async function tryFastPath(): Promise<number | null> {
   const ffiBytes = ffiPath === null ? null : await readFile(ffiPath).catch(() => null);
   if (ffiPath !== null && ffiBytes === null) return null;
   const root = await startup.prepareBuildCacheRoot(startup.resolveBuildCacheRoot());
-  const nativeEnvironment = await startup.executableNativeEnvironmentFingerprint().catch(() => null);
+  const helperObjectRoute = hostSupportsRuntimePack(process.platform, arch) &&
+    (process.env["SCRIPTC_TARGET"] ?? "") === "" &&
+    backend !== "c" && !values.sanitize &&
+    process.env["SCRIPTC_RUNTIME_PACK"] !== "0" &&
+    process.env["SCRIPTC_FETCH_CURL"] !== "1" &&
+    !startup.legacyCExecutablePathRequested();
+  let nativeEnvironment: string | null;
+  try {
+    nativeEnvironment = helperObjectRoute
+      ? await startup.executableLinkerEnvironmentFingerprint()
+      : await startup.executableNativeEnvironmentFingerprint();
+  } catch {
+    nativeEnvironment = null;
+  }
   if (nativeEnvironment === null) return null;
   const hit = await startup.readRoutedExecutableCache(root, {
     entryPath: input,
@@ -115,20 +128,21 @@ async function tryFastPath(): Promise<number | null> {
     npmStatic,
     ffiProfile: ffiPath === null ? null : { path: ffiPath, bytes: ffiBytes! },
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${arch}:${
-      hostSupportsRuntimePack(process.platform, arch) &&
-      (process.env["SCRIPTC_TARGET"] ?? "") === "" &&
-      backend !== "c" && !values.sanitize &&
-      process.env["SCRIPTC_RUNTIME_PACK"] !== "0" &&
-      process.env["SCRIPTC_FETCH_CURL"] !== "1" &&
-      ((process.env["SCRIPTC_CC"] ?? "") === "" || process.env["SCRIPTC_CC"] === "clang")
-        ? "runtime-pack"
-        : "driver-tu"
+      helperObjectRoute ? "runtime-pack" : "driver-tu"
     }`,
-    compiler: [process.env["SCRIPTC_LINKER"] ?? process.env["SCRIPTC_CC"] ?? "clang"],
+    compiler: [helperObjectRoute ? startup.resolvePlatformLinker() : (process.env["SCRIPTC_CC"] ?? "clang")],
     nativeEnvironment,
     nodeVersion: process.version,
   });
   if (hit === null) return null;
+  if (shouldWarnLegacyCExecutable({
+    executable: true,
+    fromC: false,
+    backend,
+    sanitize: values.sanitize,
+  })) {
+    process.stderr.write(LEGACY_C_EXECUTABLE_WARNING);
+  }
   if (hit.native.llvmRefusal !== undefined) {
     process.stderr.write(`scriptc: backend c (llvm refused: ${hit.native.llvmRefusal})\n`);
   }

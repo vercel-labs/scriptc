@@ -15,6 +15,9 @@ export interface NativeTargetSpec {
   minimumOs: "14.0";
   helperMinimumOs: "15.0";
   outputSuffixes: { asm: ".s"; obj: ".o"; exe: "" };
+  /** Arguments for the platform linker driver once scriptc has produced an
+   * object. These are target ABI policy, rather than C compiler settings. */
+  executableLinkerArgs: readonly ["-target", "arm64-apple-macosx14.0.0", "-pthread", "-Wl,-dead_strip"];
   supports: { asm: true; obj: true; exe: true; library: false };
   helperPackage: "@scriptc/llvm-darwin-arm64";
 }
@@ -33,6 +36,7 @@ export const MACOS_ARM64_TARGET: NativeTargetSpec = {
   minimumOs: "14.0",
   helperMinimumOs: "15.0",
   outputSuffixes: { asm: ".s", obj: ".o", exe: "" },
+  executableLinkerArgs: ["-target", "arm64-apple-macosx14.0.0", "-pthread", "-Wl,-dead_strip"],
   supports: { asm: true, obj: true, exe: true, library: false },
   helperPackage: "@scriptc/llvm-darwin-arm64",
 };

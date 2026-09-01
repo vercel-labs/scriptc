@@ -3,7 +3,8 @@ import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { analyze, buildTargetPlatform, compile, compileC, compileLibrary, isExactExternalTypeSpecifier, renderDiagnostics, renderCoverage, resolveProvenanceSources, setProvenanceSources, warmNativeCaches, type NativeCacheWarmProfile } from "@scriptc/compiler";
+import { analyze, buildTargetPlatform, compile, compileExternalC, compileLibrary, isExactExternalTypeSpecifier, renderDiagnostics, renderCoverage, resolveProvenanceSources, setProvenanceSources, warmNativeCaches, type NativeCacheWarmProfile } from "@scriptc/compiler";
+import { LEGACY_C_EXECUTABLE_WARNING, shouldWarnLegacyCExecutable } from "./legacy-c-warning.js";
 import { resolveOutputOptions } from "./output-options.js";
 import { selectOutputPaths } from "./paths.js";
 import { CLI_OPTIONS, USAGE } from "./usage.js";
@@ -259,13 +260,25 @@ async function main(): Promise<number> {
   if (output === null || !output.ok) throw new Error("internal output-option state");
   const { outDir, outPath, defaultOutputPath } = selectOutputPaths(input, output.cliOutputKind, values.out);
 
+  // SCRIPTC_CC remains a migration escape hatch for explicit C, sanitizer,
+  // and comparison builds. The normal LLVM executable route is controlled by
+  // SCRIPTC_LINKER, which receives objects and archives only.
+  if (shouldWarnLegacyCExecutable({
+    executable: output.outputKind === "exe",
+    fromC: values["from-c"],
+    backend: values.backend,
+    sanitize: values.sanitize,
+  })) {
+    process.stderr.write(LEGACY_C_EXECUTABLE_WARNING);
+  }
+
   let nativeLinkInfo: object | undefined;
   const build = async (): Promise<string> => {
     if (values["from-c"]) {
       if (ffiProfilePath !== undefined) {
         fail("--ffi is a TypeScript/JavaScript compiler feature and cannot be combined with --from-c");
       }
-      await compileC({
+      await compileExternalC({
         cPath: input,
         outPath,
         sanitize: values.sanitize,

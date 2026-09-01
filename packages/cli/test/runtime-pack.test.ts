@@ -64,4 +64,25 @@ describe.runIf(supported)("precompiled runtime executable builds", () => {
     await execFileAsync(process.execPath, cliArgs, { env });
     expect(await readFile(output)).toEqual(firstExecutable);
   });
+
+  test("the object-plus-runtime-pack route remains live with the legacy C pipeline disabled", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-no-legacy-"));
+    dirs.push(dir);
+    const entry = join(dir, "main.ts");
+    const output = join(dir, "program");
+    await writeFile(entry, 'console.log("no legacy C");\n');
+    await execFileAsync(
+      process.execPath,
+      ["--import", tsxLoader, cliEntry, "build", entry, "-o", output],
+      {
+        env: {
+          ...process.env,
+          SCRIPTC_NO_CACHE: "1",
+          SCRIPTC_LEGACY_C_PIPELINE: "0",
+        },
+      },
+    );
+    await expect(execFileAsync(output, [], { encoding: "utf8" }))
+      .resolves.toMatchObject({ stdout: "no legacy C\n" });
+  });
 });

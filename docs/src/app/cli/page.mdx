@@ -142,7 +142,10 @@ Prebuilds release runtime objects and native TLS/dynamic-engine archives for tar
   <dd>Maximum build-cache size in megabytes. The default is <code>4096</code>; the default cache is swept periodically, while an explicitly configured cap is checked after every successful cache write. Least-recently-used entries are removed when the cache exceeds the cap.</dd>
 
   <dt><code>SCRIPTC_CC</code></dt>
-  <dd>The C compiler to invoke. <code>zigcc</code> selects zig's bundled clang, which enables cross-compilation with its bundled sysroots.</dd>
+  <dd>The C compiler for explicit C builds, sanitizer builds, the temporary LLVM-fallback path, and cross-compilation. <code>zigcc</code> selects zig's bundled clang and enables cross-compilation with its bundled sysroots. On macOS arm64, setting <code>SCRIPTC_CC=clang|zigcc</code> selects a deprecated legacy executable path; leave it unset for the bundled helper/runtime-pack route.</dd>
+
+  <dt><code>SCRIPTC_LINKER</code></dt>
+  <dd>Platform linker driver for ordinary macOS arm64 LLVM-tier executables. The driver receives only the helper-produced program object, precompiled runtime objects/archives, FFI inputs, and system libraries; it locates the platform SDK and CRT inputs but does not compile scriptc-generated or runtime C.</dd>
 
   <dt><code>SCRIPTC_TARGET</code></dt>
   <dd>Target triple for cross-compilation, e.g. <code>aarch64-linux-gnu.2.36</code>, <code>x86_64-windows-gnu</code>, or <code>wasm32-wasi</code>. WASI builds default to a <code>.wasm</code> output name. See <a href="/platforms">Platform Support</a>.</dd>
@@ -156,7 +159,7 @@ fib-linux: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically
 
 ## Backends
 
-The default backend emits textual LLVM IR. On macOS arm64 it is lowered to an object by the bundled helper and linked with the precompiled runtime pack; other executable targets retain their existing toolchain path. A program outside the LLVM tier is never miscompiled—the native build falls back to the C backend transparently and says so in one stderr line. The production <code>wasm32-wasi</code> target uses LLVM's 32-bit ABI path and never falls back; an LLVM coverage gap is a build diagnostic. Dynamic npm embedding is LLVM surface on every target.
+The default backend emits textual LLVM IR. On macOS arm64 it is lowered to an object by the bundled helper and linked with the precompiled runtime pack; <code>SCRIPTC_LINKER</code> controls the platform linker driver, separately from C compilation. Other executable targets retain their existing toolchain path. A program outside the LLVM tier is never miscompiled—the native build falls back to the C backend transparently and says so in one stderr line. The production <code>wasm32-wasi</code> target uses LLVM's 32-bit ABI path and never falls back; an LLVM coverage gap is a build diagnostic. Dynamic npm embedding is LLVM surface on every target.
 
 The C backend is a debugging aid: deliberately readable, source-line-annotated output with differential tests against LLVM wherever the two overlap. Pin it when you want to inspect what your program became:
 

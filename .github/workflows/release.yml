@@ -79,6 +79,7 @@ jobs:
             runner: windows-2022
             helper: llvm-win32-x64-msvc
             runtime: runtime-win32-x64-msvc
+            use_zig: true
           - platform: linux-x64-musl
             runner: ubuntu-24.04
             helper: llvm-linux-x64-musl

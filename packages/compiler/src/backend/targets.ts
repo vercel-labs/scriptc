@@ -189,9 +189,11 @@ export const WINDOWS_X64_MSVC_TARGET: NativeTargetSpec = {
   cpu: "generic", features: "", pointerBits: 64, endianness: "little", objectFormat: "coff",
   relocationModel: "pic", codeModel: "small", minimumOs: "Windows 10", helperMinimumOs: "Windows 10",
   architecture: "x64", platform: "win32", outputSuffixes: { asm: ".asm", obj: ".obj", exe: ".exe" },
-  executableLinkerArgs: ["-target", "x86_64-pc-windows-msvc", "-Wl,/OPT:REF"],
-  defaultLinker: "clang", defaultLinkerArgs: [], runtimeSystemLibraries: ["advapi32", "iphlpapi", "ws2_32"],
-  linkerTargetTriple: "x86_64-pc-windows-msvc",
+  // The runtime pack is built against Zig's MinGW-compatible Windows sysroot;
+  // its x64 COFF ABI is compatible with the helper's MSVC-flavored object.
+  executableLinkerArgs: ["-target", "x86_64-windows-gnu", "-Wl,--gc-sections"],
+  defaultLinker: "zig", defaultLinkerArgs: ["cc"], runtimeSystemLibraries: ["advapi32", "iphlpapi", "ws2_32"],
+  linkerTargetTriple: "x86_64-windows-gnu",
   runtimeCompileDefines: [],
   supports: { asm: true, obj: true, exe: true, library: true },
   helperPackage: WINDOWS_X64_HELPER.packageName, helper: WINDOWS_X64_HELPER,

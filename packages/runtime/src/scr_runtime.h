@@ -19,6 +19,12 @@
  * Win32's missing POSIX/BSD functions live in scr_win.c. Zig's musl sysroot
  * additionally lacks arc4random_buf; scr_musl.c supplies it from Linux's
  * getrandom syscall. Both files are selected by native-toolchain.ts only for their target. */
+#if defined(_WIN32) && defined(_MSC_VER)
+/* MSVC's C headers do not define POSIX ssize_t. Keep the runtime's byte-count
+ * interfaces pointer-sized on Windows without requiring a Windows SDK header
+ * (and leave the Zig/MinGW compatibility route's native typedef intact). */
+typedef intptr_t ssize_t;
+#endif
 #ifdef _WIN32
 #include <time.h> /* time_t / struct tm for the gmtime_r shim */
 char *stpcpy(char *dst, const char *src);

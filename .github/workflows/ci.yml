@@ -360,8 +360,7 @@ jobs:
       - name: Install pinned LLVM development distribution and build tools
         shell: pwsh
         run: |
-          winget install --exact --id Kitware.CMake --accept-package-agreements --accept-source-agreements
-          choco install ninja --no-progress -y
+          choco install cmake ninja --no-progress -y
           $archive = "$env:RUNNER_TEMP\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar.xz"
           $llvm = "$env:RUNNER_TEMP\llvm-22.1.8"
           curl.exe -fL --retry 3 -o $archive https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz

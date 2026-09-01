@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { availableParallelism } from "node:os";
-import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { availableParallelism, tmpdir } from "node:os";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -34,7 +34,6 @@ async function build() {
   const compilerArgs = config.compilerArgs ?? [];
   const archiver = process.env.AR ?? config.archiver ?? "ar";
   const archiverArgs = config.archiverArgs ?? [];
-  const compilerVersion = (await run(compiler, [...compilerArgs, "--version"])).stdout.split("\n", 1)[0].trim();
   const commonFlags = [
     ...config.targetArgs, "-std=c11", ...(config.threadArgs ?? []), "-fno-math-errno", "-fno-strict-aliasing",
     ...matrix.executable_section_elimination.compile_flags, "-Wno-deprecated-declarations", "-I", runtimeSrc,
@@ -65,8 +64,20 @@ async function build() {
     return { id, path: artifactPath(output), sha256: await sha256(output), size: (await stat(output)).size };
   };
   await rm(buildRoot, { recursive: true, force: true });
-  await mkdir(stagedOutputRoot, { recursive: true });
   try {
+    await mkdir(stagedOutputRoot, { recursive: true });
+    // Zig 0.16 creates a zero-byte `a.o` in its working directory for
+    // `zig cc --version`. Probe from a private temporary directory so a
+    // runtime-pack build never leaves that compiler byproduct in the package.
+    const versionProbeRoot = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-version-"));
+    let compilerVersion;
+    try {
+      compilerVersion = (await run(compiler, [...compilerArgs, "--version"], {
+        cwd: versionProbeRoot,
+      })).stdout.split("\n", 1)[0].trim();
+    } finally {
+      await rm(versionProbeRoot, { recursive: true, force: true });
+    }
     const flavors = {};
     for (const [flavor, flavorSpec] of Object.entries(matrix.flavors)) {
       const units = [];

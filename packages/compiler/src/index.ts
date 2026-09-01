@@ -1371,9 +1371,9 @@ async function compileTracked(
           ? "helper-object"
           : helperObjectRoute ? "runtime-pack" : "driver-tu"
       }`,
-      compiler: [
+    compiler: [
         helperObjectRoute
-          ? resolvePlatformLinker()
+          ? resolvePlatformLinker(process.env, nativeCodegenTarget()?.defaultLinker)
           : (process.env["SCRIPTC_CC"] ?? "clang"),
       ],
       nativeEnvironment: helperObjectRoute

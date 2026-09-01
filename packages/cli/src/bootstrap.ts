@@ -99,14 +99,21 @@ async function tryFastPath(): Promise<number | null> {
   const ffiBytes = ffiPath === null ? null : await readFile(ffiPath).catch(() => null);
   if (ffiPath !== null && ffiBytes === null) return null;
   const root = await startup.prepareBuildCacheRoot(startup.resolveBuildCacheRoot());
-  // The bootstrap cache path intentionally stays on the legacy compiler
-  // identity. The full compiler owns helper/runtime-pack target selection;
-  // this avoids reconstructing target specifications before loading it.
-  const helperObjectRoute = false;
+  // This must exactly mirror the ordinary LLVM executable's route in the
+  // full compiler. Otherwise a valid helper/runtime-pack cache entry has a
+  // different target/compiler identity and bootstrap must unnecessarily load
+  // the whole compiler graph to rediscover it.
+  const helperRuntimePackTarget = backend !== "c" && !values.sanitize
+    ? startup.precompiledRuntimePackTarget()
+    : null;
+  const helperObjectRoute = helperRuntimePackTarget !== null;
   let nativeEnvironment: string | null;
   try {
     nativeEnvironment = helperObjectRoute
-      ? await startup.executableLinkerEnvironmentFingerprint()
+      ? await startup.executableLinkerEnvironmentFingerprint(
+        process.env,
+        helperRuntimePackTarget.defaultLinker,
+      )
       : await startup.executableNativeEnvironmentFingerprint();
   } catch {
     nativeEnvironment = null;
@@ -126,7 +133,9 @@ async function tryFastPath(): Promise<number | null> {
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${
       helperObjectRoute ? "runtime-pack" : "driver-tu"
     }`,
-    compiler: [helperObjectRoute ? startup.resolvePlatformLinker() : (process.env["SCRIPTC_CC"] ?? "clang")],
+    compiler: [helperObjectRoute
+      ? startup.resolvePlatformLinker(process.env, helperRuntimePackTarget.defaultLinker)
+      : (process.env["SCRIPTC_CC"] ?? "clang")],
     nativeEnvironment,
     nodeVersion: process.version,
   });

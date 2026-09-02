@@ -69,6 +69,7 @@
   },
   "features": [
     { "chapter": "environment_variables", "symbols": ["export"], "status": "not-applicable" },
+    { "chapter": "globals", "symbols": ["fetch"], "status": "partial", "evidence": ["tests/harness/fetch-conformance.test.ts"] },
     { "chapter": "modules", "symbols": ["__dirname", "__filename", "exports", "require", "module.require", "main", "filename"], "status": "partial", "evidence": ["tests/corpus/1612-cjs-module-globals.cjs", "tests/corpus/1596-cjs-modules/main.js", "tests/corpus/1629-require-main-filename.cjs"] },
     { "chapter": "modules", "symbols": ["require.resolve", "require.resolve.paths", "cache", "extensions", "children", "id", "isPreloading", "loaded", "parent", "paths", "Module"], "status": "not-implemented" },
     { "chapter": "modules", "symbols": ["node:", "node_modules"], "status": "partial", "evidence": ["tests/corpus/1598-cjs-builtin-require/main.js", "tests/corpus/1596-cjs-modules/main.js"] },

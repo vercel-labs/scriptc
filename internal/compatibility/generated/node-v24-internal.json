@@ -459,9 +459,9 @@
       "apiEntries": 461,
       "static": {
         "supported": 0,
-        "partial": 2,
+        "partial": 0,
         "refused": 0,
-        "not-implemented": 459,
+        "not-implemented": 461,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -531,9 +531,9 @@
       "apiEntries": 92,
       "static": {
         "supported": 0,
-        "partial": 10,
+        "partial": 8,
         "refused": 0,
-        "not-implemented": 82,
+        "not-implemented": 84,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -675,11 +675,11 @@
       "apiEntries": 27,
       "static": {
         "supported": 0,
-        "partial": 16,
+        "partial": 13,
         "refused": 0,
         "not-implemented": 11,
         "by-design": 0,
-        "unreviewed": 0,
+        "unreviewed": 3,
         "not-applicable": 0
       },
       "dynamic": {
@@ -699,11 +699,11 @@
       "apiEntries": 22,
       "static": {
         "supported": 0,
-        "partial": 8,
+        "partial": 7,
         "refused": 0,
         "not-implemented": 14,
         "by-design": 0,
-        "unreviewed": 0,
+        "unreviewed": 1,
         "not-applicable": 0
       },
       "dynamic": {
@@ -1452,9 +1452,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 11,
+        "partial": 4,
         "refused": 0,
-        "not-implemented": 77,
+        "not-implemented": 84,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -28239,12 +28239,8 @@
       "anchor": "dep0006-child_process-optionscustomfds",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.child_process",
-        "tests": [
-          "tests/corpus/1361-spawn-events.ts",
-          "tests/corpus/1565-spawn-pipe-streams.ts"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-chapter-policy:deprecations"
       },
       "dynamic": {
         "status": "not-applicable",
@@ -28265,11 +28261,8 @@
       "anchor": "dep0007-replace-cluster-workersuicide-with-workerexitedafterdisconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.cluster",
-        "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-chapter-policy:deprecations"
       },
       "dynamic": {
         "status": "not-applicable",
@@ -28400,12 +28393,8 @@
       "anchor": "dep0013-fs-asynchronous-function-without-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs",
-        "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-chapter-policy:deprecations"
       },
       "dynamic": {
         "status": "not-applicable",
@@ -30486,12 +30475,8 @@
       "anchor": "dep0109-http-https-and-tls-support-for-invalid-urls",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.http",
-        "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-chapter-policy:deprecations"
       },
       "dynamic": {
         "status": "not-applicable",
@@ -30556,11 +30541,8 @@
       "anchor": "dep0112-dgram-private-apis",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.dgram",
-        "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-chapter-policy:deprecations"
       },
       "dynamic": {
         "status": "not-applicable",
@@ -30779,12 +30761,8 @@
       "anchor": "dep0122-tls-serverprototypesetoptions",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.tls",
-        "tests": [
-          "tests/corpus/2331-tls-server-options-typed.ts",
-          "tests/corpus/2557-tls-ca-store.ts"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-chapter-policy:deprecations"
       },
       "dynamic": {
         "status": "not-applicable",
@@ -31025,12 +31003,8 @@
       "anchor": "dep0133-http-connection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.http",
-        "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-chapter-policy:deprecations"
       },
       "dynamic": {
         "status": "not-applicable",
@@ -31095,12 +31069,8 @@
       "anchor": "dep0136-http-finished",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.http",
-        "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-chapter-policy:deprecations"
       },
       "dynamic": {
         "status": "not-applicable",
@@ -37199,11 +37169,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "derived:descendants",
-        "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "derived:descendants"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -37642,11 +37609,8 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path",
-        "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:errors"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -59160,13 +59124,9 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/1598-cjs-builtin-require/main.js",
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
           "tests/harness/fetch-conformance.test.ts"
         ]
       },
@@ -61411,13 +61371,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto",
-        "tests": [
-          "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:globals"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -61471,7 +61426,7 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "surface-manifest:stdlib.fetch",
+        "evidence": "compiler-feature:globals.fetch",
         "tests": [
           "tests/harness/fetch-conformance.test.ts"
         ]
@@ -61608,11 +61563,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.module",
-        "tests": [
-          "tests/corpus/1598-cjs-builtin-require/main.js"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:globals"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -73767,8 +73719,7 @@
           "tests/corpus/1596-cjs-modules/main.js",
           "tests/corpus/1598-cjs-builtin-require/main.js",
           "tests/corpus/1612-cjs-module-globals.cjs",
-          "tests/corpus/1629-require-main-filename.cjs",
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/1629-require-main-filename.cjs"
         ]
       },
       "dynamic": {
@@ -73971,11 +73922,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.module",
-        "tests": [
-          "tests/corpus/1598-cjs-builtin-require/main.js"
-        ]
+        "status": "unreviewed"
       },
       "dynamic": {
         "status": "partial",
@@ -74185,11 +74132,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.module",
-        "tests": [
-          "tests/corpus/1598-cjs-builtin-require/main.js"
-        ]
+        "status": "unreviewed"
       },
       "dynamic": {
         "status": "partial",
@@ -74506,11 +74449,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path",
-        "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
-        ]
+        "status": "unreviewed"
       },
       "dynamic": {
         "status": "partial",
@@ -75018,7 +74957,6 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/1794-searchparams-url-live.ts",
           "tests/corpus/2646-top-level-await.ts",
           "tests/corpus/950-modules-basic/main.ts"
         ]
@@ -75159,11 +75097,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.url",
-        "tests": [
-          "tests/corpus/1794-searchparams-url-live.ts"
-        ]
+        "status": "unreviewed"
       },
       "dynamic": {
         "status": "partial",
@@ -120703,11 +120637,8 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream/web.ReadableStreamDefaultReader",
-        "tests": [
-          "tests/fixtures/npm/cases/web-streams/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:webstreams"
       },
       "anchorSource": "exact"
     },
@@ -120976,11 +120907,8 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream/web.ReadableStreamDefaultController",
-        "tests": [
-          "tests/fixtures/npm/cases/web-streams/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:webstreams"
       },
       "anchorSource": "exact"
     },
@@ -121384,11 +121312,8 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream/web.WritableStream",
-        "tests": [
-          "tests/fixtures/npm/cases/web-streams/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:webstreams"
       },
       "anchorSource": "exact"
     },
@@ -121549,11 +121474,8 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream/web.WritableStreamDefaultWriter",
-        "tests": [
-          "tests/fixtures/npm/cases/web-streams/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:webstreams"
       },
       "anchorSource": "exact"
     },
@@ -122095,11 +122017,8 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream/web.ByteLengthQueuingStrategy",
-        "tests": [
-          "tests/fixtures/npm/cases/web-streams/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:webstreams"
       },
       "anchorSource": "exact"
     },
@@ -122179,11 +122098,8 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream/web.CountQueuingStrategy",
-        "tests": [
-          "tests/fixtures/npm/cases/web-streams/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:webstreams"
       },
       "anchorSource": "exact"
     },
@@ -122263,11 +122179,8 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream/web.TextEncoderStream",
-        "tests": [
-          "tests/fixtures/npm/cases/web-streams/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:webstreams"
       },
       "anchorSource": "exact"
     },

@@ -8,13 +8,14 @@
     "tiers": {
       "static": {
         "replace-refusal": 73,
-        "verify-gap": 2750,
-        "audit-partial": 385,
+        "verify-gap": 2753,
+        "audit-partial": 378,
+        "classify": 4,
         "implement": 96
       },
       "dynamic": {
-        "audit-partial": 750,
-        "verify-gap": 2297,
+        "audit-partial": 743,
+        "verify-gap": 2304,
         "replace-refusal": 101,
         "implement": 221
       }
@@ -18478,14 +18479,12 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.path",
-          "tests": [
-            "tests/corpus/957-builtins-namespace.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:errors",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -45806,16 +45805,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.crypto",
-          "tests": [
-            "tests/corpus/1358-crypto-random.ts",
-            "tests/corpus/1534-crypto-hash-chain.ts",
-            "tests/corpus/2556-crypto-introspection.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:globals",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -45880,7 +45875,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:stdlib.fetch",
+          "source": "compiler-feature:globals.fetch",
           "tests": [
             "tests/harness/fetch-conformance.test.ts"
           ]
@@ -45977,14 +45972,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.module",
-          "tests": [
-            "tests/corpus/1598-cjs-builtin-require/main.js"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:globals",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -59509,14 +59502,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.module",
-          "tests": [
-            "tests/corpus/1598-cjs-builtin-require/main.js"
-          ]
+          "status": "unreviewed",
+          "action": "classify",
+          "verification": "unreviewed",
+          "confidence": "low",
+          "source": null,
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -59759,14 +59750,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.module",
-          "tests": [
-            "tests/corpus/1598-cjs-builtin-require/main.js"
-          ]
+          "status": "unreviewed",
+          "action": "classify",
+          "verification": "unreviewed",
+          "confidence": "low",
+          "source": null,
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -60128,14 +60117,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.path",
-          "tests": [
-            "tests/corpus/957-builtins-namespace.ts"
-          ]
+          "status": "unreviewed",
+          "action": "classify",
+          "verification": "unreviewed",
+          "confidence": "low",
+          "source": null,
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -60442,14 +60429,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.url",
-          "tests": [
-            "tests/corpus/1794-searchparams-url-live.ts"
-          ]
+          "status": "unreviewed",
+          "action": "classify",
+          "verification": "unreviewed",
+          "confidence": "low",
+          "source": null,
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -102903,14 +102888,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream/web.ReadableStreamDefaultReader",
-          "tests": [
-            "tests/fixtures/npm/cases/web-streams/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:webstreams",
+          "tests": []
         }
       }
     },
@@ -103235,14 +103218,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream/web.ReadableStreamDefaultController",
-          "tests": [
-            "tests/fixtures/npm/cases/web-streams/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:webstreams",
+          "tests": []
         }
       }
     },
@@ -103732,14 +103713,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream/web.WritableStream",
-          "tests": [
-            "tests/fixtures/npm/cases/web-streams/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:webstreams",
+          "tests": []
         }
       }
     },
@@ -103899,14 +103878,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream/web.WritableStreamDefaultWriter",
-          "tests": [
-            "tests/fixtures/npm/cases/web-streams/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:webstreams",
+          "tests": []
         }
       }
     },
@@ -104530,14 +104507,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream/web.ByteLengthQueuingStrategy",
-          "tests": [
-            "tests/fixtures/npm/cases/web-streams/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:webstreams",
+          "tests": []
         }
       }
     },
@@ -104631,14 +104606,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream/web.CountQueuingStrategy",
-          "tests": [
-            "tests/fixtures/npm/cases/web-streams/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:webstreams",
+          "tests": []
         }
       }
     },
@@ -104732,14 +104705,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream/web.TextEncoderStream",
-          "tests": [
-            "tests/fixtures/npm/cases/web-streams/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:webstreams",
+          "tests": []
         }
       }
     },

@@ -241,7 +241,7 @@ function directExportName(row, module) {
 function manifestSymbolCandidates(row) {
   const modules = pin.chapterModules[row.chapter] ?? [];
   const result = new Set(
-    symbolCandidates(row).filter((candidate) => modules.length === 0 || candidate.includes(".")),
+    symbolCandidates(row).filter((candidate) => candidate.includes(".")),
   );
   for (const module of modules) {
     const direct = directExportName(row, module);

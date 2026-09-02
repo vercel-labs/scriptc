@@ -6401,18 +6401,12 @@ static const char isl_modules_bootstrap[] =
     "    c.default = c;\n"
     "    return c;\n"
     "  });\n"
-    /* stream/web re-exports the web prelude's classes; names the
-     * prelude does not carry stay undefined (honest absence). */
+    /* stream/web re-exports the web prelude's implemented classes. */
     "  builtins['stream/web'] = memo(() => {\n"
     "    const g = globalThis;\n"
     "    const w = {\n"
-    "      ReadableStream: g.ReadableStream, WritableStream: g.WritableStream,\n"
-    "      TransformStream: g.TransformStream, TextEncoderStream: g.TextEncoderStream,\n"
+    "      ReadableStream: g.ReadableStream, TransformStream: g.TransformStream,\n"
     "      TextDecoderStream: g.TextDecoderStream,\n"
-    "      CountQueuingStrategy: g.CountQueuingStrategy, ByteLengthQueuingStrategy: g.ByteLengthQueuingStrategy,\n"
-    "      ReadableStreamDefaultReader: g.ReadableStreamDefaultReader,\n"
-    "      ReadableStreamDefaultController: g.ReadableStreamDefaultController,\n"
-    "      WritableStreamDefaultWriter: g.WritableStreamDefaultWriter,\n"
     "    };\n"
     "    w.default = w;\n"
     "    return w;\n"

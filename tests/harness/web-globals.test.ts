@@ -101,6 +101,28 @@ describe(`island web globals (scriptc-only${sanitize ? ", sanitized" : ""})`, ()
     );
   });
 
+  test("node:stream/web exposes only the implemented module constructors", async () => {
+    const out = await islandEval(
+      "web-stream-module-presence",
+      `(() => {
+        const m = globalThis.__scr_require('node:stream/web');
+        return [
+          typeof m.ReadableStream,
+          typeof m.TransformStream,
+          typeof m.TextDecoderStream,
+          'WritableStream' in m,
+          'TextEncoderStream' in m,
+          'CountQueuingStrategy' in m,
+          'ByteLengthQueuingStrategy' in m,
+          'ReadableStreamDefaultReader' in m,
+          'ReadableStreamDefaultController' in m,
+          'WritableStreamDefaultWriter' in m,
+        ].join(' ');
+      })()`,
+    );
+    expect(out).toBe("function function function false false false false false false false");
+  });
+
   test("structuredClone clones deep (cycles included) and validates options like Node", async () => {
     const out = await islandEval(
       "web-structured-clone",

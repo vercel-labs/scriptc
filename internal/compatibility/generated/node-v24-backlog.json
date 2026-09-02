@@ -7,14 +7,14 @@
     "tierItemCount": 6673,
     "tiers": {
       "static": {
-        "replace-refusal": 64,
-        "verify-gap": 2779,
-        "audit-partial": 365,
+        "replace-refusal": 73,
+        "verify-gap": 2750,
+        "audit-partial": 385,
         "implement": 96
       },
       "dynamic": {
-        "audit-partial": 665,
-        "verify-gap": 2382,
+        "audit-partial": 750,
+        "verify-gap": 2297,
         "replace-refusal": 101,
         "implement": 221
       }
@@ -1405,12 +1405,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:async_context",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:async_hooks.AsyncResource",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -1438,12 +1440,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:async_context",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:async_hooks.AsyncResource",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -1646,12 +1650,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:async_hooks",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:async_hooks.AsyncResource",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -1778,12 +1784,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:async_hooks",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:async_hooks.triggerAsyncId",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -2421,12 +2429,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:buffer",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:buffer.SlowBuffer",
+          "tests": [
+            "tests/fixtures/npm/cases/buffer-shims/main.ts"
+          ]
         }
       }
     },
@@ -2664,12 +2674,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:buffer",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:buffer.INSPECT_MAX_BYTES",
+          "tests": [
+            "tests/fixtures/npm/cases/buffer-shims/main.ts"
+          ]
         }
       }
     },
@@ -2697,12 +2709,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:buffer",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:buffer.kMaxLength",
+          "tests": [
+            "tests/fixtures/npm/cases/buffer-shims/main.ts"
+          ]
         }
       }
     },
@@ -2730,12 +2744,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:buffer",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:buffer.kStringMaxLength",
+          "tests": [
+            "tests/fixtures/npm/cases/buffer-shims/main.ts"
+          ]
         }
       }
     },
@@ -2868,12 +2884,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:buffer",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:buffer.Blob",
+          "tests": [
+            "tests/fixtures/npm/cases/buffer-shims/main.ts"
+          ]
         }
       }
     },
@@ -5389,15 +5407,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.buffer",
-          "tests": [
-            "tests/corpus/1402-buffer-encodings.ts",
-            "tests/corpus/1660-buffer-read-write-num.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:buffer",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -7553,12 +7568,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:cluster",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.cluster.isPrimary",
+          "tests": [
+            "tests/corpus/957-builtins-namespace.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -7586,12 +7603,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:cluster",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.cluster.isWorker",
+          "tests": [
+            "tests/corpus/957-builtins-namespace.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -10688,12 +10707,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.constants",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -10754,12 +10775,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:crypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.subtle",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -15606,20 +15629,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:diagnostics_channel",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.diagnostics_channel.hasSubscribers",
+          "tests": [
+            "tests/corpus/2214-dc-bind-store.cjs"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:diagnostics_channel",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:diagnostics_channel.hasSubscribers",
+          "tests": [
+            "tests/fixtures/npm/cases/builtin-shims/main.ts"
+          ]
         }
       }
     },
@@ -15843,20 +15870,24 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:diagnostics_channel",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.diagnostics_channel.hasSubscribers",
+          "tests": [
+            "tests/corpus/2214-dc-bind-store.cjs"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:diagnostics_channel",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:diagnostics_channel.hasSubscribers",
+          "tests": [
+            "tests/fixtures/npm/cases/builtin-shims/main.ts"
+          ]
         }
       }
     },
@@ -16744,12 +16775,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:dns.Resolver",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -33768,12 +33801,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:events",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:events.captureRejectionSymbol",
+          "tests": [
+            "tests/fixtures/npm/cases/stream-shims/main.ts"
+          ]
         }
       }
     },
@@ -35812,12 +35847,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:fs.constants",
+          "tests": [
+            "tests/fixtures/npm/cases/fs-shims/main.ts"
+          ]
         }
       }
     },
@@ -35907,12 +35944,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.chmod",
+          "tests": [
+            "tests/corpus/1403-buffer-fs.ts",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -36612,12 +36652,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.mkdir",
+          "tests": [
+            "tests/corpus/1403-buffer-fs.ts",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -36682,12 +36725,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.open",
+          "tests": [
+            "tests/corpus/1403-buffer-fs.ts",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+          ]
         },
         "dynamic": {
           "status": "refused",
@@ -36880,12 +36926,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.readdir",
+          "tests": [
+            "tests/corpus/1403-buffer-fs.ts",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -36915,12 +36964,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.readFile",
+          "tests": [
+            "tests/corpus/1403-buffer-fs.ts",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -37159,12 +37211,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.rm",
+          "tests": [
+            "tests/corpus/1403-buffer-fs.ts",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -37194,12 +37249,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.stat",
+          "tests": [
+            "tests/corpus/1403-buffer-fs.ts",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -37328,12 +37386,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.unlink",
+          "tests": [
+            "tests/corpus/1403-buffer-fs.ts",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -37599,12 +37660,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.writeFile",
+          "tests": [
+            "tests/corpus/1403-buffer-fs.ts",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -37634,12 +37698,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.writeFile",
+          "tests": [
+            "tests/corpus/1403-buffer-fs.ts",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -39729,14 +39796,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.path",
-          "tests": [
-            "tests/corpus/957-builtins-namespace.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -40506,14 +40571,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.path",
-          "tests": [
-            "tests/corpus/957-builtins-namespace.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -42438,20 +42501,25 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.fs.promises.mkdir",
+          "tests": [
+            "tests/corpus/1403-buffer-fs.ts",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:fs.mkdir",
+          "tests": [
+            "tests/fixtures/npm/cases/fs-shims/main.ts"
+          ]
         }
       }
     },
@@ -43106,12 +43174,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:fs",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:fs.constants",
+          "tests": [
+            "tests/fixtures/npm/cases/fs-shims/main.ts"
+          ]
         }
       }
     },
@@ -47500,14 +47570,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.path",
-          "tests": [
-            "tests/corpus/957-builtins-namespace.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:http",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -50530,14 +50598,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.url",
-          "tests": [
-            "tests/corpus/1794-searchparams-url-live.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:http",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -51987,12 +52053,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:http",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:http.METHODS",
+          "tests": [
+            "tests/fixtures/fetch/cases/island-http/main.ts"
+          ]
         }
       }
     },
@@ -52020,12 +52088,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:http",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:http.STATUS_CODES",
+          "tests": [
+            "tests/fixtures/fetch/cases/island-http/main.ts"
+          ]
         }
       }
     },
@@ -52053,12 +52123,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:http",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:http.globalAgent",
+          "tests": [
+            "tests/fixtures/fetch/cases/island-http/main.ts"
+          ]
         }
       }
     },
@@ -56489,16 +56561,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.stream",
-          "tests": [
-            "tests/corpus/1685-stream-readable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs",
-            "tests/corpus/2629-stream-consumers.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:http2",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -56559,14 +56627,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.url",
-          "tests": [
-            "tests/corpus/1794-searchparams-url-live.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:http2",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -57480,16 +57546,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.stream",
-          "tests": [
-            "tests/corpus/1685-stream-readable-basics.ts",
-            "tests/corpus/1814-stream-pipeline.cjs",
-            "tests/corpus/2629-stream-consumers.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:http2",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -61238,12 +61300,15 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:module",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:module.builtinModules",
+          "tests": [
+            "tests/fixtures/npm/cases/create-require/main.ts",
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -65796,20 +65861,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.EOL",
+          "tests": [
+            "tests/corpus/1480-os-network-interfaces.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:os.EOL",
+          "tests": [
+            "tests/fixtures/npm/cases/builtin-shims/main.ts"
+          ]
         }
       }
     },
@@ -65837,12 +65906,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:os.constants",
+          "tests": [
+            "tests/fixtures/npm/cases/builtin-shims/main.ts"
+          ]
         }
       }
     },
@@ -66331,20 +66402,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:path",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.path.delimiter",
+          "tests": [
+            "tests/corpus/957-builtins-namespace.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:path",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:path.delimiter",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -66364,20 +66439,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:path",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.path.posix",
+          "tests": [
+            "tests/corpus/957-builtins-namespace.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:path",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:path.posix",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -66397,20 +66476,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:path",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.path.sep",
+          "tests": [
+            "tests/corpus/957-builtins-namespace.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:path",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:path.sep",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -66430,20 +66513,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:path",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.path.win32",
+          "tests": [
+            "tests/corpus/957-builtins-namespace.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:path",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:path.win32",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -71530,12 +71617,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.allowedNodeEnvironmentFlags",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -71578,20 +71667,25 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.process.argv",
+          "tests": [
+            "tests/corpus/990-process-basics.ts",
+            "tests/corpus/2314-process-introspection.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.argv",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -71614,12 +71708,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.argv0",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -71726,12 +71822,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.config",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -71802,20 +71900,25 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.process.env",
+          "tests": [
+            "tests/corpus/990-process-basics.ts",
+            "tests/corpus/2314-process-introspection.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.env",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -71838,12 +71941,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.execArgv",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -71858,20 +71963,25 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.process.execPath",
+          "tests": [
+            "tests/corpus/990-process-basics.ts",
+            "tests/corpus/2314-process-introspection.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.execPath",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -71894,12 +72004,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.exitCode",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -72059,15 +72171,12 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.tls",
-          "tests": [
-            "tests/corpus/2331-tls-server-options-typed.ts",
-            "tests/corpus/2557-tls-ca-store.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:process",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -72372,20 +72481,25 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.process.pid",
+          "tests": [
+            "tests/corpus/990-process-basics.ts",
+            "tests/corpus/2314-process-introspection.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.pid",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -72408,12 +72522,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.platform",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -72436,12 +72552,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.ppid",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -72464,12 +72582,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.release",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -72833,12 +72953,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.stderr",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -72889,12 +73011,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.stdin",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -72945,12 +73069,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.stdout",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -73029,12 +73155,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.title",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -73113,12 +73241,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.version",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -73141,12 +73271,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:process",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:process.versions",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -73415,12 +73547,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:punycode",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:punycode.version",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -83035,15 +83169,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.timers",
-          "tests": [
-            "tests/corpus/1804-timers-module.ts",
-            "tests/corpus/2093-timers-promises.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:test",
+          "tests": []
         },
         "dynamic": {
           "status": "not-implemented",
@@ -85363,12 +85494,14 @@
           ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:timers",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:timers.setImmediate",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -85400,12 +85533,14 @@
           ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:timers",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:timers.setInterval",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -85437,12 +85572,14 @@
           ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:timers",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:timers.setTimeout",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -85474,12 +85611,14 @@
           ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:timers",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:timers.clearImmediate",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -85511,12 +85650,14 @@
           ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:timers",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:timers.clearInterval",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -85548,12 +85689,14 @@
           ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:timers",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:timers.clearTimeout",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts"
+          ]
         }
       }
     },
@@ -88146,20 +88289,25 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:tls",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.tls.rootCertificates",
+          "tests": [
+            "tests/corpus/2331-tls-server-options-typed.ts",
+            "tests/corpus/2557-tls-ca-store.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:tls",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:tls.rootCertificates",
+          "tests": [
+            "tests/fixtures/fetch/cases/island-http/main.ts"
+          ]
         }
       }
     },
@@ -90327,12 +90475,15 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:url.URL",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts",
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -91065,12 +91216,15 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:url.URLSearchParams",
+          "tests": [
+            "tests/fixtures/npm/cases/misc-shims/main.ts",
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -93460,12 +93614,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:util.debuglog",
+          "tests": [
+            "tests/fixtures/npm/cases/util-shims/main.ts"
+          ]
         }
       }
     },
@@ -94101,20 +94257,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.util.parseArgs",
+          "tests": [
+            "tests/corpus/2440-console-inspect-args.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:util.parseArgs",
+          "tests": [
+            "tests/fixtures/npm/cases/util-shims/main.ts"
+          ]
         }
       }
     },
@@ -94439,12 +94599,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:util",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.util.types",
+          "tests": [
+            "tests/corpus/2440-console-inspect-args.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -98809,20 +98971,22 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.crypto.hash",
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.hash",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -99403,20 +99567,22 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.crypto.hash",
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.hash",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -99568,20 +99734,22 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.crypto.hash",
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.hash",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -99700,20 +99868,22 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.crypto.hash",
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.hash",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -99832,20 +100002,22 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.crypto.hash",
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.hash",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -100459,20 +100631,22 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.crypto.hash",
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.hash",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -100624,20 +100798,22 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.crypto.hash",
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.hash",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -100723,20 +100899,22 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.crypto.hash",
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.hash",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -100888,20 +101066,22 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:webcrypto",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "surface-manifest:unsupported:node-builtin.crypto.hash",
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.hash",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -101333,12 +101513,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webcrypto",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:crypto.subtle",
+          "tests": [
+            "tests/fixtures/npm/cases/crypto-shims/main.ts"
+          ]
         }
       }
     },
@@ -102422,12 +102604,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webstreams",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:stream/web.ReadableStream",
+          "tests": [
+            "tests/fixtures/npm/cases/web-streams/main.ts"
+          ]
         }
       }
     },
@@ -102719,12 +102903,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webstreams",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:stream/web.ReadableStreamDefaultReader",
+          "tests": [
+            "tests/fixtures/npm/cases/web-streams/main.ts"
+          ]
         }
       }
     },
@@ -103049,12 +103235,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webstreams",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:stream/web.ReadableStreamDefaultController",
+          "tests": [
+            "tests/fixtures/npm/cases/web-streams/main.ts"
+          ]
         }
       }
     },
@@ -103544,12 +103732,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webstreams",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:stream/web.WritableStream",
+          "tests": [
+            "tests/fixtures/npm/cases/web-streams/main.ts"
+          ]
         }
       }
     },
@@ -103709,12 +103899,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webstreams",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:stream/web.WritableStreamDefaultWriter",
+          "tests": [
+            "tests/fixtures/npm/cases/web-streams/main.ts"
+          ]
         }
       }
     },
@@ -104072,12 +104264,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webstreams",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:stream/web.TransformStream",
+          "tests": [
+            "tests/fixtures/npm/cases/web-streams/main.ts"
+          ]
         }
       }
     },
@@ -104336,12 +104530,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webstreams",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:stream/web.ByteLengthQueuingStrategy",
+          "tests": [
+            "tests/fixtures/npm/cases/web-streams/main.ts"
+          ]
         }
       }
     },
@@ -104435,12 +104631,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webstreams",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:stream/web.CountQueuingStrategy",
+          "tests": [
+            "tests/fixtures/npm/cases/web-streams/main.ts"
+          ]
         }
       }
     },
@@ -104534,12 +104732,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webstreams",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:stream/web.TextEncoderStream",
+          "tests": [
+            "tests/fixtures/npm/cases/web-streams/main.ts"
+          ]
         }
       }
     },
@@ -104666,12 +104866,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:webstreams",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:stream/web.TextDecoderStream",
+          "tests": [
+            "tests/fixtures/npm/cases/web-streams/main.ts"
+          ]
         }
       }
     },
@@ -106136,12 +106338,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:worker_threads.resourceLimits",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -106260,20 +106464,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.worker_threads.threadId",
+          "tests": [
+            "tests/corpus/957-builtins-namespace.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:worker_threads.threadId",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -106796,20 +107004,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.worker_threads.isMainThread",
+          "tests": [
+            "tests/corpus/957-builtins-namespace.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:worker_threads.isMainThread",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -106837,12 +107049,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:worker_threads.parentPort",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -106870,12 +107084,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:worker_threads.resourceLimits",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -106903,12 +107119,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:worker_threads.SHARE_ENV",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -106928,20 +107146,24 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.worker_threads.threadId",
+          "tests": [
+            "tests/corpus/957-builtins-namespace.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:worker_threads.threadId",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },

@@ -233,8 +233,23 @@ function directExportName(row, module) {
       return direct.includes(".") ? null : direct;
     }
   }
+  if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(symbol)) return symbol;
   if (row.depth === 1 && ["class", "method", "property", "global"].includes(row.kind)) return row.name;
   return null;
+}
+
+function manifestSymbolCandidates(row) {
+  const modules = pin.chapterModules[row.chapter] ?? [];
+  const result = new Set(
+    symbolCandidates(row).filter((candidate) => modules.length === 0 || candidate.includes(".")),
+  );
+  for (const module of modules) {
+    const direct = directExportName(row, module);
+    if (!direct) continue;
+    result.add(`${module}.${direct}`);
+    if (module.includes("/") && direct === module.split("/").at(-1)) result.add(module);
+  }
+  return [...result];
 }
 
 function tier(status, _reason, evidence) {
@@ -306,6 +321,8 @@ function classifyStatic(row, chapter, ctx) {
     // its omissions explicitly; this overlay closes them with evidence).
     const dedicated = ctx.dedicated.get(candidate);
     if (dedicated) return tier(dedicated.status, "", { source: `compiler-dedicated:${candidate}`, tests: dedicated.evidence });
+  }
+  for (const candidate of manifestSymbolCandidates(row)) {
     const item = ctx.manifest.get(candidate);
     if (item) {
       if (item.status === "static") {

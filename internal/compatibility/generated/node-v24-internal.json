@@ -60,9 +60,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 13,
+        "partial": 15,
         "refused": 0,
-        "not-implemented": 4,
+        "not-implemented": 2,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -84,9 +84,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 6,
+        "partial": 8,
         "refused": 0,
-        "not-implemented": 14,
+        "not-implemented": 12,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -99,18 +99,18 @@
       "apiEntries": 98,
       "static": {
         "supported": 0,
-        "partial": 2,
+        "partial": 0,
         "refused": 0,
-        "not-implemented": 96,
+        "not-implemented": 98,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 71,
+        "partial": 76,
         "refused": 0,
-        "not-implemented": 27,
+        "not-implemented": 22,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -219,9 +219,9 @@
       "apiEntries": 34,
       "static": {
         "supported": 0,
-        "partial": 2,
+        "partial": 4,
         "refused": 0,
-        "not-implemented": 32,
+        "not-implemented": 30,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -300,9 +300,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 26,
+        "partial": 28,
         "refused": 34,
-        "not-implemented": 85,
+        "not-implemented": 83,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -363,18 +363,18 @@
       "apiEntries": 69,
       "static": {
         "supported": 0,
-        "partial": 6,
+        "partial": 8,
         "refused": 0,
-        "not-implemented": 63,
+        "not-implemented": 61,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 12,
+        "partial": 14,
         "refused": 0,
-        "not-implemented": 57,
+        "not-implemented": 55,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -396,9 +396,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 4,
+        "partial": 5,
         "refused": 13,
-        "not-implemented": 34,
+        "not-implemented": 33,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -492,9 +492,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 24,
+        "partial": 25,
         "refused": 0,
-        "not-implemented": 54,
+        "not-implemented": 53,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -507,18 +507,18 @@
       "apiEntries": 276,
       "static": {
         "supported": 0,
-        "partial": 40,
+        "partial": 49,
         "refused": 0,
-        "not-implemented": 236,
+        "not-implemented": 227,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 75,
+        "partial": 78,
         "refused": 10,
-        "not-implemented": 191,
+        "not-implemented": 188,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -555,18 +555,18 @@
       "apiEntries": 174,
       "static": {
         "supported": 0,
-        "partial": 26,
+        "partial": 24,
         "refused": 0,
-        "not-implemented": 148,
+        "not-implemented": 150,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 19,
+        "partial": 22,
         "refused": 2,
-        "not-implemented": 153,
+        "not-implemented": 150,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -579,9 +579,9 @@
       "apiEntries": 167,
       "static": {
         "supported": 0,
-        "partial": 17,
+        "partial": 14,
         "refused": 2,
-        "not-implemented": 148,
+        "not-implemented": 151,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -732,9 +732,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 5,
+        "partial": 6,
         "refused": 2,
-        "not-implemented": 23,
+        "not-implemented": 22,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -819,18 +819,18 @@
       "apiEntries": 24,
       "static": {
         "supported": 0,
-        "partial": 9,
+        "partial": 10,
         "refused": 0,
-        "not-implemented": 15,
+        "not-implemented": 14,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 19,
+        "partial": 21,
         "refused": 0,
-        "not-implemented": 5,
+        "not-implemented": 3,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -843,18 +843,18 @@
       "apiEntries": 17,
       "static": {
         "supported": 0,
-        "partial": 10,
+        "partial": 14,
         "refused": 0,
-        "not-implemented": 7,
+        "not-implemented": 3,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 12,
+        "partial": 16,
         "refused": 0,
-        "not-implemented": 5,
+        "not-implemented": 1,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -915,18 +915,18 @@
       "apiEntries": 119,
       "static": {
         "supported": 0,
-        "partial": 16,
+        "partial": 19,
         "refused": 0,
-        "not-implemented": 103,
+        "not-implemented": 100,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 11,
+        "partial": 29,
         "refused": 0,
-        "not-implemented": 108,
+        "not-implemented": 90,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -948,9 +948,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 6,
+        "partial": 7,
         "refused": 0,
-        "not-implemented": 3,
+        "not-implemented": 2,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1155,9 +1155,9 @@
       "apiEntries": 105,
       "static": {
         "supported": 0,
-        "partial": 22,
+        "partial": 21,
         "refused": 0,
-        "not-implemented": 83,
+        "not-implemented": 84,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1188,9 +1188,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 4,
+        "partial": 10,
         "refused": 0,
-        "not-implemented": 21,
+        "not-implemented": 15,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1203,18 +1203,18 @@
       "apiEntries": 64,
       "static": {
         "supported": 0,
-        "partial": 6,
+        "partial": 7,
         "refused": 4,
-        "not-implemented": 54,
+        "not-implemented": 53,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 0,
+        "partial": 2,
         "refused": 6,
-        "not-implemented": 58,
+        "not-implemented": 56,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1308,9 +1308,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 28,
+        "partial": 30,
         "refused": 0,
-        "not-implemented": 34,
+        "not-implemented": 32,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1323,18 +1323,18 @@
       "apiEntries": 105,
       "static": {
         "supported": 0,
-        "partial": 2,
+        "partial": 4,
         "refused": 1,
-        "not-implemented": 102,
+        "not-implemented": 100,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 65,
+        "partial": 67,
         "refused": 0,
-        "not-implemented": 40,
+        "not-implemented": 38,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1420,17 +1420,17 @@
       "static": {
         "supported": 0,
         "partial": 2,
-        "refused": 0,
-        "not-implemented": 146,
+        "refused": 9,
+        "not-implemented": 137,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 3,
+        "partial": 13,
         "refused": 0,
-        "not-implemented": 145,
+        "not-implemented": 135,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1452,9 +1452,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 0,
+        "partial": 11,
         "refused": 0,
-        "not-implemented": 88,
+        "not-implemented": 77,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1467,18 +1467,18 @@
       "apiEntries": 66,
       "static": {
         "supported": 0,
-        "partial": 0,
+        "partial": 4,
         "refused": 0,
-        "not-implemented": 66,
+        "not-implemented": 62,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 14,
+        "partial": 21,
         "refused": 1,
-        "not-implemented": 51,
+        "not-implemented": 44,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -2969,8 +2969,11 @@
         "evidence": "compiler-unmatched:async_context"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:async_context"
+        "status": "partial",
+        "evidence": "island-export:node:async_hooks.AsyncResource",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2996,8 +2999,11 @@
         "evidence": "compiler-unmatched:async_context"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:async_context"
+        "status": "partial",
+        "evidence": "island-export:node:async_hooks.AsyncResource",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3342,8 +3348,11 @@
         "evidence": "compiler-unmatched:async_hooks"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "island-export:node:async_hooks.AsyncResource",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3477,8 +3486,11 @@
         "evidence": "compiler-unmatched:async_hooks"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "island-export:node:async_hooks.triggerAsyncId",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3956,12 +3968,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "derived:descendants",
-        "tests": [
-          "tests/corpus/1402-buffer-encodings.ts",
-          "tests/corpus/1660-buffer-read-write-num.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "derived:descendants"
       },
       "dynamic": {
         "status": "partial",
@@ -4210,8 +4218,11 @@
         "evidence": "compiler-unmatched:buffer"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:buffer"
+        "status": "partial",
+        "evidence": "island-export:node:buffer.SlowBuffer",
+        "tests": [
+          "tests/fixtures/npm/cases/buffer-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -4417,8 +4428,11 @@
         "evidence": "compiler-unmatched:buffer"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:buffer"
+        "status": "partial",
+        "evidence": "island-export:node:buffer.INSPECT_MAX_BYTES",
+        "tests": [
+          "tests/fixtures/npm/cases/buffer-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -4444,8 +4458,11 @@
         "evidence": "compiler-unmatched:buffer"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:buffer"
+        "status": "partial",
+        "evidence": "island-export:node:buffer.kMaxLength",
+        "tests": [
+          "tests/fixtures/npm/cases/buffer-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -4471,8 +4488,11 @@
         "evidence": "compiler-unmatched:buffer"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:buffer"
+        "status": "partial",
+        "evidence": "island-export:node:buffer.kStringMaxLength",
+        "tests": [
+          "tests/fixtures/npm/cases/buffer-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -4615,8 +4635,11 @@
         "evidence": "compiler-unmatched:buffer"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:buffer"
+        "status": "partial",
+        "evidence": "island-export:node:buffer.Blob",
+        "tests": [
+          "tests/fixtures/npm/cases/buffer-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -6762,12 +6785,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.buffer",
-        "tests": [
-          "tests/corpus/1402-buffer-encodings.ts",
-          "tests/corpus/1660-buffer-read-write-num.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:buffer"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -15745,8 +15764,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.cluster.isPrimary",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -15772,8 +15794,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.cluster.isWorker",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -25047,8 +25072,11 @@
         "evidence": "compiler-unmatched:crypto"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:crypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.constants",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -25101,8 +25129,11 @@
         "evidence": "compiler-unmatched:crypto"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:crypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.subtle",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -34651,12 +34682,18 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.diagnostics_channel.hasSubscribers",
+        "tests": [
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "island-export:node:diagnostics_channel.hasSubscribers",
+        "tests": [
+          "tests/fixtures/npm/cases/builtin-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -34849,12 +34886,18 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.diagnostics_channel.hasSubscribers",
+        "tests": [
+          "tests/corpus/2214-dc-bind-store.cjs"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "island-export:node:diagnostics_channel.hasSubscribers",
+        "tests": [
+          "tests/fixtures/npm/cases/builtin-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -35696,8 +35739,11 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "partial",
+        "evidence": "island-export:node:dns.Resolver",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -50339,8 +50385,11 @@
         "evidence": "compiler-unmatched:events"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:events"
+        "status": "partial",
+        "evidence": "island-export:node:events.captureRejectionSymbol",
+        "tests": [
+          "tests/fixtures/npm/cases/stream-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -50366,8 +50415,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/2595-fs-arg-ladders.cjs"
         ]
       },
       "dynamic": {
@@ -52193,8 +52241,11 @@
         "evidence": "compiler-unmatched:fs"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:fs"
+        "status": "partial",
+        "evidence": "island-export:node:fs.constants",
+        "tests": [
+          "tests/fixtures/npm/cases/fs-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -52303,8 +52354,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.chmod",
+        "tests": [
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -52915,8 +52970,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.mkdir",
+        "tests": [
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -52975,8 +53034,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.open",
+        "tests": [
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
       },
       "dynamic": {
         "status": "refused",
@@ -53137,8 +53200,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.readdir",
+        "tests": [
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -53167,8 +53234,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.readFile",
+        "tests": [
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -53429,8 +53500,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.rm",
+        "tests": [
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -53459,8 +53534,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.stat",
+        "tests": [
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -53570,8 +53649,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.unlink",
+        "tests": [
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -53904,8 +53987,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.writeFile",
+        "tests": [
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -53934,8 +54021,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.writeFile",
+        "tests": [
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -55768,11 +55859,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path",
-        "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:fs"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -56416,11 +56504,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path",
-        "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:fs"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -58036,12 +58121,19 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.mkdir",
+        "tests": [
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:fs"
+        "status": "partial",
+        "evidence": "island-export:node:fs.mkdir",
+        "tests": [
+          "tests/fixtures/npm/cases/fs-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -58580,8 +58672,11 @@
         "evidence": "compiler-unmatched:fs"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:fs"
+        "status": "partial",
+        "evidence": "island-export:node:fs.constants",
+        "tests": [
+          "tests/fixtures/npm/cases/fs-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -61817,12 +61912,10 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/1794-searchparams-url-live.ts",
           "tests/corpus/2500-net-autosel-timeout.ts",
           "tests/corpus/2596-net-arg-ladders.cjs",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts",
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts"
         ]
       },
       "dynamic": {
@@ -62934,11 +63027,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path",
-        "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:http"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -65441,11 +65531,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.url",
-        "tests": [
-          "tests/corpus/1794-searchparams-url-live.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:http"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -66646,8 +66733,11 @@
         "evidence": "compiler-unmatched:http"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:http"
+        "status": "partial",
+        "evidence": "island-export:node:http.METHODS",
+        "tests": [
+          "tests/fixtures/fetch/cases/island-http/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -66673,8 +66763,11 @@
         "evidence": "compiler-unmatched:http"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:http"
+        "status": "partial",
+        "evidence": "island-export:node:http.STATUS_CODES",
+        "tests": [
+          "tests/fixtures/fetch/cases/island-http/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -66700,8 +66793,11 @@
         "evidence": "compiler-unmatched:http"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:http"
+        "status": "partial",
+        "evidence": "island-export:node:http.globalAgent",
+        "tests": [
+          "tests/fixtures/fetch/cases/island-http/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -66753,13 +66849,9 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/1794-searchparams-url-live.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/2500-net-autosel-timeout.ts",
           "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/2629-stream-consumers.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
           "tests/corpus/2689-http-server-timeout-properties.ts"
         ]
@@ -70812,13 +70904,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.stream",
-        "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/2629-stream-consumers.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:http2"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -70871,11 +70958,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.url",
-        "tests": [
-          "tests/corpus/1794-searchparams-url-live.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:http2"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -71638,13 +71722,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.stream",
-        "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/2629-stream-consumers.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:http2"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -76475,8 +76554,12 @@
         "evidence": "compiler-unmatched:module"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:module"
+        "status": "partial",
+        "evidence": "island-export:node:module.builtinModules",
+        "tests": [
+          "tests/fixtures/npm/cases/create-require/main.ts",
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81999,12 +82082,18 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.EOL",
+        "tests": [
+          "tests/corpus/1480-os-network-interfaces.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:os"
+        "status": "partial",
+        "evidence": "island-export:node:os.EOL",
+        "tests": [
+          "tests/fixtures/npm/cases/builtin-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82030,8 +82119,11 @@
         "evidence": "compiler-unmatched:os"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:os"
+        "status": "partial",
+        "evidence": "island-export:node:os.constants",
+        "tests": [
+          "tests/fixtures/npm/cases/builtin-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82524,12 +82616,18 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:path"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.path.delimiter",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:path"
+        "status": "partial",
+        "evidence": "island-export:node:path.delimiter",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82551,12 +82649,18 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:path"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.path.posix",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:path"
+        "status": "partial",
+        "evidence": "island-export:node:path.posix",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82578,12 +82682,18 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:path"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.path.sep",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:path"
+        "status": "partial",
+        "evidence": "island-export:node:path.sep",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -82605,12 +82715,18 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:path"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.path.win32",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:path"
+        "status": "partial",
+        "evidence": "island-export:node:path.win32",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -85782,8 +85898,6 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2314-process-introspection.ts",
-          "tests/corpus/2331-tls-server-options-typed.ts",
-          "tests/corpus/2557-tls-ca-store.ts",
           "tests/corpus/990-process-basics.ts"
         ]
       },
@@ -87433,8 +87547,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.allowedNodeEnvironmentFlags",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -87473,12 +87590,19 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.argv",
+        "tests": [
+          "tests/corpus/990-process-basics.ts",
+          "tests/corpus/2314-process-introspection.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.argv",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -87499,8 +87623,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.argv0",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -87587,8 +87714,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.config",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -87649,12 +87779,19 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.env",
+        "tests": [
+          "tests/corpus/990-process-basics.ts",
+          "tests/corpus/2314-process-introspection.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.env",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -87675,8 +87812,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.execArgv",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -87693,12 +87833,19 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.execPath",
+        "tests": [
+          "tests/corpus/990-process-basics.ts",
+          "tests/corpus/2314-process-introspection.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.execPath",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -87719,8 +87866,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.exitCode",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -87852,12 +88002,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.tls",
-        "tests": [
-          "tests/corpus/2331-tls-server-options-typed.ts",
-          "tests/corpus/2557-tls-ca-store.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -88106,12 +88252,19 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.process.pid",
+        "tests": [
+          "tests/corpus/990-process-basics.ts",
+          "tests/corpus/2314-process-introspection.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.pid",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -88132,8 +88285,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.platform",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -88154,8 +88310,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.ppid",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -88176,8 +88335,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.release",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -88467,8 +88629,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.stderr",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -88511,8 +88676,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.stdin",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -88555,8 +88723,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.stdout",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -88643,8 +88814,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.title",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -88709,8 +88883,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.version",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -88731,8 +88908,11 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:process"
+        "status": "partial",
+        "evidence": "island-export:node:process.versions",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -88992,8 +89172,11 @@
         "evidence": "compiler-unmatched:punycode"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:punycode"
+        "status": "partial",
+        "evidence": "island-export:node:punycode.version",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -98621,8 +98804,6 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/1804-timers-module.ts",
-          "tests/corpus/2093-timers-promises.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100198,12 +100379,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.timers",
-        "tests": [
-          "tests/corpus/1804-timers-module.ts",
-          "tests/corpus/2093-timers-promises.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:test"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -102274,8 +102451,11 @@
         ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:timers"
+        "status": "partial",
+        "evidence": "island-export:node:timers.setImmediate",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102306,8 +102486,11 @@
         ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:timers"
+        "status": "partial",
+        "evidence": "island-export:node:timers.setInterval",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102338,8 +102521,11 @@
         ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:timers"
+        "status": "partial",
+        "evidence": "island-export:node:timers.setTimeout",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102397,8 +102583,11 @@
         ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:timers"
+        "status": "partial",
+        "evidence": "island-export:node:timers.clearImmediate",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102429,8 +102618,11 @@
         ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:timers"
+        "status": "partial",
+        "evidence": "island-export:node:timers.clearInterval",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102461,8 +102653,11 @@
         ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:timers"
+        "status": "partial",
+        "evidence": "island-export:node:timers.clearTimeout",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103071,8 +103266,11 @@
         ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/fixtures/fetch/cases/island-http/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -105085,12 +105283,19 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.tls.rootCertificates",
+        "tests": [
+          "tests/corpus/2331-tls-server-options-typed.ts",
+          "tests/corpus/2557-tls-ca-store.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:tls"
+        "status": "partial",
+        "evidence": "island-export:node:tls.rootCertificates",
+        "tests": [
+          "tests/fixtures/fetch/cases/island-http/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -107169,8 +107374,12 @@
         "evidence": "compiler-unmatched:url"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:url"
+        "status": "partial",
+        "evidence": "island-export:node:url.URL",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts",
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -107806,8 +108015,12 @@
         "evidence": "compiler-unmatched:url"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:url"
+        "status": "partial",
+        "evidence": "island-export:node:url.URLSearchParams",
+        "tests": [
+          "tests/fixtures/npm/cases/misc-shims/main.ts",
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110061,8 +110274,11 @@
         "evidence": "compiler-unmatched:util"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:util"
+        "status": "partial",
+        "evidence": "island-export:node:util.debuglog",
+        "tests": [
+          "tests/fixtures/npm/cases/util-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -110711,12 +110927,18 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.parseArgs",
+        "tests": [
+          "tests/corpus/2440-console-inspect-args.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:util"
+        "status": "partial",
+        "evidence": "island-export:node:util.parseArgs",
+        "tests": [
+          "tests/fixtures/npm/cases/util-shims/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -111020,8 +111242,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.util.types",
+        "tests": [
+          "tests/corpus/2440-console-inspect-args.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -117076,12 +117301,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.crypto.hash"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.hash",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -117562,12 +117790,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.crypto.hash"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.hash",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -117697,12 +117928,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.crypto.hash"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.hash",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -117805,12 +118039,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.crypto.hash"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.hash",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -117913,12 +118150,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.crypto.hash"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.hash",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -118426,12 +118666,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.crypto.hash"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.hash",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -118561,12 +118804,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.crypto.hash"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.hash",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -118642,12 +118888,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.crypto.hash"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.hash",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -118777,12 +119026,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "refused",
+        "evidence": "surface-manifest:unsupported:node-builtin.crypto.hash"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.hash",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119143,8 +119395,11 @@
         "evidence": "compiler-unmatched:webcrypto"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "island-export:node:crypto.subtle",
+        "tests": [
+          "tests/fixtures/npm/cases/crypto-shims/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119875,8 +120130,11 @@
         ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/fixtures/npm/cases/web-streams/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -120172,8 +120430,11 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "island-export:node:stream/web.ReadableStream",
+        "tests": [
+          "tests/fixtures/npm/cases/web-streams/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -120442,8 +120703,11 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "island-export:node:stream/web.ReadableStreamDefaultReader",
+        "tests": [
+          "tests/fixtures/npm/cases/web-streams/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -120712,8 +120976,11 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "island-export:node:stream/web.ReadableStreamDefaultController",
+        "tests": [
+          "tests/fixtures/npm/cases/web-streams/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -121117,8 +121384,11 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "island-export:node:stream/web.WritableStream",
+        "tests": [
+          "tests/fixtures/npm/cases/web-streams/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -121279,8 +121549,11 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "island-export:node:stream/web.WritableStreamDefaultWriter",
+        "tests": [
+          "tests/fixtures/npm/cases/web-streams/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -121576,8 +121849,11 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "island-export:node:stream/web.TransformStream",
+        "tests": [
+          "tests/fixtures/npm/cases/web-streams/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -121819,8 +122095,11 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "island-export:node:stream/web.ByteLengthQueuingStrategy",
+        "tests": [
+          "tests/fixtures/npm/cases/web-streams/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -121900,8 +122179,11 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "island-export:node:stream/web.CountQueuingStrategy",
+        "tests": [
+          "tests/fixtures/npm/cases/web-streams/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -121981,8 +122263,11 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "island-export:node:stream/web.TextEncoderStream",
+        "tests": [
+          "tests/fixtures/npm/cases/web-streams/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -122089,8 +122374,11 @@
         "evidence": "compiler-unmatched:webstreams"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "island-export:node:stream/web.TextDecoderStream",
+        "tests": [
+          "tests/fixtures/npm/cases/web-streams/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -122439,8 +122727,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -123469,8 +123760,11 @@
         "evidence": "compiler-unmatched:worker_threads"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "island-export:node:worker_threads.resourceLimits",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -123573,12 +123867,18 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.worker_threads.threadId",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "island-export:node:worker_threads.threadId",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -124017,12 +124317,18 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.worker_threads.isMainThread",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "island-export:node:worker_threads.isMainThread",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -124048,8 +124354,11 @@
         "evidence": "compiler-unmatched:worker_threads"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "island-export:node:worker_threads.parentPort",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -124075,8 +124384,11 @@
         "evidence": "compiler-unmatched:worker_threads"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "island-export:node:worker_threads.resourceLimits",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -124102,8 +124414,11 @@
         "evidence": "compiler-unmatched:worker_threads"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "island-export:node:worker_threads.SHARE_ENV",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -124125,12 +124440,18 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.worker_threads.threadId",
+        "tests": [
+          "tests/corpus/957-builtins-namespace.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "island-export:node:worker_threads.threadId",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },

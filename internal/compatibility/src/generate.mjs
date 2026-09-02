@@ -216,7 +216,13 @@ function directExportName(row, module) {
     "timers/promises": "timersPromises",
   };
   const alias = subpathAliases[module];
-  if (alias && symbol.startsWith(`${alias}.`)) {
+  if (alias) {
+    // A chapter can contain both a bare module and one or more subpaths. Do
+    // not let the chapter prefix make a bare-module row look like an export
+    // from a subpath (for example, fs.chmod must not match
+    // fs/promises.chmod). The alias is the only valid spelling for a
+    // subpath's rows; the fallback prefixes below are for bare modules.
+    if (!symbol.startsWith(`${alias}.`)) return null;
     const direct = symbol.slice(alias.length + 1);
     return direct.includes(".") ? null : direct;
   }

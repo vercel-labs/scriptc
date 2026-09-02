@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 73,
-        "verify-gap": 2753,
-        "audit-partial": 378,
+        "verify-gap": 2764,
+        "audit-partial": 367,
         "classify": 4,
         "implement": 96
       },
@@ -35943,15 +35943,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.promises.chmod",
-          "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -36651,15 +36648,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.promises.mkdir",
-          "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -36724,15 +36718,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.promises.open",
-          "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "refused",
@@ -36925,15 +36916,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.promises.readdir",
-          "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -36963,15 +36951,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.promises.readFile",
-          "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -37210,15 +37195,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.promises.rm",
-          "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -37248,15 +37230,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.promises.stat",
-          "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -37385,15 +37364,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.promises.unlink",
-          "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -37659,15 +37635,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.promises.writeFile",
-          "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -37697,15 +37670,12 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.promises.writeFile",
-          "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "partial",
@@ -42500,15 +42470,12 @@
       "priority": "low",
       "tiers": {
         "static": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "surface-manifest:node-builtin.fs.promises.mkdir",
-          "tests": [
-            "tests/corpus/1403-buffer-fs.ts",
-            "tests/corpus/2595-fs-arg-ladders.cjs"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "compiler-unmatched:fs",
+          "tests": []
         },
         "dynamic": {
           "status": "partial",

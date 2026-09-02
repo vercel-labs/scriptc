@@ -1,5 +1,6 @@
 packages:
   - "packages/*"
+  - "internal/*"
 minimumReleaseAgeExclude:
   - "vercel@58.1.0"
 allowBuilds:

@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "check": "pnpm typecheck && pnpm build"
+    "compat:check": "pnpm --dir .. node-compat:check",
+    "check": "pnpm compat:check && pnpm typecheck && pnpm build"
   },
   "dependencies": {
     "@mdx-js/loader": "^3",

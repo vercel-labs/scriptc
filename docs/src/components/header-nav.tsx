@@ -12,8 +12,7 @@ const links = [
 
 function isCurrent(href: string, pathname: string): boolean {
   if (href === "/") return pathname === "/";
-  // Docs owns every other page.
-  return pathname !== "/";
+  return pathname !== "/" && pathname !== "/compatibility";
 }
 
 export function HeaderNav() {

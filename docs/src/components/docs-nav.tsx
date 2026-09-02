@@ -45,9 +45,12 @@ function Sidebar() {
 export function DocsNav({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
-  // The homepage is a full-width landing page without the docs sidebar.
+  // Top-level site pages bypass the documentation sidebar and article shell.
   if (pathname === "/") {
     return <main>{children}</main>;
+  }
+  if (pathname === "/compatibility") {
+    return <main className="h-[calc(100dvh-4rem)] overflow-hidden">{children}</main>;
   }
 
   return (

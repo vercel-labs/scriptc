@@ -1,0 +1,13 @@
+{
+  "name": "@internal/compatibility",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm check",
+    "update": "node src/generate-island-header.mjs && node src/generate.mjs",
+    "backlog": "node src/backlog.mjs",
+    "check": "node src/generate-island-header.mjs --check && node src/generate.mjs --check-local",
+    "check:upstream": "node src/generate.mjs --check"
+  }
+}

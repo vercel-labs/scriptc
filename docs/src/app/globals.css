@@ -439,6 +439,29 @@ article td {
   color: var(--ds-gray-900);
 }
 
+.compatibility-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.compatibility-table th {
+  border-bottom: 1px solid var(--ds-gray-alpha-400);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ds-gray-900);
+}
+
+.compatibility-table td {
+  border-bottom: 1px solid var(--ds-gray-alpha-200);
+  padding: 0.5rem 0.75rem;
+  color: var(--ds-gray-900);
+}
+
 /* Definition lists (flag/subcommand references on the CLI page and
    friends). Literal HTML in MDX bypasses the mdx-components mapping, so
    these live next to the article table rules above. */

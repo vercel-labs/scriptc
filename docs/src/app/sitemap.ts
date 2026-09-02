@@ -5,8 +5,8 @@ import { statSync } from "node:fs";
 import path from "node:path";
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  // The homepage lives in the site header, not the docs nav, so list it explicitly.
-  const hrefs = ["/", ...allDocsPages.map((page) => page.href)];
+  // Top-level site pages live in the header, not the docs nav.
+  const hrefs = ["/", "/compatibility", ...allDocsPages.map((page) => page.href)];
   return hrefs.map((href) => ({
     url: `${siteUrl}${href}`,
     lastModified: lastModifiedFor(href),
@@ -14,7 +14,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
 }
 
 function lastModifiedFor(href: string): Date {
-  const relative = href === "/" ? "page.tsx" : path.join(href.slice(1), "page.mdx");
+  const relative = href === "/" || href === "/compatibility" ? path.join(href.slice(1), "page.tsx") : path.join(href.slice(1), "page.mdx");
   try {
     return statSync(path.join(process.cwd(), "src", "app", relative)).mtime;
   } catch {

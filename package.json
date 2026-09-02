@@ -15,6 +15,9 @@
     "test:watch": "vitest",
     "lint": "eslint packages/compiler/src packages/cli/src",
     "manifest": "tsx scripts/surface-manifest.mjs",
+    "node-compat": "pnpm --filter @internal/compatibility run update",
+    "node-compat:backlog": "pnpm --filter @internal/compatibility run backlog --",
+    "node-compat:check": "pnpm --filter @internal/compatibility run check",
     "scriptc": "tsx packages/cli/src/main.ts"
   },
   "devDependencies": {

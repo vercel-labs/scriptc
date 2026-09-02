@@ -33,6 +33,8 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@edge-runtime/vm@3.2.0)(@types/node@24.13.3)(tsx@4.23.0)
 
+  internal/compatibility: {}
+
   packages/cli:
     dependencies:
       '@scriptc/compiler':

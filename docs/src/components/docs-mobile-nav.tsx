@@ -14,8 +14,8 @@ export function DocsMobileNav() {
     return allDocsPages.find((page) => page.href === pathname) ?? allDocsPages[0];
   }, [pathname]);
 
-  // The homepage is a full-width landing page without the docs chrome.
-  if (pathname === "/") {
+  // Top-level site pages are outside the documentation chrome.
+  if (pathname === "/" || pathname === "/compatibility") {
     return null;
   }
 

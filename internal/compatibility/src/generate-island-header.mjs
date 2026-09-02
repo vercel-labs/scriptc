@@ -38,7 +38,7 @@ function render() {
 const rendered = render();
 if (process.argv.includes("--check")) {
   if (readFileSync(headerPath, "utf8") !== rendered) {
-    throw new Error("scr_island_manifest.h is stale; run 'pnpm island-manifest'");
+    throw new Error("scr_island_manifest.h is stale; run 'pnpm node-compat'");
   }
   console.log(`island manifest is current (${Object.keys(manifest.modules).length} modules)`);
 } else {

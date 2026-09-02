@@ -516,9 +516,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 77,
+        "partial": 75,
         "refused": 10,
-        "not-implemented": 189,
+        "not-implemented": 191,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -924,9 +924,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 13,
+        "partial": 11,
         "refused": 0,
-        "not-implemented": 106,
+        "not-implemented": 108,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -948,9 +948,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 8,
+        "partial": 6,
         "refused": 0,
-        "not-implemented": 1,
+        "not-implemented": 3,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1116,9 +1116,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 62,
+        "partial": 46,
         "refused": 1,
-        "not-implemented": 74,
+        "not-implemented": 90,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1188,9 +1188,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 6,
+        "partial": 4,
         "refused": 0,
-        "not-implemented": 19,
+        "not-implemented": 21,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1332,9 +1332,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 66,
+        "partial": 65,
         "refused": 0,
-        "not-implemented": 39,
+        "not-implemented": 40,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1356,9 +1356,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 14,
+        "partial": 10,
         "refused": 12,
-        "not-implemented": 42,
+        "not-implemented": 46,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -53342,11 +53342,8 @@
         "evidence": "compiler-unmatched:fs"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:fs.realpath",
-        "tests": [
-          "tests/fixtures/npm/cases/fs-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:fs"
       },
       "anchorSource": "exact"
     },
@@ -55019,11 +55016,8 @@
         "evidence": "compiler-unmatched:fs"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:fs.realpathSync",
-        "tests": [
-          "tests/fixtures/npm/cases/fs-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:fs"
       },
       "anchorSource": "exact"
     },
@@ -86842,11 +86836,8 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:process.hrtime",
-        "tests": [
-          "tests/fixtures/npm/cases/misc-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:process"
       },
       "anchorSource": "exact"
     },
@@ -86984,11 +86975,8 @@
         "evidence": "compiler-unmatched:process"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:process.memoryUsage",
-        "tests": [
-          "tests/fixtures/npm/cases/misc-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:process"
       },
       "anchorSource": "exact"
     },
@@ -88950,11 +88938,8 @@
         "evidence": "compiler-unmatched:punycode"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:punycode.ucs2",
-        "tests": [
-          "tests/fixtures/npm/cases/misc-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:punycode"
       },
       "anchorSource": "exact"
     },
@@ -88980,11 +88965,8 @@
         "evidence": "compiler-unmatched:punycode"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:punycode.ucs2",
-        "tests": [
-          "tests/fixtures/npm/cases/misc-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:punycode"
       },
       "anchorSource": "exact"
     },
@@ -94229,11 +94211,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Readable",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "exact"
     },
@@ -94259,11 +94238,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Readable",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "exact"
     },
@@ -94289,11 +94265,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Readable",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "exact"
     },
@@ -94319,11 +94292,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Writable",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "exact"
     },
@@ -94349,11 +94319,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Writable",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "exact"
     },
@@ -94379,11 +94346,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Duplex",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "exact"
     },
@@ -94409,11 +94373,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Duplex",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "exact"
     },
@@ -94439,11 +94400,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Duplex",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "exact"
     },
@@ -94907,11 +94865,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Readable",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "ancestor"
     },
@@ -94937,11 +94892,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Readable",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "ancestor"
     },
@@ -94967,11 +94919,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Readable",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "ancestor"
     },
@@ -94997,11 +94946,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Writable",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "ancestor"
     },
@@ -95027,11 +94973,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Writable",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "ancestor"
     },
@@ -95057,11 +95000,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Duplex",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "ancestor"
     },
@@ -95087,11 +95027,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Duplex",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "ancestor"
     },
@@ -95117,11 +95054,8 @@
         "evidence": "compiler-unmatched:stream"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:stream.Duplex",
-        "tests": [
-          "tests/fixtures/npm/cases/stream-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:stream"
       },
       "anchorSource": "ancestor"
     },
@@ -102681,11 +102615,8 @@
         "evidence": "compiler-unmatched:timers"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:timers/promises.scheduler",
-        "tests": [
-          "tests/fixtures/npm/cases/misc-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:timers"
       },
       "anchorSource": "exact"
     },
@@ -102711,11 +102642,8 @@
         "evidence": "compiler-unmatched:timers"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:timers/promises.scheduler",
-        "tests": [
-          "tests/fixtures/npm/cases/misc-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:timers"
       },
       "anchorSource": "exact"
     },
@@ -110559,11 +110487,8 @@
         "evidence": "compiler-unmatched:util"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:util.inspect",
-        "tests": [
-          "tests/fixtures/npm/cases/util-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:util"
       },
       "anchorSource": "exact"
     },
@@ -111130,7 +111055,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isAnyArrayBuffer",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111160,7 +111085,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isArrayBufferView",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111190,7 +111115,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isArgumentsObject",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111220,7 +111145,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isArrayBuffer",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111250,7 +111175,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isAsyncFunction",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111280,7 +111205,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isBigInt64Array",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111310,7 +111235,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isBigIntObject",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111340,7 +111265,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isBigUint64Array",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111370,7 +111295,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isBooleanObject",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111400,7 +111325,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isBoxedPrimitive",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111430,7 +111355,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isCryptoKey",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111460,7 +111385,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isDataView",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111490,7 +111415,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isDate",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111520,7 +111445,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isExternal",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111550,7 +111475,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isFloat16Array",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111580,7 +111505,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isFloat32Array",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111610,7 +111535,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isFloat64Array",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111640,7 +111565,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isGeneratorFunction",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111670,7 +111595,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isGeneratorObject",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111700,7 +111625,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isInt8Array",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111730,7 +111655,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isInt16Array",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111760,7 +111685,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isInt32Array",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111790,7 +111715,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isKeyObject",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111820,7 +111745,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isMap",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111850,7 +111775,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isMapIterator",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111880,7 +111805,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isModuleNamespaceObject",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111910,7 +111835,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isNativeError",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111940,7 +111865,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isNumberObject",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -111970,7 +111895,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isPromise",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112000,7 +111925,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isProxy",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112030,7 +111955,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isRegExp",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112060,7 +111985,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isSet",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112090,7 +112015,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isSetIterator",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112120,7 +112045,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isSharedArrayBuffer",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112150,7 +112075,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isStringObject",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112180,7 +112105,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isSymbolObject",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112210,7 +112135,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isTypedArray",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112240,7 +112165,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isUint8Array",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112270,7 +112195,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isUint8ClampedArray",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112300,7 +112225,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isUint16Array",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112330,7 +112255,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isUint32Array",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112360,7 +112285,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isWeakMap",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -112390,7 +112315,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:util.types",
+        "evidence": "island-export:node:util/types.isWeakSet",
         "tests": [
           "tests/fixtures/npm/cases/util-shims/main.ts"
         ]
@@ -113328,11 +113253,8 @@
         "evidence": "compiler-chapter-policy:v8"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:v8.startupSnapshot",
-        "tests": [
-          "tests/fixtures/npm/cases/misc-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:v8"
       },
       "anchorSource": "exact"
     },
@@ -113353,11 +113275,8 @@
         "evidence": "compiler-chapter-policy:v8"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:v8.startupSnapshot",
-        "tests": [
-          "tests/fixtures/npm/cases/misc-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:v8"
       },
       "anchorSource": "exact"
     },
@@ -113378,11 +113297,8 @@
         "evidence": "compiler-chapter-policy:v8"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:v8.startupSnapshot",
-        "tests": [
-          "tests/fixtures/npm/cases/misc-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:v8"
       },
       "anchorSource": "exact"
     },
@@ -113403,11 +113319,8 @@
         "evidence": "compiler-chapter-policy:v8"
       },
       "dynamic": {
-        "status": "partial",
-        "evidence": "island-export:node:v8.startupSnapshot",
-        "tests": [
-          "tests/fixtures/npm/cases/misc-shims/main.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "island-unmatched:v8"
       },
       "anchorSource": "exact"
     },

@@ -216,7 +216,10 @@ function directExportName(row, module) {
     "timers/promises": "timersPromises",
   };
   const alias = subpathAliases[module];
-  if (alias && symbol.startsWith(`${alias}.`)) return symbol.slice(alias.length + 1).split(".")[0];
+  if (alias && symbol.startsWith(`${alias}.`)) {
+    const direct = symbol.slice(alias.length + 1);
+    return direct.includes(".") ? null : direct;
+  }
   const moduleDots = module.replaceAll("/", ".");
   const prefixes = new Set([
     moduleDots,
@@ -225,7 +228,10 @@ function directExportName(row, module) {
     row.chapter.replaceAll("_", ""),
   ]);
   for (const prefix of prefixes) {
-    if (prefix && symbol.startsWith(`${prefix}.`)) return symbol.slice(prefix.length + 1).split(".")[0];
+    if (prefix && symbol.startsWith(`${prefix}.`)) {
+      const direct = symbol.slice(prefix.length + 1);
+      return direct.includes(".") ? null : direct;
+    }
   }
   if (row.depth === 1 && ["class", "method", "property", "global"].includes(row.kind)) return row.name;
   return null;

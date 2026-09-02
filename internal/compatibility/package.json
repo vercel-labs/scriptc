@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "pnpm check",
-    "update": "node src/generate-island-header.mjs && node src/generate.mjs",
+    "update": "node src/update.mjs",
     "backlog": "node src/backlog.mjs",
     "check": "node src/generate-island-header.mjs --check && node src/generate.mjs --check-local",
     "check:upstream": "node src/generate.mjs --check"

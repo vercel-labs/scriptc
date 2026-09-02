@@ -13,8 +13,8 @@
         "implement": 96
       },
       "dynamic": {
-        "audit-partial": 694,
-        "verify-gap": 2353,
+        "audit-partial": 665,
+        "verify-gap": 2382,
         "replace-refusal": 101,
         "implement": 221
       }
@@ -37061,14 +37061,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:fs.realpath",
-          "tests": [
-            "tests/fixtures/npm/cases/fs-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:fs",
+          "tests": []
         }
       }
     },
@@ -38875,14 +38873,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:fs.realpathSync",
-          "tests": [
-            "tests/fixtures/npm/cases/fs-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:fs",
+          "tests": []
         }
       }
     },
@@ -70832,14 +70828,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:process.hrtime",
-          "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:process",
+          "tests": []
         }
       }
     },
@@ -70979,14 +70973,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:process.memoryUsage",
-          "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:process",
+          "tests": []
         }
       }
     },
@@ -73357,14 +73349,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:punycode.ucs2",
-          "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:punycode",
+          "tests": []
         }
       }
     },
@@ -73392,14 +73382,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:punycode.ucs2",
-          "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:punycode",
+          "tests": []
         }
       }
     },
@@ -77491,14 +77479,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Readable",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -77526,14 +77512,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Readable",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -77561,14 +77545,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Readable",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -77596,14 +77578,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Writable",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -77631,14 +77611,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Writable",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -77666,14 +77644,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Duplex",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -77701,14 +77677,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Duplex",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -77736,14 +77710,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Duplex",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -78244,14 +78216,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Readable",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -78279,14 +78249,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Readable",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -78314,14 +78282,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Readable",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -78349,14 +78315,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Writable",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -78384,14 +78348,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Writable",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -78419,14 +78381,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Duplex",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -78454,14 +78414,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Duplex",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -78489,14 +78447,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:stream.Duplex",
-          "tests": [
-            "tests/fixtures/npm/cases/stream-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:stream",
+          "tests": []
         }
       }
     },
@@ -85738,14 +85694,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:timers/promises.scheduler",
-          "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:timers",
+          "tests": []
         }
       }
     },
@@ -85773,14 +85727,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:timers/promises.scheduler",
-          "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:timers",
+          "tests": []
         }
       }
     },
@@ -94017,14 +93969,12 @@
           "tests": []
         },
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:util.inspect",
-          "tests": [
-            "tests/fixtures/npm/cases/util-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:util",
+          "tests": []
         }
       }
     },
@@ -94536,7 +94486,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isAnyArrayBuffer",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94571,7 +94521,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isArrayBufferView",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94606,7 +94556,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isArgumentsObject",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94641,7 +94591,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isArrayBuffer",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94676,7 +94626,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isAsyncFunction",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94711,7 +94661,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isBigInt64Array",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94746,7 +94696,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isBigIntObject",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94781,7 +94731,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isBigUint64Array",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94816,7 +94766,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isBooleanObject",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94851,7 +94801,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isBoxedPrimitive",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94886,7 +94836,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isCryptoKey",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94921,7 +94871,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isDataView",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94956,7 +94906,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isDate",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -94991,7 +94941,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isExternal",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95026,7 +94976,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isFloat16Array",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95061,7 +95011,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isFloat32Array",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95096,7 +95046,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isFloat64Array",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95131,7 +95081,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isGeneratorFunction",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95166,7 +95116,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isGeneratorObject",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95201,7 +95151,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isInt8Array",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95236,7 +95186,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isInt16Array",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95271,7 +95221,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isInt32Array",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95306,7 +95256,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isKeyObject",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95341,7 +95291,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isMap",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95376,7 +95326,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isMapIterator",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95411,7 +95361,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isModuleNamespaceObject",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95446,7 +95396,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isNativeError",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95481,7 +95431,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isNumberObject",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95516,7 +95466,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isPromise",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95551,7 +95501,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isProxy",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95586,7 +95536,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isRegExp",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95621,7 +95571,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isSet",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95656,7 +95606,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isSetIterator",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95691,7 +95641,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isSharedArrayBuffer",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95726,7 +95676,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isStringObject",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95761,7 +95711,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isSymbolObject",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95796,7 +95746,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isTypedArray",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95831,7 +95781,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isUint8Array",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95866,7 +95816,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isUint8ClampedArray",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95901,7 +95851,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isUint16Array",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95936,7 +95886,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isUint32Array",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -95971,7 +95921,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isWeakMap",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -96006,7 +95956,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:util.types",
+          "source": "island-export:node:util/types.isWeakSet",
           "tests": [
             "tests/fixtures/npm/cases/util-shims/main.ts"
           ]
@@ -96764,14 +96714,12 @@
       "priority": "normal",
       "tiers": {
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:v8.startupSnapshot",
-          "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:v8",
+          "tests": []
         }
       }
     },
@@ -96786,14 +96734,12 @@
       "priority": "normal",
       "tiers": {
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:v8.startupSnapshot",
-          "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:v8",
+          "tests": []
         }
       }
     },
@@ -96808,14 +96754,12 @@
       "priority": "normal",
       "tiers": {
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:v8.startupSnapshot",
-          "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:v8",
+          "tests": []
         }
       }
     },
@@ -96830,14 +96774,12 @@
       "priority": "normal",
       "tiers": {
         "dynamic": {
-          "status": "partial",
-          "action": "audit-partial",
-          "verification": "test-backed",
-          "confidence": "high",
-          "source": "island-export:node:v8.startupSnapshot",
-          "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts"
-          ]
+          "status": "not-implemented",
+          "action": "verify-gap",
+          "verification": "registry-gap",
+          "confidence": "low",
+          "source": "island-unmatched:v8",
+          "tests": []
         }
       }
     },

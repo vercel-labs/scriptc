@@ -491,9 +491,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 31,
+        "partial": 33,
         "refused": 0,
-        "not-implemented": 61,
+        "not-implemented": 59,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -43111,7 +43111,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "detail": "Provided by the embedded engine's web/global compatibility layer.",
+        "detail": "Provided when the embedded npm module bootstrap runs; absent from standalone dynamic islands.",
         "verification": "test-backed"
       }
     },
@@ -43306,9 +43306,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Provided by the embedded engine's web/global compatibility layer.",
+        "verification": "test-backed"
       }
     },
     {
@@ -43586,9 +43586,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Provided by the embedded engine's web/global compatibility layer.",
+        "verification": "test-backed"
       }
     },
     {
@@ -44287,7 +44287,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "detail": "Provided by the embedded engine's web/global compatibility layer.",
+        "detail": "Provided when the embedded npm module bootstrap runs; absent from standalone dynamic islands.",
         "verification": "test-backed"
       }
     },
@@ -44567,7 +44567,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "detail": "Provided by the embedded engine's web/global compatibility layer.",
+        "detail": "Provided when the embedded npm module bootstrap runs; absent from standalone dynamic islands.",
         "verification": "test-backed"
       }
     },
@@ -44707,7 +44707,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "detail": "Provided by the embedded engine's web/global compatibility layer.",
+        "detail": "Provided when the embedded npm module bootstrap runs; absent from standalone dynamic islands.",
         "verification": "test-backed"
       }
     },

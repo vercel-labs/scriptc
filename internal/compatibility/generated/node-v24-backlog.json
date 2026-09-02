@@ -14,8 +14,8 @@
         "implement": 96
       },
       "dynamic": {
-        "audit-partial": 743,
-        "verify-gap": 2304,
+        "audit-partial": 745,
+        "verify-gap": 2302,
         "replace-refusal": 101,
         "implement": 221
       }
@@ -43583,7 +43583,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-global:Buffer",
+          "source": "island-npm-global:Buffer",
           "tests": [
             "tests/harness/web-globals.test.ts"
           ]
@@ -43822,12 +43822,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:globals",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-global:CustomEvent",
+          "tests": [
+            "tests/harness/web-globals.test.ts"
+          ]
         }
       }
     },
@@ -44170,12 +44172,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:globals",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-global:MessageEvent",
+          "tests": [
+            "tests/harness/web-globals.test.ts"
+          ]
         }
       }
     },
@@ -45031,7 +45035,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-global:URL",
+          "source": "island-npm-global:URL",
           "tests": [
             "tests/harness/web-globals.test.ts"
           ]
@@ -45385,7 +45389,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-global:clearImmediate",
+          "source": "island-npm-global:clearImmediate",
           "tests": [
             "tests/harness/web-globals.test.ts"
           ]
@@ -45570,7 +45574,7 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-global:setImmediate",
+          "source": "island-npm-global:setImmediate",
           "tests": [
             "tests/harness/web-globals.test.ts"
           ]

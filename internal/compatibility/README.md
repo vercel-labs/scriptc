@@ -4,7 +4,7 @@ This workspace package owns scriptc's Node.js parity system.
 
 - `node-v24.json` pins the Node release tag, commit, and canonical docs/source inputs.
 - `static-support.json` overlays dedicated compiler paths and their internal test evidence on the compiler's generated surface manifest.
-- `dynamic-support.json` is the implementation-owned dynamic-island module/global registry. It also generates `packages/runtime/src/scr_island_manifest.h`, so runtime exports and compatibility claims share one source.
+- `dynamic-support.json` is the implementation-owned dynamic-island module/global registry. Its `globals.supported` entries are installed by the always-on web prelude, while `globals.npmSupported` entries are installed only by the embedded npm module bootstrap. It also generates `packages/runtime/src/scr_island_manifest.h`, so runtime exports and compatibility claims share one source.
 - `generated/node-v24-internal.json` is the engineering ledger, including implementation evidence and repository test paths.
 - `generated/node-v24-backlog.json` is the internal tier-specific work queue. It separates verification, implementation, explicit-refusal replacement, and partial-surface audit work, and prioritizes stable Node APIs above experimental, deprecated, and legacy APIs.
 - `docs/src/generated/node-v24-compatibility.json` is the stripped public artifact consumed by the docs website. It contains compiler-relevant runtime APIs, statuses, verification bases, and user-facing details; documentation, metadata, command-line/configuration entries, and rows that are N/A in both tiers remain internal.

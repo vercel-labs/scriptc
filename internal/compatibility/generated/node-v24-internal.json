@@ -540,9 +540,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 31,
+        "partial": 33,
         "refused": 0,
-        "not-implemented": 61,
+        "not-implemented": 59,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -59471,7 +59471,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-global:Buffer",
+        "evidence": "island-npm-global:Buffer",
         "tests": [
           "tests/harness/web-globals.test.ts"
         ]
@@ -59677,8 +59677,11 @@
         "evidence": "compiler-unmatched:globals"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:globals"
+        "status": "partial",
+        "evidence": "island-global:CustomEvent",
+        "tests": [
+          "tests/harness/web-globals.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -59974,8 +59977,11 @@
         "evidence": "compiler-unmatched:globals"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:globals"
+        "status": "partial",
+        "evidence": "island-global:MessageEvent",
+        "tests": [
+          "tests/harness/web-globals.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -60698,7 +60704,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-global:URL",
+        "evidence": "island-npm-global:URL",
         "tests": [
           "tests/harness/web-globals.test.ts"
         ]
@@ -61003,7 +61009,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-global:clearImmediate",
+        "evidence": "island-npm-global:clearImmediate",
         "tests": [
           "tests/harness/web-globals.test.ts"
         ]
@@ -61165,7 +61171,7 @@
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-global:setImmediate",
+        "evidence": "island-npm-global:setImmediate",
         "tests": [
           "tests/harness/web-globals.test.ts"
         ]

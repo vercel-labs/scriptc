@@ -296,8 +296,12 @@ function classificationContext() {
     validateEvidence(entry.evidence, `island module '${module}'`);
   }
   const supportedGlobals = new Set(island.globals.supported);
+  const npmSupportedGlobals = new Set(island.globals.npmSupported ?? []);
+  for (const name of npmSupportedGlobals) {
+    if (supportedGlobals.has(name)) throw new Error(`island global '${name}' is both always-supported and npm-supported`);
+  }
   for (const name of island.globals.absent) {
-    if (supportedGlobals.has(name)) throw new Error(`island global '${name}' is both supported and absent`);
+    if (supportedGlobals.has(name) || npmSupportedGlobals.has(name)) throw new Error(`island global '${name}' is both supported and absent`);
   }
   validateEvidence(island.globals.evidence, "island globals");
   return {
@@ -353,6 +357,9 @@ function classifyDynamic(row, chapter, ctx) {
   if (row.chapter === "globals") {
     if (ctx.island.globals.supported.includes(row.name)) {
       return tier("partial", "", { source: `island-global:${row.name}`, tests: ctx.island.globals.evidence });
+    }
+    if (ctx.island.globals.npmSupported?.includes(row.name)) {
+      return tier("partial", "", { source: `island-npm-global:${row.name}`, tests: ctx.island.globals.evidence });
     }
     if (ctx.island.globals.absent.includes(row.name)) {
       return tier("not-implemented", "", { source: `island-global-absent:${row.name}`, tests: ctx.island.globals.evidence });
@@ -596,6 +603,7 @@ function publicDetail(tier) {
   if (source.startsWith("island-member-stub:")) return "Exposed only as an explicit throwing or rejecting compatibility stub.";
   if (source.startsWith("island-stub:")) return "Exposed only as an explicit throwing or rejecting compatibility stub.";
   if (source.startsWith("island-global:")) return "Provided by the embedded engine's web/global compatibility layer.";
+  if (source.startsWith("island-npm-global:")) return "Provided when the embedded npm module bootstrap runs; absent from standalone dynamic islands.";
   if (source.startsWith("island-global-absent:")) return "Verified absent from the embedded engine's web/global compatibility layer.";
   if (source.startsWith("unshimmed:")) return "No dynamic-island shim exists for this Node module yet.";
   if (source.startsWith("island-chapter-policy:")) {

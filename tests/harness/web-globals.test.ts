@@ -110,8 +110,10 @@ describe(`island web globals (scriptc-only${sanitize ? ", sanitized" : ""})`, ()
         typeof TextDecoder, typeof TextDecoderStream, typeof URLSearchParams,
         typeof btoa, typeof atob, typeof Headers, typeof crypto, typeof console,
         typeof Blob, typeof File, typeof Event, typeof EventTarget, typeof CustomEvent,
+        typeof MessageEvent,
         typeof WritableStream, typeof structuredClone, typeof FormData,
-        typeof WebSocket,
+        typeof WebSocket, typeof URL, typeof Buffer, typeof setImmediate,
+        typeof clearImmediate,
       ].join(' ')`,
     );
     // Blob/File and the Event triple joined the subset when the vercel
@@ -119,12 +121,12 @@ describe(`island web globals (scriptc-only${sanitize ? ", sanitized" : ""})`, ()
     // Event and buffer.Blob at LOAD); structuredClone joined with the
     // globals lane (the HTML StructuredSerialize subset, cycles
     // included); WritableStream/FormData/WebSocket stay fenced by
-    // absence.
+    // absence. URL, Buffer, and the immediate-timer globals are installed
+    // only when the embedded npm module bootstrap runs.
     expect(out).toBe(
-      "function function function function function function " +
-        "function function function object object " +
-        "function function function function function " +
-        "undefined function undefined undefined",
+      "function function function function function function function function function " +
+        "object object function function function function function function " +
+        "undefined function undefined undefined undefined undefined undefined undefined",
     );
   });
 
@@ -136,7 +138,7 @@ describe(`island web globals (scriptc-only${sanitize ? ", sanitized" : ""})`, ()
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout.trimEnd()).toBe(
-      "function function function false false false false false false false",
+      "function function function function function function function false false false false false false false",
     );
   });
 

@@ -19,6 +19,7 @@ import { compile } from "@scriptc/compiler";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
+const fixturesRoot = join(repoRoot, "tests/fixtures");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
@@ -53,6 +54,32 @@ async function compileAndRun(name: string, source: string): Promise<RunResult> {
   if (!result.ok) {
     throw new Error(
       "web-globals program failed to compile:\n" +
+        result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+    );
+  }
+  try {
+    const { stdout, stderr } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+    return { stdout, stderr, exitCode: 0 };
+  } catch (err) {
+    const e = err as { code?: unknown; stdout?: string; stderr?: string };
+    if (typeof e.code !== "number") throw err;
+    return { stdout: e.stdout ?? "", stderr: e.stderr ?? "", exitCode: e.code };
+  }
+}
+
+/** Compiles and runs a fixture whose imports must be embedded from npm. */
+async function compileFixtureAndRun(name: string, entry: string): Promise<RunResult> {
+  const outDir = join(cacheDir, `web-${name}`);
+  mkdirSync(outDir, { recursive: true });
+  const result = await compile(entry, {
+    outPath: join(outDir, name),
+    outDir,
+    sanitize,
+    dynamic: true,
+  });
+  if (!result.ok) {
+    throw new Error(
+      "web-globals fixture failed to compile:\n" +
         result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
     );
   }
@@ -102,25 +129,15 @@ describe(`island web globals (scriptc-only${sanitize ? ", sanitized" : ""})`, ()
   });
 
   test("node:stream/web exposes only the implemented module constructors", async () => {
-    const out = await islandEval(
+    const result = await compileFixtureAndRun(
       "web-stream-module-presence",
-      `(() => {
-        const m = globalThis.__scr_require('node:stream/web');
-        return [
-          typeof m.ReadableStream,
-          typeof m.TransformStream,
-          typeof m.TextDecoderStream,
-          'WritableStream' in m,
-          'TextEncoderStream' in m,
-          'CountQueuingStrategy' in m,
-          'ByteLengthQueuingStrategy' in m,
-          'ReadableStreamDefaultReader' in m,
-          'ReadableStreamDefaultController' in m,
-          'WritableStreamDefaultWriter' in m,
-        ].join(' ');
-      })()`,
+      join(fixturesRoot, "npm/divergent/web-stream-module-presence.ts"),
     );
-    expect(out).toBe("function function function false false false false false false false");
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trimEnd()).toBe(
+      "function function function false false false false false false false",
+    );
   });
 
   test("structuredClone clones deep (cycles included) and validates options like Node", async () => {

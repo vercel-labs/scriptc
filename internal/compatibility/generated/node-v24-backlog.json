@@ -3,25 +3,25 @@
   "nodeVersion": "24.15.0",
   "nodeCommit": "848430679556aed0bd073f2bc263331ad84fa119",
   "summary": {
-    "taskCount": 3369,
-    "tierItemCount": 6673,
+    "taskCount": 3368,
+    "tierItemCount": 6671,
     "tiers": {
       "static": {
         "replace-refusal": 73,
         "verify-gap": 2764,
         "audit-partial": 371,
         "classify": 3,
-        "implement": 93
+        "implement": 92
       },
       "dynamic": {
         "audit-partial": 745,
         "verify-gap": 2302,
         "replace-refusal": 101,
-        "implement": 221
+        "implement": 220
       }
     },
     "priorities": {
-      "high": 4510,
+      "high": 4508,
       "normal": 1411,
       "low": 752
     }
@@ -62175,39 +62175,6 @@
             "tests/fixtures/npm/cases/self-name/main.ts",
             "tests/fixtures/npm/cases/scoped-nested/main.ts"
           ]
-        }
-      }
-    },
-    {
-      "id": "typescript:e0b7094a6baa",
-      "chapter": "typescript",
-      "label": "Importing types without type keyword",
-      "signature": "Importing types without `type` keyword",
-      "apiSymbol": "type",
-      "docsUrl": "https://nodejs.org/docs/v24.15.0/api/typescript.html#importing-types-without-type-keyword",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "priority": "high",
-      "tiers": {
-        "static": {
-          "status": "not-implemented",
-          "action": "implement",
-          "verification": "declared-gap",
-          "confidence": "medium",
-          "source": "compiler-feature:typescript.type",
-          "tests": []
-        },
-        "dynamic": {
-          "status": "not-implemented",
-          "action": "implement",
-          "verification": "declared-gap",
-          "confidence": "medium",
-          "source": "island-feature:typescript.type",
-          "tests": []
         }
       }
     },

@@ -697,19 +697,19 @@
       "entries": 2,
       "apiEntries": 2,
       "static": {
-        "supported": 0,
+        "supported": 2,
         "partial": 0,
         "refused": 0,
-        "not-implemented": 2,
+        "not-implemented": 0,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
-        "supported": 0,
+        "supported": 2,
         "partial": 0,
         "refused": 0,
-        "not-implemented": 2,
+        "not-implemented": 0,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -58639,12 +58639,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
       },
       "dynamic": {
-        "status": "not-implemented",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
       }
@@ -58667,14 +58667,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "Not implemented in the embedded module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented embedded module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {

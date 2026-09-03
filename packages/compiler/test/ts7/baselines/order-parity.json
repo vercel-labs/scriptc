@@ -5695,6 +5695,42 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2702-type-import-link-static/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2702-type-import-link-static/types.ts",
+    "<repo>/tests/corpus/2702-type-import-link-static/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2703-type-import-link-static-reexport/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2703-type-import-link-static-reexport/types.ts",
+    "<repo>/tests/corpus/2703-type-import-link-static-reexport/middle.ts",
+    "<repo>/tests/corpus/2703-type-import-link-static-reexport/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2704-type-import-link-static-success/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2704-type-import-link-static-success/types.ts",
+    "<repo>/tests/corpus/2704-type-import-link-static-success/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2705-type-import-link-dynamic/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2705-type-import-link-dynamic/types.ts",
+    "<repo>/tests/corpus/2705-type-import-link-dynamic/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2706-type-import-link-dynamic-success/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2706-type-import-link-dynamic-success/types.ts",
+    "<repo>/tests/corpus/2706-type-import-link-dynamic-success/main.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/300-if-else.ts": {
    "order": [
     "<repo>/tests/corpus/300-if-else.ts"

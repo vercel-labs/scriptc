@@ -523,6 +523,120 @@ console.log('never runs', a);
   });
 });
 
+// Node's strip-only TypeScript loader keeps ordinary named imports in the
+// ESM request graph. If the requested declaration is type-only, Node refuses
+// during linking even though the TypeScript checker accepts the import. The
+// corpus pins stdout and exit; these assertions pin scriptc's exact uncaught
+// SyntaxError message and the local-name ordering used to choose the first
+// failure.
+describe("native ESM type-import link SyntaxError messages", () => {
+  test("an unqualified interface import fails before any module evaluates", async () => {
+    const r = await compileAndRun(
+      "esm-type-link",
+      `import { value, Shape as MissingShape } from './types.ts';
+console.log('never runs', value);
+`,
+      "ts",
+      {
+        "types.ts": `export interface Shape { value: number }
+export const value = 7;
+console.log('types evaluated');
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe(
+      "Uncaught SyntaxError: The requested module './types.ts' does not provide an export named 'Shape'\n",
+    );
+  });
+
+  test("a child re-export failure wins before the parent import is linked", async () => {
+    const r = await compileAndRun(
+      "esm-type-link-reexport",
+      `import { Zed as zed, Aa as aaa, value } from './middle.ts';
+console.log('never runs', value);
+`,
+      "ts",
+      {
+        "middle.ts": `export { Shape as Zed, Other as Aa, value } from './types.ts';
+console.log('middle evaluated');
+`,
+        "types.ts": `export interface Shape { value: number }
+export type Other = string;
+export const value = 9;
+console.log('types evaluated');
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe(
+      "Uncaught SyntaxError: The requested module './types.ts' does not provide an export named 'Shape'\n",
+    );
+  });
+
+  test("direct imports choose the first missing binding by local name", async () => {
+    const r = await compileAndRun(
+      "esm-type-link-order",
+      `import { Shape as zed, Other as aaa } from './types.ts';
+console.log('never runs');
+`,
+      "ts",
+      {
+        "types.ts": `export interface Shape { value: number }
+export type Other = string;
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe(
+      "Uncaught SyntaxError: The requested module './types.ts' does not provide an export named 'Other'\n",
+    );
+  });
+
+  test("dynamic islands retain the native ESM link failure", async () => {
+    const r = await compileAndRun(
+      "esm-type-link-dynamic",
+      `// @dynamic
+import { Shape as MissingShape } from './types.ts';
+console.log('never runs');
+`,
+      "ts",
+      { "types.ts": "export interface Shape { value: number }\nconsole.log('types evaluated');\n" },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe(
+      "Uncaught SyntaxError: The requested module './types.ts' does not provide an export named 'Shape'\n",
+    );
+  });
+
+  test("a child native-ESM failure wins over a later parent CJS failure", async () => {
+    const r = await compileAndRun(
+      "esm-type-link-before-cjs",
+      `import './middle.ts';
+import { missing } from './table.cjs';
+console.log('never runs', missing);
+`,
+      "ts",
+      {
+        "middle.ts": `import { Shape } from './types.ts';
+console.log('middle never runs');
+`,
+        "types.ts": "export interface Shape { value: number }\nconsole.log('types evaluated');\n",
+        "table.cjs": "module.exports = { missing: 7 };\n",
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe(
+      "Uncaught SyntaxError: The requested module './types.ts' does not provide an export named 'Shape'\n",
+    );
+  });
+});
+
 describe("checked-dynamic/island boundary fences (scriptc-only)", () => {
   test("an island-typed argument into a call through 'unknown' runs Node-exactly (the retired SC1101 fence)", async () => {
     // `this` in a plain JS function is the checked-dynamic ambient

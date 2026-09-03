@@ -2490,7 +2490,13 @@ function preflight7(load: LoadResult): {
     }
   }
 
-  const linkCrash = resolveCrash !== null ? null : cjsNamedImportLinkCheck(program, entry, order, diags);
+  const linkCrash = resolveCrash !== null
+    ? null
+    : earlierLinkCrash(
+        order,
+        cjsNamedImportLinkCheck(program, entry, order, diags),
+        esmNamedImportLinkCheck(program, entry, order),
+      );
 
   return { diags, moduleOrder: order, startupCrash: resolveCrash ?? linkCrash };
 }
@@ -2687,6 +2693,204 @@ function cjsNamedImportLinkCheck(
     className: "%SyntaxError",
     loc,
   };
+}
+
+/* ── the native ESM named-import link check ─────────────────────────────
+ * TypeScript accepts `import { Shape } from "./types.ts"` when Shape is an
+ * interface or type alias: the checker is answering a TYPE question. Node's
+ * ESM linker asks a VALUE question instead. Because Node 24's strip-only
+ * execution leaves that import request in the module graph, the request
+ * fails before any module evaluates unless the source uses `import type`.
+ *
+ * Keep this separate from cjsNamedImportLinkCheck. CommonJS exports are
+ * determined by Node's source lexer and have their own interop message and
+ * ordering rules; native ESM exports come from the resolved TypeScript
+ * module symbol and use Node's generic missing-export SyntaxError. */
+function esmNamedImportLinkCheck(
+  program: ts.Program,
+  entry: ts.SourceFile,
+  moduleOrder: ts.SourceFile[],
+): StartupCrash | null {
+  const checker = program.getTypeChecker();
+  const resolveEdge = (from: ts.SourceFile, spec: string): ts.SourceFile | null => {
+    if (isRelativeSpecifier(spec)) return resolveImport7(program, from, spec);
+    const npmStatic = npmStaticDepSf7(program, from, spec);
+    if (npmStatic !== null) return npmStatic;
+    const p = resolveProjectImport(from.fileName, spec);
+    return p !== null ? (program.getSourceFile(p) ?? null) : null;
+  };
+
+  const runtimeExport = (dep: ts.SourceFile, name: string): ts.Symbol | undefined => {
+    const module = checker.getSymbolAtLocation(dep);
+    const exported = module?.getExports().get(name as ts.__String);
+    if (exported === undefined) return undefined;
+    let resolved = exported;
+    const seen = new Set<ts.Symbol>();
+    while ((resolved.flags & ts.SymbolFlags.Alias) !== 0 && !seen.has(resolved)) {
+      seen.add(resolved);
+      resolved = checker.getAliasedSymbol(resolved);
+    }
+    return resolved.flags & ts.SymbolFlags.Value ? resolved : undefined;
+  };
+
+  interface BadEsmImport {
+    exportName: string;
+    spec: string;
+    nameNode: ts.Node;
+    sf: ts.SourceFile;
+  }
+
+  const firstMissingOf = (sf: ts.SourceFile): BadEsmImport | null => {
+    const imports: { local: string; exportName: string; spec: string; nameNode: ts.Node; dep: ts.SourceFile }[] = [];
+    for (const stmt of sf.statements) {
+      if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+      const clause = stmt.importClause;
+      if (clause === undefined || clause.phaseModifier === ts.SyntaxKind.TypeKeyword) continue;
+      const spec = stmt.moduleSpecifier.text;
+      const dep = resolveEdge(sf, spec);
+      if (dep === null || dep.fileName.endsWith(".json") || !isNodeEsmFile7(dep)) continue;
+      if (clause.name !== undefined) {
+        imports.push({ local: clause.name.text, exportName: "default", spec, nameNode: clause.name, dep });
+      }
+      if (clause.namedBindings === undefined || !ts.isNamedImports(clause.namedBindings)) continue;
+      for (const element of clause.namedBindings.elements) {
+        if (element.isTypeOnly) continue;
+        const nameNode = element.propertyName ?? element.name;
+        imports.push({
+          local: element.name.text,
+          exportName: nameNode.text,
+          spec,
+          nameNode,
+          dep,
+        });
+      }
+    }
+    // Node checks regular named requests in local-binding order. Keeping the
+    // same order as the CommonJS linker above matters when one statement
+    // asks for more than one erased TypeScript export.
+    imports.sort((a, b) => (a.local < b.local ? -1 : a.local > b.local ? 1 : 0));
+    for (const request of imports) {
+      if (runtimeExport(request.dep, request.exportName) === undefined) {
+        return {
+          exportName: request.exportName,
+          spec: request.spec,
+          nameNode: request.nameNode,
+          sf,
+        };
+      }
+    }
+
+    for (const stmt of sf.statements) {
+      if (!ts.isExportDeclaration(stmt) || stmt.isTypeOnly) continue;
+      const moduleSpecifier = stmt.moduleSpecifier;
+      const exportClause = stmt.exportClause;
+      if (moduleSpecifier === undefined || exportClause === undefined) continue;
+      if (!ts.isStringLiteral(moduleSpecifier) || !ts.isNamedExports(exportClause)) continue;
+      const spec = moduleSpecifier.text;
+      const dep = resolveEdge(sf, spec);
+      if (dep === null || dep.fileName.endsWith(".json") || !isNodeEsmFile7(dep)) continue;
+      for (const element of exportClause.elements) {
+        if (element.isTypeOnly) continue;
+        const nameNode = element.propertyName ?? element.name;
+        if (runtimeExport(dep, nameNode.text) === undefined) {
+          return { exportName: nameNode.text, spec, nameNode, sf };
+        }
+      }
+    }
+    return null;
+  };
+
+  // The ESM instantiate graph is the same depth-first graph used by the CJS
+  // linker: dependencies are linked before the importing module, and a
+  // CommonJS/JSON target is a leaf for this native-export check.
+  const visited = new Set<ts.SourceFile>();
+  const dfs = (sf: ts.SourceFile): BadEsmImport | null => {
+    if (visited.has(sf)) return null;
+    visited.add(sf);
+    for (const stmt of sf.statements) {
+      if (!ts.isImportDeclaration(stmt) && !(ts.isExportDeclaration(stmt) && !stmt.isTypeOnly)) continue;
+      if (ts.isImportDeclaration(stmt) && stmt.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword) continue;
+      const moduleSpecifier = stmt.moduleSpecifier;
+      if (moduleSpecifier === undefined || !ts.isStringLiteral(moduleSpecifier)) continue;
+      const dep = resolveEdge(sf, moduleSpecifier.text);
+      if (dep === null || dep.fileName.endsWith(".json") || !isNodeEsmFile7(dep)) continue;
+      const bad = dfs(dep);
+      if (bad !== null) return bad;
+    }
+    return firstMissingOf(sf);
+  };
+
+  // Native ESM linking itself starts only from an ESM entry. The order is
+  // reconstructed above because moduleOrder is postorder while Node's link
+  // walk needs the statement-interleaved DFS. The caller uses moduleOrder to
+  // merge this result with the unchanged CommonJS lexer check.
+  void moduleOrder;
+  if (!isNodeEsmFile7(entry)) return null;
+  const bad = dfs(entry);
+  if (bad === null) return null;
+  return {
+    message: `The requested module '${bad.spec}' does not provide an export named '${bad.exportName}'`,
+    className: "%SyntaxError",
+    loc: locOf7(bad.nameNode),
+  };
+}
+
+/** Both named-export link checks run independently because their export
+ * questions are different (Node's CJS lexer versus TypeScript's value
+ * symbols). Their first failures still share one Node instantiate order: the
+ * module postorder established by preflight, then regular named imports by
+ * local binding name, then source-order re-exports. Pick the earlier result
+ * so a native ESM failure in a child cannot be hidden by a CJS failure in a
+ * later parent. */
+function earlierLinkCrash(
+  moduleOrder: ts.SourceFile[],
+  first: StartupCrash | null,
+  second: StartupCrash | null,
+): StartupCrash | null {
+  if (first === null) return second;
+  if (second === null) return first;
+  const moduleIndex = new Map(moduleOrder.map((sf, index) => [sf.fileName, index]));
+  const firstIndex = moduleIndex.get(first.loc.file) ?? Number.MAX_SAFE_INTEGER;
+  const secondIndex = moduleIndex.get(second.loc.file) ?? Number.MAX_SAFE_INTEGER;
+  if (firstIndex !== secondIndex) return firstIndex < secondIndex ? first : second;
+  if (first.loc.start !== second.loc.start) {
+    const sf = moduleOrder[firstIndex];
+    if (sf === undefined) return first.loc.start < second.loc.start ? first : second;
+    const rank = (crash: StartupCrash): [number, number] => {
+      const entries: { local: string; start: number; kind: 0 | 1 }[] = [];
+      for (const stmt of sf.statements) {
+        if (ts.isImportDeclaration(stmt) && ts.isStringLiteral(stmt.moduleSpecifier)) {
+          const clause = stmt.importClause;
+          if (clause?.phaseModifier === ts.SyntaxKind.TypeKeyword) continue;
+          if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+            for (const element of clause.namedBindings.elements) {
+              if (!element.isTypeOnly) {
+                entries.push({ local: element.name.text, start: (element.propertyName ?? element.name).getStart(sf), kind: 0 });
+              }
+            }
+          }
+        }
+      }
+      entries.sort((a, b) => (a.local < b.local ? -1 : a.local > b.local ? 1 : 0));
+      const direct = entries.findIndex((entry) => entry.start === crash.loc.start);
+      if (direct >= 0) return [0, direct];
+      let reexport = 0;
+      for (const stmt of sf.statements) {
+        const exportClause = ts.isExportDeclaration(stmt) ? stmt.exportClause : undefined;
+        if (!ts.isExportDeclaration(stmt) || stmt.isTypeOnly || exportClause === undefined || !ts.isNamedExports(exportClause)) continue;
+        for (const element of exportClause.elements) {
+          if (!element.isTypeOnly && (element.propertyName ?? element.name).getStart(sf) === crash.loc.start) return [1, reexport];
+          if (!element.isTypeOnly) reexport++;
+        }
+      }
+      return [2, crash.loc.start];
+    };
+    const firstRank = rank(first);
+    const secondRank = rank(second);
+    if (firstRank[0] !== secondRank[0]) return firstRank[0] < secondRank[0] ? first : second;
+    return firstRank[1] <= secondRank[1] ? first : second;
+  }
+  return first;
 }
 
 /* node's builtin-module name list, for the SC1010 wording decision ("the

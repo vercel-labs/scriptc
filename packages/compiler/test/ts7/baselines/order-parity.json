@@ -5518,6 +5518,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2676-record-clone-overrides.ts": {
+   "order": [
+    "<repo>/tests/corpus/2676-record-clone-overrides.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/2676-top-level-await-ambiguous/main.ts": {
    "order": [
     "<repo>/tests/corpus/2676-top-level-await-ambiguous/main.ts"
@@ -5541,6 +5547,12 @@
   "<repo>/tests/corpus/2678-date-instances.ts": {
    "order": [
     "<repo>/tests/corpus/2678-date-instances.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2678-large-string-sparse-index.ts": {
+   "order": [
+    "<repo>/tests/corpus/2678-large-string-sparse-index.ts"
    ],
    "diags": []
   },
@@ -5569,11 +5581,11 @@
    "diags": []
   },
   "<repo>/tests/corpus/2682-fs-rename.ts": {
-    "order": [
-     "<repo>/tests/corpus/2682-fs-rename.ts"
-    ],
-    "diags": []
-   },
+   "order": [
+    "<repo>/tests/corpus/2682-fs-rename.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/2683-filter-truthy-predicate.ts": {
    "order": [
     "<repo>/tests/corpus/2683-filter-truthy-predicate.ts"
@@ -5652,10 +5664,35 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2692-inline-record-assert-index.ts": {
+   "order": [
+    "<repo>/tests/corpus/2692-inline-record-assert-index.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2692-string-accumulation.ts": {
+   "order": [
+    "<repo>/tests/corpus/2692-string-accumulation.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2693-math-constants.ts": {
+   "order": [
+    "<repo>/tests/corpus/2693-math-constants.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/2700-wasi-core.ts": {
-    "order": [
-     "<repo>/tests/corpus/2700-wasi-core.ts"
-    ],
+   "order": [
+    "<repo>/tests/corpus/2700-wasi-core.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2701-import-meta/main.mjs": {
+   "order": [
+    "<repo>/tests/corpus/2701-import-meta/module with space.mjs",
+    "<repo>/tests/corpus/2701-import-meta/main.mjs"
+   ],
    "diags": []
   },
   "<repo>/tests/corpus/300-if-else.ts": {
@@ -7204,6 +7241,42 @@
      "hint": "export declarations directly: export function f() {}"
     }
    ]
+  },
+  "<repo>/tests/diagnostics/import-meta-bare.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/import-meta-bare.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/import-meta-computed.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/import-meta-computed.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/import-meta-destructure.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/import-meta-destructure.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/import-meta-dynamic.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/import-meta-dynamic.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/import-meta-resolve.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/import-meta-resolve.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/import-meta-write.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/import-meta-write.ts"
+   ],
+   "diags": []
   },
   "<repo>/tests/diagnostics/imports.ts": {
    "order": [

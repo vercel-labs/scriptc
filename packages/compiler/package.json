@@ -29,7 +29,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "node node_modules/typescript5/bin/tsc -p tsconfig.json"
+    "build": "node node_modules/typescript/bin/tsc -p tsconfig.json"
   },
   "dependencies": {
     "@scriptc/runtime": "workspace:*",

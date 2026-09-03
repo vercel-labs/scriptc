@@ -8,6 +8,7 @@
     "build": "pnpm -r --filter \"./packages/*\" run build",
     "build:fresh": "rm -rf packages/compiler/dist packages/cli/dist node_modules/.cache/scriptc-tsc && pnpm build",
     "test": "vitest run",
+    "test:ts7": "node scripts/test-ts7.mjs",
     "test:fetch-conformance": "vitest run tests/harness/fetch-conformance.test.ts",
     "test:cache-identity": "node tests/harness/cache-identity.mjs",
     "test:sandbox": "node scripts/sandbox-test.mjs",

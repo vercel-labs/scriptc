@@ -60,7 +60,10 @@ const baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as {
 
 /** Machine-independent spelling: absolute repo paths become "<repo>/…" in
  * file fields AND message text (cycle messages embed paths). */
-const rel = (s: string): string => s.split(repoRoot + "/").join("<repo>/");
+const rel = (s: string): string =>
+  s.replaceAll("\\", "/").split(repoRoot.replaceAll("\\", "/") + "/").join("<repo>/");
+
+const relativeName = (s: string): string => rel(s).replace(/^<repo>\//, "");
 
 function nativeAnswer(host: Ts7Host, entry: string): BaselineEntry {
   const t7 = checkPreflightTs7(entry, host);
@@ -134,12 +137,12 @@ if (UPDATE) {
   });
 } else {
   describe(`preflight/order canary vs recorded 5.9.3 baselines (${entries.length} entries${FULL ? ", full sweep" : ""})`, () => {
-    test.for(chunks.map((c) => [`${c[0]!.slice(repoRoot.length + 1)} … +${c.length - 1}`, c] as const))(
+    test.for(chunks.map((c) => [`${relativeName(c[0]!)} … +${c.length - 1}`, c] as const))(
       "%s",
       async ([, chunk]) => {
         for (const entry of chunk) {
           await new Promise((r) => setImmediate(r)); // keep the worker RPC alive
-          const name = entry.slice(repoRoot.length + 1);
+          const name = relativeName(entry);
           const recorded = baseline.entries[rel(entry)];
           expect(
             recorded,

@@ -29,7 +29,7 @@
     { "chapter": "esm", "symbols": ["meta", "import.meta.resolve", "dirname", "filename", "main", "data:", "require", "__filename", "require.main", "require.resolve", "NODE_PATH", "require.extensions", "require.cache"], "status": "not-implemented" },
     { "chapter": "packages", "symbols": ["package.json", "\"name\"", "\"main\"", "\"type\"", "\"exports\"", "\"imports\""], "status": "partial", "evidence": ["tests/fixtures/npm/cases/dual-entry/main.ts", "tests/fixtures/npm/cases/self-name/main.ts", "tests/fixtures/npm/cases/scoped-nested/main.ts"] },
     { "chapter": "packages", "symbols": ["--input-type"], "status": "not-applicable" },
-    { "chapter": "typescript", "symbols": ["type"], "status": "not-implemented" }
+    { "chapter": "typescript", "symbols": ["type"], "status": "supported", "evidence": ["tests/corpus/2705-type-import-link-dynamic/main.ts", "tests/corpus/2706-type-import-link-dynamic-success/main.ts", "tests/harness/errors.test.ts"] }
   ],
   "modules": {
     "events": { "exports": ["EventEmitter", "once", "on", "listenerCount", "getEventListeners", "setMaxListeners", "defaultMaxListeners", "errorMonitor", "captureRejectionSymbol"], "members": ["emitter.addListener", "emitter.emit", "emitter.eventNames", "emitter.getMaxListeners", "emitter.listenerCount", "emitter.listeners", "emitter.off", "emitter.on", "emitter.once", "emitter.prependListener", "emitter.prependOnceListener", "emitter.removeAllListeners", "emitter.removeListener", "emitter.setMaxListeners", "emitter.rawListeners", "events.getEventListeners", "events.listenerCount", "events.once", "events.on", "events.setMaxListeners"], "evidence": ["tests/fixtures/npm/cases/stream-shims/main.ts"] },

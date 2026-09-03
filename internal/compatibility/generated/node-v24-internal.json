@@ -770,19 +770,19 @@
       "entries": 11,
       "apiEntries": 2,
       "static": {
-        "supported": 0,
+        "supported": 2,
         "partial": 0,
         "refused": 0,
-        "not-implemented": 2,
+        "not-implemented": 0,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
-        "supported": 0,
+        "supported": 2,
         "partial": 0,
         "refused": 0,
-        "not-implemented": 2,
+        "not-implemented": 0,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -78423,12 +78423,23 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "supported",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/2702-type-import-link-static/main.ts",
+          "tests/corpus/2703-type-import-link-static-reexport/main.ts",
+          "tests/corpus/2704-type-import-link-static-success/main.ts",
+          "tests/harness/errors.test.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "supported",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/2705-type-import-link-dynamic/main.ts",
+          "tests/corpus/2706-type-import-link-dynamic-success/main.ts",
+          "tests/harness/errors.test.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -78585,12 +78596,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:typescript.type"
+        "status": "supported",
+        "evidence": "compiler-feature:typescript.type",
+        "tests": [
+          "tests/corpus/2702-type-import-link-static/main.ts",
+          "tests/corpus/2703-type-import-link-static-reexport/main.ts",
+          "tests/corpus/2704-type-import-link-static-success/main.ts",
+          "tests/harness/errors.test.ts"
+        ]
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-feature:typescript.type"
+        "status": "supported",
+        "evidence": "island-feature:typescript.type",
+        "tests": [
+          "tests/corpus/2705-type-import-link-dynamic/main.ts",
+          "tests/corpus/2706-type-import-link-dynamic-success/main.ts",
+          "tests/harness/errors.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

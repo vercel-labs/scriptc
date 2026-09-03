@@ -1,0 +1,5 @@
+cjs-require-esm-type-link/child.mts:1:10 - error SC1013: a named import of an unavailable export in an ES module reached through require() (Node throws its SyntaxError mid-evaluation at that require; make the import match the module's runtime exports) is not supported yet
+
+  1 | import { Shape } from './types.mts';
+    |          ^~~~~
+  2 | console.log('child evaluated');

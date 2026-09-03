@@ -1963,9 +1963,8 @@ export function collectGlobals(lowerer: Lowerer, sf: ts.SourceFile, topStmts: ts
           }]
         : [];
     // Node's startup refusal (a resolution the graph carries that Node
-    // rejects — preflight's Node-order resolution walk — or the module-
-    // LINK SyntaxError of a named import of a CommonJS export its lexer
-    // cannot detect — cjsNamedImportLinkCheck): the graph is refused
+    // rejects — preflight's Node-order resolution walk — or a module-LINK
+    // SyntaxError from either named-import checker): the graph is refused
     // before ANY module evaluates, so %main opens with exactly that throw
     // (message and error class both Node's) and the entry init below it
     // never runs. The init still lowers — the program must otherwise

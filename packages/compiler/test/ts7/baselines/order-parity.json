@@ -5695,6 +5695,56 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2702-type-import-link-static/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2702-type-import-link-static/types.ts",
+    "<repo>/tests/corpus/2702-type-import-link-static/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2703-type-import-link-static-reexport/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2703-type-import-link-static-reexport/types.ts",
+    "<repo>/tests/corpus/2703-type-import-link-static-reexport/middle.ts",
+    "<repo>/tests/corpus/2703-type-import-link-static-reexport/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2704-type-import-link-static-success/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2704-type-import-link-static-success/types.ts",
+    "<repo>/tests/corpus/2704-type-import-link-static-success/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2705-type-import-link-dynamic/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2705-type-import-link-dynamic/types.ts",
+    "<repo>/tests/corpus/2705-type-import-link-dynamic/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2706-type-import-link-dynamic-success/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2706-type-import-link-dynamic-success/types.ts",
+    "<repo>/tests/corpus/2706-type-import-link-dynamic-success/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2707-type-import-link-static-default-reexport/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2707-type-import-link-static-default-reexport/types.ts",
+    "<repo>/tests/corpus/2707-type-import-link-static-default-reexport/reexport.ts",
+    "<repo>/tests/corpus/2707-type-import-link-static-default-reexport/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2708-type-import-link-dynamic/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2708-type-import-link-dynamic/main.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/300-if-else.ts": {
    "order": [
     "<repo>/tests/corpus/300-if-else.ts"
@@ -6768,6 +6818,25 @@
      },
      "milestone": "later",
      "hint": "cycles of ES modules with declaration-only top levels whose cycle-crossing bindings are only used inside function bodies compile as-is; move the named top-level read or call into a function body (or break the named edge) so nothing runs during the cycle's init window"
+    }
+   ]
+  },
+  "<repo>/tests/diagnostics/cjs-require-esm-type-link/main.js": {
+   "order": [
+    "<repo>/tests/diagnostics/cjs-require-esm-type-link/types.mts",
+    "<repo>/tests/diagnostics/cjs-require-esm-type-link/child.mts",
+    "<repo>/tests/diagnostics/cjs-require-esm-type-link/main.js"
+   ],
+   "diags": [
+    {
+     "code": "SC1013",
+     "message": "a named import of an unavailable export in an ES module reached through require() (Node throws its SyntaxError mid-evaluation at that require; make the import match the module's runtime exports) is not supported yet",
+     "loc": {
+      "file": "<repo>/tests/diagnostics/cjs-require-esm-type-link/child.mts",
+      "start": 9,
+      "end": 14
+     },
+     "milestone": "later"
     }
    ]
   },

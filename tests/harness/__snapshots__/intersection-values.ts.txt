@@ -1,35 +1,35 @@
-intersection-values.ts:9:10 - error SC2008: values of type 'Branded' cannot be compiled: this intersection resolves to no runtime shape
+intersection-values.ts:14:10 - error SC2008: values of type 'Branded' cannot be compiled: this intersection resolves to no runtime shape
 
-   8 | type Branded = number & { __brand: "id" };
-   9 | function mint(): Branded {
+  13 | type Branded = number & Tag;
+  14 | function mint(): Branded {
      |          ^~~~
-  10 |   return 1 as Branded;
+  15 |   return 1 as unknown as Branded;
 
   hint: restate the intersection as a single interface or type literal with the combined members; mixin-produced intersections compile where the mixin chain pins one instantiation
 
-intersection-values.ts:12:7 - error SC2008: values of type 'Branded' cannot be compiled: this intersection resolves to no runtime shape
+intersection-values.ts:17:7 - error SC2008: values of type 'Branded' cannot be compiled: this intersection resolves to no runtime shape
 
-  11 | }
-  12 | const kept = mint();
+  16 | }
+  17 | const kept = mint();
      |       ^~~~
-  13 | console.log(kept);
+  18 | console.log(kept);
 
   hint: restate the intersection as a single interface or type literal with the combined members; mixin-produced intersections compile where the mixin chain pins one instantiation
 
-intersection-values.ts:12:14 - error SC2004: uses of 'mint' inherit the blocker on its declaration
+intersection-values.ts:17:14 - error SC2004: uses of 'mint' inherit the blocker on its declaration
 
-  11 | }
-  12 | const kept = mint();
+  16 | }
+  17 | const kept = mint();
      |              ^~~~
-  13 | console.log(kept);
+  18 | console.log(kept);
 
   hint: the declaration of 'mint' did not compile — fix the diagnostic reported there and these sites clear with it
 
-intersection-values.ts:13:13 - error SC2004: uses of 'kept' inherit the blocker on its declaration
+intersection-values.ts:18:13 - error SC2004: uses of 'kept' inherit the blocker on its declaration
 
-  12 | const kept = mint();
-  13 | console.log(kept);
+  17 | const kept = mint();
+  18 | console.log(kept);
      |             ^~~~
-  14 | 
+  19 | 
 
   hint: the declaration of 'kept' did not compile — fix the diagnostic reported there and these sites clear with it

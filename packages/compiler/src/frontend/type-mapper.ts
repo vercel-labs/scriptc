@@ -862,6 +862,50 @@ function classExprNeverRegisters(decl: ts.ClassLikeDeclaration): boolean {
   return false;
 }
 
+/** The IR type of a PRIMITIVE ts type — number, string, boolean — or null
+ * for everything else. The one table: mapTypeInner's scalar dispatch and
+ * the branded-intersection rule must agree on what a primitive lowers to. */
+function mapPrimitive(flags: ts.TypeFlags): IrType | null {
+  if (flags & ts.TypeFlags.Number) return F64;
+  if (flags & ts.TypeFlags.String) return STRING;
+  if (flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) return BOOL;
+  return null;
+}
+
+/** True for an intersection constituent that only DECORATES the type: a
+ * plain object type carrying no runtime shape of its own — no call or
+ * construct signatures, no class identity. Its members are type-level, so
+ * uses of them fence per SITE rather than at the type. */
+function isPlainRefinement(part: ts.Type, checker: ts.TypeChecker): boolean {
+  const sym = part.getSymbol();
+  return (
+    (part.flags & ts.TypeFlags.Object) !== 0 &&
+    checker.getCallSignatures(part).length === 0 &&
+    checker.getConstructSignatures(part).length === 0 &&
+    (sym === undefined || (sym.flags & ts.SymbolFlags.Class) === 0)
+  );
+}
+
+/** The primitive an intersection BRANDS, or null when it brands none. The
+ * shape is one primitive constituent — the runtime representation — plus
+ * plain object refinements (isPlainRefinement): the same carrier-plus-
+ * decoration rule the builtin-handle intersections below follow. Repeating
+ * one primitive is harmless (`string & string & B`); two different ones
+ * make the intersection uninhabited, so it stays unmapped. */
+function mapBrandedPrimitive(widened: ts.Type, checker: ts.TypeChecker): IrType | null {
+  let carrier: IrType | null = null;
+  for (const part of ts.constituentTypes(widened)) {
+    const primitive = mapPrimitive(checker.getBaseTypeOfLiteralType(part).flags);
+    if (primitive !== null) {
+      if (carrier !== null && carrier.kind !== primitive.kind) return null;
+      carrier = primitive;
+      continue;
+    }
+    if (!isPlainRefinement(part, checker)) return null;
+  }
+  return carrier;
+}
+
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, unions, classNamer, resolveTypeParam } = ctx;
   if (resolveTypeParam && type.flags & ts.TypeFlags.TypeParameter) {
@@ -906,9 +950,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const widened = checker.getBaseTypeOfLiteralType(type);
   const flags = widened.flags;
 
-  if (flags & ts.TypeFlags.Number) return F64;
-  if (flags & ts.TypeFlags.String) return STRING;
-  if (flags & ts.TypeFlags.Boolean || flags & ts.TypeFlags.BooleanLiteral) return BOOL;
+  {
+    const primitive = mapPrimitive(flags);
+    if (primitive !== null) return primitive;
+  }
   // node:util.parseArgs config/results are declaration-heavy conditional
   // and discriminated-union types over a value that is naturally a checked-
   // dynamic tree. Keep the named public surface (plus @types/node's private
@@ -1198,6 +1243,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     return { kind: "record", shapeId: ctx.shapes.intern(fields, true) };
   }
+  // BRANDED primitives — the nominal-typing idiom `type UserId = string &
+  // { readonly __brand: "UserId" }` (a `unique symbol` brand key spells the
+  // same shape). The brand member lives only in the type world: every value
+  // of the type IS the primitive, so the mapping is the primitive's own and
+  // a branded slot holds, passes, and computes exactly like its unbranded
+  // twin. Reads of a brand member fence per site, like any other refinement
+  // member.
+  if (widened.isIntersectionType()) {
+    const branded = mapBrandedPrimitive(widened, checker);
+    if (branded !== null) return branded;
+  }
   // Class instances: the type's symbol is a class declared in the user's
   // file. The class NAME as a value has the *constructor* type — same
   // REFINED handle intersections — @types/node's idioms: `ServerResponse<
@@ -1229,13 +1285,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         handle = mapped;
         continue;
       }
-      const partSym = part.getSymbol();
-      if (
-        (part.flags & ts.TypeFlags.Object) === 0 ||
-        checker.getCallSignatures(part).length > 0 ||
-        checker.getConstructSignatures(part).length > 0 ||
-        (partSym !== undefined && (partSym.flags & ts.SymbolFlags.Class) !== 0)
-      ) {
+      if (!isPlainRefinement(part, checker)) {
         refined = false;
         break;
       }

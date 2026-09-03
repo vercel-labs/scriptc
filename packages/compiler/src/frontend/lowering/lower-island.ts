@@ -8,7 +8,7 @@ import type { Lowerer } from "./lowerer.js";
 import { BOOL, BYTES_U8, DYN, F64, IrExpr, IrStmt, IrType, JSVAL, MAX_ISLAND_CALLBACK_ARITY, STRING, VOID, canConvertToDyn, canMarshalTypedFuncIntoIsland, islandPromisePayloadTag, isUnitType } from "../../ir/ir.js";
 import { ISLAND_SURFACE, IslandFnEntry, STATIC_MATH_FNS, STATIC_MATH_PROPS, boundaryIntoIslandMsg } from "./surfaces.js";
 import { requiresDynamicApiDiag, requiresDynamicPackageDiag } from "../../diagnostics/diagnostic.js";
-import { isCjsJsFile, isJsSourceFile, locOf, npmPackageNameOf } from "../program.js";
+import { esmNamedImportLinkCrash, isCjsJsFile, isJsSourceFile, locOf, npmPackageNameOf } from "../program.js";
 import { foldedStringKeyOf, lowerDynObjectLiteral, pureReemittable } from "./lower-exprs.js";
 import { PoisonError, dynUndefinedExpr, newFnCtx, nodeThrowExpr, own } from "./lowerer.js";
 import {
@@ -2794,13 +2794,32 @@ export function lowerStaticReadableStreamReaderCall(
     lowerer.fnStack.push(fnCtx);
     try {
       const body: IrStmt[] = [];
+      const linkCrash = esmNamedImportLinkCrash(lowerer.program, dep);
+      if (linkCrash !== null) {
+        // A dynamic import links its graph when the returned promise is
+        // settled. Preserve that timing by throwing from the synthesized
+        // namespace builder, which runs inside the Promise reaction; the
+        // bridge turns the throw into the import promise's rejection. No
+        // module init may run before this link failure.
+        body.push({
+          kind: "throw",
+          value: {
+            kind: "libCall",
+            fn: "error.new",
+            args: [{ kind: "strLit", value: linkCrash.message, type: STRING, loc }],
+            type: { kind: "object", className: linkCrash.className },
+            loc,
+          },
+          loc,
+        });
+      }
       // A synchronous entry has no run-once guard, so its historical
       // self-import path must not call %init again. An ASYNC entry does
       // have the stronger evaluation-promise cache: awaiting that cached
       // promise is essential for top-level `await import("./self")`,
       // which deadlocks (and ultimately exits 13) in Node rather than
       // exposing a half-evaluated namespace.
-      if (dep !== lowerer.entry || isAsync) {
+      if (linkCrash === null && (dep !== lowerer.entry || isAsync)) {
         const call: IrExpr = {
           kind: "call",
           callee: initName,

@@ -227,8 +227,8 @@ export interface LoadResult {
 /** See LoadResult.startupCrash: Node's exact error message, the IR error
  * class that carries it (a RUNTIME_ERROR_CLASSES name — %Error for the
  * resolver's ERR_MODULE_NOT_FOUND family, %TypeError for invalid-specifier
- * refusals, %SyntaxError for the CJS link check), and the source position
- * of the refused edge. */
+ * refusals, %SyntaxError for either named-import link check), and the source
+ * position of the refused edge. */
 export interface StartupCrash {
   message: string;
   className: "%Error" | "%TypeError" | "%SyntaxError";
@@ -2706,12 +2706,30 @@ function cjsNamedImportLinkCheck(
  * determined by Node's source lexer and have their own interop message and
  * ordering rules; native ESM exports come from the resolved TypeScript
  * module symbol and use Node's generic missing-export SyntaxError. */
-function esmNamedImportLinkCheck(
+interface BadEsmImport {
+  exportName: string;
+  spec: string;
+  nameNode: ts.Node;
+  sf: ts.SourceFile;
+}
+
+interface EsmNamedImportLinkAnalysis {
+  crash: StartupCrash | null;
+  visited: Set<ts.SourceFile>;
+  firstMissingOf: (sf: ts.SourceFile) => BadEsmImport | null;
+}
+
+/** Finds the first native-ESM link failure in the static module graph rooted
+ * at `entry`. This is used both for startup linking of the entry graph and
+ * for dynamic imports: a dynamically loaded graph rejects its import promise
+ * at this same link point instead of running any module body. `default
+ * interface` is a Node strip-only special case only for a direct import; a
+ * re-export request still asks the source module for a runtime `default`,
+ * which Node does not provide. */
+function analyzeEsmNamedImportLinks(
   program: ts.Program,
   entry: ts.SourceFile,
-  moduleOrder: ts.SourceFile[],
-  diags: ScrDiagnostic[],
-): StartupCrash | null {
+): EsmNamedImportLinkAnalysis {
   const checker = program.getTypeChecker();
   const resolveEdge = (from: ts.SourceFile, spec: string): ts.SourceFile | null => {
     if (isRelativeSpecifier(spec)) return resolveImport7(program, from, spec);
@@ -2721,7 +2739,11 @@ function esmNamedImportLinkCheck(
     return p !== null ? (program.getSourceFile(p) ?? null) : null;
   };
 
-  const runtimeExport = (dep: ts.SourceFile, name: string): ts.Symbol | undefined => {
+  const runtimeExport = (
+    dep: ts.SourceFile,
+    name: string,
+    allowDefaultInterface = true,
+  ): ts.Symbol | undefined => {
     const module = checker.getSymbolAtLocation(dep);
     const exported = module?.getExports().get(name as ts.__String);
     if (exported === undefined) return undefined;
@@ -2732,11 +2754,14 @@ function esmNamedImportLinkCheck(
       resolved = checker.getAliasedSymbol(resolved);
     }
     if (resolved.flags & ts.SymbolFlags.Value) return resolved;
-    // Node's strip-only TypeScript loader materializes `export default
-    // interface X {}` as an empty default export. The checker quite rightly
-    // classifies the declaration as type-only, but the native ESM linker sees
-    // the runtime placeholder (including through `export { default } from`).
+    // Node's strip-only TypeScript loader materializes a direct `export
+    // default interface X {}` as an empty default export. The checker quite
+    // rightly classifies the declaration as type-only, but the native ESM
+    // linker sees the runtime placeholder. Re-export requests deliberately
+    // disable this exception below: Node does not expose that placeholder to
+    // `export { default } from`.
     if (
+      allowDefaultInterface &&
       name === "default" &&
       checker.declarationsOf(resolved).some(
         (declaration) =>
@@ -2749,13 +2774,6 @@ function esmNamedImportLinkCheck(
     }
     return undefined;
   };
-
-  interface BadEsmImport {
-    exportName: string;
-    spec: string;
-    nameNode: ts.Node;
-    sf: ts.SourceFile;
-  }
 
   const firstMissingOf = (sf: ts.SourceFile): BadEsmImport | null => {
     const imports: { local: string; exportName: string; spec: string; nameNode: ts.Node; dep: ts.SourceFile }[] = [];
@@ -2809,7 +2827,10 @@ function esmNamedImportLinkCheck(
       for (const element of exportClause.elements) {
         if (element.isTypeOnly) continue;
         const nameNode = element.propertyName ?? element.name;
-        if (runtimeExport(dep, nameNode.text) === undefined) {
+        // Unlike a direct import, `export { default } from` asks the source
+        // module for a real runtime export. Node's strip-only default
+        // interface placeholder is not visible through this re-export.
+        if (runtimeExport(dep, nameNode.text, false) === undefined) {
           return { exportName: nameNode.text, spec, nameNode, sf };
         }
       }
@@ -2837,18 +2858,40 @@ function esmNamedImportLinkCheck(
     return firstMissingOf(sf);
   };
 
-  // Native ESM linking itself starts only from an ESM entry. The order is
-  // reconstructed above because moduleOrder is postorder while Node's link
-  // walk needs the statement-interleaved DFS. The caller uses moduleOrder to
-  // merge this result with the unchanged CommonJS lexer check.
+  // Native ESM linking itself starts only from an ESM entry. The caller
+  // supplies dynamic-only roots here too; each such root gets its own
+  // promise rejection rather than a startup crash.
   const bad = isNodeEsmFile7(entry) ? dfs(entry) : null;
   if (bad !== null) {
     return {
-      message: `The requested module '${bad.spec}' does not provide an export named '${bad.exportName}'`,
-      className: "%SyntaxError",
-      loc: locOf7(bad.nameNode),
+      crash: {
+        message: `The requested module '${bad.spec}' does not provide an export named '${bad.exportName}'`,
+        className: "%SyntaxError",
+        loc: locOf7(bad.nameNode),
+      },
+      visited,
+      firstMissingOf,
     };
   }
+
+  return { crash: null, visited, firstMissingOf };
+}
+
+export function esmNamedImportLinkCrash(
+  program: ts.Program,
+  entry: ts.SourceFile,
+): StartupCrash | null {
+  return analyzeEsmNamedImportLinks(program, entry).crash;
+}
+
+function esmNamedImportLinkCheck(
+  program: ts.Program,
+  entry: ts.SourceFile,
+  moduleOrder: ts.SourceFile[],
+  diags: ScrDiagnostic[],
+): StartupCrash | null {
+  const analysis = analyzeEsmNamedImportLinks(program, entry);
+  if (analysis.crash !== null) return analysis.crash;
 
   // A CommonJS entry can synchronously require an ESM graph. Node links that
   // graph at the require site, after the CommonJS module has already begun
@@ -2856,8 +2899,8 @@ function esmNamedImportLinkCheck(
   // before earlier output). Keep the compile-time fence used by the CJS link
   // checker for the analogous mid-evaluation failure instead.
   for (const sf of moduleOrder) {
-    if (!isNodeEsmFile7(sf) || visited.has(sf)) continue;
-    const childFailure = firstMissingOf(sf);
+    if (!isNodeEsmFile7(sf) || analysis.visited.has(sf)) continue;
+    const childFailure = analysis.firstMissingOf(sf);
     if (childFailure !== null) {
       diags.push(
         unsupportedDiag(

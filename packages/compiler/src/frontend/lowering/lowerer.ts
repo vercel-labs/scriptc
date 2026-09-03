@@ -348,7 +348,7 @@ export interface LowerOptions {
    * path.win32 keep answering THEIR platform everywhere, like Node's. */
   targetPlatform?: string;
   /** Node's startup refusal (LoadResult.startupCrash — preflight's
-   * resolution walk and CJS named-import link check): the program
+   * resolution walk and named-import link checks): the program
    * compiles to that startup crash. */
   startupCrash?: StartupCrash | null;
   /** LIBRARY mode's reachability roots: the profile-mapped exports of the
@@ -430,8 +430,8 @@ export interface LowererMode {
   /** The build's target platform (LowerOptions.targetPlatform — lowerToIr
    * passes it to every pass). Defaults to the host. */
   targetPlatform?: string;
-  /** Node's startup refusal (preflight's resolution walk / CJS named-
-   * import link check): %main opens with exactly this throw, before any
+  /** Node's startup refusal (preflight's resolution walk / named-import
+   * link checks): %main opens with exactly this throw, before any
    * module init — Node refuses the whole graph before anything evaluates,
    * so nothing runs. */
   startupCrash?: StartupCrash | null;

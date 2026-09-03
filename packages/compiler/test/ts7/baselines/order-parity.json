@@ -5731,6 +5731,20 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2707-type-import-link-static-default-reexport/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2707-type-import-link-static-default-reexport/types.ts",
+    "<repo>/tests/corpus/2707-type-import-link-static-default-reexport/reexport.ts",
+    "<repo>/tests/corpus/2707-type-import-link-static-default-reexport/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2708-type-import-link-dynamic/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/2708-type-import-link-dynamic/main.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/300-if-else.ts": {
    "order": [
     "<repo>/tests/corpus/300-if-else.ts"

@@ -2719,13 +2719,18 @@ interface EsmNamedImportLinkAnalysis {
   firstMissingOf: (sf: ts.SourceFile) => BadEsmImport | null;
 }
 
+/** Node's strip-only loader exposes an empty `default` export for a default
+ * interface only when the `.ts` file is in an ambiguous (typeless) package
+ * scope. Explicitly ESM files (`.mts` and `.mjs`) and `.ts` files in a
+ * `"type": "module"` package do not get that placeholder. */
+function hasNodeTsDefaultInterfacePlaceholder7(sf: ts.SourceFile): boolean {
+  return sf.fileName.endsWith(".ts") && nearestPackageType(sf.fileName) === null;
+}
+
 /** Finds the first native-ESM link failure in the static module graph rooted
  * at `entry`. This is used both for startup linking of the entry graph and
  * for dynamic imports: a dynamically loaded graph rejects its import promise
- * at this same link point instead of running any module body. `default
- * interface` is a Node strip-only special case only for a direct import; a
- * re-export request still asks the source module for a runtime `default`,
- * which Node does not provide. */
+ * at this same link point instead of running any module body. */
 function analyzeEsmNamedImportLinks(
   program: ts.Program,
   entry: ts.SourceFile,
@@ -2742,7 +2747,6 @@ function analyzeEsmNamedImportLinks(
   const runtimeExport = (
     dep: ts.SourceFile,
     name: string,
-    allowDefaultInterface = true,
   ): ts.Symbol | undefined => {
     const module = checker.getSymbolAtLocation(dep);
     const exported = module?.getExports().get(name as ts.__String);
@@ -2755,14 +2759,14 @@ function analyzeEsmNamedImportLinks(
     }
     if (resolved.flags & ts.SymbolFlags.Value) return resolved;
     // Node's strip-only TypeScript loader materializes a direct `export
-    // default interface X {}` as an empty default export. The checker quite
-    // rightly classifies the declaration as type-only, but the native ESM
-    // linker sees the runtime placeholder. Re-export requests deliberately
-    // disable this exception below: Node does not expose that placeholder to
-    // `export { default } from`.
+    // default interface X {}` as an empty default export in an ambiguous
+    // `.ts` file. The checker quite rightly classifies the declaration as
+    // type-only, but the native ESM linker sees the runtime placeholder.
+    // This is a property of the source file's Node module format, not of
+    // whether the request is direct or re-exported.
     if (
-      allowDefaultInterface &&
       name === "default" &&
+      hasNodeTsDefaultInterfacePlaceholder7(dep) &&
       checker.declarationsOf(resolved).some(
         (declaration) =>
           ts.isInterfaceDeclaration(declaration) &&
@@ -2827,10 +2831,7 @@ function analyzeEsmNamedImportLinks(
       for (const element of exportClause.elements) {
         if (element.isTypeOnly) continue;
         const nameNode = element.propertyName ?? element.name;
-        // Unlike a direct import, `export { default } from` asks the source
-        // module for a real runtime export. Node's strip-only default
-        // interface placeholder is not visible through this re-export.
-        if (runtimeExport(dep, nameNode.text, false) === undefined) {
+        if (runtimeExport(dep, nameNode.text) === undefined) {
           return { exportName: nameNode.text, spec, nameNode, sf };
         }
       }

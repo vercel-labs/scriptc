@@ -628,6 +628,44 @@ console.log('ok');
     expect(r.stderr).toBe("");
   });
 
+  test("explicit module packages do not expose default-interface placeholders", async () => {
+    const r = await compileAndRun(
+      "esm-default-interface-explicit-module",
+      `import DefaultShape from './types.ts';
+type LocalShape = DefaultShape;
+console.log('never runs');
+`,
+      "ts",
+      {
+        "package.json": `{ "type": "module" }\n`,
+        "types.ts": "export default interface DefaultShape { value: number }\n",
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe(
+      "Uncaught SyntaxError: The requested module './types.ts' does not provide an export named 'default'\n",
+    );
+  });
+
+  test("typeless packages preserve default-interface placeholders through re-exports", async () => {
+    const r = await compileAndRun(
+      "esm-default-interface-reexport",
+      `import DefaultShape from './reexport.ts';
+type LocalShape = DefaultShape;
+console.log('ok');
+`,
+      "ts",
+      {
+        "reexport.ts": `export { default } from './types.ts';\n`,
+        "types.ts": "export default interface DefaultShape { value: number }\n",
+      },
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("ok\n");
+    expect(r.stderr).toBe("");
+  });
+
   test("a child native-ESM failure wins over a later parent CJS failure", async () => {
     const r = await compileAndRun(
       "esm-type-link-before-cjs",

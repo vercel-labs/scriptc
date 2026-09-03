@@ -2495,7 +2495,7 @@ function preflight7(load: LoadResult): {
     : earlierLinkCrash(
         order,
         cjsNamedImportLinkCheck(program, entry, order, diags),
-        esmNamedImportLinkCheck(program, entry, order),
+        esmNamedImportLinkCheck(program, entry, order, diags),
       );
 
   return { diags, moduleOrder: order, startupCrash: resolveCrash ?? linkCrash };
@@ -2710,6 +2710,7 @@ function esmNamedImportLinkCheck(
   program: ts.Program,
   entry: ts.SourceFile,
   moduleOrder: ts.SourceFile[],
+  diags: ScrDiagnostic[],
 ): StartupCrash | null {
   const checker = program.getTypeChecker();
   const resolveEdge = (from: ts.SourceFile, spec: string): ts.SourceFile | null => {
@@ -2730,7 +2731,23 @@ function esmNamedImportLinkCheck(
       seen.add(resolved);
       resolved = checker.getAliasedSymbol(resolved);
     }
-    return resolved.flags & ts.SymbolFlags.Value ? resolved : undefined;
+    if (resolved.flags & ts.SymbolFlags.Value) return resolved;
+    // Node's strip-only TypeScript loader materializes `export default
+    // interface X {}` as an empty default export. The checker quite rightly
+    // classifies the declaration as type-only, but the native ESM linker sees
+    // the runtime placeholder (including through `export { default } from`).
+    if (
+      name === "default" &&
+      checker.declarationsOf(resolved).some(
+        (declaration) =>
+          ts.isInterfaceDeclaration(declaration) &&
+          ts.getModifiers(declaration)?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) === true &&
+          ts.getModifiers(declaration)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true,
+      )
+    ) {
+      return resolved;
+    }
+    return undefined;
   };
 
   interface BadEsmImport {
@@ -2824,15 +2841,34 @@ function esmNamedImportLinkCheck(
   // reconstructed above because moduleOrder is postorder while Node's link
   // walk needs the statement-interleaved DFS. The caller uses moduleOrder to
   // merge this result with the unchanged CommonJS lexer check.
-  void moduleOrder;
-  if (!isNodeEsmFile7(entry)) return null;
-  const bad = dfs(entry);
-  if (bad === null) return null;
-  return {
-    message: `The requested module '${bad.spec}' does not provide an export named '${bad.exportName}'`,
-    className: "%SyntaxError",
-    loc: locOf7(bad.nameNode),
-  };
+  const bad = isNodeEsmFile7(entry) ? dfs(entry) : null;
+  if (bad !== null) {
+    return {
+      message: `The requested module '${bad.spec}' does not provide an export named '${bad.exportName}'`,
+      className: "%SyntaxError",
+      loc: locOf7(bad.nameNode),
+    };
+  }
+
+  // A CommonJS entry can synchronously require an ESM graph. Node links that
+  // graph at the require site, after the CommonJS module has already begun
+  // evaluating, so this cannot use startupCrash (which would move the error
+  // before earlier output). Keep the compile-time fence used by the CJS link
+  // checker for the analogous mid-evaluation failure instead.
+  for (const sf of moduleOrder) {
+    if (!isNodeEsmFile7(sf) || visited.has(sf)) continue;
+    const childFailure = firstMissingOf(sf);
+    if (childFailure !== null) {
+      diags.push(
+        unsupportedDiag(
+          "SC1013",
+          locOf7(childFailure.nameNode),
+          "a named import of an unavailable export in an ES module reached through require() (Node throws its SyntaxError mid-evaluation at that require; make the import match the module's runtime exports)",
+        ),
+      );
+    }
+  }
+  return null;
 }
 
 /** Both named-export link checks run independently because their export

@@ -6807,6 +6807,25 @@
     }
    ]
   },
+  "<repo>/tests/diagnostics/cjs-require-esm-type-link/main.js": {
+   "order": [
+    "<repo>/tests/diagnostics/cjs-require-esm-type-link/types.mts",
+    "<repo>/tests/diagnostics/cjs-require-esm-type-link/child.mts",
+    "<repo>/tests/diagnostics/cjs-require-esm-type-link/main.js"
+   ],
+   "diags": [
+    {
+     "code": "SC1013",
+     "message": "a named import of an unavailable export in an ES module reached through require() (Node throws its SyntaxError mid-evaluation at that require; make the import match the module's runtime exports) is not supported yet",
+     "loc": {
+      "file": "<repo>/tests/diagnostics/cjs-require-esm-type-link/child.mts",
+      "start": 9,
+      "end": 14
+     },
+     "milestone": "later"
+    }
+   ]
+  },
   "<repo>/tests/diagnostics/cjs-require-tdz/main.js": {
    "order": [
     "<repo>/tests/diagnostics/cjs-require-tdz/main.js"

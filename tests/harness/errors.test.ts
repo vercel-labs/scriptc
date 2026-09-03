@@ -613,6 +613,21 @@ console.log('never runs');
     );
   });
 
+  test("default interface exports satisfy Node's strip-only default link", async () => {
+    const r = await compileAndRun(
+      "esm-default-interface-link",
+      `import DefaultShape from './types.ts';
+type LocalShape = DefaultShape;
+console.log('ok');
+`,
+      "ts",
+      { "types.ts": "export default interface DefaultShape { value: number }\n" },
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("ok\n");
+    expect(r.stderr).toBe("");
+  });
+
   test("a child native-ESM failure wins over a later parent CJS failure", async () => {
     const r = await compileAndRun(
       "esm-type-link-before-cjs",

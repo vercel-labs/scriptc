@@ -3,6 +3,7 @@
  * function/lambda lowering and signature collection, and monomorphizing
  * generic instantiation (bounded by MAX_GENERIC_INSTANCES). */
 import * as ts from "../ts7/adapter.js";
+import { InternalCompilerError } from "../../errors.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { BOOL, CAUGHT, DYN, F64, IrExpr, IrFunction, IrLocal, IrParam, IrStmt, IrType, JSVAL, STRING, SYMBOL_T, SrcLoc, UNDEFINED_T, VOID, arrayOf, canBoxFuncIntoDyn, canConvertToDyn, canDynCheckTo, canMarshalTypedFuncIntoIsland, ffiClassType, ffiSourceParamTypes, funcOf, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isUnitType, shapeHasAccessorSlots, typeEquals } from "../../ir/ir.js";
@@ -5502,18 +5503,21 @@ const inliningPredicates = new Set<ts.Symbol>();
     );
   }
 
-/** Nested `function name(...) {...}`: lowered as `const name = <lambda>`
-   * at the declaration's statement position (JS hoists function declarations
-   * to the top of the enclosing function — calling one before this statement
-   * is a compile error here, not a silent divergence). Self-references inside
-   * the body lower to `selfRef`, not a capture: a box holding its own
-   * closure would be an RC cycle. */
+/** Nested `function name(...) {...}` reserves its binding first, then lowers
+   * the lambda and assigns the resulting closure to that binding. The local is
+   * mutable in IR because this two-phase form lets mutually recursive
+   * declarations capture each other's live boxes before either closure is
+   * initialized. Self-references inside the body lower to `selfRef`, not a
+   * capture: a box holding its own closure would be an RC cycle. */
   export function lowerNestedFunctionDecl(lowerer: Lowerer, stmt: ts.FunctionDeclaration): IrStmt {
     if (!stmt.name) lowerer.unsupported("SC1090", stmt, "anonymous function declarations");
     const { funcType } = lowerer.lambdaSignature(stmt);
-    const local = lowerer.declareLocal(stmt.name, stmt.name.text, funcType, false);
+    const local = lowerer.declareLocal(stmt.name, stmt.name.text, funcType, true);
+    const active = [...lowerer.activeStmtLists].reverse().find((entry) => entry.stmts.includes(stmt));
+    if (!active) throw new InternalCompilerError("lowerer bug: nested function has no owning statement list");
+    active.out.push({ kind: "varDecl", localId: local.id, init: null, loc: locOf(stmt) });
     const init = lowerer.lowerLambda(stmt);
-    return { kind: "varDecl", localId: local.id, init, loc: locOf(stmt) };
+    return { kind: "assign", localId: local.id, value: init, loc: locOf(stmt) };
   }
 
 /** Signature checks + param shapes + IR func type for any lambda-like

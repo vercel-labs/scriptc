@@ -2164,6 +2164,21 @@ function preflight7(load: LoadResult): {
             refuse(refusal.message, "%Error", ambientNote);
             continue;
           }
+          // A BARE side-effect import (`import "x";` — no default, named, or
+          // namespace binding: stmt.importClause is undefined) of a module
+          // that exists ONLY as an ambient 'declare module' type surface has
+          // no runtime module AND nothing bound from it for other code to
+          // reference — the two facts together make dropping the statement
+          // behaviorally exact, not an approximation. This is the standard
+          // shape of a bundler-only stylesheet import (`import
+          // "pkg/dist/style.css";`, ambient-declared via a `declare module
+          // "*.css"` surface): real CSS side effects don't exist in a
+          // compiled binary with no browser to apply them to, so there is
+          // nothing this program could have observed from the import
+          // succeeding that it can no longer observe. A bound import
+          // (`import styles from "x.css"`, `import { x } from "x"`) still
+          // fences below — something WOULD be missing.
+          if (stmt.importClause === undefined && ambientDeclared(spec)) continue;
           // Runtime-resolvable (or a shape the probe stays conservative
           // about) with no compilable types answer: scriptc's fence.
           diags.push(

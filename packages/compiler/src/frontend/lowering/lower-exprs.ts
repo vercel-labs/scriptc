@@ -961,6 +961,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
             return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
           }
+          // In --dynamic mode, `globalThis` is available as a JSVAL via the
+          // engine's global object. Property accesses (globalThis.window,
+          // globalThis.__vibeXxx) then flow through as JSVAL member reads.
+          if (L.dynamic && expr.text === "globalThis") {
+            return { kind: "jsOp", op: "globalGet", name: "globalThis", args: [], type: JSVAL, loc };
+          }
           // The families with a WHY: each hint states what makes the
           // surface genuinely non-static (or what to use instead).
           const globalHints: Record<string, string | undefined> = {
@@ -1851,6 +1857,13 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           { kind: "dynKeyGet", key, ...(opt ? { optional: true as const } : {}), value: recvLowered, type: DYN, loc },
           expr,
         );
+      }
+      // The lowered receiver is JSVAL (e.g. `(await import("excluded-module")).tools`
+      // where the dynamic import was stubbed to Promise.resolve({}) by lowerOwnModuleImport,
+      // or any other case where a TypeScript-typed expression lowered to the JS engine island).
+      // Property access on JSVAL is a native engine getProp — always valid.
+      if (recvLowered.type.kind === "jsval") {
+        return { kind: "jsOp", op: "getProp", name: expr.name.text, args: [recvLowered], type: JSVAL, loc };
       }
       // The lowered receiver is a RECORD the checker spelled wider —
       // `s.match(re).groups.key` in a JS file: the checker says
@@ -9362,6 +9375,16 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // only on object-typed operands, so unit receivers are unreachable.
     if (recv.type.kind === "dyn") {
       return { kind: "dynHasKey", key, value: recv, type: BOOL, loc };
+    }
+    // `"key" in globalThis` (or any JSVAL receiver) — the globalThis object is a JSVAL in
+    // --dynamic mode. Emit a JS-engine property existence check: getProp(recv, key) !== undefined.
+    // This correctly handles `"window" in globalThis` (false on server, true on browser),
+    // `"document" in globalThis`, and similar feature-detection patterns.
+    if (recv.type.kind === "jsval") {
+      const prop: IrExpr = { kind: "jsOp", op: "getProp", name: key, args: [recv], type: JSVAL, loc };
+      const undef: IrExpr = { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
+      const marshaledUndef: IrExpr = { kind: "jsMarshal", value: undef, type: JSVAL, loc };
+      return { kind: "jsOp", op: "neq", args: [prop, marshaledUndef], type: BOOL, loc };
     }
     // `"k" in u` over a UNION whose arms are FIXED record shapes: every
     // arm answers membership STATICALLY (a declared non-optional field is

@@ -1024,6 +1024,10 @@ export interface IrLibSection {
   /** The declared result-arena reset entry; null selects the auto-reset
    * posture (every entry prologue resets the arena). */
   resultResetSymbol: string | null;
+  /** The declared job-checkpoint entry: "run the pending promise
+   * continuations, then return". Null when the profile declares none —
+   * the byte-identical artifact a drain-free profile always produced. */
+  drainSymbol: string | null;
   /** Thread-instanced state (the profile's abi.instance_per_thread): both
    * backends emit the program TU's mutable statics — module globals,
    * run-once guards, and the lazily-compiled regex literal caches — as
@@ -6217,6 +6221,49 @@ export function moduleUsesDc(mod: IrModule): boolean {
   return found;
 }
 
+/** True when the module reaches the PROMISE/FIBER machinery: an async
+ * function, an await, a promise value, or one of the Promise statics.
+ * Library mode's link switch for scr_async.c (the assert gating
+ * precedent): a graph with no continuation to run keeps the exact archive
+ * a pre-drain scriptc produced, byte for byte. The executable lane links
+ * that unit unconditionally and ignores this.
+ *
+ * Note what it does NOT ask: whether a LOOP is needed. It never is in a
+ * library artifact — scr_loop_run is fenced out of the SCR_LIB flavor and
+ * SC4005 refuses every surface a turn would service. */
+export function moduleUsesAsync(mod: IrModule): boolean {
+  for (const fn of mod.functions) {
+    if (fn.async === true) return true;
+  }
+  let found = false;
+  const visit = (v: unknown): void => {
+    if (found || v === null || typeof v !== "object") return;
+    if (Array.isArray(v)) {
+      for (const item of v) visit(item);
+      return;
+    }
+    const node = v as { kind?: unknown; fn?: unknown };
+    if (
+      node.kind === "promise" ||
+      node.kind === "awaitExpr" ||
+      node.kind === "awaitUnionExpr" ||
+      (node.kind === "libCall" &&
+        typeof node.fn === "string" &&
+        (node.fn.startsWith("promise.") ||
+          // The bare job-queue spellings: both push straight onto the
+          // queues this unit owns, with no promise value in sight.
+          node.fn === "process.nextTick" ||
+          LIB_MODE_JOB_QUEUE_LIB_FNS.has(node.fn)))
+    ) {
+      found = true;
+      return;
+    }
+    for (const key of Object.keys(v)) visit((v as Record<string, unknown>)[key]);
+  };
+  visit(mod);
+  return found;
+}
+
 /** True when the module contains any assert libCall — the link switch
  * that pulls scr_assert.c into the binary (native-toolchain.ts). scr_regex.c calls the
  * assert throw/inspect helpers (assert.match lives there), so the regex
@@ -6702,15 +6749,80 @@ export function moduleUsesTlsCa(mod: IrModule): boolean {
   return found;
 }
 
-/* ── library mode's async_free gate ──────────────────────────────────────
- * v1 library mode REQUIRES an async_free module graph (ratified): no async
- * functions, no generators, no timers, no event-loop or ambient-process
- * surface anywhere the entry reaches — a static fact of the graph, never a
- * runtime observation. The detector below answers "what does this graph
- * reach that a library artifact cannot link?", first offender with its source anchor;
- * the structural consequence (scr_async.c / scr_child.c and every
- * loop-hooked unit never join a library link) is safe exactly because this
- * refusal ran first. */
+/** First construct in the graph that needs a RESUMABLE NATIVE STACK: an
+ * async function, a generator, an await, a yield, or a promise value
+ * (`.then` chains lower to runtime continuation fibers too) — then, as a
+ * safety net, everything the library gate refuses, which is a superset of
+ * the loop-hooked surface. wasm32-wasi's C backend has no coroutine
+ * lowering, so this is what its SC3001 names.
+ *
+ * Deliberately NOT moduleLibAsyncSurface: the two questions parted ways
+ * when library mode began admitting continuations. "Can this graph run
+ * without a coroutine?" is the WASI C backend's question; "does this graph
+ * reach a surface a library artifact cannot link?" is the library gate's,
+ * and it now answers `null` for every one of the constructs above. */
+export function moduleCoroutineSurface(mod: IrModule): { surface: string; loc: SrcLoc } | null {
+  for (const fn of mod.functions) {
+    if (fn.async === true) return { surface: `an async function ('${fn.name.replace(/^%/, "")}')`, loc: fn.loc };
+    if (fn.generator !== undefined) {
+      return { surface: `a generator function ('${fn.name.replace(/^%/, "")}')`, loc: fn.loc };
+    }
+  }
+  const kinds: ReadonlyMap<string, string> = new Map([
+    ["promise", "promise values"],
+    ["generator", "generator values"],
+    ["awaitExpr", "await"],
+    ["awaitUnionExpr", "await"],
+    ["yieldExpr", "yield"],
+  ]);
+  const entryLoc: SrcLoc = { file: mod.sourceFile, start: 0, end: 0 };
+  let found: { surface: string; loc: SrcLoc } | null = null;
+  const visit = (v: unknown, loc: SrcLoc): void => {
+    if (found !== null || v === null || typeof v !== "object") return;
+    if (Array.isArray(v)) {
+      for (const item of v) visit(item, loc);
+      return;
+    }
+    const node = v as { kind?: unknown; loc?: SrcLoc };
+    const here = node.loc ?? loc;
+    if (typeof node.kind === "string") {
+      const bad = kinds.get(node.kind);
+      if (bad !== undefined) {
+        found = { surface: bad, loc: here };
+        return;
+      }
+    }
+    for (const key of Object.keys(v)) visit((v as Record<string, unknown>)[key], here);
+  };
+  visit(mod, entryLoc);
+  if (found !== null) return found;
+  return moduleLibAsyncSurface(mod);
+}
+
+/* ── library mode's event-loop gate ──────────────────────────────────────
+ * v1 library mode refuses every EVENT-LOOP and ambient-process surface
+ * anywhere the entry reaches — timers, sockets, signals, child processes,
+ * generators — a static fact of the graph, never a runtime observation.
+ * The detector below answers "what does this graph reach that a library
+ * artifact cannot link?", first offender with its source anchor; the
+ * structural consequence (scr_child.c and every loop-hooked unit never
+ * join a library link, and scr_async.c joins WITHOUT its loop — the
+ * `#ifndef SCR_LIB` fence around scr_loop_run) is safe exactly because
+ * this refusal ran first.
+ *
+ * Promises, `await`, and `async` functions are deliberately NOT in the
+ * refused family. A continuation is queued work, not a turn: running one
+ * needs the job queue and nothing else — no clock, no poller, no thread,
+ * no signal handler. The host owns the moment it happens, through the
+ * profile's `abi.drain_symbol`. Two async shapes stay refused because
+ * they are not the host's to drain:
+ *
+ *  - an async ENTRY module (top-level await): library init IS module
+ *    evaluation, and the host has no promise to wait on and no loop to
+ *    finish it — a half-evaluated module graph would look initialized;
+ *  - generators, which suspend for a CONSUMER rather than a job queue and
+ *    have no drain story at the ABI boundary.
+ */
 
 /** libCall families a v1 library artifact refuses, with the surface name the SC4005
  * teaching uses. Prefix match over IrLibFn spellings. */
@@ -6719,6 +6831,11 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   // its fire rides the timer queue (scr_bytes_io.c), which library links
   // exclude — refuse the surface like the rest of the event-loop family.
   ["fs.existsChk", "the async fs callback surface (fs.exists)"],
+  // fs.promises mints already-settled promises (the syscalls are
+  // synchronous), so the queue is not what stops it — its handle surface
+  // reaches units outside the library link set. Refused as one family
+  // rather than admitted piecewise.
+  ["fsp.", "the fs.promises surface"],
   ["fs.renameCb", "the async fs callback surface (fs.rename)"],
   ["process.stdoutWriteBytesCb", "process.stdout.write completion callbacks"],
   ["process.stderrWriteBytesCb", "process.stderr.write completion callbacks"],
@@ -6757,13 +6874,22 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["dyn.defineProps", "checked-dynamic prototype dispatch"],
 ];
 
+/** Spellings the prefix table above refuses by NAMESPACE but which are
+ * pure job-queue work: queueMicrotask lives in the `timers.` IrLibFn
+ * namespace and is not a timer at all — it pushes the same FIFO a
+ * promise continuation lands on, so the host's drain runs it and no turn
+ * is involved. Checked before the prefix scan. */
+const LIB_MODE_JOB_QUEUE_LIB_FNS: ReadonlySet<string> = new Set([
+  "timers.queueMicrotask",
+  "timers.queueMicrotaskDyn",
+]);
+
 /** Value/type kinds whose mere presence means an excluded unit's code (or
  * a fiber) would have to link. */
 const LIB_MODE_REFUSED_KINDS: ReadonlyMap<string, string> = new Map([
-  ["promise", "promise values"],
+  // "promise", "awaitExpr" and "awaitUnionExpr" are deliberately absent:
+  // a promise is a queued job, and the host drains the queue.
   ["generator", "generator values"],
-  ["awaitExpr", "await"],
-  ["awaitUnionExpr", "await"],
   ["yieldExpr", "yield"],
   ["child", "the child_process surface"],
   ["spawnRes", "the child_process surface"],
@@ -6791,7 +6917,13 @@ const LIB_MODE_REFUSED_KINDS: ReadonlyMap<string, string> = new Map([
  * refuses, anchored at the entry). */
 export function moduleLibAsyncSurface(mod: IrModule): { surface: string; loc: SrcLoc } | null {
   for (const fn of mod.functions) {
-    if (fn.async === true) return { surface: `an async function ('${fn.name.replace(/^%/, "")}')`, loc: fn.loc };
+    // Top-level await: the entry function IS module evaluation, which the
+    // init entry runs synchronously. Nothing at the ABI boundary can wait
+    // for it, so a graph that needs it is refused rather than silently
+    // half-initialized.
+    if (fn.async === true && fn.name === mod.entry) {
+      return { surface: "top-level await (the entry module's own body is async)", loc: fn.loc };
+    }
     if (fn.generator !== undefined) {
       return { surface: `a generator function ('${fn.name.replace(/^%/, "")}')`, loc: fn.loc };
     }
@@ -6812,7 +6944,7 @@ export function moduleLibAsyncSurface(mod: IrModule): { surface: string; loc: Sr
         found = { surface: bad, loc: here };
         return;
       }
-      if (node.kind === "libCall" && typeof node.fn === "string") {
+      if (node.kind === "libCall" && typeof node.fn === "string" && !LIB_MODE_JOB_QUEUE_LIB_FNS.has(node.fn)) {
         for (const [prefix, surface] of LIB_MODE_REFUSED_PREFIXES) {
           if (node.fn.startsWith(prefix)) {
             found = { surface, loc: here };

@@ -71,6 +71,7 @@ test("early library cache restores generated artifacts and metadata", async () =
   });
   const native = {
     backend: "llvm" as const,
+    async: false,
     regex: false,
     assert: true,
     inspect: false,
@@ -122,6 +123,7 @@ test("early library cache publishes after creating a fresh output directory", as
     cPath,
     native: {
       backend: "llvm",
+      async: false,
       regex: false,
       assert: false,
       inspect: false,
@@ -150,6 +152,7 @@ test("early library cache hits refresh every payload's LRU time", async () => {
     sidecarPath: f.sidecarPath,
     native: {
       backend: "llvm",
+      async: false,
       regex: false,
       assert: false,
       inspect: false,
@@ -193,6 +196,7 @@ test("early library cache misses on source edits and newly-resolved candidates",
     sidecarPath: f.sidecarPath,
     native: {
       backend: "llvm",
+      async: false,
       regex: false,
       assert: false,
       inspect: false,
@@ -220,6 +224,7 @@ test("early library cache misses on source edits and newly-resolved candidates",
     sidecarPath: f.sidecarPath,
     native: {
       backend: "llvm",
+      async: false,
       regex: false,
       assert: false,
       inspect: false,
@@ -265,6 +270,7 @@ test("semantic library cache restores and rebases IR after a comment-only edit",
     sidecarPath: f.sidecarPath,
     native: {
       backend: "llvm",
+      async: false,
       regex: false,
       assert: false,
       inspect: false,
@@ -322,6 +328,7 @@ test("semantic library cache refuses token and directive edits", async () => {
     sidecarPath: f.sidecarPath,
     native: {
       backend: "llvm",
+      async: false,
       regex: false,
       assert: false,
       inspect: false,
@@ -366,6 +373,7 @@ test("semantic C cache accepts only line-preserving single-source edits", async 
     sidecarPath: f.sidecarPath,
     native: {
       backend: "c",
+      async: false,
       regex: false,
       assert: false,
       inspect: false,
@@ -402,6 +410,7 @@ test("semantic C cache refuses non-LF separator normalization", async () => {
       sidecarPath: f.sidecarPath,
       native: {
         backend: "c",
+        async: false,
         regex: false,
         assert: false,
         inspect: false,
@@ -459,6 +468,7 @@ test("semantic C cache refuses comment-only edits in multi-source graphs", async
     sidecarPath: f.sidecarPath,
     native: {
       backend: "c",
+      async: false,
       regex: false,
       assert: false,
       inspect: false,
@@ -493,6 +503,7 @@ test("early library cache is separated by the host Node version", async () => {
     sidecarPath: f.sidecarPath,
     native: {
       backend: "llvm",
+      async: false,
       regex: false,
       assert: false,
       inspect: false,
@@ -524,6 +535,7 @@ test("early library cache rejects corrupted artifacts and metadata", async () =>
     sidecarPath: f.sidecarPath,
     native: {
       backend: "llvm",
+      async: false,
       regex: false,
       assert: false,
       inspect: false,
@@ -556,6 +568,7 @@ test("disabled early library cache performs no reads or writes", async () => {
     sidecarPath: f.sidecarPath,
     native: {
       backend: "llvm" as const,
+      async: false,
       regex: false,
       assert: false,
       inspect: false,

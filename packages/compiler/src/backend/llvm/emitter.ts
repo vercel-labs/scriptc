@@ -1001,6 +1001,9 @@ class LlEmitter {
       this.declare(`declare void @scr_library_callback_entry_guard(ptr)`);
       this.declare(`declare void @scr_library_arena_reset()`);
       this.declare(`declare void @scr_library_collect()`);
+      if (this.mod.lib.drainSymbol !== null) {
+        this.declare(`declare i1 @scr_drain_jobs()`);
+      }
       if ((this.mod.lib.callbacks?.length ?? 0) > 0) {
         // Host-callback channels: the registration define's dispatch
         // (strcmp over the declared names + the runtime slot store).
@@ -1434,6 +1437,7 @@ class LlEmitter {
     if (lib.callbackRegisterSymbol !== null && lib.callbackRegisterSymbol !== undefined) emitSymConst(lib.callbackRegisterSymbol);
     if (lib.resultResetSymbol !== null) emitSymConst(lib.resultResetSymbol);
     if (lib.collectSymbol !== null) emitSymConst(lib.collectSymbol);
+    if (lib.drainSymbol !== null) emitSymConst(lib.drainSymbol);
     for (const e of lib.exports) emitSymConst(e.symbol);
     out.push(``);
     // The runtime detected-trap overlay table (scr_runtime.h declares it,
@@ -1556,6 +1560,20 @@ class LlEmitter {
         `entry:`,
         `  call void @scr_library_entry(i1 zeroext false, ptr ${symConst(lib.collectSymbol)})`,
         `  call void @scr_library_collect() ; arena reset + a full cycle collection`,
+        `  ret void`,
+        `}`,
+        ``,
+      );
+    }
+    if (lib.drainSymbol !== null) {
+      // The job checkpoint, line for line with the C emission (see there
+      // for why it does not reset the arena).
+      out.push(
+        `define void @${lib.drainSymbol}() ${FN_ATTRS} {`,
+        `entry:`,
+        `  call void @scr_library_entry(i1 zeroext false, ptr ${symConst(lib.drainSymbol)})`,
+        `  %drained = call i1 @scr_drain_jobs() ; nextTick + promise jobs; no turn`,
+        `  call void @scr_library_check_exc()`,
         `  ret void`,
         `}`,
         ``,

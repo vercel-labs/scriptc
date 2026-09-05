@@ -1187,6 +1187,22 @@ export class CEmitter {
         ``,
       );
     }
+    if (lib.drainSymbol !== null) {
+      // The job checkpoint. Deliberately NOT arena-resetting: a host
+      // typically drains right after reading a result, and the declared
+      // reset posture exists precisely so the host says when results die.
+      // The runtime half is scr_drain_jobs (scr_async.c, gated into the
+      // link by this very symbol); an escaping throw from a continuation
+      // takes the init entry's escaped-exception path to the sink.
+      out.push(
+        `void ${lib.drainSymbol}(void) {`,
+        `  scr_library_entry(false, "${lib.drainSymbol}");`,
+        `  scr_drain_jobs(); /* nextTick + promise jobs to exhaustion; no turn */`,
+        `  scr_library_check_exc();`,
+        `}`,
+        ``,
+      );
+    }
     for (const e of lib.exports) {
       const params: string[] = [];
       const args: string[] = [];

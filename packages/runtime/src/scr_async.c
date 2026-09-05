@@ -202,7 +202,25 @@ static void scr_promise_gcfree(void *o) {
   scr_cyc_free(p);
 }
 
+#ifdef SCR_LIB
+/* The library session's async teardown (defined with the drain below) and
+ * its one-shot registration flag. */
+static void scr_async_library_teardown(void);
+static bool scr_async_library_registered = false;
+#endif
+
 ScrPromise *scr_promise_new(void) {
+#ifdef SCR_LIB
+  /* Library artifacts have no atexit and no loop exit, so the SESSION
+   * reset is where a session's leftover queued work dies. Register that
+   * teardown on the first promise of the process — the scr_ffi_link
+   * precedent, and the earliest point at which this unit can have any
+   * state to drop. */
+  if (!scr_async_library_registered) {
+    scr_async_library_registered = true;
+    scr_atexit(scr_async_library_teardown);
+  }
+#endif
   ScrPromise *p = scr_cyc_alloc(sizeof *p, &scr_promise_trace, &scr_promise_gcfree);
   p->rc = 1;
 #ifdef SCR_RC_AUDIT
@@ -405,6 +423,15 @@ static void scr_ready_push(ScrFiber *f) {
   scr_ready[scr_ready_head + scr_ready_len++] = f;
 }
 
+/* ── executable-lane only: the loop's own machinery ──────────────────────
+ * Everything between here and the matching #endif exists to SERVICE a loop
+ * turn — the timer heap and its whole surface, the loop's clock, and the
+ * active-resources census over them. A library artifact has no turn: the
+ * SC4005 gate refuses every one of these surfaces before emission, so
+ * compiling them into the archive would publish loop symbols an embedder
+ * can neither reach nor want. Fenced out, `nm` over a library archive tells
+ * the same story the contract does. */
+#ifndef SCR_LIB
 /* Timer min-heap, FIFO tiebreak via sequence numbers. `id` is nonzero only
  * for setInterval entries (the clearInterval handle; setTimeout has no
  * clear surface, so plain timeouts never need one) and `repeat_ms` is the
@@ -658,6 +685,8 @@ ScrArr *scr_active_resources(void) {
   return arr;
 }
 
+#endif /* !SCR_LIB */
+
 /* ── process.nextTick (the user tick queue) ───────────────────────────
  * A FIFO of user callbacks drained BEFORE promise jobs at every loop
  * checkpoint, to joint exhaustion with them — Node's tick-then-microtask
@@ -731,6 +760,7 @@ void scr_nticks_teardown(void) {
  * engine dies so closures holding engine callbacks free first and the
  * counting allocator's zero-live audit holds (the loop only exits with
  * entries still armed on the uncaught/unhandled paths). */
+#ifndef SCR_LIB
 static void scr_immediates_teardown(void);
 void scr_timers_teardown(void) {
   for (size_t i = 0; i < scr_ntimers; i++) scr_closure_release(scr_timers[i].cb);
@@ -739,7 +769,10 @@ void scr_timers_teardown(void) {
   scr_immediates_teardown();
   scr_nticks_teardown();
 }
+#endif /* !SCR_LIB — a library has no timer or immediate to release; its
+        * session teardown drops the tick queue directly. */
 
+#ifndef SCR_LIB /* the check phase is a loop station; see the fence above */
 void scr_clear_interval(double handle) {
   if (!(handle >= 1)) return; /* NaN/0/negative: never a handle; Node tolerates */
   unsigned long id = (unsigned long)handle;
@@ -852,6 +885,8 @@ static void scr_immediates_teardown(void) {
   scr_pending_immediates = 0;
   scr_reffed_immediates = 0;
 }
+
+#endif /* !SCR_LIB */
 
 /* Unhandled rejections: rejected promises retained here until observed. */
 static ScrPromise **scr_maybe_unhandled = NULL;
@@ -1581,6 +1616,7 @@ ScrPromise *scr_promise_settled_ref(void *v, void *(*retain)(void *), void (*rel
   return p;
 }
 
+#ifndef SCR_LIB /* the fs.promises surface is SC4005-refused in a library */
 /* ── fs/promises ─────────────────────────────────────────────────────
  * The promise forms run the SAME sync operations and mint an already-
  * settled promise (scr_promise_settled_*): success fulfills, a pending
@@ -1653,6 +1689,8 @@ ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath) {
   scr_fs_rename(oldpath, newpath);
   return scr_promise_settled_void();
 }
+
+#endif /* !SCR_LIB */
 
 /* fs.rename(old, new, cb): the static callback surface. The OS operation
  * starts immediately on a native worker, matching libuv's key contract:
@@ -1863,7 +1901,7 @@ static bool scr_fs_renames_dispatch(void) {
   free(op);
   return true;
 }
-#else
+#elif !defined(SCR_LIB)
 static bool scr_fs_renames_pending(void) { return false; }
 static bool scr_fs_renames_dispatch(void) { return false; }
 #endif
@@ -1954,6 +1992,7 @@ void scr_fs_rename_thunk0(ScrClosure *cb, ScrError *err) {
  * delay rides scr_set_timeout's own Node-exact coercion (clamp to 1,
  * truncate). */
 
+#ifndef SCR_LIB /* timers/promises + setImmediate: loop stations, refused */
 ScrPromise *scr_tp_set_timeout(double ms) {
   ScrPromise *p = scr_promise_new();
   scr_set_timeout(scr_make_resolve(p, 3 /* void */), ms);
@@ -2014,6 +2053,8 @@ ScrDyn *scr_set_immediate_dyn_value(void) {
  * V8's single microtask queue. scr_resume_fiber runs the closure on the
  * main stack; a throw is an uncaught exception (Node's queueMicrotask),
  * never a rejection. */
+#endif /* !SCR_LIB */
+
 void scr_queue_microtask(ScrClosure *cb) {
   ScrFiber *f = calloc(1, sizeof *f);
   if (!f) scr_oom();
@@ -2045,6 +2086,7 @@ void scr_queue_microtask_dyn(const ScrDyn *cb) {
   scr_queue_microtask(c);
 }
 
+#ifndef SCR_LIB /* every loop hook below is a turn's business, not a host's */
 /* ── the event hooks (scr_events.c) ──────────────────────────────────
  * Process signal/exit events and the piped-stdin surface live in
  * scr_events.c, which links ONLY into binaries whose IR uses those
@@ -2067,6 +2109,8 @@ void scr_loop_set_events(bool (*pending)(void), bool (*watching)(void),
   scr_events_dispatch_fn = dispatch;
   scr_events_pollfds_fn = pollfds;
 }
+
+#endif /* !SCR_LIB */
 
 /* ── the event loop ───────────────────────────────────────────────────── */
 
@@ -2114,6 +2158,7 @@ static void scr_resume_fiber(ScrFiber *f) {
   }
 }
 
+#ifndef SCR_LIB /* the loop's sleep caps and its remaining hooks */
 /* Reap granularity while children are pending on the POLLING fallback:
  * the loop polls waitpid(WNOHANG) at least this often instead of sleeping
  * to the next timer deadline. The primary path has no cap — the sleep
@@ -2232,6 +2277,169 @@ void scr_loop_set_stream(bool (*pending)(void), void (*dispatch)(void)) {
  * microtask checkpoints between macrotasks). */
 bool scr_loop_has_ready(void) { return scr_ready_len > 0; }
 
+#endif /* !SCR_LIB */
+
+/* ── the job queues, one checkpoint ──────────────────────────────────────
+ * The two ALWAYS-READY queues, factored out of the loop's checkpoint so
+ * scr_drain_jobs() below runs exactly the code the loop runs — there is
+ * one checkpoint implementation, not two that drift. Neither station
+ * reads the clock, fires a timer, polls an fd, creates a thread, or
+ * installs a handler: a checkpoint is pure queued work. */
+
+/* Every queued process.nextTick callback, FIFO, to exhaustion. False when
+ * one left an exception pending — the caller owns the uncaught path. */
+static bool scr_run_tick_queue(void) {
+  while (scr_nt_head != NULL) {
+    ScrNtick *t = scr_nt_head;
+    scr_nt_head = t->next;
+    if (scr_nt_head == NULL) scr_nt_tail = NULL;
+    ScrClosure *cb = t->cb;
+    ScrFsRenameFn error_cb = t->error_cb;
+    void (*raw)(void) = t->raw;
+    free(t);
+    if (cb) {
+      if (error_cb) error_cb(cb, NULL);
+      else ((void (*)(ScrClosure *))cb->fn)(cb);
+      scr_closure_release(cb);
+    } else {
+      raw(); /* one stream tick, FIFO with the user ticks around it */
+    }
+    if (scr_exc_pending()) return false;
+  }
+  return true;
+}
+
+/* The promise-job queue to exhaustion. A job's throw leaves the exception
+ * pending (scr_resume_fiber's queueMicrotask envelope); every caller
+ * checks the cell rather than this function's absent result. */
+static void scr_run_ready_queue(void) {
+  while (scr_ready_len > 0) {
+    ScrFiber *f = scr_ready[scr_ready_head++];
+    scr_ready_len--;
+    scr_resume_fiber(f);
+  }
+}
+
+/* ── the host-callable job checkpoint ────────────────────────────────────
+ * "Run the pending promise continuations, then return." A host that owns
+ * the main thread has no loop turn to ride: a native embedder parked
+ * inside an outbound FFI call re-enters the program through a retained
+ * callback, and a library-mode host re-enters through an ABI entry.
+ * Either way the job queues those entries fill are not serviced again
+ * until the program's main body returns — which for an embedded program
+ * means "at exit". This is that service, and deliberately nothing more:
+ * the nextTick and promise-job queues to JOINT exhaustion, the loop's own
+ * two stations, then a return.
+ *
+ * It is NOT a loop turn. No clock is read, no timer fires, no descriptor
+ * is polled, no thread is created, no signal handler is installed, and no
+ * unhandled-rejection verdict is reached (that decision belongs to a
+ * COMPLETE turn — the loop's, in the executable lane). Microtasks are not
+ * timers: the host keeps ownership of time and only says "now run what is
+ * ready", which is why a library artifact can carry this entry without
+ * acquiring an event loop.
+ *
+ * Returns false when the drain stopped on a pending exception. The cell
+ * stays pending, so the throw resumes through the ordinary unwind when
+ * the enclosing native call returns (the FFI script-callback rule) or
+ * reaches the library funnel at the entry's escaped-exception check. A
+ * drain entered WITH an exception already in flight runs nothing and
+ * returns false — the same suppression a script-thread FFI callback takes
+ * while a throw is pending. */
+bool scr_drain_jobs(void) {
+  if (scr_exc_pending()) return false;
+  /* A host may drain with a FIBER still on the stack beneath the native
+   * call it is parked in — the outbound call was made from inside an
+   * async function. Resuming a job re-points scr_current, the exception
+   * cell, and the AsyncLocalStorage context at that job, and then at MAIN
+   * when the job parks or finishes; the surrounding fiber would come back
+   * throwing and catching against main's cell. Run the drain as main
+   * deliberately (so its behavior does not depend on who called it) and
+   * restore the caller's own three before returning — the same restore
+   * scr_async_spawn does around an eager spawn. */
+  ScrFiber *caller = scr_current;
+  if (caller != NULL) {
+    scr_current = NULL;
+    scr_exc_swap_cell(NULL);
+    scr_als_active = &scr_als_main_slot;
+  }
+  bool drained = true;
+  while (scr_nt_head != NULL || scr_ready_len > 0) {
+    if (!scr_run_tick_queue()) {
+      drained = false;
+      break;
+    }
+    scr_run_ready_queue();
+    if (scr_exc_pending()) {
+      drained = false;
+      break;
+    }
+  }
+  if (caller != NULL) {
+    scr_current = caller;
+    scr_exc_swap_cell(&caller->exc);
+    scr_als_active = &caller->als;
+  }
+  return drained;
+}
+
+#ifndef SCR_LIB
+/* The executable lane's host entry: the one runtime symbol a native host
+ * linked into a scriptc executable is invited to call, named apart from
+ * the scr_ internals it must not touch. Library artifacts expose the same
+ * checkpoint under the profile's own prefix (abi.drain_symbol), so this
+ * unprefixed spelling stays out of their symbol space. */
+bool scriptc_drain(void) { return scr_drain_jobs(); }
+#endif
+
+#ifdef SCR_LIB
+/* ── the library session's async teardown ────────────────────────────────
+ * Registered on the first promise and run by every session reset
+ * (scr_library.c's reset registry, the executable lane's atexit). What a
+ * session can leave behind is exactly what the host never drained:
+ *
+ *  - queueMicrotask envelopes still in the ready queue — released here,
+ *    like the loop's teardown releases undelivered timer callbacks;
+ *  - the nextTick queue (process.nextTick is admitted — the host's drain
+ *    runs it). There is no timer heap and no immediate queue to drop
+ *    beside it: both are fenced out of this unit's library flavor;
+ *  - promises the checkpoint never got to judge — dropped without a
+ *    verdict, the executable lane's scr_discard_unhandled_rejections;
+ *  - fibers parked on a promise the host never settled. Those are
+ *    ABANDONED, exactly as the loop abandons them at exhaustion: their
+ *    stacks and the values they own are deliberately NOT unwound, because
+ *    unwinding would run user `finally` blocks that nothing ever reached.
+ *    The count arms the same RC-audit skip the executable lane uses, so
+ *    the per-session zero-live-heap seam reports a real leak and not a
+ *    host that walked away from its own continuation. */
+static void scr_async_library_teardown(void) {
+  while (scr_ready_len > 0) {
+    ScrFiber *f = scr_ready[scr_ready_head++];
+    scr_ready_len--;
+    /* A microtask envelope owns only its closure; a queued FIBER is
+     * abandoned like a parked one (its stack is never unwound). */
+    if (f->micro_cb != NULL) {
+      scr_closure_release(f->micro_cb);
+      free(f);
+    }
+  }
+  scr_ready_head = 0;
+  scr_ready_len = 0;
+  scr_nticks_teardown();
+  scr_discard_unhandled_rejections();
+  scr_note_abandoned_fibers(scr_fibers_live);
+}
+#endif /* SCR_LIB */
+
+#ifndef SCR_LIB
+/* The event loop is executable-lane-only. A library artifact links this
+ * unit for its promises and fibers alone: the SC4005 gate refuses every
+ * timer, io, child-process, and ambient-process surface a turn would
+ * service, so the turn itself has nothing to do and no library artifact
+ * should carry one. Fencing it here is what keeps the v1 promise literal
+ * — a library archive defines no loop entry, references no poll/sleep
+ * primitive, and reaches no child-process hook — while the host-callable
+ * checkpoint above still lets continuations run. */
 bool scr_loop_run(ScrPromise *top_level) {
   /* The FIRST checkpoint after the synchronous main body runs promise
    * jobs BEFORE the first tick drain: Node's main-module evaluation is
@@ -2250,30 +2458,10 @@ bool scr_loop_run(ScrPromise *top_level) {
      * microtask queue mid-drain (V8 drains it fully). A tick's uncaught
      * throw ends the loop like any listener's (main reports it). */
     if (!first_checkpoint) {
-      while (scr_nt_head != NULL) {
-        ScrNtick *t = scr_nt_head;
-        scr_nt_head = t->next;
-        if (scr_nt_head == NULL) scr_nt_tail = NULL;
-        ScrClosure *cb = t->cb;
-        ScrFsRenameFn error_cb = t->error_cb;
-        void (*raw)(void) = t->raw;
-        free(t);
-        if (cb) {
-          if (error_cb) error_cb(cb, NULL);
-          else ((void (*)(ScrClosure *))cb->fn)(cb);
-          scr_closure_release(cb);
-        } else {
-          raw(); /* one stream tick, FIFO with the user ticks around it */
-        }
-        if (scr_exc_pending()) return false;
-      }
+      if (!scr_run_tick_queue()) return false;
     }
     /* Microtasks to exhaustion (Node: promise jobs before timers). */
-    while (scr_ready_len > 0) {
-      ScrFiber *f = scr_ready[scr_ready_head++];
-      scr_ready_len--;
-      scr_resume_fiber(f);
-    }
+    scr_run_ready_queue();
     first_checkpoint = false;
     /* The ESM loader observes a rejected entry evaluation at a promise-job
      * checkpoint and terminates before later ref'd timers or I/O can run.
@@ -2675,7 +2863,13 @@ bool scr_loop_run(ScrPromise *top_level) {
   scr_note_abandoned_fibers(scr_fibers_abandoned);
   return rejection_failed;
 }
+#endif /* !SCR_LIB */
 
+#ifndef SCR_LIB
+/* The unhandled-rejection VERDICT is a complete turn's decision, so it
+ * belongs to the loop. A library host drains jobs; what it does about a
+ * rejection nothing handled is its own policy, and the session teardown
+ * drops the ledger without a competing default report. */
 /* The island's half of the unhandled-rejection report (scr_island.c
  * registers it at engine boot): called with print=true when the static
  * ledger below reported nothing — one report, one voice, like Node's
@@ -2781,6 +2975,8 @@ bool scr_report_unhandled_rejections(void) {
   if (any) scr_exit_code_note(1);
   return any;
 }
+
+#endif /* !SCR_LIB */
 
 /* A fatal executable-module rejection suppresses unrelated rejections
  * created in the SAME checkpoint. Drop their retained ledger references

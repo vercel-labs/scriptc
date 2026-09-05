@@ -1,0 +1,24 @@
+{
+  "profile_format": 1,
+  "name": "conformance-async",
+  "entry": "lib.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "ka_",
+    "init_symbol": "ka_init",
+    "sink_register_symbol": "ka_set_panic_sink",
+    "collect_symbol": "ka_collect",
+    "result_reset_symbol": null,
+    "drain_symbol": "ka_drain",
+    "callback_register_symbol": "ka_set_callback"
+  },
+  "callbacks": [
+    { "name": "emit", "params": ["string"], "returns": "void" }
+  ],
+  "exports": [
+    { "export": "start", "symbol": "ka_start", "params": ["string"], "returns": "f64" },
+    { "export": "schedule", "symbol": "ka_schedule", "params": [], "returns": "f64" },
+    { "export": "settle", "symbol": "ka_settle", "params": ["string"], "returns": "f64" },
+    { "export": "done", "symbol": "ka_done", "params": [], "returns": "f64" }
+  ]
+}

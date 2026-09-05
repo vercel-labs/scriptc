@@ -99,12 +99,57 @@ test("lazy edges inventory: unresolvable require()/import() targets mark as lazy
 test("lazy builtin edges mark in the builtins table, __require sites included", async () => {
   // The esbuild-require fixture routes external requires through the
   // bundle's __require helper — its literal call sites collect as require
-  // edges, so the builtins table lists node:os/node:tty (shimmed) and
-  // node:stream as a lazy trap (unshimmed, reached only by the
-  // never-called require) without failing the build.
+  // edges, so the builtins table lists node:module (partial), node:os/
+  // node:tty (shimmed), and node:http2 as a lazy trap (unshimmed, reached
+  // only by the never-called require) without failing the build.
   await expect(
     report(join(repoRoot, "tests/fixtures/npm/cases/esbuild-require/main.ts"), { dynamic: true }),
   ).toMatchFileSnapshot("__snapshots__/coverage-npm-lazy-builtin.txt");
+});
+
+test("a partial dynamic shim is reported as partial, not fully shimmed", async () => {
+  // The crypto-shims fixture imports node:crypto through cryptozoo. The
+  // island ships a crypto shim, but only the hashing/random/pbkdf2 slice;
+  // keys, ciphers, signing, and the rest throw at the call. The builtins
+  // table marks it "partial" with an explanatory note, distinct from a
+  // fully implemented shim (the esbuild-require snapshot pins that side).
+  await expect(
+    report(join(repoRoot, "tests/fixtures/npm/cases/crypto-shims/main.ts"), { dynamic: true }),
+  ).toMatchFileSnapshot("__snapshots__/coverage-npm-partial-builtin.txt");
+});
+
+test("known call-time-fenced builtin shims are never reported as complete", () => {
+  const cases = [
+    [
+      join(repoRoot, "tests/fixtures/commander-calc/calc.ts"),
+      ["node:child_process", "node:fs", "node:process"],
+    ],
+    [
+      join(repoRoot, "tests/fixtures/npm/cases/island-web-plumbing/main.ts"),
+      ["node:buffer", "node:dns", "node:module", "node:worker_threads"],
+    ],
+    [
+      join(repoRoot, "tests/fixtures/npm/cases/misc-shims/main.ts"),
+      ["node:v8"],
+    ],
+    [
+      join(repoRoot, "tests/fixtures/npm/cases/stream-shims/main.ts"),
+      ["node:stream/consumers"],
+    ],
+    [
+      join(repoRoot, "tests/fixtures/fetch/cases/island-http/main.ts"),
+      ["node:http"],
+    ],
+  ] as const;
+
+  for (const [entry, builtins] of cases) {
+    const lines = report(entry, { dynamic: true }).split("\n");
+    for (const builtin of builtins) {
+      const row = lines.find((line) => line.trimStart().startsWith(`${builtin} `));
+      expect(row, `${builtin} coverage row for ${entry}`).toBeDefined();
+      expect(row!.trim().split(/\s+/).slice(0, 2)).toEqual([builtin, "partial"]);
+    }
+  }
 });
 
 test("import fences no longer stop analysis: percentage plus module blockers", async () => {

@@ -203,6 +203,11 @@ export interface NpmBuiltinUse {
   builtin: string;
   /** Whether the island ships a shim for it. */
   shimmed: boolean;
+  /** Shimmed, but the island covers only PART of Node's surface: the
+   * implemented members work, the rest are throwing stubs. Coverage reports
+   * this so a partial shim is not indistinguishable from a complete one.
+   * Always false when not shimmed. */
+  partial: boolean;
   /** Unshimmed AND only require()/import() edges reach it: the build
    * embeds the island's lazy throw at the call instead of failing —
    * Node's laziness for those edge kinds (Node itself would LOAD the
@@ -574,6 +579,42 @@ const SHIMMED_BUILTINS = new Set([
   // heap statistics are inert-but-typed, and the V8 serialization format
   // fences at the call. Prettier's bundled error helpers call
   // startupSnapshot.isBuildingSnapshot() on every CLI start.
+  "v8",
+]);
+
+/** Shimmed builtins whose island shim covers only PART of Node's surface:
+ * the members the shim carries work, the rest are honest throwing stubs
+ * (scr_island.c). `SHIMMED_BUILTINS` minus this set is the full-shim set,
+ * so coverage can tell a complete shim from a partial one without a
+ * per-function capability database. A partial shim still LOADS and runs
+ * programs that stay within its implemented slice, so it is not a blocker. */
+const PARTIAL_SHIM_BUILTINS = new Set([
+  // Broad process plumbing with explicit fences: process.umask only supports
+  // its read form; module.register is unavailable; child_process is a
+  // load-only surface whose process-launching members all throw.
+  "process", "module", "child_process",
+  // Buffer is broadly implemented, but transcode remains unavailable.
+  "buffer",
+  // Whole-file reads/writes (readFile/writeFile/mkdir/stat/readdir/...);
+  // watch, open, and incremental read/write throw.
+  "fs", "fs/promises",
+  // The hashing/random/pbkdf2 slice; keys, ciphers, signing, and the rest
+  // throw at the call (the embedded runtime carries the hashing/random
+  // slice only).
+  "crypto",
+  // The stream classes and pipeline helpers work; the consumers submodule's
+  // Blob conversion remains an explicit fence.
+  "stream/consumers",
+  // deflate/gzip and the buffering stream classes; brotli and zstd throw.
+  "zlib",
+  // DNS has the loadable Node shape but every resolver call fences. The
+  // main-thread worker plumbing is real, while Worker construction throws.
+  "dns", "worker_threads",
+  // HTTP(S) implements the request/get client slice only. net/tls provide
+  // address/load plumbing for it, but their direct socket surfaces throw.
+  "http", "https", "net", "tls",
+  // Startup-snapshot/heap metadata is loadable; V8 serialization, heap
+  // snapshots, profiling, and promise hooks remain call-time fences.
   "v8",
 ]);
 
@@ -1195,6 +1236,7 @@ export class NpmGraphBuilder {
           return {
             builtin,
             shimmed,
+            partial: shimmed && PARTIAL_SHIM_BUILTINS.has(builtin.slice(5)),
             lazy: !shimmed && !this.builtinsEager.has(builtin),
             packages: [...packages].sort(),
           };

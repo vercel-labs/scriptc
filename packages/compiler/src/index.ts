@@ -52,7 +52,7 @@ import {
 import { validateSidecar } from "./library/sidecar-validate.js";
 import { entryFunctionExports, type EntryExportInfo } from "./frontend/lib-exports.js";
 import { entryContractFacts, type ContractFacts } from "./frontend/lib-contract.js";
-import { moduleLibAsyncSurface, moduleLibNondeterministicSurface, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesAssert, moduleUsesCopying, moduleUsesDc, moduleUsesDgram, moduleUsesDynAsync, moduleUsesDynInvoke, moduleUsesEmitter, moduleUsesFetch, moduleUsesFileHandle, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesInspect, moduleUsesLegacyTextDecoder, moduleUsesNet, moduleUsesNodeTest, moduleUsesParseArgs, moduleUsesProcessEvents, moduleUsesQs, moduleUsesRegex, moduleUsesSearchParams, moduleUsesStream, moduleUsesSymbol, moduleUsesTls, moduleUsesTlsCa, moduleUsesZlib, type IrFfiImport, type IrLibSection, type IrModule, type IrRecordShape, type IrType, type SrcLoc } from "./ir/ir.js";
+import { moduleCoroutineSurface, moduleLibAsyncSurface, moduleLibNondeterministicSurface, moduleEmbedsBuiltin, moduleEmbedsCompressedNpm, moduleUsesAssert, moduleUsesAsync, moduleUsesCopying, moduleUsesDc, moduleUsesDgram, moduleUsesDynAsync, moduleUsesDynInvoke, moduleUsesEmitter, moduleUsesFetch, moduleUsesFileHandle, moduleUsesFsWatch, moduleUsesHttp2, moduleUsesHttpServer, moduleUsesInspect, moduleUsesLegacyTextDecoder, moduleUsesNet, moduleUsesNodeTest, moduleUsesParseArgs, moduleUsesProcessEvents, moduleUsesQs, moduleUsesRegex, moduleUsesSearchParams, moduleUsesStream, moduleUsesSymbol, moduleUsesTls, moduleUsesTlsCa, moduleUsesZlib, type IrFfiImport, type IrLibSection, type IrModule, type IrRecordShape, type IrType, type SrcLoc } from "./ir/ir.js";
 import { serializeModule } from "./ir/serialize.js";
 import { validateModule } from "./ir/validate.js";
 import { canonicalBuiltinModule, checkPreflight, isNodeTypesPath, loadProgram, locOf, requiresOf, resolveNpmImport, type LoadResult } from "./frontend/program.js";
@@ -1566,7 +1566,10 @@ async function compileTracked(
         return fail([targetRefusalDiag("wasm32-wasi", unavailable.surface, unavailable.loc)]);
       }
       if (opts.backend === "c" || outputKind === "c") {
-        const asyncSurface = moduleLibAsyncSurface(lowered.module);
+        // The COROUTINE question, not the library gate's: this backend has
+        // no resumable-stack lowering, so an async function is refused here
+        // even though a library artifact would now admit it.
+        const asyncSurface = moduleCoroutineSurface(lowered.module);
         if (asyncSurface !== null) {
           return fail([
             backendRefusalDiag("c", "wasm32-wasi", asyncSurface.surface, asyncSurface.loc),
@@ -2031,6 +2034,7 @@ function resolveLibrarySection(
       sinkRegisterSymbol: profile.sinkRegisterSymbol,
       collectSymbol: profile.collectSymbol,
       resultResetSymbol: profile.resultResetSymbol,
+      drainSymbol: profile.drainSymbol,
       threadInstances: profile.instancePerThread,
       // Host-callback channels: declaration order is the runtime slot
       // assignment, and the unregistered-call trap text is assembled HERE,
@@ -2256,6 +2260,11 @@ function libraryNativeFeatures(
 ): EarlyLibraryNativeFeatures {
   return {
     backend,
+    // The promise/fiber unit. A graph that reaches a continuation needs
+    // it, and so does a profile that declares the drain entry (whose body
+    // calls straight into the queue). Everything else keeps the archive a
+    // pre-drain scriptc produced, byte for byte.
+    async: moduleUsesAsync(mod) || mod.lib?.drainSymbol != null,
     regex: moduleUsesRegex(mod),
     assert: moduleUsesAssert(mod),
     inspect: moduleUsesInspect(mod),
@@ -2276,6 +2285,7 @@ function libraryLocalizeSymbols(profile: LibraryProfile): string[] | undefined {
         profile.sinkRegisterSymbol,
         ...(profile.collectSymbol !== null ? [profile.collectSymbol] : []),
         ...(profile.resultResetSymbol !== null ? [profile.resultResetSymbol] : []),
+        ...(profile.drainSymbol !== null ? [profile.drainSymbol] : []),
         ...(profile.callbackRegisterSymbol !== null ? [profile.callbackRegisterSymbol] : []),
         ...(profile.sidecar !== null
           ? [profile.sidecar.buildIdSymbol, profile.sidecar.abiVersionSymbol]
@@ -2340,6 +2350,7 @@ async function compileLibraryNative(
     optimization: profile.optimization,
     ...(localizeSymbols !== undefined ? { localizeSymbols } : {}),
     ...(profile.instancePerThread ? { threadInstances: true } : {}),
+    async: features.async,
     regex: features.regex,
     assert: features.assert,
     inspect: features.inspect,
@@ -2824,6 +2835,7 @@ async function compileLibraryTracked(
       buildId,
       sourceHash,
       deterministic: moduleLibNondeterministicSurface(mod) === null,
+      asyncFree: !moduleUsesAsync(mod),
     });
     if (!built.ok) return fail(built.diagnostics);
     const violations = validateSidecar(built.doc);

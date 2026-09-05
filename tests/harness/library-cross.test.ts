@@ -269,9 +269,9 @@ describe.skipIf(!enabled)("cross-target library conformance", () => {
               expect(undef.has(spelling), `undefined reference to ${spelling}`).toBe(false);
             }
           }
-          // The structural async_free consequence: no fiber/event-loop/
-          // timer/child symbol defined in the archive, none referenced by
-          // a linked unit.
+          // These fixtures reach no continuation, so the promise/fiber
+          // unit is not gated in: no fiber/event-loop/timer/child symbol
+          // defined in the archive, none referenced by a linked unit.
           expect([...defined].filter((s) => LOOPISH.test(s))).toEqual([]);
           expect([...undef].filter((s) => LOOPISH.test(s))).toEqual([]);
 

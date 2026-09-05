@@ -21,6 +21,10 @@
  *       "sink_register_symbol": "<prefix>_set_panic_sink",
  *       "collect_symbol": "<prefix>_collect" | null,   // session ruling 2
  *       "result_reset_symbol": "<prefix>_reset" | null, // §4.3 two postures
+ *       "drain_symbol": "<prefix>_drain" | null,  // the job checkpoint:
+ *                                                // run the pending
+ *                                                // promise continuations,
+ *                                                // then return (see below)
  *       "localize_runtime": false,               // multi-instance library
  *                                                // mode (see below); absent
  *                                                // = false, the classic
@@ -384,6 +388,19 @@ export interface LibraryProfile {
   /** §4.3: declared → results accumulate until the host calls it; null →
    * every entry prologue resets the result arena. */
   resultResetSymbol: string | null;
+  /** The job checkpoint: declared → the archive exports an entry that runs
+   * the pending process.nextTick and promise-job queues to exhaustion and
+   * returns; null → no such entry (the byte-identical artifact a
+   * drain-free profile always produced).
+   *
+   * Declaring it does NOT give the artifact an event loop. The entry reads
+   * no clock, fires no timer, polls no descriptor, creates no thread, and
+   * installs no handler — the v1 contract is unchanged, and the SC4005
+   * gate still refuses every surface a loop turn would service. It is the
+   * point at which a host that owns the thread says "now run what is
+   * ready", which is what `async` functions in the graph need and all they
+   * need. */
+  drainSymbol: string | null;
   /** Multi-instance library mode: true localizes every runtime-internal
    * symbol so N archives with distinct prefixes link into one process (see
    * the header contract). False (the default) produces the classic
@@ -524,7 +541,7 @@ export function loadLibraryProfile(
     if (abi === null || typeof abi !== "object" || Array.isArray(abi)) {
       throw new ProfileError("'abi' must be an object");
     }
-    rejectUnknownKeys(abi, "abi", ["prefix", "init_symbol", "sink_register_symbol", "collect_symbol", "result_reset_symbol", "localize_runtime", "instance_per_thread", "callback_register_symbol"]);
+    rejectUnknownKeys(abi, "abi", ["prefix", "init_symbol", "sink_register_symbol", "collect_symbol", "result_reset_symbol", "drain_symbol", "localize_runtime", "instance_per_thread", "callback_register_symbol"]);
     const a = abi as Record<string, unknown>;
     const prefix = req<string>(a["prefix"], "abi.prefix", "string");
     if (!C_IDENT.test(prefix)) {
@@ -534,6 +551,7 @@ export function loadLibraryProfile(
     const sinkRegisterSymbol = symbolField(a["sink_register_symbol"], "abi.sink_register_symbol", prefix, false)!;
     const collectSymbol = symbolField(a["collect_symbol"], "abi.collect_symbol", prefix, true);
     const resultResetSymbol = symbolField(a["result_reset_symbol"], "abi.result_reset_symbol", prefix, true);
+    const drainSymbol = symbolField(a["drain_symbol"], "abi.drain_symbol", prefix, true);
     // Multi-instance library mode: strictly boolean when present (the field
     // gates the artifact's whole link surface, so a truthy non-boolean is a
     // refusal, never a coercion).
@@ -773,6 +791,7 @@ export function loadLibraryProfile(
     claim(sinkRegisterSymbol, "abi.sink_register_symbol");
     claim(collectSymbol, "abi.collect_symbol");
     claim(resultResetSymbol, "abi.result_reset_symbol");
+    claim(drainSymbol, "abi.drain_symbol");
     claim(callbackRegisterSymbol, "abi.callback_register_symbol");
     if (sidecar !== null) {
       claim(sidecar.buildIdSymbol, "sidecar.build_id_symbol");
@@ -890,6 +909,7 @@ export function loadLibraryProfile(
         sinkRegisterSymbol,
         collectSymbol,
         resultResetSymbol,
+        drainSymbol,
         localizeRuntime,
         instancePerThread,
         callbackRegisterSymbol,

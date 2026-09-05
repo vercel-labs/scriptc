@@ -1,0 +1,38 @@
+{
+  "ffi_format": 4,
+  "functions": [
+    {
+      "name": "nativeHostRegister",
+      "symbol": "hd_register",
+      "params": [
+        {
+          "callback": {
+            "id": "turn",
+            "params": ["f64"],
+            "returns": "void",
+            "lifetime": "retained"
+          }
+        }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "nativeHostResolve",
+      "symbol": "hd_take_resolve",
+      "params": [
+        {
+          "callback": {
+            "id": "resolve",
+            "params": ["f64"],
+            "returns": "void",
+            "lifetime": "retained"
+          }
+        }
+      ],
+      "returns": "void"
+    },
+    { "name": "nativeHostRun", "symbol": "hd_run", "params": [], "returns": "f64" }
+  ],
+  "libraries": [],
+  "system_libraries": []
+}

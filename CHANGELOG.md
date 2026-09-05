@@ -4,6 +4,11 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Features
+
+- **Hosts that own the main thread can run promise continuations.** A native host embedded in a scriptc executable calls `scriptc_drain()` between re-entries into the program; a library artifact exports the same checkpoint as `<prefix>_drain` when its profile declares `abi.drain_symbol`. The checkpoint runs the pending `process.nextTick` and promise-job queues to exhaustion and returns — no clock, no timer, no poll, no thread, no signal handler, and no loop.
+- **Library mode admits `async` functions, `await`, promises, and `queueMicrotask`.** `SC4005` now refuses only the event-loop and ambient-process surface a loop turn would have to service; a top-level `await` and generators stay refused because neither has a host-drain story. Library archives that reach a continuation link the promise/fiber unit — still without its loop, which is fenced out of the library flavor — so the v1 contract (no event loop, no signal handlers, no threads) is unchanged. The contract sidecar's `async_free` is now computed from the graph instead of asserted structurally.
+
 <!-- release:start -->
 
 ## 0.0.36

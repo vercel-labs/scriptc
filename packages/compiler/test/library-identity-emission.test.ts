@@ -15,6 +15,7 @@ const libraryModule = (): IrModule => ({
     sinkRegisterSymbol: "ie_set_sink",
     collectSymbol: null,
     resultResetSymbol: null,
+    drainSymbol: null,
     threadInstances: false,
     exports: [],
     trapOverlays: [],

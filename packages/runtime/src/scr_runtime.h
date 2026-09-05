@@ -4091,6 +4091,30 @@ double scr_now_ms(void); /* the loop's monotonic clock, in ms */
  * Returns true when a default/listener-crashing unhandled rejection
  * already selected and reported exit status 1. */
 bool scr_loop_run(ScrPromise *top_level);
+/* ── the host-callable job checkpoint (scr_async.c) ─────────────────────
+ * Runs the pending process.nextTick and promise-job queues to JOINT
+ * exhaustion — the loop's own two stations — and returns. Deliberately
+ * not a loop turn: it reads no clock, fires no timer, polls no
+ * descriptor, creates no thread, installs no handler, and reaches no
+ * unhandled-rejection verdict.
+ *
+ * This is the point at which a host that owns the main thread lets
+ * continuations run. Native code parked inside an outbound FFI call
+ * re-enters the program through a retained callback; a library-mode host
+ * re-enters through an ABI entry. In both shapes the queues those entries
+ * fill would otherwise wait for the program's main body to return.
+ *
+ * False means the drain stopped on a pending exception (or was entered
+ * with one already in flight): the cell stays pending and resumes through
+ * the ordinary unwind, so a host never has to unwind script frames
+ * itself. Executables expose it to their host as `scriptc_drain`;
+ * library artifacts expose it under the profile's `abi.drain_symbol`. */
+bool scr_drain_jobs(void);
+#ifndef SCR_LIB
+/* The executable lane's host entry — the ONE runtime symbol a native host
+ * linked into a scriptc executable is invited to call. */
+bool scriptc_drain(void);
+#endif
 /* External I/O hook, polled at loop quiescence like the child registry:
  * `pending` keeps the loop alive; `poll` makes progress and may SLEEP up
  * to max_wait_ms (on real fds — socket readiness wakes it early), so the
@@ -4122,6 +4146,7 @@ bool scr_on_fiber(void);
  * (a host callback may spawn a fiber that re-enters the engine). */
 void *scr_fiber_self(void);
 void scr_note_abandoned_fibers(long n); /* scr_console.c owns the flag */
+long scr_abandoned_fiber_note(void); /* the flag, read back */
 
 /* new Promise(executor): kind 0 f64, 1 bool, 2 str, 3 void; ref-kind
  * resolve thunks are emitted (they know the concrete RC helpers) over

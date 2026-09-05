@@ -396,6 +396,14 @@ extern long scr_bytes_live_count(void);   /* scr_bytes.c */
  * previous session leaked. A failure is a TRAP through the sink — the
  * executable audit's _Exit(99) stays exe-lane-only. */
 static void scr_library_audit_zero(void) {
+  /* Fibers the host walked away from — parked on a promise it never
+   * settled, or queued and never drained — keep their stacks and every
+   * value those stacks own, by design (unwinding one would run user
+   * `finally` blocks nothing ever reached). That is the executable
+   * lane's abandonment story at loop exhaustion, and the audit takes the
+   * same exemption here rather than reporting a deliberate hold as a
+   * leak. Draining to quiescence before re-init keeps the seam armed. */
+  if (scr_abandoned_fiber_note() > 0) return;
   long strings = scr_str_live_count(), arrays = scr_arr_live_count(),
        maps = scr_map_live_count(), boxes = scr_box_live_count(),
        closures = scr_closure_live_count(), objects = scr_obj_live_count(),

@@ -115,6 +115,7 @@ $ scriptc coverage hello.ts
 WASI and other cross-target builds require Zig. Its bundled WASI libc produces a portable WASI Preview 1 module through the production LLVM backend:
 
 ```console
+$ alias zigcc='zig cc'
 $ SCRIPTC_CC=zigcc SCRIPTC_TARGET=wasm32-wasi scriptc build hello.ts --no-keep-c -o hello.wasm >/dev/null
 $ file hello.wasm
 hello.wasm: WebAssembly (wasm) binary module version 0x1 (MVP)

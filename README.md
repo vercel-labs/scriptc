@@ -120,7 +120,7 @@ Note:
 
 ```javascript
 if (cc !== "zigcc") {
-  throw new Error(unknown SCRIPTC_CC '${cc}' (supported: clang, zigcc));
+  throw new Error(`unknown SCRIPTC_CC '${cc}' (supported: clang, zigcc)`);
 }
 if (target === "") return { argv: ["zig", "cc"], ... };
 ```

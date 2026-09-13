@@ -60,6 +60,9 @@ describe("library profile validation", () => {
     expect(r.profile.initSymbol).toBe("kx_init");
     expect(r.profile.collectSymbol).toBe("kx_collect");
     expect(r.profile.resultResetSymbol).toBeNull();
+    // The job checkpoint is opt-in: absent means the artifact a pre-drain
+    // profile always produced.
+    expect(r.profile.drainSymbol).toBeNull();
     // entry resolves against the profile file's directory
     expect(r.profile.entry).toBe(join(dir, "src/lib.ts"));
     expect(r.profile.exports).toHaveLength(2);
@@ -184,6 +187,18 @@ describe("library profile validation", () => {
     const r = loadLibraryProfile(writeProfile({ ...good, determinism: { deny: ["Math.random"] } }));
     expect(r.ok).toBe(true);
   });
+  test("a declared drain symbol resolves", () => {
+    const r = loadLibraryProfile(
+      writeProfile({ ...good, abi: { ...good.abi, drain_symbol: "kx_drain" } }),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.profile.drainSymbol).toBe("kx_drain");
+  });
+  test("drain symbol without the prefix", () =>
+    expectSc4001({ ...good, abi: { ...good.abi, drain_symbol: "other_drain" } }, "prefix"));
+  test("drain symbol colliding with another entry", () =>
+    expectSc4001({ ...good, abi: { ...good.abi, drain_symbol: "kx_collect" } }, "declared twice"));
   test("duplicate symbols", () =>
     expectSc4001(
       { ...good, exports: [{ export: "update", symbol: "kx_init", params: [], returns: "void" }] },

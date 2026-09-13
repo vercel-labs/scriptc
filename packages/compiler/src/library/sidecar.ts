@@ -237,6 +237,7 @@ export function abiExportSuffixes(profile: LibraryProfile): string[] {
   out.push(strip(profile.initSymbol));
   if (profile.collectSymbol !== null) out.push(strip(profile.collectSymbol));
   if (profile.resultResetSymbol !== null) out.push(strip(profile.resultResetSymbol));
+  if (profile.drainSymbol !== null) out.push(strip(profile.drainSymbol));
   for (const e of profile.exports) out.push(strip(e.symbol));
   return out;
 }
@@ -1347,6 +1348,11 @@ export interface SidecarBuildInput {
   buildId: string;
   sourceHash: string;
   deterministic: boolean;
+  /** No continuation anywhere in the compiled graph: no async function, no
+   * await, no promise value, no queued job. Computed (schema rule V14),
+   * never defaulted — library mode admits async graphs now, so this is a
+   * real fact about THIS artifact rather than a structural consequence. */
+  asyncFree: boolean;
 }
 
 /** The declared integer slots (ask 4), resolved by the projection into
@@ -1610,10 +1616,12 @@ export function buildSidecar(input: SidecarBuildInput): SidecarBuildResult {
       // is a symbol list carrying no TypeRefs).
       integer_slots: config.integerSlots.map((e) => ({ slot: e.slot, class: e.cls })),
       deterministic: input.deterministic,
-      // Structural in library mode: the SC4005 gate refused any graph
-      // reaching async/timer/event-loop surface before emission, so a
-      // sidecar exists only for async_free graphs.
-      async_free: true,
+      // No longer structural: SC4005 refuses the event-loop and
+      // ambient-process surface, but a library graph may reach promises
+      // and async functions (their continuations are the HOST's to drain,
+      // through the profile's drain entry). Computed from the graph, like
+      // `deterministic` beside it.
+      async_free: input.asyncFree,
     };
     return {
       ok: true,

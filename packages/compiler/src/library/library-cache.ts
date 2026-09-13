@@ -56,6 +56,9 @@ interface EarlyLibraryCacheStamp {
 
 export interface EarlyLibraryNativeFeatures {
   backend: "c" | "llvm";
+  /** The promise/fiber unit (scr_async.c, compiled loop-free under
+   * SCR_LIB): reached continuations, or a profile-declared drain entry. */
+  async: boolean;
   regex: boolean;
   assert: boolean;
   inspect: boolean;
@@ -112,6 +115,7 @@ export interface SemanticLibraryCacheHit {
 }
 
 const BOOLEAN_NATIVE_KEYS = [
+  "async",
   "regex",
   "assert",
   "inspect",

@@ -955,12 +955,19 @@ export function cacheTargetIdentity(
  * recompiles only the changed buckets; exact repeats use the merged-object or
  * completed-archive tiers and never repeat the merge.
  * The base set narrows from the executable lane's unconditional sources:
- * scr_async.c (fibers, timers, the loop) and scr_child.c drop — the
- * async_free refusal already guarantees nothing references them — and
- * scr_library.c (sink, arena, reset registry, library funnel) joins. The gated
- * units a library may reach are the pure-data ones (regex + the vendored matcher, assert,
- * inspect, symbol, searchParams, emitter+dyn_handle, zlib); every
- * loop-hooked or ambient unit was refused at SC4005 before emission.
+ * scr_async.c and scr_child.c drop from the UNCONDITIONAL set and
+ * scr_library.c (sink, arena, reset registry, library funnel) joins.
+ * scr_child.c never comes back — the SC4005 refusal guarantees nothing
+ * references it. scr_async.c returns as a GATED unit when the graph
+ * reaches a promise or the profile declares the drain entry, and it
+ * returns loop-free: its SCR_LIB flavor fences scr_loop_run out entirely,
+ * so the archive defines no loop entry and references no poll, sleep, or
+ * child-process primitive. What remains is the promise/fiber machinery
+ * and the two job queues the host's drain entry services. The other
+ * gated units a library may reach are the pure-data ones (regex + the
+ * vendored matcher, assert, inspect, symbol, searchParams,
+ * emitter+dyn_handle, zlib); every loop-hooked or ambient unit was
+ * refused at SC4005 before emission.
  * External-symbol contract: undefined references only to the target's C/math
  * runtime and system APIs. Windows embedders additionally link advapi32,
  * iphlpapi, and ws2_32; the platform driver supplies its ordinary CRT and
@@ -969,7 +976,8 @@ export function cacheTargetIdentity(
  * archive. */
 
 /** The library base: the executable lane's unconditional sources minus the
- * fiber/loop and child-process units, plus the library-mode TU. */
+ * promise/fiber and child-process units, plus the library-mode TU. The
+ * promise/fiber unit is gated back in below (`opts.async`). */
 const LIB_RUNTIME_SOURCES = [
   ...EXECUTABLE_RUNTIME_SOURCES.filter(
     (f) => f !== "scr_async.c" && f !== "scr_child.c" && f !== "scr_ffi.c",
@@ -1030,6 +1038,9 @@ export interface LibArchiveOptions {
    * archive, byte-for-byte. */
   threadInstances?: boolean;
   /** IR-detected link gates (the compileC precedent, refusal-narrowed). */
+  /** The promise/fiber unit (scr_async.c under -DSCR_LIB: no loop, no
+   * timers heap consumer, no child hooks). */
+  async?: boolean;
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;
@@ -1160,6 +1171,10 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     // Zig's musl sysroot does not provide arc4random_buf. Keep the fallback
     // inside the archive so library embedders need no extra system library.
     ...(isMuslTarget(driver) ? ["scr_musl.c"] : []),
+    // The promise/fiber unit, loop-free under -DSCR_LIB. Absent unless the
+    // graph reaches a continuation or the profile declares the drain
+    // entry, so a promise-free library keeps its exact archive.
+    ...(opts.async ? ["scr_async.c"] : []),
     ...(regex ? ["scr_regex.c"] : []),
     ...(opts.assert || regex || opts.symbol ? ["scr_assert.c"] : []),
     ...(opts.inspect ? ["scr_inspect.c"] : []),

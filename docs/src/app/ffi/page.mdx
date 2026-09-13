@@ -281,6 +281,32 @@ Foreign delivery is deliberately fire-and-forget. It requires `lifetime: "retain
 
 If a script-thread callback throws, the adapter returns zero (or `void`) to native code and suppresses further script callback execution while the exception is pending. When the outer native function returns, the original exception resumes through scriptc's ordinary catchable unwind path. Native work performed between the callback's return and the outer function's return is not rolled back. A foreign callback's native trampoline has already returned before its closure runs; a throw therefore follows event-loop callback semantics instead.
 
+## Running promise continuations from the host
+
+While the program is parked inside an outbound call, scriptc's event loop is not running. A promise resolved during a retained callback therefore *queues* its continuation and nothing runs it until the program's main body returns — which, for a program that hands control to a host loop and never comes back, means at exit.
+
+Hosts that own the main thread call `scriptc_drain` to say "run what is ready, then return":
+
+```c
+#include <stdbool.h>
+
+extern bool scriptc_drain(void);
+
+void host_loop(void) {
+  for (;;) {
+    on_frame();       /* a retained script-thread callback */
+    scriptc_drain();  /* its continuations run here */
+    wait_for_next_frame();
+  }
+}
+```
+
+`scriptc_drain` runs the pending `process.nextTick` and promise-job queues to joint exhaustion and returns. It is not a loop turn: it reads no clock, fires no timer, polls no descriptor, creates no thread, installs no signal handler, and reaches no unhandled-rejection verdict — those stay with the program's own loop. Timers scheduled inside the program still wait for it.
+
+Call it only from the thread the program runs on, and only between callbacks — not from inside one, and never from a foreign thread. It is safe when the outbound call that parked the program was made from inside an `async` function: the drain runs as the program's main context and restores the suspended one before returning. It returns `false` when a continuation threw; the exception stays pending and resumes through the ordinary unwind when the outer native call returns, so a host never unwinds script frames itself. A drain entered while a throw is already in flight runs nothing and returns `false`, matching how a script-thread callback is suppressed in the same situation.
+
+Library artifacts get the same checkpoint under their own symbol: declare `abi.drain_symbol` in the profile and the archive exports `<prefix>_drain` beside `<prefix>_reset`. That is also what makes `async` functions usable in a library module graph.
+
 ## Manifest fields
 
 <dl>

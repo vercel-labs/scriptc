@@ -857,18 +857,23 @@ export function libAsyncExportDiag(
   };
 }
 
-/** SC4005 — the library module graph reaches event-loop or ambient-process
- * surface (async functions, generators, timers, sockets, signals, child
- * processes, ...): async_free is a v1 REQUIREMENT, derived from the module
- * graph, never observed at runtime. */
+/** SC4005 — the library module graph reaches EVENT-LOOP or ambient-process
+ * surface (timers, sockets, signals, child processes, generators, ...): a
+ * static fact of the module graph, never observed at runtime.
+ *
+ * Promises, `await`, and `async` functions are NOT in this family. They
+ * need a job queue, and a host drains that queue itself through the
+ * profile's `abi.drain_symbol`; they need no clock, no poller, and no
+ * turn. What stays refused is everything a loop TURN would have to
+ * service — which is why the artifact still links no loop. */
 export function libAsyncSurfaceDiag(surface: string, loc: SrcLoc): ScrDiagnostic {
   return {
     code: "SC4005",
-    message: `library mode requires an async_free module graph, and this graph reaches ${surface}`,
+    message: `library mode refuses the event-loop and ambient-process surface, and this graph reaches ${surface}`,
     loc,
     hint:
       "v1 library artifacts link no event loop, install no signal handlers, and create no threads — remove the surface from " +
-      "everything the entry module reaches",
+      "everything the entry module reaches (async functions and promises are admitted: drain their continuations from the host)",
   };
 }
 

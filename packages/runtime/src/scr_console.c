@@ -13,6 +13,10 @@
  * plain builds satisfy scr_async's reference. */
 static SCR_TL long scr_abandoned_fibers = 0;
 void scr_note_abandoned_fibers(long n) { scr_abandoned_fibers = n; }
+/* Read back by the LIBRARY RC audit (scr_library.c), which cannot call
+ * scr_async.c's own counter: that unit joins a library link only when the
+ * graph reaches a promise, while this note is always present. */
+long scr_abandoned_fiber_note(void) { return scr_abandoned_fibers; }
 
 #ifndef SCR_LIB
 #ifdef SCR_RC_AUDIT

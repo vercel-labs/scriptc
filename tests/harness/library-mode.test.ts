@@ -56,7 +56,16 @@
  *                           judged by the same bar; every ineligible one
  *                           refuses SC4020 naming the failed bar — never
  *                           a generic SC1010/SC2013 — and builtins keep
- *                           the SC4005 async_free story
+ *                           the SC4005 event-loop story
+ *   K15 async-drain        async functions in the graph plus the
+ *                           profile-declared job checkpoint: a scheduled
+ *                           continuation runs at the DRAIN and nowhere
+ *                           else, settling a promise from the host queues
+ *                           rather than resumes, a quiescent drain is a
+ *                           no-op — and the archive that carries all of
+ *                           that still defines no loop entry, references
+ *                           no poll/sleep/child primitive, and keeps the
+ *                           K8 ambient audit green
  *   K14 determinism-fences  the ask-5 deny-by-manifest-id surface: a
  *                           reached fenced static surface refuses SC4008
  *                           (id + name + attributed teaching note, both
@@ -214,14 +223,94 @@ describe.each(EMISSIONS)("library mode, %s emission", (emission) => {
     for (const banned of ["sigaction", "signal", "pthread_create", "atexit", "setvbuf"]) {
       expect(undef.has(banned), `undefined reference to ${banned}`).toBe(false);
     }
-    // The structural async_free consequence: no fiber/event-loop/timer/
-    // child-process symbol is DEFINED in the archive (scr_async.c and
-    // scr_child.c never joined the link) and none is REFERENCED by a
-    // linked unit (a missed inter-unit reference would surface here, the
-    // backstop the design asks for instead of a hand-maintained map).
+    // This fixture's graph reaches no continuation, so the promise/fiber
+    // unit is not gated in either: no fiber/event-loop/timer/child-process
+    // symbol is DEFINED in the archive (scr_async.c and scr_child.c never
+    // joined the link) and none is REFERENCED by a linked unit (a missed
+    // inter-unit reference would surface here, the backstop the design
+    // asks for instead of a hand-maintained map). K15 covers the archive
+    // that DOES link the promise unit — still without a loop.
     const loopish = /^scr_(loop|fiber|on_fiber|timer|set_timeout|set_interval|set_immediate|next_tick|child|spawn)/;
     expect([...defined].filter((s) => loopish.test(s))).toEqual([]);
     expect([...undef].filter((s) => loopish.test(s))).toEqual([]);
+  });
+
+  /* ── K15: async in the graph + the host's job checkpoint ─────────────── */
+
+  const ASYNC_EXPECTED = `lib: async library ready
+lib: scheduled
+host: schedule -> 0
+host: still 0 before any drain
+lib: microtask m
+host: after drain 0
+lib: enter job
+lib: parked a
+host: start -> 0
+host: settle -> 0
+lib: job resumed X
+lib: parked b
+host: settle -> 0
+lib: job done XY
+host: done -> 1
+host: quiescent drain returned
+`;
+
+  test("K15: continuations run at the drain, and only there", async () => {
+    const { archive, outDir } = await buildLibrary("async", emission);
+    const probe = buildProbe("async", archive, outDir);
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(ASYNC_EXPECTED);
+  });
+
+  test("K15/K8: the async archive still links no loop and stays ambient-clean", async () => {
+    const { archive } = await buildLibrary("async", emission);
+    const { defined, undef } = nmSymbols(archive);
+
+    // The declared ABI, both directions — K1 over a drain-carrying profile.
+    expect([...defined].filter((s) => s.startsWith("ka_")).sort()).toEqual(
+      [
+        "ka_init", "ka_set_panic_sink", "ka_collect", "ka_drain", "ka_set_callback",
+        "ka_start", "ka_schedule", "ka_settle", "ka_done",
+      ].sort(),
+    );
+    expect([...undef].filter((s) => s.startsWith("ka_"))).toEqual([]);
+
+    // K8 unchanged: no process disposition, no threads, no atexit.
+    for (const banned of ["sigaction", "signal", "pthread_create", "atexit", "setvbuf"]) {
+      expect(undef.has(banned), `undefined reference to ${banned}`).toBe(false);
+    }
+
+    // The promise/fiber unit joined the link — that is what async needs —
+    // but the LOOP did not come with it, and neither did the child-process
+    // hooks or the sleep/poll primitives a turn would use. This is the
+    // mechanical form of "a library artifact links no event loop".
+    expect(defined.has("scr_drain_jobs")).toBe(true);
+    expect(defined.has("scr_promise_new")).toBe(true);
+    // K8's loopish regex, re-applied to the archive that DOES carry the
+    // promise unit: fibers and the job queues are here, and the loop's own
+    // machinery is not — the `#ifndef SCR_LIB` fences in scr_async.c.
+    for (const loopish of [
+      "scr_loop_run", "scr_loop_has_ready", "scr_loop_set_io", "scr_loop_set_events",
+      "scr_now_ms", "scr_set_timeout", "scr_set_interval", "scr_set_immediate",
+      "scr_clear_interval", "scr_timers_teardown", "scr_active_resources",
+      "scr_report_unhandled_rejections", "scr_fsp_read_file", "scr_tp_set_timeout",
+    ]) {
+      expect(defined.has(loopish), `archive defines ${loopish}`).toBe(false);
+      expect(undef.has(loopish), `archive references ${loopish}`).toBe(false);
+    }
+    for (const absent of ["scr_children_pending", "scr_children_wait", "scr_children_teardown"]) {
+      expect(undef.has(absent), `undefined reference to ${absent}`).toBe(false);
+    }
+    // poll(2) is the loop's idle sleep and its only entry into waiting;
+    // nothing else in the library link set reaches for it. (nanosleep is
+    // deliberately NOT asserted here: scr_lib.c has referenced it since
+    // before this unit joined any library link.)
+    expect(undef.has("poll"), "undefined reference to poll").toBe(false);
+    // The executable lane's unprefixed host entry is exe-only: a library
+    // artifact keeps the profile's symbol space to itself.
+    expect(defined.has("scriptc_drain")).toBe(false);
   });
 
   /* ── K12: the npm posture's compile side ─────────────────────────────── */
@@ -234,8 +323,8 @@ describe.each(EMISSIONS)("library mode, %s emission", (emission) => {
     expect(run.status).toBe(0);
     // scaled: mathkit.scale (which itself calls mathdep.twice) + OFFSET —
     // values computed by the packages' shipped JS, statically compiled;
-    // tail: the node:path builtin riding the same graph (async_free, so
-    // SC4005 has nothing to say).
+    // tail: the node:path builtin riding the same graph (it reaches no
+    // event-loop surface, so SC4005 has nothing to say).
     expect(run.stdout).toBe(
       `npm-static ready
 scaled: 37

@@ -18,7 +18,7 @@ import type {
   IrUnionDef,
   SrcLoc,
 } from "./ir.js";
-import { arrayOf, BOOL, BYTES_U8, bytesOf, canAdaptDynFuncTo, canConvertToDyn, canExitIslandToType, canMarshalIntoIsland, canMarshalTypedFuncIntoIsland, CHILD_T, CHILDSTREAM_T, DATE_T, DGRAMSOCK_T, DYN, DYN_HANDLE_KINDS, F64, ffiClassType, ffiSourceParamTypes, FILEHANDLE_T, FSWATCHER_T, HTTP2SESSION_T, HTTP2STREAM_T, HTTPCLIENTREQ_T, HTTPREQ_T, HTTPRES_T, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isJsonSafeType, isRefCounted, isSupportedArrayElem, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, jsOpResultKind, JSVAL, NETSERVER_T, NETSOCKET_T, PROCSTREAM_T, REF_TRUTHY_KINDS, REGEX, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, SEARCH_PARAMS_T, SECURECTX_T, shapeHasAccessorSlots, SPAWNRES_T, STATS_T, STRING, SYMBOL_T, TESTCTX_T, typeEquals, typeKey, unionFuncSetArmsOk, URL_T, VOID } from "./ir.js";
+import { arrayOf, BOOL, BYTES_U8, bytesOf, canAdaptDynFuncTo, canConvertToDyn, canExitIslandToType, canMarshalIntoIsland, canMarshalTypedFuncIntoIsland, CHILD_T, CHILDSTREAM_T, DATE_T, DGRAMSOCK_T, DYN, DYN_HANDLE_KINDS, F64, ffiClassType, ffiSourceParamTypes, FILEHANDLE_T, FSWATCHER_T, HTTP2SESSION_T, HTTP2STREAM_T, HTTPCLIENTREQ_T, HTTPREQ_T, HTTPRES_T, islandPromisePayloadTag, isFfiCallbackParam, isFfiContextParam, isFfiReleaseParam, isJsonSafeType, isJsonStringifySafeType, isRefCounted, isSupportedArrayElem, isSupportedIndexValue, isSupportedMapKey, isSupportedMapValue, isSupportedSetElem, isUnitType, jsOpResultKind, JSVAL, NETSERVER_T, NETSOCKET_T, PROCSTREAM_T, REF_TRUTHY_KINDS, REGEX, RUNTIME_EMITTER_CLASS, RUNTIME_ERROR_CLASSES, RUNTIME_STREAM_CLASSES, SEARCH_PARAMS_T, SECURECTX_T, shapeHasAccessorSlots, SPAWNRES_T, STATS_T, STRING, SYMBOL_T, TESTCTX_T, typeEquals, typeKey, unionFuncSetArmsOk, URL_T, VOID } from "./ir.js";
 
 /** Per-method signature for strIntrinsic: `argTypes` lists every argument
  * position (optional ones included); `minArgs` is how many may be omitted
@@ -1946,9 +1946,11 @@ function validateFunction(
         break;
       }
       case "seqExpr": {
-        // Statements in an expression: straight-line writes only — no
-        // control flow, no jumps (the C emission point is mid-expression).
-        const allowed = new Set(["varDecl", "assign", "exprStmt", "fieldSet", "recordSet", "recordKeySet", "arraySet", "bytesSet", "block"]);
+        // Statements in an expression cannot jump out of the expression,
+        // but a local state branch is valid: optional array stores must
+        // choose ARRAY_VALUE versus ARRAY_UNDEFINED before the final result
+        // is evaluated. Nested blocks/ifs are checked recursively below.
+        const allowed = new Set(["varDecl", "assign", "exprStmt", "fieldSet", "recordSet", "recordKeySet", "arraySet", "arraySetLength", "arraySetUndefined", "arrayDelete", "bytesSet", "block", "if"]);
         const flat = (ss: IrStmt[]): void => {
           for (const s of ss) {
             if (!allowed.has(s.kind)) {
@@ -1957,6 +1959,12 @@ function validateFunction(
             }
             if (s.kind === "block") {
               flat(s.body);
+              continue;
+            }
+            if (s.kind === "if") {
+              flat(s.then);
+              if (s.else_) flat(s.else_);
+              checkExpr(s.cond);
               continue;
             }
             checkStmt(s);
@@ -2363,6 +2371,24 @@ function validateFunction(
         }
         break;
       }
+      case "arrayHas": {
+        checkExpr(e.arr);
+        checkExpr(e.index);
+        expectType(e.index, F64, "arrayHas index");
+        if (!typeEquals(e.type, BOOL)) err(`arrayHas result ${e.type.kind} != bool`, e.loc);
+        if (e.arr.type.kind !== "array") {
+          err(`arrayHas on non-array ${e.arr.type.kind}`, e.loc);
+        }
+        break;
+      }
+      case "arrayState": {
+        checkExpr(e.arr);
+        checkExpr(e.index);
+        expectType(e.index, F64, "arrayState index");
+        if (!typeEquals(e.type, F64)) err(`arrayState result ${e.type.kind} != f64`, e.loc);
+        if (e.arr.type.kind !== "array") err(`arrayState on non-array ${e.arr.type.kind}`, e.loc);
+        break;
+      }
       case "bytesNew": {
         if (e.type.kind !== "bytes") {
           err(`bytesNew of non-bytes type ${e.type.kind}`, e.loc);
@@ -2513,10 +2539,12 @@ function validateFunction(
         const sig =
           e.method === "push" || e.method === "unshift"
             ? { argTypes: e.args.map(() => elem), result: F64 }
-            : e.method === "pushSpread" || e.method === "unshiftSpread"
+            : e.method === "pushSpread" || e.method === "concatSpread" || e.method === "unshiftSpread"
               ? { argTypes: [e.receiver.type], result: F64 }
+              : e.method === "nextPresent"
+              ? { argTypes: [F64], result: F64 }
               : e.method === "pop"
-              ? { argTypes: [], result: elem }
+              ? { argTypes: [], result: e.type } // union-checked below
               : e.method === "indexOf"
                 ? { argTypes: [elem], result: F64 }
                 : e.method === "includes"
@@ -2533,6 +2561,8 @@ function validateFunction(
                       ? { argTypes: [F64, F64, e.receiver.type], result: e.receiver.type }
                       : e.method === "with"
                         ? { argTypes: [F64, elem], result: e.receiver.type }
+                        : e.method === "withUndefined"
+                          ? { argTypes: [F64], result: e.receiver.type }
                   : e.method === "splice"
                     ? { argTypes: [F64, F64], result: e.receiver.type }
                         : e.method === "shift"
@@ -2558,19 +2588,14 @@ function validateFunction(
           // misjudge JS ===; the frontend fences these.
           err(`arrIntrinsic ${e.method} on union elements (frontend must reject)`, e.loc);
         }
-        if (e.method === "shift") {
-          // The result is the interned `elem | undefined` union (union
-          // elements are frontend-fenced, so the arms never collide).
-          if (elem.kind === "union") {
-            err("arrIntrinsic shift on union elements (frontend must reject)", e.loc);
-          }
+        if (e.method === "shift" || e.method === "pop") {
           const rdef = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
           if (
             !rdef ||
-            !rdef.arms.some((a) => a.kind === "undefinedT") ||
-            !rdef.arms.some((a) => typeEquals(a, elem))
+            !rdef.arms.some((arm) => arm.kind === "undefinedT") ||
+            !(elem.kind === "union" ? typeEquals(elem, e.type) : rdef.arms.some((arm) => typeEquals(arm, elem)))
           ) {
-            err("arrIntrinsic shift result must be the elem|undefined union", e.loc);
+            err(`arrIntrinsic ${e.method} result must be the elem|undefined union`, e.loc);
           }
         }
         // slice's indices and splice's count are optional (omitted args
@@ -4774,7 +4799,7 @@ function validateFunction(
         // walker serializes it (scr_dyn_format_j), no emitted serializer.
         if (
           e.value.type.kind !== "dyn" &&
-          !isJsonSafeType(e.value.type, (id) => records.get(id), (id) => unions.get(id))
+          !isJsonStringifySafeType(e.value.type, (id) => records.get(id), (id) => unions.get(id))
         ) {
           err(`jsonStringify of non-JSON-safe type ${e.value.type.kind}`, e.loc);
         }
@@ -5254,6 +5279,23 @@ function validateFunction(
         } else {
           expectType(s.value, s.arr.type.elem, "arraySet value");
         }
+        break;
+      }
+      case "arraySetLength": {
+        checkExpr(s.arr);
+        checkExpr(s.length);
+        expectType(s.length, F64, "arraySetLength length");
+        if (s.arr.type.kind !== "array") {
+          err(`arraySetLength on non-array ${s.arr.type.kind}`, s.loc);
+        }
+        break;
+      }
+      case "arraySetUndefined":
+      case "arrayDelete": {
+        checkExpr(s.arr);
+        checkExpr(s.index);
+        expectType(s.index, F64, `${s.kind} index`);
+        if (s.arr.type.kind !== "array") err(`${s.kind} on non-array ${s.arr.type.kind}`, s.loc);
         break;
       }
       case "bytesSet": {

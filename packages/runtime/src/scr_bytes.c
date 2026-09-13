@@ -1587,8 +1587,10 @@ ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc) {
 ScrBytes *scr_bytes_from_arr(ScrBytesElem elem, const ScrArr *arr) {
   ScrBytes *b = scr_bytes_alloc(elem, arr->len);
   for (size_t i = 0; i < arr->len; i++) {
-    double v;
-    memcpy(&v, &arr->data[i], sizeof v); /* SCR_ELEM_F64 slots hold doubles */
+    /* Buffer.from(Array) applies Number/ToUint* to each value. A hole is
+     * read as undefined and therefore contributes zero; it must never read
+     * an uninitialized dense slot or assume sparse storage is allocated. */
+    double v = scr_arr_has(arr, (double)i) ? scr_arr_get_f64((ScrArr *)arr, (double)i) : 0;
     switch (elem) {
       case SCR_BYTES_U8:
         b->data[i] = (uint8_t)scr_bytes_to_u32(v);
@@ -1858,6 +1860,30 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
 
 /* Buffer.concat(list, totalLength): the same concatenation truncated or
  * zero-padded to the validated total. */
+static ScrBytes *scr_bytes_concat_item(const ScrArr *list, size_t i) {
+  if (!scr_arr_has(list, (double)i)) {
+    char msg[160];
+    int n = snprintf(
+        msg, sizeof msg,
+        "The \"list[%zu]\" argument must be an instance of Buffer or Uint8Array. Received undefined",
+        i);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, n < 0 ? 0 : (size_t)n,
+                             "ERR_INVALID_ARG_TYPE");
+    return NULL;
+  }
+  ScrBytes *part = (ScrBytes *)scr_arr_get_ref((ScrArr *)list, (double)i);
+  if (!part) {
+    char msg[160];
+    int n = snprintf(
+        msg, sizeof msg,
+        "The \"list[%zu]\" argument must be an instance of Buffer or Uint8Array. Received undefined",
+        i);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, n < 0 ? 0 : (size_t)n,
+                             "ERR_INVALID_ARG_TYPE");
+  }
+  return part;
+}
+
 ScrBytes *scr_bytes_concat_len(const ScrArr *list, double total) {
   /* An empty list short-circuits BEFORE the total validates — Node's
    * own `if (list.length === 0) return new FastBuffer()`. */
@@ -1866,10 +1892,15 @@ ScrBytes *scr_bytes_concat_len(const ScrArr *list, double total) {
   ScrBytes *b = scr_bytes_alloc(SCR_BYTES_U8, (size_t)total);
   size_t o = 0;
   for (size_t i = 0; i < list->len && o < b->len; i++) {
-    const ScrBytes *part = (const ScrBytes *)(uintptr_t)list->data[i];
+    ScrBytes *part = scr_bytes_concat_item(list, i);
+    if (!part) {
+      scr_bytes_release(b);
+      return NULL;
+    }
     size_t take = part->len < b->len - o ? part->len : b->len - o;
     memcpy(b->data + o, part->data, take);
     o += take;
+    scr_bytes_release(part);
   }
   return b;
 }
@@ -1920,15 +1951,22 @@ bool scr_bytes_is_encoding(const ScrStr *s) {
 ScrBytes *scr_bytes_concat(const ScrArr *list) {
   size_t total = 0;
   for (size_t i = 0; i < list->len; i++) {
-    const ScrBytes *part = (const ScrBytes *)(uintptr_t)list->data[i];
+    ScrBytes *part = scr_bytes_concat_item(list, i);
+    if (!part) return NULL;
     total += part->len;
+    scr_bytes_release(part);
   }
   ScrBytes *b = scr_bytes_alloc(SCR_BYTES_U8, total);
   size_t o = 0;
   for (size_t i = 0; i < list->len; i++) {
-    const ScrBytes *part = (const ScrBytes *)(uintptr_t)list->data[i];
+    ScrBytes *part = scr_bytes_concat_item(list, i);
+    if (!part) {
+      scr_bytes_release(b);
+      return NULL;
+    }
     memcpy(b->data + o, part->data, part->len);
     o += part->len;
+    scr_bytes_release(part);
   }
   return b;
 }

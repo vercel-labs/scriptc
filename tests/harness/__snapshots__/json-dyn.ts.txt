@@ -51,7 +51,7 @@ json-dyn.ts:42:7 - error SC2007: values of type '{ (text: string, reviver?: ((th
   41 | const dynArray: unknown[] = []; // unknown[] IS the dyn array now — no fence (corpus 2585)
   42 | const parseRef = JSON.parse;
      |       ^~~~~~~~
-  43 | // BARE undefined-armed unions are not JSON on the STRINGIFY side: Node
+  43 | // The exact `string | undefined` root now lowers: strings serialize while
 
   hint: annotate the slot with the ONE signature the program actually calls (e.g. '(x: number) => string'), or wrap the overloaded function in a single-signature arrow
 
@@ -60,14 +60,7 @@ json-dyn.ts:42:18 - error SC1090: JSON methods as values (call 'parse' directly)
   41 | const dynArray: unknown[] = []; // unknown[] IS the dyn array now — no fence (corpus 2585)
   42 | const parseRef = JSON.parse;
      |                  ^~~~~~~~~~
-  43 | // BARE undefined-armed unions are not JSON on the STRINGIFY side: Node
-
-json-dyn.ts:51:39 - error SC1090: JSON.stringify of 'string | undefined' values (Node's stringify of bare undefined is not a string at all — narrow with '!== undefined' first, model absence with a null arm, or use an optional record field ('{ a?: string }'), which drops from the output like Node's) are not supported yet
-
-  50 | }
-  51 | const stringifyUndef = JSON.stringify(mkMaybe());
-     |                                       ^~~~~~~~~
-  52 | 
+  43 | // The exact `string | undefined` root now lowers: strings serialize while
 
 json-dyn.ts:59:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
 

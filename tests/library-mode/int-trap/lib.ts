@@ -15,5 +15,5 @@ export function takeU(x: number): void {
 }
 
 export function last(): number {
-  return seen.length === 0 ? -1 : seen[seen.length - 1];
+  return seen.length === 0 ? -1 : seen[seen.length - 1]!;
 }

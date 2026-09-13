@@ -26,6 +26,7 @@ beforeAll(async () => {
     join(testDir, "../src/scr_exception.c"),
     join(testDir, "../src/scr_object.c"),
     join(testDir, "../src/scr_cycle.c"),
+    join(testDir, "../src/scr_copying.c"),
     ...(process.platform === "linux" ? ["-D_GNU_SOURCE", "-lm"] : []),
   ]);
 });
@@ -35,13 +36,14 @@ test("array runtime: push/pop/set/get, RC recursion, growth", async () => {
   expect(stderr.trim()).toMatch(/^(\d+)\/\1 cases passed$/);
 });
 
-// JS returns undefined for OOB reads and creates holes for far writes; both
-// are unrepresentable, so the runtime must trap (documented divergence).
+// Proven-presence getters still trap on a hole; the shared scr_arr_has query
+// lets higher-level lowering return undefined without reading uninitialized
+// scalar storage.
 test.each([
   ["--crash-get-oob", "array index 1 out of bounds (length 1)"],
-  ["--crash-get-frac", "array index 0.5 out of bounds (length 1)"],
-  ["--crash-set-oob", "array index 2 out of bounds (length 1)"],
-  ["--crash-pop-empty", "pop() on an empty array"],
+  ["--crash-get-frac", "numeric property 0.5 is absent"],
+  ["--crash-hole-read", "array index 1 is a hole (length 3)"],
+  ["--crash-pop-empty", "pop() returned undefined"],
 ])("trap aborts (%s)", async (mode, message) => {
   const err = await execFileAsync(bin, [mode]).then(
     () => {

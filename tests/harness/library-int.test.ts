@@ -213,7 +213,7 @@ const PRELUDE = `let crossed: number[] = [];
 export function send(x: number): void { crossed.push(x); }
 export function sendU64(x: number): void { crossed.push(x); }
 export function count(): number { return crossed.length; }
-export function at(i: number): number { return crossed[i]; }
+export function at(i: number): number { return crossed[i]!; }
 `;
 
 function corpusSource(c: CorpusCase): string {

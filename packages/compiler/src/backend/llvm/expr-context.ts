@@ -71,7 +71,7 @@ export interface LlvmEmitterContext extends ShapeHost {
   emitBytesU32(value: string): string;
   emitCallExpr(e: ExprOf<"call" | "ffiCall" | "closure" | "callValue" | "selfRef" | "new" | "classRef" | "newValue" | "instanceOfValue" | "promiseVoidWiden" | "upcast" | "downcast" | "instanceOf" | "virtualCall">): LlValue;
   emitChildProcessLibCall(e: LibCallExpr): LlValue;
-  emitContainerExpr(e: ExprOf<"arrayLit" | "arrayNewLen" | "arrayGet" | "arrIntrinsic" | "bytesNew" | "bytesIntrinsic" | "mapNew" | "mapIntrinsic" | "setIntrinsic" | "setNew">): LlValue;
+  emitContainerExpr(e: ExprOf<"arrayLit" | "arrayNewLen" | "arrayGet" | "arrayHas" | "arrayState" | "arrIntrinsic" | "bytesNew" | "bytesIntrinsic" | "mapNew" | "mapIntrinsic" | "setIntrinsic" | "setNew">): LlValue;
   emitControlExpr(e: ExprOf<"dynDestrCheck" | "dynIterN" | "toBool" | "logical" | "ternary" | "optChain" | "chainRecv" | "orDefault" | "nullish">): LlValue;
   emitDynamicExpr(e: ExprOf<"dynFrom" | "dynFromJsval" | "dynCall" | "dynInvoke" | "dynArrLit" | "dynObjLit" | "unionWrap" | "unionNarrow" | "unionDisc" | "unionKeyGet" | "unionIsTag" | "dynKeyGet" | "dynHasKey" | "dynScalarEq" | "dynTest" | "unionEq" | "unionFuncEq" | "caughtTest" | "caughtCheck" | "caughtNarrow" | "caughtToDyn">): LlValue;
   emitDynamicLibCall(e: LibCallExpr): LlValue;

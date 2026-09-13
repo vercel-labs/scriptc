@@ -40,7 +40,7 @@ const results = await Promise.all(jobs); // number[] — compiles
 
 **Type surface**
 
-scriptc typechecks your program in its own type world: the standard `es2025` lib plus its own ambient declarations. In enumerated places those declarations are deliberately different from stock lib or `@types/node`, typed as what actually compiles — `JSON.parse` returns `unknown` (not `any`), `pop()` returns `T` (not `T | undefined`), the Promise executor's reject reason is pinned to `Error`. So "programs that typecheck" means scriptc's type world, and a program clean under its own `tsc` can still be redirected here — but never with a bare type error it can't reproduce: the tightened declarations get a second-chance preflight (a program clean in the project's own type world passes, and the affected sites meet per-site diagnostics with rewrite hints instead), and where the shipped fallback declarations lack a lowering for a stock member (`console.table`, `console.time`, ...), the member is declared anyway so the call lands on SC2020 naming the supported alternative. `console.log`/`info`/`debug`/`error`/`warn` themselves take `unknown` arguments and render with Node's console semantics — strings verbatim, everything else through the static `util.inspect`.
+scriptc typechecks your program in its own type world: the standard `es2025` lib plus its own ambient declarations. In enumerated places those declarations are deliberately different from stock lib or `@types/node`, typed as what actually compiles — `JSON.parse` returns `unknown` (not `any`), and the Promise executor's reject reason is pinned to `Error`. So "programs that typecheck" means scriptc's type world, and a program clean under its own `tsc` can still be redirected here — but never with a bare type error it can't reproduce: the tightened declarations get a second-chance preflight (a program clean in the project's own type world passes, and the affected sites meet per-site diagnostics with rewrite hints instead), and where the shipped fallback declarations lack a lowering for a stock member (`console.table`, `console.time`, ...), the member is declared anyway so the call lands on SC2020 naming the supported alternative. `console.log`/`info`/`debug`/`error`/`warn` themselves take `unknown` arguments and render with Node's console semantics — strings verbatim, everything else through the static `util.inspect`.
 
 Run `scriptc build` on a file to get the full, current list for that program — the compiler is always more up to date than this page.
 
@@ -48,16 +48,9 @@ Run `scriptc build` on a file to get the full, current list for that program —
 
 A static-tier program otherwise produces byte-identical stdout and the same exit code as Node. Every known divergence is deliberate and pinned by the differential test suite; these are the ones with real consequences:
 
-**Arrays are dense — invalid indices trap.** scriptc arrays have no holes and no `undefined` elements. Where JS would produce `undefined` (out-of-bounds read, `pop()` on empty), the runtime prints a `RangeError` message and aborts. This catches real bugs — but it means `process.argv[2]` with no third argument is a trap, not `undefined`:
+**Typed-array bounds violations still trap.** Ordinary arrays track holes separately from present `undefined` values: missing indexed reads and empty `pop()`/`shift()` return `undefined`, indexed writes can grow the array, and length growth creates holes. Typed-array indexed access retains its separate bounds checks; an invalid typed-array index aborts rather than returning `undefined`.
 
-```ts
-// JS habit — traps when argv[2] doesn't exist:
-const who = process.argv[2] ?? "world";
-// scriptc-safe (the length check is explicit instead of implied):
-const who = process.argv.length > 2 ? process.argv[2] : "world";
-```
-
-**Runtime traps are not catchable.** User `throw` is fully catchable, and runtime failures Node models as exceptions (JSON parse errors, checked-cast failures, fs errors, regex errors) throw real error objects — but the hard-trap set (array index violations and friends) aborts the process rather than throwing.
+**Runtime traps are not catchable.** User `throw` is fully catchable, and runtime failures Node models as exceptions (JSON parse errors, checked-cast failures, fs errors, regex errors) throw real error objects. Remaining hard traps, including typed-array bounds violations, abort the process.
 
 **A lying cast on dynamic data throws instead of corrupting memory** — the headline divergence, and the point. `JSON.parse(s) as Config` with mismatched data throws a catchable error naming the offending path (`expected number at $.port, got string`) where JS would silently hand you garbage.
 

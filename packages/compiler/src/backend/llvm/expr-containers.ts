@@ -54,17 +54,9 @@ export function arrPush(host: LlvmEmitterContext, arr: string, acc: "f64" | "boo
   }
 
 export function emitArrayCopyLoop(host: LlvmEmitterContext, dst: string, src: string, acc: "f64" | "bool" | "ref"): void {
-    const B = host.B;
-    host.declare(`declare double @scr_arr_len(ptr)`);
-    const accTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
-    host.declare(`declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`);
-    const len = B.tmp();
-    B.line(`${len} = call double @scr_arr_len(ptr ${src})`);
-    B.countedLoop(len, (i) => {
-      const v = B.tmp();
-      B.line(`${v} = call ${accTy} @scr_arr_get_${acc}(ptr ${src}, double ${i})`);
-      host.arrPush(dst, acc, v);
-    });
+    void acc;
+    host.declare(`declare double @scr_arr_push_spread(ptr, ptr)`);
+    host.B.line(`call double @scr_arr_push_spread(ptr ${dst}, ptr ${src})`);
   }
 
 export function emitStrIntrinsic(host: LlvmEmitterContext, e: IrExpr & { kind: "strIntrinsic" }): LlValue {
@@ -206,6 +198,13 @@ export function emitArrIntrinsic(host: LlvmEmitterContext, e: IrExpr & { kind: "
         B.line(`${t} = call double @scr_arr_len(ptr ${r.name})`);
         return { name: t, type: e.type };
       }
+      case "nextPresent": {
+        const start = host.emitExpr(e.args[0]!);
+        host.declare(`declare double @scr_arr_next_present(ptr, double)`);
+        const t = B.tmp();
+        B.line(`${t} = call double @scr_arr_next_present(ptr ${r.name}, double ${start.name})`);
+        return { name: t, type: e.type };
+      }
       case "push": {
         // Variadic like JS: every argument evaluates first (left to
         // right), then each appends in order. Ownership of refcounted
@@ -230,6 +229,13 @@ export function emitArrIntrinsic(host: LlvmEmitterContext, e: IrExpr & { kind: "
         host.declare(`declare double @scr_arr_len(ptr)`);
         const t = B.tmp();
         B.line(`${t} = call double @scr_arr_len(ptr ${r.name})`);
+        return { name: t, type: e.type };
+      }
+      case "concatSpread": {
+        const src = host.emitExpr(e.args[0]!);
+        host.declare(`declare double @scr_arr_concat_copy(ptr, ptr)`);
+        const t = B.tmp();
+        B.line(`${t} = call double @scr_arr_concat_copy(ptr ${r.name}, ptr ${src.name})`);
         return { name: t, type: e.type };
       }
       case "unshift": {
@@ -261,13 +267,43 @@ export function emitArrIntrinsic(host: LlvmEmitterContext, e: IrExpr & { kind: "
         B.line(`${t} = call double @scr_arr_unshift_spread(ptr ${r.name}, ptr ${src.name})`);
         return { name: t, type: e.type };
       }
-      case "pop": {
-        // Ownership of a refcounted element moves OUT of the array to
-        // this temp (+1 to us, the runtime does not release it).
-        host.declare(`declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_pop_${acc}(ptr)`);
-        const t = B.tmp();
-        B.line(`${t} = call ${accTy} @scr_arr_pop_${acc}(ptr ${r.name})`);
-        return host.own({ name: t, type: e.type });
+      case "pop":
+      case "shift": {
+        if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: array removal result is not a union");
+        const def = host.unionsById.get(e.type.unionId);
+        const tag = def ? def.arms.findIndex((arm) => typeEquals(arm, elem)) : -1;
+        const undefTag = undefinedArmTag(e.type, host.unionsById);
+        const sameUnion = elem.kind === "union" && typeEquals(elem, e.type);
+        if ((!sameUnion && tag < 0) || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: array removal union lacks its arms");
+        host.declare(`declare zeroext i8 @scr_arr_${method}_state(ptr, ptr)`);
+        const rawSlot = B.slot();
+        const resultSlot = B.slot();
+        B.entryAllocas.push(`${rawSlot} = alloca i64`, `${resultSlot} = alloca ptr`);
+        B.line(`store i64 0, ptr ${rawSlot}`);
+        const state = B.tmp();
+        const has = B.tmp();
+        B.line(`${state} = call zeroext i8 @scr_arr_${method}_state(ptr ${r.name}, ptr ${rawSlot})`);
+        B.line(`${has} = icmp eq i8 ${state}, 1`);
+        const lp = B.newLabel("remove.p");
+        const la = B.newLabel("remove.a");
+        const lj = B.newLabel("remove.j");
+        B.condBr(has, lp, la);
+        B.startBlock(lp);
+        const raw = B.tmp();
+        const value = B.tmp();
+        B.line(`${raw} = load i64, ptr ${rawSlot}`);
+        if (elem.kind === "f64") B.line(`${value} = bitcast i64 ${raw} to double`);
+        else if (elem.kind === "bool") B.line(`${value} = icmp ne i64 ${raw}, 0`);
+        else B.line(`${value} = inttoptr i64 ${raw} to ptr`);
+        B.line(`store ptr ${sameUnion ? value : host.unionNewOwned(tag, { name: value, type: elem })}, ptr ${resultSlot}`);
+        B.br(lj);
+        B.startBlock(la);
+        B.line(`store ptr ${host.unitInstanceRef(e.type.unionId, undefTag)}, ptr ${resultSlot}`);
+        B.br(lj);
+        B.startBlock(lj);
+        const out = B.tmp();
+        B.line(`${out} = load ptr, ptr ${resultSlot}`);
+        return host.own({ name: out, type: e.type });
       }
       case "indexOf": {
         // The needle is BORROWED (released with this statement's frame);
@@ -354,6 +390,17 @@ export function emitArrIntrinsic(host: LlvmEmitterContext, e: IrExpr & { kind: "
         host.emitPendingCheck();
         return out;
       }
+      case "withUndefined": {
+        const index = host.emitExpr(e.args[0]!);
+        host.declare(`declare ptr @scr_arr_with_undefined(ptr, double)`);
+        const t = B.tmp();
+        B.line(
+          `${t} = call ptr @scr_arr_with_undefined(ptr ${r.name}, double ${index.name})`,
+        );
+        const out = host.own({ name: t, type: e.type });
+        host.emitPendingCheck();
+        return out;
+      }
       case "splice": {
         // The removal splice: removed elements come back as a fresh +1
         // array, ownership MOVED out of the receiver. An omitted count
@@ -363,40 +410,6 @@ export function emitArrIntrinsic(host: LlvmEmitterContext, e: IrExpr & { kind: "
         host.declare(`declare ptr @scr_arr_splice(ptr, double, double)`);
         const t = B.tmp();
         B.line(`${t} = call ptr @scr_arr_splice(ptr ${r.name}, double ${start.name}, double ${cnt})`);
-        return host.own({ name: t, type: e.type });
-      }
-      case "shift": {
-        // JS shift: undefined on an empty array, else the first element
-        // out (ref ownership moves into the union box) with the tail
-        // sliding down. Union construction is type-directed here.
-        if (e.type.kind !== "union") throw new InternalCompilerError("llvm emitter bug: shift result is not a union");
-        const def = host.unionsById.get(e.type.unionId);
-        const tag = def ? def.arms.findIndex((a) => typeEquals(a, elem)) : -1;
-        const undefTag = undefinedArmTag(e.type, host.unionsById);
-        if (tag < 0 || undefTag < 0) throw new InternalCompilerError("llvm emitter bug: shift union lacks its arms");
-        host.declare(`declare double @scr_arr_len(ptr)`);
-        const slot = B.slot();
-        B.entryAllocas.push(`${slot} = alloca ptr`);
-        const len = B.tmp();
-        const has = B.tmp();
-        B.line(`${len} = call double @scr_arr_len(ptr ${r.name})`);
-        B.line(`${has} = fcmp one double ${len}, ${f64Lit(0)}`);
-        const lp = B.newLabel("shf.p");
-        const la = B.newLabel("shf.a");
-        const lj = B.newLabel("shf.j");
-        B.condBr(has, lp, la);
-        B.startBlock(lp);
-        host.declare(`declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_shift_${acc}(ptr)`);
-        const v = B.tmp();
-        B.line(`${v} = call ${accTy} @scr_arr_shift_${acc}(ptr ${r.name})`);
-        B.line(`store ptr ${host.unionNewOwned(tag, { name: v, type: elem })}, ptr ${slot}`);
-        B.br(lj);
-        B.startBlock(la);
-        B.line(`store ptr ${host.unitInstanceRef(e.type.unionId, undefTag)}, ptr ${slot}`);
-        B.br(lj);
-        B.startBlock(lj);
-        const t = B.tmp();
-        B.line(`${t} = load ptr, ptr ${slot}`);
         return host.own({ name: t, type: e.type });
       }
       default: {

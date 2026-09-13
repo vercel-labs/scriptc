@@ -407,54 +407,66 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
 
   switch (t.kind) {
     case "array": {
-      const len = (): IrExpr => ({ kind: "arrIntrinsic", method: "length", receiver: v(), args: [], type: F64, loc });
-      const at = (i: IrExpr): IrExpr => ({ kind: "arrayGet", arr: v(), index: i, type: t.elem, loc });
+      const at = (index: IrExpr): IrExpr => ({ kind: "arrayGet", arr: v(), index, type: t.elem, loc });
+      const state = (index: IrExpr): IrExpr => ({ kind: "arrayState", arr: v(), index, type: F64, loc });
+      const eq = (left: IrExpr, right: IrExpr): IrExpr => ({ kind: "bin", op: "===", left, right, type: BOOL, loc });
+      const lt = (left: IrExpr, right: IrExpr): IrExpr => ({ kind: "bin", op: "<", left, right, type: BOOL, loc });
+      const add = (left: IrExpr, right: IrExpr): IrExpr => ({ kind: "bin", op: "+", left, right, type: F64, loc });
+      const sub = (left: IrExpr, right: IrExpr): IrExpr => ({ kind: "bin", op: "-", left, right, type: F64, loc });
       locals.push(
         { id: "n.0", name: "n", type: F64, mutable: false },
-        { id: "s.0", name: "s", type: F64, mutable: false },
+        { id: "s.0", name: "s", type: F64, mutable: true },
         { id: "i.0", name: "i", type: F64, mutable: true },
+        { id: "next.0", name: "next", type: F64, mutable: false },
       );
       const n = (): IrExpr => varRef("n.0", F64, loc);
       const shown = (): IrExpr => varRef("s.0", F64, loc);
       const i = (): IrExpr => varRef("i.0", F64, loc);
-      const hasMore = (): IrExpr => ({ kind: "bin", op: ">", left: n(), right: numLit(100, loc), type: BOOL, loc });
+      const next = (): IrExpr => varRef("next.0", F64, loc);
+      const hasMore = (): IrExpr => lt(i(), n());
+      const isNumber = (): IrExpr => ({
+        kind: "ternary", cond: eq(state(i()), numLit(1, loc)),
+        then: isNumberFlag(lowerer, t.elem, () => at(i()), loc),
+        else_: boolLit(false, loc), type: BOOL, loc,
+      });
+      const holes = (): IrExpr => ({
+        kind: "strConcat", left: strLit("<", loc),
+        right: {
+          kind: "strConcat", left: { kind: "toString", operand: sub(next(), i()), type: STRING, loc },
+          right: { kind: "ternary", cond: eq(sub(next(), i()), numLit(1, loc)), then: strLit(" empty item>", loc), else_: strLit(" empty items>", loc), type: STRING, loc },
+          type: STRING, loc,
+        }, type: STRING, loc,
+      });
       body = [
-        { kind: "varDecl", localId: "n.0", init: len(), loc },
-        {
-          kind: "if",
-          cond: { kind: "bin", op: "===", left: n(), right: numLit(0, loc), type: BOOL, loc },
-          then: [ret(strLit("[]", loc))],
-          else_: null,
-          loc,
-        },
+        { kind: "varDecl", localId: "n.0", init: { kind: "arrIntrinsic", method: "length", receiver: v(), args: [], type: F64, loc }, loc },
+        { kind: "if", cond: eq(n(), numLit(0, loc)), then: [ret(strLit("[]", loc))], else_: null, loc },
         depthGate("[Array]"),
-        { kind: "varDecl", localId: "s.0", init: { kind: "ternary", cond: hasMore(), then: numLit(100, loc), else_: n(), type: F64, loc }, loc },
+        { kind: "varDecl", localId: "s.0", init: numLit(0, loc), loc },
+        { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
         ...begin(),
         {
-          kind: "for",
-          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-          cond: { kind: "bin", op: "<", left: i(), right: shown(), type: BOOL, loc },
-          update: { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i(), right: numLit(1, loc), type: F64, loc }, loc },
-          body: [entry(child(t.elem, at(i())), isNumberFlag(lowerer, t.elem, () => at(i()), loc))],
-          loc,
+          kind: "while",
+          cond: { kind: "logical", op: "&&", left: hasMore(), right: lt(shown(), numLit(100, loc)), type: BOOL, loc },
+          body: [
+            {
+              kind: "if", cond: eq(state(i()), numLit(0, loc)),
+              then: [
+                { kind: "varDecl", localId: "next.0", init: { kind: "arrIntrinsic", method: "nextPresent", receiver: v(), args: [i()], type: F64, loc }, loc },
+                entry(holes(), boolLit(false, loc)),
+                { kind: "assign", localId: "i.0", value: next(), loc },
+              ],
+              else_: [
+                entry({ kind: "ternary", cond: eq(state(i()), numLit(1, loc)), then: child(t.elem, at(i())), else_: strLit("undefined", loc), type: STRING, loc }, isNumber()),
+                { kind: "assign", localId: "i.0", value: add(i(), numLit(1, loc)), loc },
+              ], loc,
+            },
+            { kind: "assign", localId: "s.0", value: add(shown(), numLit(1, loc)), loc },
+          ], loc,
         },
         {
-          kind: "if",
-          cond: hasMore(),
-          then: [
-            entry(
-              {
-                kind: "libCall",
-                fn: "insp.moreItems",
-                args: [{ kind: "bin", op: "-", left: n(), right: numLit(100, loc), type: F64, loc }],
-                type: STRING,
-                loc,
-              },
-              isNumberFlag(lowerer, t.elem, () => at(numLit(100, loc)), loc),
-            ),
-          ],
-          else_: null,
-          loc,
+          kind: "if", cond: hasMore(),
+          then: [entry({ kind: "libCall", fn: "insp.moreItems", args: [sub(n(), i())], type: STRING, loc }, isNumber())],
+          else_: null, loc,
         },
         ret(end(strLit("", loc), strLit("[", loc), strLit("]", loc), true, hasMore())),
       ];
@@ -1244,7 +1256,7 @@ export function lowerFormatCall(lowerer: Lowerer, expr: ts.CallExpression, loc: 
         if (value.type.kind === "dyn") {
           return { kind: "libCall", fn: "insp.jsonDyn", args: [value], type: STRING, loc };
         }
-        if (!lowerer.jsonSafe(value.type)) {
+        if (!lowerer.jsonStringifySafe(value.type)) {
           lowerer.noLowering(`util.format %j of '${lowerer.fmt(value.type)}' values`, node, "only JSON-safe static types lower");
         }
         return { kind: "jsonStringify", value, type: STRING, loc };

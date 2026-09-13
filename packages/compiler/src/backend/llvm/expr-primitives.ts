@@ -386,7 +386,7 @@ export function emitStringExpr(host: LlvmEmitterContext, e: ExprOf<"strConcat" |
     }
   }
 
-export function emitContainerExpr(host: LlvmEmitterContext, e: ExprOf<"arrayLit" | "arrayNewLen" | "arrayGet" | "arrIntrinsic" | "bytesNew" | "bytesIntrinsic" | "mapNew" | "mapIntrinsic" | "setIntrinsic" | "setNew">): LlValue {
+export function emitContainerExpr(host: LlvmEmitterContext, e: ExprOf<"arrayLit" | "arrayNewLen" | "arrayGet" | "arrayHas" | "arrayState" | "arrIntrinsic" | "bytesNew" | "bytesIntrinsic" | "mapNew" | "mapIntrinsic" | "setIntrinsic" | "setNew">): LlValue {
     const B = host.B;
     switch (e.kind) {
       case "arrayLit": {
@@ -448,6 +448,24 @@ export function emitContainerExpr(host: LlvmEmitterContext, e: ExprOf<"arrayLit"
         const t = B.tmp();
         B.line(`${t} = call ${accTy} @scr_arr_get_${acc}(ptr ${arr.name}, double ${idx.name})`);
         return host.own({ name: t, type: e.type });
+      }
+      case "arrayHas": {
+        const arr = host.emitExpr(e.arr);
+        const idx = host.emitExpr(e.index);
+        if (e.arr.type.kind !== "array") throw new InternalCompilerError("llvm emitter bug: arrayHas on non-array");
+        host.declare(`declare zeroext i1 @scr_arr_has(ptr, double)`);
+        const t = B.tmp();
+        B.line(`${t} = call zeroext i1 @scr_arr_has(ptr ${arr.name}, double ${idx.name})`);
+        return { name: t, type: e.type };
+      }
+      case "arrayState": {
+        const arr = host.emitExpr(e.arr);
+        const idx = host.emitExpr(e.index);
+        if (e.arr.type.kind !== "array") throw new InternalCompilerError("llvm emitter bug: arrayState on non-array");
+        host.declare(`declare double @scr_arr_state(ptr, double)`);
+        const t = B.tmp();
+        B.line(`${t} = call double @scr_arr_state(ptr ${arr.name}, double ${idx.name})`);
+        return { name: t, type: e.type };
       }
       case "arrIntrinsic":
         return host.emitArrIntrinsic(e);

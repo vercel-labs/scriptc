@@ -27,7 +27,7 @@ import {
   fenceOrDropOptionKey,
   isChildSurfaceMember,
 } from "./surfaces.js";
-import { conditionalSpreadOf, droppableStatic, lowerDynObjectLiteral } from "./lower-exprs.js";
+import { conditionalSpreadOf, droppableStatic, lowerAbsenceProbe, lowerDynObjectLiteral } from "./lower-exprs.js";
 import { HTTP2_CONSTANTS } from "./http2-constants.js";
 import { CRYPTO_CIPHERS, CRYPTO_CONSTANTS, CRYPTO_CURVES, CRYPTO_HASHES } from "./crypto-tables.js";
 import { timerStyleCallback } from "./lower-calls.js";
@@ -35,6 +35,78 @@ import { registerHttpClientFnBinding, voidizedCallback } from "./lower-server.js
 import { pairsSnapshotHelper } from "./pairs-snapshot.js";
 import { BOOL, BYTES_U8, CHILD_T, CHILDSTREAM_T, DYN, F64, FILEHANDLE_T, FSWATCHER_T, PROCSTREAM_T, IrExpr, IrFunction, IrLibFn, IrLocal, IrStmt, IrType, JSVAL, NULL_T, SEARCH_PARAMS_T, SPAWNRES_T, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, canBoxFuncIntoDyn, canConvertToDyn, funcOf, isUnitType, typeEquals, typeKey } from "../../ir/ir.js";
 import { boolLit, countedFor, numLit, strLit, varRef } from "../../ir/build.js";
+
+function optionalStringTags(lowerer: Lowerer, type: IrType): { stringTag: number; undefinedTag: number } | null {
+  if (type.kind !== "union") return null;
+  const def = lowerer.unions.get(type.unionId);
+  if (!def || def.arms.length !== 2) return null;
+  const stringTag = lowerer.armTag(type.unionId, STRING);
+  const undefinedTag = lowerer.armTag(type.unionId, UNDEFINED_T);
+  return stringTag >= 0 && undefinedTag >= 0 ? { stringTag, undefinedTag } : null;
+}
+
+function lowerBuiltinValuePreservingUndefined(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  return lowerer.runtimeOptionalIdentifierValue(node)?.value ??
+    lowerAbsenceProbe(lowerer, node) ??
+    lowerer.lowerExpr(node);
+}
+
+function checkedOptionalBuiltinArm(lowerer: Lowerer, value: IrExpr, target: IrType): IrExpr | null {
+  const widened = lowerer.runtimeOptionalWidening(value.type, target);
+  if (!widened || widened.kind !== "union") return null;
+  const helper = lowerer.narrowedArmHelper(widened.unionId, target, value.loc);
+  return helper
+    ? { kind: "call", callee: helper, args: [value], type: target, loc: value.loc }
+    : null;
+}
+
+function lowerOptionalNumberPredicate(
+  lowerer: Lowerer,
+  value: IrExpr,
+  fn: IrLibFn,
+  loc: SrcLoc,
+): IrExpr | null {
+  const widened = lowerer.runtimeOptionalWidening(value.type, F64);
+  if (!widened || widened.kind !== "union") return null;
+  const numberTag = lowerer.armTag(widened.unionId, F64);
+  const undefinedTag = lowerer.armTag(widened.unionId, UNDEFINED_T);
+  if (numberTag < 0 || undefinedTag < 0) return null;
+  const key = `number.optionalPredicate:${fn}:${widened.unionId}`;
+  let helper = lowerer.widthHelpers.get(key);
+  if (!helper) {
+    helper = `%number.optionalPredicate.${lowerer.widthHelpers.size}`;
+    lowerer.widthHelpers.set(key, helper);
+    const input = varRef("value.0", widened, loc);
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "value.0", name: "value", type: widened }],
+      returnType: BOOL,
+      locals: [{ id: "value.0", name: "value", type: widened, mutable: false }],
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "unionIsTag", unionId: widened.unionId, tag: undefinedTag, negated: false, value: input, type: BOOL, loc },
+          then: [{ kind: "return", value: boolLit(false, loc), loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "return",
+          value: {
+            kind: "libCall",
+            fn,
+            args: [{ kind: "unionNarrow", unionId: widened.unionId, tag: numberTag, value: input, type: F64, loc }],
+            type: BOOL,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [value], type: BOOL, loc };
+}
 
 /** Lower an optional builtin argument whose checker type is statically
  * undefined/void. The returned expression exists only to preserve effects;
@@ -3565,7 +3637,8 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     if (name === "write" && call.arguments.length === 1) {
       const receiver = lowerer.lowerExpr(access.expression);
       if (receiver.type.kind !== "record") lowerer.badType(access.expression, lowerer.typeOf(access.expression));
-      const chunk = lowerer.lowerExpr(call.arguments[0]!);
+      let chunk = lowerBuiltinValuePreservingUndefined(lowerer, call.arguments[0]!);
+      chunk = checkedOptionalBuiltinArm(lowerer, chunk, BYTES_U8) ?? chunk;
       if (!(chunk.type.kind === "bytes" && chunk.type.elem === "u8")) {
         lowerer.noLowering(
           `StringDecoder.write of '${lowerer.fmt(chunk.type)}' data`,
@@ -3714,6 +3787,8 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       const indent = stringifySpaceIndent(lowerer, call);
       const argNode = call.arguments[0]!;
       const value = lowerer.lowerExpr(argNode);
+      const optionalString = lowerOptionalStringifyRoot(lowerer, value, indent, loc);
+      if (optionalString) return optionalString;
       // An ISLAND value (`JSON.stringify(err)` on a package handle — the
       // island error-inspection idiom): the ENGINE's own JSON.stringify
       // runs, so key order, nesting, toJSON, and getters match Node by
@@ -3746,7 +3821,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       // types the return `string`, so no static consumer can tell), and a
       // runtime handle inside the tree throws (Node would walk its own
       // enumerable props, which the handle does not model).
-      if (!lowerer.jsonSafe(value.type) && value.type.kind !== "dyn") {
+      if (!lowerer.jsonStringifySafe(value.type) && value.type.kind !== "dyn") {
         // Bare undefined-armed unions get their own wording: Node's
         // stringify of bare undefined is not a string at all — per-type
         // serialization cannot match that exactly, so the fence is
@@ -3781,6 +3856,46 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     }
     return null; // unknown members are tsc errors before lowering
   }
+
+function lowerOptionalStringifyRoot(lowerer: Lowerer, value: IrExpr, indent: string, loc: SrcLoc): IrExpr | null {
+  const tags = optionalStringTags(lowerer, value.type);
+  if (!tags || value.type.kind !== "union") return null;
+  const resultT = lowerer.withUndefinedArm(STRING);
+  const key = `json.optionalString:${value.type.unionId}:${JSON.stringify(indent)}`;
+  let helper = lowerer.widthHelpers.get(key);
+  if (!helper) {
+    helper = `%json.optionalString.${lowerer.widthHelpers.size}`;
+    lowerer.widthHelpers.set(key, helper);
+    const input = varRef("value.0", value.type, loc);
+    const serialized: IrExpr = {
+      kind: "jsonStringify",
+      value: { kind: "unionNarrow", unionId: value.type.unionId, tag: tags.stringTag, value: input, type: STRING, loc },
+      type: STRING,
+      loc,
+    };
+    if (indent !== "") (serialized as { indent?: string }).indent = indent;
+    const missing = lowerer.wrappedUndefined(resultT, loc);
+    if (!missing) throw new InternalCompilerError("optional JSON.stringify result needs an undefined arm");
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "value.0", name: "value", type: value.type }],
+      returnType: resultT,
+      locals: [{ id: "value.0", name: "value", type: value.type, mutable: false }],
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "unionIsTag", unionId: value.type.unionId, tag: tags.undefinedTag, negated: false, value: input, type: BOOL, loc },
+          then: [{ kind: "return", value: missing, loc }],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: lowerer.coerceToExpected(serialized, resultT), loc },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [value], type: resultT, loc };
+}
 
 /** The compile-time indent of a `JSON.stringify(v[, replacer[, space]])`
    * call, with Node's space rules applied: a number clamps to 0–10 spaces
@@ -4083,6 +4198,8 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     if (init.type.kind === "string") {
       return { kind: "libCall", fn: "sp.parse", args: [init], type: SEARCH_PARAMS_T, loc };
     }
+    const optionalString = lowerOptionalStringSearchParams(lowerer, init, loc);
+    if (optionalString) return optionalString;
     if (init.type.kind === "searchParams") {
       // Node ITERATES the source list — the copy is a snapshot, not a
       // live alias (mutating the copy never touches the source or its
@@ -4105,6 +4222,46 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       `URLSearchParams from '${lowerer.fmt(init.type)}' inits (a string, a string[][], another URLSearchParams, or an inline { key: value } literal — narrow unions first)`,
     );
   }
+
+function lowerOptionalStringSearchParams(lowerer: Lowerer, init: IrExpr, loc: SrcLoc): IrExpr | null {
+  const tags = optionalStringTags(lowerer, init.type);
+  if (!tags || init.type.kind !== "union") return null;
+  const key = `sp.optionalString:${init.type.unionId}`;
+  let helper = lowerer.widthHelpers.get(key);
+  if (!helper) {
+    helper = `%sp.optionalString.${lowerer.widthHelpers.size}`;
+    lowerer.widthHelpers.set(key, helper);
+    const value = varRef("init.0", init.type, loc);
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "init.0", name: "init", type: init.type }],
+      returnType: SEARCH_PARAMS_T,
+      locals: [{ id: "init.0", name: "init", type: init.type, mutable: false }],
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "unionIsTag", unionId: init.type.unionId, tag: tags.undefinedTag, negated: false, value, type: BOOL, loc },
+          then: [{ kind: "return", value: { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc }, loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "return",
+          value: {
+            kind: "libCall",
+            fn: "sp.parse",
+            args: [{ kind: "unionNarrow", unionId: init.type.unionId, tag: tags.stringTag, value, type: STRING, loc }],
+            type: SEARCH_PARAMS_T,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [init], type: SEARCH_PARAMS_T, loc };
+}
 
 /** Method calls on URLSearchParams-typed receivers — the WHATWG list
    * surface over the runtime's decoded pairs. get answers `string | null`
@@ -6679,7 +6836,7 @@ const NUMBER_CONSTANTS: Record<string, number | undefined> = {
         lowerer.noLowering(`Number.${member} with ${call.arguments.length} arguments`, call);
       }
       const argNode = call.arguments[0]!;
-      const arg = lowerer.lowerExpr(argNode);
+      const arg = lowerBuiltinValuePreservingUndefined(lowerer, argNode);
       // An ISLAND ('any'-typed) argument evaluates the predicate in the
       // engine — the statics never coerce, so the engine's answer over the
       // real value is JS-exact where a static fence would refuse the
@@ -6691,6 +6848,8 @@ const NUMBER_CONSTANTS: Record<string, number | undefined> = {
         const raw: IrExpr = { kind: "jsOp", op: "callMethod", name: member, args: [numberGlobal, arg], type: JSVAL, loc };
         return { kind: "jsExit", value: raw, type: BOOL, loc };
       }
+      const optional = lowerOptionalNumberPredicate(lowerer, arg, fn, loc);
+      if (optional) return optional;
       if (arg.type.kind !== "f64") {
         lowerer.noLowering(
           `Number.${member} of '${lowerer.fmt(arg.type)}' values`,

@@ -66,7 +66,7 @@ function fixture(): IrModule {
   );
 
   return {
-    irVersion: 6,
+    irVersion: 8,
     sourceFile: loc.file,
     entry: "__main",
     functions: [{ name: "__main", params: [], returnType: VOID, locals, body, loc }],
@@ -136,7 +136,7 @@ function receiverReassignmentFixture(): IrModule {
   ];
 
   return {
-    irVersion: 6,
+    irVersion: 8,
     sourceFile: loc.file,
     entry: "__main",
     functions: [{ name: "__main", params: [], returnType: VOID, locals, body, loc }],
@@ -201,7 +201,7 @@ function integerLoopFixture(mutatesIndex = false): IrModule {
     { kind: "bytesSet", arr: bytesRef(), index: indexRef(), value: ref("sum"), loc },
   );
   return {
-    irVersion: 6,
+    irVersion: 8,
     sourceFile: loc.file,
     entry: "__main",
     functions: [{
@@ -328,7 +328,7 @@ test("large record clones stay outlined while small clones remain inlineable", (
     const fields = Array.from({ length: count }, (_, i) => ({ name: `f${i}`, type: F64 }));
     const type = { kind: "record", shapeId: id } as const;
     return {
-      irVersion: 6,
+      irVersion: 8,
       sourceFile: "record-clone.ts",
       entry: "__main",
       records: [{ id, fields }],

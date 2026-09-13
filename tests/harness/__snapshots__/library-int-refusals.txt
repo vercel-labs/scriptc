@@ -1,6 +1,6 @@
 lib.ts:6:6 - error SC4021: integer slot 'exports.send.params[0]' (i64) cannot be proven — representability failed: the literal 9007199254740993 is not representable as f64 — it reads back as 9007199254740992
 
-  5 | export function at(i: number): number { return crossed[i]; }
+  5 | export function at(i: number): number { return crossed[i]!; }
   6 | send(9007199254740993);
     |      ^~~~~~~~~~~~~~~~
   7 | export function half(a: number): void {

@@ -13,13 +13,6 @@
  * primitives every world needs (comptime, setTimeout, __island_eval) live
  * in scriptc.d.ts, which ships to BOTH programs. */
 
-/* `pop(): T`, not the lib's `T | undefined`: popping an empty array traps
- * at runtime — a documented divergence (SEMANTICS.md) this override keeps
- * typecheckable. Check `.length` first, as real code must. */
-interface Array<T> {
-  pop(): T;
-}
-
 /* `at(): string`, not the lib's `string | undefined`: undefined is
  * unrepresentable, so an out-of-range at() THROWS a catchable TypeError at
  * the validated island exit instead of returning undefined (documented

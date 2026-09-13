@@ -31,8 +31,8 @@ const picked = mk() && mk();
 console.log(both, picked === u);
 console.log(u);
 
-// switch on a union compiles for plain-read discriminants (corpus 1119);
-// a COMPUTED discriminant rides every desugared test and stays fenced.
+// Union switches evaluate computed discriminants once; their arms still need
+// static equality, pure case tests, and non-final clauses that exit.
 switch (mk()) {
   case 1:
     break;
@@ -40,9 +40,9 @@ switch (mk()) {
 
 // Field reads on a union receiver compile now even when the arm types
 // differ — the keyed-read JOIN (corpus 1541); mkAB().v is no longer a
-// fence. Union-element arrays exist, but indexOf/includes stay fenced: union
-// boxes are compiler artifacts, and pointer identity would misjudge the
-// JS === their arm values deserve.
+// fence. One-argument indexOf/includes lower union values with per-arm JS
+// equality and correct hole handling. Calls with fromIndex remain explicitly
+// fenced.
 const items: (number | string)[] = [1, "two"];
 console.log(items.indexOf(1));
 console.log(items.includes("two"));

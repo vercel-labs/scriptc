@@ -1,4 +1,4 @@
-optional-fields.ts:12:38 - error SC1090: JSON.stringify of 'string | undefined' values (Node's stringify of bare undefined is not a string at all — narrow with '!== undefined' first, model absence with a null arm, or use an optional record field ('{ a?: string }'), which drops from the output like Node's) are not supported yet
+optional-fields.ts:12:38 - error SC1090: JSON.stringify of 'number | undefined' values (Node's stringify of bare undefined is not a string at all — narrow with '!== undefined' first, model absence with a null arm, or use an optional record field ('{ a?: string }'), which drops from the output like Node's) are not supported yet
 
   11 | }
   12 | const stringifyBare = JSON.stringify(mkMaybe());

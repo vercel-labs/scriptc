@@ -40,11 +40,11 @@ class Holder {
 const anything: any = 5; // checker-`any` bindings ride the checked-dynamic tree now — no fence
 const dynArray: unknown[] = []; // unknown[] IS the dyn array now — no fence (corpus 2585)
 const parseRef = JSON.parse;
-// BARE undefined-armed unions are not JSON on the STRINGIFY side: Node
-// stringifies bare undefined to a non-string. (The cast direction
-// `u as string | undefined` compiles now — the checked-dynamic tree holds a first-class
-// undefined value for index-signature overflow reads, and the undefined
-// arm matches exactly it.)
+// The exact `string | undefined` root now lowers: strings serialize while
+// undefined remains the undefined value, matching Node. Other bare
+// undefined-armed root unions remain fenced until their root-level result
+// can preserve undefined. Optional record fields still drop from serialized
+// output like Node's.
 function mkMaybe(): string | undefined {
   return undefined;
 }

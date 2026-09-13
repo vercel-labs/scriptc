@@ -200,6 +200,9 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
             f.throws = true;
           }
           break;
+        case "arraySetLength":
+          f.throws = true;
+          break;
         case "regexIntrinsic":
           // replaceAll and matchAll without /g throw Node's TypeError;
           // split throws on a pattern with capture groups — all catchable.

@@ -4490,6 +4490,18 @@ function lowerHttpResMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
     const header = lowerer.lowerExprExpecting(args[0]!, STRING);
     let value = lowerer.lowerExpr(args[1]!);
+    if (
+      lowerer.mapTypeOf(lowerer.typeOf(args[1]!))?.kind === "string" &&
+      lowerer.runtimeOptionalWidening(value.type, STRING) !== null
+    ) {
+      // Missing-value propagation keeps an indexed/header read's storage
+      // as string | undefined after TypeScript narrows this call site to
+      // string. Treat setHeader's string overload as the typed consumer it
+      // is: extract the proven arm through the ordinary checked coercion.
+      // An unguarded optional value remains union-typed to the checker and
+      // retains the setHeader refusal below.
+      value = lowerer.coerceInto(args[1]!, value, STRING);
+    }
     if (value.type.kind === "f64") {
       // Node formats number values via String(n) — the same ToString.
       value = { kind: "toString", operand: value, type: STRING, loc };

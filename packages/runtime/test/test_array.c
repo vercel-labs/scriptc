@@ -4,7 +4,7 @@
  *   (no args)          run all assertions; prints "N/N cases passed"
  *   --crash-get-oob    read past the end        → RangeError + abort()
  *   --crash-get-frac   read a fractional index  → RangeError + abort()
- *   --crash-set-oob    write past len (holes)   → RangeError + abort()
+ *   --crash-hole-read  read a hole             → RangeError + abort()
  *   --crash-pop-empty  pop an empty array       → RangeError + abort()
  *
  * The RC-recursion cases (array of strings, array of arrays of strings)
@@ -393,6 +393,26 @@ static void test_ref_cycle(void) {
 #endif
 }
 
+static void test_ref_truncate_cycle(void) {
+#ifdef SCR_RC_AUDIT
+  long arrays0 = scr_arr_live_count();
+#endif
+  /* The truncation release runs while the record points back at the array.
+   * The array edge must be detached before mock_cyc_release can trigger the
+   * cycle collector. */
+  ScrArr *arr = scr_arr_new_ref(&mock_cyc_retain, &mock_cyc_release, &mock_trace, 0);
+  MockRec *rec = mock_cyc_new(8);
+  rec->owner = (ScrArr *)scr_arr_retain(arr);
+  scr_arr_push_ref(arr, rec);
+  scr_arr_set_len(arr, 0);
+  scr_collect_cycles();
+  check(mock_live == 0, "truncation detaches cyclic ref before release");
+  scr_arr_release(arr);
+#ifdef SCR_RC_AUDIT
+  check(scr_arr_live_count() == arrays0, "truncation cycle: no arrays leaked");
+#endif
+}
+
 static void test_join(void) {
 #ifdef SCR_RC_AUDIT
   long strings0 = scr_str_live_count();
@@ -441,6 +461,114 @@ static void test_join(void) {
 #endif
 }
 
+static void test_sparse_holes(void) {
+#ifdef SCR_RC_AUDIT
+  long strings0 = scr_str_live_count();
+  long arrays0 = scr_arr_live_count();
+#endif
+  ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_f64(a, 3, 7);
+  check_f64(scr_arr_len(a), 4, "far indexed write grows length");
+  check(!scr_arr_has(a, 0) && !scr_arr_has(a, 2), "growth leaves holes absent");
+  check(scr_arr_has(a, 3), "far indexed write is present");
+  check_f64(scr_arr_get_f64(a, 3), 7, "far indexed value is readable");
+  scr_arr_set_undefined(a, 2);
+  check(scr_arr_state(a, 2) == SCR_ARR_UNDEFINED && scr_arr_has(a, 2),
+        "explicit undefined is present and stateful");
+  check_f64(scr_arr_next_present(a, 0), 2,
+            "next-present traversal finds explicit undefined");
+  check_f64(scr_arr_next_present(a, 3), 3,
+            "next-present traversal finds dense values");
+  check_f64(scr_arr_next_present(a, 4), 4,
+            "next-present traversal stops at length");
+  check(scr_arr_delete(a, 2) && scr_arr_state(a, 2) == SCR_ARR_HOLE &&
+            scr_arr_len(a) == 4,
+        "delete removes a slot without shrinking length");
+  ScrStr *hole_sep = scr_str_new(",", 1);
+  ScrStr *hole_join = scr_arr_join(a, hole_sep);
+  check(strcmp(hole_join->data, ",,,7") == 0,
+        "join preserves separators for holes");
+  scr_str_release(hole_join);
+  scr_str_release(hole_sep);
+
+  ScrArr *slice = scr_arr_slice(a, 0, 4);
+  check_f64(scr_arr_len(slice), 4, "slice keeps sparse length");
+  check(!scr_arr_has(slice, 0) && scr_arr_has(slice, 3),
+        "slice preserves hole presence");
+  scr_arr_release(slice);
+
+  ScrArr *materialized = scr_arr_to_reversed(a);
+  check(scr_arr_state(materialized, 1) == SCR_ARR_UNDEFINED,
+        "toReversed materializes a hole as undefined");
+  scr_arr_release(materialized);
+
+  ScrArr *concat = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_concat_copy(concat, a);
+  check(scr_arr_state(concat, 0) == SCR_ARR_HOLE,
+        "concat copy preserves holes");
+  ScrArr *spread = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_spread(spread, a);
+  check(scr_arr_state(spread, 0) == SCR_ARR_UNDEFINED,
+        "spread materializes holes as undefined");
+  scr_arr_release(concat);
+  scr_arr_release(spread);
+
+  ScrArr *rev = scr_arr_reverse(a);
+  check(rev == a, "sparse reverse keeps identity");
+  check(scr_arr_has(a, 0) && !scr_arr_has(a, 3),
+        "reverse moves presence with the value");
+  scr_arr_release(rev);
+  scr_arr_release(a);
+
+  ScrArr *high = scr_arr_new(SCR_ELEM_F64, 0);
+  const double high_index = 4000000000.0;
+  scr_arr_set_f64(high, high_index, 11);
+  check(scr_arr_has(high, high_index), "high sparse index is present");
+  check(high->cap <= ((size_t)1 << 20), "high sparse index avoids dense allocation");
+  check(high->sparse_len == 1, "high sparse index uses side storage");
+  check_f64(scr_arr_next_present(high, 0), high_index,
+            "next-present traversal jumps to side storage");
+  scr_arr_set_len(high, 0);
+  check(high->sparse_len == 0 && scr_arr_len(high) == 0,
+        "length shrink removes sparse entries");
+  scr_arr_release(high);
+
+  ScrArr *refs = scr_arr_new(SCR_ELEM_STR, 0);
+  scr_arr_set_ref(refs, high_index, scr_str_new("sparse", 6));
+  scr_arr_set_len(refs, 0);
+  scr_arr_release(refs);
+
+  ScrArr *props = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_f64(props, -1, 21);
+  scr_arr_set_f64(props, 0.5, 22);
+  scr_arr_set_f64(props, 4294967295.0, 23);
+  check_f64(scr_arr_len(props), 0, "ordinary numeric properties do not grow length");
+  check(scr_arr_has(props, -1) && scr_arr_has(props, 0.5) &&
+            scr_arr_has(props, 4294967295.0),
+        "noncanonical numeric properties are present");
+  check_f64(scr_arr_get_f64(props, -1), 21, "negative numeric property round-trips");
+  check_f64(scr_arr_get_f64(props, 0.5), 22, "fractional numeric property round-trips");
+  check_f64(scr_arr_get_f64(props, 4294967295.0), 23,
+            "max non-index numeric property round-trips");
+  scr_arr_set_undefined(props, -2);
+  scr_arr_set_undefined(props, 1.5);
+  scr_arr_set_undefined(props, 4294967295.0);
+  check(scr_arr_state(props, -2) == SCR_ARR_UNDEFINED &&
+            scr_arr_state(props, 1.5) == SCR_ARR_UNDEFINED &&
+            scr_arr_state(props, 4294967295.0) == SCR_ARR_UNDEFINED,
+        "ordinary undefined properties retain their state");
+  check(scr_arr_has(props, -2) && scr_arr_has(props, 1.5) &&
+            scr_arr_has(props, 4294967295.0),
+        "ordinary undefined properties remain present");
+  scr_arr_set_len(props, 0);
+  check(scr_arr_has(props, -1), "length truncation leaves ordinary properties");
+  scr_arr_release(props);
+#ifdef SCR_RC_AUDIT
+  check(scr_str_live_count() == strings0, "sparse ref truncation releases values");
+  check(scr_arr_live_count() == arrays0, "sparse arrays do not leak");
+#endif
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -449,8 +577,9 @@ int main(int argc, char **argv) {
       scr_arr_get_f64(a, 1); /* len is 1 */
     } else if (strcmp(argv[1], "--crash-get-frac") == 0) {
       scr_arr_get_f64(a, 0.5);
-    } else if (strcmp(argv[1], "--crash-set-oob") == 0) {
-      scr_arr_set_f64(a, 2, 9); /* would create a hole */
+    } else if (strcmp(argv[1], "--crash-hole-read") == 0) {
+      scr_arr_set_f64(a, 2, 9);
+      scr_arr_get_f64(a, 1); /* present-length read of a hole */
     } else if (strcmp(argv[1], "--crash-pop-empty") == 0) {
       scr_arr_pop_f64(a);
       scr_arr_pop_f64(a); /* now empty */
@@ -470,7 +599,9 @@ int main(int argc, char **argv) {
   test_index_of_includes();
   test_ref_elements();
   test_ref_cycle();
+  test_ref_truncate_cycle();
   test_join();
+  test_sparse_holes();
 
   fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);
   return failed == 0 ? 0 : 1;

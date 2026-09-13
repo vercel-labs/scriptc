@@ -62,9 +62,12 @@ export function buildArraySortFn(
   const fnT = funcOf([elem, elem].slice(0, arity), F64);
 
   const a = varRef("a.0", arrT, loc);
+  const snapshot = varRef("snapshot.0", arrT, loc);
   const src = varRef("src.0", arrT, loc);
   const dst = varRef("dst.0", arrT, loc);
   const n = varRef("n.0", F64, loc);
+  const valueCount = varRef("valueCount.0", F64, loc);
+  const undefinedCount = varRef("undefinedCount.0", F64, loc);
   const width = varRef("width.0", F64, loc);
   const start = varRef("start.0", F64, loc);
   const mid = varRef("mid.0", F64, loc);
@@ -72,12 +75,19 @@ export function buildArraySortFn(
   const left = varRef("left.0", F64, loc);
   const r = varRef("r.0", F64, loc);
   const k = varRef("k.0", F64, loc);
+  const i = varRef("i.0", F64, loc);
+  const j = varRef("j.0", F64, loc);
+  const state = varRef("state.0", F64, loc);
   const add = (left: IrExpr, right: IrExpr): IrExpr => ({ kind: "bin", op: "+", left, right, type: F64, loc });
   const sub = (left: IrExpr, right: IrExpr): IrExpr => ({ kind: "bin", op: "-", left, right, type: F64, loc });
   const mul = (left: IrExpr, right: IrExpr): IrExpr => ({ kind: "bin", op: "*", left, right, type: F64, loc });
   const lt = (left: IrExpr, right: IrExpr): IrExpr => ({ kind: "bin", op: "<", left, right, type: BOOL, loc });
+  const eq = (left: IrExpr, right: IrExpr): IrExpr => ({ kind: "bin", op: "===", left, right, type: BOOL, loc });
   const not = (value: IrExpr): IrExpr => ({ kind: "unary", op: "!", operand: value, type: BOOL, loc });
   const at = (index: IrExpr): IrExpr => ({ kind: "arrayGet", arr: src, index, type: elem, loc });
+  const snapshotAt = (index: IrExpr): IrExpr => ({ kind: "arrayGet", arr: snapshot, index, type: elem, loc });
+  const stateAt = (index: IrExpr): IrExpr => ({ kind: "arrayState", arr: snapshot, index, type: F64, loc });
+  const stateIs = (value: number): IrExpr => eq(state, numLit(value, loc));
   const isUndefined = (value: IrExpr): IrExpr | null => {
     if (elem.kind === "union" && undefinedTag !== null) {
       return {
@@ -121,8 +131,6 @@ export function buildArraySortFn(
     };
     const leftUndefined = isUndefined(leftValue);
     const rightUndefined = isUndefined(rightValue);
-    // CompareArrayElements: undefined always sinks and never reaches the
-    // user comparator. Ternaries preserve that callback suppression.
     return leftUndefined !== null && rightUndefined !== null
       ? {
           kind: "ternary",
@@ -227,7 +235,7 @@ export function buildArraySortFn(
   const mergePass: IrStmt = {
     kind: "for",
     init: { kind: "varDecl", localId: "start.0", init: numLit(0, loc), loc },
-    cond: lt(start, n),
+    cond: lt(start, valueCount),
     update: { kind: "assign", localId: "start.0", value: add(start, add(width, width)), loc },
     body: [
       {
@@ -235,9 +243,9 @@ export function buildArraySortFn(
         localId: "mid.0",
         init: {
           kind: "ternary",
-          cond: lt(add(start, width), n),
+          cond: lt(add(start, width), valueCount),
           then: add(start, width),
-          else_: n,
+          else_: valueCount,
           type: F64,
           loc,
         },
@@ -248,9 +256,9 @@ export function buildArraySortFn(
         localId: "right.0",
         init: {
           kind: "ternary",
-          cond: lt(add(add(start, width), width), n),
+          cond: lt(add(add(start, width), width), valueCount),
           then: add(add(start, width), width),
-          else_: n,
+          else_: valueCount,
           type: F64,
           loc,
         },
@@ -261,6 +269,62 @@ export function buildArraySortFn(
       { kind: "varDecl", localId: "k.0", init: start, loc },
       mergeOrCopy,
     ],
+    loc,
+  };
+  const collect: IrStmt = {
+    kind: "for",
+    init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+    cond: lt(i, n),
+    update: { kind: "assign", localId: "i.0", value: add(i, numLit(1, loc)), loc },
+    body: [
+      { kind: "varDecl", localId: "state.0", init: stateAt(i), loc },
+      {
+        kind: "if",
+        cond: stateIs(1),
+        then: [
+          { kind: "varDecl", localId: "v.0", init: snapshotAt(i), loc },
+          { kind: "arraySet", arr: src, index: valueCount, value: varRef("v.0", elem, loc), loc },
+          { kind: "assign", localId: "valueCount.0", value: add(valueCount, numLit(1, loc)), loc },
+        ],
+        else_: [
+          {
+            kind: "if",
+            cond: stateIs(2),
+            then: [{ kind: "assign", localId: "undefinedCount.0", value: add(undefinedCount, numLit(1, loc)), loc }],
+            else_: null,
+            loc,
+          },
+        ],
+        loc,
+      },
+    ],
+    loc,
+  };
+  const writeValues: IrStmt = {
+    kind: "for",
+    init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+    cond: lt(i, valueCount),
+    update: { kind: "assign", localId: "i.0", value: add(i, numLit(1, loc)), loc },
+    body: [
+      { kind: "varDecl", localId: "v.0", init: at(i), loc },
+      { kind: "arraySet", arr: a, index: i, value: varRef("v.0", elem, loc), loc },
+    ],
+    loc,
+  };
+  const writeUndefined: IrStmt = {
+    kind: "for",
+    init: { kind: "varDecl", localId: "j.0", init: valueCount, loc },
+    cond: lt(j, copyFirst ? n : add(valueCount, undefinedCount)),
+    update: { kind: "assign", localId: "j.0", value: add(j, numLit(1, loc)), loc },
+    body: [{ kind: "arraySetUndefined", arr: a, index: j, loc }],
+    loc,
+  };
+  const deleteRemaining: IrStmt = {
+    kind: "for",
+    init: { kind: "varDecl", localId: "j.0", init: add(valueCount, undefinedCount), loc },
+    cond: lt(j, n),
+    update: { kind: "assign", localId: "j.0", value: add(j, numLit(1, loc)), loc },
+    body: [{ kind: "arrayDelete", arr: a, index: j, loc }],
     loc,
   };
   const body: IrStmt[] = [
@@ -280,15 +344,16 @@ export function buildArraySortFn(
         }]
       : []),
     readArrayLength(arrT, loc),
-    { kind: "varDecl", localId: "src.0", init: { kind: "arrIntrinsic", method: "slice", receiver: a, args: [], type: arrT, loc }, loc },
-    // The destination is filled from index zero upward on every merge pass.
-    // An empty literal is therefore dense and works for scalar arrays too;
-    // arrayNewLen is reserved for the separate absent-slot semantics.
+    { kind: "varDecl", localId: "snapshot.0", init: { kind: "arrIntrinsic", method: "slice", receiver: a, args: [], type: arrT, loc }, loc },
+    { kind: "varDecl", localId: "src.0", init: { kind: "arrayLit", elems: [], type: arrT, loc }, loc },
+    { kind: "varDecl", localId: "valueCount.0", init: numLit(0, loc), loc },
+    { kind: "varDecl", localId: "undefinedCount.0", init: numLit(0, loc), loc },
+    collect,
     { kind: "varDecl", localId: "dst.0", init: { kind: "arrayLit", elems: [], type: arrT, loc }, loc },
     { kind: "varDecl", localId: "width.0", init: numLit(1, loc), loc },
     {
       kind: "while",
-      cond: lt(width, n),
+      cond: lt(width, valueCount),
       body: [
         mergePass,
         { kind: "varDecl", localId: "tmp.0", init: src, loc },
@@ -298,17 +363,9 @@ export function buildArraySortFn(
       ],
       loc,
     },
-    {
-      kind: "for",
-      init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
-      cond: lt(varRef("i.0", F64, loc), n),
-      update: { kind: "assign", localId: "i.0", value: add(varRef("i.0", F64, loc), numLit(1, loc)), loc },
-      body: [
-        { kind: "varDecl", localId: "v.0", init: { kind: "arrayGet", arr: src, index: varRef("i.0", F64, loc), type: elem, loc }, loc },
-        { kind: "arraySet", arr: a, index: varRef("i.0", F64, loc), value: varRef("v.0", elem, loc), loc },
-      ],
-      loc,
-    },
+    writeValues,
+    writeUndefined,
+    ...(copyFirst ? [] : [deleteRemaining]),
     { kind: "return", value: a, loc },
   ];
   return {
@@ -322,8 +379,12 @@ export function buildArraySortFn(
       { id: "a.0", name: "a", type: arrT, mutable: true },
       { id: "f.0", name: "f", type: fnT, mutable: true },
       { id: "n.0", name: "n", type: F64, mutable: false },
+      { id: "snapshot.0", name: "snapshot", type: arrT, mutable: false },
       { id: "src.0", name: "src", type: arrT, mutable: true },
       { id: "dst.0", name: "dst", type: arrT, mutable: true },
+      { id: "valueCount.0", name: "valueCount", type: F64, mutable: true },
+      { id: "undefinedCount.0", name: "undefinedCount", type: F64, mutable: true },
+      { id: "state.0", name: "state", type: F64, mutable: false },
       { id: "width.0", name: "width", type: F64, mutable: true },
       { id: "start.0", name: "start", type: F64, mutable: true },
       { id: "mid.0", name: "mid", type: F64, mutable: true },
@@ -332,6 +393,7 @@ export function buildArraySortFn(
       { id: "r.0", name: "r", type: F64, mutable: true },
       { id: "k.0", name: "k", type: F64, mutable: true },
       { id: "i.0", name: "i", type: F64, mutable: true },
+      { id: "j.0", name: "j", type: F64, mutable: true },
       { id: "tmp.0", name: "tmp", type: arrT, mutable: true },
       { id: "v.0", name: "v", type: elem, mutable: false },
       { id: "vL.0", name: "vL", type: elem, mutable: false },
@@ -343,7 +405,6 @@ export function buildArraySortFn(
     loc,
   };
 }
-
 
 export function buildBytesSortFn(
   name: string,

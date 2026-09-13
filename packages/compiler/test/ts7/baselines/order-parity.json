@@ -5713,6 +5713,210 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2703-array-sparse-sort.ts": {
+   "order": [
+    "<repo>/tests/corpus/2703-array-sparse-sort.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2704-array-sparse-to-sorted.ts": {
+   "order": [
+    "<repo>/tests/corpus/2704-array-sparse-to-sorted.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2705-array-sparse-sort-append.ts": {
+   "order": [
+    "<repo>/tests/corpus/2705-array-sparse-sort-append.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2706-array-search-missing-needle.ts": {
+   "order": [
+    "<repo>/tests/corpus/2706-array-search-missing-needle.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2707-array-search-huge-sparse.ts": {
+   "order": [
+    "<repo>/tests/corpus/2707-array-search-huge-sparse.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2720-array-read-parity.ts": {
+   "order": [
+    "<repo>/tests/corpus/2720-array-read-parity.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2721-array-nested-missing-receiver.ts": {
+   "order": [
+    "<repo>/tests/corpus/2721-array-nested-missing-receiver.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2750-array-sparse-foundation.ts": {
+   "order": [
+    "<repo>/tests/corpus/2750-array-sparse-foundation.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2751-buffer-concat-sparse-list.ts": {
+   "order": [
+    "<repo>/tests/corpus/2751-buffer-concat-sparse-list.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2752-array-optional-stores.ts": {
+   "order": [
+    "<repo>/tests/corpus/2752-array-optional-stores.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2753-array-optional-method-values.ts": {
+   "order": [
+    "<repo>/tests/corpus/2753-array-optional-method-values.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2754-array-property-undefined.ts": {
+   "order": [
+    "<repo>/tests/corpus/2754-array-property-undefined.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2755-array-optional-literal-forwarding.ts": {
+   "order": [
+    "<repo>/tests/corpus/2755-array-optional-literal-forwarding.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2780-array-parity-composition.ts": {
+   "order": [
+    "<repo>/tests/corpus/2780-array-parity-composition.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2781-array-missing-value-escape.ts": {
+   "order": [
+    "<repo>/tests/corpus/2781-array-missing-value-escape.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2782-array-sparse-callbacks.ts": {
+   "order": [
+    "<repo>/tests/corpus/2782-array-sparse-callbacks.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2783-array-defaults-rest.ts": {
+   "order": [
+    "<repo>/tests/corpus/2783-array-defaults-rest.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2784-array-reduce-missing-result.ts": {
+   "order": [
+    "<repo>/tests/corpus/2784-array-reduce-missing-result.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2785-array-missing-destructuring.ts": {
+   "order": [
+    "<repo>/tests/corpus/2785-array-missing-destructuring.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2786-array-sparse-serialization.ts": {
+   "order": [
+    "<repo>/tests/corpus/2786-array-sparse-serialization.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2787-array-missing-string-arithmetic.ts": {
+   "order": [
+    "<repo>/tests/corpus/2787-array-missing-string-arithmetic.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2788-array-missing-builtin-conversions.ts": {
+   "order": [
+    "<repo>/tests/corpus/2788-array-missing-builtin-conversions.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2789-array-missing-optional-tostring.ts": {
+   "order": [
+    "<repo>/tests/corpus/2789-array-missing-optional-tostring.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2790-array-missing-tagged-substitutions.ts": {
+   "order": [
+    "<repo>/tests/corpus/2790-array-missing-tagged-substitutions.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2791-record-optional-keys.ts": {
+   "order": [
+    "<repo>/tests/corpus/2791-record-optional-keys.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2792-record-optional-spread-entries.ts": {
+   "order": [
+    "<repo>/tests/corpus/2792-record-optional-spread-entries.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2793-union-conversion-identity-capture.ts": {
+   "order": [
+    "<repo>/tests/corpus/2793-union-conversion-identity-capture.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2794-array-generic-callback-values.ts": {
+   "order": [
+    "<repo>/tests/corpus/2794-array-generic-callback-values.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2795-array-optional-typedarray-source.ts": {
+   "order": [
+    "<repo>/tests/corpus/2795-array-optional-typedarray-source.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2796-array-sparse-class-value-instanceof.ts": {
+   "order": [
+    "<repo>/tests/corpus/2796-array-sparse-class-value-instanceof.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2800-array-expression-consumers.ts": {
+   "order": [
+    "<repo>/tests/corpus/2800-array-expression-consumers.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2801-array-switch-consumers.ts": {
+   "order": [
+    "<repo>/tests/corpus/2801-array-switch-consumers.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2820-array-missing-method-receivers.ts": {
+   "order": [
+    "<repo>/tests/corpus/2820-array-missing-method-receivers.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2821-array-optional-numeric-comparisons.ts": {
+   "order": [
+    "<repo>/tests/corpus/2821-array-optional-numeric-comparisons.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/300-if-else.ts": {
    "order": [
     "<repo>/tests/corpus/300-if-else.ts"

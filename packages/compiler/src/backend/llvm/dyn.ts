@@ -627,6 +627,13 @@ export class LlDyn {
                 { index: 1, type: host.sizeType, name: "length" },
                 { index: 2, type: host.sizeType, name: "capacity" },
                 { index: 7, type: "ptr" as const, name: "data" },
+                { index: 8, type: "ptr" as const, name: "presence" },
+                { index: 9, type: "ptr" as const, name: "sparse slots" },
+                { index: 10, type: host.sizeType, name: "sparse length" },
+                { index: 11, type: host.sizeType, name: "sparse capacity" },
+                { index: 12, type: "ptr" as const, name: "numeric properties" },
+                { index: 13, type: host.sizeType, name: "property length" },
+                { index: 14, type: host.sizeType, name: "property capacity" },
               ];
           members.forEach((member) => {
             const cachedPtr = B.tmp();

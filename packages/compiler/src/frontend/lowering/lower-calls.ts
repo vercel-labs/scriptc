@@ -227,7 +227,7 @@ export interface GenericInstance {
         }
         return { type: abi, mode: "omittable", bodyType };
       }
-      return { type: lowerer.irTypeOf(param.name), mode: "required" };
+      return { type: lowerer.runtimeOptionalBindingType(param.name, lowerer.irTypeOf(param.name)), mode: "required" };
     }
     if (param.dotDotDotToken) {
       // A JS rest param with no static element type (`(...args)` — any[]):
@@ -250,7 +250,7 @@ export interface GenericInstance {
           return { type: DYN, mode: "dynRest" };
         }
       }
-      const type = lowerer.irTypeOf(param.name);
+      const type = lowerer.runtimeOptionalBindingType(param.name, lowerer.irTypeOf(param.name));
       // Tuple-typed rest params don't map to an array; generic rest is the
       // generic path's business. Anything non-array here is unmappable.
       if (type.kind !== "array") lowerer.badType(param.name, lowerer.typeOf(param.name));
@@ -292,7 +292,7 @@ export interface GenericInstance {
       }
       return { type: abi, mode: "omittable", bodyType };
     }
-    const type = lowerer.irTypeOf(param.name);
+    const type = lowerer.runtimeOptionalBindingType(param.name, lowerer.irTypeOf(param.name));
     if (param.questionToken && !lowerer.bareUndefinedArmedUnion(type) && type.kind !== "dyn" && type.kind !== "jsval") {
       // `x?: unknown` where unknown came from an annotation: undefined is
       // absorbed into the hole type, so no undefined ARM exists — but a
@@ -326,7 +326,10 @@ export interface GenericInstance {
     return params.map((declParam, i) => {
       const symbol = signature.getParameters()[i];
       const tsType = symbol ? lowerer.checker.getTypeOfSymbol(symbol) : lowerer.typeOf(declParam.name);
-      const mapped = lowerer.mapTypeOf(tsType);
+      const mapped = lowerer.runtimeOptionalBindingType(
+        declParam.name,
+        lowerer.mapTypeOf(tsType) ?? lowerer.irTypeOf(declParam.name),
+      );
       if (!mapped || mapped.kind === "void") lowerer.badType(blameOf?.(declParam, i) ?? declParam.name, tsType);
       if (declParam.dotDotDotToken) {
         if (mapped.kind !== "array") lowerer.badType(blameOf?.(declParam, i) ?? declParam.name, tsType);
@@ -1640,6 +1643,8 @@ export function genericFnOf(lowerer: Lowerer, ident: ts.Identifier): GenericFnIn
     if (!target) fenceUnpinned();
     const bindings = new Map<ts.Symbol, IrType>();
     unifySignatureBindings(lowerer, info, target, bindings);
+    const hofBinding = runtimeOptionalHofGenericBinding(lowerer, ref, info);
+    if (hofBinding) bindings.set(hofBinding.typeParam, hofBinding.type);
     bindDefaultTypeParams(lowerer, info.typeParams, info.decl.typeParameters, bindings);
     // A pinning signature that itself keeps type parameters (`let g: <T>(x:
     // T) => T = identity` — storing the generic signature as such) binds
@@ -1659,6 +1664,28 @@ export function genericFnOf(lowerer: Lowerer, ident: ts.Identifier): GenericFnIn
     lowerer.noteEdge(inst.name);
     return { kind: "closure", fnName: inst.name, captures: [], type: funcType, loc };
   }
+
+function runtimeOptionalHofGenericBinding(
+  lowerer: Lowerer,
+  ref: ts.Expression,
+  info: GenericFnInfo,
+): { typeParam: ts.Symbol; type: IrType } | null {
+  let argument = ref;
+  while (argument.parent && ts.isParenthesizedExpression(argument.parent)) argument = argument.parent;
+  const call = argument.parent;
+  if (!ts.isCallExpression(call) || call.arguments[0] !== argument) return null;
+  if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "map") return null;
+  if (!lowerer.isStdlibMember(call.expression)) return null;
+  const receiver = lowerer.mapTypeOf(lowerer.typeOf(call.expression.expression));
+  if (receiver?.kind !== "array") return null;
+  const parameter = info.decl.parameters[0];
+  if (!parameter || !ts.isIdentifier(parameter.name)) return null;
+  const parameterType = lowerer.typeOf(parameter.name);
+  if ((parameterType.flags & ts.TypeFlags.TypeParameter) === 0) return null;
+  const typeParam = parameterType.getSymbol();
+  if (!typeParam || !info.typeParams.includes(typeParam)) return null;
+  return { typeParam, type: lowerer.runtimeOptionalType(receiver.elem) };
+}
 
 /** The instance a pinned VALUE reference names: the declaration's modes
    * over the DECLARED types mapped under the bindings (mapType's resolver
@@ -3407,6 +3434,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       if (arg.type.kind === "string") {
         return { kind: "libCall", fn: "num.fromString", args: [arg], type: F64, loc };
       }
+      const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
+      if (optionalNumber) return optionalNumber;
       lowerer.noLowering(
         `Number of ${lowerer.fmt(arg.type)} values`,
         argNode,
@@ -3722,7 +3751,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         const radix: IrExpr = expr.arguments[1]
           ? lowerer.lowerExprExpecting(expr.arguments[1], F64)
           : { kind: "numLit", value: 0, type: F64, loc };
-        const optional = lowerAbsenceProbe(lowerer, expr.arguments[0]!);
+        const optional = optionalCallValue(lowerer, expr.arguments[0]!);
         if (optional?.type.kind === "union") {
           const def = lowerer.unions.get(optional.type.unionId);
           const stringTag = def?.arms.findIndex((arm) => arm.kind === "string") ?? -1;
@@ -3796,6 +3825,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
       ) {
         const name = expr.expression.text;
+        if (name === "parseFloat") {
+          const optional = optionalCallValue(lowerer, expr.arguments[0]!);
+          if (optional) {
+            const parsed = lowerOptionalStringNumber(lowerer, optional, loc, "num.parseFloat", "parseFloat");
+            if (parsed) return parsed;
+          }
+        }
         const probed = probeLower(lowerer, expr.arguments[0]!);
         if (name === "parseFloat" && probed?.type.kind === "string") {
           return { kind: "libCall", fn: "num.parseFloat", args: [probed], type: F64, loc };
@@ -3831,17 +3867,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         const loc = locOf(expr);
         const argNode = expr.arguments[0]!;
         if (name === "decodeURIComponent") {
-          const d = lowerer.lowerExpr(argNode);
-          if (d.type.kind !== "string") {
-            lowerer.noLowering(
-              `${name} with a '${lowerer.fmt(d.type)}' argument`,
-              argNode,
-              "only string arguments lower (Node would ToString the value — convert it explicitly)",
-            );
-          }
-          return { kind: "libCall", fn: "str.decodeUriComponent", args: [d], type: STRING, loc };
+          const d = optionalCallValue(lowerer, argNode) ?? lowerer.lowerExpr(argNode);
+          const s = lowerer.ensureString(d, argNode);
+          return { kind: "libCall", fn: "str.decodeUriComponent", args: [s], type: STRING, loc };
         }
-        const s = lowerer.ensureString(lowerer.lowerExpr(argNode), argNode);
+        const value = optionalCallValue(lowerer, argNode) ?? lowerer.lowerExpr(argNode);
+        const s = lowerer.ensureString(value, argNode);
         return {
           kind: "libCall",
           fn: name === "encodeURIComponent" ? "str.encodeUriComponent" : "str.encodeUri",
@@ -4157,7 +4188,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         lowerPromiseRejectCall(lowerer, expr, expr.expression) ??
         // Before the island path: regex-argument replace/replaceAll/split
         // lower STATICALLY; only the string-pattern overloads are island.
-        lowerer.lowerRegexMethodCall(expr, expr.expression) ??
+        lowerRegexMethodCallWithOptionalArg(lowerer, expr, expr.expression) ??
         lowerer.lowerUrlMethodCall(expr, expr.expression) ??
         lowerer.lowerSearchParamsMethodCall(expr, expr.expression) ??
         lowerer.lowerStatsMethodCall(expr, expr.expression) ??
@@ -4196,11 +4227,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         // TestContext surface (t.test/t.skip/t.diagnostic), t.assert.*.
         lowerer.lowerTestMethodCall(expr, expr.expression) ??
         lowerer.lowerTimeoutMethodCall(expr, expr.expression) ??
-        lowerer.lowerStringMethodCall(expr, expr.expression) ??
+        lowerStringMethodCallWithOptionalArgs(lowerer, expr, expr.expression) ??
         // Typed-array/Buffer receivers and the Buffer statics — before the
         // island path (bytes never cross the boundary).
         lowerer.lowerBytesMethodCall(expr, expr.expression) ??
-        lowerer.lowerBufferStaticCall(expr, expr.expression) ??
+        lowerBufferStaticCallWithOptionalArg(lowerer, expr, expr.expression) ??
         // URL.revokeObjectURL's zero-argument contract (the one-argument
         // form keeps the fence — createObjectURL does too).
         lowerUrlStaticCall(lowerer, expr, expr.expression) ??
@@ -4479,6 +4510,180 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
     return { kind: "callValue", callee, args, type: callee.type.ret, loc };
   }
+
+function lowerRegexMethodCallWithOptionalArg(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const lowered = lowerer.lowerRegexMethodCall(call, access);
+  if (lowered?.kind !== "regexIntrinsic" || lowered.method !== "test" || call.arguments.length !== 1) return lowered;
+  const subject = lowered.args[0];
+  if (subject?.type.kind !== "union" || lowerer.armTag(subject.type.unionId, UNDEFINED_T) < 0) return lowered;
+  if (lowerer.mapTypeOf(lowerer.typeOf(call.arguments[0]!))?.kind !== "string") return lowered;
+  const present = lowerer.stripUndefinedArm(subject.type);
+  if (present.kind !== "string") return lowered;
+  return {
+    ...lowered,
+    args: [lowerer.ensureString(subject, call.arguments[0]!)],
+  };
+}
+
+function optionalCallValue(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  return lowerer.runtimeOptionalIdentifierValue(node)?.value ?? lowerAbsenceProbe(lowerer, node);
+}
+
+function lowerBufferStaticCallWithOptionalArg(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const lowered = lowerer.lowerBufferStaticCall(call, access);
+  if (lowered?.kind !== "bytesNew" || !lowered.source || lowered.source.type.kind !== "union") return lowered;
+  const present = lowerer.stripUndefinedArm(lowered.source.type);
+  const validSource =
+    (present.kind === "array" && present.elem.kind === "f64") ||
+    (present.kind === "bytes" && present.elem === "u8");
+  if (!validSource) return lowered;
+  const helper = lowerer.narrowedArmHelper(lowered.source.type.unionId, present, lowered.source.loc);
+  return helper
+    ? {
+        ...lowered,
+        source: { kind: "call", callee: helper, args: [lowered.source], type: present, loc: lowered.source.loc },
+      }
+    : lowered;
+}
+
+function lowerOptionalNumberDefault(
+  lowerer: Lowerer,
+  value: IrExpr,
+  dflt: number,
+  loc: SrcLoc,
+): IrExpr | null {
+  const widened = lowerer.runtimeOptionalWidening(value.type, F64);
+  if (!widened || widened.kind !== "union") return null;
+  const numberTag = lowerer.armTag(widened.unionId, F64);
+  const undefinedTag = lowerer.armTag(widened.unionId, UNDEFINED_T);
+  if (numberTag < 0 || undefinedTag < 0) return null;
+  const key = `number.optionalDefault:${widened.unionId}:${dflt}`;
+  let helper = lowerer.widthHelpers.get(key);
+  if (!helper) {
+    helper = `%number.optionalDefault.${lowerer.widthHelpers.size}`;
+    lowerer.widthHelpers.set(key, helper);
+    const input = varRef("value.0", widened, loc);
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "value.0", name: "value", type: widened }],
+      returnType: F64,
+      locals: [{ id: "value.0", name: "value", type: widened, mutable: false }],
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "unionIsTag", unionId: widened.unionId, tag: undefinedTag, negated: false, value: input, type: BOOL, loc },
+          then: [{ kind: "return", value: { kind: "numLit", value: dflt, type: F64, loc }, loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "return",
+          value: { kind: "unionNarrow", unionId: widened.unionId, tag: numberTag, value: input, type: F64, loc },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [value], type: F64, loc };
+}
+
+function lowerStringMethodCallWithOptionalArgs(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const lowered = lowerer.lowerStringMethodCall(call, access);
+  if (lowered?.kind !== "strIntrinsic") return lowered;
+  const args = [...lowered.args];
+  let changed = false;
+  const zeroDefaultArgs =
+    lowered.method === "charCodeAt" || lowered.method === "charAt" ||
+      lowered.method === "repeat" || lowered.method === "padStart" || lowered.method === "padEnd"
+      ? [0]
+      : lowered.method === "slice" || lowered.method === "substring"
+        ? [0]
+        : lowered.method === "indexOf" || lowered.method === "includes"
+          ? [1]
+          : [];
+  for (const index of zeroDefaultArgs) {
+    const value = args[index];
+    if (!value) continue;
+    const coerced = lowerOptionalNumberDefault(lowerer, value, 0, value.loc);
+    if (coerced) {
+      args[index] = coerced;
+      changed = true;
+    }
+  }
+  if (
+    (lowered.method === "indexOf" || lowered.method === "includes" ||
+      lowered.method === "startsWith" || lowered.method === "endsWith") &&
+    args[0]?.type.kind === "union" &&
+    lowerer.runtimeOptionalWidening(args[0].type, STRING) !== null
+  ) {
+    args[0] = lowerer.ensureString(args[0], call.arguments[0]!);
+    changed = true;
+  }
+  return changed ? { ...lowered, args } : lowered;
+}
+
+function lowerOptionalStringNumber(
+  lowerer: Lowerer,
+  arg: IrExpr,
+  loc: SrcLoc,
+  fn: "num.fromString" | "num.parseFloat" = "num.fromString",
+  label = "number",
+): IrExpr | null {
+  if (arg.type.kind !== "union") return null;
+  const def = lowerer.unions.get(arg.type.unionId);
+  if (!def || def.arms.length !== 2) return null;
+  const stringTag = lowerer.armTag(arg.type.unionId, STRING);
+  const undefinedTag = lowerer.armTag(arg.type.unionId, UNDEFINED_T);
+  if (stringTag < 0 || undefinedTag < 0) return null;
+  const key = `${label}.optionalString:${arg.type.unionId}`;
+  let helper = lowerer.widthHelpers.get(key);
+  if (!helper) {
+    helper = `%${label}.optionalString.${lowerer.widthHelpers.size}`;
+    lowerer.widthHelpers.set(key, helper);
+    const value = varRef("value.0", arg.type, loc);
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "value.0", name: "value", type: arg.type }],
+      returnType: F64,
+      locals: [{ id: "value.0", name: "value", type: arg.type, mutable: false }],
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "unionIsTag", unionId: arg.type.unionId, tag: undefinedTag, negated: false, value, type: BOOL, loc },
+          then: [{ kind: "return", value: { kind: "bin", op: "/", left: { kind: "numLit", value: 0, type: F64, loc }, right: { kind: "numLit", value: 0, type: F64, loc }, type: F64, loc }, loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "return",
+          value: {
+            kind: "libCall",
+            fn,
+            args: [{ kind: "unionNarrow", unionId: arg.type.unionId, tag: stringTag, value, type: STRING, loc }],
+            type: F64,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [arg], type: F64, loc };
+}
 
 /** The RUNTIME-ARITY spread call — `f(...args)`, the rest-forwarding idiom
    * (`const f = (...args) => from(...args)`): a spread whose length is a
@@ -5348,10 +5553,9 @@ const inliningPredicates = new Set<ts.Symbol>();
   }
 
 /** Tagged templates `tag\`a${x}b\`` — ES's call: tag(strings, ...values).
-   * The strings object is the per-SITE interned cooked array (the
-   * templateStrings node: one immortal string[] per occurrence, so the
-   * spec's identity contract holds — the same site evaluated twice hands
-   * the tag the SAME array; two sites never share). TemplateStringsArray
+   * The strings object is a per-SITE lazily initialized hidden array global,
+   * so the spec's identity contract holds — the same site evaluated twice
+   * hands the tag the SAME array; two sites never share. TemplateStringsArray
    * maps to string[] (type-mapper.ts), so the array rides the ordinary
    * slot-directed coercion into whatever the tag's first parameter wants
    * — string[] exactly, an `any` slot through the dyn boundary, a rest
@@ -5381,13 +5585,7 @@ const inliningPredicates = new Set<ts.Symbol>();
         );
       }
     }
-    const strings: IrExpr = {
-      kind: "templateStrings",
-      key: `${loc.file}:${expr.template.getStart()}`,
-      cooked: pieces.map((p) => p.text),
-      type: arrayOf(STRING),
-      loc,
-    };
+    const strings = (): IrExpr => loweredTemplateStrings(lowerer, expr, pieces.map((piece) => piece.text), loc);
     const values: readonly ts.Expression[] = ts.isNoSubstitutionTemplateLiteral(expr.template)
       ? []
       : expr.template.templateSpans.map((s) => s.expression);
@@ -5441,7 +5639,7 @@ const inliningPredicates = new Set<ts.Symbol>();
         const sig = lowerer.fnSigOf(expr.tag);
         if (sig) {
           lowerer.noteEdge(sig.name);
-          const args = completeArgs(lowerer, values, sig.params, loc, expr, [strings]);
+          const args = completeArgs(lowerer, values, sig.params, loc, expr, [strings()]);
           return reconcileOverloadReturn(lowerer, expr, { kind: "call", callee: sig.name, args, type: sig.returnType, loc });
         }
         // An ambient `declare function` nothing defines: Node throws
@@ -5470,7 +5668,7 @@ const inliningPredicates = new Set<ts.Symbol>();
     const callee = lowerer.lowerExpr(expr.tag);
     if (callee.type.kind === "dyn") {
       const args = [
-        lowerer.coerceInto(expr.template, strings, DYN),
+        lowerer.coerceInto(expr.template, strings(), DYN),
         ...values.map((a) => lowerer.lowerExprExpecting(a, DYN)),
       ];
       const calleeName = ts.isPropertyAccessExpression(expr.tag) || ts.isElementAccessExpression(expr.tag)
@@ -5486,6 +5684,62 @@ const inliningPredicates = new Set<ts.Symbol>();
       "tagged templates with this tag form (top-level functions and dynamic values tag; call the function directly otherwise)",
     );
   }
+
+function loweredTemplateStrings(
+  lowerer: Lowerer,
+  expr: ts.TaggedTemplateExpression,
+  cooked: string[],
+  loc: SrcLoc,
+): IrExpr {
+  // Normal runtime construction keeps this array aligned with the current
+  // ScrArr layout in both backends. The old static-header IR node encoded the
+  // pre-sparse layout in LLVM and crashed as soon as a tag read its strings.
+  const type = arrayOf(STRING);
+  const key = `templateStringsGlobal:${loc.file}:${expr.template.getStart()}`;
+  let getter = lowerer.widthHelpers.get(key);
+  if (!getter) {
+    const site = lowerer.globalsList.length;
+    const globalId = `%g.templateStrings.${site}`;
+    const readyId = `%g.templateStringsReady.${site}`;
+    getter = `%templateStrings.get.${lowerer.widthHelpers.size}`;
+    lowerer.widthHelpers.set(key, getter);
+    lowerer.globalsList.push(
+      { id: globalId, name: "%templateStrings", type, mutable: true },
+      { id: readyId, name: "%templateStringsReady", type: BOOL, mutable: true },
+    );
+    lowerer.liftedFns.push({
+      name: getter,
+      params: [],
+      returnType: type,
+      locals: [],
+      body: [
+        {
+          kind: "if",
+          cond: { kind: "unary", op: "!", operand: varRef(readyId, BOOL, loc), type: BOOL, loc },
+          then: [
+            {
+              kind: "assign",
+              localId: globalId,
+              value: {
+                kind: "arrayLit",
+                elems: cooked.map((value): IrExpr => ({ kind: "strLit", value, type: STRING, loc })),
+                type,
+                loc,
+              },
+              loc,
+            },
+            { kind: "assign", localId: readyId, value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
+          ],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: varRef(globalId, type, loc), loc },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: getter, args: [], type, loc };
+}
 
 /** True when the identifier resolves (through import aliases) to a
    * top-level function declaration of ANY program file (not merely a
@@ -5557,6 +5811,7 @@ const inliningPredicates = new Set<ts.Symbol>();
       ts.isArrowFunction(node) && !ts.isBlock(node.body) && isStreamUndefCallExpr(lowerer, node.body)
         ? VOID
         : lowerer.declaredReturnType(node, node);
+    ret = lowerer.runtimeOptionalFunctionReturnType(node, ret);
     // A contextually-typed arrow/function EXPRESSION whose slot signature
     // returns a UNION the inferred return doesn't spell adopts the slot's
     // return as its ABI: `(n) => work()` (inferring Promise<void>) against

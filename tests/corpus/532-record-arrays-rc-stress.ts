@@ -14,6 +14,7 @@ function churn(rounds: number): number {
     pool.push({ key: `k${i}`, hits: i });
     if (i % 3 === 0 && pool.length > 1) {
       const dropped = pool.pop();
+      if (dropped === undefined) continue;
       acc += dropped.hits;
     }
     if (i % 5 === 0 && pool.length > 0) {

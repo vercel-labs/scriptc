@@ -201,6 +201,8 @@ import { OVERFLOW_MEMBER } from "./shapes.js";
       `  size_t n = (size_t)scr_arr_len(a);`,
       `  for (size_t i = 0; i < n; i++) {`,
       `    if (i) for (size_t j = 0; j < sep->len; j++) scr_jb_putc(&b, sep->data[j]);`,
+      `    /* Holes and payload-free present undefined both stringify empty. */`,
+      `    if (scr_arr_state(a, (double)i) != SCR_ARR_VALUE) continue;`,
       `    ScrUnion *u = (ScrUnion *)scr_arr_get_ref(a, (double)i);`,
       ...(unitTags.length > 0
         ? [`    if (${unitTags.map((t) => `u->tag == ${t}`).join(" || ")}) { scr_union_release(u); continue; }`]
@@ -619,6 +621,7 @@ export function jsonWriteHelper(emitter: CEmitter, t: IrType): string {
         d.push(`  scr_jb_putc(b, '[');`);
         d.push(`  for (size_t i = 0; i < v->len; i++) {`);
         d.push(`    if (i > 0) scr_jb_putc(b, ',');`);
+        d.push(`    if (scr_arr_state(v, (double)i) != SCR_ARR_VALUE) { scr_jb_puts(b, "null"); continue; }`);
         if (cyclic) d.push(`    scr_jb_edge_idx(b, i);`);
         if (elem.kind === "f64") {
           d.push(`    ${w}(b, scr_arr_get_f64(v, (double)i));`);
@@ -647,12 +650,9 @@ export function jsonWriteHelper(emitter: CEmitter, t: IrType): string {
             return;
           }
           if (arm.kind === "undefinedT") {
-            // Reachable only as a record FIELD's serializer (bare
-            // undefined-armed unions are fenced from stringify), and the
-            // record writer drops the field while it holds this tag before
-            // calling — so the tag can never arrive here.
-            d.push(`  case ${i}: /* undefined arm: the field dropped at the record level */`);
-            d.push(`    scr_trap("scriptc: internal error: stringify reached an undefined arm\\n");`);
+            // Array and tuple slots stringify undefined as null. Ordinary
+            // record fields drop the key before invoking this writer.
+            d.push(`  case ${i}: scr_jb_puts(b, "null"); break;`);
             return;
           }
           const w = emitter.jsonWriteHelper(arm);

@@ -22,10 +22,12 @@ static bool copying_elem_is_ref(ScrElemKind kind) {
 }
 
 static ScrArr *copying_arr_new_like(const ScrArr *a, size_t cap) {
-  return a->elem == SCR_ELEM_REF
-             ? scr_arr_new_ref(a->elem_retain, a->elem_release,
-                               a->elem_trace, cap ? cap : 1)
-             : scr_arr_new(a->elem, cap ? cap : 1);
+  ScrArr *out = a->elem == SCR_ELEM_REF
+                    ? scr_arr_new_ref(a->elem_retain, a->elem_release,
+                                      a->elem_trace, cap ? cap : 1)
+                    : scr_arr_new(a->elem, cap ? cap : 1);
+  out->len = cap;
+  return out;
 }
 
 static uint64_t copying_arr_retain_slot(const ScrArr *a, uint64_t slot) {
@@ -38,15 +40,9 @@ static uint64_t copying_arr_retain_slot(const ScrArr *a, uint64_t slot) {
   return copying_slot_from_ptr(p);
 }
 
-static void copying_arr_copy_slot(ScrArr *out, const ScrArr *src, size_t i) {
-  out->data[out->len++] = copying_arr_retain_slot(src, src->data[i]);
-}
-
 ScrArr *scr_arr_to_reversed(const ScrArr *a) {
   ScrArr *out = copying_arr_new_like(a, a->len);
-  for (size_t i = a->len; i > 0; i--) {
-    copying_arr_copy_slot(out, a, i - 1);
-  }
+  scr_arr_copy_range_ex(out, 0, a, 0, a->len, true, true);
   return out;
 }
 
@@ -65,14 +61,10 @@ ScrArr *scr_arr_to_spliced(const ScrArr *a, double start,
   }
   size_t out_len = a->len - ndelete + items->len;
   ScrArr *out = copying_arr_new_like(a, out_len);
-  for (size_t i = 0; i < from; i++) copying_arr_copy_slot(out, a, i);
-  for (size_t i = 0; i < items->len; i++) {
-    out->data[out->len++] =
-        copying_arr_retain_slot(a, items->data[i]);
-  }
-  for (size_t i = from + ndelete; i < a->len; i++) {
-    copying_arr_copy_slot(out, a, i);
-  }
+  scr_arr_copy_range_ex(out, 0, a, 0, from, false, true);
+  scr_arr_copy_range_ex(out, from, items, 0, items->len, false, true);
+  scr_arr_copy_range_ex(out, from + items->len, a, from + ndelete,
+                        a->len - from - ndelete, false, true);
   return out;
 }
 
@@ -96,7 +88,8 @@ static bool copying_arr_with_index(const ScrArr *a, double index,
 ScrArr *scr_arr_with_f64(ScrArr *a, double index, double value) {
   size_t i;
   if (!copying_arr_with_index(a, index, &i)) return NULL;
-  ScrArr *out = scr_arr_slice(a, 0, INFINITY);
+  ScrArr *out = copying_arr_new_like(a, a->len);
+  scr_arr_copy_range_ex(out, 0, a, 0, a->len, false, true);
   scr_arr_set_f64(out, (double)i, value);
   return out;
 }
@@ -104,7 +97,8 @@ ScrArr *scr_arr_with_f64(ScrArr *a, double index, double value) {
 ScrArr *scr_arr_with_bool(ScrArr *a, double index, bool value) {
   size_t i;
   if (!copying_arr_with_index(a, index, &i)) return NULL;
-  ScrArr *out = scr_arr_slice(a, 0, INFINITY);
+  ScrArr *out = copying_arr_new_like(a, a->len);
+  scr_arr_copy_range_ex(out, 0, a, 0, a->len, false, true);
   scr_arr_set_bool(out, (double)i, value);
   return out;
 }
@@ -112,10 +106,20 @@ ScrArr *scr_arr_with_bool(ScrArr *a, double index, bool value) {
 ScrArr *scr_arr_with_ref(ScrArr *a, double index, void *value) {
   size_t i;
   if (!copying_arr_with_index(a, index, &i)) return NULL;
-  ScrArr *out = scr_arr_slice(a, 0, INFINITY);
+  ScrArr *out = copying_arr_new_like(a, a->len);
+  scr_arr_copy_range_ex(out, 0, a, 0, a->len, false, true);
   uint64_t retained =
       copying_arr_retain_slot(a, copying_slot_from_ptr(value));
   scr_arr_set_ref(out, (double)i, copying_slot_to_ptr(retained));
+  return out;
+}
+
+ScrArr *scr_arr_with_undefined(ScrArr *a, double index) {
+  size_t i;
+  if (!copying_arr_with_index(a, index, &i)) return NULL;
+  ScrArr *out = copying_arr_new_like(a, a->len);
+  scr_arr_copy_range_ex(out, 0, a, 0, a->len, false, true);
+  scr_arr_set_undefined(out, (double)i);
   return out;
 }
 

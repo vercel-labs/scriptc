@@ -698,7 +698,7 @@ function globalEffectsOf(mod: IrModule): GlobalEffects {
 
 const STMT_KINDS = new Set([
   "varDecl", "assign", "exprStmt", "if", "while", "doWhile", "switch", "for",
-  "arraySet", "bytesSet", "forOf", "return", "fieldSet", "recordSet",
+  "arraySet", "arraySetLength", "arraySetUndefined", "arrayDelete", "bytesSet", "forOf", "return", "fieldSet", "recordSet",
   "recordKeySet", "recordKeyDelete", "break", "continue", "block", "throw",
   "runtimeFence", "rethrow", "tryCatch",
 ]);
@@ -897,6 +897,17 @@ class FnAnalyzer {
         this.evalExpr(s.arr, env);
         this.evalExpr(s.index, env);
         this.evalExpr(s.value, env);
+        clearPathFacts(env);
+        return env;
+      case "arraySetLength":
+        this.evalExpr(s.arr, env);
+        this.evalExpr(s.length, env);
+        clearPathFacts(env);
+        return env;
+      case "arraySetUndefined":
+      case "arrayDelete":
+        this.evalExpr(s.arr, env);
+        this.evalExpr(s.index, env);
         clearPathFacts(env);
         return env;
       case "fieldSet":

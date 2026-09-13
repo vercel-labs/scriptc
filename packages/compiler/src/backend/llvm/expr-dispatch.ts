@@ -75,6 +75,8 @@ export function emitExpr(host: LlvmEmitterContext, e: IrExpr): LlValue {
       case "arrayLit":
       case "arrayNewLen":
       case "arrayGet":
+      case "arrayHas":
+      case "arrayState":
       case "arrIntrinsic":
       case "bytesNew":
       case "bytesIntrinsic":

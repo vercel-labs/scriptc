@@ -1049,11 +1049,10 @@ class LlEmitter {
       `%ScrClosure = type { ${this.sizeType}, ptr, ${this.sizeType}, ptr }`,
       `%ScrFfiTable = type { ptr, ${this.sizeType}, ${this.sizeType}, ptr, i8, ptr, ptr, ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, ptr, ptr }`,
       `%ScrRegex = type { ${this.sizeType}, ptr, ptr, ptr }`,
-      // ScrArr mirror { rc, len, cap, elem(i32+pad), elem_retain,
-      // elem_release, elem_trace, data } — the immortal tagged-template
-      // strings objects lay out through it (nothing GEPs into live heap
-      // arrays; those stay behind the runtime's own entry points).
-      `%ScrArr = type { ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, i32, ptr, ptr, ptr, ptr }`,
+      // ScrArr mirrors scr_runtime.h field-for-field. Live dynamic stream
+      // commits swap its mutable dense, sparse, presence, and property
+      // storage while preserving the target object's identity.
+      `%ScrArr = type { ${this.sizeType}, ${this.sizeType}, ${this.sizeType}, i32, ptr, ptr, ptr, ptr, ptr, ptr, ${this.sizeType}, ${this.sizeType}, ptr, ${this.sizeType}, ${this.sizeType} }`,
       // The runtime error prefix { rc, vt, name, message, code } and the
       // class-object shape { rc, pre, post, ctor, name } — field reads on
       // builtin errors and classval loads GEP through these.
@@ -1140,11 +1139,16 @@ class LlEmitter {
       // One immortal ScrArr per tagged-template site: a [N x ptr] data
       // global of interned cooked-string literals, and the ScrArr header
       // over it (rc == SIZE_MAX, len == cap, SCR_ELEM_STR = 2, no REF
-      // entry points). Reads retain immortal strings — a no-op.
+      // entry points). Every dense slot is present; reads retain immortal
+      // strings — a no-op.
       const n = inst.slots.length;
+      const present = n === 0
+        ? "zeroinitializer"
+        : `[ ${inst.slots.map(() => "i8 1").join(", ")} ]`;
       out.push(
         `@${inst.sym}_data = internal constant [${n} x ptr] [ ${inst.slots.map((s) => `ptr ${s}`).join(", ")} ]`,
-        `@${inst.sym} = internal global %ScrArr { ${this.sizeType} -1, ${this.sizeType} ${n}, ${this.sizeType} ${n}, i32 2, ptr null, ptr null, ptr null, ptr @${inst.sym}_data }`,
+        `@${inst.sym}_present = internal constant [${n} x i8] ${present}`,
+        `@${inst.sym} = internal global %ScrArr { ${this.sizeType} -1, ${this.sizeType} ${n}, ${this.sizeType} ${n}, i32 2, ptr null, ptr null, ptr null, ptr @${inst.sym}_data, ptr @${inst.sym}_present, ptr null, ${this.sizeType} 0, ${this.sizeType} 0, ptr null, ${this.sizeType} 0, ${this.sizeType} 0 }`,
       );
     }
     if (this.templateStringsInstances.size > 0) out.push(``);
@@ -3134,6 +3138,26 @@ class LlEmitter {
         B.line(`call void @scr_arr_set_${acc}(ptr ${arr.name}, double ${idx.name}, ${argTy} ${v.name})`);
         break;
       }
+      case "arraySetLength": {
+        const arr = this.emitExpr(s.arr);
+        const length = this.emitExpr(s.length);
+        if (s.arr.type.kind !== "array") throw new InternalCompilerError("llvm emitter bug: arraySetLength on non-array");
+        this.declare(`declare void @scr_arr_set_len(ptr, double)`);
+        B.line(`call void @scr_arr_set_len(ptr ${arr.name}, double ${length.name})`);
+        this.emitPendingCheck();
+        break;
+      }
+      case "arraySetUndefined":
+      case "arrayDelete": {
+        const arr = this.emitExpr(s.arr);
+        const idx = this.emitExpr(s.index);
+        if (s.arr.type.kind !== "array") throw new InternalCompilerError(`llvm emitter bug: ${s.kind} on non-array`);
+        const fn = s.kind === "arraySetUndefined" ? "scr_arr_set_undefined" : "scr_arr_delete";
+        this.declare(`declare ${s.kind === "arrayDelete" ? "zeroext i1" : "void"} @${fn}(ptr, double)`);
+        if (s.kind === "arrayDelete") B.line(`call zeroext i1 @${fn}(ptr ${arr.name}, double ${idx.name})`);
+        else B.line(`call void @${fn}(ptr ${arr.name}, double ${idx.name})`);
+        break;
+      }
       case "bytesSet": {
         // Typed-array element write: same evaluation order as arraySet;
         // the value is a scalar (the kind-specific inline path coerces
@@ -3997,7 +4021,7 @@ class LlEmitter {
     return result;
   }
 
-  private emitContainerExpr(e: ExprOf<"arrayLit" | "arrayNewLen" | "arrayGet" | "arrIntrinsic" | "bytesNew" | "bytesIntrinsic" | "mapNew" | "mapIntrinsic" | "setIntrinsic" | "setNew">): LlValue {
+  private emitContainerExpr(e: ExprOf<"arrayLit" | "arrayNewLen" | "arrayGet" | "arrayHas" | "arrayState" | "arrIntrinsic" | "bytesNew" | "bytesIntrinsic" | "mapNew" | "mapIntrinsic" | "setIntrinsic" | "setNew">): LlValue {
     return emitContainerExpr(this.expressionContext(), e);
   }
 

@@ -6,7 +6,7 @@ import { InternalCompilerError } from "../errors.js";
  */
 import type { IrModule } from "./ir.js";
 
-export const IR_VERSION = 6 as const;
+export const IR_VERSION = 8 as const;
 
 export function serializeModule(mod: IrModule): string {
   return JSON.stringify(mod, (_key, value) => {

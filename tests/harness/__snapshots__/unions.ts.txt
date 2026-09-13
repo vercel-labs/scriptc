@@ -7,27 +7,6 @@ unions.ts:18:10 - error SC2003: union types must match exactly: expected 'number
 
   hint: narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's
 
-unions.ts:36:9 - error SC1090: switch on union-typed values that aren't plain reads (the tests re-read the discriminant — bind it to a const first, or switch on a discriminant field) are not supported yet
-
-  35 | // a COMPUTED discriminant rides every desugared test and stays fenced.
-  36 | switch (mk()) {
-     |         ^~~~
-  37 |   case 1:
-
-unions.ts:47:13 - error SC1090: '.indexOf()' on union-element arrays (union values have no stable identity — loop and compare the narrowed values instead) are not supported yet
-
-  46 | const items: (number | string)[] = [1, "two"];
-  47 | console.log(items.indexOf(1));
-     |             ^~~~~~~~~~~~~~~~
-  48 | console.log(items.includes("two"));
-
-unions.ts:48:13 - error SC1090: '.includes()' on union-element arrays (union values have no stable identity — loop and compare the narrowed values instead) are not supported yet
-
-  47 | console.log(items.indexOf(1));
-  48 | console.log(items.includes("two"));
-     |             ^~~~~~~~~~~~~~~~~~~~~
-  49 | // Unions may contain function arms beside data arms now (typeof narrows,
-
 unions.ts:61:22 - error SC1090: string conversions of unions with object arms (narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) are not supported yet
 
   60 | // honest text (JS prints "[object Object]") and stays fenced.

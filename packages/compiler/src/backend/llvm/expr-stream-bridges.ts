@@ -89,31 +89,37 @@ export function streamTypedRefCommitAdapter(host: LlvmEmitterContext,
       const commit = `${snapshot}_commit`;
       const check = host.dyn.dynCheckHelper(t);
       host.declare(`declare void @scr_arr_release(ptr)`);
-      host.resolveThunkDefs.push(
+      const lines = [
         `define internal void @${commit}(ptr %target, ptr %d) ${FN_ATTRS} { ; commit live stream element ${typeKey(t)}`,
         `entry:`,
         `  %next = call ptr @${check}(ptr %d, ptr null)`,
         `  %missing = icmp eq ptr %next, null`,
         `  br i1 %missing, label %done, label %swap`,
         `swap:`,
-        `  %target_len_ptr = getelementptr inbounds %ScrArr, ptr %target, i64 0, i32 1`,
-        `  %next_len_ptr = getelementptr inbounds %ScrArr, ptr %next, i64 0, i32 1`,
-        `  %target_len = load ${host.sizeType}, ptr %target_len_ptr`,
-        `  %next_len = load ${host.sizeType}, ptr %next_len_ptr`,
-        `  store ${host.sizeType} %next_len, ptr %target_len_ptr`,
-        `  store ${host.sizeType} %target_len, ptr %next_len_ptr`,
-        `  %target_cap_ptr = getelementptr inbounds %ScrArr, ptr %target, i64 0, i32 2`,
-        `  %next_cap_ptr = getelementptr inbounds %ScrArr, ptr %next, i64 0, i32 2`,
-        `  %target_cap = load ${host.sizeType}, ptr %target_cap_ptr`,
-        `  %next_cap = load ${host.sizeType}, ptr %next_cap_ptr`,
-        `  store ${host.sizeType} %next_cap, ptr %target_cap_ptr`,
-        `  store ${host.sizeType} %target_cap, ptr %next_cap_ptr`,
-        `  %target_data_ptr = getelementptr inbounds %ScrArr, ptr %target, i64 0, i32 7`,
-        `  %next_data_ptr = getelementptr inbounds %ScrArr, ptr %next, i64 0, i32 7`,
-        `  %target_data = load ptr, ptr %target_data_ptr`,
-        `  %next_data = load ptr, ptr %next_data_ptr`,
-        `  store ptr %next_data, ptr %target_data_ptr`,
-        `  store ptr %target_data, ptr %next_data_ptr`,
+      ];
+      const storageMembers = [
+        { name: "len", index: 1, type: host.sizeType },
+        { name: "cap", index: 2, type: host.sizeType },
+        { name: "data", index: 7, type: "ptr" },
+        { name: "present", index: 8, type: "ptr" },
+        { name: "sparse", index: 9, type: "ptr" },
+        { name: "sparse_len", index: 10, type: host.sizeType },
+        { name: "sparse_cap", index: 11, type: host.sizeType },
+        { name: "props", index: 12, type: "ptr" },
+        { name: "prop_len", index: 13, type: host.sizeType },
+        { name: "prop_cap", index: 14, type: host.sizeType },
+      ];
+      for (const member of storageMembers) {
+        lines.push(
+          `  %target_${member.name}_ptr = getelementptr inbounds %ScrArr, ptr %target, i64 0, i32 ${member.index}`,
+          `  %next_${member.name}_ptr = getelementptr inbounds %ScrArr, ptr %next, i64 0, i32 ${member.index}`,
+          `  %target_${member.name} = load ${member.type}, ptr %target_${member.name}_ptr`,
+          `  %next_${member.name} = load ${member.type}, ptr %next_${member.name}_ptr`,
+          `  store ${member.type} %next_${member.name}, ptr %target_${member.name}_ptr`,
+          `  store ${member.type} %target_${member.name}, ptr %next_${member.name}_ptr`,
+        );
+      }
+      lines.push(
         `  call void @scr_arr_release(ptr %next)`,
         `  br label %done`,
         `done:`,
@@ -121,6 +127,7 @@ export function streamTypedRefCommitAdapter(host: LlvmEmitterContext,
         `}`,
         ``,
       );
+      host.resolveThunkDefs.push(...lines);
       return `@${commit}`;
     }
     if (t.kind !== "record") return "null";

@@ -53,7 +53,7 @@ import type {
   IrUnionDef,
   SrcLoc,
 } from "../../ir/ir.js";
-import { arrayOf, BOOL, canAdaptDynFuncTo, canConvertToDyn, canCrossIslandBoundary, canExitIslandToType, canMarshalTypedFuncIntoIsland, DYN, F64, isJsonSafeType, isUndefinedArmedUnion, isUnitType, JSVAL, RUNTIME_ERROR_CLASSES, STRING, typeEquals, UNDEFINED_T, VOID } from "../../ir/ir.js";
+import { arrayOf, BOOL, canAdaptDynFuncTo, canConvertToDyn, canCrossIslandBoundary, canExitIslandToType, canMarshalTypedFuncIntoIsland, DYN, F64, isJsonSafeType, isJsonStringifySafeType, isUndefinedArmedUnion, isUnitType, JSVAL, RUNTIME_ERROR_CLASSES, STRING, typeEquals, UNDEFINED_T, VOID } from "../../ir/ir.js";
 import { type DynamicImportResolution, type NpmBuiltinUse, type NpmLazyTrap } from "../npm.js";
 import { provenanceActive } from "../provenance-registry.js";
 import {
@@ -255,7 +255,7 @@ export interface LowerStats {
  * always visited. */
 const IR_STMT_KINDS = new Set([
   "varDecl", "assign", "exprStmt", "if", "while", "doWhile", "switch",
-  "arraySet", "forOf", "return", "fieldSet", "recordSet", "break",
+  "arraySet", "arraySetLength", "arraySetUndefined", "arrayDelete", "forOf", "return", "fieldSet", "recordSet", "break",
   "continue", "block", "tryCatch", "throw", "rethrow", "runtimeFence",
 ]);
 
@@ -1128,6 +1128,33 @@ export class Lowerer {
   /** All storage slots widened for runtime absence, including slots whose
    * current control-flow branch has temporarily narrowed the value. */
   readonly runtimeOptionalStorageLocals = new Set<IrLocal>();
+  /** Globals whose checker-bare type was widened because an indexed read can
+   * carry undefined at runtime. Identifier reads keep the union tag so
+   * typeof and later boundaries observe the real value. */
+  readonly runtimeOptionalGlobals = new Set<IrGlobal>();
+  /** Bindings whose unchecked string arithmetic can produce either a number
+   * (NaN for an absent read) or a string. Preserve that result union at bare
+   * reads instead of applying the checker-bare string narrowing adapter. */
+  readonly runtimeOptionalArithmeticLocals = new Set<IrLocal>();
+  readonly runtimeOptionalArithmeticGlobals = new Set<IrGlobal>();
+  /** Binding symbols whose IR storage type was widened by the indexed-read
+   * prepass. This includes explicit annotations: unchecked TS annotations do
+   * not prove that an array property read produced a value. */
+  readonly runtimeOptionalBindingTypes = new Map<ts.Symbol, IrType>();
+  /** Concise callback/lambda returns promoted by the HOF callback prepass;
+   * arrows have no declaration symbol to key in fnSigsBySymbol. */
+  readonly runtimeOptionalFunctionReturns = new WeakMap<ts.Node, IrType>();
+  /** Arithmetic over an unchecked string read can answer either NaN or a
+   * string. Bindings and returns use this marker to retain that result union
+   * through checker-bare string annotations. */
+  readonly runtimeOptionalArithmeticTypes = new WeakMap<ts.Node, IrType>();
+  /** Record fields promoted to an undefined-armed union by an indexed-read
+   * value. The key is the concrete emitted shape and field name. */
+  readonly runtimeOptionalFields = new Set<string>();
+  /** Callback pattern parameters carry an optional source without making
+   * every name destructured from a present source optional. */
+  readonly runtimeOptionalPatternTypes = new WeakMap<ts.Node, IrType>();
+  readonly runtimeOptionalReduceTypes = new WeakMap<ts.CallExpression, IrType>();
   /** Capture entries and their origin share one mutable box. Normalize each
    * entry to the origin so writes and flow proofs stay synchronized. */
   readonly runtimeOptionalRoots = new Map<IrLocal, IrLocal>();
@@ -1135,6 +1162,214 @@ export class Lowerer {
   runtimeOptionalRootOf(local: IrLocal): IrLocal {
     return this.runtimeOptionalRoots.get(local) ?? local;
   }
+
+  runtimeOptionalBindingType(node: ts.Node): IrType | null;
+  runtimeOptionalBindingType(node: ts.Node, fallback: IrType): IrType;
+  runtimeOptionalBindingType(node: ts.Node, fallback?: IrType): IrType | null {
+    const patternType = this.runtimeOptionalPatternTypes.get(node);
+    if (patternType) return patternType;
+    const symbol = ts.isIdentifier(node) ? this.resolveValueSymbol(node) : this.checker.getSymbolAtLocation(node);
+    if (!symbol) return fallback ?? null;
+    const known = this.runtimeOptionalBindingTypes.get(symbol);
+    if (known) return known;
+    // A module-scope function alias is collected as a global before the
+    // optional-read fixed point settles. Derive its promoted function ABI
+    // directly from the aliased declaration as a final read-side hook, so
+    // the initializer cannot fall back to a narrowing adapter.
+    if (ts.isIdentifier(node) && fallback?.kind === "func") {
+      const decl = this.checker.valueDeclarationOf(symbol);
+      if (decl && ts.isVariableDeclaration(decl) && decl.initializer) {
+        let init: ts.Expression = decl.initializer;
+        while (ts.isParenthesizedExpression(init)) init = init.expression;
+        if (ts.isIdentifier(init)) {
+          const source = this.resolveValueSymbol(init);
+          const sig = source ? this.fnSigsBySymbol.get(source) : undefined;
+          if (sig) {
+            return {
+              ...fallback,
+              params: sig.params.filter((p) => p.mode !== "dynRest").map((p) => p.type),
+              ret: sig.returnType,
+            };
+          }
+        }
+      }
+    }
+    return fallback ?? null;
+  }
+
+  runtimeOptionalIdentifierValue(node: ts.Expression): { value: IrExpr; present: IrType; unionId: string } | null {
+    if (!ts.isIdentifier(node) || this.chainRecvByNode.has(node)) return null;
+    const local = this.resolveLocal(node);
+    const symbol = this.resolveValueSymbol(node);
+    const storage = local ?? (symbol ? this.globalsBySymbol.get(symbol) : undefined);
+    if (!storage || storage.type.kind !== "union" || this.armTag(storage.type.unionId, UNDEFINED_T) < 0) return null;
+    const present = this.stripUndefinedArm(storage.type);
+    if (isUnitType(present)) return null;
+    return { value: varRef(storage.id, storage.type, locOf(node)), present, unionId: storage.type.unionId };
+  }
+
+  /** Recover the original optional union when a checked single-arm helper
+   * was installed before a strict property consumer could name its member.
+   * Recovery is limited to array element reads and storage roots marked by
+   * the optional-read analysis, so ordinary assertions keep their generic
+   * checked-narrow behavior. */
+  runtimeOptionalSourceValue(node: ts.Expression, value: IrExpr): IrExpr | null {
+    let origin: ts.Expression = node;
+    while (ts.isParenthesizedExpression(origin)) origin = origin.expression;
+    let optionalOrigin = ts.isElementAccessExpression(origin);
+    if (ts.isIdentifier(origin)) {
+      const local = this.resolveLocal(origin);
+      const root = local ? this.runtimeOptionalRootOf(local) : null;
+      const global = this.globalOf(origin);
+      optionalOrigin =
+        (!!root && this.runtimeOptionalStorageLocals.has(root)) ||
+        (!!global && (this.isRuntimeOptionalGlobal(global) ||
+          (global.type.kind === "union" && this.armTag(global.type.unionId, UNDEFINED_T) >= 0)));
+    }
+    if (!optionalOrigin) return null;
+
+    let source = value;
+    if (
+      value.kind === "call" &&
+      this.checkedNarrowHelpers.has(value.callee) &&
+      value.args.length === 1 &&
+      value.args[0]?.type.kind === "union"
+    ) {
+      source = value.args[0];
+    }
+    return source.type.kind === "union" && this.armTag(source.type.unionId, UNDEFINED_T) >= 0
+      ? source
+      : null;
+  }
+
+  /** A strict property or method receiver over an array-derived optional
+   * value. Stabilize the receiver once, throw Node's member-read TypeError
+   * for a unit arm, and extract the expected present arm otherwise. */
+  runtimeOptionalPropertyReceiver(
+    node: ts.Expression,
+    value: IrExpr,
+    expected: IrType,
+    member: string,
+  ): IrExpr | null {
+    const source = this.runtimeOptionalSourceValue(node, value);
+    if (source?.type.kind !== "union") return null;
+    const def = this.unions.get(source.type.unionId);
+    const valueTag = this.armTag(source.type.unionId, expected);
+    if (
+      !def ||
+      valueTag < 0 ||
+      !def.arms.every((arm) => typeEquals(arm, expected) || isUnitType(arm))
+    ) return null;
+
+    const loc = locOf(node);
+    const stable = this.declareHiddenLocal("%propertyRecv", source.type);
+    const stableRef = (): IrExpr => varRef(stable.id, source.type, loc);
+    let result: IrExpr = {
+      kind: "unionNarrow",
+      unionId: source.type.unionId,
+      tag: valueTag,
+      value: stableRef(),
+      type: expected,
+      loc,
+    };
+    for (let i = def.arms.length - 1; i >= 0; i--) {
+      const arm = def.arms[i];
+      if (!arm || !isUnitType(arm)) continue;
+      const unit = arm.kind === "nullT" ? "null" : "undefined";
+      result = {
+        kind: "ternary",
+        cond: {
+          kind: "unionIsTag",
+          unionId: source.type.unionId,
+          tag: i,
+          negated: false,
+          value: stableRef(),
+          type: BOOL,
+          loc,
+        },
+        then: nodeThrowExpr(1, "", `Cannot read properties of ${unit} (reading '${member}')`, expected, loc),
+        else_: result,
+        type: expected,
+        loc,
+      };
+    }
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: stable.id, init: source, loc }],
+      result,
+      type: expected,
+      loc,
+    };
+  }
+
+  runtimeOptionalFieldKey(shapeId: string, field: string): string {
+    return `${shapeId}:${field}`;
+  }
+
+  isRuntimeOptionalField(shapeId: string, field: string): boolean {
+    return this.runtimeOptionalFields.has(this.runtimeOptionalFieldKey(shapeId, field));
+  }
+
+  isRuntimeOptionalGlobal(global: IrGlobal): boolean {
+    return this.runtimeOptionalGlobals.has(global);
+  }
+
+  isRuntimeOptionalArithmeticGlobal(global: IrGlobal): boolean {
+    return this.runtimeOptionalArithmeticGlobals.has(global);
+  }
+
+  /** The union produced when an unchecked array read reaches a typed slot
+   * whose checker type is the corresponding bare arm. */
+  runtimeOptionalWidening(actual: IrType, expected: IrType): IrType | null {
+    if (actual.kind !== "union" || this.armTag(actual.unionId, UNDEFINED_T) < 0) return null;
+    return typeEquals(this.stripUndefinedArm(actual), expected) ? actual : null;
+  }
+
+  runtimeOptionalType(t: IrType): IrType {
+    if (t.kind === "union") return this.armTag(t.unionId, UNDEFINED_T) >= 0 ? t : this.withUndefinedArmOf(t) ?? t;
+    if (t.kind === "void" || t.kind === "dyn" || t.kind === "jsval" || t.kind === "generator") return t;
+    return this.withUndefinedArm(t);
+  }
+
+  promoteRuntimeOptionalParameter(node: ts.Node, type: IrType): IrType {
+    const widened = this.runtimeOptionalType(type);
+    const symbol = this.checker.getSymbolAtLocation(node);
+    if (symbol) this.runtimeOptionalBindingTypes.set(symbol, widened);
+    return widened;
+  }
+
+  promoteRuntimeOptionalFunctionReturn(node: ts.Node, type: IrType): IrType {
+    const widened = this.runtimeOptionalType(type);
+    this.runtimeOptionalFunctionReturns.set(node, widened);
+    return widened;
+  }
+
+  runtimeOptionalFunctionReturnType(node: ts.Node, fallback: IrType): IrType {
+    return this.runtimeOptionalFunctionReturns.get(node) ?? fallback;
+  }
+
+  /** Promote one field of a record storage shape to the value's runtime
+   * type. Shapes are immutable by identity, so this interns a sibling shape
+   * and records the field as runtime-optional for property-read narrowing. */
+  runtimeOptionalRecordField(type: IrType, field: string, fieldType: IrType): IrType {
+    if (type.kind !== "record") return type;
+    const shape = this.shapes.get(type.shapeId);
+    if (!shape) return type;
+    const existing = shape.fields.find((f) => f.name === field);
+    if (!existing || typeEquals(existing.type, fieldType)) {
+      if (existing) this.runtimeOptionalFields.add(this.runtimeOptionalFieldKey(type.shapeId, field));
+      return type;
+    }
+    const shapeId = this.shapes.intern(
+      shape.fields.map((f) => ({ name: f.name, type: f.name === field ? fieldType : f.type })),
+      shape.tuple === true,
+      shape.indexValue,
+      shape.declaredOrder,
+    );
+    this.runtimeOptionalFields.add(this.runtimeOptionalFieldKey(shapeId, field));
+    return { kind: "record", shapeId };
+  }
+
 
   /** Runs `fn` with the given aliased-typeof narrows applied (and restored
    * after) — the branch-scoping primitive. */
@@ -1225,6 +1460,10 @@ export class Lowerer {
    * declaration: member reads call the getter (lower-exprs). */
   readonly cjsAccessorFns = new Map<ts.Node, { fnName: string; type: IrType & { kind: "func" } }>();
   readonly narrowHelpers = new Map<string, string>();
+  /** Exact members of narrowHelpers produced by narrowedArmHelper. This
+   * lets property consumers recognize an earlier checked extraction by
+   * provenance instead of relying on its generated-name prefix. */
+  private readonly checkedNarrowHelpers = new Set<string>();
   /** Interned `%iter.drain.<n>` helpers (classIteratorDrainCall): one per
    * receiver class — the eager drain of a class iterable's protocol into
    * a fresh element array, behind array/call spreads. */
@@ -2318,6 +2557,652 @@ export class Lowerer {
     return collectJsonImports(this, parts);
   }
 
+  /** Discover the unchecked-array values that cross static ABI/storage
+   * boundaries before any function body or module initializer is emitted.
+   * TypeScript's default indexed-access type is a useful source annotation,
+   * but it is not a runtime proof; promoting only the affected slots keeps
+   * the rest of the dense ABI unchanged. */
+  analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
+    const optionalSymbols = new Set<ts.Symbol>();
+    const optionalReturns = new Set<ts.Symbol>();
+    const arithmeticReturns = new Map<ts.Symbol, IrType>();
+    const optionalParams = new Map<ts.Symbol, Set<number>>();
+    const optionalFields = new Map<ts.Symbol, Set<string>>();
+    const dynamicObjectEntryRows = new Set<ts.Symbol>();
+    const sourceFiles = parts.map((p) => p.sf);
+    const fnDecls = parts.flatMap((p) => p.fnDecls);
+    // This fixed-point scan intentionally sees deferred bodies before
+    // reachability is known. Batch their binding queries through the
+    // facade's panic fence, then keep lookup free of lowering side effects:
+    // resolveValueSymbol also flushes deferred diagnostics and applies
+    // merged-namespace fences, whose authority remains ordinary lowering.
+    this.checker.prefetchSymbolRoots(sourceFiles);
+    const symbolOf = (node: ts.Node): ts.Symbol | null => {
+      const s = this.checker.getSymbolAtLocation(node);
+      if (!s) return null;
+      return s.flags & ts.SymbolFlags.Alias ? this.checker.getAliasedSymbol(s) : s;
+    };
+    const functionDeclBySymbol = new Map<ts.Symbol, ts.FunctionLikeDeclaration>();
+    type RuntimeSig = {
+      params: ParamShape[];
+      returnType: IrType;
+      top?: FnSig;
+      method?: { params: ParamShape[]; ret: IrType };
+    };
+    const signatureBySymbol = new Map<ts.Symbol, RuntimeSig>();
+    for (const [symbol, sig] of this.fnSigsBySymbol) signatureBySymbol.set(symbol, { params: sig.params, returnType: sig.returnType, top: sig });
+    for (const decl of fnDecls) {
+      const symbol = declSymbolOf(this, decl);
+      if (symbol) functionDeclBySymbol.set(symbol, decl);
+    }
+    for (const sf of sourceFiles) {
+      ts.walkPreorder(sf, (node) => {
+        if (
+          (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) &&
+          node.body && node.name && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name))
+        ) {
+          const symbol = symbolOf(node.name);
+          if (symbol) functionDeclBySymbol.set(symbol, node);
+        }
+      });
+    }
+    for (const info of this.classes.values()) {
+      for (const { mName, member } of this.classMethodMembers(info)) {
+        if (!member.name || !(ts.isIdentifier(member.name) || ts.isStringLiteral(member.name))) continue;
+        const symbol = symbolOf(member.name);
+        const sig = info.methods.get(mName);
+        if (symbol && sig) signatureBySymbol.set(symbol, { params: sig.params, returnType: sig.ret, method: sig });
+      }
+    }
+    const peel = (node: ts.Expression): ts.Expression => {
+      let e = node;
+      while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertion(e) || ts.isNonNullExpression(e)) {
+        e = e.expression;
+      }
+      return e;
+    };
+    const explicitlyNonNull = (node: ts.Expression): boolean => {
+      let e = node;
+      while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertion(e) || ts.isNonNullExpression(e)) {
+        if (ts.isNonNullExpression(e)) return true;
+        e = e.expression;
+      }
+      return false;
+    };
+    const isArrayRead = (node: ts.Expression): boolean => {
+      const e = peel(node);
+      if (!ts.isElementAccessExpression(e)) return false;
+      return this.mapTypeOf(this.typeOf(e.expression))?.kind === "array";
+    };
+    const isDynamicObjectEntryRead = (node: ts.Expression): boolean => {
+      const read = peel(node);
+      if (!ts.isElementAccessExpression(read) || !ts.isIdentifier(read.expression)) return false;
+      const source = symbolOf(read.expression);
+      const declaration = source ? this.checker.valueDeclarationOf(source) : undefined;
+      if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) return false;
+      const init = peel(declaration.initializer);
+      if (!ts.isCallExpression(init) || !ts.isPropertyAccessExpression(init.expression)) return false;
+      if (init.expression.name.text !== "entries" || !this.isStdlibGlobal(init.expression.expression, "Object")) return false;
+      const object = init.arguments[0];
+      const objectType = object ? this.mapTypeOf(this.typeOf(object)) : null;
+      return objectType?.kind === "dyn" || objectType?.kind === "jsval";
+    };
+    const addUndefined = (t: IrType): IrType => {
+      if (t.kind === "union") return this.armTag(t.unionId, UNDEFINED_T) >= 0 ? t : this.withUndefinedArmOf(t) ?? t;
+      if (t.kind === "void" || t.kind === "dyn" || t.kind === "jsval" || t.kind === "generator") return t;
+      return this.withUndefinedArm(t);
+    };
+    const fieldName = (node: ts.PropertyAccessExpression): string => node.name.text;
+    const mayBeOptional = (node: ts.Expression): boolean => {
+      // `xs[i]!` is the explicit proven-present form. Its array read keeps
+      // the established dense bounds trap and must not promote the enclosing
+      // function/global ABI to `T | undefined`.
+      if (explicitlyNonNull(node)) return false;
+      const e = peel(node);
+      if (isArrayRead(e)) return true;
+      if (ts.isCallExpression(e) && this.runtimeOptionalReduceTypes.has(e)) return true;
+      if (
+        ts.isCallExpression(e) &&
+        ts.isPropertyAccessExpression(e.expression) &&
+        (e.expression.name.text === "pop" || e.expression.name.text === "shift") &&
+        this.mapTypeOf(this.typeOf(e))?.kind === "union" &&
+        this.armTag((this.mapTypeOf(this.typeOf(e)) as IrType & { kind: "union" }).unionId, UNDEFINED_T) >= 0
+      ) return true;
+      if (ts.isIdentifier(e)) return optionalSymbols.has(symbolOf(e) ?? ({} as ts.Symbol));
+      if (ts.isCallExpression(e) && ts.isIdentifier(e.expression)) {
+        return optionalReturns.has(symbolOf(e.expression) ?? ({} as ts.Symbol));
+      }
+      if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression)) {
+        return optionalReturns.has(symbolOf(e.expression.name) ?? ({} as ts.Symbol));
+      }
+      if (ts.isConditionalExpression(e)) {
+        return mayBeOptional(e.whenTrue) || mayBeOptional(e.whenFalse);
+      }
+      if (ts.isBinaryExpression(e)) {
+        const op = e.operatorToken.kind;
+        if (
+          op === ts.SyntaxKind.AmpersandAmpersandToken ||
+          op === ts.SyntaxKind.BarBarToken ||
+          op === ts.SyntaxKind.QuestionQuestionToken
+        ) return mayBeOptional(e.left) || mayBeOptional(e.right);
+      }
+      if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression)) {
+        const fields = optionalFields.get(symbolOf(e.expression) ?? ({} as ts.Symbol));
+        return fields?.has(fieldName(e)) ?? false;
+      }
+      return false;
+    };
+    const optionalStringArithmeticType = (node: ts.Expression): IrType | null => {
+      const e = peel(node);
+      if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.PlusToken) return null;
+      const stringArrayRead = (part: ts.Expression): boolean => {
+        const t = this.mapTypeOf(this.typeOf(part));
+        const p = peel(part);
+        if (t?.kind !== "string" || !ts.isElementAccessExpression(p)) return false;
+        const recv = this.mapTypeOf(this.typeOf(p.expression));
+        return recv?.kind === "array" && recv.elem.kind === "string";
+      };
+      const primitive = (part: ts.Expression): boolean => {
+        const t = this.mapTypeOf(this.typeOf(part));
+        return t?.kind === "f64" || t?.kind === "string";
+      };
+      if (!stringArrayRead(e.left) && !stringArrayRead(e.right)) return null;
+      if (!(primitive(e.left) || stringArrayRead(e.left)) || !(primitive(e.right) || stringArrayRead(e.right))) return null;
+      return { kind: "union", unionId: this.unions.intern([F64, STRING]) };
+    };
+    const noteField = (decl: ts.VariableDeclaration, name: string): boolean => {
+      if (!ts.isIdentifier(decl.name)) return false;
+      const symbol = symbolOf(decl.name);
+      if (!symbol) return false;
+      return noteFieldSymbol(symbol, name);
+    };
+    const noteFieldSymbol = (symbol: ts.Symbol, name: string): boolean => {
+      const set = optionalFields.get(symbol) ?? new Set<string>();
+      const before = set.size;
+      set.add(name);
+      optionalFields.set(symbol, set);
+      return set.size !== before;
+    };
+    const scanPattern = (name: ts.BindingName, init: ts.Expression): boolean => {
+      if (!ts.isArrayBindingPattern(name)) return false;
+      const sourceType = this.mapTypeOf(this.typeOf(init));
+      if (sourceType?.kind !== "array") return false;
+      let changed = false;
+      name.elements.forEach((el) => {
+        if (ts.isOmittedExpression(el) || el.name === undefined || el.dotDotDotToken) return;
+        if (ts.isIdentifier(el.name)) {
+          const symbol = symbolOf(el.name);
+          if (symbol && !el.initializer && !optionalSymbols.has(symbol)) {
+            optionalSymbols.add(symbol);
+            // Indexed flow facts can survive a mutating method call in the
+            // checker. The array's element ABI describes every value a
+            // position may hold after that call, so bind from that type.
+            const mapped = sourceType.elem;
+            if (mapped && mapped.kind !== "void" && mapped.kind !== "dyn" && mapped.kind !== "jsval") {
+              const widened = mapped.kind === "union" ? this.withUndefinedArmOf(mapped) : this.withUndefinedArm(mapped);
+              if (widened) {
+                this.runtimeOptionalBindingTypes.set(symbol, widened);
+                const global = this.globalsBySymbol.get(symbol);
+                if (global) {
+                  global.type = widened;
+                  this.runtimeOptionalGlobals.add(global);
+                }
+              }
+            }
+            changed = true;
+          }
+        }
+      });
+      return changed;
+    };
+    const hofCallbackIndices = (name: string, hasInitialValue: boolean): number[] | null => {
+      if (name === "reduce" || name === "reduceRight") return hasInitialValue ? [1] : [0, 1];
+      if (
+        name === "map" || name === "filter" || name === "forEach" ||
+        name === "find" || name === "findIndex" || name === "findLast" ||
+        name === "findLastIndex" || name === "some" || name === "every" ||
+        name === "flatMap"
+      ) return [0];
+      return null;
+    };
+    const bodyReturnsOptional = (fn: ts.FunctionLikeDeclaration): boolean => {
+      if (!fn.body) return false;
+      if (!ts.isBlock(fn.body)) return mayBeOptional(fn.body as ts.Expression);
+      let found = false;
+      ts.walkPreorder(fn.body, (node) => {
+        if (node !== fn.body && (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node))) return "skip";
+        if (ts.isReturnStatement(node) && node.expression && mayBeOptional(node.expression)) found = true;
+        return undefined;
+      });
+      return found;
+    };
+    const promoteHofCallback = (callback: ts.Expression, parameterIndices: readonly number[], seen = new Set<ts.Symbol>()): boolean => {
+      let changed = false;
+      const checkerTypeContainsTypeParameter = (type: ts.Type): boolean => {
+        if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
+        return type.isUnionType() && ts.constituentTypes(type).some(checkerTypeContainsTypeParameter);
+      };
+      const promoteNode = (fn: ts.FunctionLikeDeclaration): void => {
+        for (const parameterIndex of parameterIndices) {
+          const parameter = fn.parameters[parameterIndex];
+          if (!parameter) continue;
+          const symbol = ts.isIdentifier(parameter.name) ? symbolOf(parameter.name) : null;
+          const checkerType = this.typeOf(parameter.name);
+          const mapped = this.mapTypeOf(checkerType);
+          // Generic callbacks are monomorphized by their call-site binder.
+          // During this prepass the type parameter has no static ABI yet;
+          // asking irTypeOf to invent one poisons otherwise valid generic
+          // value/HOF programs. Leave that parameter at its generic
+          // signature and let the normal instantiation path specialize it.
+          const current = mapped ??
+            (checkerTypeContainsTypeParameter(checkerType) ? null : this.irTypeOf(parameter.name));
+          if (!current) continue;
+          if (!ts.isIdentifier(parameter.name)) {
+            const widened = this.runtimeOptionalType(current);
+            const previous = this.runtimeOptionalPatternTypes.get(parameter.name);
+            this.runtimeOptionalPatternTypes.set(parameter.name, widened);
+            if (!previous || !typeEquals(previous, widened)) changed = true;
+          }
+          if (symbol) {
+            const widened = this.runtimeOptionalType(current);
+            const previous = this.runtimeOptionalBindingTypes.get(symbol);
+            this.runtimeOptionalBindingTypes.set(symbol, widened);
+            if (!previous || !typeEquals(previous, widened)) changed = true;
+            if (!optionalSymbols.has(symbol)) {
+              optionalSymbols.add(symbol);
+              changed = true;
+            }
+          }
+        }
+        const fnType = this.mapTypeOf(this.typeOf(fn));
+        if (fnType?.kind === "func" && bodyReturnsOptional(fn)) {
+          const widenedReturn = this.runtimeOptionalType(fnType.ret);
+          const previousReturn = this.runtimeOptionalFunctionReturnType(fn, fnType.ret);
+          this.runtimeOptionalFunctionReturns.set(fn, widenedReturn);
+          if (!typeEquals(previousReturn, widenedReturn)) changed = true;
+        }
+      };
+      if (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback) || ts.isFunctionDeclaration(callback) || ts.isMethodDeclaration(callback)) {
+        promoteNode(callback);
+        return changed;
+      }
+      const callbackName = ts.isIdentifier(callback)
+        ? callback
+        : ts.isPropertyAccessExpression(callback)
+          ? callback.name
+          : null;
+      if (!callbackName) return false;
+      const symbol = symbolOf(callbackName);
+      if (!symbol || seen.has(symbol)) return false;
+      // Generic function values are pinned and monomorphized by the normal
+      // contextual-value path when the HOF lowers its callback. Promoting
+      // their type-parameter body here either asks for an impossible
+      // monomorphic ABI or poisons valid generic value programs.
+      if (this.genericFnsBySymbol.has(symbol)) return false;
+      seen.add(symbol);
+      const declaration = this.checker.valueDeclarationOf(symbol);
+      if (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer) {
+        if (promoteHofCallback(peel(declaration.initializer), parameterIndices, seen)) changed = true;
+      }
+      const sig = signatureBySymbol.get(symbol);
+      if (sig) {
+        for (const parameterIndex of parameterIndices) {
+          if (!sig.params[parameterIndex]) continue;
+          const before = sig.params[parameterIndex]!.type;
+          sig.params[parameterIndex]!.type = this.runtimeOptionalType(before);
+          if (!typeEquals(before, sig.params[parameterIndex]!.type)) changed = true;
+        }
+      }
+      const fn = functionDeclBySymbol.get(symbol);
+      if (fn) promoteNode(fn);
+      const valueType = this.runtimeOptionalBindingTypes.get(symbol) ?? this.mapTypeOf(this.typeOf(callback));
+      if (valueType?.kind === "func") {
+        const params = valueType.params.slice();
+        for (const parameterIndex of parameterIndices) {
+          if (params[parameterIndex]) params[parameterIndex] = this.runtimeOptionalType(params[parameterIndex]!);
+        }
+        const promoted: IrType = { ...valueType, params };
+        const previous = this.runtimeOptionalBindingTypes.get(symbol);
+        this.runtimeOptionalBindingTypes.set(symbol, promoted);
+        if (!previous || !typeEquals(previous, promoted)) changed = true;
+        const global = this.globalsBySymbol.get(symbol);
+        if (global) global.type = promoted;
+        // A callback-typed parameter used by a native array HOF changes
+        // the containing function's own call ABI. Record that edge in the
+        // already-collected signature as well as on the body binding, so a
+        // caller can promote the concrete callback value it supplies on a
+        // later fixed-point pass (`wrapper(xs, predicate)` ->
+        // `xs.some(predicate)`).
+        if (declaration && ts.isParameter(declaration)) {
+          const owner = declaration.parent;
+          let ownerSymbol: ts.Symbol | null = null;
+          if (ts.isFunctionDeclaration(owner)) ownerSymbol = declSymbolOf(this, owner) ?? null;
+          else if (
+            (ts.isMethodDeclaration(owner) || ts.isGetAccessorDeclaration(owner) || ts.isSetAccessorDeclaration(owner)) &&
+            owner.name
+          ) ownerSymbol = symbolOf(owner.name);
+          const ownerSig = ownerSymbol ? signatureBySymbol.get(ownerSymbol) : undefined;
+          const ownerIndex = ts.isFunctionLike(owner) ? owner.parameters.indexOf(declaration) : -1;
+          const slot = ownerIndex >= 0 ? ownerSig?.params[ownerIndex] : undefined;
+          if (slot && !typeEquals(slot.type, promoted)) {
+            slot.type = promoted;
+            changed = true;
+          }
+        }
+      }
+      return changed;
+    };
+    const callbackReturnsOptional = (callback: ts.Expression, seen = new Set<ts.Symbol>()): boolean => {
+      const node = peel(callback);
+      if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return bodyReturnsOptional(node);
+      const symbol = symbolOf(ts.isPropertyAccessExpression(node) ? node.name : node);
+      if (!symbol || seen.has(symbol)) return false;
+      seen.add(symbol);
+      const fn = functionDeclBySymbol.get(symbol);
+      if (fn) return bodyReturnsOptional(fn);
+      const decl = this.checker.valueDeclarationOf(symbol);
+      return !!decl && ts.isVariableDeclaration(decl) && !!decl.initializer && callbackReturnsOptional(decl.initializer, seen);
+    };
+    const scanFile = (sf: ts.SourceFile): boolean => {
+      let changed = false;
+      ts.walkPreorder(sf, (node) => {
+        if (ts.isVariableDeclaration(node)) {
+          if (node.initializer) {
+            if (ts.isIdentifier(node.name) && isDynamicObjectEntryRead(node.initializer)) {
+              const symbol = symbolOf(node.name);
+              if (symbol && !dynamicObjectEntryRows.has(symbol)) {
+                dynamicObjectEntryRows.add(symbol);
+                changed = true;
+              }
+            } else if (ts.isIdentifier(node.name) && mayBeOptional(node.initializer)) {
+              const symbol = symbolOf(node.name);
+              if (symbol && !optionalSymbols.has(symbol)) {
+                optionalSymbols.add(symbol);
+                changed = true;
+              }
+            }
+            if (ts.isIdentifier(node.name)) {
+              const valueSymbol = ts.isIdentifier(peel(node.initializer))
+                ? symbolOf(peel(node.initializer))
+                : ts.isPropertyAccessExpression(peel(node.initializer))
+                  ? symbolOf((peel(node.initializer) as ts.PropertyAccessExpression).name)
+                  : null;
+              const symbol = symbolOf(node.name);
+              const sourceSig = valueSymbol ? signatureBySymbol.get(valueSymbol) : undefined;
+              const sourceOptional =
+                !!sourceSig &&
+                (optionalReturns.has(valueSymbol!) ||
+                  (sourceSig.returnType.kind === "union" && this.armTag(sourceSig.returnType.unionId, UNDEFINED_T) >= 0) ||
+                  sourceSig.params.some((p) => p.type.kind === "union" && this.armTag(p.type.unionId, UNDEFINED_T) >= 0));
+              if (symbol && valueSymbol && sourceOptional) {
+                const aliasNew = !optionalReturns.has(symbol);
+                if (aliasNew) optionalReturns.add(symbol);
+                if (aliasNew) changed = true;
+                const valueType = this.mapTypeOf(this.typeOf(node.name));
+                if (valueType?.kind === "func" && sourceSig) {
+                  const promotedFn: IrType = {
+                    ...valueType,
+                    params: sourceSig.params.map((p) => p.type),
+                    ret: sourceSig.returnType,
+                  };
+                  const previous = this.runtimeOptionalBindingTypes.get(symbol);
+                  if (!previous || !typeEquals(previous, promotedFn)) {
+                    this.runtimeOptionalBindingTypes.set(symbol, promotedFn);
+                    const global = this.globalsBySymbol.get(symbol);
+                    if (global) global.type = promotedFn;
+                    changed = true;
+                  }
+                }
+              }
+            }
+            if (scanPattern(node.name, node.initializer)) changed = true;
+            if (ts.isIdentifier(node.name) && ts.isObjectLiteralExpression(peel(node.initializer))) {
+              const object = peel(node.initializer) as ts.ObjectLiteralExpression;
+              for (const prop of object.properties) {
+                if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) continue;
+                const name = prop.name;
+                if (!name || !(ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name))) continue;
+                const value = ts.isPropertyAssignment(prop) ? prop.initializer : prop.name as ts.Expression;
+                if (mayBeOptional(value) && noteField(node, name.text)) changed = true;
+              }
+            }
+          }
+        }
+        if (
+          ts.isBinaryExpression(node) &&
+          (node.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
+            node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken ||
+            node.operatorToken.kind === ts.SyntaxKind.BarBarEqualsToken ||
+            node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken) &&
+          mayBeOptional(node.right)
+        ) {
+          if (ts.isIdentifier(node.left)) {
+            const symbol = symbolOf(node.left);
+            if (symbol && !optionalSymbols.has(symbol)) {
+              optionalSymbols.add(symbol);
+              changed = true;
+            }
+          } else if (ts.isPropertyAccessExpression(node.left) && ts.isIdentifier(node.left.expression)) {
+            const symbol = symbolOf(node.left.expression);
+            if (symbol && noteFieldSymbol(symbol, node.left.name.text)) changed = true;
+          }
+        }
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+          const callbackIndices = hofCallbackIndices(node.expression.name.text, node.arguments.length >= 2);
+          const receiverNode = node.expression.expression;
+          const receiver = this.mapTypeOf(this.typeOf(receiverNode));
+          const callback = callbackIndices === null ? undefined : node.arguments[0];
+          const tuple = receiver?.kind === "record" && this.shapes.get(receiver.shapeId)?.tuple === true;
+          // A JS/evolving-any array may have acquired a precise FLOW type
+          // at this call while its actual binding remains a checked-dynamic
+          // array. Its callback consumes DYN values through runtime method
+          // dispatch, so widening that callback to the native array value
+          // ABI makes it impossible to box back into DYN. Judge a simple
+          // binding by its declaration type, the same storage fact local
+          // declaration lowering uses.
+          let nativeArrayReceiver = receiver?.kind === "array" || tuple;
+          if (nativeArrayReceiver && ts.isIdentifier(receiverNode)) {
+            const receiverSymbol = symbolOf(receiverNode);
+            const declaration = receiverSymbol ? this.checker.valueDeclarationOf(receiverSymbol) : undefined;
+            if (declaration && ts.isVariableDeclaration(declaration)) {
+              const declared = this.mapTypeOf(this.typeOf(declaration.name));
+              if (declared?.kind !== "array" && !(declared?.kind === "record" && this.shapes.get(declared.shapeId)?.tuple === true)) {
+                nativeArrayReceiver = false;
+              }
+            }
+          }
+          if (nativeArrayReceiver && callback && !ts.isSpreadElement(callback)) {
+            if (promoteHofCallback(callback, callbackIndices!)) changed = true;
+            const method = node.expression.name.text;
+            if ((method === "reduce" || method === "reduceRight") &&
+                (node.arguments.length < 2 || callbackReturnsOptional(callback))) {
+              if (promoteHofCallback(callback, [0, 1])) changed = true;
+              const result = this.runtimeOptionalType(this.irTypeOf(node));
+              const previous = this.runtimeOptionalReduceTypes.get(node);
+              if (!previous || !typeEquals(previous, result)) {
+                this.runtimeOptionalReduceTypes.set(node, result);
+                changed = true;
+              }
+            }
+          }
+        }
+        if (
+          ts.isCallExpression(node) &&
+          (ts.isIdentifier(node.expression) || ts.isPropertyAccessExpression(node.expression))
+        ) {
+          const calleeNode = ts.isIdentifier(node.expression) ? node.expression : node.expression.name;
+          const symbol = symbolOf(calleeNode);
+          if (!symbol) return;
+          const sig = signatureBySymbol.get(symbol);
+          if (!sig) {
+            const decl = this.checker.valueDeclarationOf(symbol);
+            if (decl && ts.isVariableDeclaration(decl) && decl.initializer && ts.isIdentifier(decl.initializer)) {
+              const source = symbolOf(decl.initializer);
+              const sourceSig = source ? signatureBySymbol.get(source) : undefined;
+              if (sourceSig) {
+                node.arguments.forEach((arg, i) => {
+                  if (ts.isSpreadElement(arg) || !mayBeOptional(arg) || !sourceSig.params[i]) return;
+                  const before = sourceSig.params[i]!.type;
+                  sourceSig.params[i]!.type = this.runtimeOptionalType(before);
+                  if (!typeEquals(before, sourceSig.params[i]!.type)) {
+                    changed = true;
+                    const sourceFn = functionDeclBySymbol.get(source!);
+                    const parameter = sourceFn?.parameters[i];
+                    if (parameter) {
+                      for (const bound of boundIdentifiersOf(parameter.name)) {
+                        const boundSymbol = symbolOf(bound);
+                        if (boundSymbol && !optionalSymbols.has(boundSymbol)) {
+                          optionalSymbols.add(boundSymbol);
+                          changed = true;
+                        }
+                      }
+                    }
+                  }
+                });
+              }
+            }
+            return;
+          }
+          node.arguments.forEach((arg, i) => {
+              const callbackSlot = sig.params[i]?.type;
+              if (callbackSlot?.kind === "func" && !ts.isSpreadElement(arg)) {
+                const optionalCallbackParams = callbackSlot.params.flatMap((type, index) =>
+                  type.kind === "union" && this.armTag(type.unionId, UNDEFINED_T) >= 0 ? [index] : []);
+                if (optionalCallbackParams.length > 0 && promoteHofCallback(arg, optionalCallbackParams)) {
+                  changed = true;
+                }
+              }
+              if (ts.isSpreadElement(arg) || !mayBeOptional(arg) || !sig.params[i]) return;
+              const set = optionalParams.get(symbol) ?? new Set<number>();
+              const before = set.size;
+              set.add(i);
+              optionalParams.set(symbol, set);
+              if (set.size !== before) {
+                changed = true;
+                const callee = functionDeclBySymbol.get(symbol);
+                const parameter = callee?.parameters[i];
+                if (parameter) {
+                  for (const bound of boundIdentifiersOf(parameter.name)) {
+                    const boundSymbol = symbolOf(bound);
+                    if (boundSymbol && !optionalSymbols.has(boundSymbol)) {
+                      optionalSymbols.add(boundSymbol);
+                      changed = true;
+                    }
+                  }
+                }
+              }
+          });
+        }
+      });
+      return changed;
+    };
+    const scanReturns = (symbol: ts.Symbol, decl: ts.FunctionLikeDeclaration): boolean => {
+      if (!decl.body) return false;
+      let changed = false;
+      if (!ts.isBlock(decl.body) && mayBeOptional(decl.body as ts.Expression) && !optionalReturns.has(symbol)) {
+        optionalReturns.add(symbol);
+        changed = true;
+      }
+      if (!ts.isBlock(decl.body)) {
+        const arithmetic = optionalStringArithmeticType(decl.body as ts.Expression);
+        if (arithmetic && !arithmeticReturns.has(symbol)) {
+          arithmeticReturns.set(symbol, arithmetic);
+          changed = true;
+        }
+      }
+      ts.walkPreorder(decl.body, (node) => {
+        if (node !== decl.body && (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node))) return "skip";
+        if (ts.isReturnStatement(node) && node.expression && mayBeOptional(node.expression) && !optionalReturns.has(symbol)) {
+          optionalReturns.add(symbol);
+          changed = true;
+        }
+        if (ts.isReturnStatement(node) && node.expression) {
+          const arithmetic = optionalStringArithmeticType(node.expression);
+          if (arithmetic && !arithmeticReturns.has(symbol)) {
+            arithmeticReturns.set(symbol, arithmetic);
+            changed = true;
+          }
+        }
+        return undefined;
+      });
+      return changed;
+    };
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const sf of sourceFiles) if (scanFile(sf)) changed = true;
+      for (const [symbol, decl] of functionDeclBySymbol) if (scanReturns(symbol, decl)) changed = true;
+    }
+    for (const [symbol, sig] of signatureBySymbol) {
+      const params = optionalParams.get(symbol);
+      if (params) {
+        for (const i of params) {
+          const shape = sig.params[i];
+          if (shape) shape.type = addUndefined(shape.type);
+        }
+      }
+      if (optionalReturns.has(symbol)) {
+        const next = sig.returnType.kind === "promise"
+          ? { kind: "promise" as const, inner: addUndefined(sig.returnType.inner) }
+          : addUndefined(sig.returnType);
+        sig.returnType = next;
+        if (sig.top) sig.top.returnType = next;
+        if (sig.method) sig.method.ret = next;
+      }
+      const arithmetic = arithmeticReturns.get(symbol);
+      if (arithmetic && sig.returnType.kind !== "promise") {
+        sig.returnType = arithmetic;
+        if (sig.top) sig.top.returnType = arithmetic;
+        if (sig.method) sig.method.ret = arithmetic;
+        const decl = functionDeclBySymbol.get(symbol);
+        if (decl) this.runtimeOptionalFunctionReturns.set(decl, arithmetic);
+      }
+    }
+    for (const sf of sourceFiles) {
+      ts.walkPreorder(sf, (node) => {
+        if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name)) return;
+        const symbol = symbolOf(node.name);
+        if (!symbol) return;
+        const fields = optionalFields.get(symbol);
+        if (!dynamicObjectEntryRows.has(symbol) && !optionalSymbols.has(symbol) && !fields) return;
+        const current = this.mapTypeOf(this.typeOf(node.name));
+        if (!current) return;
+        let promoted = dynamicObjectEntryRows.has(symbol) ? DYN : current;
+        if (!dynamicObjectEntryRows.has(symbol) && optionalSymbols.has(symbol)) promoted = addUndefined(promoted);
+        if (promoted.kind === "func" && node.initializer && ts.isIdentifier(node.initializer)) {
+          const sourceSig = this.fnSigOf(node.initializer);
+          if (sourceSig) {
+            promoted = {
+              ...promoted,
+              params: sourceSig.params.filter((p) => p.mode !== "dynRest").map((p) => p.type),
+              ret: sourceSig.returnType,
+            };
+          }
+        }
+        if (fields && promoted.kind === "record") {
+          for (const field of fields) {
+            const source = promoted.kind === "record"
+              ? this.shapes.get(promoted.shapeId)?.fields.find((f) => f.name === field)
+              : undefined;
+            if (!source) continue;
+            promoted = this.runtimeOptionalRecordField(promoted, field, addUndefined(source.type));
+          }
+        }
+        if (!typeEquals(promoted, current)) {
+          this.runtimeOptionalBindingTypes.set(symbol, promoted);
+          const global = ts.isIdentifier(node.name) ? this.globalOf(node.name) : this.globalsBySymbol.get(symbol);
+          if (global) {
+            global.type = promoted;
+            this.runtimeOptionalGlobals.add(global);
+          }
+        } else if (promoted.kind === "union" && this.armTag(promoted.unionId, UNDEFINED_T) >= 0) {
+          const global = ts.isIdentifier(node.name) ? this.globalOf(node.name) : this.globalsBySymbol.get(symbol);
+          if (global) this.runtimeOptionalGlobals.add(global);
+        }
+      });
+    }
+  }
+
   run(): LowerResult {
     const parts = this.splitFiles();
     // The coverage remainder deliberately visits every body that reachable
@@ -2330,6 +3215,7 @@ export class Lowerer {
       for (const fp of parts) this.checker.prefetchSourceFile(fp.sf);
     }
     this.collectProgram(parts);
+    this.analyzeRuntimeOptionalArrayReads(parts);
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
     // class, and reference lowering needs each class's rebindability
@@ -2547,7 +3433,7 @@ export class Lowerer {
       this.diags.length > 0
         ? null
         : {
-            irVersion: 6,
+            irVersion: 8,
             sourceFile: this.entry.fileName,
             functions,
             classes: artifacts.classes,
@@ -2695,6 +3581,7 @@ export class Lowerer {
     // will reuse the same answers later.
     this.prefetchClassCollection(parts.flatMap((fp) => fp.classDecls));
     this.collectProgram(parts);
+    this.analyzeRuntimeOptionalArrayReads(parts);
     // Decorated classes analyze post-collection here too: the %init seeds
     // lower the decoration calls, whose edges (decorator bodies, construct
     // thunks) reachable emit must see.
@@ -3645,10 +4532,18 @@ export class Lowerer {
     return def ? def.arms.flatMap((arm, tag) => (this.isArrayValueType(arm) ? [tag] : [])) : [];
   }
 
-  /** isJsonSafeType with this Lowerer's registries — the shared fence for
-   * what JSON.stringify accepts and what a checked cast can validate. */
+  /** Checked JSON conversion excludes undefined array slots because JSON
+   * text cannot preserve that distinction. */
   jsonSafe(t: IrType): boolean {
     return isJsonSafeType(
+      t,
+      (id) => this.shapes.get(id),
+      (id) => this.unions.get(id),
+    );
+  }
+
+  jsonStringifySafe(t: IrType): boolean {
+    return isJsonStringifySafeType(
       t,
       (id) => this.shapes.get(id),
       (id) => this.unions.get(id),
@@ -6013,9 +6908,13 @@ export class Lowerer {
     if (tag < 0) return null;
     const key = `${fromId}:${tag}`;
     const existing = this.narrowHelpers.get(key);
-    if (existing) return existing;
+    if (existing) {
+      this.checkedNarrowHelpers.add(existing);
+      return existing;
+    }
     const name = `%union.narrow.${this.narrowHelpers.size}`;
     this.narrowHelpers.set(key, name);
+    this.checkedNarrowHelpers.add(name);
     const fromT: IrType = { kind: "union", unionId: fromId };
     const u: IrExpr = { kind: "varRef", localId: "u.0", type: fromT, loc };
     const body: IrStmt[] = [];
@@ -7573,6 +8472,16 @@ export class Lowerer {
       }
       const local = this.declareLocal(decl.name, name, shape.type, true);
       params.push({ localId: local.id, name, type: local.type });
+      if (
+        shape.mode === "required" &&
+        shape.type.kind === "union" &&
+        this.armTag(shape.type.unionId, UNDEFINED_T) >= 0 &&
+        typeEquals(this.stripUndefinedArm(shape.type), this.mapTypeOf(this.typeOf(decl.name)) ?? VOID)
+      ) {
+        const root = this.runtimeOptionalRootOf(local);
+        this.runtimeOptionalLocals.add(root);
+        this.runtimeOptionalStorageLocals.add(root);
+      }
     });
     return { params, prologue };
   }
@@ -8121,7 +9030,15 @@ export class Lowerer {
   }
 
   lowerForOf(stmt: ts.ForOfStatement): IrStmt {
-    return lowerForOf(this, stmt);
+    const optional = this.runtimeOptionalIdentifierValue(stmt.expression);
+    if (optional?.present.kind !== "string") return lowerForOf(this, stmt);
+    const helper = this.narrowedArmHelper(optional.unionId, optional.present, locOf(stmt.expression));
+    if (!helper) return lowerForOf(this, stmt);
+    return this.withExpressionOverride(
+      stmt.expression,
+      { kind: "call", callee: helper, args: [optional.value], type: optional.present, loc: locOf(stmt.expression) },
+      () => lowerForOf(this, stmt),
+    );
   }
 
   lowerForStatement(stmt: ts.ForStatement): IrStmt {
@@ -8233,7 +9150,40 @@ export class Lowerer {
   }
 
   lowerElementAccess(expr: ts.ElementAccessExpression): IrExpr {
-    return lowerElementAccess(this, expr);
+    const receiver = this.runtimeOptionalIdentifierValue(expr.expression);
+    const receiverValue = receiver && (receiver.present.kind === "array" || receiver.present.kind === "record")
+      ? (() => {
+          const helper = this.narrowedArmHelper(receiver.unionId, receiver.present, locOf(expr.expression));
+          return helper ? { kind: "call" as const, callee: helper, args: [receiver.value], type: receiver.present, loc: locOf(expr.expression) } : null;
+        })()
+      : null;
+    if (receiverValue && receiver?.present.kind === "record" && ts.isNumericLiteral(expr.argumentExpression)) {
+      const shape = this.shapes.get(receiver.present.shapeId);
+      const index = expr.argumentExpression.text;
+      const field = shape?.tuple ? shape.fields.find((candidate) => candidate.name === String(Number(index))) : undefined;
+      if (field) {
+        const read: IrExpr = {
+          kind: "recordGet",
+          obj: receiverValue,
+          shapeId: receiver.present.shapeId,
+          field: field.name,
+          type: field.type,
+          loc: locOf(expr),
+        };
+        if (
+          expr.parent && ts.isTypeOfExpression(expr.parent) &&
+          (field.type.kind === "f64" || field.type.kind === "bool" || field.type.kind === "string")
+        ) {
+          return { kind: "dynFrom", value: read, type: DYN, loc: locOf(expr) };
+        }
+        return read;
+      }
+    }
+    const key = this.runtimeOptionalIdentifierValue(expr.argumentExpression);
+    const keyValue = key?.present.kind === "string" ? this.ensureString(key.value, expr.argumentExpression) : null;
+    const lower = (): IrExpr => lowerElementAccess(this, expr);
+    const withKey = (): IrExpr => keyValue ? this.withExpressionOverride(expr.argumentExpression, keyValue, lower) : lower();
+    return receiverValue ? this.withExpressionOverride(expr.expression, receiverValue, withKey) : withKey();
   }
 
   lowerRecordKeyRead(
@@ -8317,7 +9267,77 @@ export class Lowerer {
   }
 
   lowerInstanceOf(expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
-    return lowerInstanceOf(this, expr, loc);
+    const lower = (): IrExpr => this.withRuntimeOptionalClassValue(expr.right, () => lowerInstanceOf(this, expr, loc));
+    if (!ts.isIdentifier(expr.right) || this.mapTypeOf(this.typeOf(expr.right))?.kind !== "classval") {
+      return lower();
+    }
+    const optionalLeft = this.runtimeOptionalIdentifierValue(expr.left);
+    const left = optionalLeft?.value ?? (ts.isElementAccessExpression(expr.left) ? this.lowerExpr(expr.left) : null);
+    if (!left) return lower();
+    if (left.type.kind !== "union" || this.armTag(left.type.unionId, UNDEFINED_T) < 0) return lower();
+    const present = this.stripUndefinedArm(left.type);
+    if (present.kind !== "object") return lower();
+    const undefinedTag = this.armTag(left.type.unionId, UNDEFINED_T);
+    const valueTag = this.armTag(left.type.unionId, present);
+    if (undefinedTag < 0 || valueTag < 0) return lower();
+    const stable = this.declareHiddenLocal("%instanceofLeft", left.type);
+    const value = varRef(stable.id, left.type, locOf(expr.left));
+    const optionalRight = this.runtimeOptionalIdentifierValue(expr.right);
+    let right: IrExpr;
+    if (optionalRight?.present.kind === "classval") {
+      const helper = this.narrowedArmHelper(optionalRight.unionId, optionalRight.present, locOf(expr.right));
+      if (!helper) return lower();
+      right = { kind: "call", callee: helper, args: [optionalRight.value], type: optionalRight.present, loc: locOf(expr.right) };
+    } else {
+      right = this.lowerExpr(expr.right);
+    }
+    if (right.type.kind !== "classval") return lower();
+    const stableRight = this.declareHiddenLocal("%instanceofRight", right.type);
+    const rightValue = varRef(stableRight.id, right.type, locOf(expr.right));
+    const body = this.withExpressionOverride(expr.left, {
+      kind: "unionNarrow", unionId: left.type.unionId, tag: valueTag, value, type: present, loc: locOf(expr.left),
+    }, () => this.withExpressionOverride(expr.right, rightValue, () => lowerInstanceOf(this, expr, loc)));
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: stable.id, init: left, loc: locOf(expr.left) },
+        { kind: "varDecl", localId: stableRight.id, init: right, loc: locOf(expr.right) },
+      ],
+      result: {
+        kind: "ternary",
+        cond: { kind: "unionIsTag", unionId: left.type.unionId, tag: undefinedTag, negated: false, value, type: BOOL, loc },
+        then: { kind: "boolLit", value: false, type: BOOL, loc },
+        else_: body,
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+  }
+
+  private withRuntimeOptionalClassValue<T>(node: ts.Expression, lower: () => T): T {
+    if (this.mapTypeOf(this.typeOf(node))?.kind !== "classval") return lower();
+    const optional = this.runtimeOptionalIdentifierValue(node);
+    if (optional?.present.kind !== "classval") return lower();
+    const helper = this.narrowedArmHelper(optional.unionId, optional.present, locOf(node));
+    if (!helper) return lower();
+    return this.withExpressionOverride(
+      node,
+      { kind: "call", callee: helper, args: [optional.value], type: optional.present, loc: locOf(node) },
+      lower,
+    );
+  }
+
+  private withExpressionOverride<T>(node: ts.Expression, value: IrExpr, lower: () => T): T {
+    const previous = this.chainRecvByNode.get(node);
+    this.chainRecvByNode.set(node, value);
+    try {
+      return lower();
+    } finally {
+      if (previous) this.chainRecvByNode.set(node, previous);
+      else this.chainRecvByNode.delete(node);
+    }
   }
 
   lowerCall(expr: ts.CallExpression): IrExpr {
@@ -8524,7 +9544,8 @@ export class Lowerer {
       const arg = this.lowerExpr(expr.arguments[0]!);
       return { kind: "jsOp", op: "construct", args: [ctor, arg], type: JSVAL, loc };
     }
-    return lowerAbortControllerNew(this, expr) ?? lowerResponseNew(this, expr) ?? lowerStaticReadableStreamNew(this, expr) ?? lowerNew(this, expr);
+    const builtin = lowerAbortControllerNew(this, expr) ?? lowerResponseNew(this, expr) ?? lowerStaticReadableStreamNew(this, expr);
+    return builtin ?? this.withRuntimeOptionalClassValue(expr.expression, () => lowerNew(this, expr));
   }
 
   lowerFieldRead(expr: ts.PropertyAccessExpression): IrExpr | null {
@@ -9130,6 +10151,13 @@ export class Lowerer {
 
   lowerFilterNarrowCall(call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
+    // Native array filters use the state-aware HOF helper: its callback
+    // receives present undefined values and skips holes before a narrowed
+    // survivor is extracted. The older narrowing helper reads the payload
+    // directly and therefore cannot represent that three-state contract.
+    if (this.mapTypeOf(this.typeOf(access.expression))?.kind === "array" && this.isStdlibMember(access)) {
+      return null;
+    }
     return lowerFilterNarrowCall(this, call, access);
   }
 

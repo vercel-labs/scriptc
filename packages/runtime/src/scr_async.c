@@ -1051,8 +1051,10 @@ ScrPromise *scr_promise_all(ScrArr *ps, ScrArr *values,
   size_t n = ps->len;
   ScrPromise *result = scr_promise_new();
   if (values && n > 0) {
-    memset(values->data, 0, n * sizeof *values->data);
-    values->len = n;
+    /* Pre-size as holes. Promise settlement writes the present slots through
+     * the normal setters; this also remains safe when n is sparse-sized and
+     * the array intentionally has no dense allocation. */
+    scr_arr_set_len(values, (double)n);
   }
   ScrAllState *st = malloc(sizeof *st);
   if (!st) scr_oom();

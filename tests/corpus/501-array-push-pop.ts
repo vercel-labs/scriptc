@@ -17,10 +17,10 @@ if (xs.push(7) === 3) {
 
 // pop into locals; drain a stack with .length in the condition
 const names: string[] = ["ada", "grace", "hopper"];
-const last: string = names.pop();
-console.log(last, names.length);
+const last: string | undefined = names.pop();
+console.log(last ?? "missing", names.length);
 while (names.length > 0) {
-  console.log(names.pop(), names.length);
+  console.log(names.pop() ?? "missing", names.length);
 }
 
 // booleans round-trip
@@ -34,8 +34,8 @@ const rows: number[][] = [];
 rows.push([1, 2]);
 rows.push([3]);
 console.log(rows.length, rows[0][0], rows[1][0]);
-const popped: number[] = rows.pop();
-console.log(popped[0], rows.length);
+const popped: number[] | undefined = rows.pop();
+console.log(popped === undefined ? "missing" : popped[0], rows.length);
 
 // interleaved push/pop keeps LIFO order
 const log: string[] = [];

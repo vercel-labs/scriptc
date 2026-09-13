@@ -17,7 +17,7 @@ empty[0] = 7;
 console.log(empty.length, empty[0]);
 
 const words: string[] = ["alpha", "beta"];
-console.log(words[0], words[1].length);
+console.log(`${words[0]}`, words[1]);
 words[0] = words[1] + "!";
 console.log(words[0]);
 

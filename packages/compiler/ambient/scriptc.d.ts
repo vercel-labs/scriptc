@@ -15,7 +15,7 @@
  * This file ships to EVERY program scriptc builds — the lowering program
  * and preflight's project-world second-chance program alike (a project
  * using comptime must typecheck in both). The divergence/precision
- * overrides (JSON.parse(): unknown, pop(): T, the Promise executor shape,
+ * overrides (JSON.parse(): unknown, the Promise executor shape,
  * ...) live in scriptc-overrides.d.ts, which joins the LOWERING program only.
  *
  * console, process, and the "node:fs" module live in scriptc-node-fallback.d.ts,

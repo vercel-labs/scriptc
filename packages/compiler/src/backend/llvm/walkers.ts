@@ -440,6 +440,20 @@ export class LlWalkers {
       this.putc(B, "%b", "44"); // ','
       B.br(lj);
       B.startBlock(lj);
+      host.declare(`declare double @scr_arr_state(ptr, double)`);
+      const state = B.tmp();
+      const present = B.tmp();
+      const valueBlock = B.newLabel("jwa.value");
+      const missingBlock = B.newLabel("jwa.missing");
+      const doneBlock = B.newLabel("jwa.done");
+      B.line(`${state} = call double @scr_arr_state(ptr %v, double ${i})`);
+      B.line(`${present} = fcmp oeq double ${state}, ${f64Lit(1)}`);
+      B.condBr(present, valueBlock, missingBlock);
+      B.startBlock(missingBlock);
+      host.declare(`declare void @scr_jb_puts(ptr, ptr)`);
+      B.line(`call void @scr_jb_puts(ptr %b, ptr ${host.cstr("null")})`);
+      B.br(doneBlock);
+      B.startBlock(valueBlock);
       if (cyclic) {
         const idx = B.tmp();
         B.line(`${idx} = fptoui double ${i} to ${this.S}`);
@@ -460,6 +474,8 @@ export class LlWalkers {
         B.line(`call void @${w}(ptr %b, ptr ${v})`);
         B.line(`call void ${releaseSym(host, elem)}(ptr ${v})`);
       }
+      B.br(doneBlock);
+      B.startBlock(doneBlock);
     });
     this.putc(B, "%b", "93"); // ']'
     if (cyclic) this.jbLeave(B);
@@ -484,10 +500,10 @@ export class LlWalkers {
         return;
       }
       if (arm.kind === "undefinedT") {
-        // Reachable only as a record FIELD's serializer, and the record
-        // writer drops the field while it holds this tag before calling —
-        // so the tag can never arrive here.
-        B.br(bad);
+        // Array and tuple slots stringify undefined as null. Ordinary
+        // record fields drop the key before invoking this writer.
+        this.puts(B, "%b", "null");
+        B.br(done);
         return;
       }
       const w = this.jsonWriteHelper(arm);
@@ -830,6 +846,7 @@ export class LlWalkers {
     host.declare(`declare void @scr_jb_init(ptr)`);
     host.declare(`declare ptr @scr_jb_finish(ptr)`);
     host.declare(`declare double @scr_arr_len(ptr)`);
+    host.declare(`declare double @scr_arr_state(ptr, double)`);
     host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
     host.declare(`declare void @scr_union_release(ptr)`);
     host.declare(`declare void @scr_str_release(ptr)`);
@@ -850,6 +867,16 @@ export class LlWalkers {
       this.putScrStr(B, buf, "%sep");
       B.br(lel);
       B.startBlock(lel);
+      // Holes and payload-free present undefined both stringify empty. The
+      // separator was already written for this logical index, and only a
+      // VALUE slot may reach the typed getter below.
+      const state = B.tmp();
+      const isValue = B.tmp();
+      const lvalue = B.newLabel("uj.p");
+      B.line(`${state} = call double @scr_arr_state(ptr %a, double ${i})`);
+      B.line(`${isValue} = fcmp oeq double ${state}, ${f64Lit(1)}`);
+      B.condBr(isValue, lvalue, next);
+      B.startBlock(lvalue);
       const u = B.tmp();
       B.line(`${u} = call ptr @scr_arr_get_ref(ptr %a, double ${i}) ; element (+1)`);
       if (unitTags.length > 0) {

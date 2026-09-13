@@ -33,13 +33,6 @@ runtime-optional-capture-chain.ts:30:35 - error SC1090: a logical or conditional
      |                                   ^~~~~
   31 |   value = values.slice(1)[0];
 
-runtime-optional-capture-chain.ts:39:34 - error SC1090: a direct read from a runtime-optional capture with multiple value arms are not supported yet
-
-  38 |   value = 1 as unknown as string;
-  39 |   const read = () => console.log(value.length);
-     |                                  ^~~~~
-  40 |   read();
-
 runtime-optional-capture-chain.ts:46:22 - error SC1090: a direct call through a comma-wrapped runtime-optional capture is not supported yet
 
   45 |   if (!callback) return;

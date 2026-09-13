@@ -413,6 +413,22 @@ export function emitStmt(emitter: CEmitter, s: IrStmt): void {
         emitter.line(`scr_arr_set_${acc}(${arr.name}, ${idx.name}, ${v.name});${emitter.srcComment(s.loc)}`);
         break;
       }
+      case "arraySetLength": {
+        const arr = emitter.emitExpr(s.arr);
+        const length = emitter.emitExpr(s.length);
+        if (s.arr.type.kind !== "array") throw new InternalCompilerError("emitter bug: arraySetLength on non-array");
+        emitter.line(`scr_arr_set_len(${arr.name}, ${length.name});${emitter.srcComment(s.loc)}`);
+        emitter.emitPendingCheck();
+        break;
+      }
+      case "arraySetUndefined":
+      case "arrayDelete": {
+        const arr = emitter.emitExpr(s.arr);
+        const idx = emitter.emitExpr(s.index);
+        if (s.arr.type.kind !== "array") throw new InternalCompilerError(`emitter bug: ${s.kind} on non-array`);
+        emitter.line(`${s.kind === "arraySetUndefined" ? "scr_arr_set_undefined" : "scr_arr_delete"}(${arr.name}, ${idx.name});${emitter.srcComment(s.loc)}`);
+        break;
+      }
       case "bytesSet": {
         // Typed-array element write: same evaluation order as arraySet;
         // the value is a scalar (the inline kind-specific accessor coerces

@@ -36,7 +36,7 @@ console.log(jobs.indexOf(stranger), jobs.includes(stranger));
 
 // pop transfers the element out.
 const popped = jobs.pop();
-console.log(popped.name, jobs.length);
+console.log(popped?.name ?? "missing", jobs.length);
 
 // Nested shapes: records holding record arrays, arrays of those.
 interface Group {

@@ -529,7 +529,9 @@ export function jsonWriteHelper(emitter: CEmitter, t: IrType): string {
         d.push(`  scr_jb_putc(b, '{');`);
         if (!droppable) {
           emitFields.forEach((f, i) => {
-            const label = cStringLiteral(Buffer.from(`${i > 0 ? "," : ""}"${f.name}":`, "utf8"));
+            // The label is a JSON document fragment, not just a C string: escape
+            // the name as JSON first, then let cStringLiteral quote it for C.
+            const label = cStringLiteral(Buffer.from(`${i > 0 ? "," : ""}${JSON.stringify(f.name)}:`, "utf8"));
             d.push(`  scr_jb_puts(b, ${label});`);
             if (edgeable(f.type)) d.push(`  scr_jb_edge_prop(b, ${cStringLiteral(Buffer.from(f.name, "utf8"))});`);
             // Refcounted fields are BORROWED straight off the struct (the
@@ -539,7 +541,7 @@ export function jsonWriteHelper(emitter: CEmitter, t: IrType): string {
         } else {
           d.push(`  bool first = true;`);
           for (const f of emitFields) {
-            const label = cStringLiteral(Buffer.from(`"${f.name}":`, "utf8"));
+            const label = cStringLiteral(Buffer.from(`${JSON.stringify(f.name)}:`, "utf8"));
             const utag = undefinedArmTag(f.type, emitter.unionsById);
             const pad = utag >= 0 ? "    " : "  ";
             if (utag >= 0) {

@@ -1,0 +1,151 @@
+# syntax=docker/dockerfile:1.7
+#
+# scriptc cross-compile runner.
+#
+# Why not snowstep/llvm:noble? That base alone is ~2.2 GB (full LLVM/Clang/
+# Flang/MLIR/lldb toolchain), and deleting files from a base layer does not
+# shrink the image — the bytes stay in the lower layer as whiteouts. Cross
+# builds never use that clang anyway: SCRIPTC_TARGET forces SCRIPTC_CC=zigcc
+# (the clang path has no cross sysroots; see native-toolchain.ts), and zig
+# ships its own clang. So this image is debian-slim + node + zig + scriptc.
+
+ARG NODE_VERSION=20
+ARG ZIG_VERSION=0.16.0
+
+FROM node:${NODE_VERSION}-bookworm-slim AS node-bin
+
+# ---------------------------------------------------------------------------
+# zig toolchain, trimmed to the cross targets this image builds.
+#
+# zig locates its install dir by walking up from the executable looking for
+# lib/std/std.zig — so keep the tarball layout (zig + lib/ side by side) and
+# NEVER delete lib/std or lib/include (clang builtin headers zig cc needs).
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim AS zig
+
+ARG ZIG_VERSION
+# Space-separated libc/include/* dirs to keep. Must cover the SCRIPTC_TARGETs
+# built with this image:
+#   *-linux-musl  -> <triple> + generic-musl + any-linux-any
+#   wasm32-wasi   -> wasm-wasi-musl + generic-musl
+ARG ZIG_KEEP_LIBC_INCLUDE="x86_64-linux-musl wasm-wasi-musl generic-musl any-linux-any"
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+      "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+    | tar -xJ -C /opt \
+ && mv /opt/zig-x86_64-linux-${ZIG_VERSION} /opt/zig \
+ && cd /opt/zig \
+ && rm -rf doc \
+ # libc sources for targets we never build (mingw/glibc/darwin/bsd); musl and
+ # wasi stay.
+ && rm -rf lib/libc/mingw lib/libc/glibc lib/libc/darwin \
+           lib/libc/freebsd lib/libc/netbsd lib/libc/openbsd \
+ # C++ runtimes: scriptc compiles C only.
+ && rm -rf lib/libcxx lib/libcxxabi \
+ # per-target libc headers: keep only the configured set
+ && cd lib/libc/include \
+ && for d in */; do \
+      keep=0; \
+      for k in $ZIG_KEEP_LIBC_INCLUDE; do [ "${d%/}" = "$k" ] && keep=1; done; \
+      [ "$keep" = 1 ] || rm -rf "$d"; \
+    done \
+ && /opt/zig/zig version
+
+# ---------------------------------------------------------------------------
+# scriptc install (build stage; needs npm).
+# SCRIPTC_NO_CACHE=1 skips the postinstall native cache warm — it would bake
+# a native-only vendor cache into the image that cross builds cannot use.
+# The runtime vendor/ C sources MUST stay: cross targets are compiled lazily
+# on first use into the writable vendor/.cache dir.
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS scriptc-build
+
+RUN SCRIPTC_NO_CACHE=1 npm install -g scriptc \
+ && mkdir -p /usr/local/lib/node_modules/scriptc/node_modules/@scriptc/runtime/vendor/.cache \
+ && chmod -R 777 /usr/local/lib/node_modules/scriptc/node_modules/@scriptc/runtime/vendor \
+ && rm -rf /root/.npm
+
+# ---------------------------------------------------------------------------
+# Final image: debian-slim + node binary + zig + scriptc.
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim
+
+ENV SCRIPTC_CC=zigcc \
+    ZIG_GLOBAL_CACHE_DIR=/tmp/zig-global-cache
+
+# node needs libstdc++; zig is statically linked. binutils provides
+# /usr/bin/strip (see the strip example below).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates libstdc++6 binutils \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=node-bin /usr/local/bin/node /usr/local/bin/node
+COPY --from=zig /opt/zig /opt/zig
+COPY --from=scriptc-build /usr/local/lib/node_modules/scriptc /usr/local/lib/node_modules/scriptc
+
+RUN ln -sf /opt/zig/zig /usr/local/bin/zig \
+ && ln -sf /usr/local/lib/node_modules/scriptc/dist/main.js /usr/local/bin/scriptc \
+ && chmod +x /usr/local/lib/node_modules/scriptc/dist/main.js \
+ && zig version \
+ && scriptc --version
+
+WORKDIR /work
+
+ENTRYPOINT ["scriptc"]
+CMD ["--help"]
+
+#######
+#
+# DOCS
+#
+#######
+
+## build docker image
+
+# docker build -t scriptc-runner-cross -f Dockerfile.cross .
+
+## The examples below stick to simple one-shot --rm runs.
+
+## run scriptc for x86_64 binary target
+
+# docker run --rm \
+#     -e SCRIPTC_TARGET=x86_64-linux-musl -v "$PWD":/work \
+#     -u "$(id -u):$(id -g)" \
+#     scriptc-runner-cross \
+#     build ./sendFailursToMatrix.js --dynamic -o ./sendFailursToMatrix
+
+## run scriptc for wasm binary target
+
+# docker run --rm \
+#     -e SCRIPTC_TARGET=wasm32-wasi \
+#     -v "$PWD":/work \
+#     -u "$(id -u):$(id -g)" \
+#     scriptc-runner-cross \
+#     build ./sendFailursToMatrix.js --dynamic -o ./sendFailursToMatrix.wasm
+
+## remove useless debug_info and reduce binary weight by ~5MB
+
+# docker run --rm --entrypoint /usr/bin/strip \
+#     -v "$PWD":/work \
+#     scriptc-runner-cross \
+#     /work/sendFailursToMatrix
+
+## Note on caching: cross builds compile the bundled C libraries (quickjs,
+## mbedtls, zlib, ...) on first use per target. With an ephemeral container
+## (docker run --rm) that work repeats on every run. scriptc intentionally
+## keeps those objects in a transient build root rather than vendor/.cache
+## here (no writable persistent build root inside the container), so a
+## vendor-cache volume would NOT help — the .cache dir in the image only
+## exists as a writable fallback location. If per-run latency matters, keep
+## a long-lived container instead:
+##
+##   docker create --name scriptc-x64 \
+##       -e SCRIPTC_TARGET=x86_64-linux-musl -v "$PWD":/work \
+##       -u "$(id -u):$(id -g)" \
+##       scriptc-runner-cross build ./app.js --dynamic -o ./app
+##   docker start -a scriptc-x64          # first build compiles the vendor libs
+##   docker rm scriptc-x64                # ...or keep it around and re-create
+##

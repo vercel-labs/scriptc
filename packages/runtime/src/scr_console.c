@@ -4,8 +4,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #ifdef _WIN32
+#include <windows.h>
 #include <fcntl.h> /* _O_BINARY */
 #include <io.h>    /* _setmode, _fileno */
+#ifndef CP_UTF8
+#define CP_UTF8 65001
+#endif
 #endif
 
 /* Set by scr_async.c at loop exhaustion; lives here (unconditionally) so
@@ -75,6 +79,8 @@ void scr_runtime_abi_v1(void) {}
 
 void scr_init(void) {
 #ifdef _WIN32
+  SetConsoleOutputCP(CP_UTF8);
+  SetConsoleCP(CP_UTF8);
   /* The CRT opens std streams in TEXT mode, which writes \n as \r\n. Node
    * on Windows does NOT translate — console.log emits \n whether stdout is
    * a pipe or the console (libuv writes the bytes as given) — so the

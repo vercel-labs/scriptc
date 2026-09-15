@@ -269,7 +269,7 @@ export class LlWalkers {
     this.putc(B, "%b", "123"); // '{'
     if (!droppable) {
       emitFields.forEach((f, i) => {
-        this.puts(B, "%b", `${i > 0 ? "," : ""}"${f.name}":`);
+        this.puts(B, "%b", `${i > 0 ? "," : ""}${JSON.stringify(f.name)}:`);
         if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
         const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
         B.line(`call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${f.name}`);
@@ -305,7 +305,7 @@ export class LlWalkers {
           B.startBlock(lw);
         }
         comma();
-        this.puts(B, "%b", `"${f.name}":`);
+        this.puts(B, "%b", `${JSON.stringify(f.name)}:`);
         if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
         B.line(`call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${f.name}`);
         if (skip !== null) {

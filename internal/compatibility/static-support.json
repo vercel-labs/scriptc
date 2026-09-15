@@ -35,7 +35,7 @@
     "node-builtin.assert": ["tests/corpus/1600-assert-passing.ts", "tests/corpus/1609-assert-async.ts"],
     "node-builtin.async_hooks": ["tests/corpus/2213-async-local-storage.cjs"],
     "node-builtin.buffer": ["tests/corpus/1402-buffer-encodings.ts", "tests/corpus/1660-buffer-read-write-num.ts"],
-    "node-builtin.child_process": ["tests/corpus/1361-spawn-events.ts", "tests/corpus/1565-spawn-pipe-streams.ts"],
+    "node-builtin.child_process": ["tests/corpus/1361-spawn-events.ts", "tests/corpus/1565-spawn-pipe-streams.ts", "tests/corpus/2860-child-stdin.ts", "tests/corpus/2861-child-stdin-backpressure.ts", "tests/corpus/2862-child-stdin-errors.ts", "tests/corpus/2863-child-stdin-after-finish.ts", "tests/corpus/2864-child-stdin-destroy.ts"],
     "node-builtin.cluster": ["tests/corpus/957-builtins-namespace.ts"],
     "node-builtin.crypto": ["tests/corpus/1358-crypto-random.ts", "tests/corpus/1534-crypto-hash-chain.ts", "tests/corpus/2556-crypto-introspection.ts"],
     "node-builtin.dgram": ["tests/corpus/2597-dgram-send-ladders.cjs"],

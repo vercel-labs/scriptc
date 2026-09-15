@@ -382,9 +382,10 @@ export function commonJsModuleSyntaxDiag(loc: SrcLoc): ScrDiagnostic {
  * The compiler must fail before lowering instead of inheriting a parent
  * package's type and producing a runnable binary. */
 export function invalidPackageConfigDiag(packageJsonPath: string, loc: SrcLoc): ScrDiagnostic {
+  const displayPath = process.platform === "win32" ? packageJsonPath.replaceAll("\\", "/") : packageJsonPath;
   return {
     code: "SC1013",
-    message: `Node cannot load this module because '${packageJsonPath}' is an invalid package configuration (ERR_INVALID_PACKAGE_CONFIG)`,
+    message: `Node cannot load this module because '${displayPath}' is an invalid package configuration (ERR_INVALID_PACKAGE_CONFIG)`,
     loc,
     milestone: "later",
     hint: "fix the nearest package.json so it contains valid JSON",

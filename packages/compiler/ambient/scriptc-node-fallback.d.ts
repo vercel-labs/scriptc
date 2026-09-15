@@ -1512,7 +1512,16 @@ declare module "child_process" {
    * quiescence (SEMANTICS.md documents the divergence). An "error"
    * event with no registered listener prints the error and exits 1,
    * exactly the unhandled-'error' EventEmitter behavior. */
+  export interface ChildStdin {
+    readonly writable: boolean;
+    write(data: string | Uint8Array): boolean;
+    end(data?: string | Uint8Array): void;
+    destroy(): void;
+    on(event: "error", listener: (err: Error) => void): void;
+    on(event: "finish" | "drain", listener: () => void): void;
+  }
   export interface ChildProcess extends Disposable {
+    readonly stdin: ChildStdin | null;
     /* The exit listener may also take Node's second parameter — the
      * terminating signal's name, null for a normal exit. */
     on(event: "exit", listener: (code: number | null, signal: string | null) => void): void;
@@ -1545,7 +1554,7 @@ declare module "child_process" {
       /* The 3-tuple form admits number fds in the stdout/stderr slots —
        * openSync results dup2'd into the child (the daemon-log idiom
        * ["ignore", logFd, logFd]) — and "pipe" there too (child.stdout/
-       * child.stderr streams); piped STDIN stays a compile fence. */
+       * child.stderr streams); piped stdin is a writable child stream. */
       stdio: "ignore" | "inherit" | "pipe" | ("ignore" | "inherit" | "pipe" | number)[];
       /* detached gives the child its own session and process group
        * (POSIX_SPAWN_SETSID); env REPLACES the child environment; cwd

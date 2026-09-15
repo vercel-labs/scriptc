@@ -41,8 +41,9 @@ describe(`diagnostics corpus (${files.length} programs)`, () => {
         expect.unreachable(`${name} compiled successfully but must produce diagnostics`);
       }
       const rendered = renderDiagnostics(result.diagnostics, result.sourceTexts, { color: false })
+        .replaceAll("\r\n", "\n")
         // keep snapshots machine-independent
-        .replaceAll(diagDir + "/", "");
+        .replaceAll(diagDir.replaceAll("\\", "/") + "/", "");
       await expect(rendered).toMatchFileSnapshot(`__snapshots__/${name}.txt`);
     },
   );

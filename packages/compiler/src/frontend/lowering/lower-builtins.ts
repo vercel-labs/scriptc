@@ -2288,9 +2288,9 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
 
 /** `spawn(command, args?, options)` → one cp.spawn / cp.spawnOpts
    * libCall. The options argument must be an object LITERAL with an
-   * EXPLICIT stdio — "ignore" or "inherit" as the scalar, or the 3-tuple
-   * whose stdout/stderr slots may also be "pipe" (the child.stdout/
-   * child.stderr streams) or number fds; piped STDIN fences, and
+   * EXPLICIT stdio — "ignore", "inherit", or "pipe" as the scalar, or the 3-tuple
+   * whose slots may also be "pipe" (writable stdin and readable stdout/
+   * stderr); stdout/stderr also accept number fds, and
    * OMITTING the options means Node's default stdio, "pipe" on all
    * three — fenced too, so a program never silently loses its child's
    * output. The other lowered
@@ -2314,7 +2314,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     const optsNode = expr.arguments[expr.arguments.length - 1];
 
     const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
-    // Per-slot stdio modes (scr_child.c: 0 ignore, 1 inherit, 2 fd) and
+    // Per-slot stdio modes (scr_child.c: 0 ignore, 1 inherit, 2 fd, 3 pipe) and
     // the out/err fd expressions for mode 2 (the daemon-log idiom:
     // stdio: ["ignore", logFd, logFd]).
     let sawStdio = false;
@@ -2327,12 +2327,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
     let cwd: IrExpr = emptyStr;
     let plain = true; // exactly { stdio: "ignore" }: the historical libCall
 
-    const pipeFence = (node: ts.Node): never =>
-      lowerer.noLowering(
-        'spawn with stdio: "pipe"',
-        node,
-        'piped STDIN has no lowering — pipe stdout/stderr with the tuple form (stdio: ["ignore", "pipe", "pipe"]), or capture with spawnSync',
-      );
+
     if (optsNode && ts.isObjectLiteralExpression(optsNode) && expr.arguments.length >= 2) {
       for (const p of optsNode.properties) {
         // The conditional-spread idiom `...(isWindows ? {} : { detached:
@@ -2386,7 +2381,6 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
               const slot = (el: ts.Expression, which: 0 | 1 | 2): void => {
                 const t = lowerer.typeOf(el);
                 if (t.isStringLiteralType()) {
-                  if (t.value === "pipe" && which === 0) pipeFence(el);
                   if (t.value !== "ignore" && t.value !== "inherit" && t.value !== "pipe") {
                     lowerer.noLowering(
                       `spawn with stdio "${t.value}"`,
@@ -2426,16 +2420,16 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
             }
             const t = lowerer.typeOf(m.value);
             const v = t.isStringLiteralType() ? t.value : null;
-            if (v === "pipe") pipeFence(m.value);
-            if (v !== "ignore" && v !== "inherit") {
+
+            if (v !== "ignore" && v !== "inherit" && v !== "pipe") {
               lowerer.noLowering(
                 "spawn with this stdio option",
                 m.value,
-                '"ignore" and "inherit" are the supported stdio literals ' +
-                  '(or a 3-tuple of those and number fds; "pipe" has no lowering)',
+                '"ignore", "inherit", and "pipe" are the supported stdio literals ' +
+                  '(or a 3-tuple with number fds in the output slots)',
               );
             }
-            const mode = v === "inherit" ? 1 : 0;
+            const mode = v === "inherit" ? 1 : v === "pipe" ? 3 : 0;
             inMode = outMode = errMode = mode;
             sawStdio = true;
             if (v !== "ignore") plain = false;
@@ -2481,7 +2475,7 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
       lowerer.noLowering(
         "spawn without { stdio: \"ignore\" }",
         expr,
-        'Node\'s default stdio is "pipe" (streams, no lowering) — pass { stdio: "ignore" } or { stdio: "inherit" } explicitly, or capture with spawnSync',
+        'pass an explicit stdio option: "ignore", "inherit", "pipe", or a three-slot tuple',
       );
     }
     const argv = lowerer.lowerChildArgsArg(argsNode, loc);
@@ -5070,7 +5064,7 @@ function lowerOptionalStringSearchParams(lowerer: Lowerer, init: IrExpr, loc: Sr
       return { kind: "recordGet", obj: receiver, shapeId: receiver.type.shapeId, field: "%enc", type: STRING, loc: locOf(expr) };
     }
     const kind = lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind;
-    if (kind !== "stats" && kind !== "fileHandle" && kind !== "spawnRes" && kind !== "child") return null;
+    if (kind !== "stats" && kind !== "fileHandle" && kind !== "spawnRes" && kind !== "child" && kind !== "childStream") return null;
     if (kind === "child" ? !isChildSurfaceMember(lowerer, expr) : !lowerer.isStdlibMember(expr)) return null;
     const name = expr.name.text;
     const loc = locOf(expr);
@@ -5094,7 +5088,7 @@ function lowerOptionalStringSearchParams(lowerer: Lowerer, init: IrExpr, loc: Sr
     // checker's `Readable | null` (null exactly when the slot was not
     // piped), constructed type-directedly in the backend over the
     // +1-or-NULL runtime pair.
-    if (kind === "child" && (name === "stdout" || name === "stderr")) {
+    if (kind === "child" && (name === "stdout" || name === "stderr" || name === "stdin")) {
       const receiver = lowerer.lowerExpr(expr.expression);
       const type: IrType = {
         kind: "union",
@@ -5102,12 +5096,15 @@ function lowerOptionalStringSearchParams(lowerer: Lowerer, init: IrExpr, loc: Sr
       };
       const read: IrExpr = {
         kind: "libCall",
-        fn: name === "stdout" ? "child.stdout" : "child.stderr",
+        fn: name === "stdout" ? "child.stdout" : name === "stdin" ? "child.stdin" : "child.stderr",
         args: [receiver],
         type,
         loc,
       };
       return lowerer.maybeNarrow(read, expr);
+    }
+    if (kind === "childStream" && name === "writable") {
+      return { kind: "libCall", fn: "child.inputWritable", args: [lowerer.lowerExpr(expr.expression)], type: BOOL, loc };
     }
     if (kind === "child") return null; // pid/exitCode/killed live in lowerIntrinsicProperty
     if (
@@ -5305,6 +5302,25 @@ function lowerOptionalStringSearchParams(lowerer: Lowerer, init: IrExpr, loc: Sr
     if (!lowerer.isStdlibMember(access)) return null;
     const name = access.name.text;
     const loc = locOf(call);
+    if ((name === "write" && call.arguments.length === 1) || (name === "end" && call.arguments.length <= 1)) {
+      const receiver = lowerer.lowerExpr(access.expression);
+      const data = call.arguments[0] ? lowerer.lowerExpr(call.arguments[0]) : { kind: "strLit" as const, value: "", type: STRING, loc };
+      if (data.type.kind !== "string" && !(data.type.kind === "bytes" && data.type.elem === "u8")) lowerer.noLowering("child stdin data", call, "pass a string or Uint8Array, narrowed from unions");
+      const fn = name === "write" ? (data.type.kind === "string" ? "child.inputWrite" : "child.inputWriteBytes") : (data.type.kind === "string" ? "child.inputEnd" : "child.inputEndBytes");
+      return { kind: "libCall", fn, args: [receiver, data], type: name === "write" ? BOOL : VOID, loc };
+    }
+    if (name === "destroy" && call.arguments.length === 0) return { kind: "libCall", fn: "child.inputDestroy", args: [lowerer.lowerExpr(access.expression)], type: VOID, loc };
+    if (name === "on" && call.arguments.length === 2) {
+      const eventType = lowerer.typeOf(call.arguments[0]!);
+      const event = eventType.isStringLiteralType() ? eventType.value : "";
+      if (event === "error" || event === "finish" || event === "drain") {
+        if (!ts.isExpressionStatement(call.parent)) lowerer.noLowering("child stdin listener chaining", call);
+        const cb = lowerer.lowerExpr(call.arguments[1]!);
+        if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > (event === "error" ? 1 : 0)) lowerer.noLowering("child stdin listener shape", call);
+        if (event === "error" && cb.type.kind === "func" && cb.type.params.length && !(cb.type.params[0]!.kind === "object" && cb.type.params[0]!.className === "%Error")) lowerer.noLowering("child stdin error listener", call);
+        return { kind: "libCall", fn: event === "error" ? "child.inputOnError" : event === "finish" ? "child.inputOnFinish" : "child.inputOnDrain", args: [lowerer.lowerExpr(access.expression), cb], type: VOID, loc };
+      }
+    }
     if ((name === "on" || name === "once") && call.arguments.length === 2) {
       const evT = lowerer.typeOf(call.arguments[0]!);
       const event = evT.isStringLiteralType() ? evT.value : null;

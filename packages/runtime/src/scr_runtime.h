@@ -2639,6 +2639,16 @@ ScrChildStream *scr_child_stream_retain(ScrChildStream *s);
 void scr_child_stream_release(ScrChildStream *s);
 void *scr_child_stream_retain_v(void *p);
 void scr_child_stream_release_v(void *p);
+ScrChildStream *scr_child_stdin(ScrChild *c);
+bool scr_child_input_writable(ScrChildStream *s);
+bool scr_child_input_write(ScrChildStream *s, ScrStr *data);
+bool scr_child_input_write_bytes(ScrChildStream *s, ScrBytes *data);
+void scr_child_input_end(ScrChildStream *s, ScrStr *data);
+void scr_child_input_end_bytes(ScrChildStream *s, ScrBytes *data);
+void scr_child_input_destroy(ScrChildStream *s);
+void scr_child_input_on_error(ScrChildStream *s, ScrClosure *cb, ScrChildErrFn fn);
+void scr_child_input_on_finish(ScrChildStream *s, ScrClosure *cb);
+void scr_child_input_on_drain(ScrChildStream *s, ScrClosure *cb);
 ScrChildStream *scr_child_stdout(ScrChild *c); /* +1, or NULL */
 ScrChildStream *scr_child_stderr(ScrChild *c); /* +1, or NULL */
 void scr_child_stream_on_data(ScrChildStream *s, ScrClosure *cb /*moves*/,

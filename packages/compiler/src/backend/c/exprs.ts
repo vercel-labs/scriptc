@@ -5315,6 +5315,7 @@ function emitChildProcessLibCall(state: LibCallState): Temp {
             const absent = emitter.unitInstanceRef(e.type.unionId, unitTag);
             return emitter.newTemp(e.type, `${has}(${arg(0)}) ? ${present} : ${absent}`);
           }
+          case "child.stdin":
           case "child.stdout":
           case "child.stderr": {
             // `Readable | null` — the child.pid pattern with a REF arm:
@@ -5328,7 +5329,7 @@ function emitChildProcessLibCall(state: LibCallState): Temp {
             if (streamTag < 0 || nullTag < 0) {
               throw new InternalCompilerError(`emitter bug: ${e.fn} union lacks its arms`);
             }
-            const get = e.fn === "child.stdout" ? "scr_child_stdout" : "scr_child_stderr";
+            const get = e.fn === "child.stdout" ? "scr_child_stdout" : e.fn === "child.stdin" ? "scr_child_stdin" : "scr_child_stderr";
             const raw = emitter.newTemp(CHILDSTREAM_T, `${get}(${arg(0)})`);
             emitter.moveTemp(raw); // ownership passes into the union arm below
             const present = `scr_union_new_ref(${streamTag}, ${raw.name}, &scr_child_stream_retain_v, &scr_child_stream_release_v, NULL)`;
@@ -5339,6 +5340,18 @@ function emitChildProcessLibCall(state: LibCallState): Temp {
             // The receiver IS the fd scalar; dispatches onto the exact
             // promptly-submitted stdout/stderr paths (ordering identical).
             return finish(`scr_proc_stream_write(${arg(0)}, ${arg(1)})`);
+          case "child.inputWritable": return finish(`scr_child_input_writable(${arg(0)})`);
+          case "child.inputWrite": return finish(`scr_child_input_write(${arg(0)}, ${arg(1)})`);
+          case "child.inputWriteBytes": return finish(`scr_child_input_write_bytes(${arg(0)}, ${arg(1)})`);
+          case "child.inputEnd": return finish(`scr_child_input_end(${arg(0)}, ${arg(1)})`);
+          case "child.inputEndBytes": return finish(`scr_child_input_end_bytes(${arg(0)}, ${arg(1)})`);
+          case "child.inputDestroy": return finish(`scr_child_input_destroy(${arg(0)})`);
+          case "child.inputOnFinish":
+          case "child.inputOnDrain": {
+            emitter.moveTemp(args[1]!);
+            emitter.line(`${e.fn === "child.inputOnFinish" ? "scr_child_input_on_finish" : "scr_child_input_on_drain"}(${arg(0)}, ${arg(1)});`);
+            return { name: "", type: e.type };
+          }
           case "child.killed":
             return finish(`scr_child_killed(${arg(0)})`);
           case "child.kill":
@@ -5382,6 +5395,7 @@ function emitChildProcessLibCall(state: LibCallState): Temp {
             );
             return { name: "", type: e.type };
           }
+          case "child.inputOnError":
           case "child.onError": {
             // Both error-listener shapes have runtime-provided adapters
             // (constructing the %Error instance needs no program types).
@@ -5392,7 +5406,7 @@ function emitChildProcessLibCall(state: LibCallState): Temp {
             const adapter =
               cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
             emitter.line(
-              `scr_child_on_error(${arg(0)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`,
+              `${e.fn === "child.inputOnError" ? "scr_child_input_on_error" : "scr_child_on_error"}(${arg(0)}, ${cb.name}, &${adapter});${emitter.srcComment(e.loc)}`,
             );
             return { name: "", type: e.type };
           }

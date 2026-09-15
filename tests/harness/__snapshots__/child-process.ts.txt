@@ -5,16 +5,7 @@ child-process.ts:10:16 - error SC2020: 'spawn without { stdio: "ignore" }' is pa
      |                ^~~~~~~~~~~~~~~~~~
   11 | 
 
-  hint: Node's default stdio is "pipe" (streams, no lowering) — pass { stdio: "ignore" } or { stdio: "inherit" } explicitly, or capture with spawnSync
-
-child-process.ts:14:47 - error SC2020: 'spawn with stdio: "pipe"' is part of the standard library types but has no scriptc lowering yet
-
-  13 | // lowering — each names its gap.
-  14 | const piped = spawn("/bin/echo", [], { stdio: "pipe" });
-     |                                               ^~~~~~
-  15 | const inherited = spawn("/bin/echo", [], { stdio: "inherit" });
-
-  hint: piped STDIN has no lowering — pipe stdout/stderr with the tuple form (stdio: ["ignore", "pipe", "pipe"]), or capture with spawnSync
+  hint: pass an explicit stdio option: "ignore", "inherit", "pipe", or a three-slot tuple
 
 child-process.ts:23:14 - error SC1090: listeners returning a value (make the callback body a block, or return nothing) is not supported yet
 

@@ -20,6 +20,15 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       B.line(`${t} = call ptr @${sym}(${args.map((a) => `${host.llType(a.type)} ${a.name}`).join(", ")})`);
       return host.own({ name: t, type: e.type });
     }
+    if (e.fn === "child.inputOnFinish" || e.fn === "child.inputOnDrain") {
+      const recv = host.emitExpr(e.args[0]!);
+      const cb = host.emitExpr(e.args[1]!);
+      host.moveTemp(cb);
+      const sym = e.fn === "child.inputOnFinish" ? "scr_child_input_on_finish" : "scr_child_input_on_drain";
+      host.declare(`declare void @${sym}(ptr, ptr)`);
+      B.line(`call void @${sym}(ptr ${recv.name}, ptr ${cb.name})`);
+      return { name: "", type: e.type };
+    }
     if (e.fn === "child.onExit") {
       // The callback MOVES into the child's registry; the third
       // ingredient is the ADAPTER — emitted per callback shape, because
@@ -43,7 +52,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       B.line(`call void @scr_child_on_exit(ptr ${child.name}, ptr ${cb.name}, ptr @${adapter})`);
       return { name: "", type: e.type };
     }
-    if (e.fn === "child.onError") {
+    if (e.fn === "child.onError" || e.fn === "child.inputOnError") {
       // Both error-listener shapes have runtime-provided adapters
       // (constructing the %Error instance needs no program types).
       const cbT = e.args[1]!.type;
@@ -53,8 +62,9 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       host.moveTemp(cb);
       const adapter = cbT.params.length === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
       host.declare(`declare void @${adapter}(ptr, ptr)`);
-      host.declare(`declare void @scr_child_on_error(ptr, ptr, ptr)`);
-      B.line(`call void @scr_child_on_error(ptr ${child.name}, ptr ${cb.name}, ptr @${adapter})`);
+      const sym = e.fn === "child.inputOnError" ? "scr_child_input_on_error" : "scr_child_on_error";
+      host.declare(`declare void @${sym}(ptr, ptr, ptr)`);
+      B.line(`call void @${sym}(ptr ${child.name}, ptr ${cb.name}, ptr @${adapter})`);
       return { name: "", type: e.type };
     }
     if (e.fn === "spawnRes.status" || e.fn === "child.pid" || e.fn === "child.exitCode") {
@@ -137,7 +147,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       B.line(`${raw} = call ptr @scr_spawn_res_error(ptr ${recv.name}) ; +1 or NULL`);
       return host.wrapNullable(raw, raw, { kind: "object", className: "%Error" }, errTag, e.type, undefTag);
     }
-    if (e.fn === "child.stdout" || e.fn === "child.stderr") {
+    if (e.fn === "child.stdout" || e.fn === "child.stderr" || e.fn === "child.stdin") {
       // `Readable | null` — the child.pid pattern with a REF arm: the
       // runtime answers a +1 stream handle or NULL (not piped).
       if (e.type.kind !== "union") throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
@@ -145,7 +155,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       const streamTag = def ? def.arms.findIndex((a) => a.kind === "childStream") : -1;
       const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
       if (streamTag < 0 || nullTag < 0) throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
-      const get = e.fn === "child.stdout" ? "scr_child_stdout" : "scr_child_stderr";
+      const get = e.fn === "child.stdout" ? "scr_child_stdout" : e.fn === "child.stdin" ? "scr_child_stdin" : "scr_child_stderr";
       const recv = host.emitExpr(e.args[0]!);
       host.declare(`declare ptr @${get}(ptr)`);
       const raw = B.tmp();

@@ -1863,6 +1863,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // producing site. The NodeJS namespace check keeps the web
   // ReadableStream (undici-types' whatwg stream, generic, no ambient
   // namespace) unmapped.
+  if (psym?.name === "ChildStdin" && checker.declarationsOf(psym).some(d =>
+      ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()) &&
+      isDeclaredInAmbientModule(d, "child_process"))) return { kind: "childStream" };
+  if (psym?.name === "Writable" && checker.declarationsOf(psym).some(d =>
+      ts.isClassDeclaration(d) && ctx.isStdlibFile(d.getSourceFile()) &&
+      isNodeTypesPath(d.getSourceFile().fileName) && isDeclaredInAmbientModule(d, "stream"))) return { kind: "childStream" };
   // The process output streams as first-class VALUES, under the two
   // spellings @types/node uses: tty.WriteStream (process.stdout's own
   // intersection base — `WriteStream & { fd: 1 }` resolves through the

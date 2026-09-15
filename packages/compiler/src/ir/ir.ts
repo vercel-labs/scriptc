@@ -2366,6 +2366,16 @@ export type IrLibFn =
    * the chunk at its Buffer arm), 'end' fires once at EOF, always BEFORE
    * the child's 'exit' (the pinned ordering). A flowing stream keeps the
    * loop alive: usesTimers. */
+  | "child.stdin"
+  | "child.inputWritable"
+  | "child.inputWrite"
+  | "child.inputWriteBytes"
+  | "child.inputEnd"
+  | "child.inputEndBytes"
+  | "child.inputDestroy"
+  | "child.inputOnError"
+  | "child.inputOnFinish"
+  | "child.inputOnDrain"
   | "child.stdout"
   | "child.stderr"
   | "stream.onData"

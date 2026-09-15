@@ -13988,7 +13988,12 @@
         "tests": [
           "tests/corpus/1361-spawn-events.ts",
           "tests/corpus/1565-spawn-pipe-streams.ts",
-          "tests/corpus/2844-node-disposable-resources.ts"
+          "tests/corpus/2844-node-disposable-resources.ts",
+          "tests/corpus/2860-child-stdin.ts",
+          "tests/corpus/2861-child-stdin-backpressure.ts",
+          "tests/corpus/2862-child-stdin-errors.ts",
+          "tests/corpus/2863-child-stdin-after-finish.ts",
+          "tests/corpus/2864-child-stdin-destroy.ts"
         ]
       },
       "dynamic": {
@@ -14154,7 +14159,12 @@
         "evidence": "surface-manifest:node-builtin.child_process.spawn",
         "tests": [
           "tests/corpus/1361-spawn-events.ts",
-          "tests/corpus/1565-spawn-pipe-streams.ts"
+          "tests/corpus/1565-spawn-pipe-streams.ts",
+          "tests/corpus/2860-child-stdin.ts",
+          "tests/corpus/2861-child-stdin-backpressure.ts",
+          "tests/corpus/2862-child-stdin-errors.ts",
+          "tests/corpus/2863-child-stdin-after-finish.ts",
+          "tests/corpus/2864-child-stdin-destroy.ts"
         ]
       },
       "dynamic": {
@@ -14266,7 +14276,12 @@
         "evidence": "surface-manifest:node-builtin.child_process.execFileSync",
         "tests": [
           "tests/corpus/1361-spawn-events.ts",
-          "tests/corpus/1565-spawn-pipe-streams.ts"
+          "tests/corpus/1565-spawn-pipe-streams.ts",
+          "tests/corpus/2860-child-stdin.ts",
+          "tests/corpus/2861-child-stdin-backpressure.ts",
+          "tests/corpus/2862-child-stdin-errors.ts",
+          "tests/corpus/2863-child-stdin-after-finish.ts",
+          "tests/corpus/2864-child-stdin-destroy.ts"
         ]
       },
       "dynamic": {
@@ -14297,7 +14312,12 @@
         "evidence": "surface-manifest:node-builtin.child_process.execSync",
         "tests": [
           "tests/corpus/1361-spawn-events.ts",
-          "tests/corpus/1565-spawn-pipe-streams.ts"
+          "tests/corpus/1565-spawn-pipe-streams.ts",
+          "tests/corpus/2860-child-stdin.ts",
+          "tests/corpus/2861-child-stdin-backpressure.ts",
+          "tests/corpus/2862-child-stdin-errors.ts",
+          "tests/corpus/2863-child-stdin-after-finish.ts",
+          "tests/corpus/2864-child-stdin-destroy.ts"
         ]
       },
       "dynamic": {
@@ -14328,7 +14348,12 @@
         "evidence": "surface-manifest:node-builtin.child_process.spawnSync",
         "tests": [
           "tests/corpus/1361-spawn-events.ts",
-          "tests/corpus/1565-spawn-pipe-streams.ts"
+          "tests/corpus/1565-spawn-pipe-streams.ts",
+          "tests/corpus/2860-child-stdin.ts",
+          "tests/corpus/2861-child-stdin-backpressure.ts",
+          "tests/corpus/2862-child-stdin-errors.ts",
+          "tests/corpus/2863-child-stdin-after-finish.ts",
+          "tests/corpus/2864-child-stdin-destroy.ts"
         ]
       },
       "dynamic": {

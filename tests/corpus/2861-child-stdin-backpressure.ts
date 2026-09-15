@@ -1,0 +1,10 @@
+import { spawn } from "node:child_process";
+const child = spawn(process.env.SCRIPTC_TEST_NODE || "node", ["-e", "let n=0;process.stdin.on('data',b=>n+=b.length);process.stdin.on('end',()=>console.log(n));"], { stdio: "pipe" });
+let text = "";
+let drained = false;
+child.stdout?.on("data", (data: Buffer) => { text += new TextDecoder().decode(data); });
+child.stdout?.on("end", () => { console.log("bytes", text.trim(), "drain", drained); });
+child.on("error", (err: Error) => { console.log(err.message); });
+child.stdin?.on("error", (err: Error) => { console.log(err.message); });
+child.stdin?.on("drain", () => { drained = true; child.stdin?.end(); });
+console.log("backpressure", child.stdin?.write("x".repeat(1024 * 1024)));

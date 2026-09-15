@@ -711,6 +711,16 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "net.serverSetCloseOverride": { argTypes: [NETSERVER_T, null], result: VOID },
   // The piped-output stream reads: `Readable | null` unions (the libCall
   // case checks the arms — the child.pid pattern with a ref arm).
+  "child.stdin": { argTypes: [CHILD_T], result: VOID },
+  "child.inputWritable": { argTypes: [CHILDSTREAM_T], result: BOOL },
+  "child.inputWrite": { argTypes: [CHILDSTREAM_T, STRING], result: BOOL },
+  "child.inputWriteBytes": { argTypes: [CHILDSTREAM_T, BYTES_U8], result: BOOL },
+  "child.inputEnd": { argTypes: [CHILDSTREAM_T, STRING], result: VOID },
+  "child.inputEndBytes": { argTypes: [CHILDSTREAM_T, BYTES_U8], result: VOID },
+  "child.inputDestroy": { argTypes: [CHILDSTREAM_T], result: VOID },
+  "child.inputOnError": { argTypes: [CHILDSTREAM_T, null], result: VOID },
+  "child.inputOnFinish": { argTypes: [CHILDSTREAM_T, { kind: "func", params: [], ret: VOID }], result: VOID },
+  "child.inputOnDrain": { argTypes: [CHILDSTREAM_T, { kind: "func", params: [], ret: VOID }], result: VOID },
   "child.stdout": { argTypes: [CHILD_T], result: VOID },
   "child.stderr": { argTypes: [CHILD_T], result: VOID },
   // Listener registrations: callback func shapes are program-dependent
@@ -4279,7 +4289,7 @@ function validateFunction(
           }
           break;
         }
-        if (e.fn === "child.onExit" || e.fn === "child.onError") {
+        if (e.fn === "child.onExit" || e.fn === "child.onError" || e.fn === "child.inputOnError") {
           // The listener: a closure with no params, or exactly the
           // supported parameter shapes per event — exit takes (code:
           // number | null) with an optional (signal: string | null)
@@ -4441,7 +4451,7 @@ function validateFunction(
           }
           break;
         }
-        if (e.fn === "child.stdout" || e.fn === "child.stderr") {
+        if (e.fn === "child.stdout" || e.fn === "child.stderr" || e.fn === "child.stdin") {
           const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
           const ok =
             def &&

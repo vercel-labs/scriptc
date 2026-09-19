@@ -2538,8 +2538,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // the same way — the completed-signature contract: the TYPE spells
   // `T | undefined`, the default's VALUE lives in the closure body's own
   // prologue (declareParams), and the undefined arm is what triggers it.
-  // Rest parameters keep the fence (a rest signature is never spellable
-  // as one completed arity).
+  // Rest parameters keep one typed-array ABI slot and mark the function
+  // type as typed-rest. Indirect call sites pack source arguments into that
+  // slot, so the native closure ABI remains fixed-width.
   // The chalk-style FUNCTION-WITH-PROPERTIES hybrid: an intersection of
   // exactly one callable part with plain data-property parts (`F & { bold:
   // F }` — Object.assign(fn, {...})'s type) maps to a RECORD carrying the
@@ -2578,11 +2579,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       }
     }
     const params: IrType[] = [];
+    let typedRest = false;
     for (const p of sig.getParameters()) {
       const decl = checker.valueDeclarationOf(p);
-      if (decl && ts.isParameter(decl) && decl.dotDotDotToken) {
-        return null;
-      }
+      const rest = decl !== undefined && ts.isParameter(decl) && decl.dotDotDotToken !== undefined;
+      // JavaScript rest values retain the checked-dynamic/island runtime-
+      // arity ABI selected by lambdaSignature. Treating an inferred any[]
+      // declaration as a typed packed-array closure would bypass its boxed
+      // spread/error semantics and change coverage classification.
+      if (rest && decl !== undefined && isJsSourceFile(decl.getSourceFile())) return null;
       const optional =
         decl !== undefined &&
         ts.isParameter(decl) &&
@@ -2597,6 +2602,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         pt = armed;
       }
       if (!pt) return null;
+      if (rest) {
+        if (pt.kind !== "array") return null;
+        typedRest = true;
+      }
       // `(value: void) => void` (Promise<void>'s resolve) is callable with
       // no arguments — a void param is dropped, not a mapping failure.
       if (pt.kind === "void") continue;
@@ -2608,7 +2617,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // like declaredReturnType does for declarations.
     const ret = retT.flags & ts.TypeFlags.Never ? VOID : mapType(retT, ctx);
     if (!ret) return null;
-    return funcOf(params, ret);
+    return typedRest
+      ? { kind: "func", params, ret, rest: true, restAbi: "typed" }
+      : funcOf(params, ret);
   }
   // Records: object types whose members are all data properties (shorthand
   // methods in type position count — they're func-typed fields) with
@@ -3909,8 +3920,9 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     return null;
   }
 
-  // Single-signature, non-generic function types: rest parameters, a
-  // parameter type, or the return type carries the failure. (Generic and
+  // Single-signature, non-generic function types: a parameter type or the
+  // return type carries the failure. Typed rest parameters use their array
+  // type here like any other completed ABI slot. (Generic and
   // overloaded signatures have their own fences — SC2005/SC2007 — and
   // badType runs those first.)
   const callSigs = checker.getCallSignatures(widened);
@@ -3927,10 +3939,6 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
       return `the function shape is supported, but its signature is variadic ('arguments'-reading), and a compiled signature is fixed-arity`;
     }
     for (const p of sig.getParameters()) {
-      const decl = checker.valueDeclarationOf(p);
-      if (decl !== undefined && ts.isParameter(decl) && decl.dotDotDotToken !== undefined) {
-        return `the function shape is supported, but its rest parameter '${p.name}' has no compiled calling convention yet (a compiled signature is fixed-arity)`;
-      }
       const pTs = checker.getTypeOfSymbol(p);
       if (!mapType(pTs, ctx)) {
         return `the function shape is supported, but its parameter '${p.name}' has type '${text(pTs)}', which does not compile`;

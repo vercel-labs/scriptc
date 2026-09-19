@@ -24,7 +24,7 @@ import { ambientNsRootOf, ambientUndefReadType, ambientUndefVarRootOf, ambientUn
 import { expandoMemberRead, expandoWritableTarget } from "./lower-expando.js";
 import { lowerSocketInstanceOf, lowerTlsRootCertificates } from "./lower-server.js";
 import { findGenericMethodOn, lowerStaticFieldRead } from "./lower-classes.js";
-import { bindingNeverReassigned, implicitMonoFile, lowerTaggedTemplate, nullishGenericBindingUnitOf, objLitGenericFnInfoOf, objLitGenericFnNodeOf, requireObjLitGenericReceiver } from "./lower-calls.js";
+import { bindingNeverReassigned, funcTypeFromParamShapes, implicitMonoFile, lowerTaggedTemplate, nullishGenericBindingUnitOf, objLitGenericFnInfoOf, objLitGenericFnNodeOf, requireObjLitGenericReceiver } from "./lower-calls.js";
 import { mixinFnOfCallee } from "./lower-mixins.js";
 import { isConstAssertionTypeNode, isGenericCallableMemberType, isParseArgsDynTypeName, underConstAssertion, unitOnlyUnion } from "../type-mapper.js";
 import { lowerYield } from "./lower-generators.js";
@@ -889,17 +889,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       if (sig && lowerer.isTopLevelFnSymbol(expr)) {
         // A declared function used as a value: a zero-capture closure. The
         // backend interns one per function so `f === f` holds (JS identity).
-        // The value's type is the completed ABI signature — exact-arity, so
-        // optional/default/rest declarations pass the value fence first.
+        // The value's type is the completed ABI signature; optional/default
+        // slots and typed rest arrays pass the value fence first.
         lowerer.noteEdge(sig.name);
         // dynRest slots stay out of the VALUE type's param list (fn.length
         // semantics); the rest marker carries the trailing dyn-array ABI.
-        const funcType: IrType = {
-          kind: "func",
-          params: sig.params.filter((p) => p.mode !== "dynRest").map((p) => p.type),
-          ret: sig.returnType,
-          ...(sig.params.some((p) => p.mode === "dynRest") ? { rest: true as const } : {}),
-        };
+        const funcType: IrType = funcTypeFromParamShapes(sig.params, sig.returnType);
         lowerer.requireExactArityValue(expr, expr, sig.params, funcType);
         return { kind: "closure", fnName: sig.name, captures: [], type: funcType, loc };
       }

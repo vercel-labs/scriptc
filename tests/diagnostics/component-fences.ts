@@ -23,7 +23,8 @@ function report(maybe: Map<string, number> | undefined): number {
 }
 console.log(report(undefined));
 
-// A rest parameter has no compiled calling convention.
+// Typed rest values now compile; retained here as working context for the
+// component-type failures below.
 const sum = (...xs: number[]): number => xs.length;
 const storedSum = sum;
 console.log(storedSum(1, 2));

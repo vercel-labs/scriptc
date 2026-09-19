@@ -74,6 +74,31 @@ export interface FnSig {
   generator?: { yieldT: IrType; nextT: IrType; resultType: IrType & { kind: "record" } };
 }
 
+/** The one func-type projection of completed parameter shapes. Typed rest
+ * parameters keep their packed array as the trailing native ABI slot and
+ * mark the value variadic so indirect call sites run completeArgs before
+ * callValue. Dynamic rest remains the historical hidden ScrDyn slot, while
+ * island rest spells its engine-array slot directly. */
+export function funcTypeFromParamShapes(
+  shapes: readonly ParamShape[],
+  ret: IrType,
+): IrType & { kind: "func" } {
+  const typedRest = shapes.some((shape) => shape.mode === "rest");
+  const dynRest = shapes.some((shape) => shape.mode === "dynRest");
+  const islandRest = shapes.some((shape) => shape.mode === "islandRest");
+  return {
+    kind: "func",
+    params: shapes.filter((shape) => shape.mode !== "dynRest").map((shape) => shape.type),
+    ret,
+    ...(typedRest || dynRest || islandRest ? { rest: true as const } : {}),
+    ...(typedRest
+      ? { restAbi: "typed" as const }
+      : islandRest
+        ? { restAbi: "jsval" as const }
+        : {}),
+  };
+}
+
 /** Registers `const alias = overloadedDeclaration` as a compile-time
  * callable projection. The source function's one implementation ABI is
  * already collected in fnSigsBySymbol; each direct call still uses the
@@ -695,6 +720,41 @@ export interface GenericInstance {
     return lowerer.wrappedUndefined(type, loc);
   }
 
+/** Complete an indirect static call against its func value ABI. Ordinary
+ * fixed-width values retain the historical optional-suffix completion.
+ * Typed-rest values reinterpret their final array slot as a rest ParamShape
+ * and reuse completeArgs, including fixed-tuple and same-element array
+ * spreads with source-order/evaluate-once semantics. */
+function completeFuncValueArgs(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  funcType: IrType & { kind: "func" },
+  loc: SrcLoc,
+): IrExpr[] {
+  if (funcType.rest === true && funcType.restAbi === "typed") {
+    const rest = funcType.params[funcType.params.length - 1];
+    if (!rest || rest.kind !== "array") {
+      throw new InternalCompilerError("typed-rest function value has no trailing array ABI slot");
+    }
+    const shapes: ParamShape[] = funcType.params.slice(0, -1).map((type) => ({
+      type,
+      mode: omittedArgFor(lowerer, type, loc) ? "omittable" : "required",
+    }));
+    shapes.push({ type: rest, mode: "rest" });
+    return completeArgs(lowerer, call.arguments, shapes, loc, call);
+  }
+  const args = call.arguments.map((arg, index) =>
+    lowerer.lowerExprExpecting(arg, funcType.params[index]));
+  for (let i = args.length; i < funcType.params.length; i++) {
+    const absent = omittedArgFor(lowerer, funcType.params[i]!, loc);
+    if (!absent) {
+      lowerer.unsupported("SC1090", call, "calls omitting a non-optional parameter of the callee's type");
+    }
+    args.push(absent);
+  }
+  return args;
+}
+
   export function undefinedArgFor(lowerer: Lowerer, type: IrType, loc: SrcLoc, blame: ts.Node): IrExpr {
     if (type.kind === "dyn") return dynUndefinedExpr(loc);
     // An omitted argument for an ISLAND-typed omittable param (`f()` where
@@ -709,13 +769,12 @@ export interface GenericInstance {
     return wrapped;
   }
 
-/** DECISION (docs/ir.md): function VALUES keep exact-arity semantics — a
-   * func-typed IrType spells one completed signature, so a function whose
-   * declaration has optional/default/rest parameters can become a value only
-   * where the target type spells that exact signature with required
-   * parameters (`x?: T` / `x: T = e` params appear as literal `T | undefined`
-   * unions; a rest signature is never spellable without `...`, which func
-   * types reject). Direct calls get the full feature. */
+/** DECISION (docs/ir.md): function VALUES carry one completed native ABI.
+   * Optional/default parameters appear as literal `T | undefined` slots;
+   * typed rest parameters appear as one trailing typed-array slot plus the
+   * typed-rest marker that makes indirect call sites pack source arguments.
+   * A value is admitted only where its target type projects to that same
+   * completed signature. */
   export function requireExactArityValue(lowerer: Lowerer, blame: ts.Node,
     contextual: ts.Expression | null,
     shapes: readonly ParamShape[],
@@ -737,9 +796,6 @@ export interface GenericInstance {
       )
     ) {
       return;
-    }
-    if (shapes.some((s) => s.mode === "rest")) {
-      lowerer.unsupported("SC1090", blame, "functions with rest parameters as values (call them directly)");
     }
     // The type the value FLOWS under must spell the completed ABI: the
     // contextual (target) type when one exists, otherwise the expression's
@@ -1739,12 +1795,7 @@ export function genericFnOf(lowerer: Lowerer, ident: ts.Identifier): GenericFnIn
     // closure per function, so `f === f` holds like any declaration).
     if (info.implicitParams) {
       const inst = implicitDefaultInstance(lowerer, ref, info);
-      const funcType: IrType = {
-        kind: "func",
-        params: inst.params.filter((p) => p.mode !== "dynRest").map((p) => p.type),
-        ret: inst.returnType,
-        ...(inst.params.some((p) => p.mode === "dynRest") ? { rest: true as const } : {}),
-      };
+      const funcType: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
       lowerer.requireExactArityValue(ref, ref, inst.params, funcType);
       lowerer.noteEdge(inst.name);
       return { kind: "closure", fnName: inst.name, captures: [], type: funcType, loc };
@@ -1791,15 +1842,9 @@ export function genericFnOf(lowerer: Lowerer, ident: ts.Identifier): GenericFnIn
     // nothing: mapType answers null for an unsubstituted parameter.
     if (info.typeParams.some((tp) => !bindings.get(tp))) fenceUnpinned();
     const inst = genericValueInstance(lowerer, ref, info, bindings);
-    // The value's type is the completed ABI signature — exact-arity, the
-    // declared-function value rule (dynRest slots stay out of the param
-    // list; the rest marker carries the trailing dyn-array ABI).
-    const funcType: IrType = {
-      kind: "func",
-      params: inst.params.filter((p) => p.mode !== "dynRest").map((p) => p.type),
-      ret: inst.returnType,
-      ...(inst.params.some((p) => p.mode === "dynRest") ? { rest: true as const } : {}),
-    };
+    // The value's type is the completed ABI signature. Typed rest keeps its
+    // packed-array slot; dynRest stays hidden behind the rest marker.
+    const funcType: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
     lowerer.requireExactArityValue(ref, ref, inst.params, funcType);
     lowerer.noteEdge(inst.name);
     return { kind: "closure", fnName: inst.name, captures: [], type: funcType, loc };
@@ -4380,15 +4425,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const callee = expandoMemberRead(lowerer, expr.expression);
       if (callee) {
         if (callee.type.kind !== "func") lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
-        const params = callee.type.params;
-        const args = expr.arguments.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
-        for (let i = args.length; i < params.length; i++) {
-          const absent = omittedArgFor(lowerer, params[i]!, loc);
-          if (!absent) {
-            lowerer.unsupported("SC1090", expr, "calls omitting a non-optional parameter of the callee's type");
-          }
-          args.push(absent);
-        }
+        const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
         return { kind: "callValue", callee, args, type: callee.type.ret, loc };
       }
     }
@@ -4425,15 +4462,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         let callee = lowerer.lowerExpr(nsMember);
         if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
         if (callee.type.kind !== "func") lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
-        const params = callee.type.params;
-        const args = expr.arguments.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
-        for (let i = args.length; i < params.length; i++) {
-          const absent = omittedArgFor(lowerer, params[i]!, loc);
-          if (!absent) {
-            lowerer.unsupported("SC1090", expr, "calls omitting a non-optional parameter of the callee's type");
-          }
-          args.push(absent);
-        }
+        const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
         return { kind: "callValue", callee, args, type: callee.type.ret, loc };
       }
       // An AMBIENT namespace callee (`M.f()` where only `declare
@@ -4485,15 +4514,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       let callee = lowerer.lowerExpr(nameId);
       if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
       if (callee.type.kind !== "func") lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
-      const params = callee.type.params;
-      const args = expr.arguments.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
-      for (let i = args.length; i < params.length; i++) {
-        const absent = omittedArgFor(lowerer, params[i]!, loc);
-        if (!absent) {
-          lowerer.unsupported("SC1090", expr, "calls omitting a non-optional parameter of the callee's type");
-        }
-        args.push(absent);
-      }
+      const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
       return { kind: "callValue", callee, args, type: callee.type.ret, loc };
     }
     if (ts.isPropertyAccessExpression(expr.expression)) {
@@ -4781,6 +4802,14 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (callee.type.kind !== "func") {
       lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
     }
+    // Typed-rest closures already have a fixed native ABI: complete the
+    // source-level variadic call into their trailing typed-array slot.
+    // Claim before the runtime-arity spread lane; completeArgs handles
+    // typed spreads without boxing the function.
+    if (callee.type.rest === true && callee.type.restAbi === "typed") {
+      const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
+      return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+    }
     // A SPREAD argument on a func-typed callee — the rest-forwarding
     // idiom (`(...args) => from(...args)`): the runtime-arity lane boxes
     // or marshals the callee and applies through a runtime-built argument
@@ -4834,26 +4863,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
       return { kind: "dynCall", callee: boxed, calleeName, args, type: DYN, loc };
     }
-    const params = callee.type.params;
-    const args = expr.arguments.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
-    // Optional-param func TYPES map their `x?: T` slots as `T | undefined`
-    // ABI unions, and tsc admits calls that omit the optional suffix —
-    // complete the missing trailing args with the interned undefined arm,
-    // exactly what completeArgs does for direct calls (the ABI stays
-    // count-exact). A missing arg whose param has no undefined arm means
-    // the callee value's type spelled a required param tsc let the caller
-    // skip — not a shape this surface models; fence.
-    for (let i = args.length; i < params.length; i++) {
-      // A missing argument completes with the slot's absent value — the
-      // interned undefined arm, the dyn undefined for checked-dynamic
-      // slots (a JS-inferred wrapper like mustCall's, called short), or
-      // the engine undefined for island slots.
-      const absent = omittedArgFor(lowerer, params[i]!, loc);
-      if (!absent) {
-        lowerer.unsupported("SC1090", expr, "calls omitting a non-optional parameter of the callee's type");
-      }
-      args.push(absent);
-    }
+    const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
     return { kind: "callValue", callee, args, type: callee.type.ret, loc };
   }
 
@@ -6265,10 +6275,9 @@ function loweredTemplateStrings(
   }
 
 /** Signature checks + param shapes + IR func type for any lambda-like
-   * node. The func type's params are the ABI types, so a lambda with
-   * optional/default params has the same IR type as one spelling the
-   * `T | undefined` unions with required params — exactly the exact-arity
-   * value rule (requireExactArityValue decides who may become a value). */
+   * node. The func type's params are the ABI types: optional/default params
+   * become `T | undefined`, and typed rest becomes one packed-array slot.
+   * requireExactArityValue decides whether that completed ABI may escape. */
   export function lambdaSignature(lowerer: Lowerer, node: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration | ts.MethodDeclaration | ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,): { shapes: ParamShape[]; funcType: IrType & { kind: "func" } } {
     if (!node.body) lowerer.unsupported("SC1090", node, "function overload signatures");
     if (node.typeParameters) {
@@ -6381,7 +6390,6 @@ function loweredTemplateStrings(
     // use a rest parameter. Arrows never claim it (JS: an arrow's
     // `arguments` is the enclosing function's).
     const hasDynRest = shapes.some((s) => s.mode === "dynRest");
-    const hasIslandRest = shapes.some((s) => s.mode === "islandRest");
     const usesArguments =
       !hasDynRest &&
       !ts.isArrowFunction(node) &&
@@ -6394,20 +6402,9 @@ function loweredTemplateStrings(
         "'arguments' in functions with declared parameters (use a rest parameter: (...args))",
       );
     }
-    return {
-      shapes,
-      funcType: {
-        kind: "func",
-        // dynRest is EXCLUDED (the boxed thunk fills the trailing dyn
-        // array — no spelled slot); islandRest is INCLUDED (the trailing
-        // jsval param IS the engine arguments array, the REST host-call
-        // adapter's one uniform shape).
-        params: shapes.filter((s) => s.mode !== "dynRest").map((s) => s.type),
-        ret,
-        ...(hasDynRest || usesArguments || hasIslandRest ? { rest: true as const } : {}),
-        ...(hasIslandRest ? { restAbi: "jsval" as const } : {}),
-      },
-    };
+    const funcType = funcTypeFromParamShapes(shapes, ret);
+    if (usesArguments && !hasDynRest) funcType.rest = true;
+    return { shapes, funcType };
   }
 
 /** Does this function's OWN body read `arguments`? Nested plain functions
@@ -6443,7 +6440,7 @@ function loweredTemplateStrings(
   export function lowerLambda(lowerer: Lowerer, node: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration | ts.MethodDeclaration | ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,): IrExpr {
     const loc = locOf(node);
     const { shapes, funcType } = lowerer.lambdaSignature(node);
-    // A lambda IS a value: the exact-arity rule applies at birth. The
+    // A lambda IS a value: the completed-ABI rule applies at birth. The
     // contextual (target) type decides — `(x?: number) => void` may flow
     // into a slot annotated `(x: number | undefined) => void` (same ABI
     // signature), anything else is fenced. Nested function declarations and
@@ -6593,7 +6590,7 @@ function loweredTemplateStrings(
       // closure-signature check trips (SC9001). Island rest types SPELL
       // their trailing engine-array param, so funcType.params already
       // covers those.
-      if (funcType.rest === true && funcType.restAbi !== "jsval") {
+      if (funcType.rest === true && funcType.restAbi === undefined) {
         params.push({ localId: "%pfrest", name: "%pfrest", type: DYN });
       }
       const fence = lowerer.deferToRuntimeFence(diagsBefore, node, {
@@ -8790,8 +8787,7 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     // `.bold` (the chalk shape).
     if (callee.type.kind === "record") callee = lowerer.hybridCallUnwrap(callee);
     if (callee.type.kind !== "func") lowerer.badType(access, lowerer.typeOf(access));
-    const params = callee.type.params;
-    const args = call.arguments.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
+    const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
     return { kind: "callValue", callee, args, type: callee.type.ret, loc: locOf(call) };
   }
 
@@ -9740,15 +9736,7 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
           }
         }
         if (callee?.type.kind === "func") {
-          const params = callee.type.params;
-          const args = call.arguments.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
-          for (let i = args.length; i < params.length; i++) {
-            const absent = omittedArgFor(lowerer, params[i]!, locOf(call));
-            if (!absent) {
-              lowerer.unsupported("SC1090", call, "calls omitting a non-optional parameter of the callee's type");
-            }
-            args.push(absent);
-          }
+          const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
           return { kind: "callValue", callee, args, type: callee.type.ret, loc: locOf(call) };
         }
         if (callee?.type.kind === "dyn") {

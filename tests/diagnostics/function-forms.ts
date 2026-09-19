@@ -12,8 +12,9 @@ function defaulted_tp<T = number>(x: T): T {
   return x;
 }
 console.log(defaulted_tp(1));
-// Optional/default/rest parameters compile for DIRECT calls; the fences
-// below are the exact-arity value rule and the default-param type limits.
+// Optional/default/rest parameters compile for direct calls. Typed rest
+// functions are first-class values too; the remaining fence below is for a
+// nested defaulted declaration with no contextual completed signature.
 function optional(a?: number): number {
   return a === undefined ? 0 : a;
 }
@@ -23,9 +24,9 @@ function defaulted(a: number = 1): number {
 function rest(...args: number[]): number {
   return args.length;
 }
-// Optional/defaulted functions as values compile now (the inferred
-// binding spells the completed `T | undefined` signature — corpus 1535);
-// REST signatures are never spellable as exact-arity func types.
+// Optional/defaulted functions as values compile when the inferred binding
+// spells the completed `T | undefined` signature (corpus 1535); typed rest
+// signatures carry a packed-array ABI (corpus 2917).
 const restRef = rest;
 // Union-typed parameter defaults compile now (corpus 1535); kept here as
 // working context for the fences below.

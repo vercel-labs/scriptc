@@ -19,7 +19,7 @@ const dyn = (): IrExpr => ({ kind: "dynFrom", value: str("value"), type: DYN, lo
 
 function libCallModule(fn: IrLibFn, args: IrExpr[], type: IrType): IrModule {
   return {
-    irVersion: 9,
+    irVersion: 10,
     sourceFile: loc.file,
     entry: "__main",
     functions: [{

@@ -227,16 +227,16 @@ export type IrType =
    * digest state owns no script values and cannot participate in a cycle. */
   | { kind: "cryptoHash" }
   | { kind: "cryptoHmac" }
-  /** Heap, refcounted closure. `rest` marks a VARIADIC JS function (a
-   * `...args` rest parameter, or a zero-param function body reading
-   * `arguments` — test/common's mustCall wrapper): the lifted function
-   * takes one extra trailing `ScrDyn *` param — a dyn ARRAY carrying the
-   * call's arguments from index params.length on — which the dyn call
-   * thunk builds per call. `params` stays the DECLARED (non-rest) list
-   * (fn.length semantics). Rest-marked values are only ever CALLED
-   * through the dyn boundary (boxed thunks); direct static calls box
-   * first (lower-calls). */
-  | { kind: "func"; params: IrType[]; ret: IrType; rest?: true; restAbi?: "jsval" }
+  /** Heap, refcounted closure. `rest` marks a variadic function value.
+   * `restAbi: "typed"` spells one trailing typed array in `params`; static
+   * call sites pack their surplus arguments into it before `callValue`.
+   * `restAbi: "jsval"` similarly spells one trailing engine array for an
+   * island host callback. An absent `restAbi` is the legacy checked-dynamic
+   * JS form: `params` stays the declared non-rest list and the lifted
+   * function has one hidden trailing ScrDyn array filled by its boxed call
+   * thunk. The backends therefore still see one fixed native closure ABI;
+   * only the frontend's call completion observes variadic source arity. */
+  | { kind: "func"; params: IrType[]; ret: IrType; rest?: true; restAbi?: "jsval" | "typed" }
   | { kind: "object"; className: string } // heap, refcounted class instance
   /** The class STATIC side as a value — `typeof C`, the type of the class
    * name itself and of `new (…) => T` constructor-typed slots. Runtime
@@ -727,7 +727,7 @@ export function typeKey(t: IrType): string {
     case "set":
       return `set<${typeKey(t.elem)}>`;
     case "func":
-      return `func(${[...t.params.map(typeKey), ...(t.rest ? [t.restAbi === "jsval" ? "...jsval[]" : "...dyn[]"] : [])].join(",")})=>${typeKey(t.ret)}`;
+      return `func(${[...t.params.map(typeKey), ...(t.rest ? [t.restAbi === "jsval" ? "...jsval[]" : t.restAbi === "typed" ? "...typed[]" : "...dyn[]"] : [])].join(",")})=>${typeKey(t.ret)}`;
     case "object":
       return `object:${t.className}`;
     case "classval":
@@ -760,6 +760,7 @@ export function typeEquals(a: IrType, b: IrType): boolean {
       b.kind === "func" &&
       a.params.length === b.params.length &&
       (a.rest === true) === (b.rest === true) &&
+      a.restAbi === b.restAbi &&
       a.params.every((p, i) => typeEquals(p, b.params[i]!)) &&
       typeEquals(a.ret, b.ret)
     );
@@ -797,7 +798,7 @@ export function isRefCounted(t: IrType): boolean {
 
 export interface IrModule {
   /** Bumped on any breaking IR change; serialize.ts refuses mismatches. */
-  irVersion: 9;
+  irVersion: 10;
   sourceFile: string;
   functions: IrFunction[];
   /** Class shapes. Constructors and methods are ordinary module functions
@@ -5956,6 +5957,10 @@ export function canBoxFuncIntoDyn(
 ): boolean {
   return (
     t.kind === "func" &&
+    // Only the legacy hidden-dyn rest ABI has a checked-dynamic call thunk.
+    // Typed rest stays static (its trailing array is compiler-packed), and
+    // island rest has its separate engine host-callback adapter.
+    (t.rest !== true || t.restAbi === undefined) &&
     // A jsval (island) param converts through scr_jsval_from_dyn in the
     // thunk (wrapped cells unwrap by reference, dyn data deep-copies) —
     // the checker-'any' callback params of the routed-dispatch lane

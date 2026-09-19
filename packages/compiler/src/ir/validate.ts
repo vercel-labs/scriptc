@@ -2911,7 +2911,7 @@ function validateFunction(
           // ISLAND-REST types (restAbi jsval) SPELL their trailing engine
           // array param — the lifted signature matches directly, no
           // hidden slot.
-          const hiddenRest = e.type.rest === true && e.type.restAbi !== "jsval";
+          const hiddenRest = e.type.rest === true && e.type.restAbi === undefined;
           const declared = hiddenRest ? target.params.slice(0, -1) : target.params;
           const restOk =
             !hiddenRest ||

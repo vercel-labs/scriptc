@@ -1,55 +1,41 @@
-stdlib.ts:9:40 - error SC1090: a builtin function alias as an escaping value (call 'read' directly) is not supported yet
+stdlib.ts:8:40 - error SC1090: a builtin function alias as an escaping value (call 'read' directly) is not supported yet
 
-   8 | 
-   9 | const read = readFileSync; console.log(read);
-     |                                        ^~~~
-  10 | const base = basename; console.log(base);
+  7 | 
+  8 | const read = readFileSync; console.log(read);
+    |                                        ^~~~
+  9 | const cwd = process.cwd;
 
-stdlib.ts:10:36 - error SC1090: a builtin function alias as an escaping value (call 'base' directly) is not supported yet
+stdlib.ts:9:13 - error SC1090: process methods as values (call 'cwd' directly) are not supported yet
 
-   9 | const read = readFileSync; console.log(read);
-  10 | const base = basename; console.log(base);
-     |                                    ^~~~
-  11 | const joiner = join; console.log(joiner);
-
-stdlib.ts:11:34 - error SC1090: a builtin function alias as an escaping value (call 'joiner' directly) is not supported yet
-
-  10 | const base = basename; console.log(base);
-  11 | const joiner = join; console.log(joiner);
-     |                                  ^~~~~~
-  12 | const cwd = process.cwd;
-
-stdlib.ts:12:13 - error SC1090: process methods as values (call 'cwd' directly) are not supported yet
-
-  11 | const joiner = join; console.log(joiner);
-  12 | const cwd = process.cwd;
+   8 | const read = readFileSync; console.log(read);
+   9 | const cwd = process.cwd;
      |             ^~~~~~~~~~~
-  13 | const p = process;
+  10 | const p = process;
 
-stdlib.ts:15:13 - error SC1090: Math methods as values (call 'floor' directly) are not supported yet
+stdlib.ts:12:13 - error SC1090: Math methods as values (call 'floor' directly) are not supported yet
 
-  14 | const env = process.env;
-  15 | const flo = Math.floor;
+  11 | const env = process.env;
+  12 | const flo = Math.floor;
      |             ^~~~~~~~~~
-  16 | const upper = "abc".toUpperCase;
+  13 | const upper = "abc".toUpperCase;
 
-stdlib.ts:16:15 - error SC1090: string methods as values (call 'toUpperCase' directly) are not supported yet
+stdlib.ts:13:15 - error SC1090: string methods as values (call 'toUpperCase' directly) are not supported yet
 
-  15 | const flo = Math.floor;
-  16 | const upper = "abc".toUpperCase;
+  12 | const flo = Math.floor;
+  13 | const upper = "abc".toUpperCase;
      |               ^~~~~~~~~~~~~~~~~
-  17 | const fix = (1.5).toFixed;
+  14 | const fix = (1.5).toFixed;
 
-stdlib.ts:17:13 - error SC1090: number methods as values (call 'toFixed' directly) are not supported yet
+stdlib.ts:14:13 - error SC1090: number methods as values (call 'toFixed' directly) are not supported yet
 
-  16 | const upper = "abc".toUpperCase;
-  17 | const fix = (1.5).toFixed;
+  13 | const upper = "abc".toUpperCase;
+  14 | const fix = (1.5).toFixed;
      |             ^~~~~~~~~~~~~
-  18 | const pf = parseFloat;
+  15 | const pf = parseFloat;
 
-stdlib.ts:18:12 - error SC1090: library functions as values (call 'parseFloat' directly) are not supported yet
+stdlib.ts:15:12 - error SC1090: library functions as values (call 'parseFloat' directly) are not supported yet
 
-  17 | const fix = (1.5).toFixed;
-  18 | const pf = parseFloat;
+  14 | const fix = (1.5).toFixed;
+  15 | const pf = parseFloat;
      |            ^~~~~~~~~~
-  19 | 
+  16 | 

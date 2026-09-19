@@ -95,7 +95,7 @@ import { FileParts, splitFiles, collectProgram, collectNpmImports, collectJsonIm
 import { prepareCjsModuleGraph } from "./lower-node-module.js";
 import { ClassInfo, ClassIteratorInfo, GenericClassInfo, registerBuiltinErrorClasses, registerBuiltinEmitterClass, registerBuiltinStreamClasses, builtinErrorInfoOf, builtinEmitterInfoOf, builtinStreamInfoOf, analyzeClassDecoration, classIteratorDrainCall, classIteratorNextCall, classIteratorOf, classIteratorOpenCall, classIteratorRestDrainCall, classMemberNameOf, classValueRef, collectClassShape, exactClassOfReceiver, collectClassShapeInner, ctorAbiEquals, findMethodOn, findStaticOn, findGenericMethodOn, findGenericStaticOn, genericClassInstanceType, isSubclassOf, inHierarchy, overrideBelow, staticShadowBelow, upcastTo, lowerClassMembers, lowerClassCtor, lowerClassExpression, lowerClassExpressionInfo, lowerClassMethodMember, lowerClassValueProperty, lowerStaticMethod, throwingSetterFn, fieldInitStmts, lowerStaticFieldInits, lowerStaticFieldRead, lowerDerivedCtorBody, superCallStmt, lowerSuperMethodCall, superThisRef, lowerSuperAccessorRead, lowerSuperAccessorWrite, inheritsBuiltinErrorCtor, inheritsBuiltinEmitterCtor, errorMessageArg, lowerNew, accessorCall } from "./lower-classes.js";
 import { MixinFnShape, mixinCallClassInfoOf, mixinIntersectionInstanceType } from "./lower-mixins.js";
-import { ParamShape, FnSig, GenericFnInfo, GenericInstance, bindingNeverReassigned, bodyReadsArguments, implicitMonoFile, isThisParameter, paramShape, paramShapes, checkDefaultParamBodyType, completeArgs, wrappedUndefined, undefinedArgFor, requireExactArityValue, bodyReturnType, declaredReturnType, collectSignature, collectSignatureInner, collectGenericSignature, genericFnOf, lowerGenericCall, lowerGenericFnValue, inferTypeParamBindings, lowerGenericInstance, lowerCall, lowerFfiCall, lowerTimersMemberCall, lowerPromiseMethodCall, lowerFilterNarrowCall, isTopLevelFnSymbol, lowerNestedFunctionDecl, lambdaSignature, lowerLambda, lowerFunction, validateFfiImports } from "./lower-calls.js";
+import { ParamShape, FnSig, GenericFnInfo, GenericInstance, bindingNeverReassigned, bodyReadsArguments, funcTypeFromParamShapes, implicitMonoFile, isThisParameter, paramShape, paramShapes, checkDefaultParamBodyType, completeArgs, wrappedUndefined, undefinedArgFor, requireExactArityValue, bodyReturnType, declaredReturnType, collectSignature, collectSignatureInner, collectGenericSignature, genericFnOf, lowerGenericCall, lowerGenericFnValue, inferTypeParamBindings, lowerGenericInstance, lowerCall, lowerFfiCall, lowerTimersMemberCall, lowerPromiseMethodCall, lowerFilterNarrowCall, isTopLevelFnSymbol, lowerNestedFunctionDecl, lambdaSignature, lowerLambda, lowerFunction, validateFfiImports } from "./lower-calls.js";
 import { lowerArrayMethodCall, lowerMapMethodCall, lowerMapForEachCall, buildMapForEachFn, lowerRecordOvfCaptureHelper, lowerEnvToPairsHelper, lowerSetMethodCall, lowerSetForEachCall, buildSetForEachFn } from "./lower-containers.js";
 import { lowerBufferStaticCall, lowerBytesMethodCall, lowerBytesNew } from "./containers/bytes.js";
 import { lowerRegexMethodCall, lowerStringMethodCall } from "./containers/string-and-regexp.js";
@@ -3514,7 +3514,7 @@ export class Lowerer {
       this.diags.length > 0
         ? null
         : {
-            irVersion: 9,
+            irVersion: 10,
             sourceFile: this.entry.fileName,
             functions,
             classes: artifacts.classes,
@@ -9971,7 +9971,7 @@ export class Lowerer {
 
   /** Materialize one explicitly value-callable table entry as an interned
    * synthetic module function. Direct calls never use this path: they keep
-   * their existing validated libCall lowering. The descriptor opt-in is
+   * their existing validated libCall lowering. The value descriptor is
    * deliberately narrower than table membership because many table rows
    * are only dispatch sentinels for call-site-specific lowering. */
   lowerBuiltinCallableValue(
@@ -9979,29 +9979,79 @@ export class Lowerer {
     loc: SrcLoc,
   ): IrExpr | null {
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
-    if (fn?.valueCallable !== true) return null;
-    if (fn.variadicPack || fn.defaults !== undefined) {
-      throw new InternalCompilerError(
-        `builtin callable value '${bi.module}.${bi.member}' has a variable-width descriptor`,
-      );
-    }
-    const funcType = { kind: "func" as const, params: fn.params, ret: fn.result };
-    const key = `${fn.fn}:${typeKey(funcType)}`;
+    const valueParams = fn?.valueParams;
+    if (!fn || !valueParams) return null;
+    const shapes: ParamShape[] = valueParams.map((param): ParamShape => {
+      if (param.mode === "rest") return { mode: "rest", type: arrayOf(param.type) };
+      if (param.mode === "optional") {
+        return { mode: "omittable", type: this.withUndefinedArm(param.type), bodyType: param.type };
+      }
+      return { mode: "required", type: param.type };
+    });
+    const funcType = funcTypeFromParamShapes(shapes, fn.result);
+    const adapterShape = valueParams
+      .map((param) => param.mode === "optional" ? `${param.mode}:${param.defaultValue}` : param.mode)
+      .join(",");
+    const key = `${fn.fn}:${typeKey(funcType)}:${adapterShape}`;
     let fnName = this.builtinCallableValueFns.get(key);
     if (!fnName) {
       fnName = `%builtin.value.${fn.fn}.${this.builtinCallableValueFns.size}`;
       this.builtinCallableValueFns.set(key, fnName);
-      const params = fn.params.map((type, index) => ({
+      const params = funcType.params.map((type, index) => ({
         localId: `arg.${index}`,
         name: `arg${index}`,
         type,
       }));
-      const args: IrExpr[] = params.map((param) => ({
-        kind: "varRef",
-        localId: param.localId,
-        type: param.type,
-        loc,
-      }));
+      const args: IrExpr[] = params.map((param, index) => {
+        const valueParam = valueParams[index];
+        if (!valueParam) {
+          throw new InternalCompilerError(
+            `builtin callable value '${bi.module}.${bi.member}' has a missing value parameter`,
+          );
+        }
+        const ref: IrExpr = {
+          kind: "varRef",
+          localId: param.localId,
+          type: param.type,
+          loc,
+        };
+        if (valueParam.mode !== "optional") return ref;
+        if (valueParam.type.kind !== "string" || param.type.kind !== "union") {
+          throw new InternalCompilerError(
+            `builtin callable value '${bi.module}.${bi.member}' has an unsupported optional default`,
+          );
+        }
+        const undefTag = this.armTag(param.type.unionId, UNDEFINED_T);
+        const valueTag = this.armTag(param.type.unionId, valueParam.type);
+        if (undefTag < 0 || valueTag < 0) {
+          throw new InternalCompilerError(
+            `builtin callable value '${bi.module}.${bi.member}' has an invalid optional ABI`,
+          );
+        }
+        return {
+          kind: "ternary",
+          cond: {
+            kind: "unionIsTag",
+            unionId: param.type.unionId,
+            tag: undefTag,
+            negated: false,
+            value: ref,
+            type: BOOL,
+            loc,
+          },
+          then: { kind: "strLit", value: valueParam.defaultValue, type: STRING, loc },
+          else_: {
+            kind: "unionNarrow",
+            unionId: param.type.unionId,
+            tag: valueTag,
+            value: ref,
+            type: valueParam.type,
+            loc,
+          },
+          type: valueParam.type,
+          loc,
+        };
+      });
       const call: IrExpr = { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
       const body: IrStmt[] = fn.result.kind === "void"
         ? [

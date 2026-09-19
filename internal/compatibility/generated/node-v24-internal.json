@@ -81395,7 +81395,8 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts"
+          "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -81821,7 +81822,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.os.homedir",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts"
+          "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -81944,7 +81946,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.os.networkInterfaces",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts"
+          "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -81977,7 +81980,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.os.platform",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts"
+          "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -82010,7 +82014,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.os.release",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts"
+          "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -82070,7 +82075,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.os.tmpdir",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts"
+          "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -82103,7 +82109,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.os.totalmem",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts"
+          "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -82136,7 +82143,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.os.type",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts"
+          "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -82199,7 +82207,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.os.userInfo",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts"
+          "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -82262,7 +82271,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.os.EOL",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts"
+          "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -82354,6 +82364,8 @@
         "tests": [
           "tests/corpus/2915-path-function-values.ts",
           "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
           "tests/corpus/957-builtins-namespace.ts"
         ]
       },
@@ -82416,7 +82428,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82451,7 +82465,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82486,7 +82502,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82578,7 +82596,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82613,7 +82633,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82648,7 +82670,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82713,7 +82737,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82748,7 +82774,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82783,7 +82811,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82818,7 +82848,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82853,7 +82885,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82888,7 +82922,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -82923,7 +82959,9 @@
         "tests": [
           "tests/corpus/957-builtins-namespace.ts",
           "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts"
+          "tests/corpus/2916-path-function-values-cjs.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/2918-builtin-callable-widths-cjs.ts"
         ]
       },
       "dynamic": {
@@ -89406,6 +89444,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/957-builtins-namespace.ts"
         ]
       },
@@ -89439,7 +89478,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.querystring.decode",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/957-builtins-namespace.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -89472,7 +89512,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.querystring.encode",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/957-builtins-namespace.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -89505,7 +89546,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.querystring.escape",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/957-builtins-namespace.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -89538,7 +89580,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.querystring.parse",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/957-builtins-namespace.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -89571,7 +89614,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.querystring.stringify",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/957-builtins-namespace.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {
@@ -89604,7 +89648,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.querystring.unescape",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/957-builtins-namespace.ts",
+          "tests/corpus/2917-builtin-callable-widths.ts"
         ]
       },
       "dynamic": {

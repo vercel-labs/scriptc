@@ -6343,6 +6343,18 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2917-builtin-callable-widths.ts": {
+   "order": [
+    "<repo>/tests/corpus/2917-builtin-callable-widths.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2918-builtin-callable-widths-cjs.ts": {
+   "order": [
+    "<repo>/tests/corpus/2918-builtin-callable-widths-cjs.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/300-if-else.ts": {
    "order": [
     "<repo>/tests/corpus/300-if-else.ts"

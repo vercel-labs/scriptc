@@ -569,12 +569,18 @@ export interface BuiltinModuleFn {
   result: IrType;
   variadicPack?: boolean;
   defaults?: string[];
-  /** This exact fixed-width table entry may materialize as an interned
-   * zero-capture closure when the builtin escapes call position. Entries
-   * with call-site-specific validation, optional completion, or rest
-   * packing stay call-only until they have an equally exact adapter. */
-  valueCallable?: true;
+  /** The source-level function-value signature. Each admitted entry
+   * materializes as an interned zero-capture adapter over the fixed runtime
+   * libCall ABI. Optional parameters name the string default selected for
+   * omission or explicit undefined; rest parameters pack into one typed
+   * array slot. Entries with call-site-specific validation remain absent. */
+  valueParams?: BuiltinValueParam[];
 }
+
+export type BuiltinValueParam =
+  | { mode: "required"; type: IrType }
+  | { mode: "optional"; type: IrType; defaultValue: string }
+  | { mode: "rest"; type: IrType };
 
 /** The lowerable surface of the supported node builtin modules, keyed by
  * CANONICAL module name (both "fs" and "node:fs" land on "fs" — see
@@ -589,30 +595,30 @@ export interface BuiltinModuleFn {
  * platform's rules on any host). toNamespacedPath is the posix identity
  * (Node: a non-op on posix systems). */
 const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
-  join: { fn: "path.join", params: [STRING], result: STRING, variadicPack: true },
-  resolve: { fn: "path.resolve", params: [STRING], result: STRING, variadicPack: true },
-  normalize: { fn: "path.normalize", params: [STRING], result: STRING, valueCallable: true },
-  dirname: { fn: "path.dirname", params: [STRING], result: STRING, valueCallable: true },
-  basename: { fn: "path.basename", params: [STRING, STRING], result: STRING, defaults: [""] },
-  extname: { fn: "path.extname", params: [STRING], result: STRING, valueCallable: true },
-  isAbsolute: { fn: "path.isAbsolute", params: [STRING], result: BOOL, valueCallable: true },
-  relative: { fn: "path.relative", params: [STRING, STRING], result: STRING, valueCallable: true },
-  toNamespacedPath: { fn: "path.toNamespacedPath", params: [STRING], result: STRING, valueCallable: true },
+  join: { fn: "path.join", params: [STRING], result: STRING, variadicPack: true, valueParams: [{ mode: "rest", type: STRING }] },
+  resolve: { fn: "path.resolve", params: [STRING], result: STRING, variadicPack: true, valueParams: [{ mode: "rest", type: STRING }] },
+  normalize: { fn: "path.normalize", params: [STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }] },
+  dirname: { fn: "path.dirname", params: [STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }] },
+  basename: { fn: "path.basename", params: [STRING, STRING], result: STRING, defaults: [""], valueParams: [{ mode: "required", type: STRING }, { mode: "optional", type: STRING, defaultValue: "" }] },
+  extname: { fn: "path.extname", params: [STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }] },
+  isAbsolute: { fn: "path.isAbsolute", params: [STRING], result: BOOL, valueParams: [{ mode: "required", type: STRING }] },
+  relative: { fn: "path.relative", params: [STRING, STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }, { mode: "required", type: STRING }] },
+  toNamespacedPath: { fn: "path.toNamespacedPath", params: [STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }] },
 };
 
 /** The win32 twins (scr_path.c's Node-v24 path.win32 port, byte-for-byte):
  * "path/win32" everywhere, and the bare-module table when the build
  * TARGETS win32 — Node on Windows is path.win32. */
 const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
-  join: { fn: "path.win32Join", params: [STRING], result: STRING, variadicPack: true },
-  resolve: { fn: "path.win32Resolve", params: [STRING], result: STRING, variadicPack: true },
-  normalize: { fn: "path.win32Normalize", params: [STRING], result: STRING, valueCallable: true },
-  dirname: { fn: "path.win32Dirname", params: [STRING], result: STRING, valueCallable: true },
-  basename: { fn: "path.win32Basename", params: [STRING, STRING], result: STRING, defaults: [""] },
-  extname: { fn: "path.win32Extname", params: [STRING], result: STRING, valueCallable: true },
-  isAbsolute: { fn: "path.win32IsAbsolute", params: [STRING], result: BOOL, valueCallable: true },
-  relative: { fn: "path.win32Relative", params: [STRING, STRING], result: STRING, valueCallable: true },
-  toNamespacedPath: { fn: "path.win32ToNamespacedPath", params: [STRING], result: STRING, valueCallable: true },
+  join: { fn: "path.win32Join", params: [STRING], result: STRING, variadicPack: true, valueParams: [{ mode: "rest", type: STRING }] },
+  resolve: { fn: "path.win32Resolve", params: [STRING], result: STRING, variadicPack: true, valueParams: [{ mode: "rest", type: STRING }] },
+  normalize: { fn: "path.win32Normalize", params: [STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }] },
+  dirname: { fn: "path.win32Dirname", params: [STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }] },
+  basename: { fn: "path.win32Basename", params: [STRING, STRING], result: STRING, defaults: [""], valueParams: [{ mode: "required", type: STRING }, { mode: "optional", type: STRING, defaultValue: "" }] },
+  extname: { fn: "path.win32Extname", params: [STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }] },
+  isAbsolute: { fn: "path.win32IsAbsolute", params: [STRING], result: BOOL, valueParams: [{ mode: "required", type: STRING }] },
+  relative: { fn: "path.win32Relative", params: [STRING, STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }, { mode: "required", type: STRING }] },
+  toNamespacedPath: { fn: "path.win32ToNamespacedPath", params: [STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }] },
 };
 
 export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn | undefined> | undefined> = {
@@ -698,18 +704,18 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
   "path/win32": PATH_WIN32_MODULE_FNS,
   os: {
     // One platform implementation: os.platform() === process.platform.
-    platform: { fn: "process.platform", params: [], result: STRING },
-    homedir: { fn: "os.homedir", params: [], result: STRING },
-    tmpdir: { fn: "os.tmpdir", params: [], result: STRING },
+    platform: { fn: "process.platform", params: [], result: STRING, valueParams: [] },
+    homedir: { fn: "os.homedir", params: [], result: STRING, valueParams: [] },
+    tmpdir: { fn: "os.tmpdir", params: [], result: STRING, valueParams: [] },
     // uname(2)'s release field — Node's own implementation.
-    release: { fn: "os.release", params: [], result: STRING },
+    release: { fn: "os.release", params: [], result: STRING, valueParams: [] },
     // uname(2)'s sysname field ("Darwin", "Linux", "Windows_NT") — the
     // libFn/runtime pair predates this entry (the portless surface used
     // them); this row makes the MODULE call reach them (test/common's
     // isAIX/isIBMi getters are the canonical callers).
-    type: { fn: "os.type", params: [], result: STRING },
+    type: { fn: "os.type", params: [], result: STRING, valueParams: [] },
     // Total physical memory in bytes — same predating-pair story.
-    totalmem: { fn: "os.totalmem", params: [], result: F64 },
+    totalmem: { fn: "os.totalmem", params: [], result: F64, valueParams: [] },
     // Entirely special-cased (lowerOsNetworkInterfacesCall): the result is
     // the call site's mapped Dict<NetworkInterfaceInfo[]> shape, verified
     // structurally there — this entry only routes the dispatch.
@@ -797,8 +803,8 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
     decode: { fn: "qs.parse", params: [STRING], result: VOID },
     stringify: { fn: "qs.stringify", params: [DYN], result: STRING },
     encode: { fn: "qs.stringify", params: [DYN], result: STRING },
-    escape: { fn: "qs.escape", params: [STRING], result: STRING },
-    unescape: { fn: "qs.unescape", params: [STRING], result: STRING },
+    escape: { fn: "qs.escape", params: [STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }] },
+    unescape: { fn: "qs.unescape", params: [STRING], result: STRING, valueParams: [{ mode: "required", type: STRING }] },
   },
   // node:readline: createInterface's options are entirely special-cased
   // (exactly { input: process.stdin, output?: process.stdout } — see

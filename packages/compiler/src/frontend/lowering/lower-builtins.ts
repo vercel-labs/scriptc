@@ -2047,6 +2047,25 @@ function optionMember(p: ts.ObjectLiteralElementLike): { name: string; value: ts
         );
       }
     }
+    // A value-enabled builtin with defaults uses its generated adapter for
+    // direct calls too. That keeps explicit undefined identical to omission:
+    // completeArgs wraps the undefined arm, then the adapter selects the
+    // descriptor's default before entering the fixed runtime libCall ABI.
+    // The call has already passed this member's ordinary arity/shape gates.
+    if (fn.defaults && fn.valueParams) {
+      const callee = lowerer.lowerBuiltinCallableValue(bi, loc);
+      if (!callee || callee.type.kind !== "func") {
+        throw new InternalCompilerError(`missing callable adapter for ${bi.module}.${bi.member}`);
+      }
+      const funcType = callee.type;
+      const shapes: ParamShape[] = fn.valueParams.map((param, index) => {
+        const type = funcType.params[index];
+        if (!type) throw new InternalCompilerError(`missing callable parameter ${index} for ${bi.module}.${bi.member}`);
+        return { type, mode: param.mode === "optional" ? "omittable" : "required" };
+      });
+      const args = lowerer.completeArgs(expr.arguments, shapes, loc, expr);
+      return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+    }
     let args: IrExpr[];
     if (hasSpread) {
       const shapes = fn.params.map((type, i): ParamShape =>

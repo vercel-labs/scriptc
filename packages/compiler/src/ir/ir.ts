@@ -4442,7 +4442,8 @@ export type IrLibFn =
  * JS ToInt32/ToUint32 semantics — operands convert (NaN/±Infinity → 0,
  * truncate, wrap mod 2^32), the operation runs in 32-bit space (shift
  * counts mask to 5 bits), and the result returns to f64 (`>>>` as Uint32,
- * the rest as Int32) — backends emit the scr_bit_* runtime helpers. */
+ * the rest as Int32). The C backend uses scr_bit_* helpers; LLVM emits
+ * JS-exact coercions followed by native i32 operations. */
 export type IrNumBinOp =
   | "+" | "-" | "*" | "/" | "%" | "**"
   | "&" | "|" | "^" | "<<" | ">>" | ">>>"

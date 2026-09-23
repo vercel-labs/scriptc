@@ -287,6 +287,23 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
+  test("commander computed option listener registration compiles statically and byte-matches Node", async () => {
+    const entry = join(fixturesRoot, "commander-calc/version-npm-static.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["commander"] });
+    expect(coverage.npmStatic).toEqual([{ package: "commander", status: "static" }]);
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics).toHaveLength(0);
+
+    const binary = await buildStatic(entry, ["commander"]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+    expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
   test("the crypto utility package compiles fully statically and byte-matches Node", async () => {
     const entry = join(fixturesRoot, "npm/cases/crypto-shims/main.ts");
     const { coverage } = analyze(entry, { npmStatic: ["cryptozoo"] });

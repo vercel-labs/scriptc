@@ -36,6 +36,57 @@ export interface NpmStaticOverloadRewrite {
   insertions: readonly { offset: number; length: number }[];
 }
 
+/** A JavaScript return annotation cannot make Array.find return a value
+ * when no element matches. Widen only direct finds on constructor-owned
+ * arrays; arbitrary methods also named find are left alone. */
+export function applyNpmStaticFindReturnWidening(
+  sourcePath: string,
+  source: string,
+): NpmStaticOverloadRewrite | null {
+  const sourceFile = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const insertions: { offset: number; length: number }[] = [];
+  for (const statement of sourceFile.statements) {
+    if (!ts.isClassDeclaration(statement)) continue;
+    const constructor = statement.members.find(
+      (member): member is ts.ConstructorDeclaration => ts.isConstructorDeclaration(member) && member.body !== undefined,
+    );
+    if (constructor?.body === undefined) continue;
+    const arrayFields = new Set<string>();
+    for (const bodyStatement of constructor.body.statements) {
+      if (!ts.isExpressionStatement(bodyStatement) || !ts.isBinaryExpression(bodyStatement.expression)) continue;
+      const { left, right, operatorToken } = bodyStatement.expression;
+      if (
+        operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(left) &&
+        left.expression.kind === ts.SyntaxKind.ThisKeyword && ts.isArrayLiteralExpression(right)
+      ) arrayFields.add(left.name.text);
+    }
+    for (const member of statement.members) {
+      if (!ts.isMethodDeclaration(member) || member.body?.statements.length !== 1) continue;
+      const returned = member.body.statements[0];
+      if (!returned || !ts.isReturnStatement(returned) || returned.expression === undefined || !ts.isCallExpression(returned.expression)) continue;
+      const callee = returned.expression.expression;
+      if (
+        !ts.isPropertyAccessExpression(callee) || callee.name.text !== "find" ||
+        !ts.isPropertyAccessExpression(callee.expression) ||
+        callee.expression.expression.kind !== ts.SyntaxKind.ThisKeyword ||
+        !arrayFields.has(callee.expression.name.text)
+      ) continue;
+      const returnType = ts.getJSDocReturnType(member);
+      if (
+        returnType === undefined || !ts.isTypeReferenceNode(returnType) ||
+        !ts.isIdentifier(returnType.typeName) || (returnType.typeArguments?.length ?? 0) !== 0
+      ) continue;
+      insertions.push({ offset: returnType.getEnd(), length: " | undefined".length });
+    }
+  }
+  if (insertions.length === 0) return null;
+  let text = source;
+  for (const insertion of [...insertions].sort((a, b) => b.offset - a.offset)) {
+    text = text.slice(0, insertion.offset) + " | undefined" + text.slice(insertion.offset);
+  }
+  return { text, insertions };
+}
+
 const SAFE_KEYWORD_TYPES = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.BooleanKeyword,
   ts.SyntaxKind.NeverKeyword,
@@ -67,6 +118,16 @@ function safeTypeText(node: ts.TypeNode, sourceFile: ts.SourceFile, className: s
   if (ts.isUnionTypeNode(node)) {
     const arms = node.types.map((type) => safeTypeText(type, sourceFile, className));
     return arms.some((arm) => arm === null) ? null : arms.join(" | ");
+  }
+  if (
+    ts.isTypeReferenceNode(node) &&
+    ts.isIdentifier(node.typeName) &&
+    node.typeName.text === "Record" &&
+    node.typeArguments?.length === 2 &&
+    node.typeArguments[0]?.kind === ts.SyntaxKind.StringKeyword &&
+    node.typeArguments[1]?.kind === ts.SyntaxKind.StringKeyword
+  ) {
+    return "Record<string, string>";
   }
   return ts.isTypeReferenceNode(node) &&
     ts.isIdentifier(node.typeName) &&

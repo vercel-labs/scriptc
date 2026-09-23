@@ -1,0 +1,8 @@
+ee-computed-listeners.ts:6:1 - error SC2020: 'listeners of the event 'topic:x'' is part of the standard library types but has no scriptc lowering yet
+
+  5 | emitter.on(`topic:${suffix}`, () => {});
+  6 | emitter.listeners("topic:x");
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  7 | 
+
+  hint: a listener of this event uses checked-dynamic dispatch, so the listener array has no one static element type — listenerCount(name) counts

@@ -1661,6 +1661,11 @@ void scr_emitter_check_listener(const ScrDyn *cb);
 ScrEmitter *scr_emitter_on_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend);
+/* Computed-name listeners retain the original closure and its checked-
+ * dynamic call thunk, preserving the number of arguments passed to emit.
+ * The frontend keeps these names disjoint from fixed-tuple event names. */
+ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                                bool once, bool prepend);
 ScrEmitter *scr_emitter_off_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb);
 /* The adapter-mediated registration (the LLVM backend's listeners): the
  * ADAPTER closure is what emit invokes, the ORIGINAL closure is the
@@ -1695,6 +1700,7 @@ ScrEmitter *scr_emitter_remove_all(ScrEmitter *em, ScrStr *name, bool all);
  * running); returns whether the event had listeners. The _error form is
  * emit('error', err): no listener ⇒ THROWS err (borrowed; +1 taken). */
 bool scr_emitter_emit(ScrEmitter *em, ScrStr *name, ...);
+bool scr_emitter_emit_flex(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc);
 bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err);
 double scr_emitter_listener_count(ScrEmitter *em, ScrStr *name);
 double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *fn);

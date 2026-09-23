@@ -1,0 +1,8 @@
+ee-computed-stream-internal.ts:5:12 - error SC2020: 'on with a computed event name overlapping an internal event' is part of the standard library types but has no scriptc lowering yet
+
+  4 | const middle = process.argv[2] ?? "";
+  5 | emitter.on(`pre${middle}finish`, () => {});
+    |            ^~~~~~~~~~~~~~~~~~~~
+  6 | 
+
+  hint: computed-name listeners use an exact-arity dynamic argument vector; internal error, meta, and stream events retain their fixed representations

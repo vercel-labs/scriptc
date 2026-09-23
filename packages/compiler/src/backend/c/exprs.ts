@@ -7938,6 +7938,10 @@ function emitErrorsEventsLibCall(state: LibCallState): Temp {
               `(${cType(e.type).trim()})scr_emitter_on_dyn((ScrEmitter *)${arg(0)}, ${arg(1)}, ${arg(2)}, ${adapter.name}, &${dynThunk}, ${arg(4)}, ${arg(5)})`,
             );
           }
+          case "emitter.onFlex":
+            return finish(
+              `(${cType(e.type).trim()})scr_emitter_on_flex((ScrEmitter *)${arg(0)}, ${arg(1)}, ${arg(2)}, ${arg(3)}, ${arg(4)})`,
+            );
           case "emitter.onData": {
             // The stream-'data' registration: same runtime entry as
             // emitter.on, but the DATA invoke thunk (the two-slot payload
@@ -7988,6 +7992,15 @@ function emitErrorsEventsLibCall(state: LibCallState): Temp {
             return finish(
               `scr_emitter_emit((ScrEmitter *)${arg(0)}, ${arg(1)}${e.args.slice(2).map((_, i) => `, ${arg(i + 2)}`).join("")})`,
             );
+          case "emitter.emitFlex": {
+            const count = e.args.length - 2;
+            const payload = count === 0
+              ? "NULL"
+              : `(ScrDyn *const[]){${e.args.slice(2).map((_, i) => arg(i + 2)).join(", ")}}`;
+            return finish(
+              `scr_emitter_emit_flex((ScrEmitter *)${arg(0)}, ${arg(1)}, ${payload}, ${count})`,
+            );
+          }
           case "emitter.emitError":
             // emit('error', err): unhandled ⇒ the runtime throws the
             // payload through the exception cell (may-throw seed).

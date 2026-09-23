@@ -1006,9 +1006,11 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   // once, prepend), offDyn (recv, name, cb dyn).
   "emitter.checkListener": { argTypes: [DYN], result: VOID },
   "emitter.onDyn": { argTypes: [null, STRING, DYN, null, BOOL, BOOL], result: VOID },
+  "emitter.onFlex": { argTypes: [null, STRING, DYN, BOOL, BOOL], result: VOID },
   "emitter.offDyn": { argTypes: [null, STRING, DYN], result: VOID },
   "emitter.removeAll": { argTypes: [null, STRING, BOOL], result: VOID },
   "emitter.emit": { argTypes: [null, STRING], result: BOOL },
+  "emitter.emitFlex": { argTypes: [null, STRING], result: BOOL },
   "emitter.emitError": { argTypes: [null, STRING, null], result: BOOL },
   "emitter.count": { argTypes: [null, STRING], result: F64 },
   "emitter.countFn": { argTypes: [null, STRING, null], result: F64 },
@@ -3826,7 +3828,7 @@ function validateFunction(
         // (the optional chunk/cb tail), and unpipe (the optional
         // destination) admit a longer list the same way.
         const variadic =
-          e.fn === "emitter.emit" ||
+          e.fn === "emitter.emit" || e.fn === "emitter.emitFlex" ||
           e.fn === "readable.new" || e.fn === "writable.new" ||
           e.fn === "duplex.new" || e.fn === "transform.new" ||
           e.fn === "passthrough.new" ||
@@ -4927,7 +4929,7 @@ function validateFunction(
           }
           // The chaining forms return the receiver's own static class.
           if (e.fn === "emitter.on" || e.fn === "emitter.off" ||
-              e.fn === "emitter.onDyn" || e.fn === "emitter.offDyn" ||
+              e.fn === "emitter.onDyn" || e.fn === "emitter.onFlex" || e.fn === "emitter.offDyn" ||
               e.fn === "emitter.onData" || e.fn === "emitter.onDataDyn" ||
               e.fn === "emitter.removeAll" || e.fn === "emitter.setMax" ||
               e.fn === "emitter.setMaxChk") {
@@ -4970,7 +4972,12 @@ function validateFunction(
             if (!ok) err(`libCall emitter.listeners must return a func array`, e.loc);
             break;
           }
-          if (e.fn === "emitter.emit" || e.fn === "emitter.count" ||
+          if (e.fn === "emitter.emitFlex") {
+            if (e.args.slice(2).some((arg) => arg.type.kind !== "dyn")) {
+              err("libCall emitter.emitFlex payloads must be checked-dynamic", e.loc);
+            }
+          }
+          if (e.fn === "emitter.emit" || e.fn === "emitter.emitFlex" || e.fn === "emitter.count" ||
               e.fn === "emitter.getMax" || e.fn === "emitter.ctor" ||
               e.fn === "emitter.countFn" || e.fn === "emitter.emitError") {
             if (!typeEquals(e.type, sig.result)) {

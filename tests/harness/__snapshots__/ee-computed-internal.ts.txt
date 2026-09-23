@@ -1,0 +1,8 @@
+ee-computed-internal.ts:6:14 - error SC2020: 'emit with a computed event name overlapping an internal event' is part of the standard library types but has no scriptc lowering yet
+
+  5 | const suffix = process.argv[2] ?? "Listener";
+  6 | emitter.emit(`new${suffix}`, "topic");
+    |              ^~~~~~~~~~~~~~
+  7 | 
+
+  hint: computed-name listeners use an exact-arity dynamic argument vector; internal error, meta, and stream events retain their fixed representations

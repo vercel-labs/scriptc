@@ -18,7 +18,7 @@
  * skips only when it already FIRED — mid-emit removal of a not-yet-run
  * once listener does not skip it, matching the wrapper's `fired` check.
  *
- * Dispatch is C-variadic: the emit call site passes the event tuple as
+ * Literal-name dispatch is C-variadic: the emit call site passes the event tuple as
  * typed C values, and each listener invokes through a compiler-EMITTED
  * adapter `void inv(ScrClosure *cb, va_list ap)` that va_args exactly the
  * listener's own parameter prefix, retains the +1 the callee owns per the
@@ -27,7 +27,8 @@
  * site's writes. Internal (meta-event) emits reuse the same variadic
  * entry, passing the event NAME as the one argument — meta listeners are
  * fenced to arity <= 1, so no adapter ever reads the listener argument
- * Node would pass second.
+ * Node would pass second. Computed names disjoint from internal events use a
+ * checked-dynamic callback and an exact-arity argument vector instead.
  *
  * The special 'error' event routes through scr_emitter_emit_error: with no
  * 'error' listener the Error payload THROWS through the exception cell
@@ -69,6 +70,11 @@ typedef struct ScrEeEntry {
    * listeners()/rawListeners() answer it — Node's identity semantics. */
   ScrClosure *orig;
   ScrEeInvoke inv;
+  /* Computed-name registration: the original closure and its checked-
+   * dynamic thunk, called with the exact argument count. Holding the
+   * closure directly keeps its capture edges visible to cycle collection. */
+  ScrClosure *flex_cb;
+  ScrDynThunk flex_invoke;
   bool once;
   bool fired; /* a once entry that already ran (snapshot skip rule) */
   uint32_t refs;
@@ -113,12 +119,13 @@ static void scr_ee_entry_unref(ScrEeEntry *e) {
   if (--e->refs > 0) return;
   scr_closure_release(e->cb);
   scr_closure_release(e->orig); /* NULL-tolerant */
+  scr_closure_release(e->flex_cb);
   free(e);
 }
 
 /* The entry's IDENTITY closure — what Node would see as the listener. */
 static ScrClosure *scr_ee_entry_fn(const ScrEeEntry *e) {
-  return e->orig ? e->orig : e->cb;
+  return e->orig ? e->orig : e->cb ? e->cb : e->flex_cb;
 }
 
 static ScrEeReg *scr_ee_reg_ensure(ScrEmitter *em) {
@@ -201,14 +208,15 @@ void scr_emitter_reg_drop(ScrEeReg *reg) {
   free(reg);
 }
 
-/* Collector trace: the listener closures are the registry's only
- * cycle-headered children (bucket names are strings — acyclic). */
+/* Collector trace: every entry's direct, adapter, or flex closure is a
+ * cycle-headered child. Bucket names are acyclic strings. */
 void scr_emitter_reg_trace(ScrEeReg *reg, ScrTraceVisit visit, void *ctx) {
   if (!reg) return;
   for (ScrEeBucket *b = reg->head; b; b = b->next) {
     for (size_t i = 0; i < b->n; i++) {
-      visit(b->ls[i]->cb, ctx);
+      if (b->ls[i]->cb) visit(b->ls[i]->cb, ctx);
       if (b->ls[i]->orig) visit(b->ls[i]->orig, ctx);
+      if (b->ls[i]->flex_cb) visit(b->ls[i]->flex_cb, ctx);
     }
   }
 }
@@ -222,7 +230,8 @@ void scr_emitter_reg_gcfree(ScrEeReg *reg) {
   while (b) {
     ScrEeBucket *next = b->next;
     for (size_t i = 0; i < b->n; i++) {
-      if (--b->ls[i]->refs == 0) free(b->ls[i]);
+      ScrEeEntry *e = b->ls[i];
+      if (--e->refs == 0) free(e);
     }
     scr_str_release(b->name);
     free(b->ls);
@@ -332,7 +341,9 @@ static void scr_ee_warn_maybe(ScrEmitter *em, ScrEeBucket *b) {
  * try). */
 static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*/,
                               ScrClosure *orig /*moves; may be NULL*/,
-                              ScrEeInvoke inv, bool once, bool prepend) {
+                              ScrEeInvoke inv, ScrClosure *flex_cb /*moves; may be NULL*/,
+                              ScrDynThunk flex_invoke,
+                              bool once, bool prepend) {
   scr_ee_reg_ensure(em);
   scr_ee_emit_meta(em, "newListener", name);
   ScrEeBucket *b = scr_ee_bucket_ensure(em->reg, name);
@@ -341,6 +352,8 @@ static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*mov
   e->cb = cb;
   e->orig = orig;
   e->inv = inv;
+  e->flex_cb = flex_cb;
+  e->flex_invoke = flex_invoke;
   e->once = once;
   e->refs = 1;
   if (b->n == b->cap) {
@@ -362,7 +375,7 @@ static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*mov
 
 ScrEmitter *scr_emitter_on(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*/,
                             ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, cb, NULL, inv, once, prepend);
+  return scr_ee_add(em, name, cb, NULL, inv, NULL, NULL, once, prepend);
 }
 
 /* The dyn-adapted registration (JS-lane checked-dynamic listeners): the
@@ -375,8 +388,15 @@ ScrEmitter *scr_emitter_on(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*
 ScrEmitter *scr_emitter_on_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, adapter, scr_closure_retain(cb->v.fn.clo), inv, once,
+  return scr_ee_add(em, name, adapter, scr_closure_retain(cb->v.fn.clo), inv, NULL, NULL, once,
                     prepend);
+}
+
+ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                                bool once, bool prepend) {
+  if (cb->kind != SCR_DYN_FUNC) scr_trap("scriptc: computed event listener is not a function\n");
+  return scr_ee_add(em, name, NULL, NULL, NULL, scr_closure_retain(cb->v.fn.clo),
+                    cb->v.fn.thunk, once, prepend);
 }
 
 /* The adapter-mediated registration (the LLVM backend): adapter is what
@@ -385,7 +405,7 @@ ScrEmitter *scr_emitter_on_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
 ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend) {
-  return scr_ee_add(em, name, adapter, orig, inv, once, prepend);
+  return scr_ee_add(em, name, adapter, orig, inv, NULL, NULL, once, prepend);
 }
 
 /* ── fixed-arity invoke shims (scr_runtime.h's contract) ──────────────
@@ -580,7 +600,8 @@ ScrEmitter *scr_emitter_remove_all(ScrEmitter *em, ScrStr *name, bool all) {
  * still holds it (the shared fired flag — Node's wrapper.fired). A
  * listener throw stops the pass (the exception stays pending for the
  * caller). Returns whether the bucket had listeners. */
-static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template) {
+static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
+                             ScrDyn *const *flex_args, size_t flex_argc) {
   ScrEeBucket *b = em->reg ? scr_ee_bucket_find(em->reg, name->data, name->len) : NULL;
   if (!b || b->n == 0) return false;
   size_t n = b->n;
@@ -619,10 +640,17 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template)
         continue;
       }
     }
-    va_list ap;
-    va_copy(ap, *ap_template);
-    e->inv(e->cb, ap);
-    va_end(ap);
+    if (ap_template) {
+      if (!e->inv) scr_trap("scriptc: computed event collided with a fixed event\n");
+      va_list ap;
+      va_copy(ap, *ap_template);
+      e->inv(e->cb, ap);
+      va_end(ap);
+    } else {
+      if (!e->flex_invoke) scr_trap("scriptc: computed event collided with a fixed event\n");
+      ScrDyn *answer = e->flex_invoke(e->flex_cb, flex_args, flex_argc);
+      scr_dyn_release(answer); /* EventEmitter ignores callback results. */
+    }
     scr_ee_entry_unref(e);
   }
   free(snap);
@@ -632,7 +660,7 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template)
 static bool scr_ee_emit_va(ScrEmitter *em, ScrStr *name, ...) {
   va_list ap;
   va_start(ap, name);
-  bool had = scr_ee_emit_core(em, name, &ap);
+  bool had = scr_ee_emit_core(em, name, &ap, NULL, 0);
   va_end(ap);
   return had;
 }
@@ -644,9 +672,16 @@ static bool scr_ee_emit_va(ScrEmitter *em, ScrStr *name, ...) {
 bool scr_emitter_emit(ScrEmitter *em, ScrStr *name, ...) {
   va_list ap;
   va_start(ap, name);
-  bool had = scr_ee_emit_core(em, name, &ap);
+  bool had = scr_ee_emit_core(em, name, &ap, NULL, 0);
   va_end(ap);
   return had;
+}
+
+bool scr_emitter_emit_flex(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc) {
+  if (name->len == 5 && memcmp(name->data, "error", 5) == 0) {
+    scr_trap("scriptc: computed event collided with the error event\n");
+  }
+  return scr_ee_emit_core(em, name, NULL, args, argc);
 }
 
 /* emit('error', err) — Node's special event: with no 'error' listener the

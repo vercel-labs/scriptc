@@ -516,6 +516,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.ctor": "scr_emitter_init",
   "emitter.off": "scr_emitter_off",
   "emitter.offDyn": "scr_emitter_off_dyn",
+  "emitter.onFlex": "scr_emitter_on_flex",
   "emitter.checkListener": "scr_emitter_check_listener",
   "emitter.removeAll": "scr_emitter_remove_all",
   "emitter.emitError": "scr_emitter_emit_error",

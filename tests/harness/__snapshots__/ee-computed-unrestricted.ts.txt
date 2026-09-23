@@ -1,0 +1,8 @@
+ee-computed-unrestricted.ts:5:12 - error SC2020: 'on with an unrestricted computed event name' is part of the standard library types but has no scriptc lowering yet
+
+  4 | const name = process.argv[2] ?? "topic";
+  5 | emitter.on(name, () => {});
+    |            ^~~~
+  6 | 
+
+  hint: computed event names need a nonempty constant prefix or suffix so they cannot collide with internal events

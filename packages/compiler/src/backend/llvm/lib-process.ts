@@ -642,6 +642,26 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
       host.emitPendingCheck();
       return { name: t, type: e.type };
     }
+    if (e.fn === "emitter.emitFlex") {
+      const args = e.args.map((a) => host.emitExpr(a));
+      const n = args.length - 2;
+      let payload = "null";
+      if (n > 0) {
+        const arr = B.slot();
+        B.entryAllocas.push(`${arr} = alloca [${n} x ptr]`);
+        for (let i = 0; i < n; i++) {
+          const slot = B.tmp();
+          B.line(`${slot} = getelementptr inbounds [${n} x ptr], ptr ${arr}, i64 0, i64 ${i}`);
+          B.line(`store ptr ${args[i + 2]!.name}, ptr ${slot}`);
+        }
+        payload = arr;
+      }
+      host.declare(`declare zeroext i1 @scr_emitter_emit_flex(ptr, ptr, ptr, ${host.sizeType})`);
+      const t = B.tmp();
+      B.line(`${t} = call i1 @scr_emitter_emit_flex(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${payload}, ${host.sizeType} ${n})`);
+      host.emitPendingCheck();
+      return { name: t, type: e.type };
+    }
     if (e.fn === "emitter.emitData") {
       // A user emit('data', chunk) on a stream-rooted receiver: fill the
       // matching payload slot of the two-slot 'data' ABI, NULL the other.

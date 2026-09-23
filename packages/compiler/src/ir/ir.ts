@@ -3762,9 +3762,11 @@ export type IrLibFn =
   | "emitter.off"
   | "emitter.checkListener"
   | "emitter.onDyn"
+  | "emitter.onFlex"
   | "emitter.offDyn"
   | "emitter.removeAll"
   | "emitter.emit"
+  | "emitter.emitFlex"
   | "emitter.emitError"
   | "emitter.count"
   | "emitter.countFn"
@@ -7353,11 +7355,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // any of them can throw. emitError additionally THROWS its payload when
   // 'error' has no listener, Node's unhandled-'error' contract.
   "emitter.emit",
+  "emitter.emitFlex",
   "emitter.emitError",
   "emitter.on",
   "emitter.off",
   "emitter.checkListener",
   "emitter.onDyn",
+  "emitter.onFlex",
   "emitter.offDyn",
   "emitter.onData",
   "emitter.onDataDyn",

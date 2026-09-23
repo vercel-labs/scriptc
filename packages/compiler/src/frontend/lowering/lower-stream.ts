@@ -103,6 +103,13 @@ export function streamCtorShape(cls: string): { fn: string; accepted: readonly s
   }
 }
 
+/** Names emitted internally by stream runtimes. A computed EventEmitter
+ * name must not match one, even through an EventEmitter-typed stream upcast. */
+export const STREAM_FORCED_EVENT_NAMES: ReadonlySet<string> = new Set([
+  "data", "end", "close", "readable", "pause", "resume",
+  "drain", "prefinish", "finish", "pipe", "unpipe",
+]);
+
 /** The per-base FORCED event tuples (runtime-emitted payloads): consulted
  * by the emitter spoke BEFORE the program-global table, so a stream's
  * 'data' never collides with a user event named 'data' on a plain
@@ -120,6 +127,7 @@ export function streamForcedTuple(lowerer: Lowerer, info: ClassInfo | undefined 
   };
   const writable: Record<string, IrType[]> = {
     drain: [],
+    prefinish: [],
     finish: [],
     close: [],
     pipe: [{ kind: "object", className: "%Readable" }],

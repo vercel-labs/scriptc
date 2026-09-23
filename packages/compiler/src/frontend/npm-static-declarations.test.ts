@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   applyNpmStaticDeclarationProperties,
   applyNpmStaticDeclarationOverloads,
+  applyNpmStaticFindReturnWidening,
   npmStaticDeclarationReexports,
   npmStaticRuntimeClassTargets,
   parseNpmStaticDeclarationProperties,
@@ -12,6 +13,9 @@ const declarations = `
 export class Chainy {
   name(): string;
   name(value: string): this;
+  description(): string;
+  description(value: string): this;
+  description(value: string, argsDescription: Record<string, string>): this;
   tag(): string;
   tag(value: string): this;
   aliases(): string[];
@@ -29,10 +33,28 @@ export class Chainy {
 `;
 
 describe("npm-static declaration overload projection", () => {
+  test("widens an array find result when JavaScript JSDoc omits undefined", () => {
+    const source = `
+class Choices {
+  constructor() { this.items = []; }
+  /** @return {Item} */
+  lookup(value) { return this.items.find((item) => item.value === value); }
+  /** @return {Item | undefined} */
+  already(value) { return this.items.find((item) => item.value === value); }
+  /** @return {Item} */
+  custom(value) { return this.index.find(value); }
+}
+`;
+    const rewritten = applyNpmStaticFindReturnWidening("index.js", source);
+    expect(rewritten).not.toBeNull();
+    expect(rewritten!.text).toContain("/** @return {Item | undefined} */\n  lookup(value)");
+    expect(rewritten!.text).toContain("/** @return {Item | undefined} */\n  already(value)");
+    expect(rewritten!.text).toContain("/** @return {Item} */\n  custom(value)");
+  });
   test("extracts only complete representation-safe overload groups", () => {
     const overloads = parseNpmStaticDeclarationOverloads("index.d.ts", declarations);
     expect([...overloads.keys()]).toEqual(["Chainy"]);
-    expect([...overloads.get("Chainy")!.keys()]).toEqual(["name", "tag", "aliases", "helpOption"]);
+    expect([...overloads.get("Chainy")!.keys()]).toEqual(["name", "description", "tag", "aliases", "helpOption"]);
     expect(overloads.get("Chainy")!.get("name")).toEqual([
       { parameters: [], returnType: "string" },
       { parameters: [{ name: "value", type: "string", optional: false }], returnType: "this" },
@@ -116,7 +138,6 @@ module.exports = { Chainy };
     expect(rewritten!.text).toContain("@param {string | boolean} [flags]");
     expect(rewritten!.text).toContain("@param {string} [description]");
   });
-
   test("reports only relative declaration-barrel edges", () => {
     expect(npmStaticDeclarationReexports("esm.d.mts", `
       export * from "./index.js";

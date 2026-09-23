@@ -6552,6 +6552,18 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2961-emitter-computed-names.cjs": {
+   "order": [
+    "<repo>/tests/corpus/2961-emitter-computed-names.cjs"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2962-emitter-computed-optional.ts": {
+   "order": [
+    "<repo>/tests/corpus/2962-emitter-computed-optional.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/300-if-else.ts": {
    "order": [
     "<repo>/tests/corpus/300-if-else.ts"
@@ -7873,6 +7885,30 @@
   "<repo>/tests/diagnostics/dynamic-surface.ts": {
    "order": [
     "<repo>/tests/diagnostics/dynamic-surface.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/ee-computed-internal.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/ee-computed-internal.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/ee-computed-listeners.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/ee-computed-listeners.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/ee-computed-stream-internal.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/ee-computed-stream-internal.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/ee-computed-unrestricted.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/ee-computed-unrestricted.ts"
    ],
    "diags": []
   },

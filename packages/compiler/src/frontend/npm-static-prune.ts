@@ -52,38 +52,47 @@ function packageRootJsonPath(fromFile: string, packageName: string): string | nu
 
 /** A package's own sideEffects declaration cannot cover imports of a
  * dependency that runs at module init. Require the whole declared runtime
- * dependency tree to make the same promise before removing an edge. */
+ * dependency tree to make the same promise before removing an edge. A cycle
+ * back-edge is provisionally pure, but its result cannot be cached for a
+ * descendant until all dependencies of the ancestor have been checked. */
+type PackagePurity = { pure: boolean; provisional: boolean };
+
 function purePackageTree(
   path: string,
   memo: Map<string, boolean>,
   visiting: Set<string>,
-): boolean {
+): PackagePurity {
   const cached = memo.get(path);
-  if (cached !== undefined) return cached;
-  if (visiting.has(path)) return true;
+  if (cached !== undefined) return { pure: cached, provisional: false };
+  if (visiting.has(path)) return { pure: true, provisional: true };
   const json = packageJson(path);
   if (json === null || !noSideEffects(json["sideEffects"])) {
     memo.set(path, false);
-    return false;
+    return { pure: false, provisional: false };
   }
   visiting.add(path);
   let pure = true;
+  let provisional = false;
   for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
     const dependencies = json[field];
     if (dependencies === null || typeof dependencies !== "object" || Array.isArray(dependencies)) continue;
     for (const name of Object.keys(dependencies as Record<string, unknown>)) {
       const resolved = resolveBareModule(path, name, "js-only");
       const depPath = resolved === null ? null : packageRootJsonPath(resolved.typesFile, name);
-      if (depPath === null || !purePackageTree(depPath, memo, visiting)) {
+      const dep = depPath === null ? { pure: false, provisional: false } : purePackageTree(depPath, memo, visiting);
+      if (!dep.pure) {
         pure = false;
         break;
       }
+      provisional ||= dep.provisional;
     }
     if (!pure) break;
   }
   visiting.delete(path);
-  memo.set(path, pure);
-  return pure;
+  // False is final. A true result is final only when it did not borrow an
+  // ancestor's optimistic back-edge, or when the entire traversal is done.
+  if (!pure || !provisional || visiting.size === 0) memo.set(path, pure);
+  return { pure, provisional };
 }
 
 type Demand = Set<string> | null; // null requests the entire namespace
@@ -132,7 +141,7 @@ export function planNpmStaticReexports(
     const pkgPath = packageRootJsonPath(sf.fileName, pkg);
     if (pkgPath === null) return false;
     if (nearestPackageType(sf.fileName) !== "module") return false;
-    if (!purePackageTree(pkgPath, pureMemo, new Set())) return false;
+    if (!purePackageTree(pkgPath, pureMemo, new Set()).pure) return false;
     const names = demanded.get(sf);
     return names !== undefined && names !== null && !names.has(stmt.exportClause.name.text);
   };

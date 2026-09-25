@@ -3576,10 +3576,14 @@ static const char isl_modules_bootstrap[] =
     /* Node's events module: the emitter surface streams and CLIs drive —
      * prepend/once/remove with listener-unwrap, maxListeners bookkeeping
      * (warnings are not emitted), eventNames/rawListeners, Node's
-     * unhandled-'error' throw, and the once/getEventListeners statics. */
+     * unhandled-'error' throw, and the once/getEventListeners statics.
+     * EventEmitter is callable so legacy constructors can use .call(this). */
     "  builtins.events = memo(() => {\n"
-    "    class EventEmitter {\n"
-    "      constructor() { this._events = Object.create(null); this._maxListeners = undefined; }\n"
+    "    function EventEmitter() {\n"
+    "      if (this._events === undefined || !Object.prototype.hasOwnProperty.call(this, '_events')) this._events = Object.create(null);\n"
+    "      if (!Object.prototype.hasOwnProperty.call(this, '_maxListeners')) this._maxListeners = undefined;\n"
+    "    }\n"
+    "    class EventEmitterMethods {\n"
     "      _add(n, f, prepend) {\n"
     "        if (typeof f !== 'function') {\n"
     "          const e = new TypeError('The \"listener\" argument must be of type function. Received ' + (f === null ? 'null' : typeof f));\n"
@@ -3648,6 +3652,8 @@ static const char isl_modules_bootstrap[] =
     "      rawListeners(n) { const a = this._events[n]; return a ? a.slice() : []; }\n"
     "      eventNames() { return Object.keys(this._events); }\n"
     "    }\n"
+    "    EventEmitter.prototype = EventEmitterMethods.prototype;\n"
+    "    EventEmitter.prototype.constructor = EventEmitter;\n"
     "    EventEmitter.defaultMaxListeners = 10;\n"
     "    EventEmitter.errorMonitor = Symbol('events.errorMonitor');\n"
     "    EventEmitter.captureRejectionSymbol = Symbol.for('nodejs.rejection');\n"

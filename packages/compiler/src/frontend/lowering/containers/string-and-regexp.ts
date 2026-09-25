@@ -237,7 +237,9 @@ export function lowerRegexMethodCall(lowerer: Lowerer, call: ts.CallExpression,
  * Complete position defaults and conversions here for both backends. */
 export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
-  dynReceiver?: () => IrExpr,): IrExpr | null {
+  dynReceiver?: () => IrExpr,
+  argumentNodes: readonly ts.Expression[] = call.arguments,
+): IrExpr | null {
   if (lowerer.chainBlocked(access, call)) return null;
   if (dynReceiver === undefined && access.name.text === "localeCompare") return lowerLocaleCompareCall(lowerer, call, access);
   const entry = own(STR_METHODS, access.name.text);
@@ -261,9 +263,9 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
   }
   // The lib declares optional parameters beyond some lowered forms; fence
   // those arities instead of passing arguments the runtime doesn't take.
-  if (call.arguments.length < entry.minArgs || call.arguments.length > entry.maxArgs) {
+  if (argumentNodes.length < entry.minArgs || argumentNodes.length > entry.maxArgs) {
     lowerer.noLowering(
-      `.${access.name.text} with ${call.arguments.length} argument${call.arguments.length === 1 ? "" : "s"} on strings`,
+      `.${access.name.text} with ${argumentNodes.length} argument${argumentNodes.length === 1 ? "" : "s"} on strings`,
       call,
     );
   }
@@ -273,12 +275,12 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
   const loc = locOf(call);
   const searchMethod = entry.method === "indexOf" || entry.method === "includes" ||
     entry.method === "startsWith" || entry.method === "endsWith";
-  if (searchMethod && call.arguments.length < 2) {
-    const needle = lowerStringSearchArgument(lowerer, call.arguments[0], loc);
+  if (searchMethod && argumentNodes.length < 2) {
+    const needle = lowerStringSearchArgument(lowerer, argumentNodes[0], loc);
     return { kind: "strIntrinsic", method: entry.method, receiver, args: [needle], type: entry.result, loc };
   }
-  if (searchMethod && call.arguments.length === 2) {
-    const needleNode = call.arguments[0]!;
+  if (searchMethod && argumentNodes.length === 2) {
+    const needleNode = argumentNodes[0]!;
     const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, needleNode);
     let needle = undefinedArg
       ? defaultAfterUndefined(undefinedArg, strLit("undefined", loc))
@@ -294,7 +296,7 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     const defaultPosition: IrExpr = entry.method === "endsWith"
       ? { kind: "bin", op: "/", left: numLit(1, loc), right: numLit(0, loc), type: F64, loc }
       : numLit(0, loc);
-    const position = lowerPositionArgument(lowerer, call.arguments[1], defaultPosition);
+    const position = lowerPositionArgument(lowerer, argumentNodes[1], defaultPosition);
     if (needle.type.kind === "string" && (position.type.kind === "f64" || position.type.kind === "jsval")) {
       return { kind: "strIntrinsic", method: entry.method, receiver, args: [needle, position], type: entry.result, loc };
     }
@@ -309,7 +311,7 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
         kind: "strIntrinsic", method: entry.method, receiver: varRef("arg.0", STRING, loc),
         args: [
           search,
-          positionNumber(lowerer, varRef("arg.2", position.type, loc), defaultPosition, call.arguments[1]!, "string position"),
+          positionNumber(lowerer, varRef("arg.2", position.type, loc), defaultPosition, argumentNodes[1]!, "string position"),
         ],
         type: entry.result, loc,
       };
@@ -337,7 +339,7 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     if (entry.method === "slice" || entry.method === "substring") {
       defaults.push({ kind: "bin", op: "/", left: numLit(1, loc), right: numLit(0, loc), type: F64, loc });
     }
-    const args = defaults.map((value, index) => lowerPositionArgument(lowerer, call.arguments[index], value));
+    const args = defaults.map((value, index) => lowerPositionArgument(lowerer, argumentNodes[index], value));
     const subject = entry.method === "repeat" ? "string repeat count" : "string position";
     // Keep ordinary numeric calls on the direct intrinsic path, including the
     // existing boundary validation for island values in numeric slots.
@@ -354,7 +356,7 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
       const params = [receiver, ...args].map((arg, index) => ({ localId: `arg.${index}`, name: `arg${index}`, type: arg.type }));
       const result: IrExpr = {
         kind: "strIntrinsic", method: entry.method, receiver: varRef("arg.0", STRING, loc),
-        args: args.map((arg, index) => positionNumber(lowerer, varRef(`arg.${index + 1}`, arg.type, loc), defaults[index]!, call.arguments[index] ?? call, subject)),
+        args: args.map((arg, index) => positionNumber(lowerer, varRef(`arg.${index + 1}`, arg.type, loc), defaults[index]!, argumentNodes[index] ?? call, subject)),
         type: entry.result, loc,
       };
       lowerer.widthHelpers.set(key, helper);
@@ -367,15 +369,15 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     return { kind: "call", callee: helper, args: [receiver, ...args], type: entry.result, loc };
   }
   const args = entry.method === "split"
-    ? [lowerer.lowerExpr(call.arguments[0]!), lowerSplitLimitArg(lowerer, call.arguments[1], locOf(call))]
-    : call.arguments.map((a) => lowerer.lowerExpr(a));
+    ? [lowerer.lowerExpr(argumentNodes[0]!), lowerSplitLimitArg(lowerer, argumentNodes[1], locOf(call))]
+    : argumentNodes.map((a) => lowerer.lowerExpr(a));
   // split's separator must BE a string here (a regex argument was
   // claimed by lowerRegexMethodCall before this path) — the lib's
   // `string | RegExp` union has no lowering as a VALUE.
   if (entry.method === "split" && args[0]!.type.kind !== "string") {
     lowerer.unsupported(
       "SC1090",
-      call.arguments[0]!,
+      argumentNodes[0]!,
       `'.split()' on a '${lowerer.fmt(args[0]!.type)}' separator (pass a string, or a regex literal)`,
     );
   }

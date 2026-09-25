@@ -12,7 +12,7 @@ import { isJsSourceFile, isNodeEsmFile, locOf } from "../program.js";
 import { genResultRecord, isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { PoisonError, dynFallbackType, dynUndefinedExpr, importCallHandleType, jsFuncNameOf, newFnCtx, nodeThrowExpr, staticImportNamespaceType } from "./lowerer.js";
 import { enforceLibBoundary } from "./lib-boundary.js";
-import { NARROW_FIRST, builtinFenceHintOf, builtinModuleFnOf } from "./surfaces.js";
+import { NARROW_FIRST, STR_METHODS, builtinFenceHintOf, builtinModuleFnOf } from "./surfaces.js";
 import { ffiBindingDiag, ffiSignatureDiag, libCallbackDiag, requiresDynamicDiag } from "../../diagnostics/diagnostic.js";
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { mixinFnShapeOf } from "./lower-mixins.js";
@@ -4659,6 +4659,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         // TestContext surface (t.test/t.skip/t.diagnostic), t.assert.*.
         lowerer.lowerTestMethodCall(expr, expr.expression) ??
         lowerer.lowerTimeoutMethodCall(expr, expr.expression) ??
+        lowerStringPrototypeCall(lowerer, expr, expr.expression) ??
         lowerStringMethodCallWithOptionalArgs(lowerer, expr, expr.expression) ??
         // Typed-array/Buffer receivers and the Buffer statics — before the
         // island path (bytes never cross the boundary).
@@ -5032,8 +5033,10 @@ function lowerStringMethodCallWithOptionalArgs(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
+  receiver?: () => IrExpr,
+  argumentNodes: readonly ts.Expression[] = call.arguments,
 ): IrExpr | null {
-  const lowered = lowerer.lowerStringMethodCall(call, access);
+  const lowered = lowerStringMethodCall(lowerer, call, access, receiver, argumentNodes);
   if (lowered?.kind !== "strIntrinsic") return lowered;
   const args = [...lowered.args];
   let changed = false;
@@ -5061,10 +5064,58 @@ function lowerStringMethodCallWithOptionalArgs(
     args[0]?.type.kind === "union" &&
     lowerer.runtimeOptionalWidening(args[0].type, STRING) !== null
   ) {
-    args[0] = lowerer.ensureString(args[0], call.arguments[0]!);
+    args[0] = lowerer.ensureString(args[0], argumentNodes[0]!);
     changed = true;
   }
   return changed ? { ...lowered, args } : lowered;
+}
+
+function lowerStringPrototypeCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.name.text !== "call" || !ts.isPropertyAccessExpression(access.expression)) return null;
+  const methodAccess = access.expression;
+  const prototypeAccess = methodAccess.expression;
+  if (!ts.isPropertyAccessExpression(prototypeAccess) || prototypeAccess.name.text !== "prototype" ||
+      !ts.isIdentifier(prototypeAccess.expression) || prototypeAccess.expression.text !== "String" ||
+      !Object.hasOwn(STR_METHODS, methodAccess.name.text) || !lowerer.isStdlibMember(methodAccess)) return null;
+  if (call.arguments.some(ts.isSpreadElement)) return null;
+  const entry = STR_METHODS[methodAccess.name.text]!;
+  const method = methodAccess.name.text === "trimStart" ? "trimLeft" :
+    methodAccess.name.text === "trimEnd" ? "trimRight" : methodAccess.name.text;
+  const loc = locOf(call);
+  const nullishError = nodeThrowExpr(1, "", `String.prototype.${method} called on null or undefined`, entry.result, loc);
+  const receiverNode = call.arguments[0];
+  if (!receiverNode) return nullishError;
+  const receiverValue = lowerer.lowerExpr(receiverNode);
+  const receiverType = receiverValue.type;
+  const nullish = isUnitType(receiverType) || receiverType.kind === "void" ||
+    (receiverType.kind === "union" && (lowerer.unions.get(receiverType.unionId)?.arms.every((arm) =>
+      isUnitType(arm) || arm.kind === "void") ?? false));
+  if (nullish) {
+    const values = [receiverValue, ...call.arguments.slice(1).map((arg) => lowerer.lowerExpr(arg))];
+    return {
+      kind: "seqExpr",
+      stmts: values.filter((value) => !isSafeToDiscard(value)).map((value) => ({ kind: "exprStmt", expr: value, loc: value.loc })),
+      result: nullishError,
+      type: entry.result,
+      loc,
+    };
+  }
+  const scalar = receiverType.kind === "string" || receiverType.kind === "f64" ||
+    receiverType.kind === "bool" || receiverType.kind === "bigint" ||
+    (receiverType.kind === "union" && (lowerer.unions.get(receiverType.unionId)?.arms.every((arm) =>
+      arm.kind === "string" || arm.kind === "f64" || arm.kind === "bool" || arm.kind === "bigint") ?? false));
+  // Object conversion may run user code, so no later method arguments can remain to evaluate.
+  const objectWithoutMethodArgs = entry.maxArgs === 0 && call.arguments.length === 1 &&
+    (receiverType.kind === "record" || receiverType.kind === "array" || receiverType.kind === "object");
+  if (!scalar && !objectWithoutMethodArgs) {
+    return lowerer.noLowering(`String.prototype.${methodAccess.name.text}.call with ${lowerer.fmt(receiverType)} receivers`, call);
+  }
+  const receiver = lowerer.ensureString(receiverValue, receiverNode);
+  return lowerStringMethodCallWithOptionalArgs(lowerer, call, methodAccess, () => receiver, call.arguments.slice(1));
 }
 
 function lowerScalarUnionNumber(lowerer: Lowerer, arg: IrExpr, node: ts.Expression, loc: SrcLoc): IrExpr | null {

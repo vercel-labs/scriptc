@@ -332,12 +332,13 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     }
     return { kind: "call", callee: helper, args: [receiver, needle, position], type: entry.result, loc };
   }
-  if (entry.method === "charAt" || entry.method === "charCodeAt" || entry.method === "slice" || entry.method === "substring") {
+  if (entry.method === "charAt" || entry.method === "charCodeAt" || entry.method === "slice" || entry.method === "substring" || entry.method === "repeat") {
     const defaults: IrExpr[] = [numLit(0, loc)];
     if (entry.method === "slice" || entry.method === "substring") {
       defaults.push({ kind: "bin", op: "/", left: numLit(1, loc), right: numLit(0, loc), type: F64, loc });
     }
     const args = defaults.map((value, index) => lowerPositionArgument(lowerer, call.arguments[index], value));
+    const subject = entry.method === "repeat" ? "string repeat count" : "string position";
     // Keep ordinary numeric calls on the direct intrinsic path, including the
     // existing boundary validation for island values in numeric slots.
     if (args.every(arg => arg.type.kind === "f64" || arg.type.kind === "jsval")) {
@@ -353,7 +354,7 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
       const params = [receiver, ...args].map((arg, index) => ({ localId: `arg.${index}`, name: `arg${index}`, type: arg.type }));
       const result: IrExpr = {
         kind: "strIntrinsic", method: entry.method, receiver: varRef("arg.0", STRING, loc),
-        args: args.map((arg, index) => positionNumber(lowerer, varRef(`arg.${index + 1}`, arg.type, loc), defaults[index]!, call.arguments[index] ?? call, "string position")),
+        args: args.map((arg, index) => positionNumber(lowerer, varRef(`arg.${index + 1}`, arg.type, loc), defaults[index]!, call.arguments[index] ?? call, subject)),
         type: entry.result, loc,
       };
       lowerer.widthHelpers.set(key, helper);

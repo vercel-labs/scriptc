@@ -15,6 +15,9 @@
   "cpu": [
     "x64"
   ],
+  "bin": {
+    "scriptc-llvm-linux-x64-musl": "bin/scriptc-llvm-codegen"
+  },
   "files": [
     "bin",
     "LICENSE",

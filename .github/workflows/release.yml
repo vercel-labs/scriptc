@@ -297,6 +297,11 @@ jobs:
               tarball=$(cd "$dir" && pnpm pack --silent | tail -1)
               packed="$dir/$tarball"
             fi
+            case "$dir" in
+              packages/llvm-darwin-*|packages/llvm-linux-*)
+                node scripts/verify-llvm-package-mode.mjs "$packed" "$name"
+                ;;
+            esac
             if npm publish "$packed" $PROVENANCE --access public; then
               return 0
             else

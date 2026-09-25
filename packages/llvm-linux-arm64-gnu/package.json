@@ -15,6 +15,9 @@
   "cpu": [
     "arm64"
   ],
+  "bin": {
+    "scriptc-llvm-linux-arm64-gnu": "bin/scriptc-llvm-codegen"
+  },
   "files": [
     "bin",
     "LICENSE",

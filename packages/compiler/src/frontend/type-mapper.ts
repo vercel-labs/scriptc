@@ -744,17 +744,43 @@ export interface TypeMapperCtx {
 }
 
 
-/** lower-calls.ts's bodyReadsArguments, duplicated here (type-mapper.ts must not
- * import from lowering/ — that edge is a module cycle): does the function's
- * OWN body read `arguments`? Nested plain functions/methods own theirs
- * (skipped); arrows see the enclosing one (descended). */
-function bodyReadsArgumentsLocal(fn: { body?: ts.Node | undefined }): boolean {
+/** Does this identifier read the `arguments` object? A member or property
+ * name spelled `arguments` — `o.arguments`, `{ arguments: x }`, a property
+ * signature, a destructured property — names a slot, not the binding. */
+function readsArgumentsObject(n: ts.Identifier): boolean {
+  if (n.text !== "arguments") return false;
+  const parent = n.parent;
+  if (ts.isPropertyAccessExpression(parent)) return parent.name !== n;
+  if (ts.isQualifiedName(parent)) return parent.right !== n;
+  if (ts.isBindingElement(parent)) return parent.propertyName !== n;
+  if (
+    ts.isPropertyAssignment(parent) ||
+    ts.isPropertySignature(parent) ||
+    ts.isPropertyDeclaration(parent) ||
+    ts.isMethodDeclaration(parent) ||
+    ts.isMethodSignatureDeclaration(parent) ||
+    ts.isGetAccessor(parent) ||
+    ts.isSetAccessor(parent) ||
+    ts.isEnumMember(parent)
+  ) {
+    return parent.name !== n;
+  }
+  return true;
+}
+
+/** Does this function's OWN body read `arguments`? Nested plain functions
+ * and methods have their own `arguments` (the walk skips them); arrows see
+ * the enclosing one (the walk descends). Shared with the lowerer's
+ * dynFallbackType: tsgo does not synthesize the `arguments` rest parameter
+ * into inferred signatures (5.9.3 did — its param-count mismatch was the
+ * detector), so the 7 world asks the BODY directly. */
+export function bodyReadsArguments(fn: { body?: ts.Node | undefined }): boolean {
   let found = false;
   if (fn.body === undefined) return false;
   // Iterative walk (walkPreorder): function bodies can hold pathologically
   // deep expression chains that a recursive visit would die on.
   ts.walkPreorder(fn.body, (n) => {
-    if (ts.isIdentifier(n) && n.text === "arguments" && !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n)) {
+    if (ts.isIdentifier(n) && readsArgumentsObject(n)) {
       found = true;
       return "stop";
     }
@@ -2582,7 +2608,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // tsgo never SYNTHESIZES that rest param into the inferred signature
       // (5.9.3 did — the count mismatch above was the whole detector
       // there), so the declaration's own body answers directly.
-      if (sigDecl !== undefined && ts.isFunctionLike(sigDecl) && bodyReadsArgumentsLocal(sigDecl as { body?: ts.Node })) {
+      if (sigDecl !== undefined && ts.isFunctionLike(sigDecl) && bodyReadsArguments(sigDecl as { body?: ts.Node })) {
         return null;
       }
     }
@@ -3968,7 +3994,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
       sigDecl !== undefined &&
       ts.isFunctionLike(sigDecl) &&
       (sigDecl.parameters.length !== sig.getParameters().length ||
-        bodyReadsArgumentsLocal(sigDecl as { body?: ts.Node }))
+        bodyReadsArguments(sigDecl as { body?: ts.Node }))
     ) {
       return `the function shape is supported, but its signature is variadic ('arguments'-reading), and a compiled signature is fixed-arity`;
     }

@@ -6985,6 +6985,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3035-arguments-property-names.ts": {
+   "order": [
+    "<repo>/tests/corpus/3035-arguments-property-names.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/304-compound-incdec.ts": {
    "order": [
     "<repo>/tests/corpus/304-compound-incdec.ts"

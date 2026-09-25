@@ -626,6 +626,13 @@ export function lowerObjectLiteral(lowerer: Lowerer, expr: ts.ObjectLiteralExpre
     tsType = lowerer.checker.getAwaitedType(tsType) ?? tsType;
   }
   let mapped = lowerer.mapTypeOf(tsType);
+  // A JavaScript call can contextually type an object literal as string even
+  // though the literal itself is a record. Keep its own shape so a caller
+  // performing ToString can convert it after the value is built.
+  if (mapped?.kind === "string" && isJsSourceFile(expr.getSourceFile())) {
+    const own = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (own?.kind === "record") mapped = own;
+  }
   // An EMPTY-record context under a NON-empty literal (`Object.keys({
   // ...process.env })` — the lib's `{}`-typed parameters admit every
   // object): `{}` carries no shape information, so the literal builds as

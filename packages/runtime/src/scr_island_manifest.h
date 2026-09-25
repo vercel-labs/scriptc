@@ -84,6 +84,9 @@ static const struct {
     {"node:dns",
      "lookup,lookupService,resolve,resolve4,resolve6,resolveCname,resolveMx,resolveNs,resolveS"
      "rv,resolveTxt,reverse,getServers,setServers,Resolver,promises,ADDRCONFIG,V4MAPPED,ALL"},
+    {"node:dns/promises",
+     "lookup,lookupService,resolve,resolve4,resolve6,resolveCname,resolveMx,resolveNs,resolveS"
+     "rv,resolveTxt,reverse,getServers,setServers,Resolver"},
     {"node:async_hooks",
      "AsyncLocalStorage,AsyncResource,executionAsyncId,triggerAsyncId,executionAsyncResource,c"
      "reateHook"},

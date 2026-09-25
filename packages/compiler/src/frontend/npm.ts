@@ -563,8 +563,9 @@ const SHIMMED_BUILTINS = new Set([
   // Loadable with Node's surface, answers fenced AT THE CALL (through the
   // callback/promise, dns's error channel): proxy-agent's pac-resolver
   // requires dns whenever proxy env vars exist and only calls lookup when
-  // a PAC proxy resolves.
-  "dns",
+  // a PAC proxy resolves. dns/promises carries the same promise members:
+  // @redis/client requires it at load.
+  "dns", "dns/promises",
   // The main-thread worker_threads surface (real in-process MessageChannel
   // ports, Worker fences at construction) and perf_hooks' performance —
   // undici requires both UNGUARDED at load.

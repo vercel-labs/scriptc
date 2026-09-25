@@ -9475,6 +9475,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/fixtures/npm/cases/events-legacy-inheritance/main.ts": {
+   "order": [
+    "<repo>/tests/fixtures/npm/cases/events-legacy-inheritance/main.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/fixtures/npm/cases/fetch-destructure/main.ts": {
    "order": [
     "<repo>/tests/fixtures/npm/cases/fetch-destructure/main.ts"

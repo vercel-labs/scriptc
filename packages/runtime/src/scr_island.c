@@ -3578,8 +3578,7 @@ static const char isl_modules_bootstrap[] =
      * (warnings are not emitted), eventNames/rawListeners, Node's
      * unhandled-'error' throw, and the once/getEventListeners statics. */
     "  builtins.events = memo(() => {\n"
-    "    class EventEmitter {\n"
-    "      constructor() { this._events = Object.create(null); this._maxListeners = undefined; }\n"
+    "    class EventEmitterMethods {\n"
     "      _add(n, f, prepend) {\n"
     "        if (typeof f !== 'function') {\n"
     "          const e = new TypeError('The \"listener\" argument must be of type function. Received ' + (f === null ? 'null' : typeof f));\n"
@@ -3648,6 +3647,19 @@ static const char isl_modules_bootstrap[] =
     "      rawListeners(n) { const a = this._events[n]; return a ? a.slice() : []; }\n"
     "      eventNames() { return Object.keys(this._events); }\n"
     "    }\n"
+    /* Node's EventEmitter is a plain constructor function, and packages
+     * written before classes inherit from it by calling it on their own
+     * instance — `EventEmitter.call(this)` (ioredis, util.inherits-era
+     * code) — which a class constructor refuses. The methods keep their
+     * class definition; the constructor is a function, as in Node, and
+     * EventEmitter.init leaves an instance's own listeners in place. */
+    "    function EventEmitter() { EventEmitter.init.call(this); }\n"
+    "    EventEmitter.init = function () {\n"
+    "      if (this._events === undefined || this._events === Object.getPrototypeOf(this)._events) this._events = Object.create(null);\n"
+    "      this._maxListeners = this._maxListeners || undefined;\n"
+    "    };\n"
+    "    EventEmitter.prototype = EventEmitterMethods.prototype;\n"
+    "    Object.defineProperty(EventEmitter.prototype, 'constructor', { value: EventEmitter, writable: true, configurable: true });\n"
     "    EventEmitter.defaultMaxListeners = 10;\n"
     "    EventEmitter.errorMonitor = Symbol('events.errorMonitor');\n"
     "    EventEmitter.captureRejectionSymbol = Symbol.for('nodejs.rejection');\n"

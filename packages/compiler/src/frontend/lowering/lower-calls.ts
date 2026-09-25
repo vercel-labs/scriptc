@@ -35,7 +35,7 @@ import { npmStaticPackageOfPath } from "../npm-static.js";
 import { countedFor, varRef } from "../../ir/build.js";
 import { rejectStaticThis } from "./static-this.js";
 import { fenceNodeModuleMutationCall, lowerRequireCacheKeys } from "./lower-node-module.js";
-import { lowerOptionalArgument } from "./optional-arguments.js";
+import { defaultAfterUndefined, lowerOptionalArgument, lowerStaticallyUndefinedArgument, positionNumber } from "./optional-arguments.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
  * completes every call to the one full signature, so the IR and backends
@@ -3765,10 +3765,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // String(x) is exactly the template-literal ToString, Boolean(x) is
     // exactly the condition ToBoolean (union arms included), Number(x) is
     // ToNumber where it lowers exactly: numbers pass through, booleans
-    // become 1/0, and strings run the runtime's ECMA-exact
-    // StringToNumber (num.fromString — the full StringNumericLiteral
-    // grammar, scr_string.c). Other argument types (unions included —
-    // narrow first) keep the fence.
+    // become 1/0, null becomes 0, and undefined becomes NaN. Strings use
+    // the runtime's StringToNumber parser (num.fromString — the full
+    // StringNumericLiteral grammar in scr_string.c).
     // Provenance-checked like setTimeout; zero-arg forms are the JS
     // constants ("", false, 0). `new String(...)` (wrapper objects) stays
     // on the SC2020 fence.
@@ -3832,8 +3831,20 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // representation (`Boolean(rec && list.some(f))` — a record and a
       // bool) that a value lowering of the `&&` would fence on.
       if (name === "Boolean") return lowerer.lowerCondition(argNode);
+      if (name === "Number") {
+        const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, argNode);
+        if (undefinedArg) {
+          return defaultAfterUndefined(undefinedArg, {
+            kind: "bin", op: "/", left: { kind: "numLit", value: 0, type: F64, loc },
+            right: { kind: "numLit", value: 0, type: F64, loc }, type: F64, loc,
+          });
+        }
+      }
       const arg = lowerer.lowerExpr(argNode);
       if (name === "String") return lowerer.ensureString(arg, argNode);
+      if (name === "Number" && arg.type.kind === "nullT") {
+        return defaultAfterUndefined(arg, { kind: "numLit", value: 0, type: F64, loc });
+      }
       if (name === "Number" && arg.type.kind === "bigint") {
         return { kind: "libCall", fn: "bigint.toF64", args: [arg], type: F64, loc };
       }
@@ -3853,6 +3864,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       }
       const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
       if (optionalNumber) return optionalNumber;
+      const nullishNumber = lowerNullishNumber(lowerer, arg, argNode, loc);
+      if (nullishNumber) return nullishNumber;
       lowerer.noLowering(
         `Number of ${lowerer.fmt(arg.type)} values`,
         argNode,
@@ -5052,6 +5065,30 @@ function lowerStringMethodCallWithOptionalArgs(
     changed = true;
   }
   return changed ? { ...lowered, args } : lowered;
+}
+
+function lowerNullishNumber(lowerer: Lowerer, arg: IrExpr, node: ts.Expression, loc: SrcLoc): IrExpr | null {
+  if (arg.type.kind !== "union" || !lowerer.unions.get(arg.type.unionId)?.arms.every(isUnitType)) return null;
+  const key = `number.nullish:${arg.type.unionId}`;
+  let helper = lowerer.widthHelpers.get(key);
+  if (!helper) {
+    helper = `%number.nullish.${lowerer.widthHelpers.size}`;
+    lowerer.widthHelpers.set(key, helper);
+    const value = varRef("value.0", arg.type, loc);
+    const nan: IrExpr = {
+      kind: "bin", op: "/", left: { kind: "numLit", value: 0, type: F64, loc },
+      right: { kind: "numLit", value: 0, type: F64, loc }, type: F64, loc,
+    };
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "value.0", name: "value", type: arg.type }],
+      returnType: F64,
+      locals: [{ id: "value.0", name: "value", type: arg.type, mutable: false }],
+      body: [{ kind: "return", value: positionNumber(lowerer, value, nan, node, "Number argument"), loc }],
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [arg], type: F64, loc };
 }
 
 function lowerOptionalStringNumber(

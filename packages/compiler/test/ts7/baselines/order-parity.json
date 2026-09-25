@@ -6997,6 +6997,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3037-number-nullish-conversion.js": {
+   "order": [
+    "<repo>/tests/corpus/3037-number-nullish-conversion.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/304-compound-incdec.ts": {
    "order": [
     "<repo>/tests/corpus/304-compound-incdec.ts"

@@ -17,7 +17,7 @@ import { arrayIndexPresent, arrayValueRead, arrayValueStore, arrayValueType, cur
 import { typeKey } from "../type-mapper.js";
 import { WidthLift } from "./lowerer.js";
 import { boolLit, countedFor, numLit, varRef } from "../../ir/build.js";
-import { lowerOptionalArgument } from "./optional-arguments.js";
+import { lowerOptionalArgument, lowerPositionArgument, positionNumber } from "./optional-arguments.js";
 
 /** Build the argument array for a mutating/copying operation while keeping
  * the receiver's scalar payload ABI. A missing read is represented as the
@@ -325,7 +325,7 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
     // included — Node returns the unchanged length); reduce/reduceRight
     // lower both declared forms (with and without an initial value).
     const arity = {
-      push: [0, Number.MAX_SAFE_INTEGER], unshift: [0, Number.MAX_SAFE_INTEGER], pop: [0, 0], indexOf: [1, 2], includes: [1, 2], join: [1, 1],
+      push: [0, Number.MAX_SAFE_INTEGER], unshift: [0, Number.MAX_SAFE_INTEGER], pop: [0, 0], indexOf: [1, 2], lastIndexOf: [1, 2], includes: [0, 2], join: [1, 1],
       concat: [0, Number.MAX_SAFE_INTEGER],
       slice: [0, 2], shift: [0, 0], splice: [1, 2], at: [1, 1],
       map: [1, 1], filter: [1, 1], forEach: [1, 1], find: [1, 1], findIndex: [1, 1], some: [1, 1],
@@ -333,7 +333,7 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
       every: [1, 1], flatMap: [1, 1], reduce: [1, 2], reduceRight: [1, 2],
     }[
       name as
-        | "push" | "unshift" | "pop" | "concat" | "indexOf" | "includes" | "join" | "slice" | "shift" | "splice" | "at" | "map" | "filter"
+        | "push" | "unshift" | "pop" | "concat" | "indexOf" | "lastIndexOf" | "includes" | "join" | "slice" | "shift" | "splice" | "at" | "map" | "filter"
         | "forEach" | "find" | "findIndex" | "findLast" | "findLastIndex" | "some" | "every" | "flatMap" | "reduce" | "reduceRight"
     ];
     if (call.arguments.length < arity[0]! || call.arguments.length > arity[1]!) {
@@ -448,7 +448,7 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
         loc,
       };
     }
-    if (name === "indexOf" || name === "includes") {
+    if (name === "indexOf" || name === "lastIndexOf" || name === "includes") {
       return lowerArraySearchCall(lowerer, call, access, name, elem);
     }
     if (name === "concat") {
@@ -599,24 +599,28 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
 /** `indexOf` and `includes` normally use the runtime's typed search helpers,
  * but an indexed array read is a `T | undefined` value. Keep that union
  * through a small lowered loop so the needle's missing state is observable:
- * indexOf skips holes, while includes treats holes as undefined. The same
- * loop also gives union-element arrays their value equality rather than
- * comparing the compiler's union boxes by pointer. */
+ * indexOf and lastIndexOf skip holes, while includes treats holes as
+ * undefined. The same loop also gives union-element arrays their value
+ * equality rather than comparing the compiler's union boxes by pointer. */
 function lowerArraySearchCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
-  method: "indexOf" | "includes",
+  method: "indexOf" | "lastIndexOf" | "includes",
   elem: IrType,
 ): IrExpr {
   const loc = locOf(call);
   const receiver = lowerer.lowerExpr(access.expression);
-  const argNode = call.arguments[0]!;
+  const argNode = call.arguments[0] ?? call;
   if (call.arguments.some(ts.isSpreadElement)) lowerer.noLowering(`.${method} with spread arguments`, call);
-  let needle = lowerer.lowerExpr(argNode);
-  const fromIndex = call.arguments[1]
-    ? lowerOptionalArgument(lowerer, call.arguments[1], F64, numLit(0, loc))
-    : numLit(0, loc);
+  let needle: IrExpr = call.arguments[0]
+    ? lowerer.lowerExpr(call.arguments[0])
+    : { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
+  const fromIndex: IrExpr = call.arguments[1]
+    ? lowerPositionArgument(lowerer, call.arguments[1], numLit(0, loc))
+    : method === "lastIndexOf"
+      ? { kind: "bin", op: "/", left: numLit(1, loc), right: numLit(0, loc), type: F64, loc }
+      : numLit(0, loc);
   // A derived CLASS VALUE against a base-classval element widens (the same
   // pointer — identity search is exact); the coercion path owns the ABI gate.
   if (needle.type.kind === "classval" && elem.kind === "classval" && !typeEquals(needle.type, elem)) {
@@ -625,13 +629,13 @@ function lowerArraySearchCall(
 
   // Preserve the existing fast path for an ordinary, non-union needle. Its
   // runtime implementation already has exact primitive/reference equality.
-  if (call.arguments.length === 1 && elem.kind !== "union" && elem.kind !== "bigint" && typeEquals(needle.type, elem)) {
+  if (method !== "lastIndexOf" && call.arguments.length === 1 && elem.kind !== "union" && elem.kind !== "bigint" && typeEquals(needle.type, elem)) {
     return {
       kind: "arrIntrinsic",
       method,
       receiver,
       args: [needle],
-      type: method === "indexOf" ? F64 : BOOL,
+      type: method === "includes" ? BOOL : F64,
       loc,
     };
   }
@@ -641,6 +645,7 @@ function lowerArraySearchCall(
   // static undefined arm. Keep their existing runtime path and its explicit
   // type fence; typed static arrays take the state-aware helper below.
   if (valueT.kind !== "union") {
+    if (method === "lastIndexOf") lowerer.noLowering(".lastIndexOf on an array of engine values", call);
     if (call.arguments.length > 1) lowerer.noLowering(`.${method} with fromIndex on '${lowerer.fmt(elem)}' elements`, call);
     if (!typeEquals(needle.type, elem)) lowerer.badType(argNode, lowerer.typeOf(argNode));
     return {
@@ -648,7 +653,7 @@ function lowerArraySearchCall(
       method,
       receiver,
       args: [needle],
-      type: method === "indexOf" ? F64 : BOOL,
+      type: method === "includes" ? BOOL : F64,
       loc,
     };
   }
@@ -668,10 +673,16 @@ function lowerArraySearchCall(
     for (const arm of needleArms) if (!arms.some((existing) => typeEquals(existing, arm))) arms.push(arm);
     if (arms.length !== valueArms.length) valueT = { kind: "union", unionId: lowerer.unions.intern(arms) };
   }
-  const searchNeedle = lowerer.coerceInto(argNode, needle, valueT);
-  if (!typeEquals(searchNeedle.type, valueT)) lowerer.badType(argNode, lowerer.typeOf(argNode));
-  const helper = arraySearchHelper(lowerer, method, elem, valueT, loc);
-  return { kind: "call", callee: helper, args: [receiver, searchNeedle, fromIndex], type: method === "indexOf" ? F64 : BOOL, loc };
+  const directNeedle = method === "lastIndexOf" && elem.kind !== "union" && typeEquals(needle.type, elem);
+  const searchNeedle = directNeedle ? needle : lowerer.coerceInto(argNode, needle, valueT);
+  // Checked dynamic extraction can copy a composite. Its new identity cannot
+  // be compared to an array element as though it were the original value.
+  if (method === "lastIndexOf" && searchNeedle.kind === "dynCheck" && (elem.kind === "record" || elem.kind === "array")) {
+    lowerer.noLowering(".lastIndexOf with a checked dynamic reference needle", call);
+  }
+  if (!directNeedle && !typeEquals(searchNeedle.type, valueT)) lowerer.badType(argNode, lowerer.typeOf(argNode));
+  const helper = arraySearchHelper(lowerer, method, elem, valueT, searchNeedle.type, directNeedle, fromIndex.type, call.arguments[1] ?? call, loc);
+  return { kind: "call", callee: helper, args: [receiver, searchNeedle, fromIndex], type: method === "includes" ? BOOL : F64, loc };
 }
 
 /** SameValueZero over a static value union. `unionEq` supplies strict
@@ -723,36 +734,41 @@ function arraySearchEquality(
 
 function arraySearchHelper(
   lowerer: Lowerer,
-  method: "indexOf" | "includes",
+  method: "indexOf" | "lastIndexOf" | "includes",
   elem: IrType,
   valueT: IrType & { kind: "union" },
+  needleT: IrType,
+  directNeedle: boolean,
+  fromT: IrType,
+  fromNode: ts.Expression,
   loc: SrcLoc,
 ): string {
-  const key = `${method}:${typeKey(elem)}:${typeKey(valueT)}`;
+  const key = `${method}:${typeKey(elem)}:${typeKey(valueT)}:${typeKey(needleT)}:${directNeedle}:${typeKey(fromT)}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
   const arrT = arrayOf(elem);
-  const resultT = method === "indexOf" ? F64 : BOOL;
+  const resultT = method === "includes" ? BOOL : F64;
   const arrRef = varRef("a.0", arrT, loc);
   const indexRef = varRef("i.0", F64, loc);
-  const needleRef = varRef("needle.0", valueT, loc);
+  const needleRef = varRef("needle.0", needleT, loc);
   const stateRef = varRef("state.0", F64, loc);
   const nextRef = varRef("next.0", F64, loc);
-  const fromRef = varRef("from.0", F64, loc);
+  const fromRef = varRef("from.0", fromT, loc);
+  const numberRef = varRef("number.0", F64, loc);
   const integerRef = varRef("integer.0", F64, loc);
-  // ToIntegerOrInfinity, followed by the relative start index. Keeping the
-  // length read inside the helper preserves argument effects before search.
+  // Snapshot length before coercing fromIndex, then apply ToIntegerOrInfinity.
+  const number = positionNumber(lowerer, fromRef, numLit(0, loc), fromNode, "array search position");
   const integer: IrExpr = {
     kind: "ternary",
-    cond: { kind: "libCall", fn: "num.isNaN", args: [fromRef], type: BOOL, loc },
+    cond: { kind: "libCall", fn: "num.isNaN", args: [numberRef], type: BOOL, loc },
     then: numLit(0, loc),
-    else_: { kind: "libCall", fn: "math.trunc", args: [fromRef], type: F64, loc },
+    else_: { kind: "libCall", fn: "math.trunc", args: [numberRef], type: F64, loc },
     type: F64,
     loc,
   };
-  const start: IrExpr = {
+  const forwardStart: IrExpr = {
     kind: "ternary",
     cond: { kind: "bin", op: "<", left: integerRef, right: numLit(0, loc), type: BOOL, loc },
     then: {
@@ -765,10 +781,24 @@ function arraySearchHelper(
     type: F64,
     loc,
   };
+  const start: IrExpr = method === "lastIndexOf" ? {
+    kind: "ternary",
+    cond: { kind: "bin", op: "<", left: integerRef, right: numLit(0, loc), type: BOOL, loc },
+    then: { kind: "bin", op: "+", left: varRef("n.0", F64, loc), right: integerRef, type: F64, loc },
+    else_: {
+      kind: "libCall", fn: "math.min",
+      args: [
+        { kind: "bin", op: "+", left: integerRef, right: numLit(0, loc), type: F64, loc },
+        { kind: "bin", op: "-", left: varRef("n.0", F64, loc), right: numLit(1, loc), type: F64, loc },
+      ],
+      type: F64, loc,
+    },
+    type: F64, loc,
+  } : forwardStart;
   const rawRead: IrExpr = { kind: "arrayGet", arr: arrRef, index: indexRef, type: elem, loc };
   const missing = lowerer.wrappedUndefined(valueT, loc);
   if (!missing) throw new InternalCompilerError("array search helper needs an undefined arm");
-  const value: IrExpr = {
+  const optionalValue: IrExpr = {
     kind: "ternary",
     cond: { kind: "bin", op: "===", left: stateRef, right: numLit(1, loc), type: BOOL, loc },
     then: typeEquals(elem, valueT) ? rawRead : lowerer.coerceToExpected(rawRead, valueT),
@@ -776,12 +806,14 @@ function arraySearchHelper(
     type: valueT,
     loc,
   };
-  const equal = arraySearchEquality(lowerer, varRef("value.0", valueT, loc), needleRef, method === "includes", loc);
-  const match = method === "indexOf"
+  const value = directNeedle ? rawRead : optionalValue;
+  const readT = directNeedle ? elem : valueT;
+  const equal = arraySearchEquality(lowerer, varRef("value.0", readT, loc), needleRef, method === "includes", loc);
+  const match = method !== "includes"
     ? {
         kind: "logical" as const,
         op: "&&" as const,
-        left: { kind: "bin" as const, op: "!==" as const, left: stateRef, right: numLit(0, loc), type: BOOL, loc },
+        left: { kind: "bin" as const, op: directNeedle ? "===" as const : "!==" as const, left: stateRef, right: numLit(directNeedle ? 1 : 0, loc), type: BOOL, loc },
         right: equal,
         type: BOOL,
         loc,
@@ -789,7 +821,7 @@ function arraySearchHelper(
     : equal;
   const undefinedTag = lowerer.armTag(valueT.unionId, UNDEFINED_T);
   if (undefinedTag < 0) throw new InternalCompilerError("array search helper needs an undefined tag");
-  const needleIsUndefined: IrExpr = {
+  const needleIsUndefined: IrExpr = directNeedle ? boolLit(false, loc) : {
     kind: "unionIsTag",
     unionId: valueT.unionId,
     tag: undefinedTag,
@@ -801,7 +833,7 @@ function arraySearchHelper(
   const advance: IrStmt = {
     kind: "assign",
     localId: "i.0",
-    value: { kind: "bin", op: "+", left: indexRef, right: numLit(1, loc), type: F64, loc },
+    value: { kind: "bin", op: method === "lastIndexOf" ? "-" : "+", left: indexRef, right: numLit(1, loc), type: F64, loc },
     loc,
   };
   const visitPresent: IrStmt[] = [
@@ -809,13 +841,13 @@ function arraySearchHelper(
     {
       kind: "if",
       cond: match,
-      then: [{ kind: "return", value: method === "indexOf" ? indexRef : boolLit(true, loc), loc }],
+      then: [{ kind: "return", value: method === "includes" ? boolLit(true, loc) : indexRef, loc }],
       else_: null,
       loc,
     },
     advance,
   ];
-  const skipHole: IrStmt[] = [
+  const skipHole: IrStmt[] = method === "lastIndexOf" ? [advance] : [
     {
       kind: "varDecl",
       localId: "next.0",
@@ -841,32 +873,36 @@ function arraySearchHelper(
     name,
     params: [
       { localId: "a.0", name: "a", type: arrT },
-      { localId: "needle.0", name: "needle", type: valueT },
-      { localId: "from.0", name: "from", type: F64 },
+      { localId: "needle.0", name: "needle", type: needleT },
+      { localId: "from.0", name: "from", type: fromT },
     ],
     returnType: resultT,
     locals: [
       { id: "a.0", name: "a", type: arrT, mutable: true },
-      { id: "needle.0", name: "needle", type: valueT, mutable: true },
-      { id: "from.0", name: "from", type: F64, mutable: false },
+      { id: "needle.0", name: "needle", type: needleT, mutable: true },
+      { id: "from.0", name: "from", type: fromT, mutable: false },
+      { id: "number.0", name: "number", type: F64, mutable: false },
       { id: "integer.0", name: "integer", type: F64, mutable: false },
       { id: "n.0", name: "n", type: F64, mutable: false },
       { id: "i.0", name: "i", type: F64, mutable: true },
       { id: "state.0", name: "state", type: F64, mutable: false },
       { id: "next.0", name: "next", type: F64, mutable: false },
-      { id: "value.0", name: "value", type: valueT, mutable: false },
+      { id: "value.0", name: "value", type: readT, mutable: false },
     ],
     body: [
       readLenStmt(arrT, loc),
+      { kind: "varDecl", localId: "number.0", init: number, loc },
       { kind: "varDecl", localId: "integer.0", init: integer, loc },
       { kind: "varDecl", localId: "i.0", init: start, loc },
       {
         kind: "while",
-        cond: { kind: "bin", op: "<", left: indexRef, right: varRef("n.0", F64, loc), type: BOOL, loc },
+        cond: method === "lastIndexOf"
+          ? { kind: "bin", op: ">=", left: indexRef, right: numLit(0, loc), type: BOOL, loc }
+          : { kind: "bin", op: "<", left: indexRef, right: varRef("n.0", F64, loc), type: BOOL, loc },
         body: loopBody,
         loc,
       },
-      { kind: "return", value: method === "indexOf" ? numLit(-1, loc) : boolLit(false, loc), loc },
+      { kind: "return", value: method === "includes" ? boolLit(false, loc) : numLit(-1, loc), loc },
     ],
     loc,
   });

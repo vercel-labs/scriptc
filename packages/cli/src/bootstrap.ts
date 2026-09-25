@@ -128,6 +128,7 @@ async function tryFastPath(): Promise<number | null> {
     dynamic: values.dynamic,
     backend: backend ?? "auto",
     ...(optimization === "dev" ? { optimization: "dev" as const } : {}),
+    ...(values.strip ? { strip: true as const } : {}),
     npmStatic,
     ffiProfile: ffiPath === null ? null : { path: ffiPath, bytes: ffiBytes! },
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${

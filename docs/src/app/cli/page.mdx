@@ -116,6 +116,9 @@ Prebuilds release runtime objects and native TLS/dynamic-engine archives for tar
   <dt><code>--backend &lt;c|llvm&gt;</code></dt>
   <dd>Code generator: <code>llvm</code> (default) or <code>c</code> (the readable debugging backend). On supported targets, LLVM-tier executable code generation uses the bundled helper and precompiled runtime pack before the platform link. Unset, a native build can fall back to C when the program is outside the LLVM tier. The production <code>wasm32-wasi</code> target never falls back: a missing LLVM lowering is <code>SC3001</code>.</dd>
 
+  <dt><code>--strip</code></dt>
+  <dd>Remove symbol and debug payload when linking an executable, including cross-compiled targets. This opt-in flag works with either backend and <code>--from-c</code> without changing code optimization.</dd>
+
   <dt><code>--windows-subsystem &lt;console|gui&gt;</code></dt>
   <dd>Select the subsystem of a Windows executable. <code>console</code> is the default; <code>gui</code> prevents Windows from opening a console window for the app. Valid only for executable builds targeting Windows, including <code>--from-c</code>.</dd>
 

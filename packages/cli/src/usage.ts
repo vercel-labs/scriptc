@@ -35,6 +35,8 @@ Options:
                      native optimization posture (default: release/-O2). dev
                      uses -O0 and stable cached LLVM object shards for faster
                      edits of large programs
+      --strip        remove symbol/debug payload from the linked executable
+                     for smaller builds (opt in; --emit=exe only)
       --windows-subsystem <console|gui>
                      Windows executable subsystem (default: console). gui
                      prevents Windows from opening a console window
@@ -77,6 +79,7 @@ export const CLI_OPTIONS = {
   print: { type: "string" },
   backend: { type: "string" },
   optimization: { type: "string" },
+  strip: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "from-c": { type: "boolean", default: false },
   "keep-c": { type: "boolean", default: true },

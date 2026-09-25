@@ -223,6 +223,8 @@ export interface CompileBaseOptions {
   /** Native optimization posture. Release is the shipped -O2 default; dev
    * uses -O0 and stable multi-TU object caching for large LLVM programs. */
   optimization?: "release" | "dev";
+  /** Remove symbol/debug payload from an executable at link time. */
+  strip?: boolean;
   /** Windows PE executable subsystem. Console is the default; GUI suppresses
    * automatic console-window creation. Only valid for Windows executables. */
   windowsSubsystem?: WindowsSubsystem;
@@ -1077,6 +1079,7 @@ async function compileExecutableNative(
   sanitize: boolean,
   ffi: FfiProfile | null,
   windowsSubsystem?: WindowsSubsystem,
+  strip?: boolean,
   programSplit: ReturnType<typeof splitLlvmProgram> = null,
   programObjectDependencies: readonly NativeArtifactDependency[] = [],
   onArtifactReady?: NonNullable<Parameters<typeof compileExternalC>[0]["onArtifactReady"]>,
@@ -1093,6 +1096,7 @@ async function compileExecutableNative(
       features,
       ffi,
       optimization: features.optimization ?? "release",
+      ...(strip ? { strip: true } : {}),
       ...(windowsSubsystem === undefined ? {} : { windowsSubsystem }),
       programObjectDependencies,
     });
@@ -1130,6 +1134,7 @@ async function compileExecutableNative(
       outPath,
       cacheIdentity: "scriptc-generated-v1",
       ...(features.optimization === "dev" ? { optimization: "dev" as const } : {}),
+      ...(strip ? { strip: true } : {}),
       ...(windowsSubsystem === undefined ? {} : { windowsSubsystem }),
       ...(effectiveProgramSplit === null
         ? {}
@@ -1240,6 +1245,13 @@ async function compileTracked(
     return {
       ok: false,
       diagnostics: [nativeCodegenDiag("SC3002", "--windows-subsystem is only supported for executable output", entryPath)],
+      sourceTexts: new Map(),
+    };
+  }
+  if (opts.strip === true && outputKind !== "exe") {
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag("SC3002", "--strip is only supported for executable output", entryPath)],
       sourceTexts: new Map(),
     };
   }
@@ -1387,6 +1399,7 @@ async function compileTracked(
       dynamic: opts.dynamic ?? false,
       backend: opts.backend ?? "auto",
       ...(opts.optimization === "dev" ? { optimization: "dev" as const } : {}),
+      ...(opts.strip ? { strip: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       npmStatic: opts.npmStatic ?? null,
       ffiProfile:
@@ -1486,6 +1499,7 @@ async function compileTracked(
         opts.sanitize ?? false,
         ffi,
         opts.windowsSubsystem,
+        opts.strip,
         null,
         nativeProgramObject?.dependencies,
         opts.nativeProgramObject === true ? undefined : async ({ dependencies }) => {
@@ -1775,6 +1789,7 @@ async function compileTracked(
       opts.sanitize ?? false,
       ffi,
       opts.windowsSubsystem,
+      opts.strip,
       programSplit,
       nativeProgramObject?.dependencies,
       opts.nativeProgramObject === true ? undefined : async ({ dependencies }) => {

@@ -6925,21 +6925,63 @@
    ],
    "diags": []
   },
-  "<repo>/tests/corpus/3026-string-search-needle-coercion.js": {
+  "<repo>/tests/corpus/3026-array-last-index-of.js": {
    "order": [
-    "<repo>/tests/corpus/3026-string-search-needle-coercion.js"
+    "<repo>/tests/corpus/3026-array-last-index-of.js"
    ],
    "diags": []
   },
-  "<repo>/tests/corpus/3027-arguments-with-parameters.js": {
+  "<repo>/tests/corpus/3027-array-last-index-of-records.ts": {
    "order": [
-    "<repo>/tests/corpus/3027-arguments-with-parameters.js"
+    "<repo>/tests/corpus/3027-array-last-index-of-records.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3028-string-search-dynamic-needle.js": {
+   "order": [
+    "<repo>/tests/corpus/3028-string-search-dynamic-needle.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3029-string-search-union-needle.js": {
+   "order": [
+    "<repo>/tests/corpus/3029-string-search-union-needle.js"
    ],
    "diags": []
   },
   "<repo>/tests/corpus/303-break-continue.ts": {
    "order": [
     "<repo>/tests/corpus/303-break-continue.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3030-array-search-no-arg.js": {
+   "order": [
+    "<repo>/tests/corpus/3030-array-search-no-arg.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3031-string-last-index-search-value.js": {
+   "order": [
+    "<repo>/tests/corpus/3031-string-last-index-search-value.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3032-string-search-value.js": {
+   "order": [
+    "<repo>/tests/corpus/3032-string-search-value.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3033-string-search-needle-coercion.js": {
+   "order": [
+    "<repo>/tests/corpus/3033-string-search-needle-coercion.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3034-arguments-with-parameters.js": {
+   "order": [
+    "<repo>/tests/corpus/3034-arguments-with-parameters.js"
    ],
    "diags": []
   },

@@ -32,7 +32,7 @@ import {
 import { lowerAbsenceProbe } from "./lower-exprs.js";
 import { conditionalSpreadOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
-import { defaultAfterUndefined, lowerOptionalArgument, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
+import { defaultAfterUndefined, lowerOptionalArgument, lowerStaticallyUndefinedArgument, lowerStringSearchArgument } from "./optional-arguments.js";
 import { HTTP2_CONSTANTS } from "./http2-constants.js";
 import { CRYPTO_CIPHERS, CRYPTO_CONSTANTS, CRYPTO_CURVES, CRYPTO_HASHES } from "./crypto-tables.js";
 import { generatorMeta, timerStyleCallback, type ParamShape } from "./lower-calls.js";
@@ -8925,8 +8925,8 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     return { kind: "libCall", fn: "string.fromCharCode", args: [packed], type: STRING, loc };
   }
 
-/** `s.lastIndexOf(needle, position?)` on string receivers, using UTF-16
-   * indices. Omitted or undefined positions clamp to the string's end;
+/** `s.lastIndexOf(searchValue?, position?)` on string receivers, using UTF-16
+   * indices. An omitted search value searches for "undefined". Omitted or undefined positions clamp to the string's end;
    * MAX_SAFE_INTEGER has the same effect for every representable string.
    * Null for non-string receivers and other members. */
   export function lowerStringLastIndexOfCall(lowerer: Lowerer, call: ts.CallExpression,
@@ -8936,19 +8936,20 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "string") return null;
     if (!lowerer.isStdlibMember(access)) return null;
     const loc = locOf(call);
-    if (call.arguments.length < 1 || call.arguments.length > 2 || call.arguments.some(ts.isSpreadElement)) {
+    if (call.arguments.length > 2 || call.arguments.some(ts.isSpreadElement)) {
       lowerer.noLowering(
         "lastIndexOf with this argument shape",
         call,
-        "pass a string needle and an optional numeric position",
+        "pass no arguments, or a search value with an optional numeric position",
       );
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, STRING);
-    const needle = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
     const positionNode = call.arguments[1];
     if (!positionNode) {
+      const needle = lowerStringSearchArgument(lowerer, call.arguments[0], loc);
       return { kind: "libCall", fn: "string.lastIndexOf", args: [receiver, needle], type: F64, loc };
     }
+    const needle = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
     const position = lowerOptionalArgument(lowerer, positionNode, F64, numLit(Number.MAX_SAFE_INTEGER, loc));
     return { kind: "libCall", fn: "string.lastIndexOfFrom", args: [receiver, needle, position], type: F64, loc };
   }

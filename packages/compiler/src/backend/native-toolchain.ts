@@ -10,7 +10,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { localizeElfObject, mergeAndLocalizeCoffObjects } from "./object-localize.js";
-import { executableOptimizationLinkerArgs, windowsSubsystemLinkerArgs, type WindowsSubsystem } from "./targets.js";
+import { executableOptimizationLinkerArgs, executableStripLinkerArgs, windowsSubsystemLinkerArgs, type WindowsSubsystem } from "./targets.js";
 import {
   createVendorArchives,
   MBEDTLS_VERSION,
@@ -285,6 +285,8 @@ export interface CcOptions {
    * executable lane; dev selects -O0 and may compile a caller-provided LLVM
    * shard set into independently cached objects before the final link. */
   optimization?: "release" | "dev";
+  /** Remove symbol/debug payload from the linked executable. */
+  strip?: boolean;
   /** PE executable subsystem; omitted and console use the driver default. */
   windowsSubsystem?: WindowsSubsystem;
   /** Optional equivalent LLVM modules for dev compilation. Unsupported
@@ -4062,6 +4064,7 @@ async function compileCInternal(
       targetPlatform(driver),
       optimization,
     ),
+    ...executableStripLinkerArgs(targetPlatform(driver), opts.strip ?? false),
     ...windowsSubsystemArgs,
   ];
   // scr_async.c submits callback-style filesystem work to a native worker.

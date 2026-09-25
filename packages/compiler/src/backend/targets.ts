@@ -54,6 +54,19 @@ export function executableOptimizationLinkerArgs(
     : [];
 }
 
+/** Remove symbol/debug payload at link time so the executable cache stores
+ * the same bytes the user receives, including for cross-compiled targets. */
+export function executableStripLinkerArgs(platform: string, strip: boolean): string[] {
+  if (!strip) return [];
+  switch (platform) {
+    case "darwin": return ["-Wl,-S,-x"];
+    case "linux":
+    case "win32": return ["-Wl,-s"];
+    case "wasi": return ["-Wl,--strip-all"];
+    default: throw new Error(`--strip is not supported for the ${platform} executable target`);
+  }
+}
+
 export interface NativeTargetSpec {
   /** Stable scriptc-facing identity used in cache keys and diagnostics. */
   name: NativeTargetName;

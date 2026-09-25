@@ -85,6 +85,8 @@ export interface EarlyExecutableCacheOptions {
   backend: "auto" | "c" | "llvm";
   /** Omitted is the historical release posture and preserves v1 keys. */
   optimization?: "dev";
+  /** Omitted retains the unstripped executable's historical cache key. */
+  strip?: true;
   /** Omitted for the default Windows console subsystem. */
   windowsSubsystem?: "gui";
   npmStatic: readonly string[] | "auto" | null;
@@ -188,6 +190,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     options.dynamic ? "dynamic" : "static",
     options.backend,
     ...(options.optimization === "dev" ? ["optimization-dev"] : []),
+    ...(options.strip ? ["strip"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
@@ -216,6 +219,7 @@ function routeKey(options: EarlyExecutableRouteOptions): string {
     .update(options.dynamic ? "dynamic" : "static").update("\0")
     .update(options.backend).update("\0");
   if (options.optimization === "dev") hash.update("optimization-dev\0");
+  if (options.strip) hash.update("strip\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   hash
     .update(options.npmStatic === null

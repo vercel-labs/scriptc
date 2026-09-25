@@ -6,7 +6,7 @@ import type { Lowerer } from "../lowerer.js";
 import { own } from "../lowerer.js";
 import { isRequireMainFilename } from "../expressions/optional-chains.js";
 import { STR_METHODS } from "../surfaces.js";
-import { defaultAfterUndefined, lowerOptionalArgument, lowerPositionArgument, lowerStaticallyUndefinedArgument, positionNumber } from "../optional-arguments.js";
+import { defaultAfterUndefined, lowerOptionalArgument, lowerPositionArgument, lowerStaticallyUndefinedArgument, lowerStringSearchArgument, positionNumber } from "../optional-arguments.js";
 
 function lowerSplitLimitArg(lowerer: Lowerer, node: ts.Expression | undefined, loc: SrcLoc): IrExpr {
   const defaultValue: IrExpr = { kind: "numLit", value: 4294967295, type: F64, loc };
@@ -271,8 +271,13 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     ? dynReceiver()
     : lowerMethodReceiver(lowerer, access.expression, STRING, access.name.text);
   const loc = locOf(call);
-  if ((entry.method === "indexOf" || entry.method === "includes" ||
-    entry.method === "startsWith" || entry.method === "endsWith") && call.arguments.length === 2) {
+  const searchMethod = entry.method === "indexOf" || entry.method === "includes" ||
+    entry.method === "startsWith" || entry.method === "endsWith";
+  if (searchMethod && call.arguments.length < 2) {
+    const needle = lowerStringSearchArgument(lowerer, call.arguments[0], loc);
+    return { kind: "strIntrinsic", method: entry.method, receiver, args: [needle], type: entry.result, loc };
+  }
+  if (searchMethod && call.arguments.length === 2) {
     const needle = lowerer.lowerExpr(call.arguments[0]!);
     const optionalNeedle = needle.type.kind === "union" && lowerer.runtimeOptionalWidening(needle.type, STRING) !== null;
     if (needle.type.kind !== "string" && needle.type.kind !== "dyn" && !optionalNeedle) {

@@ -1,7 +1,7 @@
 import * as ts from "../ts7/adapter.js";
-import type { IrExpr, IrType } from "../../ir/ir.js";
+import type { IrExpr, IrType, SrcLoc } from "../../ir/ir.js";
 import { BOOL, F64, isUnitType, typeEquals } from "../../ir/ir.js";
-import { numLit } from "../../ir/build.js";
+import { numLit, strLit } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 
@@ -41,6 +41,19 @@ export function defaultAfterUndefined(value: IrExpr, defaultValue: IrExpr): IrEx
     type: defaultValue.type,
     loc: value.loc,
   };
+}
+
+/** Convert an omitted or supplied string-search value after preserving its effects. */
+export function lowerStringSearchArgument(lowerer: Lowerer, node: ts.Expression | undefined, loc: SrcLoc): IrExpr {
+  const absent = strLit("undefined", loc);
+  if (!node) return absent;
+  const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, node);
+  if (undefinedArg) return defaultAfterUndefined(undefinedArg, absent);
+  const value = lowerer.lowerExpr(node);
+  if (isUnitType(value.type)) {
+    return defaultAfterUndefined(value, strLit(value.type.kind === "nullT" ? "null" : "undefined", loc));
+  }
+  return lowerer.ensureString(value, node);
 }
 
 /** Lower an optional argument, applying its default only to the undefined arm. */

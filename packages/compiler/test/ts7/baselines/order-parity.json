@@ -6967,6 +6967,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3032-string-search-value.js": {
+   "order": [
+    "<repo>/tests/corpus/3032-string-search-value.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/304-compound-incdec.ts": {
    "order": [
     "<repo>/tests/corpus/304-compound-incdec.ts"

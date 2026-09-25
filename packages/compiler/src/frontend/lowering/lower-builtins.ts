@@ -32,7 +32,7 @@ import {
 import { lowerAbsenceProbe } from "./lower-exprs.js";
 import { conditionalSpreadOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
-import { defaultAfterUndefined, lowerOptionalArgument, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
+import { defaultAfterUndefined, lowerOptionalArgument, lowerStaticallyUndefinedArgument, lowerStringSearchArgument } from "./optional-arguments.js";
 import { HTTP2_CONSTANTS } from "./http2-constants.js";
 import { CRYPTO_CIPHERS, CRYPTO_CONSTANTS, CRYPTO_CURVES, CRYPTO_HASHES } from "./crypto-tables.js";
 import { generatorMeta, timerStyleCallback, type ParamShape } from "./lower-calls.js";
@@ -8946,19 +8946,7 @@ function staticTextDecoderEncoding(label: string): StaticTextDecoderEncoding | n
     const receiver = lowerer.lowerExprExpecting(access.expression, STRING);
     const positionNode = call.arguments[1];
     if (!positionNode) {
-      const needleNode = call.arguments[0];
-      let needle: IrExpr = strLit("undefined", loc);
-      if (needleNode) {
-        const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, needleNode);
-        if (undefinedArg) {
-          needle = defaultAfterUndefined(undefinedArg, needle);
-        } else {
-          const value = lowerer.lowerExpr(needleNode);
-          needle = isUnitType(value.type)
-            ? defaultAfterUndefined(value, strLit(value.type.kind === "nullT" ? "null" : "undefined", loc))
-            : lowerer.ensureString(value, needleNode);
-        }
-      }
+      const needle = lowerStringSearchArgument(lowerer, call.arguments[0], loc);
       return { kind: "libCall", fn: "string.lastIndexOf", args: [receiver, needle], type: F64, loc };
     }
     const needle = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);

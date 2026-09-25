@@ -198,6 +198,7 @@ function symbolCandidates(row) {
   const result = new Set([row.apiSymbol]);
   const aliases = [
     ["fsPromises.", "fs/promises."],
+    ["dnsPromises.", "dns/promises."],
     ["timersPromises.", "timers/promises."],
     ["streamPromises.", "stream/promises."],
     ["streamConsumers.", "stream/consumers."],
@@ -212,6 +213,7 @@ function directExportName(row, module) {
   const symbol = row.apiSymbol;
   const subpathAliases = {
     "fs/promises": "fsPromises",
+    "dns/promises": "dnsPromises",
     "stream/promises": "streamPromises",
     "stream/consumers": "streamConsumers",
     "timers/promises": "timersPromises",

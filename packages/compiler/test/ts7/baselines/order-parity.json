@@ -7009,6 +7009,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3039-string-repeat-count.js": {
+   "order": [
+    "<repo>/tests/corpus/3039-string-repeat-count.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/304-compound-incdec.ts": {
    "order": [
     "<repo>/tests/corpus/304-compound-incdec.ts"
@@ -9448,6 +9454,12 @@
   "<repo>/tests/fixtures/npm/cases/crypto-shims/main.ts": {
    "order": [
     "<repo>/tests/fixtures/npm/cases/crypto-shims/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/fixtures/npm/cases/dotfolder/main.ts": {
+   "order": [
+    "<repo>/tests/fixtures/npm/cases/dotfolder/main.ts"
    ],
    "diags": []
   },

@@ -82,8 +82,19 @@ static const struct {
      "startCpuProfile,isStringOneByteRepresentation,promiseHooks,Serializer,Deserializer,Defau"
      "ltSerializer,DefaultDeserializer,GCProfiler"},
     {"node:dns",
-     "lookup,lookupService,resolve,resolve4,resolve6,resolveCname,resolveMx,resolveNs,resolveS"
-     "rv,resolveTxt,reverse,getServers,setServers,Resolver,promises,ADDRCONFIG,V4MAPPED,ALL"},
+     "lookup,lookupService,resolve,resolve4,resolve6,resolveAny,resolveCaa,resolveCname,resolv"
+     "eMx,resolveNaptr,resolveNs,resolvePtr,resolveSoa,resolveSrv,resolveTlsa,resolveTxt,rever"
+     "se,getServers,setServers,getDefaultResultOrder,setDefaultResultOrder,Resolver,promises,A"
+     "DDRCONFIG,V4MAPPED,ALL,NODATA,FORMERR,SERVFAIL,NOTFOUND,NOTIMP,REFUSED,BADQUERY,BADNAME,"
+     "BADFAMILY,BADRESP,CONNREFUSED,TIMEOUT,EOF,FILE,NOMEM,DESTRUCTION,BADSTR,BADFLAGS,NONAME,"
+     "BADHINTS,NOTINITIALIZED,LOADIPHLPAPI,ADDRGETNETWORKPARAMS,CANCELLED"},
+    {"node:dns/promises",
+     "lookup,lookupService,resolve,resolve4,resolve6,resolveAny,resolveCaa,resolveCname,resolv"
+     "eMx,resolveNaptr,resolveNs,resolvePtr,resolveSoa,resolveSrv,resolveTlsa,resolveTxt,rever"
+     "se,getServers,setServers,getDefaultResultOrder,setDefaultResultOrder,Resolver,NODATA,FOR"
+     "MERR,SERVFAIL,NOTFOUND,NOTIMP,REFUSED,BADQUERY,BADNAME,BADFAMILY,BADRESP,CONNREFUSED,TIM"
+     "EOUT,EOF,FILE,NOMEM,DESTRUCTION,BADSTR,BADFLAGS,NONAME,BADHINTS,NOTINITIALIZED,LOADIPHLP"
+     "API,ADDRGETNETWORKPARAMS,CANCELLED"},
     {"node:async_hooks",
      "AsyncLocalStorage,AsyncResource,executionAsyncId,triggerAsyncId,executionAsyncResource,c"
      "reateHook"},

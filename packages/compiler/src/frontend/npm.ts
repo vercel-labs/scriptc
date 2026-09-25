@@ -560,11 +560,9 @@ const SHIMMED_BUILTINS = new Set([
   // a crash reporter) requires it at load on every path while
   // only driving it on Node < 14.
   "domain",
-  // Loadable with Node's surface, answers fenced AT THE CALL (through the
-  // callback/promise, dns's error channel): proxy-agent's pac-resolver
-  // requires dns whenever proxy env vars exist and only calls lookup when
-  // a PAC proxy resolves.
-  "dns",
+  // DNS imports load before any lookup. The callback and promise APIs
+  // fence network queries through their own error channels at the call.
+  "dns", "dns/promises",
   // The main-thread worker_threads surface (real in-process MessageChannel
   // ports, Worker fences at construction) and perf_hooks' performance —
   // undici requires both UNGUARDED at load.
@@ -905,6 +903,7 @@ export function probeNodeRequireRefusal(
 ): { message: string } | null {
   if (
     specifier.startsWith("./") || specifier.startsWith("../") ||
+    specifier === "." || specifier === ".." ||
     specifier.startsWith("/") || specifier.startsWith("#") ||
     specifier.startsWith("node:")
   ) {
@@ -1694,7 +1693,9 @@ export class NpmGraphBuilder {
     for (const use of this.specifiersOf(key, source)?.uses ?? []) {
       const spec = use.specifier;
       const eager = !lazy && use.static;
-      if (spec.startsWith("./") || spec.startsWith("../")) {
+      // CommonJS treats bare "." and ".." as directory-relative requires.
+      const requireDirectory = (spec === "." || spec === "..") && use.require && !use.static && !use.dynamicImport;
+      if (spec.startsWith("./") || spec.startsWith("../") || requireDirectory) {
         if (use.importMetaResolve && !use.static && !use.dynamicImport && !use.require) {
           continue;
         }

@@ -8209,16 +8209,9 @@ static const char isl_modules_bootstrap[] =
     "    v8.default = v8;\n"
     "    return v8;\n"
     "  });\n"
-    /* node:dns — LOADABLE with Node's surface shape, answers fenced at
-     * the call. proxy-agent's pac-resolver (in a real CLI's graph
-     * whenever proxy env vars exist) requires dns at LOAD and only calls
-     * lookup when a PAC proxy actually resolves — so the module must
-     * import cleanly, and the callback-taking members deliver their
-     * refusal THROUGH the callback (Node's error channel for dns), which
-     * keeps a caller's own error handling alive instead of crashing the
-     * call site. promises members reject. No resolver ships: the island
-     * has no DNS client — the fence text says so at the only point Node
-     * would have queried. */
+    /* node:dns and node:dns/promises load before callers perform a lookup.
+     * Network queries fence through the callback or promise error channel
+     * at the call. The island has no DNS client. */
     "  builtins.dns = memo(() => {\n"
     "    const fenceErr = (what) => {\n"
     "      const e = new Error(\"node:dns '\" + what + \"' is not supported in the scriptc island yet\");\n"
@@ -8232,37 +8225,51 @@ static const char isl_modules_bootstrap[] =
     "      throw fenceErr(what);\n"
     "    };\n"
     "    const pFence = (what) => (...args) => Promise.reject(fenceErr(what));\n"
+    "    let defaultResultOrder = 'verbatim';\n"
+    "    const getDefaultResultOrder = () => defaultResultOrder;\n"
+    "    const setDefaultResultOrder = (order) => {\n"
+    "      if (!['verbatim', 'ipv4first', 'ipv6first'].includes(order)) throw new TypeError('Invalid DNS result order: ' + order);\n"
+    "      defaultResultOrder = order;\n"
+    "    };\n"
+    "    const getServers = () => [];\n"
+    "    const setServers = () => {};\n"
+    "    const queryMethods = ['resolve', 'resolve4', 'resolve6', 'resolveAny', 'resolveCaa', 'resolveCname', 'resolveMx', 'resolveNaptr', 'resolveNs', 'resolvePtr', 'resolveSoa', 'resolveSrv', 'resolveTlsa', 'resolveTxt', 'reverse'];\n"
     "    const promises = {\n"
     "      lookup: pFence('lookup'), lookupService: pFence('lookupService'),\n"
-    "      resolve: pFence('resolve'), resolve4: pFence('resolve4'), resolve6: pFence('resolve6'),\n"
-    "      resolveCname: pFence('resolveCname'), resolveMx: pFence('resolveMx'),\n"
-    "      resolveNs: pFence('resolveNs'), resolveSrv: pFence('resolveSrv'),\n"
-    "      resolveTxt: pFence('resolveTxt'), reverse: pFence('reverse'),\n"
-    "      getServers: () => [], setServers: () => {},\n"
+    "      getServers, setServers, getDefaultResultOrder, setDefaultResultOrder,\n"
     "    };\n"
     "    class Resolver {\n"
     "      constructor() {}\n"
-    "      getServers() { return []; }\n"
-    "      setServers() {}\n"
+    "      getServers() { return getServers(); }\n"
+    "      setServers(servers) { return setServers(servers); }\n"
+    "      cancel() {}\n"
     "    }\n"
-    "    for (const m of ['resolve', 'resolve4', 'resolve6', 'resolveCname', 'resolveMx', 'resolveNs', 'resolveSrv', 'resolveTxt', 'reverse']) {\n"
-    "      Resolver.prototype[m] = cbFence(m);\n"
-    "    }\n"
+    "    const PromiseResolver = class Resolver {\n"
+    "      getServers() { return getServers(); }\n"
+    "      setServers(servers) { return setServers(servers); }\n"
+    "      cancel() {}\n"
+    "    };\n"
+    "    promises.Resolver = PromiseResolver;\n"
     "    const d = {\n"
     "      lookup: cbFence('lookup'), lookupService: cbFence('lookupService'),\n"
-    "      resolve: cbFence('resolve'), resolve4: cbFence('resolve4'), resolve6: cbFence('resolve6'),\n"
-    "      resolveCname: cbFence('resolveCname'), resolveMx: cbFence('resolveMx'),\n"
-    "      resolveNs: cbFence('resolveNs'), resolveSrv: cbFence('resolveSrv'),\n"
-    "      resolveTxt: cbFence('resolveTxt'), reverse: cbFence('reverse'),\n"
-    "      getServers: () => [], setServers: () => {},\n"
-    "      Resolver, promises,\n"
-    "      ADDRCONFIG: 1024, V4MAPPED: 2048, ALL: 256,\n"
-    "      NODATA: 'ENODATA', FORMERR: 'EFORMERR', SERVFAIL: 'ESERVFAIL',\n"
-    "      NOTFOUND: 'ENOTFOUND', NOTIMP: 'ENOTIMP', REFUSED: 'EREFUSED',\n"
+    "      getServers, setServers, getDefaultResultOrder, setDefaultResultOrder,\n"
+    "      Resolver, promises, ADDRCONFIG: 1024, V4MAPPED: 2048, ALL: 256,\n"
     "    };\n"
+    "    for (const m of queryMethods) {\n"
+    "      Resolver.prototype[m] = cbFence(m);\n"
+    "      PromiseResolver.prototype[m] = pFence(m);\n"
+    "      d[m] = cbFence(m);\n"
+    "      promises[m] = pFence(m);\n"
+    "    }\n"
+    "    for (const name of ['NODATA', 'FORMERR', 'SERVFAIL', 'NOTFOUND', 'NOTIMP', 'REFUSED', 'BADQUERY', 'BADNAME', 'BADFAMILY', 'BADRESP', 'CONNREFUSED', 'TIMEOUT', 'EOF', 'FILE', 'NOMEM', 'DESTRUCTION', 'BADSTR', 'BADFLAGS', 'NONAME', 'BADHINTS', 'NOTINITIALIZED', 'LOADIPHLPAPI', 'ADDRGETNETWORKPARAMS', 'CANCELLED']) {\n"
+    "      const value = name === 'EOF' ? name : 'E' + name;\n"
+    "      d[name] = value;\n"
+    "      promises[name] = value;\n"
+    "    }\n"
     "    d.default = d;\n"
     "    return d;\n"
     "  });\n"
+    "  builtins['dns/promises'] = memo(() => builtins.dns().promises);\n"
     /* node:readline — createInterface over any Readable-ish input
      * (data-event line splitting, question/line/close, async
      * iteration) and the cursor-control writers (the ANSI sequences

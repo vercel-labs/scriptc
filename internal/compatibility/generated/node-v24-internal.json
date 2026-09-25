@@ -396,9 +396,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 5,
-        "refused": 13,
-        "not-implemented": 33,
+        "partial": 12,
+        "refused": 36,
+        "not-implemented": 3,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -35163,8 +35163,11 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "partial",
+        "evidence": "island-export:node:dns/promises.Resolver",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35217,8 +35220,11 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "partial",
+        "evidence": "island-export:node:dns/promises.getServers",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35244,8 +35250,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.lookup"
       },
       "anchorSource": "exact"
     },
@@ -35271,8 +35277,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.lookupService"
       },
       "anchorSource": "exact"
     },
@@ -35298,8 +35304,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolve"
       },
       "anchorSource": "exact"
     },
@@ -35325,8 +35331,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolve4"
       },
       "anchorSource": "exact"
     },
@@ -35352,8 +35358,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolve6"
       },
       "anchorSource": "exact"
     },
@@ -35379,8 +35385,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolveAny"
       },
       "anchorSource": "exact"
     },
@@ -35406,8 +35412,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolveCaa"
       },
       "anchorSource": "exact"
     },
@@ -35433,8 +35439,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolveCname"
       },
       "anchorSource": "exact"
     },
@@ -35460,8 +35466,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolveMx"
       },
       "anchorSource": "exact"
     },
@@ -35487,8 +35493,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolveNaptr"
       },
       "anchorSource": "exact"
     },
@@ -35514,8 +35520,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolveNs"
       },
       "anchorSource": "exact"
     },
@@ -35541,8 +35547,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolvePtr"
       },
       "anchorSource": "exact"
     },
@@ -35568,8 +35574,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolveSoa"
       },
       "anchorSource": "exact"
     },
@@ -35595,8 +35601,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolveSrv"
       },
       "anchorSource": "exact"
     },
@@ -35622,8 +35628,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolveTlsa"
       },
       "anchorSource": "exact"
     },
@@ -35649,8 +35655,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.resolveTxt"
       },
       "anchorSource": "exact"
     },
@@ -35676,8 +35682,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns/promises.reverse"
       },
       "anchorSource": "exact"
     },
@@ -35703,8 +35709,11 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "partial",
+        "evidence": "island-export:node:dns/promises.setDefaultResultOrder",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35730,8 +35739,11 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "partial",
+        "evidence": "island-export:node:dns/promises.getDefaultResultOrder",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35757,8 +35769,11 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "partial",
+        "evidence": "island-export:node:dns/promises.setServers",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36198,8 +36213,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns.resolveAny"
       },
       "anchorSource": "exact"
     },
@@ -36252,8 +36267,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns.resolveCaa"
       },
       "anchorSource": "exact"
     },
@@ -36306,8 +36321,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns.resolveNaptr"
       },
       "anchorSource": "exact"
     },
@@ -36360,8 +36375,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns.resolvePtr"
       },
       "anchorSource": "exact"
     },
@@ -36387,8 +36402,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns.resolveSoa"
       },
       "anchorSource": "exact"
     },
@@ -36441,8 +36456,8 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "refused",
+        "evidence": "island-stub:node:dns.resolveTlsa"
       },
       "anchorSource": "exact"
     },
@@ -36522,8 +36537,11 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "partial",
+        "evidence": "island-export:node:dns.setDefaultResultOrder",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -36549,8 +36567,11 @@
         "evidence": "compiler-unmatched:dns"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "evidence": "island-unmatched:dns"
+        "status": "partial",
+        "evidence": "island-export:node:dns.getDefaultResultOrder",
+        "tests": [
+          "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },

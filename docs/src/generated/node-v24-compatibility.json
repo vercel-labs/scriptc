@@ -347,9 +347,9 @@
       },
       "dynamic": {
         "supported": 0,
-        "partial": 5,
-        "refused": 13,
-        "not-implemented": 33,
+        "partial": 12,
+        "refused": 36,
+        "not-implemented": 3,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -20162,9 +20162,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Available through the embedded Node compatibility shim; exact member and overload coverage may be narrower.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20218,9 +20218,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Available through the embedded Node compatibility shim; exact member and overload coverage may be narrower.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20246,9 +20246,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20274,9 +20274,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20302,9 +20302,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20330,9 +20330,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20358,9 +20358,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20386,9 +20386,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20414,9 +20414,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20442,9 +20442,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20470,9 +20470,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20498,9 +20498,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20526,9 +20526,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20554,9 +20554,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20582,9 +20582,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20610,9 +20610,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20638,9 +20638,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20666,9 +20666,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20694,9 +20694,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -20722,9 +20722,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Available through the embedded Node compatibility shim; exact member and overload coverage may be narrower.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20750,9 +20750,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Available through the embedded Node compatibility shim; exact member and overload coverage may be narrower.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20778,9 +20778,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Available through the embedded Node compatibility shim; exact member and overload coverage may be narrower.",
+        "verification": "test-backed"
       }
     },
     {
@@ -21142,9 +21142,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -21198,9 +21198,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -21254,9 +21254,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -21310,9 +21310,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -21338,9 +21338,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -21394,9 +21394,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "refused",
+        "detail": "Exposed only as an explicit throwing or rejecting compatibility stub.",
+        "verification": "explicit-refusal"
       }
     },
     {
@@ -21478,9 +21478,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Available through the embedded Node compatibility shim; exact member and overload coverage may be narrower.",
+        "verification": "test-backed"
       }
     },
     {
@@ -21506,9 +21506,9 @@
         "verification": "registry-gap"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Available through the embedded Node compatibility shim; exact member and overload coverage may be narrower.",
+        "verification": "test-backed"
       }
     },
     {

@@ -14,9 +14,9 @@
         "implement": 81
       },
       "dynamic": {
-        "audit-partial": 748,
-        "verify-gap": 2302,
-        "replace-refusal": 101,
+        "audit-partial": 755,
+        "verify-gap": 2272,
+        "replace-refusal": 124,
         "implement": 217
       }
     },
@@ -15970,12 +15970,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:dns/promises.Resolver",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -16036,12 +16038,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:dns/promises.getServers",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -16069,11 +16073,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.lookup",
           "tests": []
         }
       }
@@ -16102,11 +16106,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.lookupService",
           "tests": []
         }
       }
@@ -16135,11 +16139,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolve",
           "tests": []
         }
       }
@@ -16168,11 +16172,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolve4",
           "tests": []
         }
       }
@@ -16201,11 +16205,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolve6",
           "tests": []
         }
       }
@@ -16234,11 +16238,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolveAny",
           "tests": []
         }
       }
@@ -16267,11 +16271,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolveCaa",
           "tests": []
         }
       }
@@ -16300,11 +16304,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolveCname",
           "tests": []
         }
       }
@@ -16333,11 +16337,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolveMx",
           "tests": []
         }
       }
@@ -16366,11 +16370,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolveNaptr",
           "tests": []
         }
       }
@@ -16399,11 +16403,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolveNs",
           "tests": []
         }
       }
@@ -16432,11 +16436,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolvePtr",
           "tests": []
         }
       }
@@ -16465,11 +16469,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolveSoa",
           "tests": []
         }
       }
@@ -16498,11 +16502,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolveSrv",
           "tests": []
         }
       }
@@ -16531,11 +16535,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolveTlsa",
           "tests": []
         }
       }
@@ -16564,11 +16568,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.resolveTxt",
           "tests": []
         }
       }
@@ -16597,11 +16601,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns/promises.reverse",
           "tests": []
         }
       }
@@ -16630,12 +16634,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:dns/promises.setDefaultResultOrder",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -16663,12 +16669,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:dns/promises.getDefaultResultOrder",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -16696,12 +16704,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:dns/promises.setServers",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -17131,11 +17141,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns.resolveAny",
           "tests": []
         }
       }
@@ -17197,11 +17207,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns.resolveCaa",
           "tests": []
         }
       }
@@ -17263,11 +17273,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns.resolveNaptr",
           "tests": []
         }
       }
@@ -17329,11 +17339,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns.resolvePtr",
           "tests": []
         }
       }
@@ -17362,11 +17372,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns.resolveSoa",
           "tests": []
         }
       }
@@ -17428,11 +17438,11 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
+          "status": "refused",
+          "action": "replace-refusal",
+          "verification": "explicit-refusal",
+          "confidence": "high",
+          "source": "island-stub:node:dns.resolveTlsa",
           "tests": []
         }
       }
@@ -17527,12 +17537,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:dns.setDefaultResultOrder",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },
@@ -17560,12 +17572,14 @@
           "tests": []
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:dns",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-export:node:dns.getDefaultResultOrder",
+          "tests": [
+            "tests/fixtures/npm/cases/island-web-plumbing/main.ts"
+          ]
         }
       }
     },

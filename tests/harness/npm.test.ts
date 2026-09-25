@@ -89,6 +89,16 @@ async function build(entry: string): Promise<string> {
 }
 
 describe(`typed-callback boundary (scriptc-only${sanitize ? ", sanitized" : ""})`, () => {
+  test("DNS promises imports load and network queries reject at the call", async () => {
+    const binary = await build(join(fixturesRoot, "npm/divergent/dns-promises.ts"));
+    const res = await runBinary(binary, []);
+    expect(res.stdout.toString("utf8")).toBe(
+      "lookup:ENOTFOUND:lookup:node:dns 'lookup' is not supported in the scriptc island yet\n" +
+        "resolve4:ENOTFOUND:resolve4:node:dns 'resolve4' is not supported in the scriptc island yet\n",
+    );
+    expect(res.exitCode).toBe(0);
+  }, 120_000);
+
   // The one deliberate DIVERGENCE at the typed-callback boundary: a package
   // argument the declared param type refuses becomes a TypeError thrown
   // back into the island before the body runs (Node would run the body

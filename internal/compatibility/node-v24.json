@@ -17,7 +17,7 @@
     "console": ["console"],
     "crypto": ["crypto"],
     "diagnostics_channel": ["diagnostics_channel"],
-    "dns": ["dns"],
+    "dns": ["dns", "dns/promises"],
     "domain": ["domain"],
     "events": ["events"],
     "fs": ["fs", "fs/promises"],

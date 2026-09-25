@@ -7009,6 +7009,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3039-string-repeat-count.js": {
+   "order": [
+    "<repo>/tests/corpus/3039-string-repeat-count.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/304-compound-incdec.ts": {
    "order": [
     "<repo>/tests/corpus/304-compound-incdec.ts"

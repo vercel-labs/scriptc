@@ -4024,19 +4024,18 @@ ScrPromise *scr_async_spawn_after(ScrPromise *dependency,
                                   void (*entry)(ScrFiber *, void *),
                                   void *argpack);
 
-/* wasm32-wasi lowers async functions and generators through LLVM switched
- * coroutines instead of the native stack-switching implementations. The
- * first two adapters are emitted into the program module; the remaining
- * helpers let scr_async.c register, queue, and finish those coroutine
- * frames through the same ScrFiber scheduler. These declarations are part
- * of the LLVM/runtime ABI even though native targets never call them. */
-void scr_wasi_coro_resume(void *handle);
-void scr_wasi_coro_destroy(void *handle);
-void scr_wasi_coro_started(void *handle);
-void scr_wasi_await_prepare(ScrFiber *self, ScrPromise *p);
-void scr_wasi_await_hop_prepare(ScrFiber *self);
-bool scr_wasi_module_await_prepare(ScrFiber *self, ScrPromise *p);
-void scr_wasi_async_finish(ScrFiber *self);
+/* The LLVM backend lowers async functions (and, on wasm32-wasi,
+ * generators) through LLVM switched coroutines instead of stack-switching
+ * fibers. The program module registers each frame with its resume/destroy
+ * adapters; the remaining helpers queue and finish those frames through
+ * the same ScrFiber scheduler. Stackless bodies enter through
+ * scr_async_spawn_coro, which runs the eager prefix on the current stack. */
+ScrPromise *scr_async_spawn_coro(void (*entry)(ScrFiber *, void *), void *argpack);
+ScrFiber *scr_coro_started(void *handle, void (*resume)(void *), void (*destroy)(void *));
+void scr_coro_await_prepare(ScrFiber *self, ScrPromise *p);
+void scr_coro_await_hop_prepare(ScrFiber *self);
+bool scr_coro_module_await_prepare(ScrFiber *self, ScrPromise *p);
+void scr_coro_async_finish(ScrFiber *self);
 void scr_wasi_gen_finish(ScrFiber *self);
 
 double scr_await_f64(ScrPromise *p); /* rejected promises re-throw */
@@ -4063,6 +4062,8 @@ ScrDyn *scr_await_dyn(ScrPromise *p);
 /* `await v` over a checked-dynamic VALUE: dyn promises adopt, everything
  * else takes JS's one-hop non-thenable await and answers itself (+1). */
 ScrDyn *scr_await_dyn_value(ScrDyn *v);
+void scr_coro_await_dyn_prepare(ScrFiber *self, ScrDyn *v);
+ScrDyn *scr_coro_await_dyn_take(ScrDyn *v); /* +1, after the suspension */
 /* .then/.catch/.finally over a dyn promise (scr_dyn_invoke's promise arm
  * and the compiled dyn-receiver path): one reaction fiber per
  * registration — awaits src, runs the checked-dynamic tree handler (non-callable handlers

@@ -2,7 +2,7 @@ import { InternalCompilerError } from "./errors.js";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { clearCcCaches, configuredTargetPlatform, type NativeArtifactDependency } from "./backend/native-toolchain.js";
+import { clearCcCaches, configuredTargetPlatform, externalCompilerLegacyCoroEnd, type NativeArtifactDependency } from "./backend/native-toolchain.js";
 import { buildCacheRoot, prepareBuildCacheRoot, pruneBuildCache } from "./backend/build-cache.js";
 import {
   assertLegacyCExecutablePipelineEnabled,
@@ -17,7 +17,7 @@ import {
   targetPlatform,
 } from "./backend/external-c.js";
 import { emitCModule } from "./backend/c/c-emitter.js";
-import { emitLlvmModule, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
+import { emitLlvmModule, isCoroutineFunction, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
 import { emitNativeArtifact, NativeCodegenError } from "./backend/native-codegen.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import { nativeCodegenTarget, nativeCodegenTargetRefusal } from "./backend/targets.js";
@@ -1729,12 +1729,18 @@ async function compileTracked(
   let llvmRefusal: string | undefined;
   if (opts.backend !== "c") {
     try {
+      const helperRoute = opts.nativeProgramObject === true || usesPrecompiledRuntimePack(opts, "llvm");
+      const wasi = buildPlatform === "wasi";
       const ll = emitLlvmModule(lowered.module!, {
-        pointerBits: buildPlatform === "wasi" ? 32 : 64,
-        wasi: buildPlatform === "wasi",
-        runtimeAbiMarker:
-          opts.nativeProgramObject === true ||
-          usesPrecompiledRuntimePack(opts, "llvm"),
+        pointerBits: wasi ? 32 : 64,
+        wasi,
+        runtimeAbiMarker: helperRoute,
+        // The helper pins LLVM 22; the driver-TU route compiles this .ll
+        // with whichever external compiler is configured.
+        legacyCoroEnd:
+          !helperRoute &&
+          lowered.module!.functions.some((fn) => isCoroutineFunction(fn, wasi)) &&
+          (await externalCompilerLegacyCoroEnd().catch(() => false)),
       });
       cPath = defaultSourcePaths.llvm;
       await writeFile(cPath, ll);

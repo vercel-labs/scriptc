@@ -58,7 +58,7 @@ export interface LlvmEmitterContext extends ShapeHost {
   currentGenerator: { yieldT: IrType; nextT: IrType; } | null;
   constantNumericTables: ReadonlyMap<string, ConstantNumericTable>;
   integerRanges: IntegerRanges;
-  currentWasiCoro: { kind: "async" | "generator"; id: string; handle: string; self: string; finalLabel: string; cleanupLabel: string; suspendLabel: string; } | null;
+  currentCoro: { kind: "async" | "generator"; id: string; handle: string; self: string; finalLabel: string; cleanupLabel: string; suspendLabel: string; } | null;
   declare(decl: string): void;
   dyn: LlDyn;
   dynKind(d: string): string;
@@ -115,8 +115,8 @@ export interface LlvmEmitterContext extends ShapeHost {
   emitStringExpr(e: ExprOf<"strConcat" | "strEq" | "strCmp" | "toString" | "strIntrinsic" | "regexLit" | "templateStrings" | "regexIntrinsic">): LlValue;
   emitStringSelfConcatAssign(localId: string, left: IrExpr, suffix: IrExpr, retainForYield: boolean): LlValue;
   emitThrowValue(v: LlValue): void;
-  emitWasiSuspend(promise: string | null): void;
-  emitWasiSuspendPrepared(): void;
+  emitCoroSuspend(promise: string | null): void;
+  emitCoroSuspendPrepared(): void;
   emitWebLibCall(e: LibCallExpr): LlValue;
   emitterFixedAdapter(cbT: IrType & { kind: "func" }): { fn: string; shim: string };
   ffiByName: Map<string, IrFfiImport>;

@@ -14,25 +14,20 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
           // Internal ESM dependency wait: pending promises park the module
           // fiber, while settled ones continue synchronously.
           const p = host.emitExpr(e.args[0]!);
-          if (host.wasi) {
-            const coro = host.currentWasiCoro;
-            if (coro === null) throw new InternalCompilerError("llvm emitter bug: module await outside wasm coroutine");
-            host.declare(`declare zeroext i1 @scr_wasi_module_await_prepare(ptr, ptr)`);
-            const needsSuspend = B.tmp();
-            const suspend = B.newLabel("ma.suspend");
-            const ready = B.newLabel("ma.ready");
-            B.line(`${needsSuspend} = call zeroext i1 @scr_wasi_module_await_prepare(ptr ${coro.self}, ptr ${p.name})`);
-            B.condBr(needsSuspend, suspend, ready);
-            B.startBlock(suspend);
-            host.emitWasiSuspendPrepared();
-            B.br(ready);
-            B.startBlock(ready);
-            host.declare(`declare void @scr_module_await(ptr)`);
-            B.line(`call void @scr_module_await(ptr ${p.name})`);
-          } else {
-            host.declare(`declare void @scr_module_await(ptr)`);
-            B.line(`call void @scr_module_await(ptr ${p.name})`);
-          }
+          const coro = host.currentCoro;
+          if (coro === null) throw new InternalCompilerError("llvm emitter bug: module await outside a coroutine");
+          host.declare(`declare zeroext i1 @scr_coro_module_await_prepare(ptr, ptr)`);
+          const needsSuspend = B.tmp();
+          const suspend = B.newLabel("ma.suspend");
+          const ready = B.newLabel("ma.ready");
+          B.line(`${needsSuspend} = call zeroext i1 @scr_coro_module_await_prepare(ptr ${coro.self}, ptr ${p.name})`);
+          B.condBr(needsSuspend, suspend, ready);
+          B.startBlock(suspend);
+          host.emitCoroSuspendPrepared();
+          B.br(ready);
+          B.startBlock(ready);
+          host.declare(`declare void @scr_module_await(ptr)`);
+          B.line(`call void @scr_module_await(ptr ${p.name})`);
           host.emitPendingCheck();
           return { name: "", type: e.type };
         }
@@ -282,13 +277,13 @@ export function emitAsyncExpr(host: LlvmEmitterContext, e: ExprOf<"yieldExpr" | 
         if (e.value === null) throw new InternalCompilerError("llvm emitter bug: yieldExpr with no operand (frontend fills undefined)");
         const v = host.emitExpr(e.value);
         const yt = e.value.type;
+        const coro = host.currentCoro;
         if (e.awaited) {
           host.declare(`declare void @scr_async_gen_hop_done()`);
           B.line(`call void @scr_async_gen_hop_done()`);
         }
         if (yt.kind === "f64" || yt.kind === "date") {
-          if (host.wasi) {
-            const coro = host.currentWasiCoro!;
+          if (coro !== null) {
             host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
             host.declare(`declare void @scr_gen_out_f64(ptr, double)`);
             const g = B.tmp();
@@ -299,8 +294,7 @@ export function emitAsyncExpr(host: LlvmEmitterContext, e: ExprOf<"yieldExpr" | 
             B.line(`call void @scr_gen_yield_f64(double ${v.name})`);
           }
         } else if (yt.kind === "bool") {
-          if (host.wasi) {
-            const coro = host.currentWasiCoro!;
+          if (coro !== null) {
             host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
             host.declare(`declare void @scr_gen_out_bool(ptr, i1 zeroext)`);
             const g = B.tmp();
@@ -312,8 +306,7 @@ export function emitAsyncExpr(host: LlvmEmitterContext, e: ExprOf<"yieldExpr" | 
           }
         } else {
           host.moveTemp(v); // the OUT slot takes ownership
-          if (host.wasi) {
-            const coro = host.currentWasiCoro!;
+          if (coro !== null) {
             host.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
             host.declare(`declare void @scr_gen_out_ref(ptr, ptr, ptr)`);
             const g = B.tmp();
@@ -324,7 +317,7 @@ export function emitAsyncExpr(host: LlvmEmitterContext, e: ExprOf<"yieldExpr" | 
             B.line(`call void @scr_gen_yield_ref(ptr ${v.name}, ptr ${vAdapters(host, yt).release})`);
           }
         }
-        if (host.wasi) host.emitWasiSuspendPrepared();
+        if (coro !== null) host.emitCoroSuspendPrepared();
         host.emitPendingCheck();
         if (e.type.kind === "void") {
           // An undefined next-channel: nothing to read (the frontend
@@ -507,7 +500,7 @@ export function emitAsyncExpr(host: LlvmEmitterContext, e: ExprOf<"yieldExpr" | 
         // refcounted results arrive +1 and join the frame pre-check so an
         // unwind releases the dummy (NULL) harmlessly.
         const pr = host.emitExpr(e.value);
-        if (host.wasi) host.emitWasiSuspend(pr.name);
+        if (host.currentCoro !== null) host.emitCoroSuspend(pr.name);
         if (e.type.kind === "void") {
           host.declare(`declare void @scr_await_void(ptr)`);
           B.line(`call void @scr_await_void(ptr ${pr.name})`);
@@ -560,12 +553,12 @@ export function emitAsyncExpr(host: LlvmEmitterContext, e: ExprOf<"yieldExpr" | 
           host.declare(`declare void @scr_await_void(ptr)`);
           {
             const promise = host.unionPeek(u.name);
-            if (host.wasi) host.emitWasiSuspend(promise);
+            if (host.currentCoro !== null) host.emitCoroSuspend(promise);
             B.line(`call void @scr_await_void(ptr ${promise})`);
           }
           B.br(lj);
           B.startBlock(lh);
-          if (host.wasi) host.emitWasiSuspend(null);
+          if (host.currentCoro !== null) host.emitCoroSuspend(null);
           else B.line(`call void @scr_await_hop()`);
           B.br(lj);
           B.startBlock(lj);
@@ -593,7 +586,7 @@ export function emitAsyncExpr(host: LlvmEmitterContext, e: ExprOf<"yieldExpr" | 
         B.condBr(isP, lp, lh);
         B.startBlock(lp);
         const peek = host.unionPeek(u.name);
-        if (host.wasi) host.emitWasiSuspend(peek);
+        if (host.currentCoro !== null) host.emitCoroSuspend(peek);
         let awaited: LlValue;
         if (inner.kind === "f64" || inner.kind === "date") {
           host.declare(`declare double @scr_await_f64(ptr)`);
@@ -619,7 +612,7 @@ export function emitAsyncExpr(host: LlvmEmitterContext, e: ExprOf<"yieldExpr" | 
         B.line(`store ptr ${host.unionNewOwned(innerTag, awaited)}, ptr ${slot}`);
         B.br(lj);
         B.startBlock(lh);
-        if (host.wasi) host.emitWasiSuspend(null);
+        if (host.currentCoro !== null) host.emitCoroSuspend(null);
         else B.line(`call void @scr_await_hop()`);
         const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
         if (unitTags.length === 1) {

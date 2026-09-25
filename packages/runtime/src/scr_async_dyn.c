@@ -428,6 +428,18 @@ ScrDyn *scr_await_dyn_value(ScrDyn *v) {
   return scr_dyn_retain(v);
 }
 
+/* scr_await_dyn_value split for stackless coroutines, which suspend
+ * between queueing the continuation and extracting the result. */
+void scr_coro_await_dyn_prepare(ScrFiber *self, ScrDyn *v) {
+  if (v->kind == SCR_DYN_PROMISE) scr_coro_await_prepare(self, v->v.promise);
+  else scr_coro_await_hop_prepare(self);
+}
+
+ScrDyn *scr_coro_await_dyn_take(ScrDyn *v) {
+  if (v->kind == SCR_DYN_PROMISE) return scr_await_dyn(v->v.promise);
+  return scr_dyn_retain(v);
+}
+
 /* ── process warnings (emitWarning + the 'warning' event) ─────────────
  * Gated with the rest of this TU (a deprecation-emitting unit's gate
  * must imply the dynAsync link). Listeners are dyn functions; emission

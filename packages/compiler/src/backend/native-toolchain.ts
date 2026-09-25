@@ -889,6 +889,71 @@ export function resolveCc(
   };
 }
 
+const legacyCoroEndProbes = new Map<string, Promise<boolean>>();
+
+/** LLVM 22 made llvm.coro.end return void; older verifiers accept only the
+ * i1 form. The helper pins LLVM 22, but the external-compiler lane hands the
+ * emitted .ll straight to clang or zig cc, so coroutine emission asks that
+ * driver which form it verifies (once per driver and process). */
+export function externalCompilerLegacyCoroEnd(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const argv = resolveCc(env).argv;
+  const key = argv.join("\0");
+  let probe = legacyCoroEndProbes.get(key);
+  if (probe === undefined) {
+    probe = probeLegacyCoroEnd(argv);
+    legacyCoroEndProbes.set(key, probe);
+  }
+  return probe;
+}
+
+async function probeLegacyCoroEnd(argv: readonly string[]): Promise<boolean> {
+  // A private cwd: `zig cc` can drop stray outputs into its working directory.
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-coro-end-probe-"));
+  const verifies = async (ret: "void" | "i1"): Promise<boolean> => {
+    const source = join(dir, `${ret}.ll`);
+    // A complete (minimal) coroutine: coro.end outside one crashes the
+    // coroutine passes of both LLVM generations instead of verifying.
+    await writeFile(source, [
+      `declare token @llvm.coro.id(i32, ptr, ptr, ptr)`,
+      `declare i64 @llvm.coro.size.i64()`,
+      `declare ptr @llvm.coro.begin(token, ptr)`,
+      `declare i8 @llvm.coro.suspend(token, i1)`,
+      `declare ptr @llvm.coro.free(token, ptr)`,
+      `declare ${ret} @llvm.coro.end(ptr, i1, token)`,
+      `declare ptr @malloc(i64)`,
+      `declare void @free(ptr)`,
+      `define ptr @scriptc_coro_end_probe() presplitcoroutine {`,
+      `entry:`,
+      `  %id = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)`,
+      `  %size = call i64 @llvm.coro.size.i64()`,
+      `  %mem = call ptr @malloc(i64 %size)`,
+      `  %hdl = call ptr @llvm.coro.begin(token %id, ptr %mem)`,
+      `  %s = call i8 @llvm.coro.suspend(token none, i1 true)`,
+      `  switch i8 %s, label %suspend [ i8 1, label %cleanup ]`,
+      `cleanup:`,
+      `  %f = call ptr @llvm.coro.free(token %id, ptr %hdl)`,
+      `  call void @free(ptr %f)`,
+      `  br label %suspend`,
+      `suspend:`,
+      `  ${ret === "i1" ? "%e = " : ""}call ${ret} @llvm.coro.end(ptr %hdl, i1 false, token none)`,
+      `  ret ptr %hdl`,
+      `}`,
+      ``,
+    ].join("\n"));
+    try {
+      await execFileAsync(argv[0]!, [...argv.slice(1), "-c", source, "-o", join(dir, `${ret}.o`)], { cwd: dir });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    return !(await verifies("void")) && (await verifies("i1"));
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 /** Musl intentionally has no predefined libc macro. The explicit Zig target
  * is therefore the source of truth for selecting its small runtime shim. */
 function isMuslTarget(driver: Pick<CcDriver, "target">): boolean {

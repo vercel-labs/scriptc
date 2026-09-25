@@ -183,8 +183,31 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     return out;
   }
 
+/** The awaits that lower to libCalls: a coroutine suspends in its own
+ * frame instead of letting the runtime park a fiber stack. */
+function emitCoroAwaitLibCall(host: LlvmEmitterContext, e: LibCallExpr, self: string): LlValue {
+    const B = host.B;
+    if (e.fn === "async.hop") {
+      host.emitCoroSuspend(null);
+      return { name: "", type: e.type };
+    }
+    const v = host.emitExpr(e.args[0]!);
+    host.declare(`declare void @scr_coro_await_dyn_prepare(ptr, ptr)`);
+    host.declare(`declare ptr @scr_coro_await_dyn_take(ptr)`);
+    B.line(`call void @scr_coro_await_dyn_prepare(ptr ${self}, ptr ${v.name})`);
+    host.emitCoroSuspendPrepared();
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_coro_await_dyn_take(ptr ${v.name})`);
+    const out = host.own({ name: t, type: e.type });
+    if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
+    return out;
+  }
+
 export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     if (USES_TIMERS_LIB_FNS.has(e.fn)) host.usesTimers = true;
+    if ((e.fn === "async.hop" || e.fn === "async.awaitDyn") && host.currentCoro !== null) {
+      return emitCoroAwaitLibCall(host, e, host.currentCoro.self);
+    }
     if (e.fn === "process.nextTick") return host.emitAsyncContextLibCall(e);
     if (e.fn === "sp.pipeline") return host.emitStreamLibCall(e);
     const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;

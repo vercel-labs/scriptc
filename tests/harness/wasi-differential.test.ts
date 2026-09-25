@@ -154,6 +154,7 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "2093-timers-promises.ts",
     "2683-fs-rename-js.cjs",
     "2906-bigint-wasi-width.ts",
+    "2975-async-frame-state.ts",
   ])("the LLVM target runs %s byte-identically to Node", async (fixture) => {
     const entry = join(repoRoot, "tests/corpus", fixture);
     const outDir = await mkdtemp("/tmp/scriptc-wasi-");

@@ -180,6 +180,18 @@ export interface LlvmTargetOptions {
   /** Program objects carry a strong reference to the matching runtime ABI
    * marker so manual links against an incompatible runtime fail loudly. */
   runtimeAbiMarker?: boolean;
+  /** The .ll goes to an LLVM older than 22, whose verifier still expects
+   * llvm.coro.end to return i1 (see externalCompilerLegacyCoroEnd). */
+  legacyCoroEnd?: boolean;
+}
+
+/** Async bodies are LLVM switched coroutines on every target: a suspended
+ * call keeps only its live state in a heap frame, not a fiber stack.
+ * Generators stay stack-switching fibers except on wasm32, which has no
+ * resumable native stack. */
+export function isCoroutineFunction(fn: IrFunction, wasi: boolean): boolean {
+  if (fn.generator !== undefined) return wasi;
+  return fn.async === true;
 }
 
 export function emitLlvmModule(mod: IrModule, options: LlvmTargetOptions = {}): string {
@@ -209,6 +221,8 @@ class LlEmitter {
   private readonly wasi: boolean;
   private readonly emitLibraryIdentity: boolean;
   private readonly runtimeAbiMarker: boolean;
+  private readonly legacyCoroEnd: boolean;
+  private readonly hasCoroutines: boolean;
   /** Interned string literals: UTF-8 text → { symbol, byte length } —
    * first-use order, the C emitter's determinism discipline. */
   private readonly literals = new Map<string, { sym: string; len: number }>();
@@ -357,9 +371,9 @@ class LlEmitter {
   /** Return type of the function being emitted — the unwind path returns
    * a dummy of this type (never read: callers check the flag first). */
   private currentReturnType: IrType = VOID;
-  /** Active only while emitting a wasm32 async body lowered with LLVM's
-   * switched-coroutine intrinsics. */
-  private currentWasiCoro: {
+  /** Active only while emitting a body lowered with LLVM's
+   * switched-coroutine intrinsics (see isCoroutineFunction). */
+  private currentCoro: {
     kind: "async" | "generator";
     id: string;
     handle: string;
@@ -380,6 +394,8 @@ class LlEmitter {
     this.constantNumericTables = findConstantNumericTables(mod);
     this.sizeType = options.pointerBits === 32 ? "i32" : "i64";
     this.wasi = options.wasi === true;
+    this.legacyCoroEnd = options.legacyCoroEnd === true;
+    this.hasCoroutines = mod.functions.some((fn) => isCoroutineFunction(fn, this.wasi));
     this.emitLibraryIdentity = options.emitLibraryIdentity !== false;
     this.runtimeAbiMarker = options.runtimeAbiMarker === true;
     // ScrCycHdr is { ptr trace; ptr free; i32 color; i16 buffered;
@@ -1318,7 +1334,7 @@ class LlEmitter {
       // symbols instead, from the same IR facts the C emission consumes.
       out.push(...this.emitLibDefs(globals, globalReleaseLines, stamps));
       out.push(`attributes #0 = { sanitize_address }`);
-      if (this.wasi) out.push(`attributes #1 = { sanitize_address presplitcoroutine }`);
+      if (this.hasCoroutines) out.push(`attributes #1 = { sanitize_address presplitcoroutine }`);
       if (hasNoInlineRecordClone) out.push(`attributes #2 = { noinline sanitize_address }`);
       out.push(``);
       return out.join("\n");
@@ -1445,7 +1461,7 @@ class LlEmitter {
       // lane's -fsanitize=address link activates instrumentation over the
       // emitted functions too (the runtime TUs get theirs from clang).
       `attributes #0 = { sanitize_address }`,
-      ...(this.wasi ? [`attributes #1 = { sanitize_address presplitcoroutine }`] : []),
+      ...(this.hasCoroutines ? [`attributes #1 = { sanitize_address presplitcoroutine }`] : []),
       ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline sanitize_address }`] : []),
       ``,
     );
@@ -1869,7 +1885,7 @@ class LlEmitter {
     const retTy = this.llType(ret);
     const bodyCall = `call ${retTy} @${mangleFunction(fn.name)}(${loads.join(", ")})`;
     tr.push(retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`);
-    if (lifted && !this.wasi) {
+    if (lifted && !isCoroutineFunction(fn, this.wasi)) {
       tr.push(`  call void @scr_closure_release(ptr %a0)`);
     }
 
@@ -1899,24 +1915,25 @@ class LlEmitter {
   }
 
   /** Per-async-function machinery — async.ts's scaffolding, .ll
-   * flavored: an argument-pack struct type, a fiber trampoline (unpacks,
-   * frees the pack, runs the ordinary compiled body, settles the
-   * promise — fulfilling on clean return, leaving a pending exception
-   * for the runtime to reject with), and a spawn wrapper call sites and
-   * closures enter through (packs the args +1, scr_async_spawn runs the
-   * fiber eagerly to its first suspension and returns the promise). */
+   * flavored: an argument-pack struct type, a trampoline (unpacks, frees
+   * the pack, and starts the coroutine body, which settles its own
+   * promise), and a spawn wrapper call sites and closures enter through
+   * (packs the args +1, scr_async_spawn_coro runs the body's eager prefix
+   * on the caller's stack and returns the promise). */
   private emitAsyncScaffolding(): string[] {
     const out: string[] = [];
-    if (this.wasi) {
+    if (this.hasCoroutines) {
+      // The runtime resumes and destroys frames through these adapters,
+      // registered per frame (scr_coro_started).
       this.declare(`declare void @llvm.coro.resume(ptr)`);
       this.declare(`declare void @llvm.coro.destroy(ptr)`);
       out.push(
-        `define void @scr_wasi_coro_resume(ptr %handle) ${FN_ATTRS} {`,
+        `define internal void @sc_coro_resume(ptr %handle) ${FN_ATTRS} {`,
         `entry:`,
         `  call void @llvm.coro.resume(ptr %handle)`,
         `  ret void`,
         `}`,
-        `define void @scr_wasi_coro_destroy(ptr %handle) ${FN_ATTRS} {`,
+        `define internal void @sc_coro_destroy(ptr %handle) ${FN_ATTRS} {`,
         `entry:`,
         `  call void @llvm.coro.destroy(ptr %handle)`,
         `  ret void`,
@@ -1926,60 +1943,15 @@ class LlEmitter {
     }
     for (const fn of this.mod.functions) {
       if (fn.async !== true || fn.generator !== undefined) continue;
-      const { definitions, ret, tr, spawnParams, argPackLines } =
+      const { definitions, tr, spawnParams, argPackLines } =
         this.emitArgPackAndTrampolinePrologue(fn);
       out.push(...definitions);
-      this.declare(`declare ptr @scr_fiber_promise(ptr)`);
-      this.declare(`declare ptr @scr_async_spawn(ptr, ptr)`);
+      this.declare(`declare ptr @scr_async_spawn_coro(ptr, ptr)`);
       this.needOom();
-      if (this.wasi) {
-        // The coroutine body settles its own promise and owns the retained
-        // lifted environment until final suspension. Its initial call
-        // returns here at the first suspend (or final suspend).
-        tr.push(`  ret void`, `}`, ``);
-      } else {
-        if (fn.captures !== undefined) {
-          this.declare(`declare void @scr_closure_release(ptr)`);
-        }
-        tr.push(
-          `  %pend = call zeroext i1 @scr_exc_pending()`,
-          `  br i1 %pend, label %thrown, label %clean`,
-          `clean:`,
-          `  %pr = call ptr @scr_fiber_promise(ptr %self)`,
-        );
-        switch (ret.kind) {
-          case "void":
-            this.declare(`declare void @scr_promise_fulfill_void(ptr)`);
-            tr.push(`  call void @scr_promise_fulfill_void(ptr %pr)`);
-            break;
-          case "f64":
-          case "date":
-            this.declare(`declare void @scr_promise_fulfill_f64(ptr, double)`);
-            tr.push(`  call void @scr_promise_fulfill_f64(ptr %pr, double %r)`);
-            break;
-          case "bool":
-            this.declare(`declare void @scr_promise_fulfill_bool(ptr, i1 zeroext)`);
-            tr.push(`  call void @scr_promise_fulfill_bool(ptr %pr, i1 %r)`);
-            break;
-          case "string":
-            this.declare(`declare void @scr_promise_fulfill_str(ptr, ptr)`);
-            tr.push(`  call void @scr_promise_fulfill_str(ptr %pr, ptr %r) ; moves in`);
-            break;
-          default: {
-            const v = vAdapters(this, ret);
-            this.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
-            tr.push(
-              `  call void @scr_promise_fulfill_ref(ptr %pr, ptr %r, ptr ${v.retain}, ptr ${v.release}, ptr ${traceArg(this, ret)})`,
-            );
-          }
-        }
-        tr.push(`  ret void`, `thrown:`);
-        if (ret.kind !== "void" && isRefCounted(ret)) {
-          // An escaping throw means %r is the never-read dummy (NULL).
-          tr.push(`  call void ${releaseSym(this, ret)}(ptr %r)`);
-        }
-        tr.push(`  ret void`, `}`, ``);
-      }
+      // The coroutine body settles its own promise and owns the retained
+      // lifted environment until final suspension. Its initial call
+      // returns here at the first suspend (or final suspend).
+      tr.push(`  ret void`, `}`, ``);
       out.push(...tr);
 
       // Spawn wrapper: pack the args (+1 moves in), spawn the fiber.
@@ -2013,7 +1985,7 @@ class LlEmitter {
         ...argPackLines,
       ];
       sp.push(
-        `  %p = call ptr @scr_async_spawn(ptr @${mangleTrampoline(fn.name)}, ptr %ap)`,
+        `  %p = call ptr @scr_async_spawn_coro(ptr @${mangleTrampoline(fn.name)}, ptr %ap)`,
         ...(cache !== null
           ? [
               // The module loader owns this evaluation promise
@@ -2083,14 +2055,14 @@ class LlEmitter {
       this.declare(`declare void @scr_gen_ret_to_out(ptr)`);
       this.declare(`declare ptr @scr_gen_new(ptr, ptr, ptr)`);
       this.needOom();
-      if (lifted && !this.wasi) {
+      if (lifted && !isCoroutineFunction(fn, this.wasi)) {
         this.declare(`declare void @scr_closure_release(ptr)`);
       }
       // Normal completion stores the (typed) return value; void completes
       // with the NONE slot — JS's undefined done-value. A GENRET unwind
       // consumes the sentinel and promotes the parked .return value; a
       // real exception stays pending (the consumer-side resume moves it).
-      if (this.wasi) {
+      if (isCoroutineFunction(fn, this.wasi)) {
         tr.push(`  ret void`, `}`, ``);
       } else {
       tr.push(
@@ -2385,8 +2357,8 @@ class LlEmitter {
       return;
     }
     this.releaseForJump(0, 0);
-    if (this.currentWasiCoro !== null) {
-      this.B.terminate(`br label %${this.currentWasiCoro.finalLabel}`);
+    if (this.currentCoro !== null) {
+      this.B.terminate(`br label %${this.currentCoro.finalLabel}`);
       return;
     }
     const t = this.currentReturnType;
@@ -2875,27 +2847,27 @@ class LlEmitter {
     return mangleFunction(fnName);
   }
 
-  /** Queue the current wasm coroutine and suspend it. The runtime decides
+  /** Queue the current coroutine and suspend it. The runtime decides
    * whether the promise waiter list or the ready FIFO owns the continuation;
    * LLVM keeps all live locals in the coroutine frame. */
-  private emitWasiSuspend(promise: string | null): void {
-    const coro = this.currentWasiCoro;
-    if (coro === null) throw new InternalCompilerError("llvm emitter bug: wasm suspension outside async body");
+  private emitCoroSuspend(promise: string | null): void {
+    const coro = this.currentCoro;
+    if (coro === null) throw new InternalCompilerError("llvm emitter bug: suspension outside a coroutine body");
     if (promise === null) {
-      this.declare(`declare void @scr_wasi_await_hop_prepare(ptr)`);
-      this.B.line(`call void @scr_wasi_await_hop_prepare(ptr ${coro.self})`);
+      this.declare(`declare void @scr_coro_await_hop_prepare(ptr)`);
+      this.B.line(`call void @scr_coro_await_hop_prepare(ptr ${coro.self})`);
     } else {
-      this.declare(`declare void @scr_wasi_await_prepare(ptr, ptr)`);
-      this.B.line(`call void @scr_wasi_await_prepare(ptr ${coro.self}, ptr ${promise})`);
+      this.declare(`declare void @scr_coro_await_prepare(ptr, ptr)`);
+      this.B.line(`call void @scr_coro_await_prepare(ptr ${coro.self}, ptr ${promise})`);
     }
-    this.emitWasiSuspendPrepared();
+    this.emitCoroSuspendPrepared();
   }
 
   /** Suspend after a target-specific runtime helper already queued the
    * continuation (used by module awaits, which skip the hop when settled). */
-  private emitWasiSuspendPrepared(): void {
-    const coro = this.currentWasiCoro;
-    if (coro === null) throw new InternalCompilerError("llvm emitter bug: wasm suspension outside async body");
+  private emitCoroSuspendPrepared(): void {
+    const coro = this.currentCoro;
+    if (coro === null) throw new InternalCompilerError("llvm emitter bug: suspension outside a coroutine body");
     const save = this.B.tmp();
     const state = this.B.tmp();
     const resume = this.B.newLabel("coro.resume");
@@ -2908,9 +2880,9 @@ class LlEmitter {
   }
 
   /** Move a clean async return value into the current fiber's promise. */
-  private emitWasiFulfill(v: LlValue | null): void {
-    const coro = this.currentWasiCoro;
-    if (coro === null) throw new InternalCompilerError("llvm emitter bug: wasm fulfillment outside async body");
+  private emitCoroFulfill(v: LlValue | null): void {
+    const coro = this.currentCoro;
+    if (coro === null) throw new InternalCompilerError("llvm emitter bug: fulfillment outside a coroutine body");
     const ret = this.currentReturnType;
     if (coro.kind === "generator") {
       this.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
@@ -2980,33 +2952,41 @@ class LlEmitter {
     this.tryStack = [];
     this.currentReturnType = fn.returnType;
     this.currentGenerator = fn.generator ?? null;
-    this.currentWasiCoro = null;
+    this.currentCoro = null;
     this.logArgSlots = 0;
 
-    if (this.wasi && (fn.async === true || fn.generator !== undefined)) {
+    if (isCoroutineFunction(fn, this.wasi)) {
       this.declare(`declare token @llvm.coro.id(i32, ptr, ptr, ptr)`);
       this.declare(`declare ${this.sizeType} @llvm.coro.size.${this.sizeType}()`);
       this.declare(`declare ptr @llvm.coro.begin(token, ptr)`);
       this.declare(`declare token @llvm.coro.save(ptr)`);
       this.declare(`declare i8 @llvm.coro.suspend(token, i1)`);
       this.declare(`declare ptr @llvm.coro.free(token, ptr)`);
-      this.declare(`declare i1 @llvm.coro.end(ptr, i1, token)`);
+      this.declare(`declare ${this.legacyCoroEnd ? "i1" : "void"} @llvm.coro.end(ptr, i1, token)`);
       this.declare(`declare ptr @malloc(${this.sizeType})`);
       this.declare(`declare void @free(ptr)`);
-      this.declare(`declare void @scr_wasi_coro_started(ptr)`);
-      this.declare(`declare ptr @scr_fiber_self()`);
+      this.declare(`declare ptr @scr_coro_started(ptr, ptr, ptr)`);
+      this.needOom();
       const id = B.tmp();
       const size = B.tmp();
       const mem = B.tmp();
+      const oom = B.tmp();
       const handle = B.tmp();
       const self = B.tmp();
+      const oomLabel = B.newLabel("coro.oom");
+      const beginLabel = B.newLabel("coro.begin");
       B.line(`${id} = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)`);
       B.line(`${size} = call ${this.sizeType} @llvm.coro.size.${this.sizeType}()`);
       B.line(`${mem} = call ptr @malloc(${this.sizeType} ${size})`);
+      B.line(`${oom} = icmp eq ptr ${mem}, null`);
+      B.condBr(oom, oomLabel, beginLabel);
+      B.startBlock(oomLabel);
+      B.line(`call void @sc_oom()`);
+      B.terminate(`unreachable`);
+      B.startBlock(beginLabel);
       B.line(`${handle} = call ptr @llvm.coro.begin(token ${id}, ptr ${mem})`);
-      B.line(`call void @scr_wasi_coro_started(ptr ${handle})`);
-      B.line(`${self} = call ptr @scr_fiber_self()`);
-      this.currentWasiCoro = {
+      B.line(`${self} = call ptr @scr_coro_started(ptr ${handle}, ptr @sc_coro_resume, ptr @sc_coro_destroy)`);
+      this.currentCoro = {
         kind: fn.generator !== undefined ? "generator" : "async",
         id,
         handle,
@@ -3071,16 +3051,16 @@ class LlEmitter {
     // whose unwind released everything down to depth 0).
     if (fn.returnType.kind === "void" && !B.isTerminated()) {
       this.releaseScope(this.scopes[0]!);
-      if (this.currentWasiCoro !== null) {
-        this.emitWasiFulfill(null);
-        B.terminate(`br label %${this.currentWasiCoro.finalLabel}`);
+      if (this.currentCoro !== null) {
+        this.emitCoroFulfill(null);
+        B.terminate(`br label %${this.currentCoro.finalLabel}`);
       } else {
         B.terminate("ret void");
       }
     }
     this.scopes.pop();
 
-    const coro = this.currentWasiCoro;
+    const coro = this.currentCoro;
     if (coro !== null) {
       B.startBlock(coro.finalLabel);
       if (fn.captures !== undefined) {
@@ -3091,8 +3071,8 @@ class LlEmitter {
         this.declare(`declare void @scr_wasi_gen_finish(ptr)`);
         B.line(`call void @scr_wasi_gen_finish(ptr ${coro.self})`);
       } else {
-        this.declare(`declare void @scr_wasi_async_finish(ptr)`);
-        B.line(`call void @scr_wasi_async_finish(ptr ${coro.self})`);
+        this.declare(`declare void @scr_coro_async_finish(ptr)`);
+        B.line(`call void @scr_coro_async_finish(ptr ${coro.self})`);
       }
       const finalState = B.tmp();
       B.line(`${finalState} = call i8 @llvm.coro.suspend(token none, i1 true)`);
@@ -3105,8 +3085,9 @@ class LlEmitter {
       B.line(`call void @free(ptr ${frame})`);
       B.br(coro.suspendLabel);
       B.startBlock(coro.suspendLabel);
-      const ended = B.tmp();
-      B.line(`${ended} = call i1 @llvm.coro.end(ptr ${coro.handle}, i1 false, token none)`);
+      const endArgs = `ptr ${coro.handle}, i1 false, token none`;
+      if (this.legacyCoroEnd) B.line(`${B.tmp()} = call i1 @llvm.coro.end(${endArgs})`);
+      else B.line(`call void @llvm.coro.end(${endArgs})`);
       const ret = this.llType(fn.returnType);
       if (ret === "void") B.terminate(`ret void`);
       else if (ret === "double") B.terminate(`ret double ${f64Lit(0)}`);
@@ -3774,9 +3755,9 @@ class LlEmitter {
           this.releaseForJump(0, 0);
         }
         if (!B.isTerminated()) {
-          if (this.currentWasiCoro !== null) {
-            this.emitWasiFulfill(v);
-            B.terminate(`br label %${this.currentWasiCoro.finalLabel}`);
+          if (this.currentCoro !== null) {
+            this.emitCoroFulfill(v);
+            B.terminate(`br label %${this.currentCoro.finalLabel}`);
           } else if (v === null) B.terminate("ret void");
           else B.terminate(`ret ${this.llType(s.value!.type)} ${v.name}`);
         }

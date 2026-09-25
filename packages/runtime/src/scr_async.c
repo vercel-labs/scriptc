@@ -300,12 +300,28 @@ typedef unsigned char ScrCtx;
 typedef ucontext_t ScrCtx;
 #endif
 
+/* A fiber's saved-context slot. A POSIX ucontext_t is large, so it lives in
+ * the fiber's stack block (scr_fiber_stack_new) rather than in every
+ * ScrFiber: stackless coroutines and microtask envelopes never switch. */
+#if defined(_WIN32) || defined(__wasi__)
+#define SCR_FIBER_CTX(f) (&(f)->ctx)
+#else
+#define SCR_FIBER_CTX(f) ((f)->ctx)
+#endif
+
 struct ScrFiber {
+#if defined(_WIN32) || defined(__wasi__)
   ScrCtx ctx;
-  /* wasm32 uses LLVM's stackless switched-coroutine frame instead of a
-   * native saved stack. The compiler emits these two generic wrappers in
-   * every WASI module. */
+#else
+  ScrCtx *ctx; /* NULL until scr_fiber_stack_new */
+#endif
+  /* LLVM-compiled async bodies (and wasm32 generators) run as stackless
+   * switched coroutines instead of on a saved native stack: `coro` is the
+   * frame handle, resumed and destroyed through the adapters the owning
+   * program module registered. NULL on stack-switching fibers. */
   void *coro;
+  void (*coro_resume)(void *handle);
+  void (*coro_destroy)(void *handle);
   ScrCtx *return_to; /* whoever resumed us last (spawner or the loop) */
   char *stack;       /* POSIX only; Windows fibers own their stack (NULL) */
   ScrPromise *promise; /* the promise this fiber settles (owned +1); NULL
@@ -333,6 +349,7 @@ struct ScrFiber {
   ScrGen *gen_job;
 #ifdef SCR_ASAN_FIBERS
   void *fake_stack;
+  ScrFiber *asan_prev, *asan_next; /* scr_asan_live_fibers */
 #endif
 };
 
@@ -371,26 +388,47 @@ static ScrFiber *scr_current = NULL;
 static long scr_fibers_live = 0;
 static long scr_fibers_abandoned = 0;
 
+#ifdef SCR_ASAN_FIBERS
+/* LeakSanitizer sees only what a root reaches. A fiber suspended forever at
+ * loop exhaustion holds its frame or stack and the values those own by
+ * design (the RC audit skips the same case), so every live fiber stays
+ * linked from this root until scr_fiber_destroy. */
+static ScrFiber *scr_asan_live_fibers = NULL;
+
+static void scr_asan_fiber_link(ScrFiber *f) {
+  f->asan_next = scr_asan_live_fibers;
+  if (scr_asan_live_fibers != NULL) scr_asan_live_fibers->asan_prev = f;
+  scr_asan_live_fibers = f;
+}
+
+static void scr_asan_fiber_unlink(ScrFiber *f) {
+  if (f->asan_prev != NULL) f->asan_prev->asan_next = f->asan_next;
+  else scr_asan_live_fibers = f->asan_next;
+  if (f->asan_next != NULL) f->asan_next->asan_prev = f->asan_prev;
+}
+#endif
+
 long scr_abandoned_fiber_count(void) { return scr_fibers_abandoned; }
 
 /* True while executing on an async fiber (vs the main stack). The island
  * sizes its engine stack budget per stack: fibers are small and fixed,
- * the main stack is the process's megabytes (scr_island.c isl_entry). */
+ * the main stack is the process's megabytes (scr_island.c isl_entry). A
+ * stackless coroutine counts as a fiber too: its eager prefix can run on
+ * the small stack of a stack-switching spawner (a generator, a runtime
+ * continuation), so it keeps the conservative budget. */
 bool scr_on_fiber(void) { return scr_current != NULL; }
 void *scr_fiber_self(void) { return scr_current; }
 
-#ifdef __wasi__
-extern void scr_wasi_coro_resume(void *handle);
-extern void scr_wasi_coro_destroy(void *handle);
-
-void scr_wasi_coro_started(void *handle) {
+ScrFiber *scr_coro_started(void *handle, void (*resume)(void *), void (*destroy)(void *)) {
   if (scr_current == NULL) {
     fputs("scriptc: internal error: coroutine started outside a fiber\n", stderr);
     abort();
   }
   scr_current->coro = handle;
+  scr_current->coro_resume = resume;
+  scr_current->coro_destroy = destroy;
+  return scr_current;
 }
-#endif
 
 /* Microtask queue: ready fibers, FIFO. */
 static ScrFiber **scr_ready = NULL;
@@ -407,6 +445,16 @@ static void scr_ready_push(ScrFiber *f) {
     }
   }
   scr_ready[scr_ready_head + scr_ready_len++] = f;
+}
+
+/* `f` continues once `p` settles (settlement moves waiters to READY). */
+static void scr_promise_add_waiter(ScrPromise *p, ScrFiber *f) {
+  if (p->nwaiters == p->waiters_cap) {
+    p->waiters_cap = p->waiters_cap ? p->waiters_cap * 2 : 4;
+    p->waiters = realloc(p->waiters, p->waiters_cap * sizeof *p->waiters);
+    if (!p->waiters) scr_oom();
+  }
+  p->waiters[p->nwaiters++] = f;
 }
 
 static void scr_async_gen_job(ScrGen *g);
@@ -1194,28 +1242,46 @@ static void scr_trampoline(void) {
   self->entry(self, self->argpack);
   scr_fiber_finish(self);
   /* Dead fiber: hop back to whoever resumed us. The loop frees us. */
-  scr_switch(&self->ctx, self->return_to, NULL);
+  scr_switch(SCR_FIBER_CTX(self), self->return_to, NULL);
   /* unreachable */
 }
+
+#if !defined(_WIN32) && !defined(__wasi__)
+/* One block per stack-switching fiber: the stack, then its saved context
+ * (SCR_FIBER_STACK keeps the context 16-byte aligned). */
+static void scr_fiber_stack_new(ScrFiber *f) {
+  f->stack = malloc(SCR_FIBER_STACK + sizeof(ucontext_t));
+  if (!f->stack) scr_oom();
+  f->ctx = (ucontext_t *)(f->stack + SCR_FIBER_STACK);
+  getcontext(f->ctx);
+  f->ctx->uc_stack.ss_sp = f->stack;
+  f->ctx->uc_stack.ss_size = SCR_FIBER_STACK;
+  f->ctx->uc_link = NULL;
+  makecontext(f->ctx, scr_trampoline, 0);
+}
+#endif
 
 /* Frees a finished fiber's execution resources (the promise release and
  * bookkeeping stay at the call sites). Windows: DeleteFiber tears down the
  * fiber object and its stack — legal here because a finished fiber has
  * switched away and can never be current again. */
 static void scr_fiber_destroy(ScrFiber *f) {
+  if (f->coro != NULL) {
+    f->coro_destroy(f->coro);
+  } else {
 #ifdef _WIN32
-  DeleteFiber(f->ctx);
-#elif defined(__wasi__)
-  if (f->coro != NULL) scr_wasi_coro_destroy(f->coro);
+    DeleteFiber(f->ctx);
 #endif
+  }
   scr_als_ctx_release(f->als);
+#ifdef SCR_ASAN_FIBERS
+  scr_asan_fiber_unlink(f);
+#endif
   free(f->stack);
   free(f);
 }
 
-/* Spawns and EAGERLY runs an async body until its first suspension (JS's
- * synchronous-prefix rule). Returns the fiber's promise, +1. */
-ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
+static ScrFiber *scr_fiber_new(void (*entry)(ScrFiber *, void *), void *argpack) {
   ScrFiber *f = calloc(1, sizeof *f);
   if (!f) scr_oom();
   f->promise = scr_promise_new();
@@ -1225,22 +1291,15 @@ ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
    * init-time capture); snapshots are immutable, so a retain suffices. */
   f->als = scr_als_ctx_retain(*scr_als_active);
   scr_fibers_live++;
+#ifdef SCR_ASAN_FIBERS
+  scr_asan_fiber_link(f);
+#endif
+  return f;
+}
 
-#ifdef _WIN32
-  /* The commit size is the ucontext stack's size; the reserve stays the
-   * default 1MB. Committed lazily by the OS, like the malloc'd stacks. */
-  ScrCtx here = scr_win_self();
-  f->ctx = CreateFiber(SCR_FIBER_STACK, scr_trampoline, NULL);
-  if (f->ctx == NULL) scr_oom();
-#elif defined(__wasi__)
-  ScrFiber *spawner = scr_current;
-  scr_current = f;
-  scr_exc_swap_cell(&f->exc);
-  scr_als_active = &f->als;
-  entry(f, argpack); /* eager prefix; returns at suspend/final suspend */
-  scr_current = spawner;
-  scr_exc_swap_cell(spawner ? &spawner->exc : NULL);
-  scr_als_active = spawner ? &spawner->als : &scr_als_main_slot;
+/* Back in the spawner after the eager prefix: the caller's promise (+1),
+ * and the fiber itself when the body already completed. */
+static ScrPromise *scr_async_spawned(ScrFiber *f) {
   ScrPromise *result = scr_promise_retain(f->promise);
   if (f->done) {
     scr_promise_release(f->promise);
@@ -1248,21 +1307,45 @@ ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
     scr_fibers_live--;
   }
   return result;
+}
+
+/* Spawns a stackless async body: the entry runs the coroutine's eager
+ * prefix on the CURRENT stack and returns at its first suspension (or at
+ * final suspend). Returns the fiber's promise, +1. */
+ScrPromise *scr_async_spawn_coro(void (*entry)(ScrFiber *, void *), void *argpack) {
+  ScrFiber *f = scr_fiber_new(entry, argpack);
+  ScrFiber *spawner = scr_current;
+  scr_current = f;
+  scr_exc_swap_cell(&f->exc);
+  scr_als_active = &f->als;
+  entry(f, argpack);
+  scr_current = spawner;
+  scr_exc_swap_cell(spawner ? &spawner->exc : NULL);
+  scr_als_active = spawner ? &spawner->als : &scr_als_main_slot;
+  return scr_async_spawned(f);
+}
+
+/* Spawns and EAGERLY runs an async body until its first suspension (JS's
+ * synchronous-prefix rule). Returns the fiber's promise, +1. */
+ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
+#ifdef __wasi__
+  return scr_async_spawn_coro(entry, argpack);
 #else
-  f->stack = malloc(SCR_FIBER_STACK);
-  if (!f->stack) scr_oom();
-  getcontext(&f->ctx);
-  f->ctx.uc_stack.ss_sp = f->stack;
-  f->ctx.uc_stack.ss_size = SCR_FIBER_STACK;
-  f->ctx.uc_link = NULL;
-  makecontext(&f->ctx, scr_trampoline, 0);
+  ScrFiber *f = scr_fiber_new(entry, argpack);
+#ifdef _WIN32
+  /* The commit size is the ucontext stack's size; the reserve stays the
+   * default 1MB. Committed lazily by the OS, like the malloc'd stacks. */
+  ScrCtx here = scr_win_self();
+  f->ctx = CreateFiber(SCR_FIBER_STACK, scr_trampoline, NULL);
+  if (f->ctx == NULL) scr_oom();
+#else
+  scr_fiber_stack_new(f);
 
   ucontext_t here;
 #endif
-#ifndef __wasi__
   f->return_to = &here;
   ScrFiber *spawner = scr_current;
-  scr_switch(&here, &f->ctx, f);
+  scr_switch(&here, SCR_FIBER_CTX(f), f);
   /* back: the fiber suspended or finished. The switch back targeted NULL
    * (the child doesn't know who spawned it), which pointed both the current
    * fiber AND the exception machinery at main — restore the spawner's cell
@@ -1272,13 +1355,7 @@ ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
   scr_current = spawner;
   scr_exc_swap_cell(spawner ? &spawner->exc : NULL);
   scr_als_active = spawner ? &spawner->als : &scr_als_main_slot;
-  ScrPromise *result = scr_promise_retain(f->promise);
-  if (f->done) {
-    scr_promise_release(f->promise);
-    scr_fiber_destroy(f);
-    scr_fibers_live--;
-  }
-  return result;
+  return scr_async_spawned(f);
 #endif
 }
 
@@ -1294,73 +1371,56 @@ ScrPromise *scr_async_spawn_after(ScrPromise *dependency,
   (void)dependency;
   return scr_async_spawn(entry, argpack);
 #else
-  ScrFiber *f = calloc(1, sizeof *f);
-  if (!f) scr_oom();
-  f->promise = scr_promise_new();
-  f->entry = entry;
-  f->argpack = argpack;
-  f->als = scr_als_ctx_retain(*scr_als_active);
-  scr_fibers_live++;
-
-  if (dependency->state == SCR_PROM_PENDING) {
-    if (dependency->nwaiters == dependency->waiters_cap) {
-      dependency->waiters_cap = dependency->waiters_cap ? dependency->waiters_cap * 2 : 4;
-      dependency->waiters = realloc(
-          dependency->waiters, dependency->waiters_cap * sizeof *dependency->waiters);
-      if (!dependency->waiters) scr_oom();
-    }
-    dependency->waiters[dependency->nwaiters++] = f;
-  } else {
-    scr_ready_push(f);
-  }
+  ScrFiber *f = scr_fiber_new(entry, argpack);
+  if (dependency->state == SCR_PROM_PENDING) scr_promise_add_waiter(dependency, f);
+  else scr_ready_push(f);
   return scr_promise_retain(f->promise);
 #endif
 }
 
-/* Parks the current fiber on `p` until it settles. Only fibers await. */
-static void scr_await_park(ScrPromise *p) {
+/* A stack switch from a stackless coroutine would save the context of
+ * whichever stack happens to be running it: the emitter must suspend
+ * through the scr_coro_* preparations instead. */
+static ScrFiber *scr_stack_switch_self(void) {
   ScrFiber *self = scr_current;
   if (!self) {
     fputs("scriptc: internal error: await outside an async function\n", stderr);
     abort();
   }
-  if (p->nwaiters == p->waiters_cap) {
-    p->waiters_cap = p->waiters_cap ? p->waiters_cap * 2 : 4;
-    p->waiters = realloc(p->waiters, p->waiters_cap * sizeof *p->waiters);
-    if (!p->waiters) scr_oom();
+  if (self->coro != NULL) {
+    fputs("scriptc: internal error: stack switch inside a stackless coroutine\n", stderr);
+    abort();
   }
-  p->waiters[p->nwaiters++] = self;
-  scr_switch(&self->ctx, self->return_to, NULL);
+  return self;
+}
+
+/* Parks the current fiber on `p` until it settles. Only fibers await. */
+static void scr_await_park(ScrPromise *p) {
+  ScrFiber *self = scr_stack_switch_self();
+  scr_promise_add_waiter(p, self);
+  scr_switch(SCR_FIBER_CTX(self), self->return_to, NULL);
   /* Resumed by the loop: return_to must now point at the loop's context. */
 }
 
-#ifdef __wasi__
 /* The emitted coroutine suspends immediately after these preparation
  * calls. Settled promises still queue one ready turn; pending promises own
  * the continuation through their waiter list. */
-void scr_wasi_await_prepare(ScrFiber *self, ScrPromise *p) {
-  if (p->state == SCR_PROM_PENDING) {
-    if (p->nwaiters == p->waiters_cap) {
-      p->waiters_cap = p->waiters_cap ? p->waiters_cap * 2 : 4;
-      p->waiters = realloc(p->waiters, p->waiters_cap * sizeof *p->waiters);
-      if (!p->waiters) scr_oom();
-    }
-    p->waiters[p->nwaiters++] = self;
-  } else {
-    scr_ready_push(self);
-  }
+void scr_coro_await_prepare(ScrFiber *self, ScrPromise *p) {
+  if (p->state == SCR_PROM_PENDING) scr_promise_add_waiter(p, self);
+  else scr_ready_push(self);
 }
 
-void scr_wasi_await_hop_prepare(ScrFiber *self) { scr_ready_push(self); }
+void scr_coro_await_hop_prepare(ScrFiber *self) { scr_ready_push(self); }
 
-bool scr_wasi_module_await_prepare(ScrFiber *self, ScrPromise *p) {
+bool scr_coro_module_await_prepare(ScrFiber *self, ScrPromise *p) {
   if (p->state != SCR_PROM_PENDING) return false;
-  scr_wasi_await_prepare(self, p);
+  scr_promise_add_waiter(p, self);
   return true;
 }
 
-void scr_wasi_async_finish(ScrFiber *self) { scr_fiber_finish(self); }
+void scr_coro_async_finish(ScrFiber *self) { scr_fiber_finish(self); }
 
+#ifdef __wasi__
 void scr_wasi_gen_finish(ScrFiber *self) {
   if (scr_exc_genret_pending()) {
     scr_exc_clear();
@@ -1376,13 +1436,9 @@ void scr_wasi_gen_finish(ScrFiber *self) {
  * a settled promise would continue synchronously inside the spawner,
  * observably earlier than Node (corpus 1428 pins the ordering). */
 static void scr_await_yield(void) {
-  ScrFiber *self = scr_current;
-  if (!self) {
-    fputs("scriptc: internal error: await outside an async function\n", stderr);
-    abort();
-  }
+  ScrFiber *self = scr_stack_switch_self();
   scr_ready_push(self);
-  scr_switch(&self->ctx, self->return_to, NULL);
+  scr_switch(SCR_FIBER_CTX(self), self->return_to, NULL);
 }
 
 /* The emitted promise-or-absent await's unit arm (`await u` where u holds
@@ -1410,15 +1466,18 @@ static void scr_promise_rethrow(ScrPromise *p) {
 
 /* Await result extraction. Rejection re-throws into the awaiter. */
 static bool scr_await_settled(ScrPromise *p) {
-#ifdef __wasi__
+#ifndef __wasi__
+  if (scr_current == NULL || scr_current->coro == NULL) {
+    if (p->state != SCR_PROM_PENDING) scr_await_yield();
+    while (p->state == SCR_PROM_PENDING) scr_await_park(p);
+  }
+#endif
+  /* A stackless awaiter already suspended through scr_coro_await_prepare
+   * and resumes only after settlement. */
   if (p->state == SCR_PROM_PENDING) {
     fputs("scriptc: internal error: resumed before awaited promise settled\n", stderr);
     abort();
   }
-#else
-  if (p->state != SCR_PROM_PENDING) scr_await_yield();
-  while (p->state == SCR_PROM_PENDING) scr_await_park(p);
-#endif
   scr_prom_observe(p);
   if (p->state == SCR_PROM_REJECTED) {
     scr_promise_rethrow(p);
@@ -2244,31 +2303,35 @@ static void scr_resume_fiber(ScrFiber *f) {
     scr_async_gen_resume_ready(f->gen);
     return;
   }
+#ifndef __wasi__
+  if (f->coro == NULL) {
 #ifdef _WIN32
-  /* The loop runs on the main stack; make sure scr_loop_ctx names its
-   * fiber handle (a no-op after the first conversion). */
-  (void)scr_win_self();
+    /* The loop runs on the main stack; make sure scr_loop_ctx names its
+     * fiber handle (a no-op after the first conversion). */
+    (void)scr_win_self();
 #endif
-  f->return_to = &scr_loop_ctx;
-#ifdef __wasi__
-  scr_current = f;
-  scr_exc_swap_cell(&f->exc);
-  scr_als_active = &f->als;
-  if (f->coro != NULL) {
-    scr_wasi_coro_resume(f->coro);
-  } else {
-    /* scr_async_spawn_after's runtime C continuation. Its dependency is
-     * settled, so the entry can extract through scr_await_* without a
-     * stack switch and then completes in this turn. */
-    f->entry(f, f->argpack);
-    scr_fiber_finish(f);
+    f->return_to = &scr_loop_ctx;
+    scr_switch(&scr_loop_ctx, SCR_FIBER_CTX(f), f);
+  } else
+#endif
+  {
+    /* Stackless continuations run on the loop's own stack. */
+    scr_current = f;
+    scr_exc_swap_cell(&f->exc);
+    scr_als_active = &f->als;
+    if (f->coro != NULL) {
+      f->coro_resume(f->coro);
+    } else {
+      /* wasm32's scr_async_spawn_after runtime C continuation. Its
+       * dependency is settled, so the entry can extract through
+       * scr_await_* without a stack switch and completes in this turn. */
+      f->entry(f, f->argpack);
+      scr_fiber_finish(f);
+    }
+    scr_current = NULL;
+    scr_exc_swap_cell(NULL);
+    scr_als_active = &scr_als_main_slot;
   }
-  scr_current = NULL;
-  scr_exc_swap_cell(NULL);
-  scr_als_active = &scr_als_main_slot;
-#else
-  scr_switch(&scr_loop_ctx, &f->ctx, f);
-#endif
   if (f->done) {
     scr_promise_release(f->promise);
     scr_fiber_destroy(f);
@@ -3202,19 +3265,16 @@ static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpa
    * fiber switch). */
   f->als = scr_als_ctx_retain(*scr_als_active);
   scr_fibers_live++;
+#ifdef SCR_ASAN_FIBERS
+  scr_asan_fiber_link(f);
+#endif
 #ifdef _WIN32
   f->ctx = CreateFiber(SCR_FIBER_STACK, scr_trampoline, NULL);
   if (f->ctx == NULL) scr_oom();
 #elif defined(__wasi__)
   f->ctx = 0;
 #else
-  f->stack = malloc(SCR_FIBER_STACK);
-  if (!f->stack) scr_oom();
-  getcontext(&f->ctx);
-  f->ctx.uc_stack.ss_sp = f->stack;
-  f->ctx.uc_stack.ss_size = SCR_FIBER_STACK;
-  f->ctx.uc_link = NULL;
-  makecontext(&f->ctx, scr_trampoline, 0);
+  scr_fiber_stack_new(f);
 #endif
   g->fiber = f;
   return g;
@@ -3352,7 +3412,7 @@ void *scr_gen_take_in_ref(void) { return scr_gen_slot_take_ref(&scr_gen_self()->
  * payload or the GENRET sentinel pending (the emitted check handles it). */
 static void scr_gen_yield_switch(void) {
   ScrFiber *self = scr_current;
-  scr_switch(&self->ctx, self->return_to, NULL);
+  scr_switch(SCR_FIBER_CTX(self), self->return_to, NULL);
 }
 void scr_gen_yield_f64(double v) {
   scr_gen_slot_f64(&scr_gen_self()->out, v);
@@ -3411,12 +3471,12 @@ static void scr_gen_switch_in(ScrGen *g) {
   scr_exc_swap_cell(&f->exc);
   scr_als_active = &f->als;
   if (f->coro == NULL) f->entry(f, f->argpack);
-  else scr_wasi_coro_resume(f->coro);
+  else f->coro_resume(f->coro);
   scr_current = me;
   scr_exc_swap_cell(me != NULL ? &me->exc : NULL);
   scr_als_active = me != NULL ? &me->als : &scr_als_main_slot;
 #else
-  scr_switch(&here, &f->ctx, f);
+  scr_switch(&here, SCR_FIBER_CTX(f), f);
   /* Back on the consumer: restore identity + the consumer's cell (the
    * yield/finish switch targeted NULL — main's cell). */
   scr_current = me;

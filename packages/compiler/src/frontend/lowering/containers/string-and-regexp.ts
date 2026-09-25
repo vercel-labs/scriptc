@@ -1,12 +1,12 @@
 import * as ts from "../../ts7/adapter.js";
 import { BOOL, F64, IrExpr, IrFunction, IrStmt, IrType, STRING, SrcLoc, arrayOf, isUnitType, typeEquals, typeKey } from "../../../ir/ir.js";
-import { numLit, varRef } from "../../../ir/build.js";
+import { numLit, strLit, varRef } from "../../../ir/build.js";
 import { locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
 import { own } from "../lowerer.js";
 import { isRequireMainFilename } from "../expressions/optional-chains.js";
 import { STR_METHODS } from "../surfaces.js";
-import { defaultAfterUndefined, lowerOptionalArgument, lowerPositionArgument, lowerStaticallyUndefinedArgument, lowerStringSearchArgument, positionNumber } from "../optional-arguments.js";
+import { coerceStringSearchValue, defaultAfterUndefined, lowerOptionalArgument, lowerPositionArgument, lowerStaticallyUndefinedArgument, lowerStringSearchArgument, positionNumber } from "../optional-arguments.js";
 
 function lowerSplitLimitArg(lowerer: Lowerer, node: ts.Expression | undefined, loc: SrcLoc): IrExpr {
   const defaultValue: IrExpr = { kind: "numLit", value: 4294967295, type: F64, loc };
@@ -278,9 +278,17 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     return { kind: "strIntrinsic", method: entry.method, receiver, args: [needle], type: entry.result, loc };
   }
   if (searchMethod && call.arguments.length === 2) {
-    const needle = lowerer.lowerExpr(call.arguments[0]!);
-    const optionalNeedle = needle.type.kind === "union" && lowerer.runtimeOptionalWidening(needle.type, STRING) !== null;
-    if (needle.type.kind !== "string" && needle.type.kind !== "dyn" && !optionalNeedle) {
+    const needleNode = call.arguments[0]!;
+    const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, needleNode);
+    let needle = undefinedArg
+      ? defaultAfterUndefined(undefinedArg, strLit("undefined", loc))
+      : lowerer.lowerExpr(needleNode);
+    if (isUnitType(needle.type)) needle = coerceStringSearchValue(lowerer, needle, needleNode, loc);
+    const scalarUnion = needle.type.kind === "union" &&
+      (lowerer.unions.get(needle.type.unionId)?.arms.every((arm) =>
+        arm.kind === "string" || arm.kind === "f64" || arm.kind === "bool" || arm.kind === "bigint" || isUnitType(arm)) ?? false);
+    const scalarNeedle = needle.type.kind === "f64" || needle.type.kind === "bool" || needle.type.kind === "bigint" || scalarUnion;
+    if (needle.type.kind !== "string" && needle.type.kind !== "dyn" && !scalarNeedle) {
       lowerer.noLowering(`.${entry.method} with '${lowerer.fmt(needle.type)}' search values`, call);
     }
     const defaultPosition: IrExpr = entry.method === "endsWith"
@@ -311,7 +319,7 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
         const value = varRef("arg.1", needle.type, loc);
         const init: IrExpr = needle.type.kind === "dyn"
           ? { kind: "libCall", fn: "dyn.toStringCoerce", args: [value], type: STRING, loc }
-          : lowerer.ensureString(value, call.arguments[0]!);
+          : coerceStringSearchValue(lowerer, value, needleNode, loc);
         locals.push({ id: "search.0", name: "search", type: STRING, mutable: false });
         body.push({ kind: "varDecl", localId: "search.0", init, loc });
       }

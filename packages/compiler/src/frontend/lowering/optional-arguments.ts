@@ -49,7 +49,11 @@ export function lowerStringSearchArgument(lowerer: Lowerer, node: ts.Expression 
   if (!node) return absent;
   const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, node);
   if (undefinedArg) return defaultAfterUndefined(undefinedArg, absent);
-  const value = lowerer.lowerExpr(node);
+  return coerceStringSearchValue(lowerer, lowerer.lowerExpr(node), node, loc);
+}
+
+/** Convert a lowered string-search value while preserving unit-value effects. */
+export function coerceStringSearchValue(lowerer: Lowerer, value: IrExpr, node: ts.Expression, loc: SrcLoc): IrExpr {
   if (isUnitType(value.type)) {
     return defaultAfterUndefined(value, strLit(value.type.kind === "nullT" ? "null" : "undefined", loc));
   }

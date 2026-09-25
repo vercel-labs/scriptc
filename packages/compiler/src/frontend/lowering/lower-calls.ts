@@ -3864,13 +3864,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       }
       const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
       if (optionalNumber) return optionalNumber;
-      const nullishNumber = lowerNullishNumber(lowerer, arg, argNode, loc);
-      if (nullishNumber) return nullishNumber;
+      const scalarUnionNumber = lowerScalarUnionNumber(lowerer, arg, argNode, loc);
+      if (scalarUnionNumber) return scalarUnionNumber;
       lowerer.noLowering(
         `Number of ${lowerer.fmt(arg.type)} values`,
         argNode,
         arg.type.kind === "union"
-          ? "numbers, booleans, and strings lower (the full ToNumber string grammar included) — narrow the union first"
+          ? "unions of numbers, booleans, strings, null, and undefined lower — narrow other arms first"
           : undefined,
       );
     }
@@ -5067,12 +5067,14 @@ function lowerStringMethodCallWithOptionalArgs(
   return changed ? { ...lowered, args } : lowered;
 }
 
-function lowerNullishNumber(lowerer: Lowerer, arg: IrExpr, node: ts.Expression, loc: SrcLoc): IrExpr | null {
-  if (arg.type.kind !== "union" || !lowerer.unions.get(arg.type.unionId)?.arms.every(isUnitType)) return null;
-  const key = `number.nullish:${arg.type.unionId}`;
+function lowerScalarUnionNumber(lowerer: Lowerer, arg: IrExpr, node: ts.Expression, loc: SrcLoc): IrExpr | null {
+  if (arg.type.kind !== "union" || !lowerer.unions.get(arg.type.unionId)?.arms.every(
+    (arm) => arm.kind === "f64" || arm.kind === "string" || arm.kind === "bool" || isUnitType(arm)
+  )) return null;
+  const key = `number.scalar:${arg.type.unionId}`;
   let helper = lowerer.widthHelpers.get(key);
   if (!helper) {
-    helper = `%number.nullish.${lowerer.widthHelpers.size}`;
+    helper = `%number.scalar.${lowerer.widthHelpers.size}`;
     lowerer.widthHelpers.set(key, helper);
     const value = varRef("value.0", arg.type, loc);
     const nan: IrExpr = {

@@ -7003,6 +7003,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3038-number-scalar-unions.ts": {
+   "order": [
+    "<repo>/tests/corpus/3038-number-scalar-unions.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/304-compound-incdec.ts": {
    "order": [
     "<repo>/tests/corpus/304-compound-incdec.ts"

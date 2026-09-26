@@ -3539,14 +3539,14 @@
       "kind": "stdlib",
       "name": "string.prototype.padEnd",
       "status": "static",
-      "note": "the lowered call form takes 1 to 2 arguments"
+      "note": "the lowered call form takes 0 to 2 arguments"
     },
     {
       "id": "stdlib.string.padStart",
       "kind": "stdlib",
       "name": "string.prototype.padStart",
       "status": "static",
-      "note": "the lowered call form takes 1 to 2 arguments"
+      "note": "the lowered call form takes 0 to 2 arguments"
     },
     {
       "id": "stdlib.string.repeat",

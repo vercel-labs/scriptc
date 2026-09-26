@@ -408,10 +408,9 @@ export const STR_METHODS: Record<
   // astral halves become U+FFFD (SEMANTICS.md divergence 2, the same
   // substitution the island's boundary marshal applied).
   split: { method: "split", result: arrayOf(STRING), minArgs: 1, maxArgs: 2 },
-  // padStart/padEnd with the fill omitted: Node pads with " " — the
-  // lowering completes the default (lowerStringMethodCall).
-  padStart: { method: "padStart", result: STRING, minArgs: 1, maxArgs: 2 },
-  padEnd: { method: "padEnd", result: STRING, minArgs: 1, maxArgs: 2 },
+  // Padding completes omitted lengths and fill strings in its lowering.
+  padStart: { method: "padStart", result: STRING, minArgs: 0, maxArgs: 2 },
+  padEnd: { method: "padEnd", result: STRING, minArgs: 0, maxArgs: 2 },
   // The lre-backed pair (ECMA Default Case Conversion, final sigma
   // included — scr_regex.c): static now, no island needed; their presence
   // flips the regex LINK switch (moduleUsesRegex).

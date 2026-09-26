@@ -3,7 +3,7 @@ import { BOOL, F64, IrExpr, IrFunction, IrStmt, IrType, STRING, SrcLoc, arrayOf,
 import { numLit, strLit, varRef } from "../../../ir/build.js";
 import { locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
-import { own } from "../lowerer.js";
+import { nodeThrowExpr, own } from "../lowerer.js";
 import { isRequireMainFilename } from "../expressions/optional-chains.js";
 import { STR_METHODS } from "../surfaces.js";
 import { coerceStringSearchValue, defaultAfterUndefined, lowerOptionalArgument, lowerPositionArgument, lowerStaticallyUndefinedArgument, lowerStringSearchArgument, positionNumber } from "../optional-arguments.js";
@@ -38,6 +38,113 @@ function lowerMethodReceiver(
   if (optional) return optional;
   if (typeEquals(lowered.type, expected)) return lowered;
   return lowerer.coerceInto(node, lowered, expected);
+}
+
+function paddingFillString(lowerer: Lowerer, value: IrExpr, node: ts.Node): IrExpr {
+  const loc = value.loc;
+  if (value.type.kind === "undefinedT" || value.type.kind === "void") return strLit(" ", loc);
+  if (value.type.kind === "nullT") return strLit("null", loc);
+  if (value.type.kind === "dyn") {
+    return {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "undefined", value, type: BOOL, loc },
+      then: strLit(" ", loc),
+      else_: { kind: "libCall", fn: "dyn.toStringCoerce", args: [value], type: STRING, loc },
+      type: STRING, loc,
+    };
+  }
+  if (value.type.kind === "union") {
+    const unionId = value.type.unionId;
+    const arms = lowerer.unions.get(unionId)!.arms;
+    let result: IrExpr = strLit(" ", loc);
+    for (let tag = arms.length - 1; tag >= 0; tag--) {
+      const narrowed: IrExpr = { kind: "unionNarrow", unionId, tag, value, type: arms[tag]!, loc };
+      const converted = paddingFillString(lowerer, narrowed, node);
+      result = tag === arms.length - 1 ? converted : {
+        kind: "ternary",
+        cond: { kind: "unionIsTag", unionId, tag, value, negated: false, type: BOOL, loc },
+        then: converted, else_: result, type: STRING, loc,
+      };
+    }
+    return result;
+  }
+  return lowerer.ensureString(value, node);
+}
+
+/** Pad arguments are evaluated before receiver/length coercion, while fill
+ * conversion runs only if padding is needed. One helper keeps that order for
+ * member calls and direct String.prototype calls alike. */
+export function lowerStringPaddingCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  method: "padStart" | "padEnd",
+  receiver: IrExpr,
+  receiverNode: ts.Node,
+  argumentNodes: readonly ts.Expression[],
+): IrExpr {
+  if (argumentNodes.length > 2) {
+    return lowerer.noLowering(`.${method} with ${argumentNodes.length} arguments`, call);
+  }
+  const loc = locOf(call);
+  const maxLength = lowerPositionArgument(lowerer, argumentNodes[0], numLit(0, loc));
+  const fillNode = argumentNodes[1];
+  const undefinedFill = fillNode ? lowerStaticallyUndefinedArgument(lowerer, fillNode) : null;
+  const rawFill = !fillNode ? strLit(" ", loc) : undefinedFill
+    ? defaultAfterUndefined(undefinedFill, strLit(" ", loc))
+    : lowerer.lowerExpr(fillNode);
+  const fill = rawFill.type.kind === "nullT"
+    ? defaultAfterUndefined(rawFill, strLit("null", loc)) : rawFill;
+  const values = [receiver, maxLength, fill];
+  const key = `str.pad:${method}:${values.map(value => typeKey(value.type)).join(":")}`;
+  let helper = lowerer.widthHelpers.get(key);
+  if (!helper) {
+    helper = `%str.pad.${lowerer.widthHelpers.size}`;
+    const params = values.map((value, index) => ({ localId: `arg.${index}`, name: `arg${index}`, type: value.type }));
+    const rawReceiver = varRef("arg.0", receiver.type, loc);
+    const convertedReceiver: IrExpr = receiver.type.kind === "dyn" ? {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "nullish", value: rawReceiver, type: BOOL, loc },
+      then: nodeThrowExpr(1, "", `String.prototype.${method} called on null or undefined`, STRING, loc),
+      else_: { kind: "libCall", fn: "dyn.toStringCoerce", args: [rawReceiver], type: STRING, loc },
+      type: STRING, loc,
+    } : lowerer.ensureString(rawReceiver, receiverNode);
+    const stringReceiver = varRef("receiver.0", STRING, loc);
+    const length = varRef("length.0", F64, loc);
+    const fillValue = varRef("arg.2", fill.type, loc);
+    const padded: IrExpr = {
+      kind: "strIntrinsic", method, receiver: stringReceiver,
+      args: [length, paddingFillString(lowerer, fillValue, fillNode ?? call)], type: STRING, loc,
+    };
+    const result: IrExpr = {
+      kind: "ternary",
+      cond: {
+        kind: "bin", op: ">=", left: length,
+        right: {
+          kind: "bin", op: "+",
+          left: { kind: "strIntrinsic", method: "length", receiver: stringReceiver, args: [], type: F64, loc },
+          right: numLit(1, loc), type: F64, loc,
+        },
+        type: BOOL, loc,
+      },
+      then: padded, else_: stringReceiver, type: STRING, loc,
+    };
+    const body: IrStmt[] = [
+      { kind: "varDecl", localId: "receiver.0", init: convertedReceiver, loc },
+      { kind: "varDecl", localId: "length.0", init: positionNumber(lowerer, varRef("arg.1", maxLength.type, loc), numLit(0, loc), argumentNodes[0] ?? call, "string padding length"), loc },
+      { kind: "return", value: result, loc },
+    ];
+    lowerer.widthHelpers.set(key, helper);
+    lowerer.liftedFns.push({
+      name: helper, params, returnType: STRING,
+      locals: [
+        ...params.map(param => ({ id: param.localId, name: param.name, type: param.type, mutable: false })),
+        { id: "receiver.0", name: "receiver", type: STRING, mutable: false },
+        { id: "length.0", name: "length", type: F64, mutable: false },
+      ],
+      body, loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: values, type: STRING, loc };
 }
 
 /** Regex method calls, both directions: `re.test(s)` on a regex receiver,
@@ -273,6 +380,9 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     ? dynReceiver()
     : lowerMethodReceiver(lowerer, access.expression, STRING, access.name.text);
   const loc = locOf(call);
+  if (entry.method === "padStart" || entry.method === "padEnd") {
+    return lowerStringPaddingCall(lowerer, call, entry.method, receiver, access.expression, argumentNodes);
+  }
   const searchMethod = entry.method === "indexOf" || entry.method === "includes" ||
     entry.method === "startsWith" || entry.method === "endsWith";
   if (searchMethod && argumentNodes.length < 2) {
@@ -380,11 +490,6 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
       argumentNodes[0]!,
       `'.split()' on a '${lowerer.fmt(args[0]!.type)}' separator (pass a string, or a regex literal)`,
     );
-  }
-  // padStart/padEnd with the fill omitted: Node pads with " " — the
-  // same call with the default made explicit.
-  if ((entry.method === "padStart" || entry.method === "padEnd") && args.length === 1) {
-    args.push({ kind: "strLit", value: " ", type: STRING, loc: locOf(call) });
   }
   return {
     kind: "strIntrinsic",

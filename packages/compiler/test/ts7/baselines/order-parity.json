@@ -7033,6 +7033,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3042-string-padding-coercion.js": {
+   "order": [
+    "<repo>/tests/corpus/3042-string-padding-coercion.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/305-truthiness.ts": {
    "order": [
     "<repo>/tests/corpus/305-truthiness.ts"

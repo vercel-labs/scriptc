@@ -2788,6 +2788,86 @@ function getElemExpr(arrT: IrType, elem: IrType, loc: SrcLoc): IrExpr {
     return { kind: "call", callee: name, args: [receiver, index], type: resultT, loc };
   }
 
+/** The Array constructor's element and count forms, shared by calls and new. */
+export function lowerArrayConstructor(lowerer: Lowerer,
+  expr: ts.CallExpression | ts.NewExpression,
+  args: readonly ts.Expression[],): IrExpr {
+  const loc = locOf(expr);
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering("Array constructor with spread arguments", expr);
+  }
+  let result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (result?.kind !== "array") {
+    const contextual = lowerer.checker.getContextualType(expr);
+    if (contextual) result = lowerer.mapTypeOf(contextual);
+  }
+  if (result?.kind !== "array" || !isSupportedArrayElem(result.elem)) {
+    lowerer.badType(expr, lowerer.typeOf(expr));
+  }
+  const argType = args.length === 1 ? lowerer.mapTypeOf(lowerer.typeOf(args[0]!)) : null;
+  if (argType?.kind === "dyn" || argType?.kind === "jsval") {
+    lowerer.noLowering("Array constructor with a dynamically typed sole argument", args[0]!);
+  }
+  if (args.length === 1 && (argType?.kind === "f64" ||
+      (argType?.kind === "union" && lowerer.armTag(argType.unionId, F64) >= 0))) {
+    const count = lowerer.lowerExpr(args[0]!);
+    const numberTag = count.type.kind === "union" ? lowerer.armTag(count.type.unionId, F64) : -1;
+    if (count.type.kind !== "f64" && numberTag < 0) {
+      lowerer.noLowering("Array constructor length with a value that may be missing", args[0]!);
+    }
+    const input = count.type.kind === "union" ? lowerer.declareHiddenLocal("%arrayCtorArg", count.type) : null;
+    const inputRef = input ? varRef(input.id, count.type, loc) : null;
+    const local = lowerer.declareHiddenLocal("%arrayLengthCtor", result);
+    const ref = varRef(local.id, result, loc);
+    const length: IrExpr = inputRef && count.type.kind === "union"
+      ? { kind: "unionNarrow", unionId: count.type.unionId, tag: numberTag, value: inputRef, type: F64, loc }
+      : count;
+    const resize: IrStmt = { kind: "arraySetLength", arr: ref, length, loc };
+    return {
+      kind: "seqExpr",
+      stmts: [
+        ...(input ? [{ kind: "varDecl" as const, localId: input.id, init: count, loc }] : []),
+        { kind: "varDecl", localId: local.id, init: { kind: "arrayLit", elems: [], type: result, loc }, loc },
+        ...(inputRef && count.type.kind === "union"
+          ? [{ kind: "if" as const,
+            cond: { kind: "unionIsTag" as const, unionId: count.type.unionId, tag: numberTag, value: inputRef, negated: false, type: BOOL, loc },
+            then: [resize],
+            else_: [arrayValueStore(lowerer, ref, numLit(0, loc), lowerer.coerceInto(args[0]!, inputRef, result.elem), result.elem, loc)],
+            loc }]
+          : [resize]),
+      ],
+      result: ref,
+      type: result,
+      loc,
+    };
+  }
+  return { kind: "arrayLit", elems: args.map((arg) => lowerer.lowerExprExpecting(arg, result.elem)), type: result, loc };
+}
+
+/** `Array.of` creates an array of its arguments, including a lone number. */
+export function lowerArrayOfCall(lowerer: Lowerer, call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,): IrExpr | null {
+  if (call.questionDotToken || access.questionDotToken || access.name.text !== "of" ||
+      !lowerer.isStdlibGlobal(access.expression, "Array")) return null;
+  let result = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (result?.kind !== "array") {
+    const contextual = lowerer.checker.getContextualType(call);
+    if (contextual) result = lowerer.mapTypeOf(contextual);
+  }
+  if (result?.kind !== "array" || !isSupportedArrayElem(result.elem)) {
+    lowerer.badType(call, lowerer.typeOf(call));
+  }
+  if (call.arguments.some(ts.isSpreadElement)) {
+    return lowerArraySpreadItems(lowerer, call.arguments, result.elem, result, locOf(call));
+  }
+  return {
+    kind: "arrayLit",
+    elems: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, result.elem)),
+    type: result,
+    loc: locOf(call),
+  };
+}
+
 /** `Array.from({ length: n }, mapfn)` — the counted-generation idiom — on
    * THE stdlib Array global. The source must be an OBJECT LITERAL whose
    * single property is `length` (the shape the idiom always spells; the
@@ -2797,8 +2877,10 @@ function getElemExpr(arrT: IrType, elem: IrType, loc: SrcLoc): IrExpr {
    * checker's own `unknown` for it — and pushing each result. The loop
    * bound is `i <= n - 1`, which IS ToLength for the finite lengths that
    * terminate (fractional lengths truncate, negative/NaN produce an empty
-   * array — Node-exact). Every other Array.from shape (arrays, iterables,
-   * no mapper) keeps the fence. Null when the callee isn't an
+   * array — Node-exact). Array inputs copy through the iterator's indexed
+   * values, including holes as present undefined, and may map each value.
+   * Set inputs copy their values; strings iterate by code point and may map.
+   * Other iterable shapes keep the fence. Null when the callee isn't an
    * Array-static access. */
   export function lowerArrayFromCall(lowerer: Lowerer, call: ts.CallExpression,
     access: ts.PropertyAccessExpression,): IrExpr | null {
@@ -2834,18 +2916,60 @@ function getElemExpr(arrT: IrType, elem: IrType, loc: SrcLoc): IrExpr {
         return { kind: "arrayNewLen", length: n, type: arrT, loc };
       }
     }
-    // `Array.from(s)` on a STRING: the string iterator's code-point walk
-    // into a fresh string[] (astral characters stay whole, where a
-    // charAt/index walk would truncate the surrogate halves) — the same
-    // interned helper `[...s]` lowers through.
-    if (args.length === 1 && !ts.isObjectLiteralExpression(args[0]!)) {
-      const src = lowerer.lowerExpr(args[0]!);
-      if (src.type.kind === "string") return strCharsCall(lowerer, src, loc);
+    // Array iteration reads length again after every mapper call. Without
+    // a mapper, a dense reversed copy followed by reversal preserves order
+    // and materializes holes while keeping element reference identity.
+    if ((args.length === 1 || args.length === 2) && !ts.isObjectLiteralExpression(args[0]!)) {
+      const source = lowerer.lowerExpr(args[0]!);
+      const src = source.type.kind === "string" && args.length === 2 ? strCharsCall(lowerer, source, loc) : source;
+      if (src.type.kind === "array") {
+        const arrT = src.type;
+        if (args.length === 1) {
+          const dense: IrExpr = { kind: "arrIntrinsic", method: "toReversed", receiver: src, args: [], type: arrT, loc };
+          return { kind: "arrIntrinsic", method: "reverse", receiver: dense, args: [], type: arrT, loc };
+        }
+        const mapper = args[1]!;
+        const valueT = arrayValueType(lowerer, arrT.elem);
+        const firstParam = ts.isArrowFunction(mapper) || ts.isFunctionExpression(mapper)
+          ? mapper.parameters[0]?.name : undefined;
+        const paramSymbol = firstParam && ts.isIdentifier(firstParam)
+          ? lowerer.checker.getSymbolAtLocation(firstParam) : undefined;
+        const previous = paramSymbol ? lowerer.runtimeOptionalBindingTypes.get(paramSymbol) : undefined;
+        if (paramSymbol) lowerer.runtimeOptionalBindingTypes.set(paramSymbol, valueT);
+        let callback: ReturnType<typeof hofCallbackArg>;
+        try {
+          callback = hofCallbackArg(lowerer, mapper, [valueT], arrT);
+        } finally {
+          if (paramSymbol) {
+            if (previous === undefined) lowerer.runtimeOptionalBindingTypes.delete(paramSymbol);
+            else lowerer.runtimeOptionalBindingTypes.set(paramSymbol, previous);
+          }
+        }
+        const { fnArg, arity } = callback;
+        if (arity > 2) lowerer.noLowering("Array.from mapper with an array parameter", args[1]!);
+        const fnRet = fnArg.type.ret;
+        if (fnRet.kind === "void" || fnRet.kind === "func") lowerer.badType(call, lowerer.typeOf(call));
+        fenceProducedArrayElem(lowerer, call, "'Array.from(array, mapper)'", fnRet);
+        const outElem = callbackArrayElem(lowerer, call, fnRet);
+        const key = `fromArray:${typeKey(arrT.elem)}:${typeKey(outElem)}:${typeKey(fnRet)}:${arity}`;
+        let helper = lowerer.arrHofHelpers.get(key);
+        if (!helper) {
+          helper = `%arr.fromArray.${lowerer.arrHofHelpers.size}`;
+          lowerer.arrHofHelpers.set(key, helper);
+          lowerer.liftedFns.push(buildArrayFromArrayFn(lowerer, helper, arrT.elem, outElem, fnRet, arity, loc));
+        }
+        return { kind: "call", callee: helper, args: [src, fnArg], type: arrayOf(outElem), loc };
+      }
+      if (src.type.kind === "set" && args.length === 1) {
+        return { kind: "setIntrinsic", method: "toArray", receiver: src, args: [], type: arrayOf(src.type.elem), loc };
+      }
+      // String iteration advances by code point; the same helper serves
+      // `[...s]` and both Array.from(s) forms.
+      if (src.type.kind === "string" && args.length === 1) return strCharsCall(lowerer, src, loc);
       lowerer.noLowering(
         "Array.from with this argument shape",
         call,
-        "Array.from({ length: n }, (v, i) => ...) and Array.from(aString) are the lowered " +
-          "forms — copy arrays with [...a] and drain Map/Set iterators where they are made",
+        "Array.from(array), Array.from(array, mapper), Array.from(aString), Array.from(aString, mapper), and Array.from({ length: n }, mapper) are the lowered forms",
       );
     }
     const n =
@@ -2856,8 +2980,7 @@ function getElemExpr(arrT: IrType, elem: IrType, loc: SrcLoc): IrExpr {
       lowerer.noLowering(
         "Array.from with this argument shape",
         call,
-        "Array.from({ length: n }, (v, i) => ...) is the lowered form — copy arrays " +
-          "with [...a] and drain Map/Set iterators where they are made",
+        "Array.from(array), Array.from(array, mapper), Array.from(aString), Array.from(aString, mapper), and Array.from({ length: n }, mapper) are the lowered forms",
       );
     }
     if (n.type.kind !== "f64") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
@@ -2887,6 +3010,51 @@ function getElemExpr(arrT: IrType, elem: IrType, loc: SrcLoc): IrExpr {
     }
     return { kind: "call", callee: helper, args: [n, fnArg], type: arrayOf(fnRet), loc };
   }
+
+/** Map an array iterator to a fresh dense array. The source length remains
+ * live so mapper mutations affect which later indexes are visited. */
+function buildArrayFromArrayFn(lowerer: Lowerer, name: string, elem: IrType,
+  outElem: IrType, fnRet: IrType, arity: number, loc: SrcLoc): IrFunction {
+  const arrT = arrayOf(elem);
+  const outT = arrayOf(outElem);
+  const fnT = funcOf([arrayValueType(lowerer, elem), F64].slice(0, arity), fnRet);
+  const a = varRef("a.0", arrT, loc);
+  const i = varRef("i.0", F64, loc);
+  const out = varRef("out.0", outT, loc);
+  const mapped: IrExpr = {
+    kind: "callValue",
+    callee: varRef("f.0", fnT, loc),
+    args: [arrayValueRead(lowerer, a, i, elem, loc), i].slice(0, arity),
+    type: fnRet,
+    loc,
+  };
+  return {
+    name,
+    params: [{ localId: "a.0", name: "a", type: arrT }, { localId: "f.0", name: "f", type: fnT }],
+    returnType: outT,
+    locals: [
+      { id: "a.0", name: "a", type: arrT, mutable: true },
+      { id: "f.0", name: "f", type: fnT, mutable: true },
+      { id: "out.0", name: "out", type: outT, mutable: false },
+      { id: "i.0", name: "i", type: F64, mutable: true },
+    ],
+    body: [
+      { kind: "varDecl", localId: "out.0", init: { kind: "arrayLit", elems: [], type: outT, loc }, loc },
+      { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+      {
+        kind: "while",
+        cond: { kind: "bin", op: "<", left: i, right: { kind: "arrIntrinsic", method: "length", receiver: a, args: [], type: F64, loc }, type: BOOL, loc },
+        body: [
+          arrayValueStore(lowerer, out, i, mapped, outElem, loc),
+          { kind: "assign", localId: "i.0", value: { kind: "bin", op: "+", left: i, right: numLit(1, loc), type: F64, loc }, loc },
+        ],
+        loc,
+      },
+      { kind: "return", value: out, loc },
+    ],
+    loc,
+  };
+}
 
 /** `Array.from(s)` / `[...s]` on a STRING: the code-point split into a
    * fresh string[], through one interned helper per module. */

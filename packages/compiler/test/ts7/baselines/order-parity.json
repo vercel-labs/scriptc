@@ -7111,6 +7111,18 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3052-array-construction.ts": {
+   "order": [
+    "<repo>/tests/corpus/3052-array-construction.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3053-array-construction-js.js": {
+   "order": [
+    "<repo>/tests/corpus/3053-array-construction-js.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/400-fib.ts": {
    "order": [
     "<repo>/tests/corpus/400-fib.ts"

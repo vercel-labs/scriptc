@@ -36,6 +36,16 @@ export const ISLAND_AMBIENT_TYPES = [
   "ReadableStreamReadDoneResult",
 ] as const;
 
+function isAmbientAbortHandleType(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (type.isUnionType()) return ts.constituentTypes(type).some((part) => isAmbientAbortHandleType(part, ctx));
+  const symbol = type.getSymbol();
+  return !!symbol &&
+    (symbol.name === "AbortSignal" || symbol.name === "AbortController") &&
+    ctx.checker.declarationsOf(symbol).some(
+      (d) => (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) && ctx.isStdlibFile(d.getSourceFile()),
+    );
+}
+
 /** node:util.parseArgs's public and @types/node helper type names. Values
  * behind this surface use the checked-dynamic tree; see mapTypeInner. */
 const PARSE_ARGS_DYN_TYPES = new Set([
@@ -1218,8 +1228,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // normalizer shape): the slot has the overflow map's RC/JSON/dyn
       // plumbing, values arrive dyn or convert via dynFrom.
       if (!et || et.kind === "void") return null;
-      // A jsval MEMBER absorbs the tuple (bare jsval fields have no shape
-      // slot — the record-field rule), exactly like record fields below.
+      // A jsval member keeps this tuple in the island as a real JS array.
+      // Object records may instead keep ambient abort handles in slots.
       if (et.kind === "jsval") return JSVAL;
       fields.push({ name: String(i), type: et });
     }
@@ -3748,14 +3758,11 @@ function mapRecordTypeInner(widened: ts.Type, ctx: TypeMapperCtx): IrType | Reco
       // v }` — a string-literal key): mapping it would collide with the
       // accessor dispatch, so the shape stays unmapped.
       if (accessorSlotProp(p.name) !== null) return null;
-      // A bare jsval FIELD absorbs the record: shapes have no handle slot
-      // (the IR forbids jsval fields — no JSON story), while an island
-      // OBJECT holds engine values natively — `{ model: gateway(id),
-      // prompt }` is one island object, built field by field (jsval
-      // members as the same handle, static members marshaled). jsval-
-      // BEARING composite fields (`content: any[]`) keep their static
-      // shape — the lift covers them.
-      if (pt.kind === "jsval") return JSVAL;
+      // Keep ambient abort handles in a native record slot under --dynamic:
+      // an options record with `signal?: AbortSignal` must not turn its
+      // unrelated static fields into island properties. Other bare jsval
+      // fields still absorb the record into one island object.
+      if (pt.kind === "jsval" && !(ctx.dynamic && isAmbientAbortHandleType(fieldTs, ctx))) return JSVAL;
       fields.push({ name: p.name, type: pt });
     }
     // getPropertiesOfType yields DECLARATION order (interface/alias/literal

@@ -4,6 +4,7 @@ import {
   BOOL,
   DYN,
   F64,
+  JSVAL,
   STRING,
   UNDEFINED_T,
   VOID,
@@ -1649,11 +1650,10 @@ export function lowerObjectLiteral(lowerer: Lowerer, expr: ts.ObjectLiteralExpre
     if (at >= 0) fields.splice(at, 1);
     fields.push({ name, value });
   }
-  // Optional fields (undefined-armed union slots) may be omitted: the
-  // absent field holds the interned undefined arm, exactly like writing
-  // `a: undefined` (without exactOptionalPropertyTypes tsc treats the two
-  // the same, and only optional fields may be omitted — tsc rejects
-  // omission of required fields before lowering, undefined-armed or not).
+  // Optional fields may be omitted: the absent field holds an undefined
+  // union arm or, for an island handle slot, the engine's undefined cell.
+  // This matches writing `a: undefined` without exactOptionalPropertyTypes;
+  // tsc rejects omission of required fields before lowering.
   // A REQUIRED missing field keeps the shape-mismatch rejection (possible
   // through `as`: the cast smuggles a narrower literal past freshness).
   if (droppedNames.size > 0) {
@@ -1674,8 +1674,14 @@ export function lowerObjectLiteral(lowerer: Lowerer, expr: ts.ObjectLiteralExpre
       // property reads as undefined in Node, and a dyn slot holds
       // exactly that (the options-record call shape against
       // `{ plugins: unknown, ... }` — a JS caller the checker admits).
-      const absent = lowerer.wrappedUndefined(f.type, loc) ?? (f.type.kind === "dyn" ? dynUndefinedExpr(loc) : null);
-      if (!absent) throw shapeMismatch(expr); // only optional (undefined-armed) and 'unknown' fields may be omitted
+      const optional = ((lowerer.checker.getPropertyOfType(tsType, f.name)?.flags ?? 0) & ts.SymbolFlags.Optional) !== 0;
+      const absentHandle: IrExpr | null = f.type.kind === "jsval" && optional
+        ? { kind: "jsOp", op: "undefLit", args: [], type: JSVAL, loc }
+        : null;
+      const absent = lowerer.wrappedUndefined(f.type, loc) ??
+        (f.type.kind === "dyn" ? dynUndefinedExpr(loc) : null) ??
+        absentHandle;
+      if (!absent) throw shapeMismatch(expr); // only optional and 'unknown' fields may be omitted
       fields.push({ name: f.name, value: absent });
     }
   }

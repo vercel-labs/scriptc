@@ -7039,6 +7039,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3043-dynamic-abort-record.ts": {
+   "order": [
+    "<repo>/tests/corpus/3043-dynamic-abort-record.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/305-truthiness.ts": {
    "order": [
     "<repo>/tests/corpus/305-truthiness.ts"

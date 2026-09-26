@@ -6967,6 +6967,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3031-array-relative-index-coercion.js": {
+   "order": [
+    "<repo>/tests/corpus/3031-array-relative-index-coercion.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/3031-string-last-index-search-value.js": {
    "order": [
     "<repo>/tests/corpus/3031-string-last-index-search-value.js"

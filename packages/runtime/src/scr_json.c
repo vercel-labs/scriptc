@@ -1387,6 +1387,51 @@ ScrStr *scr_dyn_typeof(const ScrDyn *d) {
   return scr_str_new(s, strlen(s));
 }
 
+ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
+  if (d->kind == SCR_DYN_TYPED_REF) {
+    if (scr_dyn_isl_is_error(d)) return scr_str_new("[object Error]", 14);
+    ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
+    ScrStr *out = scr_dyn_object_tag(materialized);
+    scr_dyn_release(materialized);
+    return out;
+  }
+  if (d->kind == SCR_DYN_JSVAL) {
+    scr_dyn_isl_fence(d, "Object.prototype.toString.call");
+    return NULL;
+  }
+  const char *tag;
+  switch (d->kind) {
+  case SCR_DYN_UNDEF: tag = "[object Undefined]"; break;
+  case SCR_DYN_NULL: tag = "[object Null]"; break;
+  case SCR_DYN_BOOL: tag = "[object Boolean]"; break;
+  case SCR_DYN_NUM: tag = "[object Number]"; break;
+  case SCR_DYN_STR: tag = "[object String]"; break;
+  case SCR_DYN_ARR: tag = "[object Array]"; break;
+  case SCR_DYN_OBJ: tag = "[object Object]"; break;
+  case SCR_DYN_HANDLE:
+    if (d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
+        d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "[object ");
+      scr_jb_puts(&b, scr_dyn_handle_cls(d));
+      scr_jb_putc(&b, ']');
+      return scr_jb_finish(&b);
+    }
+    tag = "[object Object]";
+    break;
+  case SCR_DYN_BYTES: tag = "[object Uint8Array]"; break;
+  case SCR_DYN_FUNC: tag = "[object Function]"; break;
+  case SCR_DYN_PROMISE: tag = "[object Promise]"; break;
+  default: {
+    const char *msg = "Object.prototype.toString.call on this checked-dynamic kind is not supported yet";
+    scr_throw_error_msg(SCR_ERR_ERROR, msg, strlen(msg));
+    return NULL;
+  }
+  }
+  return scr_str_new(tag, strlen(tag));
+}
+
 /* ── JSON.stringify over a dyn value (util.format's %j) ───────────────
  * The RUNTIME walk the type-directed serializers deliberately avoid for
  * static values — a dyn value has no static type, so the checked-dynamic tree's own kinds

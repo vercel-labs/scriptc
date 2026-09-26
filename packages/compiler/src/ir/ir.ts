@@ -2020,6 +2020,8 @@ export type IrLibFn =
    * wart preserved), boolean/number/string by kind, function→"function".
    * Never throws. */
   | "dyn.typeof"
+  /** Object.prototype.toString.call on a checked-dynamic value. */
+  | "dyn.objectTag"
   /** toString() on a checked-dynamic receiver: runtime kind dispatch
    * (bytes decode per the literal encoding — utf8 default; strings,
    * numbers, booleans, arrays, objects answer JS-exactly; undefined and
@@ -7585,6 +7587,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "error.nodeThrow",
   // USVString coercion runs user toString/valueOf — throws propagate.
   "dyn.toStringCoerce",
+  "dyn.objectTag",
   // Numeric coercion runs user valueOf/toString — throws propagate.
   "dyn.toNumberCoerce",
   "child.kill",

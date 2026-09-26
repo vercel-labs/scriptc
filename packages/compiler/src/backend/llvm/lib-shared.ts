@@ -498,6 +498,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.hasKey": "scr_dyn_has_key",
   "dyn.defineProps": "scr_dyn_define_props",
   "dyn.typeof": "scr_dyn_typeof",
+  "dyn.objectTag": "scr_dyn_object_tag",
   "dyn.toString": "scr_dyn_to_string_method",
   "dyn.this": "scr_dyn_this_get",
   "insp.dyn": "scr_insp_dyn",

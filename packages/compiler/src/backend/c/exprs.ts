@@ -4384,6 +4384,8 @@ function emitDynamicLibCall(state: LibCallState): Temp {
           case "dyn.typeof":
             // Bare typeof on a dyn value: the dyn kind's JS answer (+1).
             return finish(`scr_dyn_typeof(${arg(0)})`);
+          case "dyn.objectTag":
+            return finish(`scr_dyn_object_tag(${arg(0)})`);
           case "dyn.toString":
             // Receiver-kind-dispatched toString (+1); throws Node's
             // TypeError on undefined/null and the "is not a function"

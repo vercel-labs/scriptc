@@ -115,6 +115,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "dyn.toString": { argTypes: [DYN, STRING, STRING], result: STRING },
   "dyn.defineProps": { argTypes: [DYN, DYN], result: DYN },
   "dyn.typeof": { argTypes: [DYN], result: STRING },
+  "dyn.objectTag": { argTypes: [DYN], result: STRING },
   "module.registryInit": { argTypes: [F64], result: VOID },
   "module.define": { argTypes: [F64, STRING, STRING, STRING, arrayOf(STRING), BOOL], result: VOID },
   "module.enter": { argTypes: [F64], result: VOID },

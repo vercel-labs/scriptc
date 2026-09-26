@@ -4621,7 +4621,6 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         lowerer.lowerTestMethodCall(expr, expr.expression) ??
         lowerer.lowerTimeoutMethodCall(expr, expr.expression) ??
         lowerObjectOwnPrototypeCall(lowerer, expr, expr.expression) ??
-        lowerObjectOwnMethodCall(lowerer, expr, expr.expression) ??
         lowerObjectPrototypeCall(lowerer, expr, expr.expression) ??
         lowerStringPrototypeCall(lowerer, expr, expr.expression) ??
         lowerStringMethodCallWithOptionalArgs(lowerer, expr, expr.expression) ??
@@ -4653,6 +4652,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         // hasOwnProperty on a program class CONSTRUCTOR — own statics are
         // compile-time-known, so a literal key folds to a constant.
         lowerClassHasOwnPropertyCall(lowerer, expr, expr.expression) ??
+        lowerObjectOwnMethodCall(lowerer, expr, expr.expression) ??
         // Response constructor-object operations are unsupported in both
         // tiers. Keep their SC2020 inventory contract ahead of the island
         // and generic-call fallbacks (Response.json otherwise reports the

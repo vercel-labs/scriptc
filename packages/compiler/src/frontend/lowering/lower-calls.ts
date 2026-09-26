@@ -12,13 +12,13 @@ import { isJsSourceFile, isNodeEsmFile, locOf } from "../program.js";
 import { genResultRecord, isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { PoisonError, dynFallbackType, dynUndefinedExpr, importCallHandleType, jsFuncNameOf, newFnCtx, nodeThrowExpr, staticImportNamespaceType } from "./lowerer.js";
 import { enforceLibBoundary } from "./lib-boundary.js";
-import { NARROW_FIRST, STR_METHODS, builtinFenceHintOf, builtinModuleFnOf } from "./surfaces.js";
+import { NARROW_FIRST, STRING_INDEX_METHODS, STR_METHODS, builtinFenceHintOf, builtinModuleFnOf } from "./surfaces.js";
 import { ffiBindingDiag, ffiSignatureDiag, libCallbackDiag, requiresDynamicDiag } from "../../diagnostics/diagnostic.js";
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { mixinFnShapeOf } from "./lower-mixins.js";
 import { dynStringReceiver, lowerArrayFromCall, lowerDynArrayFilterCall, lowerDynArrayFlatMapCall, lowerGroupByStaticCall, lowerIteratorHelperCall, lowerObjectAssignIndexShape, lowerObjectFromEntriesCall, lowerObjectIterOverIndexShape, lowerTupleReadMethodCall } from "./lower-containers.js";
 import { bufEncoding } from "./containers/bytes.js";
-import { lowerRegexMethodCall, lowerStringMethodCall, lowerStringPaddingCall, lowerStringSplitCall } from "./containers/string-and-regexp.js";
+import { lowerRegexMethodCall, lowerStringIndexCall, lowerStringMethodCall, lowerStringPaddingCall, lowerStringSplitCall } from "./containers/string-and-regexp.js";
 import { lowerChildStreamMethodCall, lowerChildWriterMethodCall, lowerCreateRequireCall, lowerCryptoHashMethodCall, lowerDirentMethodCall, lowerFileHandleMethodCall, lowerImportMetaResolveCall, lowerNodeModuleCall, lowerPerfHooksCall, lowerProcStreamMethodCall, lowerReflectApplyCall, lowerRequireResolveCall, lowerWatcherMethodCall } from "./lower-builtins.js";
 import { lowerAbsenceProbe, lowerPromiseAllTupleCall, lowerPromiseRejectCall, stringWrapperToString, templateRawTextOf } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
@@ -5111,18 +5111,22 @@ function lowerStringPrototypeCall(
   const prototypeAccess = methodAccess.expression;
   if (!ts.isPropertyAccessExpression(prototypeAccess) || prototypeAccess.name.text !== "prototype" ||
       !ts.isIdentifier(prototypeAccess.expression) || prototypeAccess.expression.text !== "String" ||
-      !Object.hasOwn(STR_METHODS, methodAccess.name.text) || !lowerer.isStdlibMember(methodAccess)) return null;
+      (!Object.hasOwn(STR_METHODS, methodAccess.name.text) && !STRING_INDEX_METHODS.has(methodAccess.name.text)) ||
+      !lowerer.isStdlibMember(methodAccess)) return null;
   if (call.arguments.some(ts.isSpreadElement)) return null;
-  const entry = STR_METHODS[methodAccess.name.text]!;
+  const entry = STR_METHODS[methodAccess.name.text];
+  const indexMethod = STRING_INDEX_METHODS.has(methodAccess.name.text) ? methodAccess.name.text as "at" | "codePointAt" : null;
+  const resultType = indexMethod ? lowerer.withUndefinedArmOf(indexMethod === "at" ? STRING : F64) : entry?.result;
+  if (!resultType) return null;
   const method = methodAccess.name.text === "trimStart" ? "trimLeft" :
     methodAccess.name.text === "trimEnd" ? "trimRight" : methodAccess.name.text;
   const loc = locOf(call);
-  const nullishError = nodeThrowExpr(1, "", `String.prototype.${method} called on null or undefined`, entry.result, loc);
+  const nullishError = nodeThrowExpr(1, "", `String.prototype.${method} called on null or undefined`, resultType, loc);
   const receiverNode = call.arguments[0];
   if (!receiverNode) return nullishError;
   // Receiver coercion runs after .call has evaluated its arguments; keep
   // contextual wrapper lowering on forms without later method arguments.
-  const immediateWrapper = entry.maxArgs === 0 && call.arguments.length === 1
+  const immediateWrapper = entry?.maxArgs === 0 && call.arguments.length === 1
     ? immediatePrimitiveWrapperToString(lowerer, receiverNode) : null;
   const receiverValue = immediateWrapper ?? lowerer.lowerExpr(receiverNode);
   const receiverType = receiverValue.type;
@@ -5135,24 +5139,26 @@ function lowerStringPrototypeCall(
       kind: "seqExpr",
       stmts: values.filter((value) => !isSafeToDiscard(value)).map((value) => ({ kind: "exprStmt", expr: value, loc: value.loc })),
       result: nullishError,
-      type: entry.result,
+      type: resultType,
       loc,
     };
   }
-  const padding = entry.method === "padStart" || entry.method === "padEnd";
+  const padding = entry?.method === "padStart" || entry?.method === "padEnd";
   const scalar = receiverType.kind === "string" || receiverType.kind === "f64" ||
     receiverType.kind === "bool" || receiverType.kind === "bigint" ||
     (receiverType.kind === "union" && (lowerer.unions.get(receiverType.unionId)?.arms.every((arm) =>
       arm.kind === "string" || arm.kind === "f64" || arm.kind === "bool" || arm.kind === "bigint") ?? false));
   // Other methods convert object receivers before lowering their arguments;
   // padding uses a helper that delays conversion until every argument is ready.
-  const objectWithoutMethodArgs = entry.maxArgs === 0 && call.arguments.length === 1 &&
+  const objectWithoutMethodArgs = entry?.maxArgs === 0 && call.arguments.length === 1 &&
     (receiverType.kind === "record" || receiverType.kind === "array" || receiverType.kind === "object");
-  const dynObjectWithoutMethodArgs = entry.maxArgs === 0 && call.arguments.length === 1 &&
+  const dynObjectWithoutMethodArgs = entry?.maxArgs === 0 && call.arguments.length === 1 &&
     receiverType.kind === "dyn" && plainObjectCoercionReceiver(lowerer, receiverNode);
   if (!scalar && !objectWithoutMethodArgs && !dynObjectWithoutMethodArgs && !(padding && receiverType.kind === "dyn")) {
     return lowerer.noLowering(`String.prototype.${methodAccess.name.text}.call with ${lowerer.fmt(receiverType)} receivers`, call);
   }
+  if (indexMethod) return lowerStringIndexCall(lowerer, call, indexMethod, receiverValue, receiverNode, call.arguments.slice(1));
+  if (!entry) return null;
   if (padding) {
     return lowerStringPaddingCall(lowerer, call, entry.method as "padStart" | "padEnd", receiverValue, receiverNode, call.arguments.slice(1));
   }

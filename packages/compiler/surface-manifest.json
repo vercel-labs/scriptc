@@ -3489,8 +3489,8 @@
       "id": "stdlib.string.at",
       "kind": "stdlib",
       "name": "string.prototype.at",
-      "status": "dynamic-only",
-      "code": "SC2012"
+      "status": "static",
+      "note": "the lowered call form takes 0 to 1 arguments"
     },
     {
       "id": "stdlib.string.charAt",
@@ -3503,6 +3503,13 @@
       "id": "stdlib.string.charCodeAt",
       "kind": "stdlib",
       "name": "string.prototype.charCodeAt",
+      "status": "static",
+      "note": "the lowered call form takes 0 to 1 arguments"
+    },
+    {
+      "id": "stdlib.string.codePointAt",
+      "kind": "stdlib",
+      "name": "string.prototype.codePointAt",
       "status": "static",
       "note": "the lowered call form takes 0 to 1 arguments"
     },

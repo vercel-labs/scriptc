@@ -1,11 +1,11 @@
 import * as ts from "../../ts7/adapter.js";
-import { BOOL, DYN, F64, IrExpr, IrFunction, IrStmt, IrType, STRING, SrcLoc, arrayOf, isUnitType, typeEquals, typeKey } from "../../../ir/ir.js";
+import { BOOL, DYN, F64, IrExpr, IrFunction, IrStmt, IrType, STRING, SrcLoc, UNDEFINED_T, arrayOf, isUnitType, typeEquals, typeKey } from "../../../ir/ir.js";
 import { numLit, strLit, varRef } from "../../../ir/build.js";
 import { locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
 import { nodeThrowExpr, own } from "../lowerer.js";
 import { isRequireMainFilename } from "../expressions/optional-chains.js";
-import { STR_METHODS } from "../surfaces.js";
+import { STRING_INDEX_METHODS, STR_METHODS } from "../surfaces.js";
 import { coerceStringSearchValue, defaultAfterUndefined, lowerOptionalArgument, lowerPositionArgument, lowerStaticallyUndefinedArgument, lowerStringSearchArgument, positionNumber } from "../optional-arguments.js";
 
 function lowerSplitLimitArg(lowerer: Lowerer, node: ts.Expression | undefined, loc: SrcLoc): IrExpr {
@@ -141,6 +141,99 @@ function lowerMethodReceiver(
   if (optional) return optional;
   if (typeEquals(lowered.type, expected)) return lowered;
   return lowerer.coerceInto(node, lowered, expected);
+}
+
+/** Relative string indexing and code-point decoding over the UTF-16 intrinsics. */
+export function lowerStringIndexCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  method: "at" | "codePointAt",
+  receiver: IrExpr,
+  receiverNode: ts.Node,
+  argumentNodes: readonly ts.Expression[],
+): IrExpr {
+  const loc = locOf(call);
+  if (argumentNodes.length > 1 || argumentNodes.some(ts.isSpreadElement)) {
+    return lowerer.noLowering(`String.prototype.${method} with ${argumentNodes.length} arguments`, call);
+  }
+  const indexNode = argumentNodes[0];
+  let index = lowerPositionArgument(lowerer, indexNode, numLit(0, loc));
+  if (indexNode && (index.type.kind === "record" || index.type.kind === "array" || index.type.kind === "func")) {
+    index = lowerer.coerceInto(indexNode, index, DYN);
+  }
+  const valueType = method === "at" ? STRING : F64;
+  const resultType = lowerer.withUndefinedArmOf(valueType);
+  if (!resultType || resultType.kind !== "union") return lowerer.noLowering(`String.prototype.${method} result`, call);
+  const undefinedTag = lowerer.armTag(resultType.unionId, UNDEFINED_T);
+  const valueTag = lowerer.armTag(resultType.unionId, valueType);
+  const key = `str.index:${method}:${typeKey(receiver.type)}:${typeKey(index.type)}`;
+  let helper = lowerer.widthHelpers.get(key);
+  if (!helper) {
+    helper = `%str.index.${lowerer.widthHelpers.size}`;
+    lowerer.widthHelpers.set(key, helper);
+    const rawReceiver = varRef("arg.0", receiver.type, loc);
+    const rawIndex = varRef("arg.1", index.type, loc);
+    const stringReceiver = varRef("receiver.0", STRING, loc);
+    const length = varRef("length.0", F64, loc);
+    const position = varRef("position.0", F64, loc);
+    const first = varRef("first.0", F64, loc);
+    const second = varRef("second.0", F64, loc);
+    const bin = (op: "<" | ">=" | ">" | "+" | "-" | "*", left: IrExpr, right: IrExpr): IrExpr =>
+      ({ kind: "bin", op, left, right, type: op === "<" || op === ">=" || op === ">" ? BOOL : F64, loc });
+    const either = (left: IrExpr, right: IrExpr): IrExpr => ({ kind: "logical", op: "||", left, right, type: BOOL, loc });
+    const wrap = (value: IrExpr): IrExpr => ({ kind: "unionWrap", unionId: resultType.unionId, tag: valueTag, value, type: resultType, loc });
+    const miss: IrExpr = {
+      kind: "unionWrap", unionId: resultType.unionId, tag: undefinedTag,
+      value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc }, type: resultType, loc,
+    };
+    const numeric = positionNumber(lowerer, rawIndex, numLit(0, loc), indexNode ?? call, "string index");
+    const numericValue = varRef("numeric.0", F64, loc);
+    const body: IrStmt[] = [
+      { kind: "varDecl", localId: "receiver.0", init: lowerer.ensureString(rawReceiver, receiverNode), loc },
+      { kind: "varDecl", localId: "length.0", init: { kind: "strIntrinsic", method: "length", receiver: stringReceiver, args: [], type: F64, loc }, loc },
+      { kind: "varDecl", localId: "numeric.0", init: numeric, loc },
+      { kind: "varDecl", localId: "position.0", init: {
+        kind: "ternary", cond: { kind: "libCall", fn: "num.isNaN", args: [numericValue], type: BOOL, loc },
+        then: numLit(0, loc), else_: { kind: "libCall", fn: "math.trunc", args: [numericValue], type: F64, loc }, type: F64, loc,
+      }, loc },
+    ];
+    if (method === "at") {
+      body.push({ kind: "if", cond: bin("<", position, numLit(0, loc)),
+        then: [{ kind: "assign", localId: "position.0", value: bin("+", position, length), loc }], else_: null, loc });
+    }
+    body.push({ kind: "if", cond: either(bin("<", position, numLit(0, loc)), bin(">=", position, length)),
+      then: [{ kind: "return", value: miss, loc }], else_: null, loc });
+    if (method === "at") {
+      body.push({ kind: "return", value: wrap({ kind: "strIntrinsic", method: "charAt", receiver: stringReceiver, args: [position], type: STRING, loc }), loc });
+    } else {
+      body.push({ kind: "varDecl", localId: "first.0", init: { kind: "strIntrinsic", method: "charCodeAt", receiver: stringReceiver, args: [position], type: F64, loc }, loc });
+      body.push({ kind: "if", cond: either(either(bin("<", first, numLit(0xd800, loc)), bin(">", first, numLit(0xdbff, loc))), bin(">=", bin("+", position, numLit(1, loc)), length)),
+        then: [{ kind: "return", value: wrap(first), loc }], else_: null, loc });
+      body.push({ kind: "varDecl", localId: "second.0", init: { kind: "strIntrinsic", method: "charCodeAt", receiver: stringReceiver, args: [bin("+", position, numLit(1, loc))], type: F64, loc }, loc });
+      body.push({ kind: "if", cond: either(bin("<", second, numLit(0xdc00, loc)), bin(">", second, numLit(0xdfff, loc))),
+        then: [{ kind: "return", value: wrap(first), loc }], else_: null, loc });
+      body.push({ kind: "return", value: wrap(bin("+", bin("+", bin("*", bin("-", first, numLit(0xd800, loc)), numLit(1024, loc)), bin("-", second, numLit(0xdc00, loc))), numLit(0x10000, loc))), loc });
+    }
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "arg.0", name: "receiver", type: receiver.type }, { localId: "arg.1", name: "index", type: index.type }],
+      returnType: resultType,
+      locals: [
+        { id: "arg.0", name: "receiver", type: receiver.type, mutable: false },
+        { id: "arg.1", name: "index", type: index.type, mutable: false },
+        { id: "receiver.0", name: "stringReceiver", type: STRING, mutable: false },
+        { id: "length.0", name: "length", type: F64, mutable: false },
+        { id: "numeric.0", name: "numeric", type: F64, mutable: false },
+        { id: "position.0", name: "position", type: F64, mutable: method === "at" },
+        ...(method === "codePointAt" ? [
+          { id: "first.0", name: "first", type: F64, mutable: false },
+          { id: "second.0", name: "second", type: F64, mutable: false },
+        ] : []),
+      ],
+      body, loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [receiver, index], type: resultType, loc };
 }
 
 function paddingFillString(lowerer: Lowerer, value: IrExpr, node: ts.Node): IrExpr {
@@ -453,7 +546,8 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
   if (lowerer.chainBlocked(access, call)) return null;
   if (dynReceiver === undefined && access.name.text === "localeCompare") return lowerLocaleCompareCall(lowerer, call, access);
   const entry = own(STR_METHODS, access.name.text);
-  if (!entry) return null;
+  const indexMethod = STRING_INDEX_METHODS.has(access.name.text) ? access.name.text as "at" | "codePointAt" : null;
+  if (!entry && !indexMethod) return null;
   // A validated dyn receiver (`pkg.name.replace(...)` on a JSON.parse
   // value) arrives pre-extracted through `dynReceiver`; its checker type
   // is `any`, so the type/symbol gates don't apply — the dyn value's
@@ -473,7 +567,7 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
   }
   // The lib declares optional parameters beyond some lowered forms; fence
   // those arities instead of passing arguments the runtime doesn't take.
-  if (argumentNodes.length < entry.minArgs || argumentNodes.length > entry.maxArgs) {
+  if (argumentNodes.length < (entry?.minArgs ?? 0) || argumentNodes.length > (entry?.maxArgs ?? 1)) {
     lowerer.noLowering(
       `.${access.name.text} with ${argumentNodes.length} argument${argumentNodes.length === 1 ? "" : "s"} on strings`,
       call,
@@ -483,6 +577,8 @@ export function lowerStringMethodCall(lowerer: Lowerer, call: ts.CallExpression,
     ? dynReceiver()
     : lowerMethodReceiver(lowerer, access.expression, STRING, access.name.text);
   const loc = locOf(call);
+  if (indexMethod) return lowerStringIndexCall(lowerer, call, indexMethod, receiver, access.expression, argumentNodes);
+  if (!entry) return null;
   if (entry.method === "split") return lowerStringSplitCall(lowerer, call, receiver, access.expression, argumentNodes);
   if (entry.method === "padStart" || entry.method === "padEnd") {
     return lowerStringPaddingCall(lowerer, call, entry.method, receiver, access.expression, argumentNodes);

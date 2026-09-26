@@ -3487,6 +3487,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2113-string-index-methods.js": {
+   "order": [
+    "<repo>/tests/corpus/2113-string-index-methods.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/212-string-aliasing-append.ts": {
    "order": [
     "<repo>/tests/corpus/212-string-aliasing-append.ts"

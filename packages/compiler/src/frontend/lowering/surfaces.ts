@@ -424,6 +424,9 @@ export const STR_METHODS: Record<
   toWellFormed: { method: "toWellFormed", result: STRING, minArgs: 0, maxArgs: 0 },
 };
 
+/** String index reads return an undefined arm and compose the existing UTF-16 intrinsics. */
+export const STRING_INDEX_METHODS = new Set(["at", "codePointAt"]);
+
 /** One member of the island-backed ambient surface: declared argument
  * types (tsc enforces them at call sites; the arity double-checks the
  * table against the ambient file) and the validated island-exit target the

@@ -17,7 +17,7 @@ import { arrayIndexPresent, arrayValueRead, arrayValueStore, arrayValueType, cur
 import { typeKey } from "../type-mapper.js";
 import { WidthLift } from "./lowerer.js";
 import { boolLit, countedFor, numLit, varRef } from "../../ir/build.js";
-import { lowerOptionalArgument, lowerPositionArgument, positionNumber } from "./optional-arguments.js";
+import { lowerPositionArgument, positionNumber } from "./optional-arguments.js";
 
 function primitivePositionType(lowerer: Lowerer, type: IrType): boolean {
   if (type.kind === "union") {
@@ -25,6 +25,30 @@ function primitivePositionType(lowerer: Lowerer, type: IrType): boolean {
   }
   return type.kind === "f64" || type.kind === "string" || type.kind === "bool" ||
     type.kind === "nullT" || type.kind === "undefinedT";
+}
+
+function lowerArrayPosition(
+  lowerer: Lowerer,
+  node: ts.Expression | undefined,
+  defaultValue: IrExpr,
+  subject: string,
+): IrExpr {
+  if (!node) return defaultValue;
+  if (ts.isSpreadElement(node)) lowerer.noLowering(`${subject} with a spread argument`, node);
+  const value = lowerPositionArgument(lowerer, node, defaultValue);
+  if (!primitivePositionType(lowerer, value.type)) {
+    lowerer.noLowering(`${subject} of '${lowerer.fmt(value.type)}' values`, node);
+  }
+  const loc = locOf(node);
+  const local = lowerer.declareHiddenLocal("%arrayPosition", value.type);
+  const ref = varRef(local.id, value.type, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+    result: positionNumber(lowerer, ref, defaultValue, node, subject),
+    type: F64,
+    loc,
+  };
 }
 
 /** Build the argument array for a mutating/copying operation while keeping
@@ -287,26 +311,13 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
         lowerer.unsupported("SC1090", call, "spread arguments to Array.toSpliced");
       }
       const receiver = lowerer.lowerExpr(access.expression);
-      const start = call.arguments[0]
-        ? lowerer.lowerExprExpecting(call.arguments[0], F64)
-        : { kind: "numLit" as const, value: 0, type: F64, loc };
-      const deleteCountDefault: IrExpr = {
-        kind: "numLit",
-        value: NaN,
-        type: F64,
-        loc,
-      };
-      const deleteCount =
-        call.arguments.length === 0
-          ? { kind: "numLit" as const, value: 0, type: F64, loc }
-          : call.arguments[1]
-            ? lowerOptionalArgument(
-                lowerer,
-                call.arguments[1],
-                F64,
-                deleteCountDefault,
-              )
-            : { kind: "numLit" as const, value: Infinity, type: F64, loc };
+      const start = lowerArrayPosition(lowerer, call.arguments[0], numLit(0, loc), "array toSpliced start");
+      const deleteCount = lowerArrayPosition(
+        lowerer,
+        call.arguments[1],
+        numLit(call.arguments.length === 1 ? Infinity : 0, loc),
+        "array toSpliced deleteCount",
+      );
       const itemNodes = call.arguments.slice(2);
       const itemProbes = itemNodes.map((arg) => tryLowerExpression(lowerer, arg));
       const statefulItems = itemProbes.some((probe) =>
@@ -339,7 +350,7 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
     const arity = {
       push: [0, Number.MAX_SAFE_INTEGER], unshift: [0, Number.MAX_SAFE_INTEGER], pop: [0, 0], indexOf: [1, 2], lastIndexOf: [1, 2], includes: [0, 2], join: [1, 1],
       concat: [0, Number.MAX_SAFE_INTEGER],
-      slice: [0, 2], shift: [0, 0], splice: [1, 2], at: [0, 1],
+      slice: [0, 2], shift: [0, 0], splice: [0, 2], at: [0, 1],
       map: [1, 1], filter: [1, 1], forEach: [1, 1], find: [1, 1], findIndex: [1, 1], some: [1, 1],
       findLast: [1, 1], findLastIndex: [1, 1],
       every: [1, 1], flatMap: [1, 1], reduce: [1, 2], reduceRight: [1, 2],
@@ -522,30 +533,19 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
       return { kind: "call", callee: helper, args: [receiver, ...args], type: receiverIr, loc };
     }
     if (name === "slice") {
-      // `a.slice(start?, end?)` — a fresh shallow copy of the index range,
-      // JS-exact index handling (ToIntegerOrInfinity, negatives from the
-      // end, clamping; omitted args are omitted from the IR — the backend
-      // fills 0 / +Infinity, the string-slice convention). Ref elements
-      // are RETAINED into the copy: the same references, exactly JS's
-      // shallow copy. Every element kind slices — the receiver's own type
-      // is the result type.
       const receiver = lowerer.lowerExpr(access.expression);
-      const args = call.arguments.map((a) => lowerer.lowerExpr(a));
-      for (let i = 0; i < args.length; i++) {
-        if (args[i]!.type.kind !== "f64") lowerer.badType(call.arguments[i]!, lowerer.typeOf(call.arguments[i]!));
-      }
+      const args = [
+        lowerArrayPosition(lowerer, call.arguments[0], numLit(0, loc), "array slice start"),
+        lowerArrayPosition(lowerer, call.arguments[1], numLit(Infinity, loc), "array slice end"),
+      ];
       return { kind: "arrIntrinsic", method: "slice", receiver, args, type: receiverIr, loc };
     }
     if (name === "splice") {
-      // The REMOVAL forms: splice(start) and splice(start, deleteCount) —
-      // Node-exact relative/clamped indices, the removed elements back in
-      // order (their ownership moves out of the receiver). Insertion
-      // (3+ args) fenced by arity above.
       const receiver = lowerer.lowerExpr(access.expression);
-      const args = call.arguments.map((a) => lowerer.lowerExpr(a));
-      for (let i = 0; i < args.length; i++) {
-        if (args[i]!.type.kind !== "f64") lowerer.badType(call.arguments[i]!, lowerer.typeOf(call.arguments[i]!));
-      }
+      const args = [
+        lowerArrayPosition(lowerer, call.arguments[0], numLit(0, loc), "array splice start"),
+        lowerArrayPosition(lowerer, call.arguments[1], numLit(call.arguments.length === 1 ? Infinity : 0, loc), "array splice deleteCount"),
+      ];
       return { kind: "arrIntrinsic", method: "splice", receiver, args, type: receiverIr, loc };
     }
     if (name === "shift") {

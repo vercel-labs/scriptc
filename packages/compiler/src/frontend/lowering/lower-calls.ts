@@ -16,7 +16,7 @@ import { NARROW_FIRST, STRING_INDEX_METHODS, STR_METHODS, builtinFenceHintOf, bu
 import { ffiBindingDiag, ffiSignatureDiag, libCallbackDiag, requiresDynamicDiag } from "../../diagnostics/diagnostic.js";
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { mixinFnShapeOf } from "./lower-mixins.js";
-import { dynStringReceiver, lowerArrayFromCall, lowerDynArrayFilterCall, lowerDynArrayFlatMapCall, lowerGroupByStaticCall, lowerIteratorHelperCall, lowerObjectAssignIndexShape, lowerObjectFromEntriesCall, lowerObjectIterOverIndexShape, lowerTupleReadMethodCall } from "./lower-containers.js";
+import { dynStringReceiver, lowerArrayConstructor, lowerArrayFromCall, lowerArrayOfCall, lowerDynArrayFilterCall, lowerDynArrayFlatMapCall, lowerGroupByStaticCall, lowerIteratorHelperCall, lowerObjectAssignIndexShape, lowerObjectFromEntriesCall, lowerObjectIterOverIndexShape, lowerTupleReadMethodCall } from "./lower-containers.js";
 import { bufEncoding } from "./containers/bytes.js";
 import { lowerRegexMethodCall, lowerStringIndexCall, lowerStringMethodCall, lowerStringPaddingCall, lowerStringSplitCall } from "./containers/string-and-regexp.js";
 import { lowerChildStreamMethodCall, lowerChildWriterMethodCall, lowerCreateRequireCall, lowerCryptoHashMethodCall, lowerDirentMethodCall, lowerFileHandleMethodCall, lowerImportMetaResolveCall, lowerNodeModuleCall, lowerPerfHooksCall, lowerProcStreamMethodCall, lowerReflectApplyCall, lowerRequireResolveCall, lowerWatcherMethodCall } from "./lower-builtins.js";
@@ -3984,6 +3984,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // supported form is fenced here per site. Members with no lowering at
     // all (fs.watch, os.cpus, ...) fence with the module-qualified name.
     if (ts.isIdentifier(expr.expression)) {
+      if (expr.expression.text === "Array" && lowerer.isStdlibGlobal(expr.expression, "Array")) {
+        return lowerArrayConstructor(lowerer, expr, expr.arguments);
+      }
       // A call through a compile-time util.promisify projection. execFile
       // keeps its custom result helper; ordinary builtins route through
       // their existing promise-module lowering.
@@ -4693,6 +4696,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         lowerObjectStaticCall(lowerer, expr, expr.expression) ??
         lowerObjectFromEntriesCall(lowerer, expr, expr.expression) ??
         lowerArrayFromCall(lowerer, expr, expr.expression) ??
+        lowerArrayOfCall(lowerer, expr, expr.expression) ??
         lowerer.lowerArrayMethodCall(expr, expr.expression) ??
         // Read-only array methods (slice/map) on TUPLE receivers — the
         // positions snapshot into a fresh array (the for-of stance).

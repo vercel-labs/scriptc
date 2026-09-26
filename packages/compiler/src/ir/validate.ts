@@ -2801,6 +2801,10 @@ function validateFunction(
                           ? { argTypes: [F64], result: e.receiver.type }
                   : e.method === "splice"
                     ? { argTypes: [F64, F64], result: e.receiver.type }
+                    : e.method === "spliceInsert"
+                      ? { argTypes: [F64, F64, e.receiver.type], result: e.receiver.type }
+                      : e.method === "flatCopy" || e.method === "flatOne"
+                        ? { argTypes: [e.type], result: e.type }
                         : e.method === "shift"
                           ? { argTypes: [], result: e.type } // union-checked below
                           : { argTypes: [], result: F64 }; // length
@@ -2809,6 +2813,12 @@ function validateFunction(
         }
         if (e.method === "indexEq" && elem.kind !== "f64" && elem.kind !== "bool" && elem.kind !== "string") {
           err(`arrIntrinsic indexEq requires primitive elements, got ${elem.kind}`, e.loc);
+        }
+        if (e.method === "flatCopy" && !typeEquals(e.type, e.receiver.type)) {
+          err("arrIntrinsic flatCopy result must match its receiver", e.loc);
+        }
+        if (e.method === "flatOne" && (elem.kind !== "array" || !typeEquals(e.type, elem))) {
+          err("arrIntrinsic flatOne result must match the nested array type", e.loc);
         }
         if (
           e.method === "join" &&

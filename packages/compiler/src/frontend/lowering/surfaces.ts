@@ -314,6 +314,7 @@ export const ARRAY_METHODS = new Set([
   "every",
   "at",
   "flatMap",
+  "flat",
   "reduce",
   "reduceRight",
   "indexOf",

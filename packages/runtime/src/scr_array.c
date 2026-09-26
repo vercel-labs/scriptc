@@ -1186,6 +1186,54 @@ ScrArr *scr_arr_splice(ScrArr *a, double start, double deleteCount) {
   return out;
 }
 
+/* Insert the evaluated arguments at the original start position. The first
+ * splice moves removed slots out, and the second moves the remaining tail
+ * out. Appending items follows array iteration (a hole becomes undefined);
+ * appending the tail follows indexed copying (holes stay holes). */
+ScrArr *scr_arr_splice_insert(ScrArr *a, double start, double deleteCount,
+                              const ScrArr *items) {
+  double len = (double)a->len;
+  double s0 = isnan(start) ? 0 : trunc(start);
+  if (s0 < 0) s0 += len;
+  size_t from = s0 <= 0 ? 0 : s0 >= len ? a->len : (size_t)s0;
+  double avail = len - (double)from;
+  double d0 = isnan(deleteCount) ? 0 : trunc(deleteCount);
+  size_t n = d0 <= 0 ? 0 : d0 >= avail ? (size_t)avail : (size_t)d0;
+  if (items->len > SCR_ARR_MAX_LENGTH - (a->len - n)) scr_arr_oom();
+  ScrArr *removed = scr_arr_splice(a, start, deleteCount);
+  ScrArr *tail = scr_arr_splice(a, (double)from, INFINITY);
+  scr_arr_push_spread(a, items);
+  scr_arr_concat_copy(a, tail);
+  scr_arr_release(tail);
+  return removed;
+}
+
+/* FlattenIntoArray for static arrays: a dense copy with depth zero, or one
+ * level over array elements. The frontend supplies an empty result of the
+ * correct element kind; inner holes are skipped and present undefined stays
+ * present. This function borrows both inputs and returns a retained result. */
+ScrArr *scr_arr_flat_copy(const ScrArr *a, ScrArr *out, bool flatten) {
+  for (size_t i = 0; i < a->len; i++) {
+    uint64_t slot;
+    uint8_t state = scr_arr_state_at(a, i, &slot);
+    if (state == SCR_ARR_HOLE) continue;
+    if (flatten && state == SCR_ARR_VALUE) {
+      const ScrArr *inner = (const ScrArr *)scr_slot_to_ptr(slot);
+      for (size_t j = 0; j < inner->len; j++) {
+        if (scr_arr_state_at(inner, j, NULL) == SCR_ARR_HOLE) continue;
+        if (out->len == SCR_ARR_MAX_LENGTH) scr_arr_oom();
+        size_t at = out->len++;
+        scr_arr_copy_index(out, at, inner, j);
+      }
+    } else {
+      if (out->len == SCR_ARR_MAX_LENGTH) scr_arr_oom();
+      size_t at = out->len++;
+      scr_arr_copy_index(out, at, a, i);
+    }
+  }
+  return scr_arr_retain(out);
+}
+
 /* ── indexOf / includes ────────────────────────────────────────────────
  * indexOf uses JS strict equality (===): NaN never matches (NaN !== NaN),
  * -0 matches 0 (C == agrees on both). includes uses SameValueZero: the one

@@ -1596,6 +1596,12 @@ export type IrArrIntrinsicMethod =
   | "slice"
   | "shift"
   | "splice"
+  /** One dense copy pass, or one level of flattening into an empty typed
+   * result array. The supplied result is borrowed and returned retained. */
+  | "flatCopy"
+  | "flatOne"
+  /** Mutating splice with evaluated insertion items; returns removed slots. */
+  | "spliceInsert"
   | "reverse"
   /** ES2023 copying methods. `toSpliced` receives [start, deleteCount,
    * itemsArray], with omitted arguments completed by the frontend;

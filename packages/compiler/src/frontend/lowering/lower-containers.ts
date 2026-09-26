@@ -18,6 +18,7 @@ import { typeKey } from "../type-mapper.js";
 import { WidthLift } from "./lowerer.js";
 import { boolLit, countedFor, numLit, varRef } from "../../ir/build.js";
 import { lowerPositionArgument, positionNumber } from "./optional-arguments.js";
+import { lowerArrayCopyWithin, lowerArrayFill } from "./array-indexed-mutation.js";
 
 function primitivePositionType(lowerer: Lowerer, type: IrType): boolean {
   if (type.kind === "union") {
@@ -235,6 +236,41 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
         type: receiverIr,
         loc,
       };
+    }
+    if (name === "fill") {
+      if (call.arguments.length > 3 || call.arguments.some(ts.isSpreadElement)) {
+        lowerer.noLowering(`.fill with ${call.arguments.length} arguments`, call);
+      }
+      const value = call.arguments[0] ? lowerer.lowerExpr(call.arguments[0]) : null;
+      if (value && (value.type.kind === "dyn" || value.type.kind === "jsval") &&
+        isRefCounted(elem) && elem.kind !== "string" && !typeEquals(value.type, elem)) {
+        lowerer.noLowering(".fill of a checked-dynamic reference into a static array", call.arguments[0]!);
+      }
+      const writeUndefined = value === null || value.type.kind === "undefinedT";
+      return lowerArrayFill(
+        lowerer,
+        lowerer.lowerExpr(access.expression),
+        value,
+        writeUndefined,
+        lowerArrayPosition(lowerer, call.arguments[1], numLit(0, loc), "array fill start"),
+        lowerArrayPosition(lowerer, call.arguments[2], numLit(Infinity, loc), "array fill end"),
+        receiverIr,
+        loc,
+      );
+    }
+    if (name === "copyWithin") {
+      if (call.arguments.length > 3 || call.arguments.some(ts.isSpreadElement)) {
+        lowerer.noLowering(`.copyWithin with ${call.arguments.length} arguments`, call);
+      }
+      return lowerArrayCopyWithin(
+        lowerer,
+        lowerer.lowerExpr(access.expression),
+        lowerArrayPosition(lowerer, call.arguments[0], numLit(0, loc), "array copyWithin target"),
+        lowerArrayPosition(lowerer, call.arguments[1], numLit(0, loc), "array copyWithin start"),
+        lowerArrayPosition(lowerer, call.arguments[2], numLit(Infinity, loc), "array copyWithin end"),
+        receiverIr,
+        loc,
+      );
     }
     if (name === "with") {
       if (call.arguments.length !== 2 || call.arguments.some(ts.isSpreadElement)) {

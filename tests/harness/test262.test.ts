@@ -51,6 +51,10 @@ assert.notSameValue(1, "1");
   { name: "wrong SameValue", status: "fail", source: "assert.sameValue(1, 2);" },
   { name: "signed zero mismatch", status: "fail", source: "assert.sameValue(0, -0);" },
   { name: "NaN is the same value", status: "fail", source: "assert.notSameValue(NaN, NaN);" },
+  { name: "scalar array contents", status: "pass", source: "assert.compareArray([1, NaN, -0, undefined], [1, NaN, -0, undefined]);" },
+  { name: "array length mismatch", status: "fail", source: "assert.compareArray([1], [1, 2]);" },
+  { name: "array element mismatch", status: "fail", source: "assert.compareArray([1, 2], [1, 3]);" },
+  { name: "array signed zero mismatch", status: "fail", source: "assert.compareArray([0], [-0]);" },
   { name: "assert requires true, not truthiness", status: "fail", source: "assert(1);" },
 ];
 
@@ -78,4 +82,18 @@ describe(`Test262 host assertion contract${shardSuffix()}`, () => {
       expect(result, JSON.stringify(result)).toMatchObject({ status: "harness-refusal", reason: "reference-assertion" });
     });
   }
+
+  test("array element identity assertions are refused", async () => {
+    const source = "const value = {}; try { assert.compareArray([value], [value]); } catch { }";
+    expect(() => runUpstream(source)).not.toThrow();
+    const result = await runSource(source, { sanitize });
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "harness-refusal", reason: "reference-assertion" });
+  });
+
+  test("array-like objects remain outside the adapter", async () => {
+    const source = "try { assert.compareArray({ 0: 1, length: 1 }, [1]); } catch { }";
+    expect(() => runUpstream(source)).not.toThrow();
+    const result = await runSource(source, { sanitize });
+    expect(result, JSON.stringify(result)).toMatchObject({ status: "harness-refusal", reason: "reference-assertion" });
+  });
 });

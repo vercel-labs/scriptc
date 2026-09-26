@@ -2117,9 +2117,21 @@
       "status": "static"
     },
     {
+      "id": "stdlib.array.copyWithin",
+      "kind": "stdlib",
+      "name": "Array.prototype.copyWithin",
+      "status": "static"
+    },
+    {
       "id": "stdlib.array.every",
       "kind": "stdlib",
       "name": "Array.prototype.every",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.array.fill",
+      "kind": "stdlib",
+      "name": "Array.prototype.fill",
       "status": "static"
     },
     {

@@ -300,6 +300,8 @@ export const ARRAY_METHODS = new Set([
   "unshift",
   "pop",
   "reverse",
+  "fill",
+  "copyWithin",
   "concat",
   "map",
   "filter",

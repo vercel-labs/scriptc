@@ -163,14 +163,12 @@ stdlib-fence.ts:35:15 - error SC2020: 'Error.stack' is part of the standard libr
 
   hint: stack traces are not captured (frames would need runtime bookkeeping); name, message, and toString() are available
 
-stdlib-fence.ts:37:15 - error SC2020: 'Math.SQRT2' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:37:20 - error SC1090: Math methods as values (call 'sinh' directly) are not supported yet
 
   36 | // Unlowered members on lowered containers.
-  37 | const sqrt2 = Math.SQRT2;
-     |               ^~~~~~~~~~
+  37 | const sinhMethod = Math.sinh;
+     |                    ^~~~~~~~~
   38 | // (n-ary Math.min/max LOWER now — the variadic battery lives in the
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
 stdlib-fence.ts:40:17 - error SC2020: 'Math.min' is part of the standard library types but has no scriptc lowering yet
 

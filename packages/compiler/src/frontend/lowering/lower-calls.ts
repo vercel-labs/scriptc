@@ -20,7 +20,7 @@ import { dynStringReceiver, lowerArrayFromCall, lowerDynArrayFilterCall, lowerDy
 import { bufEncoding } from "./containers/bytes.js";
 import { lowerRegexMethodCall, lowerStringMethodCall } from "./containers/string-and-regexp.js";
 import { lowerChildStreamMethodCall, lowerChildWriterMethodCall, lowerCreateRequireCall, lowerCryptoHashMethodCall, lowerDirentMethodCall, lowerFileHandleMethodCall, lowerImportMetaResolveCall, lowerNodeModuleCall, lowerPerfHooksCall, lowerProcStreamMethodCall, lowerReflectApplyCall, lowerRequireResolveCall, lowerWatcherMethodCall } from "./lower-builtins.js";
-import { lowerAbsenceProbe, lowerPromiseAllTupleCall, lowerPromiseRejectCall, templateRawTextOf } from "./lower-exprs.js";
+import { lowerAbsenceProbe, lowerPromiseAllTupleCall, lowerPromiseRejectCall, stringWrapperToString, templateRawTextOf } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { httpClientFnBindingOf, isStreamUndefCallExpr, lowerCompatReqStreamOptionalCall, lowerHttpClientFnCall } from "./lower-server.js";
@@ -3769,8 +3769,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // the runtime's StringToNumber parser (num.fromString — the full
     // StringNumericLiteral grammar in scr_string.c).
     // Provenance-checked like setTimeout; zero-arg forms are the JS
-    // constants ("", false, 0). `new String(...)` (wrapper objects) stays
-    // on the SC2020 fence.
+    // constants ("", false, 0). Wrapper objects stay fenced except where
+    // the receiver is immediately converted by a direct String method call.
     if (
       ts.isIdentifier(expr.expression) &&
       expr.expression.text === "BigInt" &&
@@ -3831,48 +3831,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // representation (`Boolean(rec && list.some(f))` — a record and a
       // bool) that a value lowering of the `&&` would fence on.
       if (name === "Boolean") return lowerer.lowerCondition(argNode);
-      if (name === "Number") {
-        const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, argNode);
-        if (undefinedArg) {
-          return defaultAfterUndefined(undefinedArg, {
-            kind: "bin", op: "/", left: { kind: "numLit", value: 0, type: F64, loc },
-            right: { kind: "numLit", value: 0, type: F64, loc }, type: F64, loc,
-          });
-        }
-      }
+      if (name === "Number") return lowerNumberConstructorValue(lowerer, argNode, loc);
       const arg = lowerer.lowerExpr(argNode);
       if (name === "String") return lowerer.ensureString(arg, argNode);
-      if (name === "Number" && arg.type.kind === "nullT") {
-        return defaultAfterUndefined(arg, { kind: "numLit", value: 0, type: F64, loc });
-      }
-      if (name === "Number" && arg.type.kind === "bigint") {
-        return { kind: "libCall", fn: "bigint.toF64", args: [arg], type: F64, loc };
-      }
-      if (arg.type.kind === "f64") return arg;
-      if (arg.type.kind === "bool") {
-        return {
-          kind: "ternary",
-          cond: arg,
-          then: { kind: "numLit", value: 1, type: F64, loc },
-          else_: { kind: "numLit", value: 0, type: F64, loc },
-          type: F64,
-          loc,
-        };
-      }
-      if (arg.type.kind === "string") {
-        return { kind: "libCall", fn: "num.fromString", args: [arg], type: F64, loc };
-      }
-      const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
-      if (optionalNumber) return optionalNumber;
-      const scalarUnionNumber = lowerScalarUnionNumber(lowerer, arg, argNode, loc);
-      if (scalarUnionNumber) return scalarUnionNumber;
-      lowerer.noLowering(
-        `Number of ${lowerer.fmt(arg.type)} values`,
-        argNode,
-        arg.type.kind === "union"
-          ? "unions of numbers, booleans, strings, null, and undefined lower — narrow other arms first"
-          : undefined,
-      );
     }
 
     // __island_eval: the internal island testing hook (eval in the embedded
@@ -5070,6 +5031,76 @@ function lowerStringMethodCallWithOptionalArgs(
   return changed ? { ...lowered, args } : lowered;
 }
 
+function lowerNumberConstructorValue(lowerer: Lowerer, argNode: ts.Expression, loc: SrcLoc): IrExpr {
+  const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, argNode);
+  if (undefinedArg) {
+    return defaultAfterUndefined(undefinedArg, {
+      kind: "bin", op: "/", left: { kind: "numLit", value: 0, type: F64, loc },
+      right: { kind: "numLit", value: 0, type: F64, loc }, type: F64, loc,
+    });
+  }
+  const arg = lowerer.lowerExpr(argNode);
+  if (arg.type.kind === "nullT") return defaultAfterUndefined(arg, { kind: "numLit", value: 0, type: F64, loc });
+  if (arg.type.kind === "bigint") return { kind: "libCall", fn: "bigint.toF64", args: [arg], type: F64, loc };
+  if (arg.type.kind === "f64") return arg;
+  if (arg.type.kind === "bool") {
+    return {
+      kind: "ternary",
+      cond: arg,
+      then: { kind: "numLit", value: 1, type: F64, loc },
+      else_: { kind: "numLit", value: 0, type: F64, loc },
+      type: F64,
+      loc,
+    };
+  }
+  if (arg.type.kind === "string") return { kind: "libCall", fn: "num.fromString", args: [arg], type: F64, loc };
+  const optionalNumber = lowerOptionalStringNumber(lowerer, arg, loc);
+  if (optionalNumber) return optionalNumber;
+  const scalarUnionNumber = lowerScalarUnionNumber(lowerer, arg, argNode, loc);
+  if (scalarUnionNumber) return scalarUnionNumber;
+  return lowerer.noLowering(
+    `Number of ${lowerer.fmt(arg.type)} values`,
+    argNode,
+    arg.type.kind === "union"
+      ? "unions of numbers, booleans, strings, null, and undefined lower — narrow other arms first"
+      : undefined,
+  );
+}
+
+function immediatePrimitiveWrapperToString(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  const stringValue = stringWrapperToString(lowerer, node);
+  if (stringValue) return stringValue;
+  let wrapped = node;
+  while (ts.isParenthesizedExpression(wrapped)) wrapped = wrapped.expression;
+  if (!ts.isNewExpression(wrapped) || !ts.isIdentifier(wrapped.expression)) return null;
+  const name = wrapped.expression.text;
+  if ((name !== "Boolean" && name !== "Number") ||
+      !lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(wrapped.expression) ?? undefined)) return null;
+  const args = wrapped.arguments ?? [];
+  if (args.length > 1 || args.some(ts.isSpreadElement)) return null;
+  const loc = locOf(wrapped);
+  const primitive: IrExpr = name === "Boolean"
+    ? args.length ? lowerer.lowerCondition(args[0]!) : { kind: "boolLit", value: false, type: BOOL, loc }
+    : args.length ? lowerNumberConstructorValue(lowerer, args[0]!, loc) : { kind: "numLit", value: 0, type: F64, loc };
+  return lowerer.ensureString(primitive, wrapped);
+}
+
+function plainObjectCoercionReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
+  const plainLiteral = (literal: ts.ObjectLiteralExpression): boolean => literal.properties.every((prop) =>
+    ts.isPropertyAssignment(prop) &&
+    (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) || ts.isNumericLiteral(prop.name)) &&
+    prop.name.text !== "__proto__");
+  let value = node;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (ts.isObjectLiteralExpression(value)) return plainLiteral(value);
+  if (!ts.isIdentifier(value)) return false;
+  const symbol = lowerer.resolveValueSymbol(value);
+  const decl = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+  if (!symbol || !decl || !ts.isVariableDeclaration(decl) || !decl.initializer ||
+      !ts.isObjectLiteralExpression(decl.initializer) || !plainLiteral(decl.initializer)) return false;
+  return bindingNeverReassigned(lowerer, symbol, decl);
+}
+
 function lowerStringPrototypeCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -5089,7 +5120,11 @@ function lowerStringPrototypeCall(
   const nullishError = nodeThrowExpr(1, "", `String.prototype.${method} called on null or undefined`, entry.result, loc);
   const receiverNode = call.arguments[0];
   if (!receiverNode) return nullishError;
-  const receiverValue = lowerer.lowerExpr(receiverNode);
+  // Receiver coercion runs after .call has evaluated its arguments; keep
+  // contextual wrapper lowering on forms without later method arguments.
+  const immediateWrapper = entry.maxArgs === 0 && call.arguments.length === 1
+    ? immediatePrimitiveWrapperToString(lowerer, receiverNode) : null;
+  const receiverValue = immediateWrapper ?? lowerer.lowerExpr(receiverNode);
   const receiverType = receiverValue.type;
   const nullish = isUnitType(receiverType) || receiverType.kind === "void" ||
     (receiverType.kind === "union" && (lowerer.unions.get(receiverType.unionId)?.arms.every((arm) =>
@@ -5111,10 +5146,14 @@ function lowerStringPrototypeCall(
   // Object conversion may run user code, so no later method arguments can remain to evaluate.
   const objectWithoutMethodArgs = entry.maxArgs === 0 && call.arguments.length === 1 &&
     (receiverType.kind === "record" || receiverType.kind === "array" || receiverType.kind === "object");
-  if (!scalar && !objectWithoutMethodArgs) {
+  const dynObjectWithoutMethodArgs = entry.maxArgs === 0 && call.arguments.length === 1 &&
+    receiverType.kind === "dyn" && plainObjectCoercionReceiver(lowerer, receiverNode);
+  if (!scalar && !objectWithoutMethodArgs && !dynObjectWithoutMethodArgs) {
     return lowerer.noLowering(`String.prototype.${methodAccess.name.text}.call with ${lowerer.fmt(receiverType)} receivers`, call);
   }
-  const receiver = lowerer.ensureString(receiverValue, receiverNode);
+  const receiver: IrExpr = dynObjectWithoutMethodArgs
+    ? { kind: "libCall", fn: "dyn.toStringCoerce", args: [receiverValue], type: STRING, loc }
+    : lowerer.ensureString(receiverValue, receiverNode);
   return lowerStringMethodCallWithOptionalArgs(lowerer, call, methodAccess, () => receiver, call.arguments.slice(1));
 }
 

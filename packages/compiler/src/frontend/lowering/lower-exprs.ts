@@ -36,6 +36,7 @@ import { conditionalSpreadOf, foldedStringKeyOf } from "./expressions/object-lit
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { fenceNodeModuleMutation, isNodeModuleValue, lowerNodeModuleIdentifier, lowerNodeModuleProperty, lowerRequireCacheElement, lowerRequireCacheHas, lowerRequireMainProperty } from "./lower-node-module.js";
 import { lowerAbstractEquality } from "./abstract-equality.js";
+import { coerceStringSearchValue, defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
 
 /** An assignable `obj.field` target — a class field, a record field, or a
  * class ACCESSOR property (reads become getter calls, writes setter calls;
@@ -5477,7 +5478,7 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
    * neither is observable where the value immediately stringifies — so the
    * span lowers as the argument's own ToString (`new String()` is "").
    * Every other position keeps the wrapper-object constructor fence. */
-  function stringWrapperToString(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  export function stringWrapperToString(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
     let e = node;
     while (ts.isParenthesizedExpression(e)) e = e.expression;
     if (!ts.isNewExpression(e) || !ts.isIdentifier(e.expression)) return null;
@@ -5486,7 +5487,10 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
     const args = e.arguments ?? [];
     if (args.length > 1 || args.some(ts.isSpreadElement)) return null;
     if (args.length === 0) return { kind: "strLit", value: "", type: STRING, loc: locOf(e) };
-    return lowerer.caughtToString(args[0]!) ?? lowerer.ensureString(lowerer.lowerExpr(args[0]!), args[0]!);
+    const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, args[0]!);
+    if (undefinedArg) return defaultAfterUndefined(undefinedArg, { kind: "strLit", value: "undefined", type: STRING, loc: locOf(e) });
+    return lowerer.caughtToString(args[0]!) ??
+      coerceStringSearchValue(lowerer, lowerer.lowerExpr(args[0]!), args[0]!, locOf(e));
   }
 
 export function lowerTemplate(lowerer: Lowerer, expr: ts.TemplateExpression): IrExpr {

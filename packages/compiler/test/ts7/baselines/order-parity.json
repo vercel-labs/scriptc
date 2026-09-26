@@ -7027,6 +7027,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3041-string-prototype-object-call.js": {
+   "order": [
+    "<repo>/tests/corpus/3041-string-prototype-object-call.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/305-truthiness.ts": {
    "order": [
     "<repo>/tests/corpus/305-truthiness.ts"

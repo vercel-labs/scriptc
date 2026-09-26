@@ -7087,9 +7087,27 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3049-array-flat-depth.ts": {
+   "order": [
+    "<repo>/tests/corpus/3049-array-flat-depth.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/305-truthiness.ts": {
    "order": [
     "<repo>/tests/corpus/305-truthiness.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3050-array-splice-insert.ts": {
+   "order": [
+    "<repo>/tests/corpus/3050-array-splice-insert.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3051-array-join-default.ts": {
+   "order": [
+    "<repo>/tests/corpus/3051-array-join-default.ts"
    ],
    "diags": []
   },

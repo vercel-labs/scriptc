@@ -224,18 +224,9 @@ stdlib-fence.ts:46:19 - error SC2020: 'Number.prototype.toLocaleString without a
 
   hint: the default locale is the host environment's, which a compiled binary cannot carry — pass it explicitly: x.toLocaleString("en-US")
 
-stdlib-fence.ts:51:16 - error SC2020: '.join with 0 arguments' is part of the standard library types but has no scriptc lowering yet
-
-  50 | const found = nums.indexOf(2, 1); // the fromIndex overload lowers
-  51 | const joined = nums.join();
-     |                ^~~~~~~~~~~
-  52 | nums.forEach((x) => console.log(x), { unused: true }); // thisArg stays fenced
-
-  hint: pass the separator explicitly: join(",")
-
 stdlib-fence.ts:52:1 - error SC2020: '.forEach with 2 arguments' is part of the standard library types but has no scriptc lowering yet
 
-  51 | const joined = nums.join();
+  51 | const joined = nums.join(); // the omitted separator lowers
   52 | nums.forEach((x) => console.log(x), { unused: true }); // thisArg stays fenced
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   53 | const pos = "abc".includes("b", 1); // the position form lowers now (indexOf's clamp)

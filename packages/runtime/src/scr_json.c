@@ -3304,6 +3304,19 @@ ScrDyn *scr_dyn_assign_all(ScrDyn *target, const ScrDyn *sources) {
   return scr_dyn_retain(target);
 }
 
+static bool scr_dyn_canonical_own_index(const ScrStr *key, size_t length) {
+  if (key->len == 0 || (key->len > 1 && key->data[0] == '0')) return false;
+  size_t index = 0;
+  for (size_t i = 0; i < key->len; i++) {
+    if (key->data[i] < '0' || key->data[i] > '9') return false;
+    size_t digit = (size_t)(key->data[i] - '0');
+    if (index > (SIZE_MAX - digit) / 10) return false;
+    index = index * 10 + digit;
+    if (index >= length) return false;
+  }
+  return true;
+}
+
 bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
   if (v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL) {
     const char *m = "Cannot convert undefined or null to object";
@@ -3321,13 +3334,20 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
   }
   if (v->kind == SCR_DYN_ARR) {
     if (key->len == 6 && memcmp(key->data, "length", 6) == 0) return true;
-    size_t idx = 0;
-    int is_index = key->len > 0 && !(key->len > 1 && key->data[0] == '0');
-    for (size_t i = 0; is_index && i < key->len; i++) {
-      if (key->data[i] < '0' || key->data[i] > '9') is_index = 0;
-      else idx = idx * 10 + (size_t)(key->data[i] - '0');
-    }
-    return is_index != 0 && idx < v->v.arr.len;
+    return scr_dyn_canonical_own_index(key, v->v.arr.len);
+  }
+  if (v->kind == SCR_DYN_STR) {
+    if (key->len == 6 && memcmp(key->data, "length", 6) == 0) return true;
+    return scr_dyn_canonical_own_index(key, (size_t)scr_str_utf16_len(v->v.str));
+  }
+  if (v->kind == SCR_DYN_BYTES) {
+    return scr_dyn_canonical_own_index(key, v->v.bytes->len);
+  }
+  if (v->kind == SCR_DYN_FUNC || v->kind == SCR_DYN_HANDLE ||
+      v->kind == SCR_DYN_TYPED_REF) {
+    const char *m = "Own-property checks on this checked-dynamic kind are not supported yet";
+    scr_throw_error_msg(SCR_ERR_ERROR, m, strlen(m));
+    return false;
   }
   return false;
 }

@@ -55,6 +55,27 @@ console.log(
   Object.prototype.hasOwnProperty.call(JSON.parse('{"a":1}'), "a"),
   Object.prototype.hasOwnProperty.call(JSON.parse('[1,null]'), "length"),
 );
+const parsedText = JSON.parse('"A\\ud834\\udd1eB"');
+console.log(
+  Object.prototype.hasOwnProperty.call(parsedText, "length"),
+  Object.prototype.hasOwnProperty.call(parsedText, "0"),
+  Object.prototype.hasOwnProperty.call(parsedText, "1"),
+  Object.prototype.hasOwnProperty.call(parsedText, "2"),
+  Object.prototype.hasOwnProperty.call(parsedText, "3"),
+  Object.prototype.hasOwnProperty.call(parsedText, "4"),
+  Object.prototype.hasOwnProperty.call(parsedText, "01"),
+);
+const parsedArray = JSON.parse("[4,5]");
+console.log(
+  Object.prototype.hasOwnProperty.call(parsedArray, "1"),
+  Object.prototype.hasOwnProperty.call(parsedArray, "2"),
+  Object.prototype.hasOwnProperty.call(parsedArray, "18446744073709551617"),
+);
+const boxedBytes: unknown = new Uint8Array([7, 8]);
+console.log(
+  Object.prototype.hasOwnProperty.call(boxedBytes, "1"),
+  Object.prototype.hasOwnProperty.call(boxedBytes, "length"),
+);
 
 const order: string[] = [];
 const changing: { value?: number } = {};

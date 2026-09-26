@@ -7075,6 +7075,18 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3047-object-prototype-tag.js": {
+   "order": [
+    "<repo>/tests/corpus/3047-object-prototype-tag.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3048-object-own-prototype.ts": {
+   "order": [
+    "<repo>/tests/corpus/3048-object-own-prototype.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/305-truthiness.ts": {
    "order": [
     "<repo>/tests/corpus/305-truthiness.ts"

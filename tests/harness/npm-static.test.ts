@@ -169,18 +169,34 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  test("picocolors inherited Object methods retain the prototype-method fence", () => {
+  test("picocolors inherited valueOf retains the prototype-method fence", () => {
     const entry = join(pilotRoot, "colors-prototype-cli.ts");
     const { coverage } = analyze(entry, { npmStatic: ["picocolors"] });
     expect(coverage.npmStatic).toEqual([{ package: "picocolors", status: "static" }]);
     expect(coverage.preflightFailed).toBe(false);
     expect(coverage.runtimeFences ?? []).toHaveLength(0);
-    expect(coverage.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["SC2020", "SC2020"]);
+    expect(coverage.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["SC2020"]);
     expect(coverage.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
-      expect.stringContaining(".hasOwnProperty' is part of the standard library types"),
       expect.stringContaining(".valueOf' is part of the standard library types"),
     ]);
   }, 120_000);
+
+  test("picocolors inherited hasOwnProperty matches Node", async () => {
+    const entry = join(pilotRoot, "colors-hasown-cli.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["picocolors"] });
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics).toHaveLength(0);
+    expect(coverage.runtimeFences ?? []).toHaveLength(0);
+
+    const binary = await buildStatic(entry, ["picocolors"]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+    expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
 
   // Tier 1, auto mode: the eligibility heuristics pick escape-string-regexp
   // (own .d.ts, unminified, no transform markers) without naming it.

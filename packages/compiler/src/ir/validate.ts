@@ -115,6 +115,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "dyn.toString": { argTypes: [DYN, STRING, STRING], result: STRING },
   "dyn.defineProps": { argTypes: [DYN, DYN], result: DYN },
   "dyn.typeof": { argTypes: [DYN], result: STRING },
+  "dyn.objectTag": { argTypes: [DYN], result: STRING },
   "module.registryInit": { argTypes: [F64], result: VOID },
   "module.define": { argTypes: [F64, STRING, STRING, STRING, arrayOf(STRING), BOOL], result: VOID },
   "module.enter": { argTypes: [F64], result: VOID },
@@ -232,20 +233,31 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "math.trunc": { argTypes: [F64], result: F64 },
   "math.ceil": { argTypes: [F64], result: F64 },
   "math.sin": { argTypes: [F64], result: F64 },
+  "math.sinh": { argTypes: [F64], result: F64 },
   "math.cos": { argTypes: [F64], result: F64 },
+  "math.cosh": { argTypes: [F64], result: F64 },
   "math.tan": { argTypes: [F64], result: F64 },
+  "math.tanh": { argTypes: [F64], result: F64 },
   "math.asin": { argTypes: [F64], result: F64 },
+  "math.asinh": { argTypes: [F64], result: F64 },
   "math.acos": { argTypes: [F64], result: F64 },
+  "math.acosh": { argTypes: [F64], result: F64 },
   "math.atan": { argTypes: [F64], result: F64 },
+  "math.atanh": { argTypes: [F64], result: F64 },
   "math.cbrt": { argTypes: [F64], result: F64 },
+  "math.clz32": { argTypes: [F64], result: F64 },
   "math.sign": { argTypes: [F64], result: F64 },
   "math.exp": { argTypes: [F64], result: F64 },
+  "math.expm1": { argTypes: [F64], result: F64 },
+  "math.fround": { argTypes: [F64], result: F64 },
   "math.sqrt": { argTypes: [F64], result: F64 },
   "math.log": { argTypes: [F64], result: F64 },
+  "math.log1p": { argTypes: [F64], result: F64 },
   "math.log2": { argTypes: [F64], result: F64 },
   "math.log10": { argTypes: [F64], result: F64 },
   "math.atan2": { argTypes: [F64, F64], result: F64 },
   "math.pow": { argTypes: [F64, F64], result: F64 },
+  "math.imul": { argTypes: [F64, F64], result: F64 },
   "math.min": { argTypes: [F64, F64], result: F64 },
   "math.max": { argTypes: [F64, F64], result: F64 },
   "math.random": { argTypes: [], result: F64 },
@@ -1349,6 +1361,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   // Like process.envGet: the result is the module's interned
   // `number | undefined` union — checked by arms in the libCall case.
   "process.columns": { argTypes: [F64], result: VOID },
+  "process.rows": { argTypes: [F64], result: VOID },
   "process.stdinDestroy": { argTypes: [], result: VOID },
   "process.stdinSetRawMode": { argTypes: [BOOL], result: VOID },
   // Arg 0 is a packed f64[] OR a bytes value (the spread-typed-array
@@ -2771,6 +2784,8 @@ function validateFunction(
               ? { argTypes: [e.receiver.type], result: F64 }
               : e.method === "nextPresent" || e.method === "getNumber"
               ? { argTypes: [F64], result: F64 }
+              : e.method === "indexEq"
+              ? { argTypes: [F64, e.receiver.type, F64], result: BOOL }
               : e.method === "pop"
               ? { argTypes: [], result: e.type } // union-checked below
               : e.method === "indexOf"
@@ -2793,11 +2808,24 @@ function validateFunction(
                           ? { argTypes: [F64], result: e.receiver.type }
                   : e.method === "splice"
                     ? { argTypes: [F64, F64], result: e.receiver.type }
+                    : e.method === "spliceInsert"
+                      ? { argTypes: [F64, F64, e.receiver.type], result: e.receiver.type }
+                      : e.method === "flatCopy" || e.method === "flatOne"
+                        ? { argTypes: [e.type], result: e.type }
                         : e.method === "shift"
                           ? { argTypes: [], result: e.type } // union-checked below
                           : { argTypes: [], result: F64 }; // length
         if (e.method === "getNumber" && elem.kind !== "f64") {
           err(`arrIntrinsic getNumber requires f64 elements, got ${elem.kind}`, e.loc);
+        }
+        if (e.method === "indexEq" && elem.kind !== "f64" && elem.kind !== "bool" && elem.kind !== "string") {
+          err(`arrIntrinsic indexEq requires primitive elements, got ${elem.kind}`, e.loc);
+        }
+        if (e.method === "flatCopy" && !typeEquals(e.type, e.receiver.type)) {
+          err("arrIntrinsic flatCopy result must match its receiver", e.loc);
+        }
+        if (e.method === "flatOne" && (elem.kind !== "array" || !typeEquals(e.type, elem))) {
+          err("arrIntrinsic flatOne result must match the nested array type", e.loc);
         }
         if (
           e.method === "join" &&
@@ -4023,7 +4051,7 @@ function validateFunction(
           }
           break;
         }
-        if (e.fn === "process.columns") {
+        if (e.fn === "process.columns" || e.fn === "process.rows") {
           // Result is the module's interned `number | undefined` union.
           const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
           const ok =
@@ -4032,7 +4060,7 @@ function validateFunction(
             def.arms[0]!.kind === "f64" &&
             def.arms[1]!.kind === "undefinedT";
           if (!ok) {
-            err(`libCall process.columns must return the 'number | undefined' union`, e.loc);
+            err(`libCall ${e.fn} must return the 'number | undefined' union`, e.loc);
           }
           break;
         }

@@ -39,4 +39,24 @@ export namespace assert {
       throw new Test262Error(message);
     }
   }
+
+  export function compareArray(actual: unknown, expected: unknown, message = "Expected matching array contents"): void {
+    if (!Array.isArray(actual) || !Array.isArray(expected)) {
+      scalar(actual);
+      scalar(expected);
+      throw new Test262Error(message);
+    }
+    if (actual.length !== expected.length) throw new Test262Error(message);
+    for (let i = 0; i < actual.length; i++) {
+      const left: unknown = i in actual ? actual[i] : undefined;
+      const right: unknown = i in expected ? expected[i] : undefined;
+      scalar(left);
+      scalar(right);
+      try {
+        nodeAssert.strictEqual(left, right);
+      } catch {
+        throw new Test262Error(message);
+      }
+    }
+  }
 }

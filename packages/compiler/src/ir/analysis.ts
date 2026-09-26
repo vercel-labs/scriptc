@@ -82,8 +82,10 @@ export function dynDesc(
 const BORROW_SAFE_MATH = new Set<IrLibFn>([
   "math.floor", "math.ceil", "math.trunc", "math.round", "math.abs",
   "math.min", "math.max", "math.sqrt", "math.pow",
-  "math.sin", "math.cos", "math.tan", "math.asin", "math.acos", "math.atan",
-  "math.atan2", "math.cbrt", "math.sign", "math.exp", "math.log", "math.log2", "math.log10",
+  "math.sin", "math.sinh", "math.cos", "math.cosh", "math.tan", "math.tanh",
+  "math.asin", "math.asinh", "math.acos", "math.acosh", "math.atan", "math.atanh",
+  "math.atan2", "math.cbrt", "math.clz32", "math.sign", "math.exp", "math.expm1",
+  "math.fround", "math.log", "math.log1p", "math.log2", "math.log10", "math.imul",
 ]);
 
 /** Whether an operand preserves a direct receiver binding until its last

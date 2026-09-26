@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/runtime-linux-x64-gnu",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "description": "Precompiled scriptc runtime pack for Linux x64 glibc",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",

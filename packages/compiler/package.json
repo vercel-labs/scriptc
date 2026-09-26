@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/compiler",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "description": "The scriptc compiler — TypeScript/JavaScript frontend, typed IR, LLVM and C backends",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",

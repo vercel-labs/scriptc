@@ -12,11 +12,12 @@ import type { Lowerer } from "./lowerer.js";
 import { wasiGuestPath } from "../../wasi-paths.js";
 import { BIGINT_T, BOOL, CAUGHT, DYN, DYN_HANDLE_KINDS, F64, IrExpr, IrFunction, IrJsOp, IrLocal, IrRecordShape, IrStmt, IrType, JSVAL, NULL_T, REF_TRUTHY_KINDS, REGEX, RUNTIME_ERROR_CLASSES, SEARCH_PARAMS_T, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, canAdaptDynFuncTo, canBoxFuncIntoDyn, funcOf, isDynTypedRefType, isJsonSafeType, isSupportedArrayElem, isUnitType, jsOpResultKind, shapeHasAccessorSlots, typeEquals, typeKey, unionFuncSetArmsOk } from "../../ir/ir.js";
 import { cjsClassExprWholeExportOf, cjsExportAssignmentOf, cjsExportDiscardReason, isCjsExportTableLiteral, isCjsJsFile, isJsSourceFile, isModuleExportsAccess, isNodeEsmFile, locOf } from "../program.js";
-import { ARRAY_METHODS, builtinConstLit, builtinFenceHintOf, builtinModuleConstOf, builtinModulesArrayLit, builtinModuleFnOf, COMPOUND_ASSIGN_OPS, CompoundOp, ISLAND_SURFACE, isChildSurfaceMember, MAP_METHODS, NARROW_FIRST, SET_METHODS, STR_METHODS, UNSUPPORTED_EXPR, sideEffectFreeOptionValue, stdlibGlobalNameOf } from "./surfaces.js";
+import { ARRAY_METHODS, builtinConstLit, builtinFenceHintOf, builtinModuleConstOf, builtinModulesArrayLit, builtinModuleFnOf, COMPOUND_ASSIGN_OPS, CompoundOp, ISLAND_SURFACE, isChildSurfaceMember, MAP_METHODS, NARROW_FIRST, SET_METHODS, STRING_INDEX_METHODS, STR_METHODS, UNSUPPORTED_EXPR, sideEffectFreeOptionValue, stdlibGlobalNameOf } from "./surfaces.js";
 import { UNSUPPORTED, blockedBindingUseDiag, requiresDynamicPackageDiag, unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import { PoisonError, dynUndefinedExpr, jsFuncNameOf, neverTaintedJsType, nodeThrowExpr, own } from "./lowerer.js";
 import { lowerNpmStaticSafeIndexRead, lowerSafeIndexRead, strCharsCall, tryLowerNumericIndexRead } from "./lower-containers.js";
 import { arrayValueRead, arrayValueStore } from "./array-values.js";
+import { tryLowerIndexedComparison } from "./indexed-comparison.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { unsupportedModuleFeatureOf } from "../builtin-modules.js";
 import { fenceEnumObjectValue, lowerEnumAccess } from "./lower-enums.js";
@@ -615,6 +616,18 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         return { kind: "strLit", value: "object", type: STRING, loc };
       }
       if (ts.isPropertyAccessExpression(expr.expression)) {
+        const member = expr.expression;
+        const prototype = member.expression;
+        if (STRING_INDEX_METHODS.has(member.name.text) && ts.isPropertyAccessExpression(prototype) &&
+            prototype.name.text === "prototype" && ts.isIdentifier(prototype.expression) &&
+            lowerer.isStdlibGlobal(prototype.expression, "String") && lowerer.isStdlibMember(member)) {
+          return { kind: "strLit", value: "function", type: STRING, loc };
+        }
+        if (member.name.text === "at" && ts.isPropertyAccessExpression(prototype) &&
+            prototype.name.text === "prototype" && ts.isIdentifier(prototype.expression) &&
+            lowerer.isStdlibGlobal(prototype.expression, "Array") && lowerer.isStdlibMember(member)) {
+          return { kind: "strLit", value: "function", type: STRING, loc };
+        }
         const presence = lowerPromiseThenPresence(
           lowerer,
           expr.expression,
@@ -3636,7 +3649,7 @@ function lowerPromiseThenPresence(
     }
     if (
       kind === "string"
-        ? own(STR_METHODS, name) !== undefined || own(ISLAND_SURFACE.string, name) !== undefined
+        ? own(STR_METHODS, name) !== undefined || STRING_INDEX_METHODS.has(name) || own(ISLAND_SURFACE.string, name) !== undefined
         : ARRAY_METHODS.has(name)
     ) {
       lowerer.unsupported("SC1090", expr, `${kind} methods as values (call '${name}' directly)`);
@@ -6728,6 +6741,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       case ts.SyntaxKind.EqualsEqualsEqualsToken:
       case ts.SyntaxKind.ExclamationEqualsEqualsToken: {
         const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+        const indexed = tryLowerIndexedComparison(lowerer, left, right, negated, loc);
+        if (indexed) return indexed;
         if (plainBothNum) return { kind: "bin", op: negated ? "!==" : "===", left, right, type: BOOL, loc };
         if (bothStr) return { kind: "strEq", negated, left, right, type: BOOL, loc };
         // bool === bool: a plain value compare (the config-drift checks'

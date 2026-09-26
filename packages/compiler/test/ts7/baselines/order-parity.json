@@ -3487,6 +3487,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2113-string-index-methods.js": {
+   "order": [
+    "<repo>/tests/corpus/2113-string-index-methods.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/212-string-aliasing-append.ts": {
    "order": [
     "<repo>/tests/corpus/212-string-aliasing-append.ts"
@@ -6871,6 +6877,48 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2991-array-indexed-equality.ts": {
+   "order": [
+    "<repo>/tests/corpus/2991-array-indexed-equality.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2992-stream-rows.ts": {
+   "order": [
+    "<repo>/tests/corpus/2992-stream-rows.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2993-fiber-stack-lifetimes.ts": {
+   "order": [
+    "<repo>/tests/corpus/2993-fiber-stack-lifetimes.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2994-fromcharcode-scalar.ts": {
+   "order": [
+    "<repo>/tests/corpus/2994-fromcharcode-scalar.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2995-math-hyperbolic.ts": {
+   "order": [
+    "<repo>/tests/corpus/2995-math-hyperbolic.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2996-math-near-one.ts": {
+   "order": [
+    "<repo>/tests/corpus/2996-math-near-one.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2997-math-integer-float.ts": {
+   "order": [
+    "<repo>/tests/corpus/2997-math-integer-float.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/300-if-else.ts": {
    "order": [
     "<repo>/tests/corpus/300-if-else.ts"
@@ -6961,6 +7009,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3031-array-relative-index-coercion.js": {
+   "order": [
+    "<repo>/tests/corpus/3031-array-relative-index-coercion.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/3031-string-last-index-search-value.js": {
    "order": [
     "<repo>/tests/corpus/3031-string-last-index-search-value.js"
@@ -7039,15 +7093,81 @@
    ],
    "diags": []
   },
-  "<repo>/tests/corpus/3043-dynamic-abort-record.ts": {
+  "<repo>/tests/corpus/3043-string-split-arguments.js": {
    "order": [
-    "<repo>/tests/corpus/3043-dynamic-abort-record.ts"
+    "<repo>/tests/corpus/3043-string-split-arguments.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3044-array-slice-splice-positions.js": {
+   "order": [
+    "<repo>/tests/corpus/3044-array-slice-splice-positions.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3045-array-indexed-mutation.js": {
+   "order": [
+    "<repo>/tests/corpus/3045-array-indexed-mutation.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3046-array-indexed-ref-identity.ts": {
+   "order": [
+    "<repo>/tests/corpus/3046-array-indexed-ref-identity.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3047-object-prototype-tag.js": {
+   "order": [
+    "<repo>/tests/corpus/3047-object-prototype-tag.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3048-object-own-prototype.ts": {
+   "order": [
+    "<repo>/tests/corpus/3048-object-own-prototype.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3049-array-flat-depth.ts": {
+   "order": [
+    "<repo>/tests/corpus/3049-array-flat-depth.ts"
    ],
    "diags": []
   },
   "<repo>/tests/corpus/305-truthiness.ts": {
    "order": [
     "<repo>/tests/corpus/305-truthiness.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3050-array-splice-insert.ts": {
+   "order": [
+    "<repo>/tests/corpus/3050-array-splice-insert.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3051-array-join-default.ts": {
+   "order": [
+    "<repo>/tests/corpus/3051-array-join-default.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3052-array-construction.ts": {
+   "order": [
+    "<repo>/tests/corpus/3052-array-construction.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3053-array-construction-js.js": {
+   "order": [
+    "<repo>/tests/corpus/3053-array-construction-js.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3054-dynamic-abort-record.ts": {
+   "order": [
+    "<repo>/tests/corpus/3054-dynamic-abort-record.ts"
    ],
    "diags": []
   },

@@ -163,14 +163,12 @@ stdlib-fence.ts:35:15 - error SC2020: 'Error.stack' is part of the standard libr
 
   hint: stack traces are not captured (frames would need runtime bookkeeping); name, message, and toString() are available
 
-stdlib-fence.ts:37:15 - error SC2020: 'Math.SQRT2' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:37:20 - error SC1090: Math methods as values (call 'sinh' directly) are not supported yet
 
   36 | // Unlowered members on lowered containers.
-  37 | const sqrt2 = Math.SQRT2;
-     |               ^~~~~~~~~~
+  37 | const sinhMethod = Math.sinh;
+     |                    ^~~~~~~~~
   38 | // (n-ary Math.min/max LOWER now — the variadic battery lives in the
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
 stdlib-fence.ts:40:17 - error SC2020: 'Math.min' is part of the standard library types but has no scriptc lowering yet
 
@@ -224,18 +222,9 @@ stdlib-fence.ts:46:19 - error SC2020: 'Number.prototype.toLocaleString without a
 
   hint: the default locale is the host environment's, which a compiled binary cannot carry — pass it explicitly: x.toLocaleString("en-US")
 
-stdlib-fence.ts:51:16 - error SC2020: '.join with 0 arguments' is part of the standard library types but has no scriptc lowering yet
-
-  50 | const found = nums.indexOf(2, 1); // the fromIndex overload lowers
-  51 | const joined = nums.join();
-     |                ^~~~~~~~~~~
-  52 | nums.forEach((x) => console.log(x), { unused: true }); // thisArg stays fenced
-
-  hint: pass the separator explicitly: join(",")
-
 stdlib-fence.ts:52:1 - error SC2020: '.forEach with 2 arguments' is part of the standard library types but has no scriptc lowering yet
 
-  51 | const joined = nums.join();
+  51 | const joined = nums.join(); // the omitted separator lowers
   52 | nums.forEach((x) => console.log(x), { unused: true }); // thisArg stays fenced
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   53 | const pos = "abc".includes("b", 1); // the position form lowers now (indexOf's clamp)

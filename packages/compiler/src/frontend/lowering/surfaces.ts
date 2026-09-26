@@ -300,6 +300,8 @@ export const ARRAY_METHODS = new Set([
   "unshift",
   "pop",
   "reverse",
+  "fill",
+  "copyWithin",
   "concat",
   "map",
   "filter",
@@ -312,6 +314,7 @@ export const ARRAY_METHODS = new Set([
   "every",
   "at",
   "flatMap",
+  "flat",
   "reduce",
   "reduceRight",
   "indexOf",
@@ -407,7 +410,7 @@ export const STR_METHODS: Record<
   // Empty separator splits per UTF-16 code unit —
   // astral halves become U+FFFD (SEMANTICS.md divergence 2, the same
   // substitution the island's boundary marshal applied).
-  split: { method: "split", result: arrayOf(STRING), minArgs: 1, maxArgs: 2 },
+  split: { method: "split", result: arrayOf(STRING), minArgs: 0, maxArgs: 2 },
   // Padding completes omitted lengths and fill strings in its lowering.
   padStart: { method: "padStart", result: STRING, minArgs: 0, maxArgs: 2 },
   padEnd: { method: "padEnd", result: STRING, minArgs: 0, maxArgs: 2 },
@@ -423,6 +426,9 @@ export const STR_METHODS: Record<
   isWellFormed: { method: "isWellFormed", result: BOOL, minArgs: 0, maxArgs: 0 },
   toWellFormed: { method: "toWellFormed", result: STRING, minArgs: 0, maxArgs: 0 },
 };
+
+/** String index reads return an undefined arm and compose the existing UTF-16 intrinsics. */
+export const STRING_INDEX_METHODS = new Set(["at", "codePointAt"]);
 
 /** One member of the island-backed ambient surface: declared argument
  * types (tsc enforces them at call sites; the arity double-checks the
@@ -464,7 +470,7 @@ export const boundaryOutOfIslandMsg = (typeName: string): string =>
  * user. */
 export const ISLAND_SURFACE = {
   /** `Math.<fn>(...)` lowers to callMethod(globalGet("Math"), fn, args);
-   * Math.PI and Math.E are compile-time numeric literals in STATIC_MATH_PROPS;
+   * Math constants are compile-time numeric literals in STATIC_MATH_PROPS;
    * remaining Math properties retain island/fence behavior.
    * The entries here handle untabled scalar call shapes where --dynamic is
    * available; STATIC_MATH_FNS handles the ordinary typed calls first. */
@@ -472,10 +478,12 @@ export const ISLAND_SURFACE = {
     // The static table below handles these methods at its admitted arities.
     fns: {
       abs: ISL_N1, acos: ISL_N1, asin: ISL_N1, atan: ISL_N1, atan2: ISL_N2,
-      cbrt: ISL_N1, ceil: ISL_N1, cos: ISL_N1, exp: ISL_N1,
-      hypot: ISL_N2, log: ISL_N1, log2: ISL_N1, log10: ISL_N1, pow: ISL_N2,
+      acosh: ISL_N1, asinh: ISL_N1, atanh: ISL_N1,
+      cbrt: ISL_N1, ceil: ISL_N1, clz32: ISL_N1, cos: ISL_N1, cosh: ISL_N1,
+      exp: ISL_N1, expm1: ISL_N1, fround: ISL_N1,
+      hypot: ISL_N2, imul: ISL_N2, log: ISL_N1, log1p: ISL_N1, log2: ISL_N1, log10: ISL_N1, pow: ISL_N2,
       round: ISL_N1,
-      sign: ISL_N1, sin: ISL_N1, sqrt: ISL_N1, tan: ISL_N1, trunc: ISL_N1,
+      sign: ISL_N1, sin: ISL_N1, sinh: ISL_N1, sqrt: ISL_N1, tan: ISL_N1, tanh: ISL_N1, trunc: ISL_N1,
     } as Record<string, IslandFnEntry | undefined>,
     // Math constants are compile-time literals, not island properties.
     props: {} as Record<string, IrType | undefined>,
@@ -518,8 +526,14 @@ export const ISLAND_SURFACE = {
  * their island/fence behavior through ISLAND_SURFACE.math.props and the
  * generic standard-library member fence. */
 export const STATIC_MATH_PROPS: Record<string, number | undefined> = {
-  PI: 3.141592653589793,
   E: 2.718281828459045,
+  LN10: 2.302585092994046,
+  LN2: 0.6931471805599453,
+  LOG10E: 0.4342944819032518,
+  LOG2E: 1.4426950408889634,
+  PI: 3.141592653589793,
+  SQRT1_2: 0.7071067811865476,
+  SQRT2: 1.4142135623730951,
 };
 
 /** Math members with a STATIC lowering. Most use the tabled arity; min/max
@@ -539,20 +553,31 @@ export const STATIC_MATH_FNS: Record<string, { fn: IrLibFn; arity: number } | un
   max: { fn: "math.max", arity: 2 },
   random: { fn: "math.random", arity: 0 },
   sin: { fn: "math.sin", arity: 1 },
+  sinh: { fn: "math.sinh", arity: 1 },
   cos: { fn: "math.cos", arity: 1 },
+  cosh: { fn: "math.cosh", arity: 1 },
   tan: { fn: "math.tan", arity: 1 },
+  tanh: { fn: "math.tanh", arity: 1 },
   asin: { fn: "math.asin", arity: 1 },
+  asinh: { fn: "math.asinh", arity: 1 },
   acos: { fn: "math.acos", arity: 1 },
+  acosh: { fn: "math.acosh", arity: 1 },
   atan: { fn: "math.atan", arity: 1 },
+  atanh: { fn: "math.atanh", arity: 1 },
   cbrt: { fn: "math.cbrt", arity: 1 },
+  clz32: { fn: "math.clz32", arity: 1 },
   sign: { fn: "math.sign", arity: 1 },
   exp: { fn: "math.exp", arity: 1 },
+  expm1: { fn: "math.expm1", arity: 1 },
+  fround: { fn: "math.fround", arity: 1 },
   sqrt: { fn: "math.sqrt", arity: 1 },
   log: { fn: "math.log", arity: 1 },
+  log1p: { fn: "math.log1p", arity: 1 },
   log2: { fn: "math.log2", arity: 1 },
   log10: { fn: "math.log10", arity: 1 },
   atan2: { fn: "math.atan2", arity: 2 },
   pow: { fn: "math.pow", arity: 2 },
+  imul: { fn: "math.imul", arity: 2 },
   hypot: { fn: "math.hypotArr", arity: 2 },
 };
 
@@ -1166,6 +1191,13 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     name: "process.columns",
     fns: ["process.columns"],
     note: "the columns read on the process stdio streams (terminal geometry)",
+  },
+  {
+    id: "node-builtin.process.rows",
+    kind: "node-builtin",
+    name: "process.rows",
+    fns: ["process.rows"],
+    note: "the rows read on process.stdout/stderr (terminal geometry)",
   },
   {
     id: "node-builtin.process.kill",

@@ -1729,9 +1729,9 @@ function emitContainerExpr(
         return emitter.newTemp(e.type, `scr_arr_state(${arr.name}, ${idx.name})`);
       }
       case "arrIntrinsic": {
-        // getNumber copies out a scalar without invoking user code. A
+        // getNumber/indexEq produce scalars without invoking user code. A
         // stable binding can own its receiver until that lookup finishes.
-        const r = e.method === "getNumber"
+        const r = e.method === "getNumber" || e.method === "indexEq"
           ? emitStableReceiver(emitter, e.receiver, e.args)
           : emitter.emitExpr(e.receiver);
         if (e.receiver.type.kind !== "array") throw new InternalCompilerError("emitter bug: arrIntrinsic on non-array");
@@ -1748,6 +1748,12 @@ function emitContainerExpr(
           case "nextPresent": {
             const start = emitter.emitExpr(e.args[0]!);
             return emitter.newTemp(e.type, `scr_arr_next_present(${r.name}, ${start.name})`);
+          }
+          case "indexEq": {
+            const index = emitter.emitExpr(e.args[0]!);
+            const other = emitStableReceiver(emitter, e.args[1]!, [e.args[2]!]);
+            const otherIndex = emitter.emitExpr(e.args[2]!);
+            return emitter.newTemp(e.type, `scr_arr_index_eq(${r.name}, ${index.name}, ${other.name}, ${otherIndex.name})`);
           }
           case "push": {
             // Variadic like JS: every argument evaluates first (left to
@@ -1900,6 +1906,17 @@ function emitContainerExpr(
             const start = emitter.emitExpr(e.args[0]!);
             const cnt = e.args[1] ? emitter.emitExpr(e.args[1]).name : "INFINITY";
             return emitter.newTemp(e.type, `scr_arr_splice(${r.name}, ${start.name}, ${cnt})`);
+          }
+          case "spliceInsert": {
+            const start = emitter.emitExpr(e.args[0]!);
+            const count = emitter.emitExpr(e.args[1]!);
+            const items = emitter.emitExpr(e.args[2]!);
+            return emitter.newTemp(e.type, `scr_arr_splice_insert(${r.name}, ${start.name}, ${count.name}, ${items.name})`);
+          }
+          case "flatCopy":
+          case "flatOne": {
+            const out = emitter.emitExpr(e.args[0]!);
+            return emitter.newTemp(e.type, `scr_arr_flat_copy(${r.name}, ${out.name}, ${method === "flatOne" ? "true" : "false"})`);
           }
           default: {
             const _exhaustive: never = method;
@@ -4384,6 +4401,8 @@ function emitDynamicLibCall(state: LibCallState): Temp {
           case "dyn.typeof":
             // Bare typeof on a dyn value: the dyn kind's JS answer (+1).
             return finish(`scr_dyn_typeof(${arg(0)})`);
+          case "dyn.objectTag":
+            return finish(`scr_dyn_object_tag(${arg(0)})`);
           case "dyn.toString":
             // Receiver-kind-dispatched toString (+1); throws Node's
             // TypeError on undefined/null and the "is not a function"
@@ -5162,28 +5181,48 @@ function emitPrimitiveLibCall(state: LibCallState): Temp {
             return finish(`ceil(${arg(0)})`);
           case "math.sin":
             return finish(`sin(${arg(0)})`);
+          case "math.sinh":
+            return finish(`sinh(${arg(0)})`);
           case "math.cos":
             return finish(`cos(${arg(0)})`);
+          case "math.cosh":
+            return finish(`cosh(${arg(0)})`);
           case "math.tan":
             return finish(`tan(${arg(0)})`);
+          case "math.tanh":
+            return finish(`tanh(${arg(0)})`);
           case "math.asin":
             return finish(`asin(${arg(0)})`);
+          case "math.asinh":
+            return finish(`asinh(${arg(0)})`);
           case "math.acos":
             return finish(`acos(${arg(0)})`);
+          case "math.acosh":
+            return finish(`acosh(${arg(0)})`);
           case "math.atan":
             return finish(`atan(${arg(0)})`);
+          case "math.atanh":
+            return finish(`atanh(${arg(0)})`);
           case "math.cbrt":
             return finish(`cbrt(${arg(0)})`);
+          case "math.clz32":
+            return finish(`scr_math_clz32(${arg(0)})`);
           case "math.sign":
             // Each argument was evaluated into a temp. Returning that temp
             // for unordered/zero inputs preserves NaN and the sign of zero.
             return finish(`(${arg(0)} > 0.0 ? 1.0 : (${arg(0)} < 0.0 ? -1.0 : ${arg(0)}))`);
           case "math.exp":
             return finish(`exp(${arg(0)})`);
+          case "math.expm1":
+            return finish(`expm1(${arg(0)})`);
+          case "math.fround":
+            return finish(`scr_math_fround(${arg(0)})`);
           case "math.sqrt":
             return finish(`sqrt(${arg(0)})`);
           case "math.log":
             return finish(`log(${arg(0)})`);
+          case "math.log1p":
+            return finish(`log1p(${arg(0)})`);
           case "math.log2":
             return finish(`log2(${arg(0)})`);
           case "math.log10":
@@ -5192,6 +5231,8 @@ function emitPrimitiveLibCall(state: LibCallState): Temp {
             return finish(`atan2(${arg(0)}, ${arg(1)})`);
           case "math.pow":
             return finish(`scr_math_pow(${arg(0)}, ${arg(1)})`);
+          case "math.imul":
+            return finish(`scr_math_imul(${arg(0)}, ${arg(1)})`);
           // Math.abs — C fabs IS the JS operation. Math.round — the JS
           // half-toward-+Infinity rule (scr_lib.c; C round() differs on
           // halves and naive floor(x+0.5) drifts at the epsilon boundary).
@@ -8053,22 +8094,23 @@ function emitProcessLibCall(state: LibCallState): Temp {
             return finish(`scr_stdin_next_chunk()`);
           case "process.isTTY":
             return finish(`scr_process_is_tty(${arg(0)})`);
-          case "process.columns": {
-            // ioctl(TIOCGWINSZ): a non-negative width wraps the f64 arm;
+          case "process.columns":
+          case "process.rows": {
+            // ioctl(TIOCGWINSZ): a non-negative dimension wraps the f64 arm;
             // a non-TTY stream (or an ioctl refusal) comes back negative
             // and yields the interned undefined-arm instance — Node's
-            // missing `.columns`. Type-directed union construction, like
+            // missing geometry. Type-directed union construction, like
             // process.envGet.
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: process.columns result is not a union");
+              throw new InternalCompilerError(`emitter bug: ${e.fn} result is not a union`);
             }
             const def = emitter.unionsById.get(e.type.unionId);
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
             const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (f64Tag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: process.columns union lacks its arms");
+              throw new InternalCompilerError(`emitter bug: ${e.fn} union lacks its arms`);
             }
-            const w = emitter.newTemp(F64, `scr_process_columns(${arg(0)})`);
+            const w = emitter.newTemp(F64, `scr_process_${e.fn === "process.rows" ? "rows" : "columns"}(${arg(0)})`);
             const present = `scr_union_new_f64(${f64Tag}, ${w.name})`;
             const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
             return emitter.newTemp(e.type, `${w.name} >= 0 ? ${present} : ${absent}`);
@@ -8938,6 +8980,14 @@ function emitIoLibCall(state: LibCallState): Temp {
 }
 
 function emitLibCallExpr(emitter: CEmitter, e: LibCallExpr): Temp {
+        const packed = e.args[0];
+        if (e.fn === "string.fromCharCode" && packed?.kind === "arrayLit" &&
+            packed.elems.length === 1 && !packed.spreads?.length) {
+          // The literal is only the variadic ABI pack, never an observable
+          // array. Evaluate the scalar once before bypassing that allocation.
+          const code = emitter.emitExpr(packed.elems[0]!);
+          return emitter.newTemp(e.type, `scr_str_from_char_code_one(${code.name})`);
+        }
         // Standard-library call. Args are BORROWED (owned temps of the
         // current frame, released at statement end); refcounted results come
         // back +1 (process.argv: +1 on the runtime's ONE interned array —

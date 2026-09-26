@@ -34,7 +34,7 @@ const st = new Set(new Set([1, 2])); // array seeds lower; Set/iterable seeds st
 const agg = new AggregateError([]);
 const stack = new Error("boom").stack;
 // Unlowered members on lowered containers.
-const sqrt2 = Math.SQRT2;
+const sinhMethod = Math.sinh;
 // (n-ary Math.min/max LOWER now — the variadic battery lives in the
 // corpus; the mixed spread/positional list is the form that stays fenced.)
 const clamped = Math.min(1, ...[2, 3]);
@@ -48,7 +48,7 @@ const localized = (1234.5).toLocaleString();
 // no fenced form remains to pin.)
 const nums = [1, 2, 3];
 const found = nums.indexOf(2, 1); // the fromIndex overload lowers
-const joined = nums.join();
+const joined = nums.join(); // the omitted separator lowers
 nums.forEach((x) => console.log(x), { unused: true }); // thisArg stays fenced
 const pos = "abc".includes("b", 1); // the position form lowers now (indexOf's clamp)
 const rev = JSON.parse("1", (_k, v) => v);

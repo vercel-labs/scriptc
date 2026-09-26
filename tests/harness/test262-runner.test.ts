@@ -50,6 +50,13 @@ test("unsupported execution requirements and assertion reflection remain exclusi
   expect(exclusion(text, metadata(text), "sloppy")).toBe("execution:sloppy");
 });
 
+test("the compareArray include only admits the implemented assertion form", () => {
+  const accepted = source("includes: [compareArray.js]", "assert.compareArray([1, NaN], [1, NaN]);");
+  expect(exclusion(accepted, metadata(accepted), "strict")).toBeUndefined();
+  const globalHelper = source("includes: [compareArray.js]", "compareArray([1], [1]);");
+  expect(exclusion(globalHelper, metadata(globalHelper), "strict")).toBe("harness:compareArray-surface");
+});
+
 test("the adapter retains the test body without a function or try/catch wrapper", () => {
   const body = source("description: lexical", "const x = 1;\nassert.sameValue(x, 1);");
   const result = prepare(body);

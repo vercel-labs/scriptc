@@ -11,7 +11,7 @@ import { MAX_GENERIC_INSTANCES, appendImplicitUndefinedReturn, generatorMeta, ge
 import { isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { cjsClassExprWholeExportOf, isCjsJsFile, isJsSourceFile, isModuleExportsAccess, isNodeTypesPath, locOf } from "../program.js";
 import { PoisonError, dynFallbackType, dynUndefinedExpr, newFnCtx, own } from "./lowerer.js";
-import { lowerMapSeedArrayNew } from "./lower-containers.js";
+import { lowerArrayConstructor, lowerMapSeedArrayNew } from "./lower-containers.js";
 import { bufEncoding } from "./containers/bytes.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { lowerSearchParamsNew } from "./lower-builtins.js";
@@ -5210,12 +5210,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       // the fence: never silently an empty map. Unsupported key/value
       // types get their half named specifically instead of the component
       // fence (SC2009, which names Map slots at value positions elsewhere).
-      // `new Array<T>()` and the ELEMENTS forms (`new Array('hi', 'bye')`,
-      // any argument list that is not one lone number) ARE array literals
-      // — the spec's ArrayCreate + element writes. The one-NUMBER form
-      // allocates a HOLE array (reads answer undefined where the element
-      // type says T) — no honest lowering exists unless the element type
-      // admits undefined, so it fences by name.
+      // Both Array() and new Array() share the elements/count lowering.
       // `new Object()` — the spec's OrdinaryObjectCreate, exactly what the
       // `{}` literal builds (fresh reference identity, no own properties) —
       // lowers as the empty record. The ARGUMENT form is Object(x): it
@@ -5234,28 +5229,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         };
       }
       if (symbol?.name === "Array" && lowerer.isStdlibSymbol(symbol)) {
-        const args = expr.arguments ?? [];
-        if (args.some(ts.isSpreadElement)) {
-          lowerer.noLowering("new Array with spread arguments", expr, "write the array literal: [...xs]");
-        }
-        if (args.length === 1 && lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "f64") {
-          lowerer.noLowering(
-            "new Array(count)",
-            expr,
-            "the one-number form allocates HOLES (reads answer undefined, which the element type cannot carry) — build and push, or use the elements form: new Array(a, b)",
-          );
-        }
-        let t = lowerer.mapTypeOf(lowerer.typeOf(expr));
-        // JS's `new Array()` types any[]; the contextual type carries the
-        // annotation when one exists (the new Map() stance).
-        if (t?.kind !== "array") {
-          const ctx = lowerer.checker.getContextualType(expr);
-          const ctxMapped = ctx ? lowerer.mapTypeOf(ctx) : null;
-          if (ctxMapped?.kind === "array") t = ctxMapped;
-        }
-        if (t?.kind !== "array") lowerer.badType(expr, lowerer.typeOf(expr));
-        const elems = args.map((a) => lowerer.lowerExprExpecting(a, t.elem));
-        return { kind: "arrayLit", elems, type: t, loc };
+        return lowerArrayConstructor(lowerer, expr, expr.arguments ?? []);
       }
       if (symbol?.name === "Map" && lowerer.isStdlibSymbol(symbol)) {
         const seedArg = (expr.arguments?.length ?? 0) === 1 ? expr.arguments![0]! : null;

@@ -91,7 +91,8 @@ export function exclusion(source, meta, variant) {
   if (meta.negative) return `negative-phase:${meta.negative.phase}`;
   if (meta.flags.includes("async")) return "execution:async";
   if (meta.flags.some((flag) => flag.startsWith("CanBlock"))) return "host:agents";
-  if (meta.includes.length) return `harness-includes:${meta.includes.join(",")}`;
+  const unsupportedIncludes = meta.includes.filter((name) => name !== "compareArray.js");
+  if (unsupportedIncludes.length) return `harness-includes:${unsupportedIncludes.join(",")}`;
   const sf = ts.createSourceFile("test.js", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   let reason;
   const forbidden = new Set(["$262", "$DONE", "$DONOTEVALUATE", "globalThis", "eval", "Function", "print", "process", "require", "arguments"]);
@@ -106,10 +107,13 @@ export function exclusion(source, meta, variant) {
       if (ts.isCallExpression(parent) && parent.expression === node) {
         // assert(value, message)
       } else if (ts.isPropertyAccessExpression(parent) && parent.expression === node &&
-        ["sameValue", "notSameValue"].includes(parent.name.text) &&
+        ["sameValue", "notSameValue", "compareArray"].includes(parent.name.text) &&
         ts.isCallExpression(parent.parent) && parent.parent.expression === parent) {
         // Supported assertion calls; aliases, mutations, and reflection stay out.
       } else reason = "harness:assert-surface";
+    } else if (meta.includes.includes("compareArray.js") && ts.isIdentifier(node) && node.text === "compareArray" &&
+      !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node && ts.isIdentifier(node.parent.expression) && node.parent.expression.text === "assert")) {
+      reason = "harness:compareArray-surface";
     } else if (ts.isIdentifier(node) && node.text === "Test262Error") {
       if (!ts.isNewExpression(node.parent) || node.parent.expression !== node) reason = "harness:Test262Error-surface";
     }

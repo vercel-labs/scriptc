@@ -1574,6 +1574,10 @@ export type IrArrIntrinsicMethod =
    * returning the stored number or NaN for a hole/undefined/missing key.
    * Borrows the receiver and never traps on missing values. */
   | "getNumber"
+  /** Internal strict equality of two f64/bool/string array slots. Arguments
+   * are [left index, right array, right index]; holes and present undefined
+   * compare as undefined. Both arrays have the same primitive element type. */
+  | "indexEq"
   | "push"
   | "pushSpread"
   | "concatSpread"
@@ -1589,6 +1593,12 @@ export type IrArrIntrinsicMethod =
   | "slice"
   | "shift"
   | "splice"
+  /** One dense copy pass, or one level of flattening into an empty typed
+   * result array. The supplied result is borrowed and returned retained. */
+  | "flatCopy"
+  | "flatOne"
+  /** Mutating splice with evaluated insertion items; returns removed slots. */
+  | "spliceInsert"
   | "reverse"
   /** ES2023 copying methods. `toSpliced` receives [start, deleteCount,
    * itemsArray], with omitted arguments completed by the frontend;
@@ -2017,6 +2027,8 @@ export type IrLibFn =
    * wart preserved), boolean/number/string by kind, function→"function".
    * Never throws. */
   | "dyn.typeof"
+  /** Object.prototype.toString.call on a checked-dynamic value. */
+  | "dyn.objectTag"
   /** toString() on a checked-dynamic receiver: runtime kind dispatch
    * (bytes decode per the literal encoding — utf8 default; strings,
    * numbers, booleans, arrays, objects answer JS-exactly; undefined and
@@ -2160,21 +2172,32 @@ export type IrLibFn =
   | "math.trunc"
   | "math.ceil"
   | "math.sin"
+  | "math.sinh"
   | "math.cos"
+  | "math.cosh"
   | "math.tan"
+  | "math.tanh"
   | "math.asin"
+  | "math.asinh"
   | "math.acos"
+  | "math.acosh"
   | "math.atan"
+  | "math.atanh"
   | "math.cbrt"
+  | "math.clz32"
   /** Return -1, +1, or the original NaN/zero. In particular, -0 remains -0. */
   | "math.sign"
   | "math.exp"
+  | "math.expm1"
+  | "math.fround"
   | "math.sqrt"
   | "math.log"
+  | "math.log1p"
   | "math.log2"
   | "math.log10"
   | "math.atan2"
   | "math.pow"
+  | "math.imul"
   /** The static global parsers/tests (scr_string.c). num.parseInt is
    * ECMA-262 19.2.5 exactly — JS whitespace, sign, ToInt32 radix (the
    * frontend completes an omitted radix to 0 = the spec's "undefined":
@@ -4417,6 +4440,8 @@ export type IrLibFn =
    * yields the undefined arm, exactly Node's missing `.columns`. Never
    * throws. */
   | "process.columns"
+  /** Terminal height, with the same fd and optional-number contract. */
+  | "process.rows"
   /** fromCharCode takes one packed f64[] or bytes arg and builds a string
    * from UTF-16 code units. Adjacent surrogate pairs combine; lone
    * surrogates follow the runtime's replacement policy. */
@@ -7322,6 +7347,7 @@ export const LIB_NONDETERMINISTIC_PREFIXES: readonly [string, string][] = [
   ["process.threadCpu", "the thread CPU clock (process.threadCpuUsage)"],
   ["process.isTTY", "terminal attachment (isTTY)"],
   ["process.columns", "terminal geometry (columns)"],
+  ["process.rows", "terminal geometry (rows)"],
   ["process.kill", "process authority (kill)"],
   ["process.umask", "process authority (umask)"],
   ["process.exit", "process authority (exit)"],
@@ -7582,6 +7608,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "error.nodeThrow",
   // USVString coercion runs user toString/valueOf — throws propagate.
   "dyn.toStringCoerce",
+  "dyn.objectTag",
   // Numeric coercion runs user valueOf/toString — throws propagate.
   "dyn.toNumberCoerce",
   "child.kill",

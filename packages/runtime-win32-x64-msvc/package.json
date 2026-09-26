@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/runtime-win32-x64-msvc",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "description": "Precompiled scriptc runtime pack for Windows x64 MSVC",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",

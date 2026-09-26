@@ -463,32 +463,21 @@ console.log(recovered);
   });
 
   /* ── the island-backed ambient surface (Math, methods, globals) ───────
-   * Value results are differential (corpus 1110–1116); what lives here is
-   * behavior Node cannot oracle: the `.at()` undefined-refusal divergence
-   * and the fiber re-anchor for surface calls inside async bodies. */
+   * Value results are differential (corpus 1110–1116 and 2113); this
+   * checks that --dynamic leaves static .at() behavior unchanged and that
+   * surface calls re-anchor the engine on fibers inside async bodies. */
 
-  test("out-of-range .at() throws a catchable TypeError instead of returning undefined", async () => {
-    // `at` is declared returning `string` (undefined is unrepresentable);
-    // out of range the engine yields undefined and the validated exit
-    // refuses it — strictly, catchably — where Node would hand back
-    // undefined. The documented divergence, pinned.
-    const r = await compileAndRun(
-      "at-out-of-range",
-      `const s = "abc";
-try {
-  console.log("in range", s.at(1), s.at(-1));
-  const c = s.at(99);
-  console.log("unreachable", c);
-} catch {
-  console.log("caught");
-}
-const direct = s.at(-4);
-console.log("unreachable", direct);
-`,
-    );
-    expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("in range b c\ncaught\n");
-    expect(r.stderr).toContain("TypeError: expected string, got undefined");
+  test("string .at() returns undefined out of range in both build modes", async () => {
+    const source = `const s = "abc";
+console.log("in range", s.at(1), s.at(-1));
+console.log("out of range", s.at(99), s.at(-4));
+`;
+    for (const dynamic of [false, true]) {
+      const r = await compileAndRun("at-out-of-range", source, { dynamic });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toBe("in range b c\nout of range undefined undefined\n");
+      expect(r.stderr).toBe("");
+    }
   });
 
   test("island-backed calls re-anchor the engine on fibers (Math after await)", async () => {

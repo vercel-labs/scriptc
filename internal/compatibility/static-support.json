@@ -58,6 +58,8 @@
     "node-builtin.path": ["tests/corpus/957-builtins-namespace.ts", "tests/corpus/2915-path-function-values.ts", "tests/corpus/2916-path-function-values-cjs.ts", "tests/corpus/2917-builtin-callable-widths.ts", "tests/corpus/2918-builtin-callable-widths-cjs.ts"],
     "node-builtin.perf_hooks": ["tests/corpus/957-builtins-namespace.ts"],
     "node-builtin.process": ["tests/corpus/990-process-basics.ts", "tests/corpus/2314-process-introspection.ts"],
+    "node-builtin.process.rows": ["tests/corpus/2992-stream-rows.ts", "tests/harness/terminal-geometry.test.ts"],
+    "node-builtin.process.columns": ["tests/corpus/1448-stream-columns.ts", "tests/harness/terminal-geometry.test.ts"],
     "node-builtin.process.exitCode": ["tests/corpus/2941-process-exit-code.ts", "tests/corpus/2942-process-exit-code-override.ts", "tests/corpus/2943-process-exit-code-invalid.ts", "tests/corpus/2944-process-exit-code-wrap.ts"],
     "node-builtin.querystring": ["tests/corpus/957-builtins-namespace.ts", "tests/corpus/2917-builtin-callable-widths.ts"],
     "node-builtin.readline": ["tests/corpus/1475-readline-closed-stdin.ts"],
@@ -149,6 +151,7 @@
     { "chapter": "typescript", "symbols": ["type"], "status": "supported", "evidence": ["tests/corpus/2702-type-import-link-static/main.ts", "tests/corpus/2703-type-import-link-static-reexport/main.ts", "tests/corpus/2704-type-import-link-static-success/main.ts", "tests/corpus/2707-type-import-link-static-default-reexport/main.ts", "tests/harness/errors.test.ts"] }
   ],
   "dedicated": [
+    { "symbols": ["writeStream.rows", "writeStream.columns"], "status": "partial", "evidence": ["tests/corpus/1448-stream-columns.ts", "tests/corpus/2992-stream-rows.ts", "tests/harness/terminal-geometry.test.ts"] },
     { "symbols": ["console.log", "console.info", "console.debug", "console.error", "console.warn"], "status": "partial", "evidence": ["tests/corpus/1460-console-error-warn.ts", "tests/corpus/2440-console-inspect-args.ts"] },
     { "symbols": ["assert", "assert.ok", "assert.equal", "assert.notEqual", "assert.strictEqual", "assert.notStrictEqual", "assert.deepStrictEqual", "assert.notDeepStrictEqual", "assert.fail", "assert.match", "assert.doesNotMatch", "assert.throws", "assert.rejects", "assert.doesNotReject", "assert.ifError"], "status": "partial", "evidence": ["tests/corpus/1600-assert-passing.ts", "tests/corpus/1604-assert-deep-structures.ts", "tests/corpus/1609-assert-async.ts", "tests/corpus/1721-assert-throws-regex-class.ts", "tests/corpus/2936-static-loose-equality.ts"] },
     { "symbols": ["crypto.createHash", "Hash", "hash.update", "hash.digest", "hash.copy", "crypto.createHmac", "Hmac", "hmac.update", "hmac.digest", "crypto.hash", "crypto.timingSafeEqual", "crypto.randomFillSync", "crypto.randomInt", "crypto.pbkdf2", "crypto.pbkdf2Sync"], "status": "partial", "evidence": ["tests/corpus/2890-crypto-static-utility.ts", "tests/harness/npm-static.test.ts"] },

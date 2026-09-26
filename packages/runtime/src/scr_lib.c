@@ -3207,27 +3207,32 @@ ScrStr *scr_atomics_wait(ScrBytes *arr, double idx, double expected, double time
 
 bool scr_process_is_tty(double fd) { return isatty((int)fd) != 0; }
 
-/* Terminal width for process.stdout/stderr.columns: ioctl(TIOCGWINSZ) on
+/* Terminal geometry for process.stdout/stderr.columns/rows: ioctl(TIOCGWINSZ) on
  * the stream's fd, exactly Node's tty.WriteStream source of truth. A
  * non-TTY stream, or a terminal that refuses the ioctl, answers -1 and
  * the emitter's union construction turns that into the undefined arm —
- * Node's missing `.columns` on non-TTY streams. */
-double scr_process_columns(double fd) {
+ * Node's missing geometry on non-TTY streams. */
+static double scr_process_dimension(double fd, bool rows) {
   if (!isatty((int)fd)) return -1;
 #ifdef _WIN32
-  /* The console buffer's window width — libuv's uv_tty_get_winsize. */
+  /* The console buffer's visible window — libuv's uv_tty_get_winsize. */
   HANDLE h = (HANDLE)_get_osfhandle((int)fd);
   CONSOLE_SCREEN_BUFFER_INFO info;
   if (h == INVALID_HANDLE_VALUE || !GetConsoleScreenBufferInfo(h, &info)) return -1;
-  return (double)(info.srWindow.Right - info.srWindow.Left + 1);
+  return rows ? (double)(info.srWindow.Bottom - info.srWindow.Top + 1)
+              : (double)(info.srWindow.Right - info.srWindow.Left + 1);
 #elif defined(__wasi__)
+  (void)rows;
   return -1;
 #else
   struct winsize ws;
   if (ioctl((int)fd, TIOCGWINSZ, &ws) != 0) return -1;
-  return (double)ws.ws_col;
+  return rows ? (double)ws.ws_row : (double)ws.ws_col;
 #endif
 }
+
+double scr_process_columns(double fd) { return scr_process_dimension(fd, false); }
+double scr_process_rows(double fd) { return scr_process_dimension(fd, true); }
 
 /* process.stdin.setRawMode(mode). TTY stdin: libuv's UV_TTY_MODE_RAW
  * termios flag set — exactly what Node's setRawMode(true) applies — and
@@ -3878,6 +3883,28 @@ double scr_math_round(double x) {
 double scr_math_pow(double base, double exponent) {
   if (isnan(exponent) || (isinf(exponent) && fabs(base) == 1.0)) return NAN;
   return pow(base, exponent);
+}
+
+double scr_math_clz32(double x) {
+  uint32_t bits = scr_to_uint32(x);
+  if (bits == 0) return 32.0;
+  unsigned count = 0;
+  while ((bits & UINT32_C(0x80000000)) == 0) {
+    bits <<= 1;
+    count++;
+  }
+  return (double)count;
+}
+
+double scr_math_fround(double x) {
+  return (double)(float)x;
+}
+
+double scr_math_imul(double a, double b) {
+  uint32_t bits = scr_to_uint32(a) * scr_to_uint32(b);
+  return bits >= UINT32_C(0x80000000)
+             ? (double)(uint64_t)bits - 4294967296.0
+             : (double)bits;
 }
 
 double scr_math_random(void) {
@@ -5052,6 +5079,7 @@ ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem) {
  * Node writing a lone surrogate to stdout produces the same replacement
  * bytes), UTF-8 encode. */
 static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), void *src) {
+  if (n == 1) return scr_str_from_char_code_one((double)unit(src, 0));
   char *out = malloc(n * 3 + 1); /* worst case: 3 bytes per UTF-16 unit */
   if (!out) {
     scr_trap("scriptc: out of memory\n");

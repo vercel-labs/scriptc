@@ -12,13 +12,13 @@ import { isJsSourceFile, isNodeEsmFile, locOf } from "../program.js";
 import { genResultRecord, isGenericCallableMemberType, typeKey } from "../type-mapper.js";
 import { PoisonError, dynFallbackType, dynUndefinedExpr, importCallHandleType, jsFuncNameOf, newFnCtx, nodeThrowExpr, staticImportNamespaceType } from "./lowerer.js";
 import { enforceLibBoundary } from "./lib-boundary.js";
-import { NARROW_FIRST, STR_METHODS, builtinFenceHintOf, builtinModuleFnOf } from "./surfaces.js";
+import { NARROW_FIRST, STRING_INDEX_METHODS, STR_METHODS, builtinFenceHintOf, builtinModuleFnOf } from "./surfaces.js";
 import { ffiBindingDiag, ffiSignatureDiag, libCallbackDiag, requiresDynamicDiag } from "../../diagnostics/diagnostic.js";
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { mixinFnShapeOf } from "./lower-mixins.js";
-import { dynStringReceiver, lowerArrayFromCall, lowerDynArrayFilterCall, lowerDynArrayFlatMapCall, lowerGroupByStaticCall, lowerIteratorHelperCall, lowerObjectAssignIndexShape, lowerObjectFromEntriesCall, lowerObjectIterOverIndexShape, lowerTupleReadMethodCall } from "./lower-containers.js";
+import { dynStringReceiver, lowerArrayConstructor, lowerArrayFromCall, lowerArrayOfCall, lowerDynArrayFilterCall, lowerDynArrayFlatMapCall, lowerGroupByStaticCall, lowerIteratorHelperCall, lowerObjectAssignIndexShape, lowerObjectFromEntriesCall, lowerObjectIterOverIndexShape, lowerTupleReadMethodCall } from "./lower-containers.js";
 import { bufEncoding } from "./containers/bytes.js";
-import { lowerRegexMethodCall, lowerStringMethodCall, lowerStringPaddingCall } from "./containers/string-and-regexp.js";
+import { lowerRegexMethodCall, lowerStringIndexCall, lowerStringMethodCall, lowerStringPaddingCall, lowerStringSplitCall } from "./containers/string-and-regexp.js";
 import { lowerChildStreamMethodCall, lowerChildWriterMethodCall, lowerCreateRequireCall, lowerCryptoHashMethodCall, lowerDirentMethodCall, lowerFileHandleMethodCall, lowerImportMetaResolveCall, lowerNodeModuleCall, lowerPerfHooksCall, lowerProcStreamMethodCall, lowerReflectApplyCall, lowerRequireResolveCall, lowerWatcherMethodCall } from "./lower-builtins.js";
 import { lowerAbsenceProbe, lowerPromiseAllTupleCall, lowerPromiseRejectCall, stringWrapperToString, templateRawTextOf } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
@@ -3984,6 +3984,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // supported form is fenced here per site. Members with no lowering at
     // all (fs.watch, os.cpus, ...) fence with the module-qualified name.
     if (ts.isIdentifier(expr.expression)) {
+      if (expr.expression.text === "Array" && lowerer.isStdlibGlobal(expr.expression, "Array")) {
+        return lowerArrayConstructor(lowerer, expr, expr.arguments);
+      }
       // A call through a compile-time util.promisify projection. execFile
       // keeps its custom result helper; ordinary builtins route through
       // their existing promise-module lowering.
@@ -4620,6 +4623,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         // TestContext surface (t.test/t.skip/t.diagnostic), t.assert.*.
         lowerer.lowerTestMethodCall(expr, expr.expression) ??
         lowerer.lowerTimeoutMethodCall(expr, expr.expression) ??
+        lowerObjectOwnPrototypeCall(lowerer, expr, expr.expression) ??
+        lowerObjectPrototypeCall(lowerer, expr, expr.expression) ??
         lowerStringPrototypeCall(lowerer, expr, expr.expression) ??
         lowerStringMethodCallWithOptionalArgs(lowerer, expr, expr.expression) ??
         // Typed-array/Buffer receivers and the Buffer statics — before the
@@ -4650,6 +4655,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         // hasOwnProperty on a program class CONSTRUCTOR — own statics are
         // compile-time-known, so a literal key folds to a constant.
         lowerClassHasOwnPropertyCall(lowerer, expr, expr.expression) ??
+        lowerObjectOwnMethodCall(lowerer, expr, expr.expression) ??
         // Response constructor-object operations are unsupported in both
         // tiers. Keep their SC2020 inventory contract ahead of the island
         // and generic-call fallbacks (Response.json otherwise reports the
@@ -4690,6 +4696,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         lowerObjectStaticCall(lowerer, expr, expr.expression) ??
         lowerObjectFromEntriesCall(lowerer, expr, expr.expression) ??
         lowerArrayFromCall(lowerer, expr, expr.expression) ??
+        lowerArrayOfCall(lowerer, expr, expr.expression) ??
         lowerer.lowerArrayMethodCall(expr, expr.expression) ??
         // Read-only array methods (slice/map) on TUPLE receivers — the
         // positions snapshot into a fresh array (the for-of stance).
@@ -5101,6 +5108,239 @@ function plainObjectCoercionReceiver(lowerer: Lowerer, node: ts.Expression): boo
   return bindingNeverReassigned(lowerer, symbol, decl);
 }
 
+function objectToStringTag(lowerer: Lowerer, type: IrType): string | null {
+  switch (type.kind) {
+  case "undefinedT":
+  case "void": return "Undefined";
+  case "nullT": return "Null";
+  case "bool": return "Boolean";
+  case "f64": return "Number";
+  case "string": return "String";
+  case "bigint": return "BigInt";
+  case "symbol": return "Symbol";
+  case "array": return "Array";
+  case "record": return "Object";
+  case "func":
+  case "classval": return "Function";
+  case "date": return "Date";
+  case "regex": return "RegExp";
+  case "map": return "Map";
+  case "set": return "Set";
+  case "promise": return "Promise";
+  case "bytes":
+    return ({ u8: "Uint8Array", u32: "Uint32Array", i32: "Int32Array", f32: "Float32Array", f64: "Float64Array" })[type.elem];
+  case "object":
+    return type.className === "%Error" || lowerer.isSubclassOf(type.className, "%Error") ? "Error" : null;
+  default: return null;
+  }
+}
+
+function immediateObjectTagReceiver(lowerer: Lowerer, node: ts.Expression): { tag: string; effect: IrExpr } | null {
+  let value = node;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  const loc = locOf(value);
+  if (ts.isArrayLiteralExpression(value)) return { tag: "Array", effect: lowerer.lowerExpr(value) };
+  if ((ts.isCallExpression(value) || ts.isNewExpression(value)) && ts.isIdentifier(value.expression) &&
+      (value.expression.text === "Array" || value.expression.text === "Error") &&
+      (value.arguments?.length ?? 0) === 0 && lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(value.expression) ?? undefined)) {
+    return { tag: value.expression.text, effect: { kind: "numLit", value: 0, type: F64, loc } };
+  }
+  if (ts.isNewExpression(value) && ts.isIdentifier(value.expression) &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(value.expression) ?? undefined)) {
+    const name = value.expression.text;
+    const args = value.arguments ?? [];
+    if (args.length <= 1 && !args.some(ts.isSpreadElement)) {
+      if (name === "String") {
+        const effect = stringWrapperToString(lowerer, value);
+        if (effect) return { tag: "String", effect };
+      }
+      if (name === "Number") return {
+        tag: "Number",
+        effect: args.length ? lowerNumberConstructorValue(lowerer, args[0]!, loc) : { kind: "numLit", value: 0, type: F64, loc },
+      };
+      if (name === "Boolean") return {
+        tag: "Boolean",
+        effect: args.length ? lowerer.lowerCondition(args[0]!) : { kind: "boolLit", value: false, type: BOOL, loc },
+      };
+    }
+  }
+  if ((ts.isCallExpression(value) || ts.isNewExpression(value)) &&
+      ts.isIdentifier(value.expression) && value.expression.text === "Object" &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(value.expression) ?? undefined)) {
+    const args = value.arguments ?? [];
+    if (args.some(ts.isSpreadElement)) return null;
+    const first = args[0];
+    const inner = first && (immediateObjectTagReceiver(lowerer, first) ?? (() => {
+      const effect = lowerer.lowerExpr(first);
+      const tag = isUnitType(effect.type) || effect.type.kind === "void" ? "Object" : objectToStringTag(lowerer, effect.type);
+      return tag === null ? null : { tag, effect };
+    })());
+    if (first && !inner) return null;
+    const stmts: IrStmt[] = [];
+    if (inner && !isSafeToDiscard(inner.effect)) stmts.push({ kind: "exprStmt", expr: inner.effect, loc: inner.effect.loc });
+    for (const extra of args.slice(1)) {
+      const effect = lowerer.lowerExpr(extra);
+      if (!isSafeToDiscard(effect)) stmts.push({ kind: "exprStmt", expr: effect, loc: locOf(extra) });
+    }
+    return {
+      tag: inner?.tag ?? "Object",
+      effect: { kind: "seqExpr", stmts, result: { kind: "numLit", value: 0, type: F64, loc }, type: F64, loc },
+    };
+  }
+  return null;
+}
+
+function lowerObjectOwnPrototypeCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (lowerer.dynamic || access.name.text !== "call" || !ts.isPropertyAccessExpression(access.expression)) return null;
+  const method = access.expression;
+  const enumerable = method.name.text === "propertyIsEnumerable";
+  if (method.name.text !== "hasOwnProperty" && !enumerable) return null;
+  const prototype = method.expression;
+  if (!ts.isPropertyAccessExpression(prototype) || prototype.name.text !== "prototype" ||
+      !lowerer.isStdlibGlobal(prototype.expression, "Object") || !lowerer.isStdlibMember(method) ||
+      call.arguments.some(ts.isSpreadElement)) return null;
+  return lowerObjectOwnCall(lowerer, call, call.arguments[0], call.arguments[1], call.arguments.slice(2), method.name.text);
+}
+
+function lowerObjectOwnMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const method = access.name.text;
+  if (lowerer.dynamic || call.questionDotToken || access.questionDotToken ||
+      (method !== "hasOwnProperty" && method !== "propertyIsEnumerable") ||
+      !lowerer.isStdlibMember(access) || call.arguments.some(ts.isSpreadElement)) return null;
+  return lowerObjectOwnCall(lowerer, call, access.expression, call.arguments[0], call.arguments.slice(1), method);
+}
+
+function lowerObjectOwnCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  receiverNode: ts.Expression | undefined,
+  keyNode: ts.Expression | undefined,
+  extraNodes: readonly ts.Expression[],
+  method: string,
+): IrExpr {
+  const enumerable = method === "propertyIsEnumerable";
+  const loc = locOf(call);
+  const stmts: IrStmt[] = [];
+  const receiver = receiverNode ? lowerer.lowerExpr(receiverNode) : { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc } as IrExpr;
+  let receiverRef: IrExpr = receiver;
+  if (isUnitType(receiver.type) || receiver.type.kind === "void") {
+    if (!isSafeToDiscard(receiver)) stmts.push({ kind: "exprStmt", expr: receiver, loc });
+  } else {
+    const local = lowerer.declareHiddenLocal("%ownReceiver", receiver.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: receiver, loc });
+    receiverRef = varRef(local.id, receiver.type, loc);
+  }
+  const rawKey = keyNode ? lowerer.lowerExpr(keyNode) : null;
+  let keyRef: IrExpr | null = rawKey;
+  if (rawKey && (isUnitType(rawKey.type) || rawKey.type.kind === "void")) {
+    if (!isSafeToDiscard(rawKey)) stmts.push({ kind: "exprStmt", expr: rawKey, loc: rawKey.loc });
+  } else if (rawKey) {
+    const local = lowerer.declareHiddenLocal("%ownKey", rawKey.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: rawKey, loc: rawKey.loc });
+    keyRef = varRef(local.id, rawKey.type, loc);
+  }
+  for (const extra of extraNodes) {
+    const effect = lowerer.lowerExpr(extra);
+    if (!isSafeToDiscard(effect)) stmts.push({ kind: "exprStmt", expr: effect, loc: locOf(extra) });
+  }
+  let key: IrExpr | null = keyRef;
+  if (!keyNode || rawKey?.type.kind === "undefinedT" || rawKey?.type.kind === "void") {
+    key = { kind: "strLit", value: "undefined", type: STRING, loc };
+  } else if (rawKey?.type.kind === "nullT") {
+    key = { kind: "strLit", value: "null", type: STRING, loc };
+  } else if (key && (key.type.kind === "f64" || key.type.kind === "bool" || key.type.kind === "bigint")) {
+    key = { kind: "toString", operand: key, type: STRING, loc };
+  }
+  if (!key || key.type.kind !== "string") {
+    lowerer.noLowering("Object.prototype." + method + " with this property key", keyNode ?? call);
+  }
+  let result: IrExpr;
+  const type = receiver.type;
+  if (isUnitType(type) || type.kind === "void") {
+    result = nodeThrowExpr(1, "", "Cannot convert undefined or null to object", BOOL, loc);
+  } else if (type.kind === "record") {
+    const shape = lowerer.shapes.get(type.shapeId);
+    if (!shape || shape.tuple || shape.indexValue || shapeHasAccessorSlots(shape)) {
+      lowerer.noLowering("Object.prototype." + method + " over this record shape", receiverNode ?? call);
+    }
+    result = { kind: "call", callee: recordHasOwnHelper(lowerer, type.shapeId, loc), args: [receiverRef, key], type: BOOL, loc };
+  } else if (type.kind === "dyn" && !enumerable) {
+    result = { kind: "libCall", fn: "dyn.hasOwn", args: [receiverRef, key], type: BOOL, loc };
+  } else if (type.kind === "string" || type.kind === "array") {
+    const needleLocal = lowerer.declareHiddenLocal("%ownIndex", F64);
+    stmts.push({ kind: "varDecl", localId: needleLocal.id, init: { kind: "libCall", fn: "num.fromString", args: [key], type: F64, loc }, loc });
+    const needle = varRef(needleLocal.id, F64, loc);
+    const length: IrExpr = type.kind === "string"
+      ? { kind: "strIntrinsic", method: "length", receiver: receiverRef, args: [], type: F64, loc }
+      : { kind: "arrIntrinsic", method: "length", receiver: receiverRef, args: [], type: F64, loc };
+    const inRange: IrExpr = { kind: "bin", op: "<", left: needle, right: length, type: BOOL, loc };
+    const nonNegative: IrExpr = { kind: "bin", op: ">=", left: needle, right: { kind: "numLit", value: 0, type: F64, loc }, type: BOOL, loc };
+    const integer: IrExpr = { kind: "bin", op: "===", left: needle,
+      right: { kind: "libCall", fn: "math.floor", args: [needle], type: F64, loc }, type: BOOL, loc };
+    const canonical: IrExpr = { kind: "strEq", negated: false, left: key, right: { kind: "toString", operand: needle, type: STRING, loc }, type: BOOL, loc };
+    const present: IrExpr = type.kind === "string" ? { kind: "boolLit", value: true, type: BOOL, loc } :
+      { kind: "bin", op: "===", left: { kind: "arrIntrinsic", method: "nextPresent", receiver: receiverRef, args: [needle], type: F64, loc }, right: needle, type: BOOL, loc };
+    const no: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+    const indexOwn = [inRange, integer, canonical, present].reduce<IrExpr>((left, right) =>
+      ({ kind: "logical", op: "&&", left, right, type: BOOL, loc }), nonNegative);
+    const lengthOwn: IrExpr = !enumerable
+      ? { kind: "strEq", negated: false, left: key, right: { kind: "strLit", value: "length", type: STRING, loc }, type: BOOL, loc }
+      : no;
+    result = { kind: "logical", op: "||", left: lengthOwn, right: indexOwn, type: BOOL, loc };
+  } else if (type.kind === "f64" || type.kind === "bool" || type.kind === "bigint" || type.kind === "symbol") {
+    result = { kind: "boolLit", value: false, type: BOOL, loc };
+  } else {
+    lowerer.noLowering("Object.prototype." + method + " over a " + lowerer.fmt(type) + " receiver", receiverNode ?? call);
+  }
+  return { kind: "seqExpr", stmts, result, type: BOOL, loc };
+}
+
+function lowerObjectPrototypeCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (lowerer.dynamic || access.name.text !== "call" || !ts.isPropertyAccessExpression(access.expression)) return null;
+  const method = access.expression;
+  const prototype = method.expression;
+  if (method.name.text !== "toString" || !ts.isPropertyAccessExpression(prototype) ||
+      prototype.name.text !== "prototype" || !lowerer.isStdlibGlobal(prototype.expression, "Object") ||
+      !lowerer.isStdlibMember(method) || call.arguments.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  if (call.arguments.length === 0) return { kind: "strLit", value: "[object Undefined]", type: STRING, loc };
+  const receiverNode = call.arguments[0]!;
+  const immediate = immediateObjectTagReceiver(lowerer, receiverNode);
+  const receiver = immediate?.effect ?? lowerer.lowerExpr(receiverNode);
+  const tag = immediate?.tag ?? objectToStringTag(lowerer, receiver.type);
+  if (tag === null && receiver.type.kind !== "dyn") {
+    lowerer.noLowering("Object.prototype.toString.call over a " + lowerer.fmt(receiver.type) + " receiver", receiverNode);
+  }
+  const stmts: IrStmt[] = [];
+  let ref: IrExpr = receiver;
+  if (isUnitType(receiver.type) || receiver.type.kind === "void") {
+    if (!isSafeToDiscard(receiver)) stmts.push({ kind: "exprStmt", expr: receiver, loc });
+  } else {
+    const local = lowerer.declareHiddenLocal("%objectTagReceiver", receiver.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: receiver, loc });
+    ref = varRef(local.id, receiver.type, loc);
+  }
+  for (const extra of call.arguments.slice(1)) {
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(extra), loc: locOf(extra) });
+  }
+  const result: IrExpr = tag === null
+    ? { kind: "libCall", fn: "dyn.objectTag", args: [ref], type: STRING, loc }
+    : { kind: "strLit", value: "[object " + tag + "]", type: STRING, loc };
+  return { kind: "seqExpr", stmts, result, type: STRING, loc };
+}
+
 function lowerStringPrototypeCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -5111,18 +5351,22 @@ function lowerStringPrototypeCall(
   const prototypeAccess = methodAccess.expression;
   if (!ts.isPropertyAccessExpression(prototypeAccess) || prototypeAccess.name.text !== "prototype" ||
       !ts.isIdentifier(prototypeAccess.expression) || prototypeAccess.expression.text !== "String" ||
-      !Object.hasOwn(STR_METHODS, methodAccess.name.text) || !lowerer.isStdlibMember(methodAccess)) return null;
+      (!Object.hasOwn(STR_METHODS, methodAccess.name.text) && !STRING_INDEX_METHODS.has(methodAccess.name.text)) ||
+      !lowerer.isStdlibMember(methodAccess)) return null;
   if (call.arguments.some(ts.isSpreadElement)) return null;
-  const entry = STR_METHODS[methodAccess.name.text]!;
+  const entry = STR_METHODS[methodAccess.name.text];
+  const indexMethod = STRING_INDEX_METHODS.has(methodAccess.name.text) ? methodAccess.name.text as "at" | "codePointAt" : null;
+  const resultType = indexMethod ? lowerer.withUndefinedArmOf(indexMethod === "at" ? STRING : F64) : entry?.result;
+  if (!resultType) return null;
   const method = methodAccess.name.text === "trimStart" ? "trimLeft" :
     methodAccess.name.text === "trimEnd" ? "trimRight" : methodAccess.name.text;
   const loc = locOf(call);
-  const nullishError = nodeThrowExpr(1, "", `String.prototype.${method} called on null or undefined`, entry.result, loc);
+  const nullishError = nodeThrowExpr(1, "", `String.prototype.${method} called on null or undefined`, resultType, loc);
   const receiverNode = call.arguments[0];
   if (!receiverNode) return nullishError;
   // Receiver coercion runs after .call has evaluated its arguments; keep
   // contextual wrapper lowering on forms without later method arguments.
-  const immediateWrapper = entry.maxArgs === 0 && call.arguments.length === 1
+  const immediateWrapper = entry?.maxArgs === 0 && call.arguments.length === 1
     ? immediatePrimitiveWrapperToString(lowerer, receiverNode) : null;
   const receiverValue = immediateWrapper ?? lowerer.lowerExpr(receiverNode);
   const receiverType = receiverValue.type;
@@ -5135,26 +5379,31 @@ function lowerStringPrototypeCall(
       kind: "seqExpr",
       stmts: values.filter((value) => !isSafeToDiscard(value)).map((value) => ({ kind: "exprStmt", expr: value, loc: value.loc })),
       result: nullishError,
-      type: entry.result,
+      type: resultType,
       loc,
     };
   }
-  const padding = entry.method === "padStart" || entry.method === "padEnd";
+  const padding = entry?.method === "padStart" || entry?.method === "padEnd";
   const scalar = receiverType.kind === "string" || receiverType.kind === "f64" ||
     receiverType.kind === "bool" || receiverType.kind === "bigint" ||
     (receiverType.kind === "union" && (lowerer.unions.get(receiverType.unionId)?.arms.every((arm) =>
       arm.kind === "string" || arm.kind === "f64" || arm.kind === "bool" || arm.kind === "bigint") ?? false));
   // Other methods convert object receivers before lowering their arguments;
   // padding uses a helper that delays conversion until every argument is ready.
-  const objectWithoutMethodArgs = entry.maxArgs === 0 && call.arguments.length === 1 &&
+  const objectWithoutMethodArgs = entry?.maxArgs === 0 && call.arguments.length === 1 &&
     (receiverType.kind === "record" || receiverType.kind === "array" || receiverType.kind === "object");
-  const dynObjectWithoutMethodArgs = entry.maxArgs === 0 && call.arguments.length === 1 &&
+  const dynObjectWithoutMethodArgs = entry?.maxArgs === 0 && call.arguments.length === 1 &&
     receiverType.kind === "dyn" && plainObjectCoercionReceiver(lowerer, receiverNode);
   if (!scalar && !objectWithoutMethodArgs && !dynObjectWithoutMethodArgs && !(padding && receiverType.kind === "dyn")) {
     return lowerer.noLowering(`String.prototype.${methodAccess.name.text}.call with ${lowerer.fmt(receiverType)} receivers`, call);
   }
+  if (indexMethod) return lowerStringIndexCall(lowerer, call, indexMethod, receiverValue, receiverNode, call.arguments.slice(1));
+  if (!entry) return null;
   if (padding) {
     return lowerStringPaddingCall(lowerer, call, entry.method as "padStart" | "padEnd", receiverValue, receiverNode, call.arguments.slice(1));
+  }
+  if (entry.method === "split") {
+    return lowerStringSplitCall(lowerer, call, receiverValue, receiverNode, call.arguments.slice(1));
   }
   const receiver: IrExpr = dynObjectWithoutMethodArgs
     ? { kind: "libCall", fn: "dyn.toStringCoerce", args: [receiverValue], type: STRING, loc }

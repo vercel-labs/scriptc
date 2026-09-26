@@ -1014,12 +1014,18 @@ double scr_math_hypot_arr(ScrArr *a);
 double scr_math_min(double a, double b);
 double scr_math_round(double x);
 double scr_math_pow(double base, double exponent);
+double scr_math_clz32(double x);
+double scr_math_fround(double x);
+double scr_math_imul(double a, double b);
 double scr_math_max(double a, double b);
 double scr_math_random(void);
 
 double scr_arr_get_f64(ScrArr *a, double i); /* trap missing/hole */
 /* ToNumber(a[i]) for f64 storage: borrows a; missing/hole/undefined -> NaN. */
 double scr_arr_get_number(const ScrArr *a, double i);
+/* Strict equality of ordinary indexed reads on matching primitive arrays.
+ * Borrows both arrays, preserves undefined vs NaN, and never allocates. */
+bool scr_arr_index_eq(const ScrArr *a, double i, const ScrArr *b, double j);
 bool scr_arr_get_bool(ScrArr *a, double i);  /* trap missing/hole */
 void *scr_arr_get_ref(ScrArr *a, double i);  /* trap missing/hole; +1 */
 
@@ -1087,6 +1093,9 @@ uint8_t scr_arr_shift_state(ScrArr *a, uint64_t *slot_out);
  * to the end). Returns the removed elements in order as a fresh +1 array,
  * ownership MOVED out of the receiver. Borrows a. */
 ScrArr *scr_arr_splice(ScrArr *a, double start, double deleteCount);
+ScrArr *scr_arr_splice_insert(ScrArr *a, double start, double deleteCount,
+                              const ScrArr *items);
+ScrArr *scr_arr_flat_copy(const ScrArr *a, ScrArr *out, bool flatten);
 
 /* indexOf: first index whose element strictly equals (JS ===) the needle,
  * or -1. Per element kind: f64 by value (NaN never matches — NaN !== NaN;
@@ -2413,6 +2422,8 @@ void scr_process_stdin_set_raw_mode(bool raw);
  * union's number arm and -1 into its undefined arm (Node's non-TTY
  * `.columns` is undefined). Never throws. */
 double scr_process_columns(double fd);
+/* Terminal height; same optional-number sentinel contract as columns. */
+double scr_process_rows(double fd);
 
 /* Stats values (statSync/lstatSync and their fs.promises twins): an immutable
  * snapshot of stat(2). scr_fs_stat follows symlinks; scr_fs_lstat does not.
@@ -3559,6 +3570,8 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key);
 /* Bare `typeof v` on a dyn value: the dyn kind's JS answer (+1 string;
  * null answers "object"). Never throws. */
 ScrStr *scr_dyn_typeof(const ScrDyn *d);
+/* Object.prototype.toString.call over the native checked-dynamic tree; +1. */
+ScrStr *scr_dyn_object_tag(const ScrDyn *d);
 /* Receiver-kind-dispatched toString() (Buffer-flavored bytes decode per
  * enc — utf8 default; strings/numbers/booleans/arrays/objects answer
  * JS-exactly; undefined/null throw the catchable TypeError). Borrows; +1. */
@@ -5009,6 +5022,9 @@ ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
  * (divergence 1's policy). Borrowed args; the string result is +1; neither
  * throws. */
 ScrStr *scr_str_from_char_code(ScrArr *codes);
+/* Single numeric argument; avoids argument packing. Defined in scr_string.c
+ * to share its character cache. Same ToUint16 and lone-surrogate behavior. */
+ScrStr *scr_str_from_char_code_one(double code);
 /* The spread-typed-array form (String.fromCharCode(...bytes) — the
  * magic-number ASCII probe); same semantics per element. */
 ScrStr *scr_str_from_char_code_bytes(ScrBytes *codes);

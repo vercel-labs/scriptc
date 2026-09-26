@@ -2165,6 +2165,12 @@
       "status": "static"
     },
     {
+      "id": "stdlib.array.flat",
+      "kind": "stdlib",
+      "name": "Array.prototype.flat",
+      "status": "static"
+    },
+    {
       "id": "stdlib.array.flatMap",
       "kind": "stdlib",
       "name": "Array.prototype.flatMap",

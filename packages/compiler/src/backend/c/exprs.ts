@@ -1901,6 +1901,17 @@ function emitContainerExpr(
             const cnt = e.args[1] ? emitter.emitExpr(e.args[1]).name : "INFINITY";
             return emitter.newTemp(e.type, `scr_arr_splice(${r.name}, ${start.name}, ${cnt})`);
           }
+          case "spliceInsert": {
+            const start = emitter.emitExpr(e.args[0]!);
+            const count = emitter.emitExpr(e.args[1]!);
+            const items = emitter.emitExpr(e.args[2]!);
+            return emitter.newTemp(e.type, `scr_arr_splice_insert(${r.name}, ${start.name}, ${count.name}, ${items.name})`);
+          }
+          case "flatCopy":
+          case "flatOne": {
+            const out = emitter.emitExpr(e.args[0]!);
+            return emitter.newTemp(e.type, `scr_arr_flat_copy(${r.name}, ${out.name}, ${method === "flatOne" ? "true" : "false"})`);
+          }
           default: {
             const _exhaustive: never = method;
             void _exhaustive;

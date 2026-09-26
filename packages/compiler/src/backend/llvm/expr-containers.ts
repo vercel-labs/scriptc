@@ -443,6 +443,23 @@ export function emitArrIntrinsic(host: LlvmEmitterContext, e: IrExpr & { kind: "
         B.line(`${t} = call ptr @scr_arr_splice(ptr ${r.name}, double ${start.name}, double ${cnt})`);
         return host.own({ name: t, type: e.type });
       }
+      case "spliceInsert": {
+        const start = host.emitExpr(e.args[0]!);
+        const count = host.emitExpr(e.args[1]!);
+        const items = host.emitExpr(e.args[2]!);
+        host.declare(`declare ptr @scr_arr_splice_insert(ptr, double, double, ptr)`);
+        const t = B.tmp();
+        B.line(`${t} = call ptr @scr_arr_splice_insert(ptr ${r.name}, double ${start.name}, double ${count.name}, ptr ${items.name})`);
+        return host.own({ name: t, type: e.type });
+      }
+      case "flatCopy":
+      case "flatOne": {
+        const out = host.emitExpr(e.args[0]!);
+        host.declare(`declare ptr @scr_arr_flat_copy(ptr, ptr, i1)`);
+        const t = B.tmp();
+        B.line(`${t} = call ptr @scr_arr_flat_copy(ptr ${r.name}, ptr ${out.name}, i1 ${method === "flatOne" ? 1 : 0})`);
+        return host.own({ name: t, type: e.type });
+      }
       default: {
         const _exhaustive: never = method;
         void _exhaustive;

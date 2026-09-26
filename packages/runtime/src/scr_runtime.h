@@ -1087,6 +1087,9 @@ uint8_t scr_arr_shift_state(ScrArr *a, uint64_t *slot_out);
  * to the end). Returns the removed elements in order as a fresh +1 array,
  * ownership MOVED out of the receiver. Borrows a. */
 ScrArr *scr_arr_splice(ScrArr *a, double start, double deleteCount);
+ScrArr *scr_arr_splice_insert(ScrArr *a, double start, double deleteCount,
+                              const ScrArr *items);
+ScrArr *scr_arr_flat_copy(const ScrArr *a, ScrArr *out, bool flatten);
 
 /* indexOf: first index whose element strictly equals (JS ===) the needle,
  * or -1. Per element kind: f64 by value (NaN never matches — NaN !== NaN;

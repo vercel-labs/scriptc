@@ -288,14 +288,11 @@ export type IrType =
   | { kind: "dyn" }
   /** An island value handle — the type of `any` under --dynamic. Runtime
    * representation is a refcounted cell (ScrJsval) owning one embedded-
-   * engine value. Same deliberate NARROWNESS as dyn (locals/globals/
-   * params/args/returns only — never record/class fields, array elements,
-   * union arms, or capture boxes), but the OPPOSITE operational stance:
-   * where every operation on dyn is frontend-rejected, operations on
-   * jsval compile to engine calls (jsOp) with JS-exact semantics, and
-   * exits back to static types are validated (jsExit). Exists only when
-   * the frontend runs with the dynamic option; static builds never see
-   * this kind. */
+   * engine value. It can live in locals, globals, parameters, returns,
+   * arrays, class fields, and ambient AbortSignal/AbortController record
+   * fields. Operations on jsval compile to engine calls (jsOp) with
+   * JS-exact semantics; exits back to static types are validated (jsExit).
+   * This kind exists only with the dynamic option. */
   | { kind: "jsval" }
   /** A catch binding — the type of `catch (e)`'s local, and NOTHING else
    * (never params, returns, fields, arms, elements, globals, captures).

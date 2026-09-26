@@ -1673,13 +1673,9 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       }
       seen.add(f.name);
       // Unit kinds (undefinedT/nullT) exist only as union arms — a BARE
-      // unit field is as malformed as a void one. dyn fields are VALID
-      // (`[string, unknown]` entries tuples, `{ v: unknown }` records):
-      // the slot holds a dyn value with the overflow map's plumbing.
-      if (
-        f.type.kind === "void" || f.type.kind === "jsval" ||
-        isUnitType(f.type)
-      ) {
+      // unit field is as malformed as a void one. dyn and jsval slots
+      // are valid; both are refcounted values held by the record shape.
+      if (f.type.kind === "void" || isUnitType(f.type)) {
         errors.push({ message: `record ${rec.id}: field "${f.name}" is ${f.type.kind}`, loc: noLoc });
       }
       if (f.type.kind === "record" && !new Set((mod.records ?? []).map((r) => r.id)).has(f.type.shapeId)) {

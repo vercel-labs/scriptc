@@ -7165,6 +7165,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3054-dynamic-abort-record.ts": {
+   "order": [
+    "<repo>/tests/corpus/3054-dynamic-abort-record.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/400-fib.ts": {
    "order": [
     "<repo>/tests/corpus/400-fib.ts"

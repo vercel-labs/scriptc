@@ -85,16 +85,16 @@ export function isRequireMainFilename(lowerer: Lowerer, expr: ts.Expression): bo
   return !isNodeEsmFile(expr.getSourceFile());
 }
 
-/** True when `expr` is the tail of an optional chain the STATIC chain
- * machinery should short-circuit whole: an unhandled deeper `?.` whose
- * guarded receiver lowers as a unit-armed union. Dyn ('unknown') and
- * island ('any') receivers answer their tails through their own
- * undefined-propagating reads and stay out; never-nullish receivers fold
- * at the token's own entry. */
+/** True when `expr` is the tail of an optional chain that must short-circuit
+ * whole: an unhandled deeper `?.` guarded by a unit-armed union or an island
+ * value. An island tail needs the guard because an ordinary engine read of
+ * the short-circuited undefined would throw. Dyn ('unknown') tails use
+ * their optional keyed reads; never-nullish receivers fold at the token. */
 export function isOptionalChainTail(lowerer: Lowerer, expr: ts.Expression): boolean {
   const tail = chainTailDot(lowerer, expr);
   if (!tail) return false;
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(tail.expression));
+  if (recvT?.kind === "jsval") return true;
   if (recvT?.kind !== "union") return false;
   const def = lowerer.unions.get(recvT.unionId);
   return !!def && def.arms.some(isUnitType);

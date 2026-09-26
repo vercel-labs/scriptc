@@ -622,6 +622,11 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             lowerer.isStdlibGlobal(prototype.expression, "String") && lowerer.isStdlibMember(member)) {
           return { kind: "strLit", value: "function", type: STRING, loc };
         }
+        if (member.name.text === "at" && ts.isPropertyAccessExpression(prototype) &&
+            prototype.name.text === "prototype" && ts.isIdentifier(prototype.expression) &&
+            lowerer.isStdlibGlobal(prototype.expression, "Array") && lowerer.isStdlibMember(member)) {
+          return { kind: "strLit", value: "function", type: STRING, loc };
+        }
         const presence = lowerPromiseThenPresence(
           lowerer,
           expr.expression,

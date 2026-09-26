@@ -19,6 +19,14 @@ import { WidthLift } from "./lowerer.js";
 import { boolLit, countedFor, numLit, varRef } from "../../ir/build.js";
 import { lowerOptionalArgument, lowerPositionArgument, positionNumber } from "./optional-arguments.js";
 
+function primitivePositionType(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "union") {
+    return lowerer.unions.get(type.unionId)?.arms.every((arm) => primitivePositionType(lowerer, arm)) ?? false;
+  }
+  return type.kind === "f64" || type.kind === "string" || type.kind === "bool" ||
+    type.kind === "nullT" || type.kind === "undefinedT";
+}
+
 /** Build the argument array for a mutating/copying operation while keeping
  * the receiver's scalar payload ABI. A missing read is represented as the
  * present UNDEFINED state in this temporary, so push/unshift and toSpliced
@@ -209,19 +217,28 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
         lowerer.noLowering(`.with with ${call.arguments.length} arguments`, call);
       }
       const receiver = lowerer.lowerExpr(access.expression);
-      const index = lowerer.lowerExprExpecting(call.arguments[0]!, F64);
+      const index = lowerPositionArgument(lowerer, call.arguments[0]!, numLit(0, loc));
+      if (!primitivePositionType(lowerer, index.type)) {
+        lowerer.noLowering(`.with index of '${lowerer.fmt(index.type)}' values`, call.arguments[0]!);
+      }
       const value = lowerer.lowerExpr(call.arguments[1]!);
+      const receiverLocal = lowerer.declareHiddenLocal("%withRecv", receiverIr);
+      const indexLocal = lowerer.declareHiddenLocal("%withIndex", index.type);
+      const valueLocal = lowerer.declareHiddenLocal("%withValue", value.type);
+      const receiverRef = varRef(receiverLocal.id, receiverIr, loc);
+      const indexRef = varRef(indexLocal.id, index.type, loc);
+      const valueRef = varRef(valueLocal.id, value.type, loc);
+      const numericIndex = positionNumber(lowerer, indexRef, numLit(0, loc), call.arguments[0]!, "array with index");
+      const stmts: IrStmt[] = [
+        { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: indexLocal.id, init: index, loc },
+        { kind: "varDecl", localId: valueLocal.id, init: value, loc },
+      ];
       if (value.type.kind === "union" && lowerer.runtimeOptionalWidening(value.type, elem) !== null) {
         // `.with()` validates its index and returns a fresh copy. Stabilize
         // all three operands, then select the scalar replacement or the
         // present-undefined copy without evaluating a read twice.
-        const receiverLocal = lowerer.declareHiddenLocal("%withRecv", receiverIr);
-        const indexLocal = lowerer.declareHiddenLocal("%withIndex", F64);
-        const valueLocal = lowerer.declareHiddenLocal("%withValue", value.type);
         const unionId = value.type.unionId;
-        const receiverRef = varRef(receiverLocal.id, receiverIr, loc);
-        const indexRef = varRef(indexLocal.id, F64, loc);
-        const valueRef = varRef(valueLocal.id, value.type, loc);
         const undefTag = lowerer.armTag(unionId, UNDEFINED_T);
         const condition: IrExpr = {
           kind: "unionIsTag",
@@ -236,7 +253,7 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
           kind: "arrIntrinsic",
           method: "withUndefined",
           receiver: receiverRef,
-          args: [indexRef],
+          args: [numericIndex],
           type: receiverIr,
           loc,
         };
@@ -244,28 +261,23 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
           kind: "arrIntrinsic",
           method: "with",
           receiver: receiverRef,
-          args: [indexRef, lowerer.coerceToExpected(valueRef, elem)],
+          args: [numericIndex, lowerer.coerceToExpected(valueRef, elem)],
           type: receiverIr,
           loc,
         };
         return {
           kind: "seqExpr",
-          stmts: [
-            { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
-            { kind: "varDecl", localId: indexLocal.id, init: index, loc },
-            { kind: "varDecl", localId: valueLocal.id, init: value, loc },
-          ],
+          stmts,
           result: { kind: "ternary", cond: condition, then: missing, else_: present, type: receiverIr, loc },
           type: receiverIr,
           loc,
         };
       }
-      const coercedValue = lowerer.coerceInto(call.arguments[1]!, value, elem);
+      const coercedValue = lowerer.coerceInto(call.arguments[1]!, valueRef, elem);
       return {
-        kind: "arrIntrinsic",
-        method: "with",
-        receiver,
-        args: [index, coercedValue],
+        kind: "seqExpr",
+        stmts,
+        result: { kind: "arrIntrinsic", method: "with", receiver: receiverRef, args: [numericIndex, coercedValue], type: receiverIr, loc },
         type: receiverIr,
         loc,
       };
@@ -327,7 +339,7 @@ function fenceProducedArrayElem(lowerer: Lowerer, node: ts.Node, producer: strin
     const arity = {
       push: [0, Number.MAX_SAFE_INTEGER], unshift: [0, Number.MAX_SAFE_INTEGER], pop: [0, 0], indexOf: [1, 2], lastIndexOf: [1, 2], includes: [0, 2], join: [1, 1],
       concat: [0, Number.MAX_SAFE_INTEGER],
-      slice: [0, 2], shift: [0, 0], splice: [1, 2], at: [1, 1],
+      slice: [0, 2], shift: [0, 0], splice: [1, 2], at: [0, 1],
       map: [1, 1], filter: [1, 1], forEach: [1, 1], find: [1, 1], findIndex: [1, 1], some: [1, 1],
       findLast: [1, 1], findLastIndex: [1, 1],
       every: [1, 1], flatMap: [1, 1], reduce: [1, 2], reduceRight: [1, 2],
@@ -2489,13 +2501,15 @@ function getElemExpr(arrT: IrType, elem: IrType, loc: SrcLoc): IrExpr {
     access: ts.PropertyAccessExpression,
     elem: IrType,): IrExpr {
     const loc = locOf(call);
+    if (call.arguments.some(ts.isSpreadElement)) lowerer.noLowering(".at with spread arguments", call);
     const receiver = lowerer.lowerExpr(access.expression);
-    const index = lowerer.lowerExprExpecting(call.arguments[0]!, F64);
+    const indexNode = call.arguments[0];
+    const index = lowerPositionArgument(lowerer, indexNode, numLit(0, loc));
     const resultT = lowerer.irTypeOf(call);
     if (resultT.kind !== "union") lowerer.badType(call, lowerer.typeOf(call)); // defensive: T | undefined always maps to a union
     const undefTag = lowerer.armTag(resultT.unionId, UNDEFINED_T);
     if (undefTag < 0) lowerer.badType(call, lowerer.typeOf(call));
-    const key = `at:${typeKey(elem)}:${typeKey(resultT)}`;
+    const key = `at:${typeKey(elem)}:${typeKey(resultT)}:${typeKey(index.type)}`;
     let name = lowerer.arrHofHelpers.get(key);
     if (!name) {
       name = `%arr.at.${lowerer.arrHofHelpers.size}`;
@@ -2503,7 +2517,8 @@ function getElemExpr(arrT: IrType, elem: IrType, loc: SrcLoc): IrExpr {
       const arrT = arrayOf(elem);
 
       const t = varRef("t.0", F64, loc);
-      const i = varRef("i.0", F64, loc);
+      const i = varRef("i.0", index.type, loc);
+      const number = varRef("number.0", F64, loc);
       const n = varRef("n.0", F64, loc);
       const found = lowerer.coerceToExpected(arrayValueRead(lowerer, varRef("a.0", arrT, loc), t, elem, loc), resultT);
       const miss: IrExpr = {
@@ -2518,20 +2533,21 @@ function getElemExpr(arrT: IrType, elem: IrType, loc: SrcLoc): IrExpr {
       const lt = (l: IrExpr, r: IrExpr): IrExpr => ({ kind: "bin", op: "<", left: l, right: r, type: BOOL, loc });
       const body: IrStmt[] = [
         readLenStmt(arrT, loc),
+        { kind: "varDecl", localId: "number.0", init: positionNumber(lowerer, i, numLit(0, loc), indexNode ?? call, "array at position"), loc },
         // ToIntegerOrInfinity: floor is trunc for i >= 0; negatives mirror
         // (trunc(i) = -floor(-i)); NaN becomes 0. ±Infinity floors to
         // itself and falls out of range below, exactly the spec.
-        { kind: "varDecl", localId: "t.0", init: floorOf(i), loc },
+        { kind: "varDecl", localId: "t.0", init: floorOf(number), loc },
         {
           kind: "if",
-          cond: lt(i, numLit(0, loc)),
-          then: [{ kind: "assign", localId: "t.0", value: { kind: "bin", op: "-", left: numLit(0, loc), right: floorOf({ kind: "bin", op: "-", left: numLit(0, loc), right: i, type: F64, loc }), type: F64, loc }, loc }],
+          cond: lt(number, numLit(0, loc)),
+          then: [{ kind: "assign", localId: "t.0", value: { kind: "bin", op: "-", left: numLit(0, loc), right: floorOf({ kind: "bin", op: "-", left: numLit(0, loc), right: number, type: F64, loc }), type: F64, loc }, loc }],
           else_: null,
           loc,
         },
         {
           kind: "if",
-          cond: { kind: "libCall", fn: "num.isNaN", args: [i], type: BOOL, loc },
+          cond: { kind: "libCall", fn: "num.isNaN", args: [number], type: BOOL, loc },
           then: [{ kind: "assign", localId: "t.0", value: numLit(0, loc), loc }],
           else_: null,
           loc,
@@ -2563,13 +2579,14 @@ function getElemExpr(arrT: IrType, elem: IrType, loc: SrcLoc): IrExpr {
         name,
         params: [
           { localId: "a.0", name: "a", type: arrT },
-          { localId: "i.0", name: "i", type: F64 },
+          { localId: "i.0", name: "i", type: index.type },
         ],
         returnType: resultT,
         locals: [
           { id: "a.0", name: "a", type: arrT, mutable: true },
-          { id: "i.0", name: "i", type: F64, mutable: true },
+          { id: "i.0", name: "i", type: index.type, mutable: false },
           { id: "n.0", name: "n", type: F64, mutable: false },
+          { id: "number.0", name: "number", type: F64, mutable: false },
           { id: "t.0", name: "t", type: F64, mutable: true },
         ],
         body,

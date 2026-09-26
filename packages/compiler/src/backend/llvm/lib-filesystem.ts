@@ -630,6 +630,35 @@ export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): 
       B.line(`${t} = select i1 ${positive}, double ${f64Lit(1)}, double ${nonPositive}`);
       return { name: t, type: e.type };
     }
+    if (e.fn === "math.clz32") {
+      const v = host.emitExpr(e.args[0]!);
+      const bits = host.emitToUint32(v.name, e.args[0]!);
+      host.declare(`declare i32 @llvm.ctlz.i32(i32, i1)`);
+      const count = B.tmp();
+      const t = B.tmp();
+      B.line(`${count} = call i32 @llvm.ctlz.i32(i32 ${bits}, i1 false)`);
+      B.line(`${t} = uitofp i32 ${count} to double`);
+      return { name: t, type: e.type };
+    }
+    if (e.fn === "math.imul") {
+      const a = host.emitExpr(e.args[0]!);
+      const b = host.emitExpr(e.args[1]!);
+      const lhs = host.emitToUint32(a.name, e.args[0]!);
+      const rhs = host.emitToUint32(b.name, e.args[1]!);
+      const product = B.tmp();
+      const t = B.tmp();
+      B.line(`${product} = mul i32 ${lhs}, ${rhs}`);
+      B.line(`${t} = sitofp i32 ${product} to double`);
+      return { name: t, type: e.type };
+    }
+    if (e.fn === "math.fround") {
+      const v = host.emitExpr(e.args[0]!);
+      const narrowed = B.tmp();
+      const t = B.tmp();
+      B.line(`${narrowed} = fptrunc double ${v.name} to float`);
+      B.line(`${t} = fpext float ${narrowed} to double`);
+      return { name: t, type: e.type };
+    }
     if (e.fn === "num.isNaN") {
       const v = host.emitExpr(e.args[0]!);
       const t = B.tmp();

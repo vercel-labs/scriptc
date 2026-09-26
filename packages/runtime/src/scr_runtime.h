@@ -1014,6 +1014,9 @@ double scr_math_hypot_arr(ScrArr *a);
 double scr_math_min(double a, double b);
 double scr_math_round(double x);
 double scr_math_pow(double base, double exponent);
+double scr_math_clz32(double x);
+double scr_math_fround(double x);
+double scr_math_imul(double a, double b);
 double scr_math_max(double a, double b);
 double scr_math_random(void);
 

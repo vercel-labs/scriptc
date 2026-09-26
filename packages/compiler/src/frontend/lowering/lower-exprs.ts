@@ -17,6 +17,7 @@ import { UNSUPPORTED, blockedBindingUseDiag, requiresDynamicPackageDiag, unsuppo
 import { PoisonError, dynUndefinedExpr, jsFuncNameOf, neverTaintedJsType, nodeThrowExpr, own } from "./lowerer.js";
 import { lowerNpmStaticSafeIndexRead, lowerSafeIndexRead, strCharsCall, tryLowerNumericIndexRead } from "./lower-containers.js";
 import { arrayValueRead, arrayValueStore } from "./array-values.js";
+import { tryLowerIndexedComparison } from "./indexed-comparison.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { unsupportedModuleFeatureOf } from "../builtin-modules.js";
 import { fenceEnumObjectValue, lowerEnumAccess } from "./lower-enums.js";
@@ -6740,6 +6741,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       case ts.SyntaxKind.EqualsEqualsEqualsToken:
       case ts.SyntaxKind.ExclamationEqualsEqualsToken: {
         const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+        const indexed = tryLowerIndexedComparison(lowerer, left, right, negated, loc);
+        if (indexed) return indexed;
         if (plainBothNum) return { kind: "bin", op: negated ? "!==" : "===", left, right, type: BOOL, loc };
         if (bothStr) return { kind: "strEq", negated, left, right, type: BOOL, loc };
         // bool === bool: a plain value compare (the config-drift checks'

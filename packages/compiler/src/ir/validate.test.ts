@@ -24,6 +24,24 @@ test("numeric array-read intrinsic validates and round-trips", () => {
   expect(deserializeModule(serializeModule(mod))).toEqual(mod);
 });
 
+test("indexed equality validates primitive kinds, arguments, and result", () => {
+  const args: IrExpr[] = [
+    { kind: "numLit", value: 0, type: F64, loc },
+    { kind: "arrayLit", elems: [], type: arrayOf(F64), loc },
+    { kind: "numLit", value: 1, type: F64, loc },
+  ];
+  const mod = numericReadModule({ method: "indexEq", args, type: BOOL });
+  expect(validateModule(mod)).toEqual([]);
+  expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+  for (const override of [
+    { args: [] }, { type: F64 },
+    { args: [args[0]!, { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc }, args[2]!] },
+    { receiver: { kind: "arrayLit", elems: [], type: arrayOf(arrayOf(F64)), loc } },
+  ] satisfies Partial<IrExpr & { kind: "arrIntrinsic" }>[]) {
+    expect(validateModule(numericReadModule({ method: "indexEq", args, type: BOOL, ...override }))).not.toEqual([]);
+  }
+});
+
 test.each([
   [{ receiver: { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc } }, "requires f64 elements"],
   [{ args: [] }, "0 args, expected 1"],

@@ -1251,9 +1251,9 @@
       "apiEntries": 18,
       "static": {
         "supported": 0,
-        "partial": 0,
+        "partial": 3,
         "refused": 0,
-        "not-implemented": 18,
+        "not-implemented": 15,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -106706,8 +106706,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/1448-stream-columns.ts",
+          "tests/corpus/2992-stream-rows.ts",
+          "tests/harness/terminal-geometry.test.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -107066,8 +107071,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "partial",
+        "evidence": "compiler-dedicated:writeStream.columns",
+        "tests": [
+          "tests/corpus/1448-stream-columns.ts",
+          "tests/corpus/2992-stream-rows.ts",
+          "tests/harness/terminal-geometry.test.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -107120,8 +107130,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "partial",
+        "evidence": "compiler-dedicated:writeStream.rows",
+        "tests": [
+          "tests/corpus/1448-stream-columns.ts",
+          "tests/corpus/2992-stream-rows.ts",
+          "tests/harness/terminal-geometry.test.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",

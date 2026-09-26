@@ -1622,6 +1622,13 @@
       "note": "getrusage's 16 fields — every field read samples live machine state"
     },
     {
+      "id": "node-builtin.process.rows",
+      "kind": "node-builtin",
+      "name": "process.rows",
+      "status": "static",
+      "note": "the rows read on process.stdout/stderr (terminal geometry)"
+    },
+    {
       "id": "node-builtin.process.threadCpuUsage",
       "kind": "node-builtin",
       "name": "process.threadCpuUsage",

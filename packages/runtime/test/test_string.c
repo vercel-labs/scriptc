@@ -266,6 +266,78 @@ static void accumulation_asserts(void) {
   scr_str_release(large);
 }
 
+static void short_string_asserts(void) {
+  // Scalar construction shares ASCII without allocating, including NUL.
+  ScrStr *ascii = scr_str_from_char_code_one(65.9);
+  ScrStr *wrapped = scr_str_from_char_code_one(65536 + 65);
+  ScrStr *nul = scr_str_from_char_code_one(INFINITY);
+  if (ascii != wrapped || ascii->rc != SIZE_MAX || ascii->len != 1 ||
+      ascii->data[0] != 'A' || nul->len != 1 || nul->data[0] != 0) {
+    failed++;
+    fprintf(stderr, "SCALAR CHAR: ASCII cache or ToUint16 mismatch\n");
+  }
+  scr_str_release(ascii);
+  scr_str_release(wrapped);
+  scr_str_release(nul);
+
+  ScrStr *unit = scr_str_from_char_code_one(0x2500);
+  ScrStr *same = scr_str_from_char_code_one(0x2500);
+  if (unit != same || unit->rc != 2 || unit->len != 3 ||
+      memcmp(unit->data, "\xE2\x94\x80", 3) != 0) {
+    failed++;
+    fprintf(stderr, "SCALAR CHAR: Unicode sharing mismatch\n");
+  }
+  scr_str_release(unit);
+  scr_str_release(same);
+
+  ScrStr *source = scr_str_new("\xE2\x94\x80\xE2\x94\x80", 6);
+  ScrStr *a = scr_str_char_at(source, 0);
+  ScrStr *b = scr_str_char_at(source, 1);
+  if (a != b || a->rc != 2) {
+    failed++;
+    fprintf(stderr, "SHORT: repeated Unicode character was not shared\n");
+  }
+  scr_str_release(a);
+  scr_str_release(b);
+  // Lookup after the last owner dies must never read a stale weak entry.
+  for (int i = 0; i < 1000; i++) {
+    ScrStr *c = scr_str_char_at(source, 0);
+    if (c->len != 3 || memcmp(c->data, source->data, 3) != 0) failed++;
+    scr_str_release(c);
+  }
+  // More live values than cache slots force collisions without invalidating
+  // old owners. Embedded NULs are content, not terminators for the key.
+  ScrStr *held[256];
+  for (int i = 0; i < 256; i++) {
+    char bytes[3] = {(char)('a' + i / 16), 0, (char)('a' + i % 16)};
+    ScrStr *input = scr_str_new(bytes, 3);
+    held[i] = scr_str_slice(input, 0, 3);
+    scr_str_release(input);
+  }
+  for (int i = 0; i < 256; i++) {
+    char bytes[3] = {(char)('a' + i / 16), 0, (char)('a' + i % 16)};
+    if (held[i]->len != 3 || memcmp(held[i]->data, bytes, 3) != 0) failed++;
+    scr_str_release(held[i]);
+  }
+  // Regrow may move the allocation. Append must also forget a cached key
+  // before a uniquely owned string's bytes change.
+  a = scr_str_char_at(source, 0);
+  a = scr_str_regrow(a, 32);
+  ScrStr *suffix = scr_str_new("x", 1);
+  handoff_append(&a, suffix);
+  b = scr_str_char_at(source, 0);
+  if (a->len != 4 || b->len != 3 || memcmp(b->data, source->data, 3) != 0) failed++;
+  // Sharing must preserve an observable alias across concat.
+  ScrStr *alias = scr_str_char_at(source, 1);
+  handoff_append(&b, suffix);
+  if (alias->len != 3 || b->len != 4) failed++;
+  scr_str_release(alias);
+  scr_str_release(b);
+  scr_str_release(a);
+  scr_str_release(suffix);
+  scr_str_release(source);
+}
+
 #ifdef SCR_SIDX_TEST
 static void sidx_fail(const char *what) {
   failed++;
@@ -662,6 +734,7 @@ int main(int argc, char **argv) {
 
   divergence_asserts();
   accumulation_asserts();
+  short_string_asserts();
 #ifdef SCR_SIDX_TEST
   sparse_index_asserts();
   sparse_ascii_prefix_asserts();

@@ -1350,6 +1350,7 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   // Like process.envGet: the result is the module's interned
   // `number | undefined` union — checked by arms in the libCall case.
   "process.columns": { argTypes: [F64], result: VOID },
+  "process.rows": { argTypes: [F64], result: VOID },
   "process.stdinDestroy": { argTypes: [], result: VOID },
   "process.stdinSetRawMode": { argTypes: [BOOL], result: VOID },
   // Arg 0 is a packed f64[] OR a bytes value (the spread-typed-array
@@ -2776,6 +2777,8 @@ function validateFunction(
               ? { argTypes: [e.receiver.type], result: F64 }
               : e.method === "nextPresent" || e.method === "getNumber"
               ? { argTypes: [F64], result: F64 }
+              : e.method === "indexEq"
+              ? { argTypes: [F64, e.receiver.type, F64], result: BOOL }
               : e.method === "pop"
               ? { argTypes: [], result: e.type } // union-checked below
               : e.method === "indexOf"
@@ -2803,6 +2806,9 @@ function validateFunction(
                           : { argTypes: [], result: F64 }; // length
         if (e.method === "getNumber" && elem.kind !== "f64") {
           err(`arrIntrinsic getNumber requires f64 elements, got ${elem.kind}`, e.loc);
+        }
+        if (e.method === "indexEq" && elem.kind !== "f64" && elem.kind !== "bool" && elem.kind !== "string") {
+          err(`arrIntrinsic indexEq requires primitive elements, got ${elem.kind}`, e.loc);
         }
         if (
           e.method === "join" &&
@@ -4028,7 +4034,7 @@ function validateFunction(
           }
           break;
         }
-        if (e.fn === "process.columns") {
+        if (e.fn === "process.columns" || e.fn === "process.rows") {
           // Result is the module's interned `number | undefined` union.
           const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
           const ok =
@@ -4037,7 +4043,7 @@ function validateFunction(
             def.arms[0]!.kind === "f64" &&
             def.arms[1]!.kind === "undefinedT";
           if (!ok) {
-            err(`libCall process.columns must return the 'number | undefined' union`, e.loc);
+            err(`libCall ${e.fn} must return the 'number | undefined' union`, e.loc);
           }
           break;
         }

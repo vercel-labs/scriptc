@@ -203,9 +203,9 @@ export function emitStableReceiver(host: LlvmEmitterContext, receiver: IrExpr, f
 
 export function emitArrIntrinsic(host: LlvmEmitterContext, e: IrExpr & { kind: "arrIntrinsic" }): LlValue {
     const B = host.B;
-    // getNumber copies out a scalar without invoking user code. A stable
+    // getNumber/indexEq produce scalars without invoking user code. A stable
     // binding can own its receiver until that lookup finishes.
-    const r = e.method === "getNumber"
+    const r = e.method === "getNumber" || e.method === "indexEq"
       ? host.emitStableReceiver(e.receiver, e.args)
       : host.emitExpr(e.receiver);
     if (e.receiver.type.kind !== "array") throw new InternalCompilerError("llvm emitter bug: arrIntrinsic on non-array");
@@ -234,6 +234,15 @@ export function emitArrIntrinsic(host: LlvmEmitterContext, e: IrExpr & { kind: "
         host.declare(`declare double @scr_arr_next_present(ptr, double)`);
         const t = B.tmp();
         B.line(`${t} = call double @scr_arr_next_present(ptr ${r.name}, double ${start.name})`);
+        return { name: t, type: e.type };
+      }
+      case "indexEq": {
+        const index = host.emitExpr(e.args[0]!);
+        const other = host.emitStableReceiver(e.args[1]!, [e.args[2]!]);
+        const otherIndex = host.emitExpr(e.args[2]!);
+        host.declare(`declare zeroext i1 @scr_arr_index_eq(ptr, double, ptr, double)`);
+        const t = B.tmp();
+        B.line(`${t} = call zeroext i1 @scr_arr_index_eq(ptr ${r.name}, double ${index.name}, ptr ${other.name}, double ${otherIndex.name})`);
         return { name: t, type: e.type };
       }
       case "push": {

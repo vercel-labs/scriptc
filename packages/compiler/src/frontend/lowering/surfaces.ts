@@ -1173,6 +1173,13 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     note: "the columns read on the process stdio streams (terminal geometry)",
   },
   {
+    id: "node-builtin.process.rows",
+    kind: "node-builtin",
+    name: "process.rows",
+    fns: ["process.rows"],
+    note: "the rows read on process.stdout/stderr (terminal geometry)",
+  },
+  {
     id: "node-builtin.process.kill",
     kind: "node-builtin",
     name: "process.kill",

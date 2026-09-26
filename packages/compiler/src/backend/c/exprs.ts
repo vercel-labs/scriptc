@@ -1729,9 +1729,9 @@ function emitContainerExpr(
         return emitter.newTemp(e.type, `scr_arr_state(${arr.name}, ${idx.name})`);
       }
       case "arrIntrinsic": {
-        // getNumber copies out a scalar without invoking user code. A
+        // getNumber/indexEq produce scalars without invoking user code. A
         // stable binding can own its receiver until that lookup finishes.
-        const r = e.method === "getNumber"
+        const r = e.method === "getNumber" || e.method === "indexEq"
           ? emitStableReceiver(emitter, e.receiver, e.args)
           : emitter.emitExpr(e.receiver);
         if (e.receiver.type.kind !== "array") throw new InternalCompilerError("emitter bug: arrIntrinsic on non-array");
@@ -1748,6 +1748,12 @@ function emitContainerExpr(
           case "nextPresent": {
             const start = emitter.emitExpr(e.args[0]!);
             return emitter.newTemp(e.type, `scr_arr_next_present(${r.name}, ${start.name})`);
+          }
+          case "indexEq": {
+            const index = emitter.emitExpr(e.args[0]!);
+            const other = emitStableReceiver(emitter, e.args[1]!, [e.args[2]!]);
+            const otherIndex = emitter.emitExpr(e.args[2]!);
+            return emitter.newTemp(e.type, `scr_arr_index_eq(${r.name}, ${index.name}, ${other.name}, ${otherIndex.name})`);
           }
           case "push": {
             // Variadic like JS: every argument evaluates first (left to
@@ -8055,22 +8061,23 @@ function emitProcessLibCall(state: LibCallState): Temp {
             return finish(`scr_stdin_next_chunk()`);
           case "process.isTTY":
             return finish(`scr_process_is_tty(${arg(0)})`);
-          case "process.columns": {
-            // ioctl(TIOCGWINSZ): a non-negative width wraps the f64 arm;
+          case "process.columns":
+          case "process.rows": {
+            // ioctl(TIOCGWINSZ): a non-negative dimension wraps the f64 arm;
             // a non-TTY stream (or an ioctl refusal) comes back negative
             // and yields the interned undefined-arm instance — Node's
-            // missing `.columns`. Type-directed union construction, like
+            // missing geometry. Type-directed union construction, like
             // process.envGet.
             if (e.type.kind !== "union") {
-              throw new InternalCompilerError("emitter bug: process.columns result is not a union");
+              throw new InternalCompilerError(`emitter bug: ${e.fn} result is not a union`);
             }
             const def = emitter.unionsById.get(e.type.unionId);
             const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
             const undefTag = undefinedArmTag(e.type, emitter.unionsById);
             if (f64Tag < 0 || undefTag < 0) {
-              throw new InternalCompilerError("emitter bug: process.columns union lacks its arms");
+              throw new InternalCompilerError(`emitter bug: ${e.fn} union lacks its arms`);
             }
-            const w = emitter.newTemp(F64, `scr_process_columns(${arg(0)})`);
+            const w = emitter.newTemp(F64, `scr_process_${e.fn === "process.rows" ? "rows" : "columns"}(${arg(0)})`);
             const present = `scr_union_new_f64(${f64Tag}, ${w.name})`;
             const absent = emitter.unitInstanceRef(e.type.unionId, undefTag);
             return emitter.newTemp(e.type, `${w.name} >= 0 ? ${present} : ${absent}`);
@@ -8940,6 +8947,14 @@ function emitIoLibCall(state: LibCallState): Temp {
 }
 
 function emitLibCallExpr(emitter: CEmitter, e: LibCallExpr): Temp {
+        const packed = e.args[0];
+        if (e.fn === "string.fromCharCode" && packed?.kind === "arrayLit" &&
+            packed.elems.length === 1 && !packed.spreads?.length) {
+          // The literal is only the variadic ABI pack, never an observable
+          // array. Evaluate the scalar once before bypassing that allocation.
+          const code = emitter.emitExpr(packed.elems[0]!);
+          return emitter.newTemp(e.type, `scr_str_from_char_code_one(${code.name})`);
+        }
         // Standard-library call. Args are BORROWED (owned temps of the
         // current frame, released at statement end); refcounted results come
         // back +1 (process.argv: +1 on the runtime's ONE interned array —

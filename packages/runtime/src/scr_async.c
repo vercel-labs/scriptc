@@ -3,7 +3,7 @@
  *
  * Model (see docs/ir.md):
  * - An async function's body is ordinary compiled C, run on its own fiber
- *   (heap-allocated ucontext stack). Calling it runs the body EAGERLY until
+ *   (dedicated ucontext stack). Calling it runs the body EAGERLY until
  *   the first suspension (JS's synchronous-prefix rule), then control
  *   returns to the spawner with a +1 promise.
  * - `await` on a pending promise parks the fiber on the promise's waiter
@@ -18,6 +18,13 @@
  *   downgrades to a note in that case.
  */
 #define _XOPEN_SOURCE 700
+/* Anonymous mappings alongside the XSI ucontext API on Darwin and glibc. */
+#ifndef _DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE 1
+#endif
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
+#endif
 #include "scr_runtime.h"
 
 #include <errno.h>
@@ -43,6 +50,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/mman.h>
 #include <ucontext.h>
 #include <unistd.h>
 #endif
@@ -80,12 +88,63 @@ void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_
  * the measured need: an engine call costs 64–96KB there, and a real
  * embedded graph entered FROM A FIBER (a commander action awaiting
  * generateText — zod parses inside promise chains) nests dozens of engine
- * frames; the memory is malloc'd and committed lazily, so idle fibers pay
- * address space, not RSS. */
+ * frames; native POSIX stacks are mapped and committed lazily, so idle
+ * fibers pay address space, not RSS. */
 #ifdef SCR_ASAN_FIBERS
 #define SCR_FIBER_STACK (8 * 1024 * 1024)
 #else
 #define SCR_FIBER_STACK (256 * 1024)
+#endif
+
+#if !defined(_WIN32) && !defined(__wasi__)
+/* Keep stacks out of malloc's size classes. Reuse a bounded number during
+ * a burst of promise/generator work, then unmap the spares before the loop
+ * sleeps. This avoids both heap fragmentation and per-call mmap overhead.
+ * The sanitizer lane unmaps every finished stack immediately. */
+#ifndef SCR_ASAN_FIBERS
+#define SCR_FIBER_SPARES 4
+static SCR_TL void *scr_fiber_spares[SCR_FIBER_SPARES];
+static SCR_TL size_t scr_fiber_nspares;
+static SCR_TL bool scr_fiber_cleanup_registered;
+#endif
+
+static void scr_fiber_stacks_clear(void) {
+#ifndef SCR_ASAN_FIBERS
+  while (scr_fiber_nspares > 0) {
+    (void)munmap(scr_fiber_spares[--scr_fiber_nspares], SCR_FIBER_STACK);
+    scr_fiber_spares[scr_fiber_nspares] = NULL;
+  }
+#endif
+}
+
+static void *scr_fiber_stack_new(void) {
+#ifndef SCR_ASAN_FIBERS
+  if (scr_fiber_nspares > 0) {
+    void *stack = scr_fiber_spares[--scr_fiber_nspares];
+    scr_fiber_spares[scr_fiber_nspares] = NULL;
+    return stack;
+  }
+  if (!scr_fiber_cleanup_registered) {
+    scr_fiber_cleanup_registered = true;
+    scr_atexit(scr_fiber_stacks_clear);
+  }
+#endif
+  void *stack = mmap(NULL, SCR_FIBER_STACK, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (stack == MAP_FAILED) scr_trap("scriptc: out of memory\n");
+  return stack;
+}
+
+static void scr_fiber_stack_free(void *stack) {
+  if (!stack) return;
+#ifndef SCR_ASAN_FIBERS
+  if (scr_fiber_nspares < SCR_FIBER_SPARES) {
+    scr_fiber_spares[scr_fiber_nspares++] = stack;
+    return;
+  }
+#endif
+  (void)munmap(stack, SCR_FIBER_STACK);
+}
 #endif
 
 /* ── promises ─────────────────────────────────────────────────────────── */
@@ -1209,7 +1268,11 @@ static void scr_fiber_destroy(ScrFiber *f) {
   if (f->coro != NULL) scr_wasi_coro_destroy(f->coro);
 #endif
   scr_als_ctx_release(f->als);
+#if !defined(_WIN32) && !defined(__wasi__)
+  scr_fiber_stack_free(f->stack);
+#else
   free(f->stack);
+#endif
   free(f);
 }
 
@@ -1249,8 +1312,7 @@ ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack) {
   }
   return result;
 #else
-  f->stack = malloc(SCR_FIBER_STACK);
-  if (!f->stack) scr_oom();
+  f->stack = scr_fiber_stack_new();
   getcontext(&f->ctx);
   f->ctx.uc_stack.ss_sp = f->stack;
   f->ctx.uc_stack.ss_size = SCR_FIBER_STACK;
@@ -2620,6 +2682,9 @@ bool scr_loop_run(ScrPromise *top_level) {
      * during that turn. No fd will wake us for this userspace work: return to
      * dispatch without sleeping, still allowing due timers and immediates. */
     if (scr_children_ready()) due = now;
+#if !defined(_WIN32) && !defined(__wasi__)
+    if (due > now) scr_fiber_stacks_clear();
+#endif
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
     if (io) {
       if (kids && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
@@ -3208,8 +3273,7 @@ static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpa
 #elif defined(__wasi__)
   f->ctx = 0;
 #else
-  f->stack = malloc(SCR_FIBER_STACK);
-  if (!f->stack) scr_oom();
+  f->stack = scr_fiber_stack_new();
   getcontext(&f->ctx);
   f->ctx.uc_stack.ss_sp = f->stack;
   f->ctx.uc_stack.ss_size = SCR_FIBER_STACK;

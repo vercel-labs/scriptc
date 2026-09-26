@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 46,
-        "verify-gap": 2581,
-        "audit-partial": 585,
+        "verify-gap": 2579,
+        "audit-partial": 587,
         "classify": 2,
         "implement": 81
       },
@@ -89736,12 +89736,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:tty",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:writeStream.columns",
+          "tests": [
+            "tests/corpus/1448-stream-columns.ts",
+            "tests/corpus/2992-stream-rows.ts",
+            "tests/harness/terminal-geometry.test.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -89802,12 +89806,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:tty",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:writeStream.rows",
+          "tests": [
+            "tests/corpus/1448-stream-columns.ts",
+            "tests/corpus/2992-stream-rows.ts",
+            "tests/harness/terminal-geometry.test.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",

@@ -6877,21 +6877,45 @@
    ],
    "diags": []
   },
-  "<repo>/tests/corpus/2991-math-hyperbolic.ts": {
+  "<repo>/tests/corpus/2991-array-indexed-equality.ts": {
    "order": [
-    "<repo>/tests/corpus/2991-math-hyperbolic.ts"
+    "<repo>/tests/corpus/2991-array-indexed-equality.ts"
    ],
    "diags": []
   },
-  "<repo>/tests/corpus/2992-math-near-one.ts": {
+  "<repo>/tests/corpus/2992-stream-rows.ts": {
    "order": [
-    "<repo>/tests/corpus/2992-math-near-one.ts"
+    "<repo>/tests/corpus/2992-stream-rows.ts"
    ],
    "diags": []
   },
-  "<repo>/tests/corpus/2993-math-integer-float.ts": {
+  "<repo>/tests/corpus/2993-fiber-stack-lifetimes.ts": {
    "order": [
-    "<repo>/tests/corpus/2993-math-integer-float.ts"
+    "<repo>/tests/corpus/2993-fiber-stack-lifetimes.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2994-fromcharcode-scalar.ts": {
+   "order": [
+    "<repo>/tests/corpus/2994-fromcharcode-scalar.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2995-math-hyperbolic.ts": {
+   "order": [
+    "<repo>/tests/corpus/2995-math-hyperbolic.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2996-math-near-one.ts": {
+   "order": [
+    "<repo>/tests/corpus/2996-math-near-one.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2997-math-integer-float.ts": {
+   "order": [
+    "<repo>/tests/corpus/2997-math-integer-float.ts"
    ],
    "diags": []
   },

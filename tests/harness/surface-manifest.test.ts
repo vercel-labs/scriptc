@@ -134,6 +134,9 @@ const PROBES: Probe[] = [
   { id: "stdlib.math.tan", source: "console.log(Math.tan(2));\n" },
   { id: "stdlib.math.sign", source: "console.log(Math.sign(-2));\n" },
   { id: "stdlib.math.hypot", source: "console.log(Math.hypot(3, 4));\n" },
+  { id: "stdlib.math.log1p", source: "console.log(Math.log1p(0.5));\n" },
+  { id: "stdlib.math.imul", source: "console.log(Math.imul(-1, 3));\n" },
+  { id: "stdlib.math.fround", source: "console.log(Math.fround(1.5));\n" },
   { id: "stdlib.map.has", source: 'const m = new Map<string, number>();\nm.set("a", 1);\nconsole.log(m.has("a"));\n' },
   { id: "stdlib.date.now", source: "console.log(Date.now() > 0);\n" },
   { id: "stdlib.date.parse", source: 'console.log(Date.parse("2026-07-17T00:00:00Z"));\n' },
@@ -161,6 +164,7 @@ const PROBES: Probe[] = [
   { id: "node-builtin.os.EOL", source: 'import { EOL } from "node:os";\nconsole.log(EOL.length);\n' },
   { id: "stdlib.math.PI", source: "console.log(Math.PI);\n" },
   { id: "stdlib.math.E", source: "console.log(Math.E);\n" },
+  { id: "stdlib.math.SQRT2", source: "console.log(Math.SQRT2);\n" },
   // status dynamic-only — refused with the entry's code statically,
   // analyzed clean under --dynamic
   { id: "stdlib.string.replace", source: 'console.log("aa".replace("a", "b"));\n' },

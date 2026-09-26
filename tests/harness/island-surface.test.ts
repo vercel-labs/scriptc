@@ -178,9 +178,18 @@ describe("every ISLAND_SURFACE entry is declared standard-library surface", () =
 });
 
 describe("static Math properties", () => {
-  test("PI and E are declared in the static table, not the dynamic island table", () => {
-    expect(Object.keys(ISLAND_SURFACE.math.props)).not.toEqual(expect.arrayContaining(["PI", "E"]));
-    expect(STATIC_MATH_PROPS).toEqual({ PI: 3.141592653589793, E: 2.718281828459045 });
+  test("the standard constants are declared in the static table", () => {
+    expect(Object.keys(ISLAND_SURFACE.math.props)).not.toEqual(expect.arrayContaining(Object.keys(STATIC_MATH_PROPS)));
+    expect(STATIC_MATH_PROPS).toEqual({
+      E: 2.718281828459045,
+      LN10: 2.302585092994046,
+      LN2: 0.6931471805599453,
+      LOG10E: 0.4342944819032518,
+      LOG2E: 1.4426950408889634,
+      PI: 3.141592653589793,
+      SQRT1_2: 0.7071067811865476,
+      SQRT2: 1.4142135623730951,
+    });
   });
 
   test.for(staticMathPropProbes.map((p, i) => [p.what, p, i] as const))("%s is a number", ([, probe, i]) => {

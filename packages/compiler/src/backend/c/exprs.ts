@@ -5175,28 +5175,48 @@ function emitPrimitiveLibCall(state: LibCallState): Temp {
             return finish(`ceil(${arg(0)})`);
           case "math.sin":
             return finish(`sin(${arg(0)})`);
+          case "math.sinh":
+            return finish(`sinh(${arg(0)})`);
           case "math.cos":
             return finish(`cos(${arg(0)})`);
+          case "math.cosh":
+            return finish(`cosh(${arg(0)})`);
           case "math.tan":
             return finish(`tan(${arg(0)})`);
+          case "math.tanh":
+            return finish(`tanh(${arg(0)})`);
           case "math.asin":
             return finish(`asin(${arg(0)})`);
+          case "math.asinh":
+            return finish(`asinh(${arg(0)})`);
           case "math.acos":
             return finish(`acos(${arg(0)})`);
+          case "math.acosh":
+            return finish(`acosh(${arg(0)})`);
           case "math.atan":
             return finish(`atan(${arg(0)})`);
+          case "math.atanh":
+            return finish(`atanh(${arg(0)})`);
           case "math.cbrt":
             return finish(`cbrt(${arg(0)})`);
+          case "math.clz32":
+            return finish(`scr_math_clz32(${arg(0)})`);
           case "math.sign":
             // Each argument was evaluated into a temp. Returning that temp
             // for unordered/zero inputs preserves NaN and the sign of zero.
             return finish(`(${arg(0)} > 0.0 ? 1.0 : (${arg(0)} < 0.0 ? -1.0 : ${arg(0)}))`);
           case "math.exp":
             return finish(`exp(${arg(0)})`);
+          case "math.expm1":
+            return finish(`expm1(${arg(0)})`);
+          case "math.fround":
+            return finish(`scr_math_fround(${arg(0)})`);
           case "math.sqrt":
             return finish(`sqrt(${arg(0)})`);
           case "math.log":
             return finish(`log(${arg(0)})`);
+          case "math.log1p":
+            return finish(`log1p(${arg(0)})`);
           case "math.log2":
             return finish(`log2(${arg(0)})`);
           case "math.log10":
@@ -5205,6 +5225,8 @@ function emitPrimitiveLibCall(state: LibCallState): Temp {
             return finish(`atan2(${arg(0)}, ${arg(1)})`);
           case "math.pow":
             return finish(`scr_math_pow(${arg(0)}, ${arg(1)})`);
+          case "math.imul":
+            return finish(`scr_math_imul(${arg(0)}, ${arg(1)})`);
           // Math.abs — C fabs IS the JS operation. Math.round — the JS
           // half-toward-+Infinity rule (scr_lib.c; C round() differs on
           // halves and naive floor(x+0.5) drifts at the epsilon boundary).

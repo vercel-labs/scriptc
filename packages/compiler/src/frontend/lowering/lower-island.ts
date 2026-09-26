@@ -3445,7 +3445,7 @@ export function lowerStaticReadableStreamReaderCall(
     return finish(lowerer.jsvalIn(lowerer.lowerExpr(access.expression), access.expression), entry);
   }
 
-/** Canonical `Math.PI` / `Math.E` property reads become typed numeric
+/** Canonical Math constant property reads become typed numeric
    * literals. Remaining Math properties retain the island/fence path. Math
    * methods referenced without a call are rejected specifically (no value form
    * exists, --dynamic or not). Null for non-Math receivers (the property chain

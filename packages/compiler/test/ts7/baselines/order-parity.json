@@ -6877,6 +6877,24 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/2991-math-hyperbolic.ts": {
+   "order": [
+    "<repo>/tests/corpus/2991-math-hyperbolic.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2992-math-near-one.ts": {
+   "order": [
+    "<repo>/tests/corpus/2992-math-near-one.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/2993-math-integer-float.ts": {
+   "order": [
+    "<repo>/tests/corpus/2993-math-integer-float.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/300-if-else.ts": {
    "order": [
     "<repo>/tests/corpus/300-if-else.ts"

@@ -3880,6 +3880,28 @@ double scr_math_pow(double base, double exponent) {
   return pow(base, exponent);
 }
 
+double scr_math_clz32(double x) {
+  uint32_t bits = scr_to_uint32(x);
+  if (bits == 0) return 32.0;
+  unsigned count = 0;
+  while ((bits & UINT32_C(0x80000000)) == 0) {
+    bits <<= 1;
+    count++;
+  }
+  return (double)count;
+}
+
+double scr_math_fround(double x) {
+  return (double)(float)x;
+}
+
+double scr_math_imul(double a, double b) {
+  uint32_t bits = scr_to_uint32(a) * scr_to_uint32(b);
+  return bits >= UINT32_C(0x80000000)
+             ? (double)(uint64_t)bits - 4294967296.0
+             : (double)bits;
+}
+
 double scr_math_random(void) {
   uint64_t r;
   arc4random_buf(&r, sizeof r);

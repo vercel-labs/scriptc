@@ -6,6 +6,19 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.1.6
+
+### Features
+
+- **Static Array behavior covers construction, mutation, indexing, flattening, splicing, and joining.** Array construction and iterable conversion, `fill`, `copyWithin`, relative-index coercion, `flat`, splice insertion, and join coercion now compile with JavaScript semantics.
+- **Static Object and String operations expand.** Own-property checks, prototype tags, `String.prototype.at`, `codePointAt`, and `split` coercions now compile with Node-compatible behavior.
+
+### Performance
+
+- **Array, string, and terminal operations use fewer resources.** Array comparisons and string operations allocate less, fibers reuse stacks and release cached memory while idle, and terminal dimensions come directly from native streams.
+
+<!-- release:end -->
+
 ## 0.1.5
 
 ### Features
@@ -26,8 +39,6 @@ All notable changes to scriptc will be documented in this file.
 - **Dynamic islands load more legacy packages.** Redis 6 entry points and callable `EventEmitter` usage work with the island runtime.
 - **Published LLVM helpers retain executable permissions.**
 - **Switching build modes preserves reusable artifacts.**
-
-<!-- release:end -->
 
 ## 0.1.4
 

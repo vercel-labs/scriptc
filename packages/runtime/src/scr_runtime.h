@@ -1023,6 +1023,9 @@ double scr_math_random(void);
 double scr_arr_get_f64(ScrArr *a, double i); /* trap missing/hole */
 /* ToNumber(a[i]) for f64 storage: borrows a; missing/hole/undefined -> NaN. */
 double scr_arr_get_number(const ScrArr *a, double i);
+/* Strict equality of ordinary indexed reads on matching primitive arrays.
+ * Borrows both arrays, preserves undefined vs NaN, and never allocates. */
+bool scr_arr_index_eq(const ScrArr *a, double i, const ScrArr *b, double j);
 bool scr_arr_get_bool(ScrArr *a, double i);  /* trap missing/hole */
 void *scr_arr_get_ref(ScrArr *a, double i);  /* trap missing/hole; +1 */
 
@@ -2419,6 +2422,8 @@ void scr_process_stdin_set_raw_mode(bool raw);
  * union's number arm and -1 into its undefined arm (Node's non-TTY
  * `.columns` is undefined). Never throws. */
 double scr_process_columns(double fd);
+/* Terminal height; same optional-number sentinel contract as columns. */
+double scr_process_rows(double fd);
 
 /* Stats values (statSync/lstatSync and their fs.promises twins): an immutable
  * snapshot of stat(2). scr_fs_stat follows symlinks; scr_fs_lstat does not.
@@ -5017,6 +5022,9 @@ ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
  * (divergence 1's policy). Borrowed args; the string result is +1; neither
  * throws. */
 ScrStr *scr_str_from_char_code(ScrArr *codes);
+/* Single numeric argument; avoids argument packing. Defined in scr_string.c
+ * to share its character cache. Same ToUint16 and lone-surrogate behavior. */
+ScrStr *scr_str_from_char_code_one(double code);
 /* The spread-typed-array form (String.fromCharCode(...bytes) — the
  * magic-number ASCII probe); same semantics per element. */
 ScrStr *scr_str_from_char_code_bytes(ScrBytes *codes);

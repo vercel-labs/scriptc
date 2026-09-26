@@ -280,6 +280,16 @@ static bool scr_arr_take_state(ScrArr *a, size_t index, uint64_t *out,
 }
 
 static void scr_arr_replace_owned(ScrArr *a, size_t index, uint64_t slot) {
+  if (index < a->cap) {
+    uint8_t state = a->present[index];
+    uint64_t old = state == SCR_ARR_VALUE ? a->data[index] : 0;
+    /* Publish the new edge before releasing the old one: a release can
+     * collect cycles. Holes have uninitialized data and must not be read. */
+    a->data[index] = slot;
+    a->present[index] = SCR_ARR_VALUE;
+    if (state == SCR_ARR_VALUE && scr_elem_is_ref(a->elem)) scr_elem_release(a, old);
+    return;
+  }
   uint64_t old;
   uint8_t state;
   bool had = scr_arr_take_state(a, index, &old, &state);
@@ -766,7 +776,21 @@ double scr_arr_get_f64(ScrArr *a, double i) {
   return scr_slot_to_f64(scr_arr_require_slot(a, i));
 }
 
+static bool scr_arr_read_value(const ScrArr *a, double i, uint64_t *slot) {
+  size_t idx;
+  uint8_t state;
+  if (scr_arr_valid_index(i, &idx)) {
+    if (idx >= a->len) return false;
+    state = scr_arr_state_at(a, idx, slot);
+  } else if (!scr_arr_prop_get_state(a, i, slot, &state)) {
+    return false;
+  }
+  return state == SCR_ARR_VALUE;
+}
+
 double scr_arr_get_number(const ScrArr *a, double i) {
+  /* Keep this hot numeric-only entry self-contained: routing it through
+   * scr_arr_read_value adds an out-of-line call at -O2 on native targets. */
   size_t idx;
   uint64_t slot;
   uint8_t state;
@@ -777,6 +801,28 @@ double scr_arr_get_number(const ScrArr *a, double i) {
     return NAN;
   }
   return state == SCR_ARR_VALUE ? scr_slot_to_f64(slot) : NAN;
+}
+
+bool scr_arr_index_eq(const ScrArr *a, double i, const ScrArr *b, double j) {
+  uint64_t av, bv;
+  /* Avoid two general lookups for the common dense case. Check the range
+   * before casting, and distinguish values from holes/present undefined. */
+  if (i >= 0 && i < (double)a->cap && i == trunc(i) &&
+      j >= 0 && j < (double)b->cap && j == trunc(j)) {
+    size_t ai = (size_t)i, bi = (size_t)j;
+    bool ap = ai < a->len && a->present[ai] == SCR_ARR_VALUE;
+    bool bp = bi < b->len && b->present[bi] == SCR_ARR_VALUE;
+    if (!ap || !bp) return ap == bp;
+    av = a->data[ai];
+    bv = b->data[bi];
+  } else {
+    bool ap = scr_arr_read_value(a, i, &av);
+    bool bp = scr_arr_read_value(b, j, &bv);
+    if (!ap || !bp) return ap == bp;
+  }
+  if (a->elem == SCR_ELEM_F64) return scr_slot_to_f64(av) == scr_slot_to_f64(bv);
+  if (a->elem == SCR_ELEM_STR) return scr_str_eq(scr_slot_to_ptr(av), scr_slot_to_ptr(bv));
+  return av == bv; /* bool; matching primitive kinds are validated by the IR */
 }
 
 bool scr_arr_get_bool(ScrArr *a, double i) {
@@ -801,7 +847,6 @@ static void scr_arr_set_slot(ScrArr *a, double i, uint64_t slot) {
     scr_arr_prop_set(a, i, slot);
     return;
   }
-  idx = scr_arr_check_index(a, i, true);
   if (idx >= a->len) a->len = idx + 1;
   /* Unlink-then-release: a release can trigger a cycle collection, which
    * must never see a heap edge whose count was already given up. */
@@ -826,7 +871,6 @@ void scr_arr_set_undefined(ScrArr *a, double i) {
     scr_arr_prop_set_undefined(a, i);
     return;
   }
-  idx = scr_arr_check_index(a, i, true);
   if (idx >= a->len) a->len = idx + 1;
   scr_arr_replace_state_owned(a, idx, 0, SCR_ARR_UNDEFINED);
 }

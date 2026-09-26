@@ -461,7 +461,7 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       B.line(`call void @scr_process_on_exit(ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`);
       return { name: "", type: e.type };
     }
-    if (e.fn === "process.envGet" || e.fn === "process.columns") {
+    if (e.fn === "process.envGet" || e.fn === "process.columns" || e.fn === "process.rows") {
       // getenv(3) / ioctl(TIOCGWINSZ): the runtime answers a +1 string or
       // NULL (a width or a negative sentinel); the union construction is
       // type-directed HERE — present wraps the value arm, absent yields
@@ -485,8 +485,9 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         B.line(`${raw} = call ptr @scr_env_get(ptr ${args[0]!.name})`);
         B.line(`${present} = icmp ne ptr ${raw}, null`);
       } else {
-        host.declare(`declare double @scr_process_columns(double)`);
-        B.line(`${raw} = call double @scr_process_columns(double ${args[0]!.name})`);
+        const runtimeFn = e.fn === "process.rows" ? "scr_process_rows" : "scr_process_columns";
+        host.declare(`declare double @${runtimeFn}(double)`);
+        B.line(`${raw} = call double @${runtimeFn}(double ${args[0]!.name})`);
         B.line(`${present} = fcmp oge double ${raw}, ${f64Lit(0)}`);
       }
       B.condBr(present, lp, la);

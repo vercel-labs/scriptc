@@ -1577,6 +1577,10 @@ export type IrArrIntrinsicMethod =
    * returning the stored number or NaN for a hole/undefined/missing key.
    * Borrows the receiver and never traps on missing values. */
   | "getNumber"
+  /** Internal strict equality of two f64/bool/string array slots. Arguments
+   * are [left index, right array, right index]; holes and present undefined
+   * compare as undefined. Both arrays have the same primitive element type. */
+  | "indexEq"
   | "push"
   | "pushSpread"
   | "concatSpread"
@@ -4439,6 +4443,8 @@ export type IrLibFn =
    * yields the undefined arm, exactly Node's missing `.columns`. Never
    * throws. */
   | "process.columns"
+  /** Terminal height, with the same fd and optional-number contract. */
+  | "process.rows"
   /** fromCharCode takes one packed f64[] or bytes arg and builds a string
    * from UTF-16 code units. Adjacent surrogate pairs combine; lone
    * surrogates follow the runtime's replacement policy. */
@@ -7344,6 +7350,7 @@ export const LIB_NONDETERMINISTIC_PREFIXES: readonly [string, string][] = [
   ["process.threadCpu", "the thread CPU clock (process.threadCpuUsage)"],
   ["process.isTTY", "terminal attachment (isTTY)"],
   ["process.columns", "terminal geometry (columns)"],
+  ["process.rows", "terminal geometry (rows)"],
   ["process.kill", "process authority (kill)"],
   ["process.umask", "process authority (umask)"],
   ["process.exit", "process authority (exit)"],

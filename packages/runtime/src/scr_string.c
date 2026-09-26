@@ -18,6 +18,26 @@ static void scr_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }
 
+/* Weak, bounded interning for tiny slices (including non-ASCII characters).
+ * Unlike an owning cache, this never keeps a string alive: its last release
+ * removes the entry. Collisions simply replace the weak pointer. A unique
+ * string can still be appended to or reallocated, so those paths invalidate
+ * the entry before touching its bytes/address. No ScrStr ABI change. */
+#define SCR_SHORT_N 64
+static SCR_TL ScrStr *scr_short_tab[SCR_SHORT_N];
+
+static size_t scr_short_hash(const char *bytes, size_t len) {
+  size_t h = len;
+  for (size_t i = 0; i < len; i++) h = h * 31 + (unsigned char)bytes[i];
+  return h % SCR_SHORT_N;
+}
+
+static void scr_short_forget(const ScrStr *s) {
+  if (s->len < 2 || s->len > 4) return;
+  size_t h = scr_short_hash(s->data, s->len);
+  if (scr_short_tab[h] == s) scr_short_tab[h] = NULL;
+}
+
 /* ── UTF-16 index cache ───────────────────────────────────────────────
  * JS string semantics are UTF-16 indices over our UTF-8 storage, so
  * .length, charCodeAt, charAt, indexOf and slice all need unit↔byte
@@ -251,6 +271,7 @@ ScrStr *scr_str_alloc_raw(size_t len, size_t cap) {
 }
 
 ScrStr *scr_str_regrow(ScrStr *s, size_t newcap) {
+  scr_short_forget(s);
   scr_sidx_purge(s); /* realloc may move; the old address may be recycled */
   ScrStr *r = realloc(s, sizeof(ScrStr) + newcap + 1);
   if (!r) scr_oom();
@@ -261,6 +282,7 @@ ScrStr *scr_str_regrow(ScrStr *s, size_t newcap) {
 void scr_str_release(ScrStr *s) {
   if (!s || s->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--s->rc == 0) {
+    scr_short_forget(s);
     scr_sidx_purge(s); /* the address may be recycled by the next malloc */
 #ifdef SCR_RC_AUDIT
     scr_live_strings--;
@@ -287,6 +309,7 @@ ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
    * with rc > 1 might be aliased and is copied, never mutated. */
   if (a->rc == 1 && a != b && a->cap >= newlen) {
     size_t oldlen = a->len;
+    scr_short_forget(a);
     memcpy(a->data + a->len, b->data, b->len);
     a->len = newlen;
     a->data[newlen] = '\0';
@@ -410,13 +433,41 @@ static const struct { size_t rc; size_t len; size_t cap; char data[1]; }
 
 static ScrStr *scr_str_empty(void) { return (ScrStr *)&scr_lit_empty; }
 
-/* Interned when the content is empty or one ASCII byte; fresh otherwise. */
+/* Empty/ASCII characters are immortal; tiny spans share live heap strings. */
 static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
   if (len == 0) return scr_str_empty();
   if (len == 1 && (unsigned char)bytes[0] < 0x80) {
     return (ScrStr *)&scr_ascii1[(unsigned char)bytes[0]];
   }
+  if (len >= 2 && len <= 4) {
+    size_t h = scr_short_hash(bytes, len);
+    ScrStr *cached = scr_short_tab[h];
+    if (cached && cached->len == len && memcmp(cached->data, bytes, len) == 0)
+      return scr_str_retain(cached);
+    ScrStr *s = scr_str_new(bytes, len);
+    scr_short_tab[h] = s;
+    return s;
+  }
   return scr_str_new(bytes, len);
+}
+
+/* A scalar fromCharCode needs neither the variadic argument array nor an
+ * encoding buffer. Reuse the same empty/ASCII/tiny-span storage policy as
+ * character indexing. A lone surrogate keeps the existing U+FFFD policy. */
+ScrStr *scr_str_from_char_code_one(double code) {
+  uint32_t cp = scr_to_uint32(code) & 0xFFFFu;
+  if (cp < 0x80) return (ScrStr *)&scr_ascii1[cp];
+  if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xFFFD;
+  char bytes[3];
+  if (cp < 0x800) {
+    bytes[0] = (char)(0xC0 | (cp >> 6));
+    bytes[1] = (char)(0x80 | (cp & 0x3F));
+    return scr_str_from_span(bytes, 2);
+  }
+  bytes[0] = (char)(0xE0 | (cp >> 12));
+  bytes[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+  bytes[2] = (char)(0x80 | (cp & 0x3F));
+  return scr_str_from_span(bytes, 3);
 }
 
 /* ── string methods: UTF-16 semantics over UTF-8 storage ──────────

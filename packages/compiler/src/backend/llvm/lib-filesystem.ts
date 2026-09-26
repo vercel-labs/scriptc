@@ -687,6 +687,14 @@ export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): 
       return host.wrapNullable(raw, raw, STRING, strTag, e.type, undefTag);
     }
     if (e.fn === "string.fromCharCode") {
+      const packed = e.args[0]!;
+      if (packed.kind === "arrayLit" && packed.elems.length === 1 && !packed.spreads?.length) {
+        const code = host.emitExpr(packed.elems[0]!);
+        host.declare(`declare ptr @scr_str_from_char_code_one(double)`);
+        const t = B.tmp();
+        B.line(`${t} = call ptr @scr_str_from_char_code_one(double ${code.name})`);
+        return host.own({ name: t, type: e.type });
+      }
       // One packed f64[] (the frontend built it) or one bytes value (the
       // spread-typed-array form); +1 string.
       const sym = e.args[0]!.type.kind === "bytes" ? "scr_str_from_char_code_bytes" : "scr_str_from_char_code";

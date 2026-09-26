@@ -6896,7 +6896,7 @@ function lowerProcessIpcSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr 
 /** `process.stdin/stdout/stderr.isTTY` → isatty(3) on the stream's fd
    * (a REAL boolean: Node's non-TTY streams expose `undefined` here — the
    * documented divergence; truthiness tests, the actual usage, agree), and
-   * `process.stdout/stderr.columns` → ioctl(TIOCGWINSZ) on the fd, with
+   * `process.stdout/stderr.columns/rows` → ioctl(TIOCGWINSZ) on the fd, with
    * Node's non-TTY answer intact: the read is `number | undefined` and a
    * non-TTY (or ioctl-refusing) stream yields the undefined arm. The
    * receiver match sees through parens and as-casts to the SYMBOL —
@@ -6910,7 +6910,7 @@ function lowerProcessIpcSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr 
   export function lowerProcessStreamProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
     if (expr.questionDotToken) return null;
     const member = expr.name.text;
-    if (member !== "isTTY" && member !== "columns") return null;
+    if (member !== "isTTY" && member !== "columns" && member !== "rows") return null;
     let recv: ts.Expression = expr.expression;
     while (ts.isParenthesizedExpression(recv) || ts.isAsExpression(recv) || ts.isTypeAssertion(recv)) recv = recv.expression;
     // Browser-compatible packages commonly write
@@ -6939,7 +6939,7 @@ function lowerProcessIpcSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr 
     if (member === "isTTY") {
       return { kind: "libCall", fn: "process.isTTY", args: [fd], type: BOOL, loc };
     }
-    if (stream === "stdin") return null; // no columns on a ReadStream — generic fences apply
+    if (stream === "stdin") return null; // no geometry on a ReadStream — generic fences apply
     const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
     const want = lowerer.withUndefinedArm(F64);
     // JS files skip the annotation fence: there is no annotation to fix —
@@ -6947,13 +6947,13 @@ function lowerProcessIpcSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr 
     // (commander's `isTTY ? columns : undefined` help-width probes).
     if ((!declared || typeKey(declared) !== typeKey(want)) && !isJsSourceFile(expr.getSourceFile())) {
       lowerer.noLowering(
-        `process.${stream}.columns as a plain number`,
+        `process.${stream}.${member} as a plain number`,
         expr,
-        "on a non-TTY stream Node's .columns is undefined — type the read to admit it: " +
-          `(process.${stream} as typeof process.${stream} & { columns?: number }).columns`,
+        `on a non-TTY stream Node's .${member} is undefined — type the read to admit it: ` +
+          `(process.${stream} as typeof process.${stream} & { ${member}?: number }).${member}`,
       );
     }
-    return { kind: "libCall", fn: "process.columns", args: [fd], type: want, loc };
+    return { kind: "libCall", fn: member === "rows" ? "process.rows" : "process.columns", args: [fd], type: want, loc };
   }
 
 /** `process.argv` / `process.platform` / `process.pid` property READS

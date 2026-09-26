@@ -7039,6 +7039,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3043-string-split-arguments.js": {
+   "order": [
+    "<repo>/tests/corpus/3043-string-split-arguments.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/305-truthiness.ts": {
    "order": [
     "<repo>/tests/corpus/305-truthiness.ts"

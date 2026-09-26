@@ -3581,7 +3581,7 @@
       "kind": "stdlib",
       "name": "string.prototype.split",
       "status": "static",
-      "note": "the lowered call form takes 1 to 2 arguments"
+      "note": "the lowered call form takes 0 to 2 arguments"
     },
     {
       "id": "stdlib.string.startsWith",

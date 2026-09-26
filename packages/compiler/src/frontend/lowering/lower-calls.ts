@@ -18,7 +18,7 @@ import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { mixinFnShapeOf } from "./lower-mixins.js";
 import { dynStringReceiver, lowerArrayFromCall, lowerDynArrayFilterCall, lowerDynArrayFlatMapCall, lowerGroupByStaticCall, lowerIteratorHelperCall, lowerObjectAssignIndexShape, lowerObjectFromEntriesCall, lowerObjectIterOverIndexShape, lowerTupleReadMethodCall } from "./lower-containers.js";
 import { bufEncoding } from "./containers/bytes.js";
-import { lowerRegexMethodCall, lowerStringMethodCall, lowerStringPaddingCall } from "./containers/string-and-regexp.js";
+import { lowerRegexMethodCall, lowerStringMethodCall, lowerStringPaddingCall, lowerStringSplitCall } from "./containers/string-and-regexp.js";
 import { lowerChildStreamMethodCall, lowerChildWriterMethodCall, lowerCreateRequireCall, lowerCryptoHashMethodCall, lowerDirentMethodCall, lowerFileHandleMethodCall, lowerImportMetaResolveCall, lowerNodeModuleCall, lowerPerfHooksCall, lowerProcStreamMethodCall, lowerReflectApplyCall, lowerRequireResolveCall, lowerWatcherMethodCall } from "./lower-builtins.js";
 import { lowerAbsenceProbe, lowerPromiseAllTupleCall, lowerPromiseRejectCall, stringWrapperToString, templateRawTextOf } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
@@ -5155,6 +5155,9 @@ function lowerStringPrototypeCall(
   }
   if (padding) {
     return lowerStringPaddingCall(lowerer, call, entry.method as "padStart" | "padEnd", receiverValue, receiverNode, call.arguments.slice(1));
+  }
+  if (entry.method === "split") {
+    return lowerStringSplitCall(lowerer, call, receiverValue, receiverNode, call.arguments.slice(1));
   }
   const receiver: IrExpr = dynObjectWithoutMethodArgs
     ? { kind: "libCall", fn: "dyn.toStringCoerce", args: [receiverValue], type: STRING, loc }

@@ -407,7 +407,7 @@ export const STR_METHODS: Record<
   // Empty separator splits per UTF-16 code unit —
   // astral halves become U+FFFD (SEMANTICS.md divergence 2, the same
   // substitution the island's boundary marshal applied).
-  split: { method: "split", result: arrayOf(STRING), minArgs: 1, maxArgs: 2 },
+  split: { method: "split", result: arrayOf(STRING), minArgs: 0, maxArgs: 2 },
   // Padding completes omitted lengths and fill strings in its lowering.
   padStart: { method: "padStart", result: STRING, minArgs: 0, maxArgs: 2 },
   padEnd: { method: "padEnd", result: STRING, minArgs: 0, maxArgs: 2 },

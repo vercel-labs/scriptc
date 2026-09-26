@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/runtime-linux-arm64-gnu",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Precompiled scriptc runtime pack for Linux arm64 glibc",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",

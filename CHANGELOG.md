@@ -6,6 +6,29 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.1.5
+
+### Features
+
+- **Static HTTP support covers more client and server behavior.** The `node:http` surface adds request and response controls, timeout and event handling, connection shutdown behavior, and stricter header validation.
+- **Static numeric APIs expand.** `Float64Array`, indexed compound assignments, and additional analytic and remaining `Math` functions compile natively.
+- **Array and string search calls handle more JavaScript inputs.** Static `includes`, `lastIndexOf`, and positioned string methods accept omitted and primitive search values while preserving position coercion.
+- **Published Effect modules can compile statically.** The npm-static path follows reachable exports through package modules and prunes unused package code.
+- **Executable stripping is available as an opt-in build option.**
+
+### Performance
+
+- **LLVM emits faster numeric operations.** Proven integer arithmetic and numeric remainder use direct operations, and numeric array reads avoid redundant boxing, retains, and temporary records.
+
+### Fixes
+
+- **Static JavaScript coercions preserve Node behavior across more call forms.** String padding and search, `Number` conversion, and narrowed string and buffer calls now handle unions, wrappers, objects, nullish values, and omitted arguments correctly.
+- **Dynamic islands load more legacy packages.** Redis 6 entry points and callable `EventEmitter` usage work with the island runtime.
+- **Published LLVM helpers retain executable permissions.**
+- **Switching build modes preserves reusable artifacts.**
+
+<!-- release:end -->
+
 ## 0.1.4
 
 ### Features
@@ -29,8 +52,6 @@ All notable changes to scriptc will be documented in this file.
 - **Windows and Linux runtime builds cover more host details.** Windows executables support GUI subsystem selection and installed CMake generators, Windows runtimes include native clock and sleep shims, and GNU runtime packs preserve glibc 2.36 compatibility.
 - **Static npm resolution follows package import maps.** Package-scoped imports use edge-specific conditions, and fallback Node declarations include `RequestInfo` without widening supported fetch inputs.
 - **HTTP request parsing bounds and validates trailers.** Header and trailer parsing enforce byte and field-count limits, and trailer data is safely discarded when handlers respond before the request body finishes.
-
-<!-- release:end -->
 
 ## 0.1.3
 

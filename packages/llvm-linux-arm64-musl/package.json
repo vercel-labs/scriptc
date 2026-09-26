@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/llvm-linux-arm64-musl",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Statically linked LLVM code-generation helper for scriptc on Linux arm64 musl",
   "license": "Apache-2.0 WITH LLVM-exception",
   "homepage": "https://scriptc.dev",

@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/llvm-linux-x64-gnu",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Pinned LLVM code-generation helper for scriptc on Linux x64",
   "license": "Apache-2.0 WITH LLVM-exception",
   "homepage": "https://scriptc.dev",

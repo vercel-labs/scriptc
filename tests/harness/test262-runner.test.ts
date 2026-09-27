@@ -47,11 +47,30 @@ test("unsupported execution requirements and assertion reflection remain exclusi
   expect(exclusion(text, metadata(text), "strict")).toBeUndefined();
   expect(exclusion(text, metadata(text), "sloppy")).toBeUndefined();
   const scriptGlobal = source("description: script global", "assert.sameValue((function () { return this; })(), globalThis);");
-  expect(exclusion(scriptGlobal, metadata(scriptGlobal), "sloppy")).toBe("host:script-environment");
+  expect(exclusion(scriptGlobal, metadata(scriptGlobal), "sloppy")).toBe("host:globalThis");
   const commonJsGlobal = source("description: CommonJS global", "assert.sameValue(module.exports, {});");
   expect(exclusion(commonJsGlobal, metadata(commonJsGlobal), "sloppy")).toBe("host:module");
   const asyncText = source("flags: [async]", "Promise.resolve().then(() => $DONE());");
   expect(exclusion(asyncText, metadata(asyncText), "strict")).toBeUndefined();
+});
+
+test("receiver-bound this is admitted without adapting script-level this", () => {
+  for (const [body, expected] of [
+    ["class C { read() { return this.value; } }", undefined],
+    ["class C { read() { return () => this.value; } }", undefined],
+    ["class C { value = this; }", undefined],
+    ["class C { static { this.value = 1; } }", undefined],
+    ["function read() { return this; }", undefined],
+    ["const read = () => this;", "host:script-environment"],
+    ["assert.sameValue(this, undefined);", "host:script-environment"],
+    ["class C { [this.key]() {} }", "host:script-environment"],
+    ["class C extends this.Base {}", "host:script-environment"],
+  ] as const) {
+    const text = source("description: this binding", body);
+    for (const variant of ["strict", "sloppy"] as const) {
+      expect(exclusion(text, metadata(text), variant), `${variant}: ${body}`).toBe(expected);
+    }
+  }
 });
 
 test("negative parse cases require the compiler's matching source diagnostic", () => {

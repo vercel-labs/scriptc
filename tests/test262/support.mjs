@@ -84,6 +84,17 @@ export function variants(meta) {
   return ["sloppy", "strict"];
 }
 
+function hasOwnThisBinding(node) {
+  let child = node;
+  for (let parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (ts.isArrowFunction(parent)) continue;
+    if (ts.isFunctionLike(parent) && child === parent.body) return true;
+    if (ts.isPropertyDeclaration(parent) && child === parent.initializer) return true;
+    if (ts.isClassStaticBlockDeclaration(parent) && child === parent.body) return true;
+  }
+  return false;
+}
+
 // The first static profile adapts scripts to standalone strict modules. Be
 // conservative about observable global-script semantics and helper reflection.
 // Exclusions are runner limitations, never implementation support claims.
@@ -105,11 +116,8 @@ export function exclusion(source, meta, variant) {
   if (meta.flags.includes("async")) forbidden.delete("$DONE");
   const visit = (node) => {
     if (reason) return;
-    if (variant === "sloppy" && node.kind === ts.SyntaxKind.ThisKeyword) {
-      reason = "host:script-environment";
-      return;
-    }
-    if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.ImportKeyword || ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+    if ((node.kind === ts.SyntaxKind.ThisKeyword && !hasOwnThisBinding(node)) ||
+      node.kind === ts.SyntaxKind.ImportKeyword || ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
       reason = "host:script-environment";
     } else if (ts.isIdentifier(node) && forbidden.has(node.text)) {
       reason = `host:${node.text}`;

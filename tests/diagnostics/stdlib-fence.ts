@@ -27,7 +27,7 @@ const sameDate = mutableDate === mutableDate; // scalar storage must not fake ob
 const wm = new WeakMap();
 const px = new Proxy({ a: 1 }, {});
 const buf = new ArrayBuffer(8);
-const st = new Set(new Set([1, 2])); // array seeds lower; Set/iterable seeds stay fenced
+const st = new Set(new Set([1, 2])); // string and array seeds lower; Set-valued seeds stay fenced
 // (new Error / TypeError / RangeError / SyntaxError now LOWER — the error
 // battery lives in the corpus; what stays fenced is the rest of the family
 // and the unlowered members of lowered error objects.)

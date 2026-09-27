@@ -114,7 +114,7 @@ stdlib-fence.ts:29:7 - error SC2020: 'ArrayBuffer' is part of the standard libra
   28 | const px = new Proxy({ a: 1 }, {});
   29 | const buf = new ArrayBuffer(8);
      |       ^~~
-  30 | const st = new Set(new Set([1, 2])); // array seeds lower; Set/iterable seeds stay fenced
+  30 | const st = new Set(new Set([1, 2])); // string and array seeds lower; Set-valued seeds stay fenced
 
   hint: no free-standing ArrayBuffer value exists — typed arrays own their storage (new Uint8Array(n) allocates; new Uint8Array(new ArrayBuffer(n)) erases the buffer into the view)
 
@@ -123,18 +123,18 @@ stdlib-fence.ts:29:13 - error SC2020: 'new ArrayBuffer' is part of the standard 
   28 | const px = new Proxy({ a: 1 }, {});
   29 | const buf = new ArrayBuffer(8);
      |             ^~~~~~~~~~~~~~~~~~
-  30 | const st = new Set(new Set([1, 2])); // array seeds lower; Set/iterable seeds stay fenced
+  30 | const st = new Set(new Set([1, 2])); // string and array seeds lower; Set-valued seeds stay fenced
 
   hint: no free-standing ArrayBuffer value exists — typed arrays own their storage: allocate the view directly (new Uint8Array(n)), or erase a fresh buffer into one (new Uint8Array(new ArrayBuffer(n)), new DataView(new ArrayBuffer(n), ...))
 
 stdlib-fence.ts:30:12 - error SC2020: 'new Set(values)' is part of the standard library types but has no scriptc lowering yet
 
   29 | const buf = new ArrayBuffer(8);
-  30 | const st = new Set(new Set([1, 2])); // array seeds lower; Set/iterable seeds stay fenced
+  30 | const st = new Set(new Set([1, 2])); // string and array seeds lower; Set-valued seeds stay fenced
      |            ^~~~~~~~~~~~~~~~~~~~~~~~
   31 | // (new Error / TypeError / RangeError / SyntaxError now LOWER — the error
 
-  hint: construct the Set empty and add() each value — only an array or fixed tuple of already-legal elements (string or number) seeds a Set
+  hint: construct the Set empty and add() each value — only a string, array, or fixed tuple of already-legal elements (string or number) seeds a Set
 
 stdlib-fence.ts:34:7 - error SC2020: 'AggregateError' is part of the standard library types but has no scriptc lowering yet
 

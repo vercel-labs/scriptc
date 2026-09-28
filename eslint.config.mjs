@@ -19,6 +19,7 @@ const TS5_ISLANDS = [
   // beside cjs-lexer.ts (only strings cross its boundary).
   "packages/compiler/src/frontend/npm-static-declarations.ts",
   "packages/compiler/src/frontend/npm-static-rewrite.ts",
+  "packages/compiler/src/frontend/npm-static-bundled-cjs.ts",
   // Semantic cache validation parses source text only to identify exact
   // regex spans and syntax errors; its boundary is strings, offsets, and
   // booleans, so no 5.9.3 AST value enters the 7.0.2 program world.

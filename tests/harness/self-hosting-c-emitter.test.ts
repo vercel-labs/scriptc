@@ -19,6 +19,13 @@ const execFileAsync = promisify(execFile);
 const runOptions = { cwd: root, timeout: 60_000, maxBuffer: 128 * 1024 * 1024 };
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
+function programStderr(stderr: Buffer): string {
+  const text = stderr.toString("utf8");
+  return sanitize
+    ? text.replace(/^==\d+==WARNING: ASan doesn't fully support makecontext\/swapcontext functions and may produce false positives in some cases!\n/gm, "")
+    : text;
+}
+
 function nativeFeatures(mod: IrModule) {
   return {
     regex: moduleUsesRegex(mod), copying: moduleUsesCopying(mod),
@@ -131,7 +138,7 @@ for (const backend of ["c", "llvm"] as const) {
           expect(result.status, `${source}: ${result.stderr}`).toBe(0);
         }
         expect(native.stdout, source).toEqual(node.stdout);
-        expect(native.stderr, source).toEqual(node.stderr);
+        expect(programStderr(native.stderr), source).toBe(programStderr(node.stderr));
       }
 
       // Bootstrap the backend itself: the native stage emits its own IR,

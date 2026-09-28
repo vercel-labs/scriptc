@@ -8405,7 +8405,7 @@ export class Lowerer {
   /* ── the class graph (single inheritance) ─────────────────────────── */
 
   findMethodOn(info: ClassInfo | null,
-    name: string,): { declarer: ClassInfo; sig: { params: ParamShape[]; ret: IrType; abstract?: true; async?: true } } | null {
+    name: string,): { declarer: ClassInfo; sig: { params: ParamShape[]; ret: IrType; abstract?: true; async?: true; gen?: NonNullable<IrFunction["generator"]> } } | null {
     return findMethodOn(this, info, name);
   }
 

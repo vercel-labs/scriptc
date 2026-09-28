@@ -12,7 +12,7 @@ import type { Lowerer } from "./lowerer.js";
 import { BOOL, DYN, IrExpr, IrStmt, IrType, SrcLoc, UNDEFINED_T, VOID, isUnitType, typeEquals } from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import { genResultRecord } from "../type-mapper.js";
-import { forOfVarTarget } from "./lower-stmts.js";
+import { forOfVarTarget, lowerDestructuringAssign } from "./lower-stmts.js";
 
 export type GenType = IrType & { kind: "generator" };
 
@@ -219,6 +219,70 @@ export function extractIteratorValue(
   return { kind: "call", callee: helper, args: [read], type: yt, loc };
 }
 
+function generatorLoopBinding(
+  lowerer: Lowerer,
+  stmt: ts.ForOfStatement,
+  value: IrExpr,
+  valueType: IrType,
+): IrStmt[] {
+  const loc = locOf(stmt.initializer);
+  if (!ts.isVariableDeclarationList(stmt.initializer)) {
+    let target: ts.Node = stmt.initializer;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (ts.isIdentifier(target)) {
+      const writable = lowerer.resolveWritable(target);
+      if (!writable) lowerer.rejectUnresolved(target, "assignment to an unresolved loop binding");
+      return [{
+        kind: "assign",
+        localId: writable.id,
+        value: lowerer.coerceInto(target, value, writable.type),
+        loc,
+      }];
+    }
+    if (ts.isArrayLiteralExpression(target) || ts.isObjectLiteralExpression(target)) {
+      const temp = lowerer.declareHiddenLocal("%genValue", valueType);
+      const ref: IrExpr = { kind: "varRef", localId: temp.id, type: valueType, loc };
+      return [
+        { kind: "varDecl", localId: temp.id, init: value, loc },
+        lowerDestructuringAssign(lowerer, target, ref, target, loc),
+      ];
+    }
+    lowerer.unsupported("SC1090", stmt.initializer, "for-of assignment to this target");
+  }
+  const list = stmt.initializer;
+  const decl = list.declarations[0]!;
+  const isLet = (list.flags & ts.NodeFlags.Let) !== 0;
+  if (ts.isIdentifier(decl.name)) {
+    const varTarget = forOfVarTarget(lowerer, decl);
+    const bound = varTarget
+      ? lowerer.declareHiddenLocal("%genValue", valueType)
+      : lowerer.declareLocal(decl.name, decl.name.text, valueType, isLet);
+    const out: IrStmt[] = [{ kind: "varDecl", localId: bound.id, init: value, loc }];
+    if (varTarget) {
+      out.push({
+        kind: "assign",
+        localId: varTarget.id,
+        value: lowerer.coerceInto(decl.name, { kind: "varRef", localId: bound.id, type: valueType, loc }, varTarget.type),
+        loc,
+      });
+    }
+    return out;
+  }
+  if (ts.isArrayBindingPattern(decl.name) || ts.isObjectBindingPattern(decl.name)) {
+    const temp = lowerer.declareHiddenLocal("%genValue", valueType);
+    const out: IrStmt[] = [{ kind: "varDecl", localId: temp.id, init: value, loc }];
+    lowerer.lowerBindingPattern(
+      decl.name,
+      () => ({ kind: "varRef", localId: temp.id, type: valueType, loc }),
+      valueType,
+      isLet,
+      out,
+    );
+    return out;
+  }
+  lowerer.unsupported("SC1031", decl.name);
+}
+
 /** `for (const x of gen)` — the desugared drive:
  *
  *   { const %gof = <iterable>; let %gdone = false;
@@ -246,20 +310,9 @@ export function lowerForOfGenerator(
   if (iterable.type.async) {
     lowerer.unsupported("SC1070", stmt.expression, "synchronous for-of over an async generator (use 'for await')");
   }
-  if (!ts.isVariableDeclarationList(stmt.initializer)) {
-    lowerer.unsupported(
-      "SC1090",
-      stmt.initializer,
-      "for-of over a pre-declared variable (declare the loop variable in the loop: for (const x of ...))",
-    );
+  if (ts.isVariableDeclarationList(stmt.initializer) && (stmt.initializer.flags & ts.NodeFlags.Using) !== 0) {
+    lowerer.unsupported("SC1090", stmt.initializer, "'using' declarations (dispose-at-scope-exit semantics)");
   }
-  const list = stmt.initializer;
-  if ((list.flags & ts.NodeFlags.Using) !== 0) {
-    lowerer.unsupported("SC1090", list, "'using' declarations (dispose-at-scope-exit semantics)");
-  }
-  const isLet = (list.flags & ts.NodeFlags.Let) !== 0;
-  const decl = list.declarations[0]!;
-  if (!ts.isIdentifier(decl.name)) lowerer.unsupported("SC1031", decl.name);
   const genT = iterable.type;
   if (genT.yieldT.kind === "void") {
     lowerer.unsupported(
@@ -296,13 +349,6 @@ export function lowerForOfGenerator(
         `for-of over a generator yielding '${lowerer.fmt(genT.yieldT)}' (no per-element extraction exists — drive it with .next() and narrow r.value)`,
       );
     }
-    // `for (var x of gen)`: the mechanics stay on a hidden per-iteration
-    // local; the body opens by assigning into the hoisted var binding.
-    const varTarget = forOfVarTarget(lowerer, decl);
-    const x = varTarget
-      ? lowerer.declareHiddenLocal("%vof", genT.yieldT)
-      : lowerer.declareLocal(decl.name, decl.name.text, genT.yieldT, isLet);
-    const xRef: IrExpr = { kind: "varRef", localId: x.id, type: genT.yieldT, loc };
     const head: IrStmt[] = [
       {
         kind: "varDecl",
@@ -327,10 +373,7 @@ export function lowerForOfGenerator(
         else_: null,
         loc,
       },
-      { kind: "varDecl", localId: x.id, init: extracted, loc },
-      ...(varTarget
-        ? [{ kind: "assign", localId: varTarget.id, value: lowerer.coerceInto(decl.name, xRef, varTarget.type), loc } satisfies IrStmt]
-        : []),
+      ...generatorLoopBinding(lowerer, stmt, extracted, genT.yieldT),
     ];
     const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement), labels);
     return {
@@ -390,22 +433,9 @@ export function lowerForAwaitGenerator(
   if (!lowerer.ctx.isAsync) {
     lowerer.unsupported("SC1090", stmt, "top-level 'for await' (await outside async functions)");
   }
-  if (!ts.isVariableDeclarationList(stmt.initializer)) {
-    lowerer.unsupported(
-      "SC1090",
-      stmt.initializer,
-      "for-await over a pre-declared variable (declare the loop variable in the loop: for await (const value of ...))",
-    );
+  if (ts.isVariableDeclarationList(stmt.initializer) && (stmt.initializer.flags & ts.NodeFlags.Using) !== 0) {
+    lowerer.unsupported("SC1090", stmt.initializer, "'await using' loop bindings over async generators");
   }
-  const list = stmt.initializer;
-  if ((list.flags & ts.NodeFlags.Using) !== 0) {
-    lowerer.unsupported("SC1090", list, "'await using' loop bindings over async generators");
-  }
-  const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
-  const isLet = (list.flags & ts.NodeFlags.Let) !== 0;
-  if (!isConst && !isLet) lowerer.unsupported("SC1030", list, "'var' loop bindings in 'for await' (use const)");
-  const decl = list.declarations[0]!;
-  if (!ts.isIdentifier(decl.name)) lowerer.unsupported("SC1031", decl.name);
   const genT = iterable.type;
   if (genT.yieldT.kind === "void") {
     lowerer.unsupported("SC1090", stmt.expression, "for-await over an async generator that never yields");
@@ -440,7 +470,6 @@ export function lowerForAwaitGenerator(
         `for-await over an async generator yielding '${lowerer.fmt(genT.yieldT)}' (no per-element extraction exists)`,
       );
     }
-    const x = lowerer.declareLocal(decl.name, decl.name.text, genT.yieldT, isLet);
     const head: IrStmt[] = [
       {
         kind: "varDecl",
@@ -469,7 +498,7 @@ export function lowerForAwaitGenerator(
         else_: null,
         loc,
       },
-      { kind: "varDecl", localId: x.id, init: extracted, loc },
+      ...generatorLoopBinding(lowerer, stmt, extracted, genT.yieldT),
     ];
     const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement), labels);
     const closePromise: IrExpr = { kind: "genResume", mode: "return", gen: gRef(), arg: null, type: promiseT, loc };

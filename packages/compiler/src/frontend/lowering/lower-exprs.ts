@@ -6034,6 +6034,47 @@ function lowerAnyBinaryInIsland(
   };
 }
 
+export function lowerCompoundValueToTarget(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  compound: CompoundOp,
+  target: { id: string; type: IrType },
+): IrExpr {
+  const loc = locOf(expr);
+  const read: IrExpr = { kind: "varRef", localId: target.id, type: target.type, loc: locOf(expr.left) };
+  const rhs = lowerer.lowerExpr(expr.right);
+  const numericRhs = lowerOptionalNumber(lowerer, rhs, loc);
+  if (target.type.kind === "jsval" || rhs.type.kind === "jsval") {
+    const JS_COMPOUND: Record<string, IrJsOp> = { "+": "add", "-": "sub", "*": "mul", "/": "div", "%": "mod", "**": "pow" };
+    const jop = JS_COMPOUND[compound];
+    if (jop === undefined) lowerer.unsupported("SC1043", expr);
+    const wrapped: IrExpr = {
+      kind: "jsOp", op: jop,
+      args: [lowerer.jsvalIn(read, expr.left), lowerer.jsvalIn(rhs, expr.right)],
+      type: JSVAL, loc,
+    };
+    return lowerer.coerceInto(expr, wrapped, target.type);
+  }
+  if (compound === "+" && target.type.kind === "string") {
+    return { kind: "strConcat", left: read, right: lowerer.ensureString(rhs, expr.right), type: STRING, loc };
+  }
+  if (target.type.kind === "f64" && numericRhs.type.kind === "f64") {
+    return { kind: "bin", op: compound, left: read, right: numericRhs, type: F64, loc };
+  }
+  if (
+    (target.type.kind === "dyn" || rhs.type.kind === "dyn") &&
+    (target.type.kind === "dyn" || target.type.kind === "f64") &&
+    (rhs.type.kind === "dyn" || rhs.type.kind === "f64") &&
+    isJsSourceFile(expr.getSourceFile())
+  ) {
+    const checkNum = (value: IrExpr): IrExpr =>
+      value.type.kind === "dyn" ? { kind: "dynCheck", value, type: F64, loc: value.loc } : value;
+    const computed: IrExpr = { kind: "bin", op: compound, left: checkNum(read), right: checkNum(rhs), type: F64, loc };
+    return target.type.kind === "dyn" ? { kind: "dynFrom", value: computed, type: DYN, loc } : computed;
+  }
+  lowerer.unsupported("SC1043", expr);
+}
+
 export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr {
     const loc = locOf(expr);
     const op = expr.operatorToken.kind;
@@ -6067,6 +6108,27 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       const indexedCompound = COMPOUND_ASSIGN_OPS[op];
       if (indexedCompound !== undefined && ts.isElementAccessExpression(expr.left)) {
         return lowerElementCompound(lowerer, expr, indexedCompound);
+      }
+      if (indexedCompound !== undefined && ts.isIdentifier(expr.left)) {
+        const target = lowerer.resolveWritable(expr.left);
+        if (!target) {
+          lowerer.rejectUnresolved(expr.left, "assignment to an unresolved variable");
+        }
+        const value = lowerCompoundValueToTarget(lowerer, expr, indexedCompound, target);
+        return { kind: "assignExpr", localId: target.id, value, type: target.type, loc };
+      }
+      if (
+        indexedCompound !== undefined &&
+        (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) &&
+        !(ts.isPropertyAccessExpression(expr.left) && expr.left.questionDotToken)
+      ) {
+        const target =
+          expandoWritableTarget(lowerer, expr.left) ??
+          (ts.isPropertyAccessExpression(expr.left) ? nsWritableTarget(lowerer, expr.left) : null);
+        if (target) {
+          const value = lowerCompoundValueToTarget(lowerer, expr, indexedCompound, target);
+          return { kind: "assignExpr", localId: target.id, value, type: target.type, loc };
+        }
       }
       // `events.defaultMaxListeners = v` — the module-property write
       // Node validates (validateNumber(n, 'defaultMaxListeners', 0)):

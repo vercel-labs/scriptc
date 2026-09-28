@@ -1,0 +1,13 @@
+generator-method-overrides.ts:8:4 - error SC1090: overriding the generator method 'values' (generator methods dispatch statically — a virtual slot cannot enter their spawn wrapper) is not supported yet
+
+  7 | class Replaced extends Base {
+  8 |   *values(): Generator<number, void, undefined> {
+    |    ^~~~~~
+  9 |     yield 2;
+
+generator-method-overrides.ts:12:22 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  11 | }
+  12 | const source: Base = new Replaced();
+     |                      ^~~~~~~~~~~~~~
+  13 | for (const value of source.values()) console.log(value);

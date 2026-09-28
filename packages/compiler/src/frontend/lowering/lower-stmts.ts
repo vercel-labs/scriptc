@@ -9,7 +9,7 @@ import type { Lowerer } from "./lowerer.js";
 import { arrayValueRead, arrayValueStore, arrayValueType } from "./array-values.js";
 import { lowerForAwaitGenerator, lowerForOfGenerator, lowerYieldStarStatement, type GenType } from "./lower-generators.js";
 import { lowerForAwaitBuiltin } from "./lower-async-iteration.js";
-import { BOOL, BYTES_U8, CAUGHT, DYN, F64, IrExpr, IrGlobal, IrJsOp, IrLocal, IrStmt, IrType, JSVAL, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, isUnitType, shapeHasAccessorSlots, typeEquals } from "../../ir/ir.js";
+import { BOOL, BYTES_U8, CAUGHT, DYN, F64, IrExpr, IrGlobal, IrLocal, IrStmt, IrType, JSVAL, STRING, SrcLoc, UNDEFINED_T, VOID, arrayOf, isUnitType, shapeHasAccessorSlots, typeEquals } from "../../ir/ir.js";
 import { PoisonError, boundIdentifiersOf, dynFallbackType, dynUndefinedExpr, importCallHandleType, neverTaintedJsType, staticImportNamespaceType, stmtUsesIsland, uncheckedOverloadHandleCall } from "./lowerer.js";
 import { enforceLibBoundary } from "./lib-boundary.js";
 import { cjsExportAssignmentOf, cjsExportDiscardReason, cjsExportTargetLiteral, isCjsJsFile, isEsModuleStamp, isJsSourceFile, locOf, requireSpecOf } from "../program.js";
@@ -26,7 +26,7 @@ import { lowerStreamUnderscoreAssign, streamClassAliasDecl } from "./lower-strea
 import { lowerHttpResPropertyAssignment, lowerHttpServerTimeoutAssignment, lowerServerCloseOverrideAssignment } from "./lower-server.js";
 import { builtinMemberRequireDecl, builtinNamespaceDestructureModuleOf, createRequireBindingDecl, createRequireCalleeFileOf, createRequireNamespaceDecl, createRequireProgramModuleDecl, createRequireProgramModuleOf, lowerNodeModuleCall, registerBuiltinCallableAlias } from "./lower-builtins.js";
 import { lowerEnumDeclaration } from "./lower-enums.js";
-import { abstractPropertyDeclOf, aliasTypeofNarrows, isMatchSliceType, lowerAbsenceProbe, lowerElementCompound, lowerGroupsProjection, lowerOptionalNumber, matchResultNamedGroupsOf, runtimeOptionalTrueIds, symbolFieldInfo, withRuntimeOptionalNarrowed } from "./lower-exprs.js";
+import { abstractPropertyDeclOf, aliasTypeofNarrows, isMatchSliceType, lowerAbsenceProbe, lowerCompoundValueToTarget, lowerElementCompound, lowerGroupsProjection, matchResultNamedGroupsOf, runtimeOptionalTrueIds, symbolFieldInfo, withRuntimeOptionalNarrowed } from "./lower-exprs.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerUnionFieldWrite } from "./expressions/union-field-write.js";
@@ -5380,42 +5380,12 @@ function lowerBranchSwitch(
    * whose target is the member's module global. */
   function lowerCompoundToTarget(lowerer: Lowerer, expr: ts.BinaryExpression, compound: CompoundOp,
     target: { id: string; type: IrType },): IrStmt {
-    const loc = locOf(expr);
-    const read: IrExpr = { kind: "varRef", localId: target.id, type: target.type, loc: locOf(expr.left) };
-    const rhs = lowerer.lowerExpr(expr.right);
-    const numericRhs = lowerOptionalNumber(lowerer, rhs, loc);
-    let value: IrExpr;
-    if (target.type.kind === "jsval" || rhs.type.kind === "jsval") {
-      const JS_COMPOUND: Record<string, IrJsOp> = { "+": "add", "-": "sub", "*": "mul", "/": "div", "%": "mod", "**": "pow" };
-      const jop = JS_COMPOUND[compound];
-      if (jop === undefined) lowerer.unsupported("SC1043", expr);
-      const wrapped: IrExpr = {
-        kind: "jsOp", op: jop,
-        args: [lowerer.jsvalIn(read, expr.left), lowerer.jsvalIn(rhs, expr.right)],
-        type: JSVAL, loc,
-      };
-      value = lowerer.coerceInto(expr, wrapped, target.type);
-    } else if (compound === "+" && target.type.kind === "string") {
-      value = { kind: "strConcat", left: read, right: lowerer.ensureString(rhs, expr.right), type: STRING, loc };
-    } else if (target.type.kind === "f64" && numericRhs.type.kind === "f64") {
-      value = { kind: "bin", op: compound, left: read, right: numericRhs, type: F64, loc };
-    } else if (
-      (target.type.kind === "dyn" || rhs.type.kind === "dyn") &&
-      (target.type.kind === "dyn" || target.type.kind === "f64") &&
-      (rhs.type.kind === "dyn" || rhs.type.kind === "f64") &&
-      isJsSourceFile(expr.getSourceFile())
-    ) {
-      // JS any-origin operands: check to number and compute natively
-      // (the binary-operator stance) — the dyn target takes the result
-      // back through the usual dyn conversion.
-      const checkNum = (e: IrExpr): IrExpr =>
-        e.type.kind === "dyn" ? { kind: "dynCheck", value: e, type: F64, loc: e.loc } : e;
-      const computed: IrExpr = { kind: "bin", op: compound, left: checkNum(read), right: checkNum(rhs), type: F64, loc };
-      value = target.type.kind === "dyn" ? { kind: "dynFrom", value: computed, type: DYN, loc } : computed;
-    } else {
-      lowerer.unsupported("SC1043", expr);
-    }
-    return { kind: "assign", localId: target.id, value, loc };
+    return {
+      kind: "assign",
+      localId: target.id,
+      value: lowerCompoundValueToTarget(lowerer, expr, compound, target),
+      loc: locOf(expr),
+    };
   }
 
 /** One destructuring-assignment pattern the island can run: empty object/

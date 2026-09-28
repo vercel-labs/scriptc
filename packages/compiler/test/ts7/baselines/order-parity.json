@@ -7601,9 +7601,21 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3120-generator-method-loop-bindings.ts": {
+   "order": [
+    "<repo>/tests/corpus/3120-generator-method-loop-bindings.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/3120-ir-nonfinite-numbers.ts": {
    "order": [
     "<repo>/tests/corpus/3120-ir-nonfinite-numbers.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3121-compound-assignment-values.js": {
+   "order": [
+    "<repo>/tests/corpus/3121-compound-assignment-values.js"
    ],
    "diags": []
   },
@@ -9070,6 +9082,12 @@
   "<repo>/tests/diagnostics/function-limits.ts": {
    "order": [
     "<repo>/tests/diagnostics/function-limits.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/generator-method-overrides.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/generator-method-overrides.ts"
    ],
    "diags": []
   },

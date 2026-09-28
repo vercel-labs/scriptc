@@ -55,9 +55,8 @@ export interface ClassInfo {
    * inherited private name are fenced at collection, and tsc confines
    * every access site to the declaring class's body, so the base-chain
    * walk IS lexical resolution and privates never join vtables (JS's
-   * no-dynamic-dispatch semantics by construction). A `gen` entry is a
-   * #private GENERATOR method: the body is a generator IrFunction and
-   * calls enter through its gen-spawn wrapper. */
+   * no-dynamic-dispatch semantics by construction). A `gen` entry has a
+   * generator body whose direct calls enter through its spawn wrapper. */
   methods: Map<string, { params: ParamShape[]; ret: IrType; abstract?: true; async?: true; gen?: NonNullable<IrFunction["generator"]> }>;
   /** OWN GENERIC instance methods (own type parameters — `m<T>(x: T)`),
    * monomorphized per call site like top-level generic functions: instance
@@ -1327,10 +1326,12 @@ export function collectClassShapeInner(lowerer: Lowerer, decl: ts.ClassLikeDecla
             ts.isMethodDeclaration(member) &&
             (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
             member.body &&
-            member.typeParameters === undefined &&
-            member.asteriskToken === undefined
+            member.typeParameters === undefined
           ) {
             const { shapes, funcType: ft } = lowerer.lambdaSignature(member);
+            if (member.asteriskToken !== undefined && ft.ret.kind !== "generator") {
+              lowerer.badType(member.name, lowerer.typeOf(member.name));
+            }
             staticMethods.set(member.name.text, { params: shapes, ret: ft.ret, member });
           }
           // GENERIC static methods monomorphize like top-level generic
@@ -1722,20 +1723,9 @@ export function collectClassShapeInner(lowerer: Lowerer, decl: ts.ClassLikeDecla
         } else if (ts.isMethodDeclaration(member)) {
           const mName = classMemberNameOf(lowerer, member.name);
           if (mName === null) lowerer.unsupported("SC1090", member, "computed method names");
-          // Sync PUBLIC generator methods stay fenced because virtualCall
-          // dispatch cannot hold spawn wrappers. Async generator methods
-          // use the existing static async-method dispatch discipline;
-          // overrides fence below. #private generators are always direct.
-          const asyncGenerator =
-            member.asteriskToken !== undefined &&
-            member.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
-          if (member.asteriskToken !== undefined && !asyncGenerator && !ts.isPrivateIdentifier(member.name)) {
-            lowerer.unsupported(
-              "SC1071",
-              member,
-              "generator methods (a #private generator method compiles — privates never dispatch dynamically; or declare a module-level function* and call it from the method)",
-            );
-          }
+          // Generator calls use their spawn wrapper. Public methods are
+          // direct calls only when no subclass overrides the method;
+          // override chains involving generators fence below.
           // An ABSTRACT method is a signature with no body — type-world,
           // except that it declares the vtable slot: calls through
           // base-typed receivers are ordinary virtual dispatch, and tsc
@@ -1917,7 +1907,14 @@ export function collectClassShapeInner(lowerer: Lowerer, decl: ts.ClassLikeDecla
               `overriding ${overridden.sig.async === true ? "the async method" : "a method with an async method"} '${mName}' (async methods dispatch statically — the vtable slot machinery has no fiber-spawn story)`,
             );
           }
-          // A #private GENERATOR method carries its channels on the sig:
+          if (overridden && (member.asteriskToken !== undefined || overridden.sig.gen !== undefined)) {
+            lowerer.unsupported(
+              "SC1090",
+              member.name,
+              `overriding the generator method '${mName}' (generator methods dispatch statically — a virtual slot cannot enter their spawn wrapper)`,
+            );
+          }
+          // A GENERATOR method carries its channels on the sig:
           // the body lowers as a generator IrFunction (`this` as param 0),
           // and every call — direct by construction — enters through the
           // emitted gen-spawn wrapper, answering the suspended generator.
@@ -4232,11 +4229,9 @@ export function lowerClassMembers(lowerer: Lowerer, info: ClassInfo): IrFunction
     // spawn's argument pack). Dispatch is static by construction — the
     // override fence at collection keeps async methods out of vtables.
     const isAsync = sig.async === true;
-    // #PRIVATE GENERATOR methods: the module function is a generator
-    // IrFunction — the body returns the TReturn channel, yields ride
-    // ctx.generator, and every call (direct by construction — privates
-    // never virtualize) enters through the emitted gen-spawn wrapper with
-    // `this` in the argument pack, answering the suspended generator.
+    // GENERATOR methods: the module function returns the TReturn channel,
+    // yields ride ctx.generator, and direct calls enter through the emitted
+    // gen-spawn wrapper with `this` in the argument pack.
     const genCh = sig.gen !== undefined && sig.ret.kind === "generator" ? sig.gen : null;
     const bodyReturn = genCh !== null
       ? lowerer.genBodyReturnType(sig.ret)
@@ -4283,15 +4278,21 @@ export function lowerClassMembers(lowerer: Lowerer, info: ClassInfo): IrFunction
   export function lowerStaticMethod(lowerer: Lowerer, info: ClassInfo, name: string): IrFunction | null {
     const entry = info.staticMethods?.get(name);
     if (!entry?.member.body) return null;
-    // Async statics: an async IrFunction like any module function — the
-    // body returns the promise's INNER type, calls enter through the
-    // fiber spawn wrapper (callTargetC routes by fn.async).
-    const isAsync =
-      entry.member.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true &&
-      entry.ret.kind === "promise";
-    const bodyReturn = isAsync && entry.ret.kind === "promise" ? entry.ret.inner : entry.ret;
+    const isAsync = entry.member.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+    const isGenerator = entry.member.asteriskToken !== undefined;
+    if (isGenerator && (entry.ret.kind !== "generator" || (entry.ret.async === true) !== isAsync)) {
+      lowerer.badType(entry.member.name, lowerer.typeOf(entry.member.name));
+    }
+    if (isAsync && !isGenerator && entry.ret.kind !== "promise") {
+      lowerer.badType(entry.member.name, lowerer.typeOf(entry.member.name));
+    }
+    const genCh = isGenerator && entry.ret.kind === "generator" ? generatorMeta(lowerer, entry.ret) : null;
+    const bodyReturn = genCh !== null
+      ? lowerer.genBodyReturnType(entry.ret)
+      : isAsync && entry.ret.kind === "promise" ? entry.ret.inner : entry.ret;
     const fnCtx = newFnCtx(false, null, null, bodyReturn);
     fnCtx.isAsync = isAsync;
+    if (genCh !== null) fnCtx.generator = genCh;
     lowerer.fnStack.push(fnCtx);
     try {
       rejectStaticThis(
@@ -4311,6 +4312,7 @@ export function lowerClassMembers(lowerer: Lowerer, info: ClassInfo): IrFunction
         loc: locOf(entry.member),
       };
       if (isAsync) fn.async = true;
+      if (genCh !== null) fn.generator = genCh;
       return fn;
     } catch (e) {
       // A poison OUTSIDE the per-statement catches (the this/super fence,

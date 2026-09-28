@@ -280,6 +280,24 @@ static void short_string_asserts(void) {
   scr_str_release(wrapped);
   scr_str_release(nul);
 
+  /* scr_str_new returns immortal empty and ASCII instances without allocating. */
+  ScrStr *empty0 = scr_str_new("", 0);
+  ScrStr *empty1 = scr_str_new(NULL, 0);
+  ScrStr *ascii_new0 = scr_str_new("A", 1);
+  ScrStr *ascii_new1 = scr_str_new("A", 1);
+  if (empty0 != empty1 || empty0->rc != SIZE_MAX || empty0->len != 0) {
+    failed++;
+    fprintf(stderr, "SHORT: empty string is not immortal\n");
+  }
+  if (ascii_new0 != ascii_new1 || ascii_new0->rc != SIZE_MAX || ascii_new0->len != 1 || ascii_new0->data[0] != 'A') {
+    failed++;
+    fprintf(stderr, "SHORT: ASCII scr_str_new is not immortal\n");
+  }
+  scr_str_release(empty0);
+  scr_str_release(empty1);
+  scr_str_release(ascii_new0);
+  scr_str_release(ascii_new1);
+
   ScrStr *unit = scr_str_from_char_code_one(0x2500);
   ScrStr *same = scr_str_from_char_code_one(0x2500);
   if (unit != same || unit->rc != 2 || unit->len != 3 ||

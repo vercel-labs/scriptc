@@ -31,14 +31,26 @@ size_t scr_bytes_elem_size(ScrBytesElem elem) {
 
 /* ── lifecycle ─────────────────────────────────────────────────────────── */
 
+/* Contiguous layout: b->data immediately follows the header, aligned to at
+ * least 8 bytes (sufficient for Float64Array elements across 32-bit and 64-bit
+ * architectures). */
+#define SCR_BYTES_HDR_SZ ((sizeof(ScrBytes) + (size_t)7) & ~(size_t)7)
+
+static inline uint8_t *scr_bytes_inline_data(const ScrBytes *b) {
+  return (uint8_t *)b + SCR_BYTES_HDR_SZ;
+}
+
 static ScrBytes *scr_bytes_alloc(ScrBytesElem elem, size_t len) {
-  ScrBytes *b = malloc(sizeof(ScrBytes));
+  size_t esz = scr_bytes_elem_size(elem);
+  size_t count = len ? len : 1;
+  if (count > (SIZE_MAX - SCR_BYTES_HDR_SZ) / esz) scr_bytes_oom();
+  size_t datasz = count * esz;
+  ScrBytes *b = calloc(1, SCR_BYTES_HDR_SZ + datasz);
   if (!b) scr_bytes_oom();
   b->rc = 1;
   b->len = len;
   b->elem = elem;
-  b->data = calloc(len ? len : 1, scr_bytes_elem_size(elem));
-  if (!b->data) scr_bytes_oom();
+  b->data = scr_bytes_inline_data(b);
   b->backing = NULL;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
@@ -90,7 +102,7 @@ void scr_bytes_release(ScrBytes *b) {
   if (--b->rc == 0) {
     if (b->backing) {
       scr_bytes_release(b->backing); /* a view: data points into the owner */
-    } else {
+    } else if (b->data != scr_bytes_inline_data(b)) {
       free(b->data);
     }
 #ifdef SCR_RC_AUDIT

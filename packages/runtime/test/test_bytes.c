@@ -59,7 +59,18 @@ static void test_construction(void) {
   check_f64(scr_bytes_len(b), 3, "new(3) length");
   check_f64(scr_bytes_byte_len(b), 3, "u8 byteLength == length");
   check_f64(scr_bytes_get(b, 0), 0, "zero-filled");
+  size_t hdrsz = (sizeof(ScrBytes) + (size_t)7) & ~(size_t)7;
+  check(b->data == (uint8_t *)b + hdrsz, "owner data is contiguous with struct");
+  check(((uintptr_t)b->data & 7) == 0, "owner data payload is 8-byte aligned");
+  ScrBytes *sub = scr_bytes_subarray(b, 1, 2);
+  check(sub->data != (uint8_t *)sub + hdrsz, "view data points into owner, not contiguous");
+  check(sub->backing == b, "view references backing owner");
+  scr_bytes_release(sub);
   scr_bytes_release(b);
+
+  ScrBytes *f64 = scr_bytes_new(SCR_BYTES_F64, 2);
+  check(((uintptr_t)f64->data & 7) == 0, "f64 data payload is 8-byte aligned");
+  scr_bytes_release(f64);
 
   /* ToIndex: 3.5 truncates to 3, NaN is 0 — no throw (Node-exact). */
   b = scr_bytes_new(SCR_BYTES_U8, 3.5);

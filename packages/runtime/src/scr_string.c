@@ -38,6 +38,27 @@ static void scr_short_forget(const ScrStr *s) {
   if (scr_short_tab[h] == s) scr_short_tab[h] = NULL;
 }
 
+/* ── interned strings ─────────────────────────────────────────────────
+ * The empty string and every single-character ASCII string are immortal
+ * statics (same layout the emitter uses for literals): charAt/slice churn
+ * in tight loops returns these without allocating.
+ */
+typedef struct { size_t rc; size_t len; size_t cap; char data[2]; } ScrChar1;
+#define SCR_A(c) {SIZE_MAX, 1, 1, {(char)(c), 0}}
+#define SCR_A8(c) \
+  SCR_A(c), SCR_A(c + 1), SCR_A(c + 2), SCR_A(c + 3), \
+  SCR_A(c + 4), SCR_A(c + 5), SCR_A(c + 6), SCR_A(c + 7)
+static const ScrChar1 scr_ascii1[128] = {
+  SCR_A8(0),   SCR_A8(8),   SCR_A8(16),  SCR_A8(24),
+  SCR_A8(32),  SCR_A8(40),  SCR_A8(48),  SCR_A8(56),
+  SCR_A8(64),  SCR_A8(72),  SCR_A8(80),  SCR_A8(88),
+  SCR_A8(96),  SCR_A8(104), SCR_A8(112), SCR_A8(120),
+};
+static const struct { size_t rc; size_t len; size_t cap; char data[1]; }
+    scr_lit_empty = {SIZE_MAX, 0, 0, ""};
+
+static inline ScrStr *scr_str_empty(void) { return (ScrStr *)&scr_lit_empty; }
+
 /* ── UTF-16 index cache ───────────────────────────────────────────────
  * JS string semantics are UTF-16 indices over our UTF-8 storage, so
  * .length, charCodeAt, charAt, indexOf and slice all need unit↔byte
@@ -227,6 +248,10 @@ static ScrStr *scr_str_alloc(size_t len, size_t cap) {
 }
 
 ScrStr *scr_str_new(const char *bytes, size_t len) {
+  if (len == 0) return scr_str_empty();
+  if (len == 1 && (unsigned char)bytes[0] < 0x80) {
+    return (ScrStr *)&scr_ascii1[(unsigned char)bytes[0]];
+  }
   ScrStr *s = scr_str_alloc(len, len);
   memcpy(s->data, bytes, len);
   s->data[len] = '\0';
@@ -412,33 +437,9 @@ int scr_str_cmp_u16(ScrStr *a, ScrStr *b) {
   return 0;
 }
 
-/* ── interned strings ─────────────────────────────────────────────────
- * The empty string and every single-character ASCII string are immortal
- * statics (same layout the emitter uses for literals): charAt/slice churn
- * in tight loops returns these without allocating.
- */
-typedef struct { size_t rc; size_t len; size_t cap; char data[2]; } ScrChar1;
-#define SCR_A(c) {SIZE_MAX, 1, 1, {(char)(c), 0}}
-#define SCR_A8(c) \
-  SCR_A(c), SCR_A(c + 1), SCR_A(c + 2), SCR_A(c + 3), \
-  SCR_A(c + 4), SCR_A(c + 5), SCR_A(c + 6), SCR_A(c + 7)
-static const ScrChar1 scr_ascii1[128] = {
-  SCR_A8(0),   SCR_A8(8),   SCR_A8(16),  SCR_A8(24),
-  SCR_A8(32),  SCR_A8(40),  SCR_A8(48),  SCR_A8(56),
-  SCR_A8(64),  SCR_A8(72),  SCR_A8(80),  SCR_A8(88),
-  SCR_A8(96),  SCR_A8(104), SCR_A8(112), SCR_A8(120),
-};
-static const struct { size_t rc; size_t len; size_t cap; char data[1]; }
-    scr_lit_empty = {SIZE_MAX, 0, 0, ""};
-
-static ScrStr *scr_str_empty(void) { return (ScrStr *)&scr_lit_empty; }
-
 /* Empty/ASCII characters are immortal; tiny spans share live heap strings. */
 static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
-  if (len == 0) return scr_str_empty();
-  if (len == 1 && (unsigned char)bytes[0] < 0x80) {
-    return (ScrStr *)&scr_ascii1[(unsigned char)bytes[0]];
-  }
+  if (len <= 1) return scr_str_new(bytes, len);
   if (len >= 2 && len <= 4) {
     size_t h = scr_short_hash(bytes, len);
     ScrStr *cached = scr_short_tab[h];

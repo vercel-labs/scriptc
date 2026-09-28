@@ -751,9 +751,41 @@ static ScrNtick *scr_nt_tail = NULL;
  * it, because 'exit' listeners run AFTER the loop's teardown and may
  * enqueue ticks that must never run (Node) yet must not leak. */
 
-void scr_next_tick(ScrClosure *cb /*moves*/) {
+#ifndef SCR_RC_AUDIT
+#define SCR_NT_FREELIST_MAX 128
+static SCR_TL ScrNtick *scr_nt_freelist = NULL;
+static SCR_TL size_t scr_nt_freelist_count = 0;
+#endif
+
+static ScrNtick *scr_ntick_alloc(void) {
+#ifndef SCR_RC_AUDIT
+  if (scr_nt_freelist) {
+    ScrNtick *t = scr_nt_freelist;
+    scr_nt_freelist = t->next;
+    scr_nt_freelist_count--;
+    memset(t, 0, sizeof *t);
+    return t;
+  }
+#endif
   ScrNtick *t = calloc(1, sizeof *t);
   if (!t) scr_oom();
+  return t;
+}
+
+static void scr_ntick_free(ScrNtick *t) {
+#ifndef SCR_RC_AUDIT
+  if (scr_nt_freelist_count < SCR_NT_FREELIST_MAX) {
+    t->next = scr_nt_freelist;
+    scr_nt_freelist = t;
+    scr_nt_freelist_count++;
+    return;
+  }
+#endif
+  free(t);
+}
+
+void scr_next_tick(ScrClosure *cb /*moves*/) {
+  ScrNtick *t = scr_ntick_alloc();
   t->cb = cb;
   if (scr_nt_tail) scr_nt_tail->next = t;
   else scr_nt_head = t;
@@ -765,8 +797,7 @@ void scr_next_tick(ScrClosure *cb /*moves*/) {
  * adapter ABI also used by fs.rename: emitted adapters construct the
  * program's Error | null union, and NULL selects its null arm. */
 void scr_process_write_callback(ScrClosure *cb /*moves*/, ScrFsRenameFn fn) {
-  ScrNtick *t = calloc(1, sizeof *t);
-  if (!t) scr_oom();
+  ScrNtick *t = scr_ntick_alloc();
   t->cb = cb;
   t->error_cb = fn;
   if (scr_nt_tail) scr_nt_tail->next = t;
@@ -780,8 +811,7 @@ void scr_process_write_callback(ScrClosure *cb /*moves*/, ScrFsRenameFn fn) {
  * endReadableNT, ...). The hook dispatches exactly one stream tick;
  * teardown just drops markers (the stream queue owns its entries). */
 void scr_next_tick_raw(void (*fn)(void)) {
-  ScrNtick *t = calloc(1, sizeof *t);
-  if (!t) scr_oom();
+  ScrNtick *t = scr_ntick_alloc();
   t->raw = fn;
   if (scr_nt_tail) scr_nt_tail->next = t;
   else scr_nt_head = t;
@@ -796,6 +826,14 @@ void scr_nticks_teardown(void) {
     free(t);
   }
   scr_nt_tail = NULL;
+#ifndef SCR_RC_AUDIT
+  while (scr_nt_freelist != NULL) {
+    ScrNtick *t = scr_nt_freelist;
+    scr_nt_freelist = t->next;
+    free(t);
+  }
+  scr_nt_freelist_count = 0;
+#endif
 }
 
 /* Releases every armed timer — the island teardown calls this before the
@@ -2512,7 +2550,7 @@ bool scr_loop_run(ScrPromise *top_level) {
         ScrClosure *cb = t->cb;
         ScrFsRenameFn error_cb = t->error_cb;
         void (*raw)(void) = t->raw;
-        free(t);
+        scr_ntick_free(t);
         if (cb) {
           if (error_cb) error_cb(cb, NULL);
           else ((void (*)(ScrClosure *))cb->fn)(cb);

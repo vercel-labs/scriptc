@@ -16,6 +16,7 @@ report("uri", new URIError("uri"));
 report("child reference", new ChildReferenceError("child"));
 report("child eval", new ChildEvalError("child"));
 report("child uri", new ChildURIError("child"));
+report("child cause", new ChildReferenceError("present", { cause: undefined }));
 
 try {
   throw new ReferenceError("caught");

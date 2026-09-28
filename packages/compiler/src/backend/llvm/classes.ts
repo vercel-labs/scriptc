@@ -205,6 +205,9 @@ export interface ClassHost extends ShapeHost {
 function undefFieldInits(host: ClassHost, meta: LlClassMeta): string[] {
   const out: string[] = [];
   meta.def.fields.forEach((f, i) => {
+    // Error.cause uses NULL for absence; an options constructor installs
+    // a value only when the cause property is present.
+    if (f.name === "%cause") return;
     const { index } = classFieldIndex(meta, f.name);
     if (f.type.kind === "jsval" || f.type.kind === "dyn") {
       const undefinedFn = f.type.kind === "dyn" ? "scr_dyn_undefined" : "scr_jsval_undefined";

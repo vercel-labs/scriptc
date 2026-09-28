@@ -7619,6 +7619,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3122-js-async-class-methods.js": {
+   "order": [
+    "<repo>/tests/corpus/3122-js-async-class-methods.js"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/400-fib.ts": {
    "order": [
     "<repo>/tests/corpus/400-fib.ts"

@@ -1,0 +1,11 @@
+scriptc coverage tests/fixtures/npm/cases/crypto-shims/main.ts
+
+  statements analyzed   3
+  compile statically    2  (66%)
+  compile dynamically   1  (33%) (island sites — the embedded engine runs them)
+
+  embedded npm code imports Node builtins:
+    node:crypto  partial  (cryptozoo)
+    (partial: the shim exists but covers only part of Node's surface; unsupported members throw at the call)
+
+  builds with --dynamic — no remaining blockers (the island sites above run in the embedded engine).

@@ -1001,6 +1001,9 @@ export function jsFuncNameOf(node: ts.Node): string | null {
   return null;
 }
 
+/** Scalar kinds a typeof narrow may take a checked-dynamic binding to. */
+const DYN_SCALAR_NARROWS: ReadonlySet<IrType["kind"]> = new Set(["f64", "string", "bool", "bigint"]);
+
 export class Lowerer {
   readonly frontendServices: FrontendServices | undefined;
   readonly checker: ts.TypeChecker;
@@ -3664,15 +3667,28 @@ export class Lowerer {
       let es = 0;
       const classDispatch = new ClassDynamicDispatch();
       let dispatchChanged = !this.remainder;
+      // A function-local class lowers inside its enclosing body
+      // (lowerClassExpression caches its members there). Type mapping can
+      // collect one earlier, or in a pass that never lowers that body (the
+      // coverage remainder skips reached functions): it waits here until
+      // its body lowered, and never lowers without its lexical environment.
+      const waitingLocals: ClassInfo[] = [];
+      const readyLocal = (): number => waitingLocals.findIndex((info) => info.localClass!.ready);
       while (
         dispatchChanged ||
         ec < this.exprClasses.length ||
+        readyLocal() !== -1 ||
         gc < this.genericClassInstances.length ||
         gi < this.instantiationQueue.length ||
         es < this.emitSpecQueue.length
       ) {
+        for (let ready = readyLocal(); ready !== -1; ready = readyLocal()) {
+          functions.push(...this.lowerClassMembers(waitingLocals.splice(ready, 1)[0]!));
+        }
         while (ec < this.exprClasses.length) {
-          functions.push(...this.lowerClassMembers(this.exprClasses[ec++]!));
+          const info = this.exprClasses[ec++]!;
+          if (info.localClass && !info.localClass.ready) waitingLocals.push(info);
+          else functions.push(...this.lowerClassMembers(info));
         }
         while (gc < this.genericClassInstances.length) {
           functions.push(...this.lowerClassMembers(this.genericClassInstances[gc++]!));
@@ -4848,9 +4864,13 @@ export class Lowerer {
         if (narrowedIr === null || boundIr === null) return bound;
         if (typeEquals(narrowedIr, boundIr)) return t;
         // A checked value can contain any runtime kind. A checker-proven
-        // branch narrow therefore cannot contradict this specialization;
-        // reads still validate the payload through maybeNarrow.
-        if (boundIr.kind === "dyn") return t;
+        // typeof narrow to a scalar therefore cannot contradict this
+        // specialization; reads still validate the payload through
+        // maybeNarrow. Structured narrows (a JSDoc `Promise|undefined`
+        // param after a `?.then` guard) keep the checked binding: the
+        // value is still dyn, and lowering it as the declared structure
+        // loses its methods.
+        if (boundIr.kind === "dyn" && DYN_SCALAR_NARROWS.has(narrowedIr.kind)) return t;
         // A union binding narrowed to one of its arms (typeof/equality
         // guards over string|number bindings) — the narrow is truth.
         if (boundIr.kind === "union") {

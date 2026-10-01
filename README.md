@@ -160,3 +160,7 @@ The normal workspace build needs no local LLVM installation. To rebuild a native
 `pnpm test:sandbox` loads `.env.local`, preflights Vercel authentication and project access, and uses the managed `vercel/sandbox/universal` image by default. It installs the repository-pinned Node, pnpm, and LLVM toolchain plus scriptc dependencies in each disposable Sandbox before building the uploaded worktree. Set `SCRIPTC_SANDBOX_IMAGE` to a fully qualified VCR reference only to use the optional prebuilt image from `pnpm test:sandbox:image`. The prebuilt image keeps the roughly four-minute fast path; cold managed-image runs take longer because they install the pinned toolchain in each Sandbox.
 
 `VERCEL_OIDC_TOKEN` is preferred. For access-token authentication, set `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`; team and project are never inferred from `SCRIPTC_SANDBOX_IMAGE`. The legacy VCR command used by `pnpm test:sandbox:image` cannot authenticate with an OIDC JWT, so image builds use `VERCEL_TOKEN` when available or the existing Vercel CLI login; OIDC claims still select the VCR team and project. The test corpus runs each program under Node and as a compiled native binary, then checks that stdout, stderr, and exit codes match exactly. The full gate also runs the corpus with AddressSanitizer and the runtime reference-count audit.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).

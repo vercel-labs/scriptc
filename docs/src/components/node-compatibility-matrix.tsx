@@ -4,7 +4,7 @@
 // empty after an edit.
 // @refresh reset
 
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import compatibilityMeta from "@/generated/node-v24-compatibility-meta.json";
 
 type Status =
@@ -76,17 +76,19 @@ const stabilityStyles: Record<number, string> = {
   3: "border-gray-alpha-500 bg-gray-alpha-100 text-gray-900",
 };
 
-function StatusBadge({ status, detail, verification }: { status: Status; detail?: string; verification?: Verification }) {
+const StatusBadge = memo(function StatusBadge({ status, detail, verification }: { status: Status; detail?: string; verification?: Verification }) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
   const tooltip = verification ? `${detail ?? ""}${detail ? "\n\n" : ""}Verification: ${verification.label}. ${verification.detail}` : detail;
   return (
-    <span className="group relative inline-flex" tabIndex={tooltip ? 0 : undefined}>
+    <span className="group relative inline-flex" tabIndex={tooltip ? 0 : undefined} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}>
       <span
         className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium ${styles[status]}`}
         title={tooltip}
       >
         {labels[status]}
       </span>
-      {tooltip ? (
+      {tooltip && (hovered || focused) ? (
         <span role="tooltip" className="pointer-events-none invisible absolute left-0 top-full z-30 mt-2 w-64 rounded-md border border-gray-alpha-500 bg-background-100 p-2 text-left text-xs font-normal leading-5 text-gray-1000 opacity-0 shadow-popover transition-opacity group-hover:visible group-hover:opacity-100 group-focus-visible:visible group-focus-visible:opacity-100">
           {detail ? <span className="block">{detail}</span> : null}
           {verification ? <span className={detail ? "mt-2 block border-t border-gray-alpha-400 pt-2" : "block"}><strong>Verification:</strong> {verification.label}. {verification.detail}</span> : null}
@@ -94,22 +96,26 @@ function StatusBadge({ status, detail, verification }: { status: Status; detail?
       ) : null}
     </span>
   );
-}
+});
 
-function StabilityBadge({ stability }: { stability: NodeStability }) {
+const StabilityBadge = memo(function StabilityBadge({ stability }: { stability: NodeStability }) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
   if (stability === null) return <span className="text-xs text-gray-700" title="Node.js does not publish a stability index for this entry.">—</span>;
   const detail = `Node.js Stability ${stability.index}: ${stability.text}${stability.inherited ? " (inherited from the nearest parent section)" : ""}`;
   return (
-    <span className="group relative inline-flex" tabIndex={0}>
+    <span className="group relative inline-flex" tabIndex={0} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}>
       <span className={`inline-flex min-w-7 justify-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${stabilityStyles[stability.level] ?? stabilityStyles[3]}`} title={detail}>
         {stability.index}
       </span>
-      <span role="tooltip" className="pointer-events-none invisible absolute left-1/2 top-full z-30 mt-2 w-72 -translate-x-1/2 rounded-md border border-gray-alpha-500 bg-background-100 p-2 text-left text-xs font-normal leading-5 text-gray-1000 opacity-0 shadow-popover transition-opacity group-hover:visible group-hover:opacity-100 group-focus-visible:visible group-focus-visible:opacity-100">
-        {detail}
-      </span>
+      {(hovered || focused) ? (
+        <span role="tooltip" className="pointer-events-none invisible absolute left-1/2 top-full z-30 mt-2 w-72 -translate-x-1/2 rounded-md border border-gray-alpha-500 bg-background-100 p-2 text-left text-xs font-normal leading-5 text-gray-1000 opacity-0 shadow-popover transition-opacity group-hover:visible group-hover:opacity-100 group-focus-visible:visible group-focus-visible:opacity-100">
+          {detail}
+        </span>
+      ) : null}
     </span>
   );
-}
+});
 
 function statusCounts(rows: Row[], tier: "static" | "dynamic") {
   return rows.reduce<Record<Status, number>>(

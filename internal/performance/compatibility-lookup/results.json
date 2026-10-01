@@ -1,0 +1,3112 @@
+{
+  "status": "lab-only; no production deployment or real-user measurements",
+  "sourceCommit": "2069684",
+  "window": "single local optimization session",
+  "workload": "published Node 24.15.0 compatibility census; production Next.js build; local HTTP; nine attempts per phase/CPU profile",
+  "timing": "browser input capture to two requestAnimationFrame callbacks; sequential readFile typing measured from first input to final result; untimed assertions check every displayed label",
+  "workCounters": {
+    "allRows": 3662,
+    "elementsBefore": 90922,
+    "elementsAfter": 58649,
+    "retainedStatusRendersBefore": 6128,
+    "retainedStatusRendersAfter": 0,
+    "guard": {
+      "hiddenTooltips": 0,
+      "maxElementsPerRow": 17,
+      "elementAllowance": 500,
+      "maxRetainedRendererCalls": 16,
+      "positiveHoverControl": true
+    }
+  },
+  "experiments": [
+    {
+      "name": "lazy tooltip DOM",
+      "before": "original",
+      "after": "lazyTooltips",
+      "retained": true
+    },
+    {
+      "name": "memoize unchanged badges",
+      "before": "beforeMemo",
+      "after": "afterMemo",
+      "retained": true
+    },
+    {
+      "name": "content-visibility on table rows/cells",
+      "retained": false,
+      "reason": "rows gave no useful gain; cells reduced layout cost but changed table height and scroll geometry"
+    }
+  ],
+  "visual": {
+    "desktopTooltipPixelDifferences": 0,
+    "mobileTooltipDifferentChannels": 92,
+    "mobileTooltipTotalChannels": 912600,
+    "tableDimensionsAndTooltipTextEqual": true
+  },
+  "runs": {
+    "original": {
+      "environment": {
+        "node": "v24.15.0",
+        "browser": "154.0.8037.57",
+        "platform": "darwin",
+        "os": "25.6.0",
+        "arch": "arm64",
+        "cpu": "Apple M3",
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "baseURL": "http://localhost:3107",
+        "censusRows": 3662
+      },
+      "summaries": [
+        {
+          "throttle": 1,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 643.5,
+          "p95_ms": 674.5,
+          "elements": 89169,
+          "rows": 3592
+        },
+        {
+          "throttle": 1,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 58.199999928474426,
+          "p95_ms": 60.89999997615814,
+          "elements": 301,
+          "rows": 6
+        },
+        {
+          "throttle": 1,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 24.40000009536743,
+          "p95_ms": 29.700000047683716,
+          "elements": 1617,
+          "rows": 55
+        },
+        {
+          "throttle": 1,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 584.8999999761581,
+          "p95_ms": 613.7000000476837,
+          "elements": 90922,
+          "rows": 3662
+        },
+        {
+          "throttle": 1,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 61.700000047683716,
+          "p95_ms": 63.200000047683716,
+          "elements": 1617,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 3014.7000000476837,
+          "p95_ms": 3464.600000023842,
+          "elements": 89169,
+          "rows": 3592
+        },
+        {
+          "throttle": 4,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 259.7000000476837,
+          "p95_ms": 313.59999990463257,
+          "elements": 301,
+          "rows": 6
+        },
+        {
+          "throttle": 4,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 49.10000002384186,
+          "p95_ms": 53.10000002384186,
+          "elements": 1617,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 2401.3000000715256,
+          "p95_ms": 2446.2000000476837,
+          "elements": 90922,
+          "rows": 3662
+        },
+        {
+          "throttle": 4,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 266.7999999523163,
+          "p95_ms": 371.7000000476837,
+          "elements": 1617,
+          "rows": 55
+        }
+      ],
+      "samples": {
+        "1x/prefix-r": {
+          "rows": 3592,
+          "elements": 89169,
+          "ms": [
+            651.6000000238419,
+            667.3999999761581,
+            614.3000000715256,
+            674.5,
+            643.5,
+            641.5,
+            631.7999999523163,
+            646.6000000238419,
+            621.3000000715256
+          ]
+        },
+        "1x/readFile": {
+          "rows": 6,
+          "elements": 301,
+          "ms": [
+            60.10000002384186,
+            56.699999928474426,
+            58.300000071525574,
+            58.199999928474426,
+            60.89999997615814,
+            60.89999997615814,
+            55.60000002384186,
+            56.699999928474426,
+            56.5
+          ]
+        },
+        "1x/clear": {
+          "rows": 55,
+          "elements": 1617,
+          "ms": [
+            17.5,
+            29.700000047683716,
+            26.399999976158142,
+            21.199999928474426,
+            26.600000023841858,
+            24.40000009536743,
+            23,
+            25.199999928474426,
+            21.899999976158142
+          ]
+        },
+        "1x/expand-all": {
+          "rows": 3662,
+          "elements": 90922,
+          "ms": [
+            613.7000000476837,
+            563.7000000476837,
+            566.7000000476837,
+            584.8999999761581,
+            587,
+            585,
+            574.4000000953674,
+            595.6000000238419,
+            581.8000000715256
+          ]
+        },
+        "1x/collapse-all": {
+          "rows": 55,
+          "elements": 1617,
+          "ms": [
+            58.89999997615814,
+            62.39999997615814,
+            63.200000047683716,
+            62.89999997615814,
+            59.39999997615814,
+            55.10000002384186,
+            61.700000047683716,
+            59.09999990463257,
+            62.699999928474426
+          ]
+        },
+        "4x/prefix-r": {
+          "rows": 3592,
+          "elements": 89169,
+          "ms": [
+            2535.7000000476837,
+            2856.2000000476837,
+            3014.7000000476837,
+            3070,
+            2671.5999999046326,
+            2822.1999999284744,
+            3464.600000023842,
+            3439.6999999284744,
+            3355.4000000953674
+          ]
+        },
+        "4x/readFile": {
+          "rows": 6,
+          "elements": 301,
+          "ms": [
+            267.7000000476837,
+            253.5,
+            253.20000004768372,
+            247.89999997615814,
+            241.5,
+            259.7000000476837,
+            299.7999999523163,
+            313.59999990463257,
+            305.60000002384186
+          ]
+        },
+        "4x/clear": {
+          "rows": 55,
+          "elements": 1617,
+          "ms": [
+            51.39999997615814,
+            47.60000002384186,
+            51.299999952316284,
+            52.699999928474426,
+            44.39999997615814,
+            45.10000002384186,
+            46.09999990463257,
+            53.10000002384186,
+            49.10000002384186
+          ]
+        },
+        "4x/expand-all": {
+          "rows": 3662,
+          "elements": 90922,
+          "ms": [
+            2409.399999976158,
+            2401.3000000715256,
+            2411.8000000715256,
+            2314,
+            2360.100000023842,
+            2417.6999999284744,
+            2347.7000000476837,
+            2446.2000000476837,
+            2373.2000000476837
+          ]
+        },
+        "4x/collapse-all": {
+          "rows": 55,
+          "elements": 1617,
+          "ms": [
+            272.39999997615814,
+            273.5,
+            254.80000007152557,
+            239.70000004768372,
+            248.5,
+            371.7000000476837,
+            266.7999999523163,
+            308.60000002384186,
+            250.80000007152557
+          ]
+        }
+      },
+      "loads": [
+        {
+          "throttle": 1,
+          "navigation": {
+            "name": "http://localhost:3107/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 63,
+            "navigationId": 6789,
+            "initiatorType": "navigation",
+            "deliveryType": "",
+            "nextHopProtocol": "http/1.1",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.5,
+            "domainLookupStart": 0.5,
+            "domainLookupEnd": 0.5,
+            "connectStart": 0.5,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.5,
+            "requestStart": 1.1999999284744263,
+            "responseStart": 7.199999928474426,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 7.199999928474426,
+            "responseEnd": 7.599999904632568,
+            "transferSize": 4976,
+            "encodedBodySize": 4676,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 0,
+            "unloadEventEnd": 0,
+            "domInteractive": 32.699999928474426,
+            "domContentLoadedEventStart": 32.799999952316284,
+            "domContentLoadedEventEnd": 32.799999952316284,
+            "domComplete": 63,
+            "loadEventStart": 63,
+            "loadEventEnd": 63,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "low"
+            }
+          },
+          "data": [
+            {
+              "name": "http://localhost:3107/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 79.59999990463257,
+              "duration": 7,
+              "navigationId": 6789,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 79.59999990463257,
+              "domainLookupStart": 79.59999990463257,
+              "domainLookupEnd": 79.59999990463257,
+              "connectStart": 79.59999990463257,
+              "secureConnectionStart": 0,
+              "connectEnd": 79.59999990463257,
+              "requestStart": 79.89999997615814,
+              "responseStart": 81.39999997615814,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 81.39999997615814,
+              "responseEnd": 86.59999990463257,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        },
+        {
+          "throttle": 4,
+          "navigation": {
+            "name": "http://localhost:3107/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 73.39999997615814,
+            "navigationId": 2543,
+            "initiatorType": "navigation",
+            "deliveryType": "cache",
+            "nextHopProtocol": "",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.19999992847442627,
+            "domainLookupStart": 0.19999992847442627,
+            "domainLookupEnd": 0.19999992847442627,
+            "connectStart": 0.19999992847442627,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.19999992847442627,
+            "requestStart": 1.1999999284744263,
+            "responseStart": 9.600000023841858,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 9.600000023841858,
+            "responseEnd": 9.899999976158142,
+            "transferSize": 300,
+            "encodedBodySize": 4676,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 14.399999976158142,
+            "unloadEventEnd": 14.399999976158142,
+            "domInteractive": 32.699999928474426,
+            "domContentLoadedEventStart": 32.699999928474426,
+            "domContentLoadedEventEnd": 32.699999928474426,
+            "domComplete": 73.39999997615814,
+            "loadEventStart": 73.39999997615814,
+            "loadEventEnd": 73.39999997615814,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "high"
+            }
+          },
+          "data": [
+            {
+              "name": "http://localhost:3107/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 103.19999992847443,
+              "duration": 51.200000047683716,
+              "navigationId": 2543,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 103.19999992847443,
+              "domainLookupStart": 103.19999992847443,
+              "domainLookupEnd": 103.19999992847443,
+              "connectStart": 103.19999992847443,
+              "secureConnectionStart": 0,
+              "connectEnd": 103.19999992847443,
+              "requestStart": 103.60000002384186,
+              "responseStart": 123.29999995231628,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 123.29999995231628,
+              "responseEnd": 154.39999997615814,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        }
+      ]
+    },
+    "lazyTooltips": {
+      "environment": {
+        "node": "v24.15.0",
+        "browser": "154.0.8037.57",
+        "platform": "darwin",
+        "os": "25.6.0",
+        "arch": "arm64",
+        "cpu": "Apple M3",
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "baseURL": "http://localhost:3107",
+        "censusRows": 3662
+      },
+      "summaries": [
+        {
+          "throttle": 1,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 304.3000000715256,
+          "p95_ms": 397,
+          "elements": 57526,
+          "rows": 3592
+        },
+        {
+          "throttle": 1,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 33.89999997615814,
+          "p95_ms": 44.799999952316284,
+          "elements": 247,
+          "rows": 6
+        },
+        {
+          "throttle": 1,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 21.300000071525574,
+          "p95_ms": 27.200000047683716,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 1,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 316.60000002384186,
+          "p95_ms": 344.60000002384186,
+          "elements": 58649,
+          "rows": 3662
+        },
+        {
+          "throttle": 1,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 36,
+          "p95_ms": 40.60000002384186,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 1396.2000000476837,
+          "p95_ms": 1482.5,
+          "elements": 57526,
+          "rows": 3592
+        },
+        {
+          "throttle": 4,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 145.39999997615814,
+          "p95_ms": 168.10000002384186,
+          "elements": 247,
+          "rows": 6
+        },
+        {
+          "throttle": 4,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 30.100000023841858,
+          "p95_ms": 33.10000002384186,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 1245.1000000238419,
+          "p95_ms": 1415.8999999761581,
+          "elements": 58649,
+          "rows": 3662
+        },
+        {
+          "throttle": 4,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 153.39999997615814,
+          "p95_ms": 170.90000009536743,
+          "elements": 1131,
+          "rows": 55
+        }
+      ],
+      "samples": {
+        "1x/prefix-r": {
+          "rows": 3592,
+          "elements": 57526,
+          "ms": [
+            349.5,
+            302,
+            332.2999999523163,
+            397,
+            331.10000002384186,
+            304.10000002384186,
+            304.3000000715256,
+            297.2999999523163,
+            300.40000009536743
+          ]
+        },
+        "1x/readFile": {
+          "rows": 6,
+          "elements": 247,
+          "ms": [
+            37.60000002384186,
+            36.60000002384186,
+            44.799999952316284,
+            32.300000071525574,
+            32.700000047683716,
+            31.699999928474426,
+            32.800000071525574,
+            33.89999997615814,
+            37.5
+          ]
+        },
+        "1x/clear": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            16.399999976158142,
+            22.700000047683716,
+            16.800000071525574,
+            27.200000047683716,
+            25.100000023841858,
+            17.200000047683716,
+            21.300000071525574,
+            18.5,
+            26.199999928474426
+          ]
+        },
+        "1x/expand-all": {
+          "rows": 3662,
+          "elements": 58649,
+          "ms": [
+            335.89999997615814,
+            318.2000000476837,
+            316.60000002384186,
+            326,
+            303,
+            286.60000002384186,
+            344.60000002384186,
+            276.39999997615814,
+            284.2999999523163
+          ]
+        },
+        "1x/collapse-all": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            35.300000071525574,
+            36.5,
+            36,
+            40.60000002384186,
+            36.89999997615814,
+            38.700000047683716,
+            33.699999928474426,
+            33.5,
+            33.89999997615814
+          ]
+        },
+        "4x/prefix-r": {
+          "rows": 3592,
+          "elements": 57526,
+          "ms": [
+            1313.5,
+            1482.5,
+            1374.5,
+            1365.1999999284744,
+            1396.2000000476837,
+            1443,
+            1396.2000000476837,
+            1395.3999999761581,
+            1437.1000000238419
+          ]
+        },
+        "4x/readFile": {
+          "rows": 6,
+          "elements": 247,
+          "ms": [
+            168.10000002384186,
+            136.70000004768372,
+            147.20000004768372,
+            136.60000002384186,
+            142.89999997615814,
+            145.39999997615814,
+            145.39999997615814,
+            141.80000007152557,
+            145.89999997615814
+          ]
+        },
+        "4x/clear": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            27.5,
+            33.10000002384186,
+            29.899999976158142,
+            30,
+            32.299999952316284,
+            30.100000023841858,
+            31.199999928474426,
+            29.399999976158142,
+            32.40000009536743
+          ]
+        },
+        "4x/expand-all": {
+          "rows": 3662,
+          "elements": 58649,
+          "ms": [
+            1210.6000000238419,
+            1195.6999999284744,
+            1291.6000000238419,
+            1230.3999999761581,
+            1415.8999999761581,
+            1288.8999999761581,
+            1318.3999999761581,
+            1222.8999999761581,
+            1245.1000000238419
+          ]
+        },
+        "4x/collapse-all": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            149.69999992847443,
+            145.20000004768372,
+            156.39999997615814,
+            170.90000009536743,
+            161.89999997615814,
+            170.90000009536743,
+            153.39999997615814,
+            152.39999997615814,
+            152.89999997615814
+          ]
+        }
+      },
+      "loads": [
+        {
+          "throttle": 1,
+          "navigation": {
+            "name": "http://localhost:3107/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 60.799999952316284,
+            "navigationId": 4817,
+            "initiatorType": "navigation",
+            "deliveryType": "",
+            "nextHopProtocol": "http/1.1",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.6999999284744263,
+            "domainLookupStart": 0.6999999284744263,
+            "domainLookupEnd": 0.6999999284744263,
+            "connectStart": 0.6999999284744263,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.6999999284744263,
+            "requestStart": 1.5,
+            "responseStart": 4.100000023841858,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 4.100000023841858,
+            "responseEnd": 4.5,
+            "transferSize": 5021,
+            "encodedBodySize": 4721,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 0,
+            "unloadEventEnd": 0,
+            "domInteractive": 24.5,
+            "domContentLoadedEventStart": 24.5,
+            "domContentLoadedEventEnd": 24.5,
+            "domComplete": 60.799999952316284,
+            "loadEventStart": 60.799999952316284,
+            "loadEventEnd": 60.799999952316284,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "low"
+            }
+          },
+          "data": [
+            {
+              "name": "http://localhost:3107/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 80.60000002384186,
+              "duration": 7.5,
+              "navigationId": 4817,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 80.60000002384186,
+              "domainLookupStart": 80.60000002384186,
+              "domainLookupEnd": 80.60000002384186,
+              "connectStart": 80.60000002384186,
+              "secureConnectionStart": 0,
+              "connectEnd": 80.60000002384186,
+              "requestStart": 80.89999997615814,
+              "responseStart": 83.89999997615814,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 83.89999997615814,
+              "responseEnd": 88.10000002384186,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        },
+        {
+          "throttle": 4,
+          "navigation": {
+            "name": "http://localhost:3107/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 70.79999995231628,
+            "navigationId": 3268,
+            "initiatorType": "navigation",
+            "deliveryType": "cache",
+            "nextHopProtocol": "",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.2999999523162842,
+            "domainLookupStart": 0.2999999523162842,
+            "domainLookupEnd": 0.2999999523162842,
+            "connectStart": 0.2999999523162842,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.2999999523162842,
+            "requestStart": 1.1999999284744263,
+            "responseStart": 4.5,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 4.5,
+            "responseEnd": 4.799999952316284,
+            "transferSize": 300,
+            "encodedBodySize": 4721,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 12.699999928474426,
+            "unloadEventEnd": 12.699999928474426,
+            "domInteractive": 31.799999952316284,
+            "domContentLoadedEventStart": 31.799999952316284,
+            "domContentLoadedEventEnd": 31.799999952316284,
+            "domComplete": 70.79999995231628,
+            "loadEventStart": 70.79999995231628,
+            "loadEventEnd": 70.79999995231628,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "high"
+            }
+          },
+          "data": [
+            {
+              "name": "http://localhost:3107/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 99.39999997615814,
+              "duration": 27.399999976158142,
+              "navigationId": 3268,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 99.39999997615814,
+              "domainLookupStart": 99.39999997615814,
+              "domainLookupEnd": 99.39999997615814,
+              "connectStart": 99.39999997615814,
+              "secureConnectionStart": 0,
+              "connectEnd": 99.39999997615814,
+              "requestStart": 100.19999992847443,
+              "responseStart": 103.59999990463257,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 103.59999990463257,
+              "responseEnd": 126.79999995231628,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        }
+      ]
+    },
+    "beforeMemo": {
+      "environment": {
+        "node": "v24.15.0",
+        "browser": "154.0.8037.57",
+        "platform": "darwin",
+        "os": "25.6.0",
+        "arch": "arm64",
+        "cpu": "Apple M3",
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "baseURL": "http://localhost:3107",
+        "censusRows": 3662
+      },
+      "summaries": [
+        {
+          "throttle": 1,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 330,
+          "p95_ms": 387.3000000715256,
+          "elements": 57526,
+          "rows": 3592
+        },
+        {
+          "throttle": 1,
+          "phase": "prefix-re",
+          "n": 9,
+          "p50_ms": 93.80000007152557,
+          "p95_ms": 104.89999997615814,
+          "elements": 49068,
+          "rows": 3061
+        },
+        {
+          "throttle": 1,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 33.60000002384186,
+          "p95_ms": 38.299999952316284,
+          "elements": 247,
+          "rows": 6
+        },
+        {
+          "throttle": 1,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 20,
+          "p95_ms": 29.800000071525574,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 1,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 304.10000002384186,
+          "p95_ms": 321.6999999284744,
+          "elements": 58649,
+          "rows": 3662
+        },
+        {
+          "throttle": 1,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 35.90000009536743,
+          "p95_ms": 37.5,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 1378.2999999523163,
+          "p95_ms": 1461.4000000953674,
+          "elements": 57526,
+          "rows": 3592
+        },
+        {
+          "throttle": 4,
+          "phase": "prefix-re",
+          "n": 9,
+          "p50_ms": 382.7999999523163,
+          "p95_ms": 449.1999999284744,
+          "elements": 49068,
+          "rows": 3061
+        },
+        {
+          "throttle": 4,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 140.89999997615814,
+          "p95_ms": 146.89999997615814,
+          "elements": 247,
+          "rows": 6
+        },
+        {
+          "throttle": 4,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 27.799999952316284,
+          "p95_ms": 34.799999952316284,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 1221.3000000715256,
+          "p95_ms": 1296.6000000238419,
+          "elements": 58649,
+          "rows": 3662
+        },
+        {
+          "throttle": 4,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 155.60000002384186,
+          "p95_ms": 171.20000004768372,
+          "elements": 1131,
+          "rows": 55
+        }
+      ],
+      "samples": {
+        "1x/prefix-r": {
+          "rows": 3592,
+          "elements": 57526,
+          "ms": [
+            337.40000009536743,
+            296,
+            294.2000000476837,
+            387.3000000715256,
+            296.60000002384186,
+            313.89999997615814,
+            330,
+            340.7000000476837,
+            337.89999997615814
+          ]
+        },
+        "1x/prefix-re": {
+          "rows": 3061,
+          "elements": 49068,
+          "ms": [
+            104.69999992847443,
+            93.80000007152557,
+            104.89999997615814,
+            87.09999990463257,
+            99.79999995231628,
+            93,
+            91.70000004768372,
+            96.09999990463257,
+            85.39999997615814
+          ]
+        },
+        "1x/readFile": {
+          "rows": 6,
+          "elements": 247,
+          "ms": [
+            33.299999952316284,
+            33.60000002384186,
+            38.299999952316284,
+            34.40000009536743,
+            34,
+            32.299999952316284,
+            33.299999952316284,
+            33.700000047683716,
+            32.200000047683716
+          ]
+        },
+        "1x/clear": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            20,
+            18.199999928474426,
+            27.800000071525574,
+            29.800000071525574,
+            16.399999976158142,
+            18.40000009536743,
+            21.59999990463257,
+            24.100000023841858,
+            17.5
+          ]
+        },
+        "1x/expand-all": {
+          "rows": 3662,
+          "elements": 58649,
+          "ms": [
+            321.6999999284744,
+            301.39999997615814,
+            321.2000000476837,
+            302,
+            300.40000009536743,
+            306.2999999523163,
+            311.2999999523163,
+            304.10000002384186,
+            289.60000002384186
+          ]
+        },
+        "1x/collapse-all": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            34.299999952316284,
+            34,
+            33.799999952316284,
+            36.09999990463257,
+            37.5,
+            37,
+            35.699999928474426,
+            36.5,
+            35.90000009536743
+          ]
+        },
+        "4x/prefix-r": {
+          "rows": 3592,
+          "elements": 57526,
+          "ms": [
+            1418.2000000476837,
+            1406.5,
+            1351.7000000476837,
+            1324,
+            1449.5,
+            1351.6999999284744,
+            1350.2000000476837,
+            1378.2999999523163,
+            1461.4000000953674
+          ]
+        },
+        "4x/prefix-re": {
+          "rows": 3061,
+          "elements": 49068,
+          "ms": [
+            402.39999997615814,
+            386.60000002384186,
+            382.7999999523163,
+            372,
+            417.6999999284744,
+            369.10000002384186,
+            377.6999999284744,
+            379.90000009536743,
+            449.1999999284744
+          ]
+        },
+        "4x/readFile": {
+          "rows": 6,
+          "elements": 247,
+          "ms": [
+            146.89999997615814,
+            141.89999997615814,
+            138.80000007152557,
+            137.60000002384186,
+            141.70000004768372,
+            136.69999992847443,
+            141.69999992847443,
+            140,
+            140.89999997615814
+          ]
+        },
+        "4x/clear": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            34.799999952316284,
+            27.299999952316284,
+            27.100000023841858,
+            27.299999952316284,
+            27.100000023841858,
+            27.799999952316284,
+            33.699999928474426,
+            28.40000009536743,
+            29
+          ]
+        },
+        "4x/expand-all": {
+          "rows": 3662,
+          "elements": 58649,
+          "ms": [
+            1275.2999999523163,
+            1197.7999999523163,
+            1225.3999999761581,
+            1181.9000000953674,
+            1221.3000000715256,
+            1207.8000000715256,
+            1198.2999999523163,
+            1260.5,
+            1296.6000000238419
+          ]
+        },
+        "4x/collapse-all": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            171.20000004768372,
+            149.89999997615814,
+            145.60000002384186,
+            160.60000002384186,
+            153.5,
+            158.39999997615814,
+            154.39999997615814,
+            166.19999992847443,
+            155.60000002384186
+          ]
+        }
+      },
+      "loads": [
+        {
+          "throttle": 1,
+          "navigation": {
+            "name": "http://localhost:3107/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 100.39999997615814,
+            "navigationId": 3595,
+            "initiatorType": "navigation",
+            "deliveryType": "",
+            "nextHopProtocol": "http/1.1",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.5,
+            "domainLookupStart": 0.5,
+            "domainLookupEnd": 0.5,
+            "connectStart": 0.5,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.5,
+            "requestStart": 1.600000023841858,
+            "responseStart": 13,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 13,
+            "responseEnd": 13.600000023841858,
+            "transferSize": 5021,
+            "encodedBodySize": 4721,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 0,
+            "unloadEventEnd": 0,
+            "domInteractive": 66.79999995231628,
+            "domContentLoadedEventStart": 66.79999995231628,
+            "domContentLoadedEventEnd": 66.79999995231628,
+            "domComplete": 100.39999997615814,
+            "loadEventStart": 100.39999997615814,
+            "loadEventEnd": 100.39999997615814,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "low"
+            }
+          },
+          "data": [
+            {
+              "name": "http://localhost:3107/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 124.10000002384186,
+              "duration": 64.5,
+              "navigationId": 3595,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 124.10000002384186,
+              "domainLookupStart": 124.10000002384186,
+              "domainLookupEnd": 124.10000002384186,
+              "connectStart": 124.10000002384186,
+              "secureConnectionStart": 0,
+              "connectEnd": 124.10000002384186,
+              "requestStart": 128.70000004768372,
+              "responseStart": 175.29999995231628,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 175.29999995231628,
+              "responseEnd": 188.60000002384186,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        },
+        {
+          "throttle": 4,
+          "navigation": {
+            "name": "http://localhost:3107/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 60.200000047683716,
+            "navigationId": 1051,
+            "initiatorType": "navigation",
+            "deliveryType": "cache",
+            "nextHopProtocol": "",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.20000004768371582,
+            "domainLookupStart": 0.20000004768371582,
+            "domainLookupEnd": 0.20000004768371582,
+            "connectStart": 0.20000004768371582,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.20000004768371582,
+            "requestStart": 2.600000023841858,
+            "responseStart": 3.700000047683716,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 3.700000047683716,
+            "responseEnd": 3.8000000715255737,
+            "transferSize": 300,
+            "encodedBodySize": 4721,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 9.800000071525574,
+            "unloadEventEnd": 9.800000071525574,
+            "domInteractive": 28.800000071525574,
+            "domContentLoadedEventStart": 28.800000071525574,
+            "domContentLoadedEventEnd": 28.899999976158142,
+            "domComplete": 60.200000047683716,
+            "loadEventStart": 60.200000047683716,
+            "loadEventEnd": 60.200000047683716,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "low"
+            }
+          },
+          "data": [
+            {
+              "name": "http://localhost:3107/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 68.60000002384186,
+              "duration": 29.299999952316284,
+              "navigationId": 1051,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 68.60000002384186,
+              "domainLookupStart": 68.60000002384186,
+              "domainLookupEnd": 68.60000002384186,
+              "connectStart": 68.60000002384186,
+              "secureConnectionStart": 0,
+              "connectEnd": 68.60000002384186,
+              "requestStart": 68.89999997615814,
+              "responseStart": 70.60000002384186,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 70.60000002384186,
+              "responseEnd": 97.89999997615814,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        }
+      ]
+    },
+    "afterMemo": {
+      "environment": {
+        "node": "v24.15.0",
+        "browser": "154.0.8037.57",
+        "platform": "darwin",
+        "os": "25.6.0",
+        "arch": "arm64",
+        "cpu": "Apple M3",
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "baseURL": "http://127.0.0.1:3108",
+        "censusRows": 3662
+      },
+      "summaries": [
+        {
+          "throttle": 1,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 319.7999999523163,
+          "p95_ms": 382.60000002384186,
+          "elements": 57526,
+          "rows": 3592
+        },
+        {
+          "throttle": 1,
+          "phase": "prefix-re",
+          "n": 9,
+          "p50_ms": 82.10000002384186,
+          "p95_ms": 100.39999997615814,
+          "elements": 49068,
+          "rows": 3061
+        },
+        {
+          "throttle": 1,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 32.700000047683716,
+          "p95_ms": 40.89999997615814,
+          "elements": 247,
+          "rows": 6
+        },
+        {
+          "throttle": 1,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 22.5,
+          "p95_ms": 33.299999952316284,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 1,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 301,
+          "p95_ms": 352.89999997615814,
+          "elements": 58649,
+          "rows": 3662
+        },
+        {
+          "throttle": 1,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 39.200000047683716,
+          "p95_ms": 42.10000002384186,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 1368.2000000476837,
+          "p95_ms": 1448.3999999761581,
+          "elements": 57526,
+          "rows": 3592
+        },
+        {
+          "throttle": 4,
+          "phase": "prefix-re",
+          "n": 9,
+          "p50_ms": 349.10000002384186,
+          "p95_ms": 410.2999999523163,
+          "elements": 49068,
+          "rows": 3061
+        },
+        {
+          "throttle": 4,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 141.5,
+          "p95_ms": 150.5,
+          "elements": 247,
+          "rows": 6
+        },
+        {
+          "throttle": 4,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 31.399999976158142,
+          "p95_ms": 32.700000047683716,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 1254.5,
+          "p95_ms": 1286,
+          "elements": 58649,
+          "rows": 3662
+        },
+        {
+          "throttle": 4,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 152.20000004768372,
+          "p95_ms": 169.69999992847443,
+          "elements": 1131,
+          "rows": 55
+        }
+      ],
+      "samples": {
+        "1x/prefix-r": {
+          "rows": 3592,
+          "elements": 57526,
+          "ms": [
+            334.7999999523163,
+            311,
+            315.39999997615814,
+            310.10000002384186,
+            382.60000002384186,
+            289.3000000715256,
+            322.3000000715256,
+            319.7999999523163,
+            328
+          ]
+        },
+        "1x/prefix-re": {
+          "rows": 3061,
+          "elements": 49068,
+          "ms": [
+            91.10000002384186,
+            84.10000002384186,
+            86.39999997615814,
+            100.39999997615814,
+            79.79999995231628,
+            77.79999995231628,
+            79.30000007152557,
+            79.10000002384186,
+            82.10000002384186
+          ]
+        },
+        "1x/readFile": {
+          "rows": 6,
+          "elements": 247,
+          "ms": [
+            37.10000002384186,
+            34.39999997615814,
+            37,
+            40.89999997615814,
+            31.700000047683716,
+            31.200000047683716,
+            31.5,
+            31.600000023841858,
+            32.700000047683716
+          ]
+        },
+        "1x/clear": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            18,
+            20,
+            17.899999976158142,
+            33.299999952316284,
+            30.600000023841858,
+            22.5,
+            18.399999976158142,
+            27.100000023841858,
+            24.899999976158142
+          ]
+        },
+        "1x/expand-all": {
+          "rows": 3662,
+          "elements": 58649,
+          "ms": [
+            352.89999997615814,
+            305.8000000715256,
+            289.7999999523163,
+            289.1999999284744,
+            300.89999997615814,
+            299.3000000715256,
+            301,
+            302.89999997615814,
+            301.7000000476837
+          ]
+        },
+        "1x/collapse-all": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            35.39999997615814,
+            34.699999928474426,
+            33.800000071525574,
+            34,
+            40,
+            39.60000002384186,
+            39.200000047683716,
+            41.200000047683716,
+            42.10000002384186
+          ]
+        },
+        "4x/prefix-r": {
+          "rows": 3592,
+          "elements": 57526,
+          "ms": [
+            1353.3000000715256,
+            1369.7000000476837,
+            1425.1000000238419,
+            1344.1000000238419,
+            1330.7999999523163,
+            1409.7000000476837,
+            1448.3999999761581,
+            1361.6999999284744,
+            1368.2000000476837
+          ]
+        },
+        "4x/prefix-re": {
+          "rows": 3061,
+          "elements": 49068,
+          "ms": [
+            319.3000000715256,
+            349.10000002384186,
+            349.40000009536743,
+            345.5,
+            340.7000000476837,
+            339.59999990463257,
+            410.2999999523163,
+            364.7999999523163,
+            361.8000000715256
+          ]
+        },
+        "4x/readFile": {
+          "rows": 6,
+          "elements": 247,
+          "ms": [
+            142.5,
+            141.80000007152557,
+            140.20000004768372,
+            150.5,
+            139,
+            137.20000004768372,
+            141.5,
+            143.19999992847443,
+            132
+          ]
+        },
+        "4x/clear": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            32.40000009536743,
+            28.200000047683716,
+            31.600000023841858,
+            31.399999976158142,
+            26.800000071525574,
+            32.700000047683716,
+            29.100000023841858,
+            30.700000047683716,
+            32.200000047683716
+          ]
+        },
+        "4x/expand-all": {
+          "rows": 3662,
+          "elements": 58649,
+          "ms": [
+            1220.7000000476837,
+            1275.5,
+            1199.7999999523163,
+            1223.2000000476837,
+            1286,
+            1259.2000000476837,
+            1254.5,
+            1209.8999999761581,
+            1273.6000000238419
+          ]
+        },
+        "4x/collapse-all": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            152.20000004768372,
+            159.80000007152557,
+            144.29999995231628,
+            151.5,
+            169.69999992847443,
+            157.60000002384186,
+            147.60000002384186,
+            150.39999997615814,
+            152.79999995231628
+          ]
+        }
+      },
+      "loads": [
+        {
+          "throttle": 1,
+          "navigation": {
+            "name": "http://127.0.0.1:3108/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 69.5,
+            "navigationId": 7307,
+            "initiatorType": "navigation",
+            "deliveryType": "",
+            "nextHopProtocol": "http/1.1",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.5,
+            "domainLookupStart": 0.5,
+            "domainLookupEnd": 0.5,
+            "connectStart": 0.5,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.5,
+            "requestStart": 1.2999999523162842,
+            "responseStart": 8.299999952316284,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 8.299999952316284,
+            "responseEnd": 8.600000023841858,
+            "transferSize": 5021,
+            "encodedBodySize": 4721,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 0,
+            "unloadEventEnd": 0,
+            "domInteractive": 38.299999952316284,
+            "domContentLoadedEventStart": 38.299999952316284,
+            "domContentLoadedEventEnd": 38.299999952316284,
+            "domComplete": 69.5,
+            "loadEventStart": 69.5,
+            "loadEventEnd": 69.5,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "low"
+            }
+          },
+          "data": [
+            {
+              "name": "http://127.0.0.1:3108/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 85.70000004768372,
+              "duration": 28.699999928474426,
+              "navigationId": 7307,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 85.70000004768372,
+              "domainLookupStart": 85.70000004768372,
+              "domainLookupEnd": 85.70000004768372,
+              "connectStart": 85.70000004768372,
+              "secureConnectionStart": 0,
+              "connectEnd": 85.70000004768372,
+              "requestStart": 85.89999997615814,
+              "responseStart": 113,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 113,
+              "responseEnd": 114.39999997615814,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        },
+        {
+          "throttle": 4,
+          "navigation": {
+            "name": "http://127.0.0.1:3108/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 66.40000009536743,
+            "navigationId": 9677,
+            "initiatorType": "navigation",
+            "deliveryType": "cache",
+            "nextHopProtocol": "",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.30000007152557373,
+            "domainLookupStart": 0.30000007152557373,
+            "domainLookupEnd": 0.30000007152557373,
+            "connectStart": 0.30000007152557373,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.30000007152557373,
+            "requestStart": 1,
+            "responseStart": 3.9000000953674316,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 3.9000000953674316,
+            "responseEnd": 4.100000023841858,
+            "transferSize": 300,
+            "encodedBodySize": 4721,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 9.600000023841858,
+            "unloadEventEnd": 9.600000023841858,
+            "domInteractive": 28.5,
+            "domContentLoadedEventStart": 28.5,
+            "domContentLoadedEventEnd": 28.600000023841858,
+            "domComplete": 66.30000007152557,
+            "loadEventStart": 66.40000009536743,
+            "loadEventEnd": 66.40000009536743,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "high"
+            }
+          },
+          "data": [
+            {
+              "name": "http://127.0.0.1:3108/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 92.60000002384186,
+              "duration": 19.800000071525574,
+              "navigationId": 9677,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 92.60000002384186,
+              "domainLookupStart": 92.60000002384186,
+              "domainLookupEnd": 92.60000002384186,
+              "connectStart": 92.60000002384186,
+              "secureConnectionStart": 0,
+              "connectEnd": 92.60000002384186,
+              "requestStart": 93.40000009536743,
+              "responseStart": 96.60000002384186,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 96.60000002384186,
+              "responseEnd": 112.40000009536743,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        }
+      ]
+    },
+    "journeyBefore": {
+      "environment": {
+        "node": "v24.15.0",
+        "browser": "154.0.8037.57",
+        "platform": "darwin",
+        "os": "25.6.0",
+        "arch": "arm64",
+        "cpu": "Apple M3",
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "baseURL": "http://127.0.0.1:3108",
+        "censusRows": 3662
+      },
+      "summaries": [
+        {
+          "throttle": 1,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 679.1000000238419,
+          "p95_ms": 1217.1000000238419,
+          "elements": 89169,
+          "rows": 3592
+        },
+        {
+          "throttle": 1,
+          "phase": "prefix-re",
+          "n": 9,
+          "p50_ms": 181.79999995231628,
+          "p95_ms": 340.39999997615814,
+          "elements": 76026,
+          "rows": 3061
+        },
+        {
+          "throttle": 1,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 57.700000047683716,
+          "p95_ms": 108.60000002384186,
+          "elements": 301,
+          "rows": 6
+        },
+        {
+          "throttle": 1,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 25,
+          "p95_ms": 32.699999928474426,
+          "elements": 1617,
+          "rows": 55
+        },
+        {
+          "throttle": 1,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 641.5,
+          "p95_ms": 919.2000000476837,
+          "elements": 90922,
+          "rows": 3662
+        },
+        {
+          "throttle": 1,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 63,
+          "p95_ms": 184.69999992847443,
+          "elements": 1617,
+          "rows": 55
+        },
+        {
+          "throttle": 1,
+          "phase": "typed-readFile",
+          "n": 9,
+          "p50_ms": 1087.7000000476837,
+          "p95_ms": 1491,
+          "elements": 301,
+          "rows": 6
+        },
+        {
+          "throttle": 4,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 2635.5,
+          "p95_ms": 3768.6999999284744,
+          "elements": 89169,
+          "rows": 3592
+        },
+        {
+          "throttle": 4,
+          "phase": "prefix-re",
+          "n": 9,
+          "p50_ms": 796.4000000953674,
+          "p95_ms": 962.8000000715256,
+          "elements": 76026,
+          "rows": 3061
+        },
+        {
+          "throttle": 4,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 256.8000000715256,
+          "p95_ms": 319.2000000476837,
+          "elements": 301,
+          "rows": 6
+        },
+        {
+          "throttle": 4,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 47.10000002384186,
+          "p95_ms": 62.300000071525574,
+          "elements": 1617,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 2554.7000000476837,
+          "p95_ms": 4195.699999928474,
+          "elements": 90922,
+          "rows": 3662
+        },
+        {
+          "throttle": 4,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 286.7000000476837,
+          "p95_ms": 400.5,
+          "elements": 1617,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "typed-readFile",
+          "n": 9,
+          "p50_ms": 3799.7999999523163,
+          "p95_ms": 4644.600000023842,
+          "elements": 301,
+          "rows": 6
+        }
+      ],
+      "samples": {
+        "1x/prefix-r": {
+          "rows": 3592,
+          "elements": 89169,
+          "ms": [
+            750.6000000238419,
+            641.6000000238419,
+            643.7000000476837,
+            748.7000000476837,
+            1217.1000000238419,
+            679.1000000238419,
+            637.1000000238419,
+            660.7999999523163,
+            754.6000000238419
+          ]
+        },
+        "1x/prefix-re": {
+          "rows": 3061,
+          "elements": 76026,
+          "ms": [
+            203.10000002384186,
+            204.60000002384186,
+            181.79999995231628,
+            191.60000002384186,
+            340.39999997615814,
+            161.90000009536743,
+            164.29999995231628,
+            163.30000007152557,
+            170.30000007152557
+          ]
+        },
+        "1x/readFile": {
+          "rows": 6,
+          "elements": 301,
+          "ms": [
+            57.700000047683716,
+            56.800000071525574,
+            61.700000047683716,
+            108.60000002384186,
+            64.60000002384186,
+            56.90000009536743,
+            56.5,
+            58.10000002384186,
+            53.699999928474426
+          ]
+        },
+        "1x/clear": {
+          "rows": 55,
+          "elements": 1617,
+          "ms": [
+            25,
+            23.5,
+            23.800000071525574,
+            28,
+            32.699999928474426,
+            22.399999976158142,
+            26.700000047683716,
+            30.40000009536743,
+            18
+          ]
+        },
+        "1x/expand-all": {
+          "rows": 3662,
+          "elements": 90922,
+          "ms": [
+            641.5,
+            602.1000000238419,
+            618,
+            919.2000000476837,
+            692.4000000953674,
+            624.6999999284744,
+            590,
+            692.7000000476837,
+            665.1999999284744
+          ]
+        },
+        "1x/collapse-all": {
+          "rows": 55,
+          "elements": 1617,
+          "ms": [
+            57.799999952316284,
+            62.60000002384186,
+            63,
+            184.69999992847443,
+            76.29999995231628,
+            57.60000002384186,
+            64.10000002384186,
+            65.70000004768372,
+            58.10000002384186
+          ]
+        },
+        "1x/typed-readFile": {
+          "rows": 6,
+          "elements": 301,
+          "ms": [
+            1023,
+            1154.7999999523163,
+            1491,
+            1254.5999999046326,
+            1077,
+            1087.7000000476837,
+            1119,
+            1028.6999999284744,
+            978.3000000715256
+          ]
+        },
+        "4x/prefix-r": {
+          "rows": 3592,
+          "elements": 89169,
+          "ms": [
+            2461.6999999284744,
+            2568.600000023842,
+            2678,
+            2785,
+            3768.6999999284744,
+            2471.2999999523163,
+            2635.5,
+            2530.399999976158,
+            3098.100000023842
+          ]
+        },
+        "4x/prefix-re": {
+          "rows": 3061,
+          "elements": 76026,
+          "ms": [
+            818.6000000238419,
+            715,
+            871.1999999284744,
+            776.2999999523163,
+            796.4000000953674,
+            751.7000000476837,
+            715.0999999046326,
+            803.1999999284744,
+            962.8000000715256
+          ]
+        },
+        "4x/readFile": {
+          "rows": 6,
+          "elements": 301,
+          "ms": [
+            270.10000002384186,
+            241.39999997615814,
+            283.10000002384186,
+            256.8000000715256,
+            236.69999992847443,
+            252.29999995231628,
+            250.89999997615814,
+            276.7999999523163,
+            319.2000000476837
+          ]
+        },
+        "4x/clear": {
+          "rows": 55,
+          "elements": 1617,
+          "ms": [
+            46.59999990463257,
+            53,
+            51.60000002384186,
+            44.89999997615814,
+            47.10000002384186,
+            43.299999952316284,
+            46.39999997615814,
+            50,
+            62.300000071525574
+          ]
+        },
+        "4x/expand-all": {
+          "rows": 3662,
+          "elements": 90922,
+          "ms": [
+            2510.5,
+            2492.2000000476837,
+            3003.7999999523163,
+            3294.2000000476837,
+            2383.2000000476837,
+            2665.7000000476837,
+            2239.5,
+            2554.7000000476837,
+            4195.699999928474
+          ]
+        },
+        "4x/collapse-all": {
+          "rows": 55,
+          "elements": 1617,
+          "ms": [
+            299.60000002384186,
+            281.60000002384186,
+            283.60000002384186,
+            346,
+            294.1999999284744,
+            280.2999999523163,
+            249.30000007152557,
+            286.7000000476837,
+            400.5
+          ]
+        },
+        "4x/typed-readFile": {
+          "rows": 6,
+          "elements": 301,
+          "ms": [
+            4216.5,
+            3799.7999999523163,
+            3494.399999976158,
+            4269.799999952316,
+            4215.5,
+            3413.7999999523163,
+            3730.1999999284744,
+            3526.600000023842,
+            4644.600000023842
+          ]
+        }
+      },
+      "loads": [
+        {
+          "throttle": 1,
+          "usable_ms": 213.5,
+          "navigation": {
+            "name": "http://127.0.0.1:3108/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 121,
+            "navigationId": 352,
+            "initiatorType": "navigation",
+            "deliveryType": "",
+            "nextHopProtocol": "http/1.1",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.5,
+            "domainLookupStart": 0.5,
+            "domainLookupEnd": 0.5,
+            "connectStart": 0.5,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.5,
+            "requestStart": 1.600000023841858,
+            "responseStart": 10.800000071525574,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 10.800000071525574,
+            "responseEnd": 11.5,
+            "transferSize": 5022,
+            "encodedBodySize": 4722,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 0,
+            "unloadEventEnd": 0,
+            "domInteractive": 63.700000047683716,
+            "domContentLoadedEventStart": 63.700000047683716,
+            "domContentLoadedEventEnd": 63.700000047683716,
+            "domComplete": 121,
+            "loadEventStart": 121,
+            "loadEventEnd": 121,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "low"
+            }
+          },
+          "data": [
+            {
+              "name": "http://127.0.0.1:3108/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 146.90000009536743,
+              "duration": 33.299999952316284,
+              "navigationId": 352,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 146.90000009536743,
+              "domainLookupStart": 146.90000009536743,
+              "domainLookupEnd": 146.90000009536743,
+              "connectStart": 146.90000009536743,
+              "secureConnectionStart": 0,
+              "connectEnd": 146.90000009536743,
+              "requestStart": 147.20000004768372,
+              "responseStart": 178.90000009536743,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 178.90000009536743,
+              "responseEnd": 180.20000004768372,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        },
+        {
+          "throttle": 4,
+          "usable_ms": 243.89999997615814,
+          "navigation": {
+            "name": "http://127.0.0.1:3108/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 72.39999997615814,
+            "navigationId": 9481,
+            "initiatorType": "navigation",
+            "deliveryType": "cache",
+            "nextHopProtocol": "",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.5,
+            "domainLookupStart": 0.5,
+            "domainLookupEnd": 0.5,
+            "connectStart": 0.5,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.5,
+            "requestStart": 1.2000000476837158,
+            "responseStart": 9.5,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 9.5,
+            "responseEnd": 9.700000047683716,
+            "transferSize": 300,
+            "encodedBodySize": 4722,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 14.300000071525574,
+            "unloadEventEnd": 14.300000071525574,
+            "domInteractive": 34.200000047683716,
+            "domContentLoadedEventStart": 34.200000047683716,
+            "domContentLoadedEventEnd": 34.300000071525574,
+            "domComplete": 72.30000007152557,
+            "loadEventStart": 72.39999997615814,
+            "loadEventEnd": 72.39999997615814,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "high"
+            }
+          },
+          "data": [
+            {
+              "name": "http://127.0.0.1:3108/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 100.39999997615814,
+              "duration": 23,
+              "navigationId": 9481,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 100.39999997615814,
+              "domainLookupStart": 100.39999997615814,
+              "domainLookupEnd": 100.39999997615814,
+              "connectStart": 100.39999997615814,
+              "secureConnectionStart": 0,
+              "connectEnd": 100.39999997615814,
+              "requestStart": 100.70000004768372,
+              "responseStart": 105,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 105,
+              "responseEnd": 123.39999997615814,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        }
+      ]
+    },
+    "journeyAfter": {
+      "environment": {
+        "node": "v24.15.0",
+        "browser": "154.0.8037.57",
+        "platform": "darwin",
+        "os": "25.6.0",
+        "arch": "arm64",
+        "cpu": "Apple M3",
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "baseURL": "http://127.0.0.1:3108",
+        "censusRows": 3662
+      },
+      "summaries": [
+        {
+          "throttle": 1,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 357,
+          "p95_ms": 394.2000000476837,
+          "elements": 57526,
+          "rows": 3592
+        },
+        {
+          "throttle": 1,
+          "phase": "prefix-re",
+          "n": 9,
+          "p50_ms": 101.80000007152557,
+          "p95_ms": 110.19999992847443,
+          "elements": 49068,
+          "rows": 3061
+        },
+        {
+          "throttle": 1,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 34.59999990463257,
+          "p95_ms": 35.60000002384186,
+          "elements": 247,
+          "rows": 6
+        },
+        {
+          "throttle": 1,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 23.399999976158142,
+          "p95_ms": 31.5,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 1,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 307.7999999523163,
+          "p95_ms": 341.89999997615814,
+          "elements": 58649,
+          "rows": 3662
+        },
+        {
+          "throttle": 1,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 36.300000071525574,
+          "p95_ms": 39.5,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 1,
+          "phase": "typed-readFile",
+          "n": 9,
+          "p50_ms": 514.1999999284744,
+          "p95_ms": 556.9000000953674,
+          "elements": 247,
+          "rows": 6
+        },
+        {
+          "throttle": 4,
+          "phase": "prefix-r",
+          "n": 9,
+          "p50_ms": 1351.3999999761581,
+          "p95_ms": 1455.1000000238419,
+          "elements": 57526,
+          "rows": 3592
+        },
+        {
+          "throttle": 4,
+          "phase": "prefix-re",
+          "n": 9,
+          "p50_ms": 427.7999999523163,
+          "p95_ms": 456.5,
+          "elements": 49068,
+          "rows": 3061
+        },
+        {
+          "throttle": 4,
+          "phase": "readFile",
+          "n": 9,
+          "p50_ms": 140.69999992847443,
+          "p95_ms": 162.30000007152557,
+          "elements": 247,
+          "rows": 6
+        },
+        {
+          "throttle": 4,
+          "phase": "clear",
+          "n": 9,
+          "p50_ms": 31,
+          "p95_ms": 36.39999997615814,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "expand-all",
+          "n": 9,
+          "p50_ms": 1274.6999999284744,
+          "p95_ms": 1435.6999999284744,
+          "elements": 58649,
+          "rows": 3662
+        },
+        {
+          "throttle": 4,
+          "phase": "collapse-all",
+          "n": 9,
+          "p50_ms": 160,
+          "p95_ms": 171,
+          "elements": 1131,
+          "rows": 55
+        },
+        {
+          "throttle": 4,
+          "phase": "typed-readFile",
+          "n": 9,
+          "p50_ms": 1972.3999999761581,
+          "p95_ms": 2101.2000000476837,
+          "elements": 247,
+          "rows": 6
+        }
+      ],
+      "samples": {
+        "1x/prefix-r": {
+          "rows": 3592,
+          "elements": 57526,
+          "ms": [
+            371.60000002384186,
+            383.2999999523163,
+            335.89999997615814,
+            394.2000000476837,
+            345.7999999523163,
+            357,
+            357,
+            356.2000000476837,
+            346.1999999284744
+          ]
+        },
+        "1x/prefix-re": {
+          "rows": 3061,
+          "elements": 49068,
+          "ms": [
+            110.19999992847443,
+            99.79999995231628,
+            101.80000007152557,
+            98.19999992847443,
+            105.60000002384186,
+            105.60000002384186,
+            97.69999992847443,
+            107.20000004768372,
+            95.30000007152557
+          ]
+        },
+        "1x/readFile": {
+          "rows": 6,
+          "elements": 247,
+          "ms": [
+            35.60000002384186,
+            31.90000009536743,
+            35.59999990463257,
+            34.59999990463257,
+            34.799999952316284,
+            35.39999997615814,
+            33.10000002384186,
+            32.90000009536743,
+            31.800000071525574
+          ]
+        },
+        "1x/clear": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            23.399999976158142,
+            22.800000071525574,
+            18.899999976158142,
+            24.700000047683716,
+            26.799999952316284,
+            16.59999990463257,
+            31.5,
+            17.5,
+            24.299999952316284
+          ]
+        },
+        "1x/expand-all": {
+          "rows": 3662,
+          "elements": 58649,
+          "ms": [
+            341.89999997615814,
+            307.39999997615814,
+            313.5,
+            298.59999990463257,
+            335.7999999523163,
+            298.7999999523163,
+            307.7999999523163,
+            326.7999999523163,
+            291.10000002384186
+          ]
+        },
+        "1x/collapse-all": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            34.60000002384186,
+            36.300000071525574,
+            35.89999997615814,
+            38.699999928474426,
+            39.199999928474426,
+            39.5,
+            36.300000071525574,
+            37.39999997615814,
+            34.10000002384186
+          ]
+        },
+        "1x/typed-readFile": {
+          "rows": 6,
+          "elements": 247,
+          "ms": [
+            506.10000002384186,
+            540.6000000238419,
+            485.40000009536743,
+            539.6999999284744,
+            501.39999997615814,
+            556.9000000953674,
+            514.1999999284744,
+            539,
+            485
+          ]
+        },
+        "4x/prefix-r": {
+          "rows": 3592,
+          "elements": 57526,
+          "ms": [
+            1453,
+            1342.7999999523163,
+            1353.6000000238419,
+            1351.3999999761581,
+            1455.1000000238419,
+            1309.0999999046326,
+            1397.5,
+            1299.8999999761581,
+            1324.5
+          ]
+        },
+        "4x/prefix-re": {
+          "rows": 3061,
+          "elements": 49068,
+          "ms": [
+            418.3000000715256,
+            419.6999999284744,
+            456.5,
+            440.60000002384186,
+            427.7999999523163,
+            422.1999999284744,
+            425,
+            456.3000000715256,
+            441
+          ]
+        },
+        "4x/readFile": {
+          "rows": 6,
+          "elements": 247,
+          "ms": [
+            138.10000002384186,
+            138.79999995231628,
+            140.69999992847443,
+            162.30000007152557,
+            145.5,
+            137.10000002384186,
+            140.20000004768372,
+            145.89999997615814,
+            160.80000007152557
+          ]
+        },
+        "4x/clear": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            31,
+            33,
+            31.5,
+            30,
+            28.700000047683716,
+            27.5,
+            29.600000023841858,
+            36.39999997615814,
+            35.89999997615814
+          ]
+        },
+        "4x/expand-all": {
+          "rows": 3662,
+          "elements": 58649,
+          "ms": [
+            1264.5,
+            1387.7999999523163,
+            1327.4000000953674,
+            1201.9000000953674,
+            1274.6999999284744,
+            1273.1000000238419,
+            1241.8999999761581,
+            1435.6999999284744,
+            1354.0999999046326
+          ]
+        },
+        "4x/collapse-all": {
+          "rows": 55,
+          "elements": 1131,
+          "ms": [
+            159.40000009536743,
+            160,
+            165.60000002384186,
+            150.89999997615814,
+            171,
+            152.89999997615814,
+            163.89999997615814,
+            166.89999997615814,
+            141.09999990463257
+          ]
+        },
+        "4x/typed-readFile": {
+          "rows": 6,
+          "elements": 247,
+          "ms": [
+            2051.8000000715256,
+            2021.2999999523163,
+            1896.2999999523163,
+            1860.1999999284744,
+            2101.2000000476837,
+            1972.3999999761581,
+            1930.6000000238419,
+            2074.399999976158,
+            1914.2999999523163
+          ]
+        }
+      },
+      "loads": [
+        {
+          "throttle": 1,
+          "usable_ms": 133,
+          "navigation": {
+            "name": "http://127.0.0.1:3108/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 70.5,
+            "navigationId": 379,
+            "initiatorType": "navigation",
+            "deliveryType": "",
+            "nextHopProtocol": "http/1.1",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.7999999523162842,
+            "domainLookupStart": 0.7999999523162842,
+            "domainLookupEnd": 0.7999999523162842,
+            "connectStart": 0.7999999523162842,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.7999999523162842,
+            "requestStart": 1.7999999523162842,
+            "responseStart": 10.5,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 10.5,
+            "responseEnd": 10.899999976158142,
+            "transferSize": 5020,
+            "encodedBodySize": 4720,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 0,
+            "unloadEventEnd": 0,
+            "domInteractive": 37.199999928474426,
+            "domContentLoadedEventStart": 37.199999928474426,
+            "domContentLoadedEventEnd": 37.199999928474426,
+            "domComplete": 70.5,
+            "loadEventStart": 70.5,
+            "loadEventEnd": 70.5,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "low"
+            }
+          },
+          "data": [
+            {
+              "name": "http://127.0.0.1:3108/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 87.69999992847443,
+              "duration": 16,
+              "navigationId": 379,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 87.69999992847443,
+              "domainLookupStart": 87.69999992847443,
+              "domainLookupEnd": 87.69999992847443,
+              "connectStart": 87.69999992847443,
+              "secureConnectionStart": 0,
+              "connectEnd": 87.69999992847443,
+              "requestStart": 88,
+              "responseStart": 100.89999997615814,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 100.89999997615814,
+              "responseEnd": 103.69999992847443,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        },
+        {
+          "throttle": 4,
+          "usable_ms": 315.5,
+          "navigation": {
+            "name": "http://127.0.0.1:3108/compatibility",
+            "entryType": "navigation",
+            "startTime": 0,
+            "duration": 80.79999995231628,
+            "navigationId": 9274,
+            "initiatorType": "navigation",
+            "deliveryType": "cache",
+            "nextHopProtocol": "",
+            "renderBlockingStatus": "non-blocking",
+            "contentType": "text/html",
+            "contentEncoding": "gzip",
+            "workerStart": 0,
+            "workerRouterEvaluationStart": 0,
+            "workerCacheLookupStart": 0,
+            "workerMatchedSourceType": "",
+            "workerFinalSourceType": "",
+            "redirectStart": 0,
+            "redirectEnd": 0,
+            "fetchStart": 0.2999999523162842,
+            "domainLookupStart": 0.2999999523162842,
+            "domainLookupEnd": 0.2999999523162842,
+            "connectStart": 0.2999999523162842,
+            "secureConnectionStart": 0,
+            "connectEnd": 0.2999999523162842,
+            "requestStart": 1.100000023841858,
+            "responseStart": 4.899999976158142,
+            "firstInterimResponseStart": 0,
+            "finalResponseHeadersStart": 4.899999976158142,
+            "responseEnd": 5.100000023841858,
+            "transferSize": 300,
+            "encodedBodySize": 4720,
+            "decodedBodySize": 20336,
+            "responseStatus": 200,
+            "serverTiming": [],
+            "unloadEventStart": 21.100000023841858,
+            "unloadEventEnd": 21.100000023841858,
+            "domInteractive": 41,
+            "domContentLoadedEventStart": 41,
+            "domContentLoadedEventEnd": 41,
+            "domComplete": 80.60000002384186,
+            "loadEventStart": 80.79999995231628,
+            "loadEventEnd": 80.79999995231628,
+            "type": "navigate",
+            "redirectCount": 0,
+            "activationStart": 0,
+            "criticalCHRestart": 0,
+            "notRestoredReasons": null,
+            "confidence": {
+              "randomizedTriggerRate": 0.4994798,
+              "value": "high"
+            }
+          },
+          "data": [
+            {
+              "name": "http://127.0.0.1:3108/compatibility/data?v=b9e39038b2832f02e54b",
+              "entryType": "resource",
+              "startTime": 107.69999992847443,
+              "duration": 29,
+              "navigationId": 9274,
+              "initiatorType": "fetch",
+              "deliveryType": "",
+              "nextHopProtocol": "http/1.1",
+              "renderBlockingStatus": "non-blocking",
+              "contentType": "application/json",
+              "contentEncoding": "",
+              "workerStart": 0,
+              "workerRouterEvaluationStart": 0,
+              "workerCacheLookupStart": 0,
+              "workerMatchedSourceType": "",
+              "workerFinalSourceType": "",
+              "redirectStart": 0,
+              "redirectEnd": 0,
+              "fetchStart": 107.69999992847443,
+              "domainLookupStart": 107.69999992847443,
+              "domainLookupEnd": 107.69999992847443,
+              "connectStart": 107.69999992847443,
+              "secureConnectionStart": 0,
+              "connectEnd": 107.69999992847443,
+              "requestStart": 108.39999997615814,
+              "responseStart": 111.79999995231628,
+              "firstInterimResponseStart": 0,
+              "finalResponseHeadersStart": 111.79999995231628,
+              "responseEnd": 136.69999992847443,
+              "transferSize": 2247670,
+              "encodedBodySize": 2247370,
+              "decodedBodySize": 2247370,
+              "responseStatus": 200,
+              "serverTiming": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "memoBootstrap": {
+    "resamples": 10000,
+    "seed": 42,
+    "random": "LCG: state = (1664525 * state + 1013904223) mod 2^32",
+    "method": "independent before/after resampling; nearest-rank 2.5/97.5 percentiles of before median minus after median",
+    "intervals": {
+      "1x": {
+        "low_ms": 2.700000047683716,
+        "high_ms": 20.59999990463257
+      },
+      "4x": {
+        "low_ms": 15.899999856948853,
+        "high_ms": 67.29999995231628
+      }
+    }
+  },
+  "rejectedCssTrials": [
+    {
+      "variant": "baseline",
+      "ms": 2577.600000023842,
+      "rows": 3592,
+      "height_px": 210587
+    },
+    {
+      "variant": "baseline",
+      "ms": 2374.7999999523163,
+      "rows": 3592,
+      "height_px": 210587
+    },
+    {
+      "variant": "baseline",
+      "ms": 2537.100000023842,
+      "rows": 3592,
+      "height_px": 210587
+    },
+    {
+      "variant": "rowVisibility",
+      "ms": 2542.0999999046326,
+      "rows": 3592,
+      "height_px": 210587
+    },
+    {
+      "variant": "rowVisibility",
+      "ms": 2840.5,
+      "rows": 3592,
+      "height_px": 210587
+    },
+    {
+      "variant": "rowVisibility",
+      "ms": 2445,
+      "rows": 3592,
+      "height_px": 210587
+    },
+    {
+      "variant": "cellVisibility",
+      "ms": 1168.6000000238419,
+      "rows": 3592,
+      "height_px": 66785
+    },
+    {
+      "variant": "cellVisibility",
+      "ms": 1157.1999999284744,
+      "rows": 3592,
+      "height_px": 67864
+    },
+    {
+      "variant": "cellVisibility",
+      "ms": 1105,
+      "rows": 3592,
+      "height_px": 67864
+    }
+  ]
+}

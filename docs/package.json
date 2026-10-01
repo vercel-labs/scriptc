@@ -12,7 +12,9 @@
     "typecheck": "fumadocs-mdx && next typegen && tsc --noEmit",
     "test:routes": "node scripts/test-routes.mjs",
     "compat:check": "pnpm --dir .. node-compat:check",
-    "check": "pnpm compat:check && pnpm typecheck && pnpm build && pnpm test:routes"
+    "test:compatibility": "pnpm --dir .. exec playwright test --config docs/playwright.config.ts",
+    "bench:compatibility": "SCRIPTC_DOCS_BENCH=1 pnpm test:compatibility",
+    "check": "pnpm compat:check && pnpm typecheck && pnpm build && pnpm test:routes && pnpm test:compatibility"
   },
   "dependencies": {
     "@vercel/geistdocs": "2.7.8",

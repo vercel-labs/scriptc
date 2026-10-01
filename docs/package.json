@@ -10,7 +10,9 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "compat:check": "pnpm --dir .. node-compat:check",
-    "check": "pnpm compat:check && pnpm typecheck && pnpm build"
+    "test:compatibility": "pnpm --dir .. exec playwright test --config docs/playwright.config.ts",
+    "bench:compatibility": "SCRIPTC_DOCS_BENCH=1 pnpm test:compatibility",
+    "check": "pnpm compat:check && pnpm typecheck && pnpm build && pnpm test:compatibility"
   },
   "dependencies": {
     "@mdx-js/loader": "^3",

@@ -10,6 +10,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docs_compatibility:
+    name: test (docs compatibility browser contracts)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir docs install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Docs and stable browser work ceilings
+        working-directory: docs
+        env:
+          NEXT_DIST_DIR: .next-check
+        run: pnpm check
+
   native_macos:
     name: build (macOS arm64 native packages)
     runs-on: macos-15
@@ -599,13 +621,14 @@ jobs:
   # Retain the pre-matrix "test" check for branch protection and badges. It
   # passes only when every matrix shard and independent integration job does.
   test:
-    needs: [tests, bootstrap, linux_host_clang, ts7_parity, llvm_artifacts_linux_x64, llvm_artifacts_macos_arm64, llvm_artifacts_macos_x64, windows_cli, llvm_artifacts_windows_x64]
+    needs: [docs_compatibility, tests, bootstrap, linux_host_clang, ts7_parity, llvm_artifacts_linux_x64, llvm_artifacts_macos_arm64, llvm_artifacts_macos_x64, windows_cli, llvm_artifacts_windows_x64]
     # A superseded run must release its concurrency slot immediately.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: All lanes green
         run: |
+          test "${{ needs.docs_compatibility.result }}" = success
           test "${{ needs.tests.result }}" = success
           test "${{ needs.bootstrap.result }}" = success
           test "${{ needs.linux_host_clang.result }}" = success

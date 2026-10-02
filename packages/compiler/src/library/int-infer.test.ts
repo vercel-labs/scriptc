@@ -366,6 +366,102 @@ describe("the ask-4 conformance corpus over scriptc IR", () => {
   });
 });
 
+describe("signed zero before integer boundaries", () => {
+  const z = ref("z.0");
+  const clampAbove = (value: IrExpr): IrExpr => math("trunc", math("min", value, num(1)));
+  const clampBoth = (value: IrExpr): IrExpr =>
+    math("trunc", math("max", math("min", value, num(1)), num(-1)));
+  const atZero = (value: IrExpr): IntVerdict => only(caseModule(["z"], [], [
+    iff(bin("===", z, num(0)), [send(value)]),
+  ]));
+
+  test.each([1, -1])("division by normalized zero with dividend %s retains both infinity signs", (dividend) => {
+    // z === 0 admits -0 too. A one-sided clamp cannot bound both results.
+    const quotient = bin("/", num(dividend), z);
+    const value = dividend > 0
+      ? clampAbove(quotient)
+      : math("trunc", math("max", quotient, num(-1)));
+    const v = atZero(value);
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("range");
+  });
+
+  test.each([-1, -3])("normalized zero to negative odd power %s retains both infinity signs", (exponent) => {
+    const v = atZero(clampAbove(bin("**", z, num(exponent))));
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("range");
+  });
+
+  test.each([
+    [-2, 1],
+    [-0.5, 1],
+    [0, 1],
+    [3, 0],
+  ])("normalized zero to power %s remains precise after clamping", (exponent, expected) => {
+    const v = atZero(clampAbove(bin("**", z, num(exponent))));
+    expect(v.outcome).toBe("prove");
+    expect(v.provenLo).toBe(expected);
+    expect(v.provenHi).toBe(expected);
+  });
+
+  test("a two-sided clamp bounds division by either zero sign without introducing NaN", () => {
+    const v = atZero(clampBoth(bin("/", num(1), z)));
+    expect(v.outcome).toBe("prove");
+    expect(v.provenLo).toBe(-1);
+    expect(v.provenHi).toBe(1);
+  });
+
+  test("a computed negative zero retains both infinity signs when used as a divisor", () => {
+    const v = only(caseModule([], [], [
+      send(clampAbove(bin("/", num(1), math("trunc", num(-0.5))))),
+    ]));
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("range");
+  });
+
+  test("a non-singleton exponent interval containing negative odd integers remains unprovable", () => {
+    const exponent = ref("exponent.0");
+    const v = only(caseModule(["z", "exponent"], [], [
+      iff(and(bin("===", z, num(0)), and(bin(">=", exponent, num(-3)), bin("<=", exponent, num(-1)))), [
+        send(clampAbove(bin("**", z, exponent))),
+      ]),
+    ]));
+    expect(v.outcome).toBe("refuse");
+  });
+
+  test("zero divided by zero remains NaN even inside a two-sided clamp", () => {
+    const v = atZero(clampBoth(bin("/", z, z)));
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("wholeness");
+    expect(v.detail).toContain("NaN");
+  });
+
+  test("a dividend interval containing zero preserves possible NaN", () => {
+    const dividend = ref("dividend.0");
+    const v = only(caseModule(["z", "dividend"], [], [
+      iff(and(bin("===", z, num(0)), and(bin(">=", dividend, num(0)), bin("<=", dividend, num(1)))), [
+        send(clampBoth(bin("/", dividend, z))),
+      ]),
+    ]));
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("wholeness");
+    expect(v.detail).toContain("NaN");
+  });
+
+  test.each(["numerator", "denominator"] as const)("possible NaN in the %s survives division and clamping", (position) => {
+    const value = ref("value.0");
+    const quotient = position === "numerator" ? bin("/", value, num(0)) : bin("/", num(1), value);
+    const v = only(caseModule(["choose"], ["value"], [
+      decl("value.0", num(position === "numerator" ? 1 : 0)),
+      iff(bin(">", ref("choose.0"), num(0)), [assign("value.0", num(NaN))]),
+      send(clampBoth(quotient)),
+    ]));
+    expect(v.outcome).toBe("refuse");
+    expect(v.obligation).toBe("wholeness");
+    expect(v.detail).toContain("NaN");
+  });
+});
+
 describe("the domain's edges beyond the corpus", () => {
   test("a declared i64 parameter seeds whole-in-safe-range inside its own function", () => {
     // send's own body forwards its parameter to sendU64: the i64 seed is

@@ -88,8 +88,8 @@ export const SAFE_MIN = -SAFE_MAX;
 
 /** The set of f64 values a binding may hold at a program point: a closed
  * interval over the extended reals (`-0` normalized to 0 — the interval
- * tracks mathematical value; zero's sign is an f64-interior observation
- * with no boundary consequence), `whole` when every member is a finite
+ * tracks mathematical value; transfer functions must conservatively
+ * account for both signs of zero), `whole` when every member is a finite
  * integer-valued f64, `maybeNaN` when NaN may be in the set (NaN lives
  * outside the interval, which describes only the numeric members), and
  * the integer literal's source `spelling` for the representability check
@@ -207,13 +207,12 @@ function transferMul(a: AbsVal, b: AbsVal): AbsVal {
 function transferDiv(a: AbsVal, b: AbsVal): AbsVal {
   const maybeNaN = a.maybeNaN || b.maybeNaN;
   if (!hasNumeric(a) || !hasNumeric(b)) return { ...BOTTOM, maybeNaN };
-  // Divisor exactly 0: x/0 is ±Infinity (sign by the dividend), 0/0 NaN.
+  // A zero interval represents both +0 and -0. A nonzero dividend can
+  // therefore produce either infinity; 0/0 is NaN for either zero sign.
   if (isSingleton(b) && b.lo === 0) {
     const nanPossible = maybeNaN || (a.lo <= 0 && a.hi >= 0);
-    const lo = a.lo < 0 ? -Infinity : Infinity; // -Infinity reachable iff some dividend < 0
-    const hi = a.hi > 0 ? Infinity : -Infinity; // +Infinity reachable iff some dividend > 0
-    if (lo > hi) return { ...BOTTOM, maybeNaN: nanPossible }; // only 0/0: no numeric members
-    return absVal(lo, hi, false, nanPossible);
+    if (a.lo === 0 && a.hi === 0) return { ...BOTTOM, maybeNaN: nanPossible };
+    return absVal(-Infinity, Infinity, false, nanPossible);
   }
   // Divisor may be 0 among other values: give up on precision.
   if (b.lo <= 0 && b.hi >= 0) return { ...TOP };
@@ -243,6 +242,11 @@ function transferMod(a: AbsVal, b: AbsVal): AbsVal {
 function transferPow(a: AbsVal, b: AbsVal): AbsVal {
   const maybeNaN = a.maybeNaN || b.maybeNaN;
   if (!hasNumeric(a) || !hasNumeric(b)) return { ...BOTTOM, maybeNaN };
+  // Normalized zero may be -0, whose negative odd powers are -Infinity.
+  if (isSingleton(a) && a.lo === 0 && isSingleton(b)
+      && Number.isInteger(b.lo) && b.lo < 0 && Math.abs(b.lo % 2) === 1) {
+    return absVal(-Infinity, Infinity, false, maybeNaN);
+  }
   if (isSingleton(a) && isSingleton(b) && !maybeNaN) return constVal(a.lo ** b.lo);
   // Provable without folding: whole base ≥ 1 with whole non-negative
   // exponent (pow is monotone in both arguments on that region).

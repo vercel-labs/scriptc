@@ -3079,11 +3079,12 @@ export class Lowerer {
       }
       if (ts.isBinaryExpression(e)) {
         const op = e.operatorToken.kind;
-        if (
-          op === ts.SyntaxKind.AmpersandAmpersandToken ||
-          op === ts.SyntaxKind.BarBarToken ||
-          op === ts.SyntaxKind.QuestionQuestionToken
-        ) return mayBeOptional(e.left) || mayBeOptional(e.right);
+        // `a ?? b` and `a || b` replace an undefined left operand with the
+        // right one, so only the right operand can make them undefined.
+        if (op === ts.SyntaxKind.BarBarToken || op === ts.SyntaxKind.QuestionQuestionToken) {
+          return mayBeOptional(e.right);
+        }
+        if (op === ts.SyntaxKind.AmpersandAmpersandToken) return mayBeOptional(e.left) || mayBeOptional(e.right);
       }
       if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression)) {
         const symbol = symbolOf(e.expression);

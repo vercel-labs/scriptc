@@ -10,6 +10,7 @@
  */
 import { execFile } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -185,6 +186,36 @@ test("node-types: fetch AbortSignal and readable bodies lower statically", async
     sanitize,
   });
   expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+});
+
+test("node-types: fetched Response headers dispatch their undici-types members", async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/plain", "x-kind": "greeting" });
+    response.end("hello");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("missing server address");
+    const base = `http://127.0.0.1:${address.port}`;
+    const entry = join(nodeTypesDir, "fetch-headers.mts");
+    const outDir = outDirFor("node-fetch-headers");
+    const result = await compile(entry, {
+      outPath: join(outDir, "fetch-headers"),
+      outDir,
+      sanitize,
+    });
+    expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+    if (!result.ok) return;
+    const [native, node] = await Promise.all([
+      execFileAsync(result.binaryPath, [base]),
+      execFileAsync(process.execPath, [entry, base]),
+    ]);
+    expect(native.stdout).toBe(node.stdout);
+    expect(native.stderr).toBe(node.stderr);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 test("node-types: imported TypeScript sources can use the RequestInfo global", async () => {

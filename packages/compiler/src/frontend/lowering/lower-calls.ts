@@ -6380,7 +6380,9 @@ function lowerOptionalStringNumber(
     // with the original receiver rather than a materialized property view.
     const callbackProperty = (() => {
       const prop = lowerer.checker.getPropertyOfType(recvTs, access.name.text);
-      return prop !== undefined && lowerer.checker.declarationsOf(prop).some((decl) =>
+      // Library declarations spell native methods as readonly function
+      // properties (undici-types `Headers.get`); those still dispatch by name.
+      return prop !== undefined && !lowerer.isStdlibSymbol(prop) && lowerer.checker.declarationsOf(prop).some((decl) =>
         ts.isPropertyDeclaration(decl) || ts.isPropertySignature(decl));
     })();
     const dispatched = callbackProperty ? null : lowerDynDispatchMethodCall(lowerer, call, access, recv, arrayReceiver);

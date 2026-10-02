@@ -329,6 +329,11 @@ ScrStr *scr_library_str_in(const uint8_t *p, size_t len) {
   return scr_str_new(len == 0 ? "" : (const char *)p, len);
 }
 
+ScrStr *scr_library_cstr_in(const char *p) {
+  if (p == NULL) scr_trap("scriptc: library cstring input is NULL\n");
+  return scr_str_new(p, strlen(p));
+}
+
 ScrBytes *scr_library_bytes_in(const uint8_t *p, size_t len, const char *trap_msg) {
   ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)len);
   if (b == NULL) {
@@ -363,6 +368,11 @@ void scr_library_str_out(ScrStr *s, const uint8_t **out, size_t *out_len) {
   scr_library_arena_keep(s, true);
   *out = (const uint8_t *)s->data; /* NUL-terminated after len (ScrStr layout) */
   *out_len = s->len;
+}
+
+const char *scr_library_cstr_out(ScrStr *s) {
+  scr_library_arena_keep(s, true);
+  return s->data;
 }
 
 void scr_library_bytes_out(ScrBytes *b, const uint8_t **out, size_t *out_len) {

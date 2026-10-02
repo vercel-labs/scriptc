@@ -262,6 +262,7 @@ extern const size_t scr_library_trap_overlays_len;
  * the result arena and stay valid until the next arena reset. String
  * results are NUL-terminated after *out_len bytes (ScrStr's layout). */
 ScrStr *scr_library_str_in(const uint8_t *p, size_t len);   /* +1 */
+ScrStr *scr_library_cstr_in(const char *p);                 /* +1, copies through NUL */
 /* trap_msg is the wrapper's compiler-assembled host-contract trap message
  * (structured trap-teaching bytes naming this entry's symbol), delivered
  * through the funnel when len falls outside the marshalling class. */
@@ -273,6 +274,7 @@ ScrBytes *scr_library_bytes_in(const uint8_t *p, size_t len, const char *trap_ms
 double scr_library_i64_in(int64_t v, const char *trap_msg);
 double scr_library_u64_in(uint64_t v, const char *trap_msg);
 void scr_library_str_out(ScrStr *s, const uint8_t **out, size_t *out_len);
+const char *scr_library_cstr_out(ScrStr *s);                /* arena-owned, NUL-terminated */
 void scr_library_bytes_out(ScrBytes *b, const uint8_t **out, size_t *out_len);
 
 #define scr_atexit(fn) scr_library_register_reset(fn)

@@ -845,7 +845,7 @@ export function libUnmappableSignatureDiag(
     loc,
     hint:
       "marshalling classes: f64/u8/u32/i32 (TS number; the integer plumbing classes are param-only), i64/u64 (TS number, " +
-      "prove-or-refuse at compile time — params and returns), bool, string, bytes (Uint8Array/Buffer), and a void return; " +
+      "prove-or-refuse at compile time — params and returns), bool, string, cstring (NUL-terminated UTF-8 pointer), bytes (Uint8Array/Buffer), and a void return; " +
       "records and unions slot in when the contract-sidecar conversation (asks 2/3) lands — deferral, not permanent unsupport",
   };
 }
@@ -1052,7 +1052,7 @@ export function libCallbackDiag(name: string, detail: string, loc: SrcLoc): ScrD
     hint:
       "profile-declared callbacks are the library's outbound seam: declare the channel in the profile's " +
       "'callbacks' array (name, params, returns) and keep the ambient TypeScript signature on the callback " +
-      "marshalling classes — params f64/bool/string/bytes and the u8/u32/i32 plumbing classes, " +
+      "marshalling classes — params f64/bool/string/cstring/bytes and the u8/u32/i32 plumbing classes, " +
       "returns f64/bool/u8/u32/i32/void; the host registers an implementation through the profile's " +
       "abi.callback_register_symbol before calling any entry that can reach the channel",
   };

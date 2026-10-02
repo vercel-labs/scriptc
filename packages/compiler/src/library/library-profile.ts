@@ -185,13 +185,14 @@
  *     least one channel — a callback-free profile keeps the ordinary
  *     ambient ReferenceError semantics, and its artifact is unchanged).
  *     Direct calls only, the FFI binding rule.
- *   - `params`: f64, bool, string, bytes, and the u8/u32/i32 plumbing
+ *   - `params`: f64, bool, string, cstring, bytes, and the u8/u32/i32 plumbing
  *     classes (outbound plumbing rides JS's own ToUint32/ToInt32, the
  *     executable FFI lane's rule). string/bytes arrive as (ptr, len)
- *     pairs BORROWED for the duration of the call only.
- *   - `returns`: f64, bool, u8, u32, i32, or void — scalars only (a
- *     buffer return needs an ownership contract the mode does not define,
- *     the FFI format-1 ruling).
+ *     pairs BORROWED for the duration of the call only; cstring arrives as
+ *     one pointer to a NUL-terminated UTF-8 span and is copied on entry.
+ *   - `returns`: f64, bool, string, cstring, bytes, void, i64, or u64
+ *     cstring results are NUL-terminated pointers held by the result arena;
+ *     string/bytes results use the explicit pointer-and-length output slots.
  *
  * The registration symbol's C shape, one per profile:
  *
@@ -259,7 +260,7 @@ import { resolveLibraryFences, type LibraryFenceDecl, type ResolvedLibraryFence 
  * marshalled wrapper (values past ±(2^53−1) cannot ride f64 exactly — the
  * SC4012 host-contract trap), and internal call sites must PROVE the
  * argument whole-in-range at compile time (library/int-infer.ts). */
-export const LIB_PARAM_CLASSES = ["f64", "bool", "string", "bytes", "u8", "u32", "i32", "i64", "u64"] as const;
+export const LIB_PARAM_CLASSES = ["f64", "bool", "string", "cstring", "bytes", "u8", "u32", "i32", "i64", "u64"] as const;
 /** Marshalling classes legal in RETURN position: the value classes, void,
  * and ask 4's i64/u64 — an integer RETURN compiles only when every value
  * reaching it is PROVEN whole and in range (prove-or-refuse; the wrapper's
@@ -267,7 +268,7 @@ export const LIB_PARAM_CLASSES = ["f64", "bool", "string", "bytes", "u8", "u32",
  * u8/u32/i32 plumbing classes stay param-only: they were ratified as
  * inbound plumbing, and outbound integers are the proven classes'
  * business. */
-export const LIB_RETURN_CLASSES = ["f64", "bool", "string", "bytes", "void", "i64", "u64"] as const;
+export const LIB_RETURN_CLASSES = ["f64", "bool", "string", "cstring", "bytes", "void", "i64", "u64"] as const;
 
 /** Ask 4's declared integer classes (the prove-or-refuse pair). */
 export type LibIntClass = "i64" | "u64";

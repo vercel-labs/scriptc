@@ -13480,6 +13480,36 @@
     "<repo>/tests/fixtures/npm/cases/node24-diagnostics-transform-throw/main.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/node24-file-url-buffer.ts": {
+   "order": [
+    "<repo>/tests/corpus/node24-file-url-buffer.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/node24-file-url-errors.js": {
+   "order": [
+    "<repo>/tests/corpus/node24-file-url-errors.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/node24-file-url-options.ts": {
+   "order": [
+    "<repo>/tests/corpus/node24-file-url-options.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/fixtures/npm/cases/node24-file-url-conversion/main.ts": {
+   "order": [
+    "<repo>/tests/fixtures/npm/cases/node24-file-url-conversion/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/fixtures/node-types/file-url-conversion.ts": {
+   "order": [
+    "<repo>/tests/fixtures/node-types/file-url-conversion.ts"
+   ],
+   "diags": []
   }
  }
 }

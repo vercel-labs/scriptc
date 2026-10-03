@@ -608,7 +608,7 @@ export interface BuiltinModuleFn {
   defaults?: string[];
   /** The source-level function-value signature. Each admitted entry
    * materializes as an interned zero-capture adapter over the fixed runtime
-   * libCall ABI. Optional parameters name the scalar default selected for
+   * libCall ABI. Optional parameters name the scalar or checked-undefined default selected for
    * omission or explicit undefined; rest parameters pack into one typed
    * array slot. Entries with call-site-specific validation remain absent. */
   valueParams?: BuiltinValueParam[];
@@ -616,7 +616,7 @@ export interface BuiltinModuleFn {
 
 export type BuiltinValueParam =
   | { mode: "required"; type: IrType }
-  | { mode: "optional"; type: IrType; defaultValue: string | number }
+  | { mode: "optional"; type: IrType; defaultValue: string | number | undefined }
   | { mode: "rest"; type: IrType };
 
 /** The common first-class shape for builtin functions whose supported
@@ -851,11 +851,9 @@ export const BUILTIN_MODULE_FNS: Record<string, Record<string, BuiltinModuleFn |
     crc32: { fn: "zlib.crc32", params: [], result: F64 },
   },
   url: {
-    // fileURLToPath accepts a URL value OR a string — the call lowering
-    // picks the libFn by the ARGUMENT's static type (see the special case
-    // in lowerBuiltinModuleCall); the table entry carries the string form.
-    fileURLToPath: { fn: "url.fileURLToPathStr", params: [STRING], result: STRING },
-    pathToFileURL: { fn: "url.pathToFileURL", params: [STRING], result: URL_T },
+    fileURLToPath: { fn: "url.fileURLToPathOptions", params: [DYN, DYN], result: STRING, valueParams: [{ mode: "required", type: DYN }, { mode: "optional", type: DYN, defaultValue: undefined }] },
+    fileURLToPathBuffer: { fn: "url.fileURLToPathBuffer", params: [DYN, DYN], result: BYTES_U8, valueParams: [{ mode: "required", type: DYN }, { mode: "optional", type: DYN, defaultValue: undefined }] },
+    pathToFileURL: { fn: "url.pathToFileURLChecked", params: [DYN, DYN], result: URL_T, valueParams: [{ mode: "required", type: DYN }, { mode: "optional", type: DYN, defaultValue: undefined }] },
   },
   child_process: {
     // spawnSync's and spawn's call completions are entirely special-cased
@@ -1025,7 +1023,8 @@ export const BUILTIN_MODULE_CONSTS: Record<string, Record<string, string | numbe
  * (library/fence-eval.ts) and the attestation-parity test. */
 export const BUILTIN_MODULE_FN_ALIASES: Record<string, Record<string, readonly IrLibFn[] | undefined> | undefined> = {
   url: {
-    pathToFileURL: ["url.pathToFileURLPlatform"],
+    fileURLToPath: ["url.fileURLToPathStr", "url.fileURLToPathUrl", "url.fileURLToPathChecked"],
+    pathToFileURL: ["url.pathToFileURL", "url.pathToFileURLPlatform", "url.pathToFileURLWin32"],
   },
   fs: {
     // Inline numeric O_* flags use a target-neutral runtime entry point.
@@ -1325,23 +1324,13 @@ const WIN32_TARGET_CONSTS: Record<string, Record<string, string | number | boole
   os: { EOL: "\r\n" },
 };
 
-/** url's win32-target table: fileURLToPath is receiver-form-special-cased
- * either way, and pathToFileURL swaps to its win32 IR flavor (the same
- * runtime call, but in the may-throw seed — Node's win32 arm raises UNC
- * TypeErrors where the posix arm never throws). */
-const URL_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
-  fileURLToPath: { fn: "url.fileURLToPathStr", params: [STRING], result: STRING },
-  pathToFileURL: { fn: "url.pathToFileURLWin32", params: [STRING], result: URL_T },
-};
-
 /** BUILTIN_MODULE_FNS with the platform-conditional modules bound per
  * TARGET: a win32 triple compiles Node-on-Windows semantics — `path` is
- * path.win32 and url's bridge takes the win32 flavors. Fence wording is
+ * path.win32 and url's bridge selects the Windows runtime behavior. Fence wording is
  * unaffected — callers keep naming the module the source spelled. */
 function builtinModuleFnsOf(lowerer: Lowerer, module: string): Record<string, BuiltinModuleFn | undefined> | undefined {
   if (lowerer.targetPlatform === "win32") {
     if (module === "path") return BUILTIN_MODULE_FNS["path/win32"];
-    if (module === "url") return URL_WIN32_MODULE_FNS;
   }
   return ownEntry(BUILTIN_MODULE_FNS, module);
 }

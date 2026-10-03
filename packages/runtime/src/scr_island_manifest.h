@@ -54,8 +54,8 @@ static const struct {
     {"node:module",
      "createRequire,builtinModules,isBuiltin,syncBuiltinESMExports,register,findSourceMap"},
     {"node:url",
-     "URL,URLSearchParams,fileURLToPath,pathToFileURL,parse,format,resolve,domainToASCII,domai"
-     "nToUnicode,urlToHttpOptions"},
+     "URL,URLSearchParams,fileURLToPath,fileURLToPathBuffer,pathToFileURL,parse,format,resolve"
+     ",domainToASCII,domainToUnicode,urlToHttpOptions"},
     {"node:buffer",
      "Buffer,SlowBuffer,INSPECT_MAX_BYTES,kMaxLength,kStringMaxLength,constants,isAscii,isUtf8"
      ",atob,btoa,Blob,File,transcode,resolveObjectURL"},

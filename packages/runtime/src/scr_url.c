@@ -197,7 +197,7 @@ static void ub_push_encoded(UrlBuf *b, unsigned char c, bool (*needs)(unsigned c
 /* ── parsing ─────────────────────────────────────────────────────────── */
 
 static void scr_url_throw_invalid(void) {
-  scr_throw_error_msg(SCR_ERR_TYPE, "Invalid URL", 11);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, "Invalid URL", 11, "ERR_INVALID_URL");
 }
 
 static bool is_special_scheme(const char *s, size_t len) {
@@ -893,15 +893,36 @@ static int hex_val(char c) {
   return -1;
 }
 
+static bool url_file_scheme(ScrUrl *u) {
+  if (u->scheme->len == 4 && memcmp(u->scheme->data, "file", 4) == 0) return true;
+  scr_throw_error_msg_code(SCR_ERR_TYPE, "The URL must be of scheme file", 30, "ERR_INVALID_URL_SCHEME");
+  return false;
+}
+
+static bool url_file_posix_host(ScrUrl *u) {
+  if (u->host->len == 0) return true;
+  const char *platform =
+#if defined(__APPLE__)
+      "darwin";
+#elif defined(__linux__)
+      "linux";
+#elif defined(_WIN32)
+      "win32";
+#else
+      "posix";
+#endif
+  char message[96];
+  int length = snprintf(message, sizeof message, "File URL host must be \"localhost\" or empty on %s", platform);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)length, "ERR_INVALID_FILE_URL_HOST");
+  return false;
+}
+
 /* fileURLToPath over a parsed URL: Node's checks, Node's messages. The
  * posix arm rejects hosts and keeps forward slashes; the win32 arm maps
  * hosts to UNC \\host prefixes, flips separators, and demands a drive
  * letter otherwise. The public wrappers below select by TARGET. */
 static ScrStr *scr_url_to_path_impl(ScrUrl *u, bool win32) {
-  if (!(u->scheme->len == 4 && memcmp(u->scheme->data, "file", 4) == 0)) {
-    scr_throw_error_msg_code(SCR_ERR_TYPE, "The URL must be of scheme file", 30, "ERR_INVALID_URL_SCHEME");
-    return NULL;
-  }
+  if (!url_file_scheme(u)) return NULL;
   const char *p = u->path->data;
   size_t len = u->path->len;
   if (win32) {
@@ -951,23 +972,7 @@ static ScrStr *scr_url_to_path_impl(ScrUrl *u, bool win32) {
     free(out.data);
     return s;
   }
-  if (u->host->len > 0) {
-    /* Parse-time normalization already emptied "localhost". */
-    const char *plat =
-#if defined(__APPLE__)
-        "darwin";
-#elif defined(__linux__)
-        "linux";
-#elif defined(_WIN32)
-        "win32";
-#else
-        "posix";
-#endif
-    char msg[96];
-    int mlen = snprintf(msg, sizeof msg, "File URL host must be \"localhost\" or empty on %s", plat);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)mlen, "ERR_INVALID_FILE_URL_HOST");
-    return NULL;
-  }
+  if (!url_file_posix_host(u)) return NULL;
   for (size_t i = 0; i < len; i++) {
     if (p[i] == '%' && i + 2 < len) {
       int hi = hex_val(p[i + 1]);
@@ -1044,7 +1049,7 @@ static void scr_url_throw_arg_value(const char *reason, ScrStr *value) {
   ub_append(&msg, reason, strlen(reason));
   ub_append(&msg, ". Received ", 11);
   ub_push_inspected(&msg, value->data, value->len);
-  scr_throw_error_msg(SCR_ERR_TYPE, msg.data, msg.len);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg.data, msg.len, "ERR_INVALID_ARG_VALUE");
   free(msg.data);
 }
 
@@ -1424,4 +1429,149 @@ ScrStr *scr_url_checked_to_path(const ScrDyn *value) {
   if (value->kind == SCR_DYN_STR) return scr_url_str_to_path(value->v.str);
   scr_dyn_arg_type_fail("path", "of type string or an instance of URL", value);
   return NULL;
+}
+
+/* Property reads keep option accessors/proxies live, including typed
+ * record getter closures and objects held by the dynamic engine. */
+static ScrDyn *url_property_read(const ScrDyn *object, const char *name) {
+  if (object->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(object);
+    if (!view) return NULL;
+    char getter_name[64];
+    snprintf(getter_name, sizeof getter_name, "%%get:%s", name);
+    const ScrDyn *getter = scr_dyn_obj_get(view, getter_name, strlen(getter_name));
+    ScrDyn *value = getter ? scr_dyn_call(getter, NULL, 0, "getter") : url_property_read(view, name);
+    scr_dyn_release(view);
+    return value;
+  }
+  if (object->kind == SCR_DYN_JSVAL || object->kind == SCR_DYN_HANDLE) {
+    ScrStr *key = scr_str_new(name, strlen(name));
+    ScrDyn *value = object->kind == SCR_DYN_JSVAL ? scr_dyn_isl_key_get(object, key) : scr_dyn_handle_key_get(object, key);
+    scr_str_release(key);
+    return value;
+  }
+  return scr_dyn_obj_read(object, name, strlen(name));
+}
+
+/* options?.windows is a nullish default followed by JS truthiness. */
+static bool url_options_windows(const ScrDyn *options, bool *windows) {
+#ifdef _WIN32
+  *windows = true;
+#else
+  *windows = false;
+#endif
+  if (scr_dyn_is_nullish(options)) return true;
+  ScrDyn *value = url_property_read(options, "windows");
+  if (!value || scr_exc_pending()) { scr_dyn_release(value); return false; }
+  if (!scr_dyn_is_nullish(value)) *windows = scr_dyn_truthy(value);
+  scr_dyn_release(value);
+  return true;
+}
+
+static ScrUrl *url_checked_file_input(const ScrDyn *value) {
+  if (scr_dyn_native_url_is(value)) return scr_url_retain(value->v.handle.ptr);
+  if (value->kind == SCR_DYN_STR) return scr_url_new(value->v.str);
+  /* Node's isURL checks href/protocol/auth/path structurally. Keep the
+   * short circuit order and getter exceptions before its scheme check. */
+  bool is_url = !scr_dyn_is_nullish(value);
+  const char *keys[] = {"href", "protocol", "auth", "path"};
+  for (size_t i = 0; is_url && i < 4; i++) {
+    ScrDyn *property = url_property_read(value, keys[i]);
+    if (!property || scr_exc_pending()) { scr_dyn_release(property); return NULL; }
+    is_url = i < 2 ? scr_dyn_truthy(property) : property->kind == SCR_DYN_UNDEF;
+    scr_dyn_release(property);
+  }
+  if (!is_url) {
+    scr_dyn_arg_type_fail("path", "of type string or an instance of URL", value);
+    return NULL;
+  }
+  ScrDyn *protocol = url_property_read(value, "protocol");
+  if (!protocol || scr_exc_pending()) { scr_dyn_release(protocol); return NULL; }
+  bool file = protocol->kind == SCR_DYN_STR && protocol->v.str->len == 5 && memcmp(protocol->v.str->data, "file:", 5) == 0;
+  scr_dyn_release(protocol);
+  if (!file) {
+    scr_throw_error_msg_code(SCR_ERR_TYPE, "The URL must be of scheme file", 30, "ERR_INVALID_URL_SCHEME");
+    return NULL;
+  }
+  ScrDyn *host = url_property_read(value, "hostname");
+  if (!host || scr_exc_pending()) { scr_dyn_release(host); return NULL; }
+  ScrDyn *path = url_property_read(value, "pathname");
+  if (!path || scr_exc_pending()) { scr_dyn_release(host); scr_dyn_release(path); return NULL; }
+  if (host->kind != SCR_DYN_STR || path->kind != SCR_DYN_STR) {
+    static const char message[] = "file URL-like objects require string hostname and pathname properties in scriptc";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_dyn_release(host); scr_dyn_release(path);
+    return NULL;
+  }
+  ScrUrl *url = scr_url_new_file(scr_str_retain(host->v.str), scr_str_retain(path->v.str));
+  scr_dyn_release(host); scr_dyn_release(path);
+  return url;
+}
+
+ScrStr *scr_url_checked_to_path_options(const ScrDyn *value, const ScrDyn *options) {
+  bool windows;
+  if (!url_options_windows(options, &windows)) return NULL;
+  ScrUrl *url = url_checked_file_input(value);
+  if (!url) return NULL;
+  ScrStr *path = scr_url_to_path_impl(url, windows);
+  scr_url_release(url);
+  return path;
+}
+
+ScrUrl *scr_url_checked_from_path(const ScrDyn *value, const ScrDyn *options) {
+  if (value->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("path", "of type string", value);
+    return NULL;
+  }
+  bool windows;
+  if (!url_options_windows(options, &windows)) return NULL;
+  return scr_url_from_path_impl(value->v.str, windows);
+}
+
+ScrBytes *scr_url_checked_to_path_buffer(const ScrDyn *value, const ScrDyn *options) {
+  bool windows;
+  if (!url_options_windows(options, &windows)) return NULL;
+  ScrUrl *url = url_checked_file_input(value);
+  if (!url) return NULL;
+  if (!url_file_scheme(url) || (!windows && !url_file_posix_host(url))) {
+    scr_url_release(url);
+    return NULL;
+  }
+  UrlBuf decoded;
+  ub_init(&decoded);
+  if (windows && url->host->len) {
+    ub_append(&decoded, "\\\\", 2);
+    ub_append(&decoded, url->host->data, url->host->len);
+  }
+  const char *path = url->path->data;
+  for (size_t i = 0; i < url->path->len; i++) {
+    if (path[i] == '%' && i + 2 < url->path->len) {
+      int high = hex_val(path[i + 1]), low = hex_val(path[i + 2]);
+      if (high >= 0 && low >= 0) {
+        ub_push(&decoded, (char)((high << 4) | low));
+        i += 2;
+        continue;
+      }
+    }
+    /* Convert literal separators before decoding: encoded %2F stays '/'.
+     * Invalid escapes and invalid UTF-8 are preserved as raw bytes. */
+    ub_push(&decoded, windows && path[i] == '/' ? '\\' : path[i]);
+  }
+  size_t start = 0;
+  if (windows && url->host->len == 0) {
+    int letter = (decoded.len > 1 ? (unsigned char)decoded.data[1] : 0) | 0x20;
+    if (letter < 'a' || letter > 'z' || decoded.len < 3 || decoded.data[2] != ':') {
+      free(decoded.data);
+      scr_url_release(url);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, "File URL path must be absolute", 30, "ERR_INVALID_FILE_URL_PATH");
+      return NULL;
+    }
+    start = 1;
+  }
+  ScrBytes *result = scr_bytes_new(SCR_BYTES_U8, (double)(decoded.len - start));
+  result->is_buffer = true;
+  if (decoded.len > start) memcpy(result->data, decoded.data + start, decoded.len - start);
+  free(decoded.data);
+  scr_url_release(url);
+  return result;
 }

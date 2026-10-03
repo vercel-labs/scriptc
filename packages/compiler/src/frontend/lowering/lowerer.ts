@@ -10723,6 +10723,7 @@ export class Lowerer {
     const shapes: ParamShape[] = valueParams.map((param): ParamShape => {
       if (param.mode === "rest") return { mode: "rest", type: arrayOf(param.type) };
       if (param.mode === "optional") {
+        if (param.type.kind === "dyn" && param.defaultValue === undefined) return { mode: "omittable", type: DYN };
         return { mode: "omittable", type: this.withUndefinedArm(param.type), bodyType: param.type };
       }
       return { mode: "required", type: param.type };
@@ -10755,7 +10756,9 @@ export class Lowerer {
           loc,
         };
         if (valueParam.mode !== "optional") return ref;
-        if ((valueParam.type.kind !== "string" && valueParam.type.kind !== "f64") || param.type.kind !== "union") {
+        // Checked runtime APIs consume undefined directly for omitted options.
+        if (valueParam.type.kind === "dyn" && valueParam.defaultValue === undefined) return ref;
+        if (valueParam.defaultValue === undefined || (valueParam.type.kind !== "string" && valueParam.type.kind !== "f64") || param.type.kind !== "union") {
           throw new InternalCompilerError(
             `builtin callable value '${display}' has an unsupported optional default`,
           );

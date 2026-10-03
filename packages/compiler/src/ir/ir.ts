@@ -2491,6 +2491,9 @@ export type IrLibFn =
   | "url.href"
   | "url.fileURLToPathUrl"
   | "url.fileURLToPathChecked"
+  | "url.fileURLToPathOptions"
+  | "url.fileURLToPathBuffer"
+  | "url.pathToFileURLChecked"
   | "url.fileURLToPathStr"
   | "url.pathToFileURL"
   /** Explicit path syntax from the options.windows argument, independent
@@ -7874,6 +7877,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.newBase",
   "url.fileURLToPathUrl",
   "url.fileURLToPathChecked",
+  "url.fileURLToPathOptions",
+  "url.fileURLToPathBuffer",
+  "url.pathToFileURLChecked",
   "url.fileURLToPathStr",
   // The win32-target flavor of pathToFileURL (same runtime entry point —
   // the bridge dispatches by the binary's platform): Node's win32 arm

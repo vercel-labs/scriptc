@@ -3311,41 +3311,44 @@ static JSValue isl_host_zlib(JSContext *ctx, JSValueConst this_val, int argc,
 static JSValue isl_host_url_to_path(JSContext *ctx, JSValueConst this_val, int argc,
                                     JSValueConst *argv) {
   (void)this_val;
-  (void)argc;
-  ScrStr *s = isl_arg_str(ctx, argv[0]);
-  if (!s) return JS_EXCEPTION;
-#ifdef _WIN32
-  ScrUrl *u = scr_url_new(s);
-  ScrStr *r = u ? scr_url_to_path_w32(u) : NULL;
-  if (u) scr_url_release(u);
-#else
-  ScrStr *r = scr_url_str_to_path(s);
-#endif
-  scr_str_release(s);
-  if (!r) return isl_throw_pending(ctx);
-  JSValue out = JS_NewStringLen(ctx, r->data, r->len);
-  scr_str_release(r);
-  return out;
+  ScrDyn *input = isl_dyn_from_value(argc ? argv[0] : JS_UNDEFINED);
+  if (!input) return JS_EXCEPTION;
+  ScrDyn *options = isl_dyn_from_value(argc > 1 ? argv[1] : JS_UNDEFINED);
+  ScrStr *path = scr_url_checked_to_path_options(input, options);
+  scr_dyn_release(input); scr_dyn_release(options);
+  if (!path) return isl_throw_pending(ctx);
+  JSValue result = JS_NewStringLen(ctx, path->data, path->len);
+  scr_str_release(path);
+  return result;
+}
+
+static JSValue isl_host_url_to_path_buffer(JSContext *ctx, JSValueConst this_val, int argc,
+                                           JSValueConst *argv) {
+  (void)this_val;
+  ScrDyn *input = isl_dyn_from_value(argc ? argv[0] : JS_UNDEFINED);
+  if (!input) return JS_EXCEPTION;
+  ScrDyn *options = isl_dyn_from_value(argc > 1 ? argv[1] : JS_UNDEFINED);
+  ScrBytes *path = scr_url_checked_to_path_buffer(input, options);
+  scr_dyn_release(input); scr_dyn_release(options);
+  if (!path) return isl_throw_pending(ctx);
+  JSValue result = JS_NewUint8ArrayCopy(ctx, path->data, path->len);
+  scr_bytes_release(path);
+  return result;
 }
 
 static JSValue isl_host_url_from_path(JSContext *ctx, JSValueConst this_val, int argc,
                                       JSValueConst *argv) {
   (void)this_val;
-  (void)argc;
-  ScrStr *s = isl_arg_str(ctx, argv[0]);
-  if (!s) return JS_EXCEPTION;
-#ifdef _WIN32
-  ScrUrl *u = scr_url_from_path_w32(s);
-#else
-  ScrUrl *u = scr_url_from_path(s);
-#endif
-  scr_str_release(s);
-  if (!u) return isl_throw_pending(ctx);
-  ScrStr *href = scr_url_href(u);
-  scr_url_release(u);
-  JSValue out = JS_NewStringLen(ctx, href->data, href->len);
+  ScrDyn *input = isl_dyn_from_value(argc ? argv[0] : JS_UNDEFINED);
+  ScrDyn *options = isl_dyn_from_value(argc > 1 ? argv[1] : JS_UNDEFINED);
+  ScrUrl *url = scr_url_checked_from_path(input, options);
+  scr_dyn_release(input); scr_dyn_release(options);
+  if (!url) return isl_throw_pending(ctx);
+  ScrStr *href = scr_url_href(url);
+  scr_url_release(url);
+  JSValue result = JS_NewStringLen(ctx, href->data, href->len);
   scr_str_release(href);
-  return out;
+  return result;
 }
 
 /* fs.constants (and the legacy `constants` module's fs half): the REAL
@@ -5144,11 +5147,11 @@ static const char isl_modules_bootstrap[] =
      * converters riding the static scr_url.c implementations (Node's
      * exact rules), and the legacy parse/format/resolve trio over the
      * WHATWG parser. */
-    "    const fileURLToPath = (u) => {\n"
-    "      const s = typeof u === 'object' && u !== null && 'href' in u ? String(u.href) : String(u);\n"
-    "      return host.urlToPath(s);\n"
-    "    };\n"
-    "    const pathToFileURL = (p) => new globalThis.URL(host.urlFromPath(String(p)));\n"
+    /* Read user option getters in their engine so thrown values preserve
+     * identity. The path-to-URL public wrapper validates its path first. */
+    "    const fileURLToPath = (u, options) => host.urlToPath(u, { windows: options?.windows });\n"
+    "    const fileURLToPathBuffer = (u, options) => builtins.buffer().Buffer.from(host.urlToPathBuffer(u, { windows: options?.windows }));\n"
+    "    const pathToFileURL = (p, options) => new globalThis.URL(host.urlFromPath(p, typeof p === 'string' ? { windows: options?.windows } : undefined));\n"
     "    const parse = (input, parseQuery) => {\n"
     "      const out = { protocol: null, slashes: null, auth: null, host: null, port: null,\n"
     "        hostname: null, hash: null, search: null, query: null, pathname: null, path: null, href: String(input) };\n"
@@ -5210,7 +5213,7 @@ static const char isl_modules_bootstrap[] =
     "    const u = {\n"
     "      URL: globalThis.URL,\n"
     "      URLSearchParams: globalThis.URLSearchParams,\n"
-    "      fileURLToPath, pathToFileURL, parse, format, resolve,\n"
+    "      fileURLToPath, fileURLToPathBuffer, pathToFileURL, parse, format, resolve,\n"
     /* IDNA is not carried: ASCII hostnames pass through lowercased
      * (documented divergence for internationalized domains). */
     "      domainToASCII: (d) => String(d).toLowerCase(),\n"
@@ -10514,8 +10517,9 @@ static void isl_modules_boot(void) {
   JS_SetPropertyStr(isl_ctx, host, "fs", JS_NewCFunction(isl_ctx, isl_host_fs, "fs", 4));
   JS_SetPropertyStr(isl_ctx, host, "fsConstants", JS_NewCFunction(isl_ctx, isl_host_fs_constants, "fsConstants", 0));
   JS_SetPropertyStr(isl_ctx, host, "path", JS_NewCFunction(isl_ctx, isl_host_path, "path", 4));
-  JS_SetPropertyStr(isl_ctx, host, "urlToPath", JS_NewCFunction(isl_ctx, isl_host_url_to_path, "urlToPath", 1));
-  JS_SetPropertyStr(isl_ctx, host, "urlFromPath", JS_NewCFunction(isl_ctx, isl_host_url_from_path, "urlFromPath", 1));
+  JS_SetPropertyStr(isl_ctx, host, "urlToPath", JS_NewCFunction(isl_ctx, isl_host_url_to_path, "urlToPath", 2));
+  JS_SetPropertyStr(isl_ctx, host, "urlToPathBuffer", JS_NewCFunction(isl_ctx, isl_host_url_to_path_buffer, "urlToPathBuffer", 2));
+  JS_SetPropertyStr(isl_ctx, host, "urlFromPath", JS_NewCFunction(isl_ctx, isl_host_url_from_path, "urlFromPath", 2));
   JS_SetPropertyStr(isl_ctx, host, "hrtime", JS_NewCFunction(isl_ctx, isl_host_hrtime, "hrtime", 0));
   JS_SetPropertyStr(isl_ctx, host, "versions", JS_NewCFunction(isl_ctx, isl_host_versions, "versions", 0));
   JS_SetPropertyStr(isl_ctx, host, "ids", JS_NewCFunction(isl_ctx, isl_host_ids, "ids", 0));
@@ -11042,6 +11046,7 @@ static const char isl_url_src[] =
     "      }\n"
     "      return this._sp;\n"
     "    }\n"
+    "    get href() { throw new TypeError('Receiver must be an instance of class URL'); }\n"
     "    toString() { return this.href; }\n"
     "    toJSON() { return this.href; }\n"
     "    static canParse(input, base) {\n"

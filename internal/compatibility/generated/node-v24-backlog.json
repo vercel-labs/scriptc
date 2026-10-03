@@ -8,14 +8,14 @@
     "tiers": {
       "static": {
         "replace-refusal": 43,
-        "verify-gap": 2516,
-        "audit-partial": 653,
+        "verify-gap": 2515,
+        "audit-partial": 654,
         "classify": 2,
         "implement": 81
       },
       "dynamic": {
-        "audit-partial": 844,
-        "verify-gap": 2182,
+        "audit-partial": 845,
+        "verify-gap": 2181,
         "replace-refusal": 112,
         "implement": 214
       }
@@ -93158,9 +93158,12 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:node-builtin.url.fileURLToPath",
+          "source": "compiler-feature:url.url.fileURLToPath",
           "tests": [
-            "tests/corpus/file-url-percent-decoding.ts"
+            "tests/corpus/node24-file-url-buffer.ts",
+            "tests/corpus/node24-file-url-options.ts",
+            "tests/corpus/node24-file-url-errors.js",
+            "tests/fixtures/node-types/file-url-conversion.ts"
           ]
         },
         "dynamic": {
@@ -93168,11 +93171,9 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:url.fileURLToPath",
+          "source": "island-feature:url.url.fileURLToPath",
           "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts",
-            "tests/fixtures/npm/cases/island-web-plumbing/main.ts",
-            "tests/fixtures/npm/cases/node24-url-factories/main.ts"
+            "tests/fixtures/npm/cases/node24-file-url-conversion/main.ts"
           ]
         }
       }
@@ -93193,20 +93194,27 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:url.url.fileURLToPathBuffer",
+          "tests": [
+            "tests/corpus/node24-file-url-buffer.ts",
+            "tests/corpus/node24-file-url-options.ts",
+            "tests/corpus/node24-file-url-errors.js",
+            "tests/fixtures/node-types/file-url-conversion.ts"
+          ]
         },
         "dynamic": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "island-unmatched:url",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "island-feature:url.url.fileURLToPathBuffer",
+          "tests": [
+            "tests/fixtures/npm/cases/node24-file-url-conversion/main.ts"
+          ]
         }
       }
     },
@@ -93267,9 +93275,12 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:node-builtin.url.pathToFileURL",
+          "source": "compiler-feature:url.url.pathToFileURL",
           "tests": [
-            "tests/corpus/path-to-file-url-options.ts"
+            "tests/corpus/node24-file-url-buffer.ts",
+            "tests/corpus/node24-file-url-options.ts",
+            "tests/corpus/node24-file-url-errors.js",
+            "tests/fixtures/node-types/file-url-conversion.ts"
           ]
         },
         "dynamic": {
@@ -93277,11 +93288,9 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:url.pathToFileURL",
+          "source": "island-feature:url.url.pathToFileURL",
           "tests": [
-            "tests/fixtures/npm/cases/misc-shims/main.ts",
-            "tests/fixtures/npm/cases/island-web-plumbing/main.ts",
-            "tests/fixtures/npm/cases/node24-url-factories/main.ts"
+            "tests/fixtures/npm/cases/node24-file-url-conversion/main.ts"
           ]
         }
       }

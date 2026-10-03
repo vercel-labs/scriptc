@@ -1535,7 +1535,8 @@ declare module "url" {
   export type URLSearchParams = globalThis.URLSearchParams;
   export const URL: typeof globalThis.URL;
   export const URLSearchParams: typeof globalThis.URLSearchParams;
-  export function fileURLToPath(url: string | URL): string;
+  export function fileURLToPath(url: string | URL, options?: { windows?: boolean }): string;
+  export function fileURLToPathBuffer(url: string | URL, options?: { windows?: boolean }): Buffer;
   export function pathToFileURL(path: string, options?: { windows?: boolean }): URL;
 }
 declare module "node:url" {

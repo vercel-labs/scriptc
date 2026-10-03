@@ -2513,32 +2513,25 @@ function lowerFsSyncBufferWindow(
     }
     const required = fn.params.length - (fn.defaults?.length ?? 0);
     const hasSpread = expr.arguments.some(ts.isSpreadElement);
-    if (!hasSpread && bi.module === "url" && bi.member === "pathToFileURL" && expr.arguments.length === 2) {
-      let options = expr.arguments[1]!;
-      while (ts.isParenthesizedExpression(options) || ts.isSatisfiesExpression(options)) options = options.expression;
-      if (!ts.isObjectLiteralExpression(options) || options.properties.length > 1) {
-        lowerer.noLowering("pathToFileURL with these options", options, "use a literal { windows: boolean } options object");
+    if (bi.module === "url" && ["fileURLToPath", "fileURLToPathBuffer", "pathToFileURL"].includes(bi.member)) {
+      if (hasSpread || expr.arguments.length > 2) {
+        lowerer.noLowering(`${bi.member} with these arguments`, expr, "pass a path and optional options object directly");
       }
-      let windowsNode: ts.Expression | null = null;
-      const property = options.properties[0];
-      if (property) {
-        if ((!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) ||
-            (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name)) || property.name.text !== "windows") {
-          lowerer.noLowering("pathToFileURL with these options", property, "use a literal { windows: boolean } options object");
+      // Keep the established typed one-argument paths free of boxing. The
+      // checked variants preserve each converter's validation/getter order.
+      if (expr.arguments.length === 1 && bi.member !== "fileURLToPathBuffer") {
+        const arg = lowerer.lowerExpr(expr.arguments[0]!);
+        if (bi.member === "fileURLToPath") {
+          if (arg.type.kind === "url") return { kind: "libCall", fn: "url.fileURLToPathUrl", args: [arg], type: STRING, loc };
+          if (arg.type.kind === "string") return { kind: "libCall", fn: "url.fileURLToPathStr", args: [arg], type: STRING, loc };
+        } else if (arg.type.kind === "string") {
+          return { kind: "libCall", fn: lowerer.targetPlatform === "win32" ? "url.pathToFileURLWin32" : "url.pathToFileURL", args: [arg], type: fn.result, loc };
         }
-        windowsNode = ts.isPropertyAssignment(property) ? property.initializer : property.name;
+        return { kind: "libCall", fn: fn.fn, args: [lowerer.coerceToExpected(arg, DYN), dynUndefinedExpr(loc)], type: fn.result, loc };
       }
-      const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-      const defaultWindows: IrExpr = { kind: "boolLit", value: lowerer.targetPlatform === "win32", type: BOOL, loc };
-      const windows = windowsNode ? lowerOptionalArgument(lowerer, windowsNode, BOOL, defaultWindows) : defaultWindows;
-      return { kind: "libCall", fn: "url.pathToFileURLPlatform", args: [path, windows], type: fn.result, loc };
-    }
-    if (hasSpread && bi.module === "url" && bi.member === "fileURLToPath") {
-      lowerer.noLowering(
-        "fileURLToPath with spread arguments",
-        expr,
-        "call fileURLToPath(value) directly so the URL-or-string overload remains statically visible",
-      );
+      const args = [0, 1].map((index) => expr.arguments[index]
+        ? lowerer.lowerExprExpecting(expr.arguments[index]!, DYN) : dynUndefinedExpr(loc));
+      return { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
     }
     if (
       hasSpread &&
@@ -2558,25 +2551,6 @@ function lowerFsSyncBufferWindow(
         bi.member === "readFileSync" || bi.member === "readFile"
           ? `pass the encoding: ${bi.member}(path, "utf8") — Buffer reads and options objects have no lowering`
           : `the supported form takes ${fn.params.length} argument${fn.params.length === 1 ? "" : "s"} (no options objects)`,
-      );
-    }
-    if (!hasSpread && bi.module === "url" && bi.member === "fileURLToPath") {
-      // Node accepts a URL value or a URL string — one libFn per receiver
-      // form, picked by the argument's static type. Unions (URL |
-      // undefined, ...) must narrow first, like everywhere else.
-      const argNode = expr.arguments[0]!;
-      const arg = lowerer.lowerExpr(argNode);
-      if (arg.type.kind === "dyn") return { kind: "libCall", fn: "url.fileURLToPathChecked", args: [arg], type: STRING, loc };
-      if (arg.type.kind === "url") {
-        return { kind: "libCall", fn: "url.fileURLToPathUrl", args: [arg], type: STRING, loc };
-      }
-      if (arg.type.kind === "string") {
-        return { kind: "libCall", fn: "url.fileURLToPathStr", args: [arg], type: STRING, loc };
-      }
-      lowerer.noLowering(
-        `fileURLToPath of '${lowerer.fmt(arg.type)}' values`,
-        argNode,
-        "pass a URL value or a URL string (narrow unions first)",
       );
     }
     if (!hasSpread && ((bi.module === "fs" && bi.member === "readFileSync") ||

@@ -625,6 +625,12 @@ function publicDetail(tier) {
     if (source === "compiler-feature:url.URL") {
       return "Supports absolute inputs and relative inputs with string or URL bases; setters and some WHATWG parsing behavior remain unsupported.";
     }
+    if (source === "compiler-feature:url.url.fileURLToPathBuffer") {
+      return "Converts file URLs to raw path bytes with POSIX or Windows options, preserving invalid UTF-8 and malformed escapes; internationalized hostnames remain unsupported.";
+    }
+    if (/^compiler-feature:url\.url\.(?:fileURLToPath|pathToFileURL)$/.test(source)) {
+      return "Supports file-path conversion with POSIX or Windows options for the tested string and URL forms; internationalized hostnames remain unsupported.";
+    }
     if (/^compiler-feature:(?:globals\.Text(?:Encoder|Decoder)|util\.(?:util\.Text(?:Encoder|Decoder)|text(?:Encoder\.encode|Decoder\.decode)))$/.test(source)) {
       return "Native codec values support UTF-8 encoding and whole-buffer decoding with recognized literal labels and default options.";
     }
@@ -698,6 +704,12 @@ function publicDetail(tier) {
     }
     if (source === "island-feature:buffer.buffer.transcode") {
       return "Converts Buffer and Uint8Array inputs among ASCII, Latin-1, UTF-8, and UTF-16LE, including encoding aliases and conversion errors.";
+    }
+    if (source === "island-feature:url.url.fileURLToPathBuffer") {
+      return "Converts file URLs to raw path bytes with POSIX or Windows options, preserving invalid UTF-8 and malformed escapes; internationalized hostnames remain unsupported.";
+    }
+    if (/^island-feature:url\.url\.(?:fileURLToPath|pathToFileURL)$/.test(source)) {
+      return "Supports file-path conversion with POSIX or Windows options for the tested string and URL forms; internationalized hostnames remain unsupported.";
     }
     if (source === "island-feature:util.textEncoder.encodeInto") {
       return "Writes complete UTF-8 characters into island-owned Uint8Array or Buffer views; byte arrays received from native code are copied.";

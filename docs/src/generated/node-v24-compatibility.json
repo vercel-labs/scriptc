@@ -1178,18 +1178,18 @@
       "apiEntries": 62,
       "static": {
         "supported": 0,
-        "partial": 10,
+        "partial": 11,
         "refused": 0,
-        "not-implemented": 52,
+        "not-implemented": 51,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
       },
       "dynamic": {
         "supported": 0,
-        "partial": 30,
+        "partial": 31,
         "refused": 0,
-        "not-implemented": 32,
+        "not-implemented": 31,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -83415,12 +83415,12 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "detail": "Supports file-path conversion with POSIX or Windows options for the tested string and URL forms; internationalized hostnames remain unsupported.",
         "verification": "test-backed"
       },
       "dynamic": {
         "status": "partial",
-        "detail": "Available through the embedded Node compatibility shim; exact member and overload coverage may be narrower.",
+        "detail": "Supports file-path conversion with POSIX or Windows options for the tested string and URL forms; internationalized hostnames remain unsupported.",
         "verification": "test-backed"
       }
     },
@@ -83442,14 +83442,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Converts file URLs to raw path bytes with POSIX or Windows options, preserving invalid UTF-8 and malformed escapes; internationalized hostnames remain unsupported.",
+        "verification": "test-backed"
       },
       "dynamic": {
-        "status": "not-implemented",
-        "detail": "This API is not implemented by the dynamic-island shim.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Converts file URLs to raw path bytes with POSIX or Windows options, preserving invalid UTF-8 and malformed escapes; internationalized hostnames remain unsupported.",
+        "verification": "test-backed"
       }
     },
     {
@@ -83499,12 +83499,12 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "detail": "Supports file-path conversion with POSIX or Windows options for the tested string and URL forms; internationalized hostnames remain unsupported.",
         "verification": "test-backed"
       },
       "dynamic": {
         "status": "partial",
-        "detail": "Available through the embedded Node compatibility shim; exact member and overload coverage may be narrower.",
+        "detail": "Supports file-path conversion with POSIX or Windows options for the tested string and URL forms; internationalized hostnames remain unsupported.",
         "verification": "test-backed"
       }
     },

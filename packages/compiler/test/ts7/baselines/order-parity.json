@@ -9284,6 +9284,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/class-value-constructor-exceptions.ts": {
+   "order": [
+    "<repo>/tests/corpus/class-value-constructor-exceptions.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/closure-nullable-union-return.ts": {
    "order": [
     "<repo>/tests/corpus/closure-nullable-union-return.ts"

@@ -1,0 +1,26 @@
+no-error-assertion-fences.ts:3:31 - error SC2020: 'assert.doesNotThrow with an object-shape expectation' is part of the standard library types but has no scriptc lowering yet
+
+  2 | // Static expectations require a class, regex, or validator over unknown.
+  3 | assert.doesNotThrow(() => {}, { name: "Error" });
+    |                               ^~~~~~~~~~~~~~~~~
+  4 | assert.doesNotThrow(() => {}, (error: Error): boolean => error.message === "boom");
+
+  hint: Node rejects this form when the callback fails — use a class, a regex, a validation callback, or a bare call
+
+no-error-assertion-fences.ts:4:31 - error SC2020: 'assert.doesNotThrow with this validation callback' is part of the standard library types but has no scriptc lowering yet
+
+  3 | assert.doesNotThrow(() => {}, { name: "Error" });
+  4 | assert.doesNotThrow(() => {}, (error: Error): boolean => error.message === "boom");
+    |                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  5 | void assert.doesNotReject(Promise.resolve(), (error: Error): boolean => error.message === "boom");
+
+  hint: use a callback accepting an unknown value, or a zero-parameter callback; its result is compared with true
+
+no-error-assertion-fences.ts:5:46 - error SC2020: 'assert.doesNotReject with this validation callback' is part of the standard library types but has no scriptc lowering yet
+
+  4 | assert.doesNotThrow(() => {}, (error: Error): boolean => error.message === "boom");
+  5 | void assert.doesNotReject(Promise.resolve(), (error: Error): boolean => error.message === "boom");
+    |                                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  6 | // Validators receive the original reason without a typed argument check.
+
+  hint: use a callback accepting an unknown value, or a zero-parameter callback; its result is compared with true

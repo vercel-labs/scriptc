@@ -4439,6 +4439,9 @@ export type IrLibFn =
   | "assert.shapeEnd"
   | "assert.regexErrTest"
   | "assert.unwantedRejection"
+  | "assert.unwantedError"
+  | "assert.noErrorPredicate"
+  | "assert.regexDynTest"
   /** Node's expectsError over an error-INSTANCE expected (assert.throws/
    * rejects second argument): walk the expected dyn error's keys (name,
    * message, code — the %error marker skipped) and deep-compare each
@@ -8007,6 +8010,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "assert.throwsRegex",
   "assert.shapeEnd",
   "assert.unwantedRejection",
+  "assert.unwantedError",
+  "assert.noErrorPredicate",
+  "assert.regexDynTest",
   "assert.expectsErrDyn",
   "assert.ifErrorErr",
   "assert.ifErrorF64",

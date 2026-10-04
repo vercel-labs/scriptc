@@ -7378,6 +7378,11 @@ void scr_assert_shape_end(ScrStr *msg, bool has_msg);
 /* assert.doesNotReject whose rejection MATCHED (or had no expected):
  * "Got unwanted rejection[: message].\nActual message: \"...\"". */
 void scr_assert_unwanted_rejection(ScrError *err, ScrStr *msg, bool has_msg);
+/* No-error assertions share Node's unwanted-exception/rejection message.
+ * The frontend reads and coerces actual?.message, preserving getter throws. */
+void scr_assert_unwanted_error(ScrStr *actual_message, bool rejection, ScrStr *msg, bool has_msg);
+bool scr_assert_no_error_predicate(ScrDyn *predicate, ScrDyn *actual);
+bool scr_assert_regex_dyn_test(ScrRegex *re, ScrDyn *actual);
 /* assert.ifError over the static surface: throws for ANY value the
  * frontend routes here (Node: everything but null/undefined, falsy
  * included) — "ifError got unwanted exception: " + the error's message

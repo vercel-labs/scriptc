@@ -111,7 +111,7 @@ assert-fences.ts:47:43 - error SC2020: 'assert.doesNotReject with an object-shap
      |                                           ^~~~~~~~~~~~~~~~~~~~~
   48 | assert.ifError(new Map<string, number>()); // no honest ifError rendering for this type
 
-  hint: Node rejects this form (doesNotReject takes a class or RegExp) — use a class, a regex, or a bare call
+  hint: Node rejects this form when the callback fails — use a class, a regex, a validation callback, or a bare call
 
 assert-fences.ts:48:16 - error SC2020: 'assert.ifError over 'Map<string, number>' values' is part of the standard library types but has no scriptc lowering yet
 

@@ -4564,7 +4564,16 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
     for (int i = 0; i < 2; i++) {
       const ScrDyn *owner = scr_dyn_property_owner(d, hint[i], strlen(hint[i]));
       ScrDyn *m = owner ? scr_dyn_obj_read(d, hint[i], strlen(hint[i])) : NULL;
+      if (scr_exc_pending()) { scr_dyn_release(m); return NULL; }
       if (!m && i == 0 && scr_dyn_has_object_prototype(d)) {
+        // Checked Error values retain their Error.prototype formatter even
+        // when their fields are exposed through the cached object view.
+        ScrError *error = scr_errdyn_err_of(d);
+        if (error) {
+          ScrStr *text = scr_error_to_string(error);
+          scr_error_release(error);
+          return text;
+        }
         return scr_str_new("[object Object]", 15);
       }
       if (!m || m->kind != SCR_DYN_FUNC) { scr_dyn_release(m); continue; }

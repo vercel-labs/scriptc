@@ -19,6 +19,7 @@
     "wasi": "by-design"
   },
   "features": [
+    { "chapter": "assert", "symbols": ["assert.doesNotThrow", "assert.doesNotReject"], "status": "partial", "evidence": ["tests/fixtures/npm/cases/node24-no-error-assertions/main.ts"] },
     { "chapter": "util", "symbols": ["util.stripVTControlCharacters", "util.toUSVString"], "status": "supported", "evidence": ["tests/fixtures/npm/cases/node24-text-utilities/main.ts"] },
     { "chapter": "util", "symbols": ["util.getSystemErrorName", "util.getSystemErrorMessage", "util.getSystemErrorMap"], "status": "partial", "evidence": ["tests/fixtures/npm/cases/node24-system-errors/main.ts"] },
     { "chapter": "url", "symbols": ["url.fileURLToPath", "url.fileURLToPathBuffer", "url.pathToFileURL"], "status": "partial", "evidence": ["tests/fixtures/npm/cases/node24-file-url-conversion/main.ts"] },

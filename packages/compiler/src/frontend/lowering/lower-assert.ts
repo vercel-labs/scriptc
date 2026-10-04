@@ -118,6 +118,8 @@ export function lowerAssertModuleCall(
       return lowerAssertMatch(lowerer, expr, loc, true);
     case "throws":
       return lowerAssertThrows(lowerer, expr, loc);
+    case "doesNotThrow":
+      return lowerAssertThrows(lowerer, expr, loc, true);
     case "rejects":
       return lowerAssertRejects(lowerer, expr, loc, false);
     case "doesNotReject":
@@ -568,7 +570,7 @@ interface ThrowsShapeKey {
   enameBake: string | null;
 }
 
-/** The classified expected argument of throws/rejects/doesNotReject.
+/** The classified expected argument of throws/rejects/doesNotThrow/doesNotReject.
  * "message" is Node's string form (the value IS the assertion message);
  * the rest select a synthesized catch body in the interned helper. */
 type ThrowsExpected =
@@ -576,6 +578,7 @@ type ThrowsExpected =
   | { form: "message"; msg: IrExpr; hasMsg: IrExpr }
   | { form: "class"; className: string; displayName: string }
   | { form: "regex"; value: IrExpr }
+  | { form: "predicate"; value: IrExpr }
   | { form: "shape"; keys: ThrowsShapeKey[] }
   // An error-INSTANCE expected (Node compares name, message, and the
   // expected's own enumerable keys with isDeepStrictEqual): the value
@@ -638,6 +641,16 @@ function classifyThrowsExpected(
       className: info.def.name,
       displayName: rec ? rec.lib : info.def.name.replace(/^%/, ""),
     };
+  }
+  if ((surface === "assert.doesNotThrow" || surface === "assert.doesNotReject") && expectedT?.kind === "func") {
+    const value = lowerer.lowerExpr(node);
+    if (value.type.kind === "func" && value.type.params.every((param) => param.kind === "dyn") && lowerer.dynConvertible(value.type)) {
+      return { form: "predicate", value: lowerer.coerceToExpected(value, DYN) };
+    }
+    lowerer.noLowering(
+      `${surface} with this validation callback`, node,
+      "use a callback accepting an unknown value, or a zero-parameter callback; its result is compared with true",
+    );
   }
   let obj: ts.Expression = node;
   while (ts.isParenthesizedExpression(obj)) obj = obj.expression;
@@ -741,25 +754,28 @@ function classifyThrowsExpected(
  * non-Error thrown value under any expectation propagates
  * (SEMANTICS.md 104 — Node builds an AssertionError from its
  * inspection). */
-function lowerAssertThrows(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-  requireStatementPosition(lowerer, expr, "assert.throws");
+function lowerAssertThrows(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc, doesNot = false): IrExpr {
+  const surface = doesNot ? "assert.doesNotThrow" : "assert.throws";
+  requireStatementPosition(lowerer, expr, surface);
   if (expr.arguments.length < 1 || expr.arguments.length > 3) {
     lowerer.noLowering(
-      `assert.throws with ${expr.arguments.length} arguments`,
+      `${surface} with ${expr.arguments.length} arguments`,
       expr,
-      "the supported forms are throws(fn), throws(fn, expected), and throws(fn, expected, message)",
+      `the supported forms are ${surface}(fn), ${surface}(fn, expected), and ${surface}(fn, expected, message)`,
     );
   }
   const fn = lowerer.lowerExpr(expr.arguments[0]!);
   if (fn.type.kind !== "func" || fn.type.params.length !== 0) {
     lowerer.noLowering(
-      "assert.throws with this callback shape",
+      `${surface} with this callback shape`,
       expr.arguments[0]!,
       "the callback must be a zero-parameter function",
     );
   }
-  const { expected, msg, hasMsg } = throwsArguments(lowerer, "assert.throws", expr, loc);
-  const helper = assertThrowsHelper(lowerer, "throws", fn.type, false, expected, loc);
+  const { expected, msg, hasMsg } = throwsArguments(lowerer, surface, expr, loc);
+  if (doesNot) refuseNoErrorShape(lowerer, surface, expr, expected);
+  const helper = assertThrowsHelper(lowerer, doesNot ? "dnt" : "throws", fn.type, false, expected, loc);
+  if (doesNot) return noErrorCall(lowerer, helper, fn, expected, msg, hasMsg, VOID, loc);
   return { kind: "call", callee: helper, args: [fn, msg, hasMsg, ...expectedArgs(expected)], type: VOID, loc };
 }
 
@@ -801,17 +817,9 @@ function lowerAssertRejects(
     );
   }
   const { expected, msg, hasMsg } = throwsArguments(lowerer, surface, expr, loc);
-  if (doesNot && (expected.form === "shape" || expected.form === "errValue")) {
-    // Node itself rejects this form (ERR_INVALID_ARG_TYPE: "expected"
-    // must be a function or RegExp) — the fence is the compile-time
-    // statement of the same rule.
-    lowerer.noLowering(
-      `${surface} with an object-shape expectation`,
-      expr.arguments[1]!,
-      "Node rejects this form (doesNotReject takes a class or RegExp) — use a class, a regex, or a bare call",
-    );
-  }
+  if (doesNot) refuseNoErrorShape(lowerer, surface, expr, expected);
   const helper = assertThrowsHelper(lowerer, doesNot ? "dnr" : "rejects", recv.type, recvIsPromise, expected, loc);
+  if (doesNot) return noErrorCall(lowerer, helper, recv, expected, msg, hasMsg, { kind: "promise", inner: VOID }, loc);
   return {
     kind: "call",
     callee: helper,
@@ -821,9 +829,36 @@ function lowerAssertRejects(
   };
 }
 
+/** Preserve source argument order despite the helper's ABI grouping the
+ * message before the matcher. The callback runs only after all arguments. */
+function noErrorCall(lowerer: Lowerer, helper: string, receiver: IrExpr, expected: ThrowsExpected, msg: IrExpr, hasMsg: IrExpr, type: IrType, loc: SrcLoc): IrExpr {
+  const stmts: IrStmt[] = [];
+  const save = (value: IrExpr, label: string): IrExpr => {
+    const local = lowerer.declareHiddenLocal(label, value.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    return varRef(local.id, value.type, loc);
+  };
+  const recv = save(receiver, "%assertNoErrorReceiver");
+  const matchers = expectedArgs(expected).map((value) => save(value, "%assertNoErrorExpected"));
+  return { kind: "seqExpr", stmts, result: { kind: "call", callee: helper, args: [recv, msg, hasMsg, ...matchers], type, loc }, type, loc };
+}
+
+function refuseNoErrorShape(lowerer: Lowerer, surface: string, expr: ts.CallExpression, expected: ThrowsExpected): void {
+  if (expected.form === "shape" || expected.form === "errValue") {
+    // Node itself rejects this form (ERR_INVALID_ARG_TYPE: "expected"
+    // must be a function or RegExp) — the fence is the compile-time
+    // statement of the same rule.
+    lowerer.noLowering(
+      `${surface} with an object-shape expectation`,
+      expr.arguments[1]!,
+      "Node rejects this form when the callback fails — use a class, a regex, a validation callback, or a bare call",
+    );
+  }
+}
+
 /** The shared expected/message argument split (arguments 2 and 3): a
- * string expected IS the message and excludes a third argument (Node
- * throws ERR_INVALID_ARG_TYPE there). */
+ * string expected IS the message. Only no-error assertions permit a third
+ * argument in this form, evaluating it before ignoring its value. */
 function throwsArguments(
   lowerer: Lowerer,
   surface: string,
@@ -838,12 +873,19 @@ function throwsArguments(
       ? classifyThrowsExpected(lowerer, surface, expectedNode, loc)
       : { form: "bare" };
   if (expected.form === "message") {
-    if (expr.arguments.length === 3) {
+    if (expr.arguments.length === 3 && surface !== "assert.doesNotThrow" && surface !== "assert.doesNotReject") {
       lowerer.noLowering(
         `${surface} with a string expected argument AND a message`,
         expr.arguments[2]!,
         "Node rejects this form (the string IS the message) — use an expected shape second",
       );
+    }
+    if (expr.arguments[2]) {
+      // No-error assertions ignore the third value in the string-second
+      // form, while ordinary argument evaluation still runs it once.
+      const ignored = lowerer.lowerExpr(expr.arguments[2]);
+      const message = lowerer.declareHiddenLocal("%assertNoErrorMessage", STRING);
+      return { expected, msg: { kind: "seqExpr", stmts: [{ kind: "varDecl", localId: message.id, init: expected.msg, loc }, { kind: "exprStmt", expr: ignored, loc }], result: varRef(message.id, STRING, loc), type: STRING, loc }, hasMsg: expected.hasMsg };
     }
     return { expected, msg: expected.msg, hasMsg: expected.hasMsg };
   }
@@ -854,7 +896,7 @@ function throwsArguments(
 /** The extra call-site arguments a form carries into its helper, in the
  * helper's own parameter order. */
 function expectedArgs(expected: ThrowsExpected): IrExpr[] {
-  if (expected.form === "regex") return [expected.value];
+  if (expected.form === "regex" || expected.form === "predicate") return [expected.value];
   if (expected.form === "shape") return expected.keys.map((k) => k.value);
   if (expected.form === "errValue") return [expected.value];
   return [];
@@ -886,7 +928,7 @@ function expectedArgs(expected: ThrowsExpected): IrExpr[] {
  * thrown value under any expectation propagates (SEMANTICS.md 104). */
 function assertThrowsHelper(
   lowerer: Lowerer,
-  mode: "throws" | "rejects" | "dnr",
+  mode: "throws" | "rejects" | "dnr" | "dnt",
   recvType: IrType,
   recvIsPromise: boolean,
   expected: ThrowsExpected,
@@ -897,11 +939,13 @@ function assertThrowsHelper(
       ? `class:${expected.className}`
       : expected.form === "regex"
         ? "regex"
-        : expected.form === "shape"
-          ? "shape:" + expected.keys.map((k) => `${k.id}${k.kind}:${k.enameBake ?? ""}`).join(",")
-          : expected.form === "errValue"
-            ? "errval"
-            : "bare";
+        : expected.form === "predicate"
+          ? "predicate"
+          : expected.form === "shape"
+            ? "shape:" + expected.keys.map((k) => `${k.id}${k.kind}:${k.enameBake ?? ""}`).join(",")
+            : expected.form === "errValue"
+              ? "errval"
+              : "bare";
   const key = `assert.${mode}:${recvIsPromise ? "p" : "f"}:${typeKey(recvType)}:${sig}`;
   const existing = lowerer.assertHelpers.get(key);
   if (existing) return existing;
@@ -932,6 +976,7 @@ function assertThrowsHelper(
   ];
   const shapeParamIds: string[] = [];
   if (expected.form === "regex") params.push({ localId: "re.0", name: "re", type: REGEX });
+  if (expected.form === "predicate") params.push({ localId: "predicate.0", name: "predicate", type: DYN });
   if (expected.form === "errValue") params.push({ localId: "ev.0", name: "ev", type: DYN });
   if (expected.form === "shape") {
     expected.keys.forEach((k, i) => {
@@ -979,44 +1024,62 @@ function assertThrowsHelper(
   })();
 
   let catchBody: IrStmt[];
-  if (mode === "dnr") {
+  if (mode === "dnr" || mode === "dnt") {
+    const actual = (): IrExpr => ({ kind: "caughtToDyn", value: caughtRef(), type: DYN, loc });
+    const unwanted = (): IrStmt => lib("assert.unwantedError", [
+      { kind: "libCall", fn: "util.toUSVString", args: [{ kind: "dynKeyGet", value: actual(), key: strLit("message", loc), optional: true, type: DYN, loc }], type: STRING, loc },
+      boolLit(mode === "dnr", loc), m(), hm(),
+    ]);
     switch (expected.form) {
       case "bare":
       case "message":
-        catchBody = [
-          ifStmt(isInstance("%Error"), [lib("assert.unwantedRejection", [narrowed(), m(), hm()])]),
-          rethrow,
-        ];
+        catchBody = [unwanted()];
         break;
-      case "class":
+      case "class": {
+        // Builtin errors can also arrive through checked values (JS
+        // callbacks and rejected promises). The identity cache retains
+        // their class even when their name is writable.
+        const runtimeClass = RUNTIME_ERROR_CLASSES.get(expected.className);
+        const matches: IrExpr = expected.className === "%Error" || runtimeClass
+          ? { kind: "libCall", fn: "dyn.errInstanceof", args: [actual(), numLit(runtimeClass?.kind ?? 0, loc)], type: BOOL, loc }
+          : isInstance(expected.className);
         catchBody = [
-          ifStmt(isInstance(expected.className), [
-            lib("assert.unwantedRejection", [narrowed(), m(), hm()]),
+          ifStmt(matches, [
+            unwanted(),
           ]),
+          // Error itself is callable as a validator after instanceof
+          // fails; subclasses are excluded by Node's constructor-chain
+          // check. Its string conversion can run hooks or throw.
+          ...(expected.className === "%Error" ? [{ kind: "exprStmt" as const, expr: { kind: "libCall" as const, fn: "util.toUSVString" as const, args: [actual()], type: STRING, loc }, loc }] : []),
           rethrow,
         ];
         break;
+      }
       case "regex":
         catchBody = [
-          ifStmt(isInstance("%Error"), [
-            ifStmt(
-              {
-                kind: "libCall",
-                fn: "assert.regexErrTest",
-                args: [varRef("re.0", REGEX, loc), narrowed()],
-                type: BOOL,
-                loc,
-              },
-              [lib("assert.unwantedRejection", [narrowed(), m(), hm()])],
-            ),
-          ]),
+          ifStmt(
+            {
+              kind: "libCall",
+              fn: "assert.regexDynTest",
+              args: [varRef("re.0", REGEX, loc), actual()],
+              type: BOOL,
+              loc,
+            },
+            [unwanted()],
+          ),
+          rethrow,
+        ];
+        break;
+      case "predicate":
+        catchBody = [
+          ifStmt({ kind: "libCall", fn: "assert.noErrorPredicate", args: [varRef("predicate.0", DYN, loc), actual()], type: BOOL, loc }, [unwanted()]),
           rethrow,
         ];
         break;
       default:
         // Node itself rejects shape expectations here (ERR_INVALID_ARG_TYPE)
         // — the call site fences before reaching this helper.
-        throw new InternalCompilerError("assert helper: doesNotReject shape forms fence at the call site");
+        throw new InternalCompilerError("assert helper: no-error shape forms fence at the call site");
     }
   } else {
     switch (expected.form) {
@@ -1070,12 +1133,14 @@ function assertThrowsHelper(
           doReturn,
         ];
         break;
+      case "predicate":
+        throw new InternalCompilerError("assert validation callback only enters a no-error helper");
     }
   }
 
   const body: IrStmt[] = [];
   let tryBody: IrStmt[];
-  if (mode === "throws") {
+  if (mode === "throws" || mode === "dnt") {
     const fnT = recvType as IrType & { kind: "func" };
     tryBody = [
       {
@@ -1106,7 +1171,7 @@ function assertThrowsHelper(
     ];
   }
   body.push({ kind: "tryCatch", tryBody, catchBody, catchLocalId: "e.0", finallyBody: null, loc });
-  if (mode !== "dnr") {
+  if (mode !== "dnr" && mode !== "dnt") {
     body.push(lib("assert.throwsNone", [boolLit(mode === "rejects", loc), ename.e, boolLit(ename.has, loc), m(), hm()]));
   }
   body.push(doReturn);
@@ -1118,7 +1183,7 @@ function assertThrowsHelper(
     locals,
     body,
     loc,
-    ...(mode === "throws" ? {} : { async: true as const }),
+    ...(mode === "throws" || mode === "dnt" ? {} : { async: true as const }),
   });
   return name;
 }

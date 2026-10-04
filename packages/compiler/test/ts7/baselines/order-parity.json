@@ -13576,6 +13576,42 @@
     "<repo>/tests/corpus/node24-text-utilities-coercion.js"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/node24-no-error-assertions.ts": {
+   "order": [
+    "<repo>/tests/corpus/node24-no-error-assertions.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/node24-no-error-assertions.cjs": {
+   "order": [
+    "<repo>/tests/corpus/node24-no-error-assertions.cjs"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/fixtures/npm/cases/node24-no-error-assertions/main.ts": {
+   "order": [
+    "<repo>/tests/fixtures/npm/cases/node24-no-error-assertions/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/fixtures/node-types/no-error-assertions.ts": {
+   "order": [
+    "<repo>/tests/fixtures/node-types/no-error-assertions.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/node24-no-error-assertions-coercion.js": {
+   "order": [
+    "<repo>/tests/corpus/node24-no-error-assertions-coercion.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/no-error-assertion-fences.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/no-error-assertion-fences.ts"
+   ],
+   "diags": []
   }
  }
 }

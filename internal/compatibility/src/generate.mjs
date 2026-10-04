@@ -596,6 +596,9 @@ function publicDetail(tier) {
   if (source.startsWith("surface-manifest:unsupported:")) return "Explicitly rejected by a named compiler diagnostic.";
   if (source.startsWith("surface-manifest:dynamic-only:")) return "Explicitly refused in static code; this form requires the dynamic island.";
   if (source.startsWith("surface-manifest:")) return "Implemented for the call shapes accepted by the compiler lowering.";
+  if (/^compiler-dedicated:assert\.doesNot(?:Throw|Reject)$/.test(source)) {
+    return "Supports callbacks or native promises with messages, Error classes, regular expressions, and validators accepting unknown values; object expectations and complete AssertionError metadata remain unsupported.";
+  }
   if (source.startsWith("compiler-dedicated:")) return "Implemented by a dedicated static compiler/runtime path.";
   if (source.startsWith("compiler-feature:")) {
     if (/^compiler-feature:buffer\.buffer\.(?:isAscii|isUtf8)$/.test(source)) {
@@ -696,6 +699,9 @@ function publicDetail(tier) {
     return "No dynamic-island implementation exists for this Node API family yet.";
   }
   if (source.startsWith("island-feature:")) {
+    if (/^island-feature:assert\.assert\.doesNot(?:Throw|Reject)$/.test(source)) {
+      return "Supports no-error assertions over callbacks, promises, and promise-like objects, with Error classes, regular expressions, validation functions, and Node-compatible failure metadata for the tested forms.";
+    }
     if (source === "island-feature:util.util.stripVTControlCharacters") return "Removes ANSI control sequences with the Node matcher and validates non-string arguments.";
     if (source === "island-feature:util.util.toUSVString") return "Replaces unpaired surrogate code units and preserves Node string coercion, custom conversion hooks, and conversion errors.";
     if (source.startsWith("island-feature:diagnostics_channel.")) return "Publishes synchronous, promise, and callback tracing lifecycle events with result/error identity, subscriber management, and store bindings. Bound stores follow the embedded engine's synchronous AsyncLocalStorage model and do not propagate across awaits.";

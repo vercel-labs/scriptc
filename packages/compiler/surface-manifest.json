@@ -332,14 +332,6 @@
       "note": "await the promise directly — an unexpected rejection already fails the test"
     },
     {
-      "id": "node-builtin.assert.doesNotThrow",
-      "kind": "node-builtin",
-      "name": "assert.doesNotThrow",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "call the function directly — an unexpected throw already fails the test"
-    },
-    {
       "id": "node-builtin.assert.ifError",
       "kind": "node-builtin",
       "name": "assert.ifError",
@@ -385,14 +377,6 @@
       "status": "unsupported",
       "code": "SC2020",
       "note": "await the promise directly — an unexpected rejection already fails the test"
-    },
-    {
-      "id": "node-builtin.assert.strict.doesNotThrow",
-      "kind": "node-builtin",
-      "name": "assert/strict.doesNotThrow",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "call the function directly — an unexpected throw already fails the test"
     },
     {
       "id": "node-builtin.assert.strict.ifError",

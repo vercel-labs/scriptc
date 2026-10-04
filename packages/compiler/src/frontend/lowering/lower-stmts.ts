@@ -1081,8 +1081,16 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
       // cell. `throw f()` of a void call has no value; Date has numeric
       // storage internally, but cannot preserve its object kind through the
       // untyped catch boundary. Reject both rather than changing JS identity.
-      const value = lowerer.lowerExpr(stmt.expression);
+      let value = lowerer.lowerExpr(stmt.expression);
       if (value.type.kind === "void") lowerer.badType(stmt.expression, lowerer.typeOf(stmt.expression));
+      // Preserve primitive reasons and readable record identity across the
+      // untyped catch boundary. Unit literals have no standalone native
+      // value, and native reference payloads otherwise lose their shape.
+      if (isUnitType(value.type) || value.type.kind === "symbol" || value.type.kind === "bigint") {
+        value = lowerer.coerceToExpected(value, DYN);
+      } else if (value.type.kind === "record" && lowerer.dynConvertible(value.type)) {
+        value = { kind: "dynFrom", value, liveRef: true, type: DYN, loc: locOf(stmt.expression) };
+      }
       if (value.type.kind === "date") {
         lowerer.unsupported(
           "SC1090",

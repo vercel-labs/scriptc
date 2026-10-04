@@ -273,6 +273,7 @@ ScrStr *scr_caught_to_string(const ScrCaught *c) {
     /* fall through */
   case SCR_EXC_REF:
   case SCR_EXC_PRIMITIVE_REF:
+    if (c->retain_fn == scr_dyn_retain_v) return scr_dyn_string_constructor(c->payload);
     /* Object.prototype.toString — exact for thrown records and class
      * instances without a toString override; thrown arrays/closures/union
      * boxes print this too where Node would vary (SEMANTICS.md). */

@@ -1427,6 +1427,9 @@ export const LIB_FN_SIGS: Record<IrLibFn, { argTypes: (IrType | null)[]; result:
   "assert.shapeEnd": { argTypes: [STRING, BOOL], result: VOID },
   "assert.regexErrTest": { argTypes: [REGEX, { kind: "object", className: "%Error" }], result: BOOL },
   "assert.unwantedRejection": { argTypes: [{ kind: "object", className: "%Error" }, STRING, BOOL], result: VOID },
+  "assert.unwantedError": { argTypes: [STRING, BOOL, STRING, BOOL], result: VOID },
+  "assert.noErrorPredicate": { argTypes: [DYN, DYN], result: BOOL },
+  "assert.regexDynTest": { argTypes: [REGEX, DYN], result: BOOL },
   "assert.expectsErrDyn": { argTypes: [DYN, DYN, STRING, BOOL], result: VOID },
   // assert.ifError's typed entries (always throw; unit args never
   // lower). The error slot is program-dependent — any %Error-hierarchy

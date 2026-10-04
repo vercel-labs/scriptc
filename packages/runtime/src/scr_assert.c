@@ -1481,6 +1481,32 @@ void scr_assert_unwanted_rejection(ScrError *err, ScrStr *msg, bool has_msg) {
   scr_assert_fail_msg(ab_take(&b));
 }
 
+void scr_assert_unwanted_error(ScrStr *actual_message, bool rejection, ScrStr *msg, bool has_msg) {
+  ScrAssertBuf b = {0};
+  ab_cstr(&b, rejection ? "Got unwanted rejection" : "Got unwanted exception");
+  if (has_msg && msg->len) {
+    ab_cstr(&b, ": ");
+    ab_str(&b, msg);
+  } else ab_char(&b, '.');
+  ab_cstr(&b, "\nActual message: \"");
+  ab_str(&b, actual_message);
+  ab_char(&b, '"');
+  scr_assert_fail_msg(ab_take(&b));
+}
+
+/* Node calls validation functions with a fresh object receiver and accepts
+ * only the boolean true. A callback exception remains the pending exception. */
+bool scr_assert_no_error_predicate(ScrDyn *predicate, ScrDyn *actual) {
+  ScrDyn *receiver = scr_dyn_new_obj();
+  scr_dyn_this_push_dyn(receiver);
+  ScrDyn *result = scr_dyn_call(predicate, &actual, 1, "expected");
+  scr_dyn_this_pop();
+  scr_dyn_release(receiver);
+  bool matched = result && result->kind == SCR_DYN_BOOL && result->v.b;
+  scr_dyn_release(result);
+  return matched;
+}
+
 /* ── assert.ifError ───────────────────────────────────────────────────
  * Node throws for ANY value but null/undefined (falsy included); the
  * frontend routes null/undefined to a no-op and everything else here.

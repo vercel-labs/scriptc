@@ -1112,6 +1112,17 @@ bool scr_assert_regex_err_test(ScrRegex *re, ScrError *err) {
   return matched;
 }
 
+bool scr_assert_regex_dyn_test(ScrRegex *re, ScrDyn *actual) {
+  // String(symbol) accepts a direct Symbol; object conversion uses the
+  // string hint, including Symbol.toPrimitive and custom Error formatters.
+  ScrStr *str = actual->kind == SCR_DYN_SYMBOL
+    ? scr_dyn_string_constructor(actual) : scr_util_to_usv_string(actual);
+  if (!str) return false;
+  bool matched = scr_assert_regex_hits(re, str);
+  scr_str_release(str);
+  return matched;
+}
+
 /* The regex-valued shape slot (assert.throws(fn, {message: /re/})):
  * test the stashed actual key eagerly and store verdict + rendering, so
  * scr_assert.c's comparison and diff stay libregexp-free. An absent

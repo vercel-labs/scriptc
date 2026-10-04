@@ -27,8 +27,8 @@
       "apiEntries": 29,
       "static": {
         "supported": 0,
-        "partial": 17,
-        "refused": 4,
+        "partial": 18,
+        "refused": 3,
         "not-implemented": 8,
         "by-design": 0,
         "unreviewed": 0,
@@ -1535,14 +1535,20 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/2936-static-loose-equality.ts",
+          "tests/corpus/node24-no-error-assertions-coercion.js",
+          "tests/corpus/node24-no-error-assertions.cjs",
+          "tests/corpus/node24-no-error-assertions.ts",
+          "tests/fixtures/node-types/no-error-assertions.ts",
+          "tests/harness/project-config.test.ts"
         ]
       },
       "dynamic": {
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/fixtures/npm/cases/assert-shims/main.ts"
+          "tests/fixtures/npm/cases/assert-shims/main.ts",
+          "tests/fixtures/npm/cases/node24-no-error-assertions/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -2033,18 +2039,18 @@
         "status": "partial",
         "evidence": "compiler-dedicated:assert.doesNotReject",
         "tests": [
-          "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
-          "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts"
+          "tests/corpus/node24-no-error-assertions.ts",
+          "tests/corpus/node24-no-error-assertions.cjs",
+          "tests/corpus/node24-no-error-assertions-coercion.js",
+          "tests/fixtures/node-types/no-error-assertions.ts",
+          "tests/harness/project-config.test.ts"
         ]
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:assert.doesNotReject",
+        "evidence": "island-feature:assert.assert.doesNotReject",
         "tests": [
-          "tests/fixtures/npm/cases/assert-shims/main.ts"
+          "tests/fixtures/npm/cases/node24-no-error-assertions/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2067,14 +2073,21 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.assert.doesNotThrow"
+        "status": "partial",
+        "evidence": "compiler-dedicated:assert.doesNotThrow",
+        "tests": [
+          "tests/corpus/node24-no-error-assertions.ts",
+          "tests/corpus/node24-no-error-assertions.cjs",
+          "tests/corpus/node24-no-error-assertions-coercion.js",
+          "tests/fixtures/node-types/no-error-assertions.ts",
+          "tests/harness/project-config.test.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
-        "evidence": "island-export:node:assert.doesNotThrow",
+        "evidence": "island-feature:assert.assert.doesNotThrow",
         "tests": [
-          "tests/fixtures/npm/cases/assert-shims/main.ts"
+          "tests/fixtures/npm/cases/node24-no-error-assertions/main.ts"
         ]
       },
       "anchorSource": "exact"

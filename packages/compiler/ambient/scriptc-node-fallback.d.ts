@@ -2097,6 +2097,7 @@ declare module "assert" {
     function notDeepEqual(actual: unknown, expected: unknown, message?: string): void;
     function fail(message?: string): never;
     function throws(fn: () => unknown, expected?: unknown, message?: string): void;
+    function doesNotThrow(fn: () => unknown, expected?: unknown, message?: string): void;
     function rejects(fn: (() => Promise<unknown>) | Promise<unknown>, expected?: unknown, message?: string): Promise<void>;
     function doesNotReject(fn: (() => Promise<unknown>) | Promise<unknown>, expected?: unknown, message?: string): Promise<void>;
     function match(value: string, regExp: RegExp, message?: string): void;
@@ -2127,6 +2128,7 @@ declare module "assert/strict" {
     function notDeepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function fail(message?: string): never;
     function throws(fn: () => unknown, expected?: unknown, message?: string): void;
+    function doesNotThrow(fn: () => unknown, expected?: unknown, message?: string): void;
     function rejects(fn: (() => Promise<unknown>) | Promise<unknown>, expected?: unknown, message?: string): Promise<void>;
     function doesNotReject(fn: (() => Promise<unknown>) | Promise<unknown>, expected?: unknown, message?: string): Promise<void>;
     function match(value: string, regExp: RegExp, message?: string): void;

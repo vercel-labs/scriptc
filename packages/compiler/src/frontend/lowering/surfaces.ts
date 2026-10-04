@@ -1452,7 +1452,6 @@ const ASSERT_MODULE_HINTS: Record<string, string | undefined> = {
     "await the promise inside assert.throws's callback story instead: " +
     "try { await p; assert.fail(\"expected rejection\") } catch { ... }",
   doesNotReject: "await the promise directly — an unexpected rejection already fails the test",
-  doesNotThrow: "call the function directly — an unexpected throw already fails the test",
   AssertionError:
     "the class itself has no lowering — catch and test err.name === " +
     '"AssertionError" or err.code === "ERR_ASSERTION"',
@@ -1470,7 +1469,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<string, Record<string, string | 
     ifError: ASSERT_MODULE_HINTS["ifError"],
     rejects: ASSERT_MODULE_HINTS["rejects"],
     doesNotReject: ASSERT_MODULE_HINTS["doesNotReject"],
-    doesNotThrow: ASSERT_MODULE_HINTS["doesNotThrow"],
     AssertionError: ASSERT_MODULE_HINTS["AssertionError"],
   },
   util: {

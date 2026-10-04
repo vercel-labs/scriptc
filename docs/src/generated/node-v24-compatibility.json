@@ -74,8 +74,8 @@
       "apiEntries": 29,
       "static": {
         "supported": 0,
-        "partial": 17,
-        "refused": 4,
+        "partial": 18,
+        "refused": 3,
         "not-implemented": 8,
         "by-design": 0,
         "unreviewed": 0,
@@ -1772,12 +1772,12 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "detail": "Supports callbacks or native promises with messages, Error classes, regular expressions, and validators accepting unknown values; object expectations and complete AssertionError metadata remain unsupported.",
         "verification": "test-backed"
       },
       "dynamic": {
         "status": "partial",
-        "detail": "Available through the embedded Node compatibility shim; exact member and overload coverage may be narrower.",
+        "detail": "Supports no-error assertions over callbacks, promises, and promise-like objects, with Error classes, regular expressions, validation functions, and Node-compatible failure metadata for the tested forms.",
         "verification": "test-backed"
       }
     },
@@ -1799,13 +1799,13 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "partial",
+        "detail": "Supports callbacks or native promises with messages, Error classes, regular expressions, and validators accepting unknown values; object expectations and complete AssertionError metadata remain unsupported.",
+        "verification": "test-backed"
       },
       "dynamic": {
         "status": "partial",
-        "detail": "Available through the embedded Node compatibility shim; exact member and overload coverage may be narrower.",
+        "detail": "Supports no-error assertions over callbacks, promises, and promise-like objects, with Error classes, regular expressions, validation functions, and Node-compatible failure metadata for the tested forms.",
         "verification": "test-backed"
       }
     },

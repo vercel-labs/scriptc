@@ -7,9 +7,9 @@
     "tierItemCount": 6645,
     "tiers": {
       "static": {
-        "replace-refusal": 43,
+        "replace-refusal": 42,
         "verify-gap": 2510,
-        "audit-partial": 659,
+        "audit-partial": 660,
         "classify": 2,
         "implement": 81
       },
@@ -471,11 +471,11 @@
           "confidence": "high",
           "source": "compiler-dedicated:assert.doesNotReject",
           "tests": [
-            "tests/corpus/1600-assert-passing.ts",
-            "tests/corpus/1604-assert-deep-structures.ts",
-            "tests/corpus/1609-assert-async.ts",
-            "tests/corpus/1721-assert-throws-regex-class.ts",
-            "tests/corpus/2936-static-loose-equality.ts"
+            "tests/corpus/node24-no-error-assertions.ts",
+            "tests/corpus/node24-no-error-assertions.cjs",
+            "tests/corpus/node24-no-error-assertions-coercion.js",
+            "tests/fixtures/node-types/no-error-assertions.ts",
+            "tests/harness/project-config.test.ts"
           ]
         },
         "dynamic": {
@@ -483,9 +483,9 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:assert.doesNotReject",
+          "source": "island-feature:assert.assert.doesNotReject",
           "tests": [
-            "tests/fixtures/npm/cases/assert-shims/main.ts"
+            "tests/fixtures/npm/cases/node24-no-error-assertions/main.ts"
           ]
         }
       }
@@ -506,21 +506,27 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "refused",
-          "action": "replace-refusal",
-          "verification": "explicit-refusal",
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:unsupported:node-builtin.assert.doesNotThrow",
-          "tests": []
+          "source": "compiler-dedicated:assert.doesNotThrow",
+          "tests": [
+            "tests/corpus/node24-no-error-assertions.ts",
+            "tests/corpus/node24-no-error-assertions.cjs",
+            "tests/corpus/node24-no-error-assertions-coercion.js",
+            "tests/fixtures/node-types/no-error-assertions.ts",
+            "tests/harness/project-config.test.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "island-export:node:assert.doesNotThrow",
+          "source": "island-feature:assert.assert.doesNotThrow",
           "tests": [
-            "tests/fixtures/npm/cases/assert-shims/main.ts"
+            "tests/fixtures/npm/cases/node24-no-error-assertions/main.ts"
           ]
         }
       }

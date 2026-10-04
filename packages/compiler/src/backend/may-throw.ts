@@ -39,8 +39,12 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
   const manifestHasRetainedCallback = hasRetainedFfiCallback(mod.ffiImports ?? []);
   // Method name → every class's implementation of it (virtualCall callees).
   const methodImpls = new Map<string, string[]>();
+  const classes = new Map((mod.classes ?? []).map((cls) => [cls.name, cls]));
+  const constructorClasses = new Map<string, string>();
+  const classValueCallers = new Map<string, Set<string>>();
   const tdzGlobals = (mod.globals ?? []).filter((g) => g.tdz).map((g) => g.id);
   for (const cls of mod.classes ?? []) {
+    constructorClasses.set(`%${cls.name}.constructor`, cls.name);
     for (const m of cls.methods ?? []) {
       let list = methodImpls.get(m);
       if (!list) methodImpls.set(m, (list = []));
@@ -238,16 +242,9 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
           // hierarchy; classval flows never leave it.
           const cls = rec.callee.type.kind === "classval" ? rec.callee.type.className : undefined;
           if (cls !== undefined) {
-            const descends = (name: string): boolean => {
-              for (let c = (mod.classes ?? []).find((k) => k.name === name); c; c = (mod.classes ?? []).find((k) => k.name === c!.base)) {
-                if (c.name === cls) return true;
-                if (c.base === undefined) break;
-              }
-              return false;
-            };
-            for (const k of mod.classes ?? []) {
-              if (descends(k.name)) f.callees.push(`%${k.name}.constructor`);
-            }
+            let list = classValueCallers.get(cls);
+            if (!list) classValueCallers.set(cls, (list = new Set()));
+            list.add(fn.name);
           }
           break;
         }
@@ -292,6 +289,12 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
       list.push(name);
     }
   }
+  // A throwing constructor makes construction through its class value and
+  // every ancestor's class value potentially throwing. Keep this hierarchy
+  // summary separate from constructor functions: a throwing descendant must
+  // not make direct `new Base()` or a sibling's constructor throw. Each class
+  // is reached at most once, without materializing every descendant edge.
+  const throwingHierarchies = new Set<string>();
   let indirect = sawDynFuncAdapter;
   if (indirect) for (const name of indirectCallers) mark(name);
   for (let i = 0; i < pending.length; i++) {
@@ -301,6 +304,15 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
       for (const caller of indirectCallers) mark(caller);
     }
     for (const caller of callers.get(name) ?? []) mark(caller);
+    let cls = constructorClasses.get(name);
+    while (cls !== undefined && !throwingHierarchies.has(cls)) {
+      const def = classes.get(cls);
+      if (!def) break;
+      throwingHierarchies.add(cls);
+      const valueCallers = classValueCallers.get(cls);
+      if (valueCallers) for (const caller of valueCallers) mark(caller);
+      cls = def.base;
+    }
   }
   return { fns: may, indirect };
 }

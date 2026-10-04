@@ -130,3 +130,63 @@ test("dynamic function adapters activate indirect calls without an IR closure ta
   );
   expect(computeMayThrow(mod)).toEqual({ fns: new Set(["caller", "indirect", "adapter"]), indirect: true });
 });
+
+const construct = (className: string, direct = false): IrStmt => exprStmt(direct
+  ? { kind: "new", className, args: [], type: { kind: "object", className }, loc }
+  : { kind: "newValue", callee: { kind: "classRef", className, type: { kind: "classval", className }, loc }, args: [], type: { kind: "object", className }, loc });
+
+test("class-value construction includes descendants without making direct or sibling construction throw", () => {
+  const mod = moduleWith(
+    fn("caller", [call("rootValue")], []),
+    ...["Root", "Middle", "Leaf", "Sibling", "Other"].flatMap((name) => [
+      fn(`${name.toLowerCase()}Value`, [construct(name), construct(name)], []),
+      fn(`${name.toLowerCase()}Direct`, [construct(name, true)], []),
+      fn(`%${name}.constructor`, name === "Leaf" || name === "Other" ? [call("failure")] : [], []),
+    ]),
+    fn("failure", [failure], []),
+  );
+  mod.classes = [
+    { name: "Leaf", base: "Middle", fields: [], loc },
+    { name: "Sibling", base: "Root", fields: [], loc },
+    { name: "Middle", base: "Root", fields: [], loc },
+    { name: "Other", fields: [], loc },
+    { name: "Root", fields: [], loc },
+  ];
+  const before = structuredClone(mod);
+  const expected = new Set(["failure", "%Leaf.constructor", "%Other.constructor", "caller", "rootValue", "middleValue", "leafValue", "leafDirect", "otherValue", "otherDirect"]);
+  expect(computeMayThrow(mod)).toEqual({ fns: expected, indirect: false });
+  expect(mod).toEqual(before);
+  mod.classes.reverse();
+  mod.functions.reverse();
+  expect(computeMayThrow(mod)).toEqual({ fns: expected, indirect: false });
+  mod.functions.find((f) => f.name === "%Leaf.constructor")!.body = [];
+  expect(computeMayThrow(mod)).toEqual({ fns: new Set(["failure", "%Other.constructor", "otherValue", "otherDirect"]), indirect: false });
+});
+
+test("class-value dependencies participate in the call graph fixpoint", () => {
+  const mod = moduleWith(
+    fn("caller", [construct("Root")], []),
+    fn("direct", [construct("Root", true)], []),
+    fn("%Root.constructor", [], []),
+    fn("%Child.constructor", [construct("Other")], []),
+    fn("%Other.constructor", [construct("Root")], []),
+    fn("%OtherChild.constructor", [call("failure")], []),
+    fn("failure", [failure], []),
+  );
+  mod.classes = [
+    { name: "Root", fields: [], loc }, { name: "Child", base: "Root", fields: [], loc },
+    { name: "Other", fields: [], loc }, { name: "OtherChild", base: "Other", fields: [], loc },
+  ];
+  expect(computeMayThrow(mod)).toEqual({
+    fns: new Set(["failure", "%OtherChild.constructor", "%Child.constructor", "%Other.constructor", "caller"]), indirect: false,
+  });
+  mod.functions.find((f) => f.name === "failure")!.body = [];
+  expect(computeMayThrow(mod)).toEqual({ fns: new Set(), indirect: false });
+});
+
+test("propagates construction through a deep hierarchy without descendant expansion or recursive traversal", () => {
+  const size = 6000;
+  const mod = moduleWith(...Array.from({ length: size }, (_, i) => fn(`factory${i}`, [construct(`C${i}`)], [])), fn(`%C${size - 1}.constructor`, [failure], []));
+  mod.classes = Array.from({ length: size }, (_, i) => ({ name: `C${i}`, ...(i > 0 ? { base: `C${i - 1}` } : {}), fields: [], loc })).reverse();
+  expect(computeMayThrow(mod)).toEqual({ fns: new Set(mod.functions.map((f) => f.name)), indirect: false });
+});

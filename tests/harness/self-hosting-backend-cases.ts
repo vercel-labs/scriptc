@@ -82,6 +82,17 @@ export function backendAnalysisCases(): BackendAnalysisCase[] {
   cases.push({ name: "hierarchy uniform tracing", module: hierarchy, shapes: ["object:Child", "object:Sibling", "object:Base"] });
 
   const length = 128;
+  const constructorChain = module([
+    ...Array.from({ length }, (_, i) => fn(`factory${i}`, [stmt({ kind: "newValue", callee: {
+      kind: "classRef", className: `C${i}`, type: { kind: "classval", className: `C${i}` }, loc,
+    }, args: [], type: { kind: "object", className: `C${i}` }, loc })])),
+    fn("direct", [stmt({ kind: "new", className: "C0", args: [], type: { kind: "object", className: "C0" }, loc })]),
+    fn("%C0.constructor"), fn(`%C${length - 1}.constructor`, [{ kind: "throw", value: num(1), loc }]),
+  ]);
+  constructorChain.classes = Array.from({ length }, (_, i) => ({ name: `C${i}`, ...(i > 0 ? { base: `C${i - 1}` } : {}), fields: [], loc })).reverse();
+  cases.push({ name: "class-value chain keeps direct construction separate", module: constructorChain, mayThrow: [
+    `%C${length - 1}.constructor`, ...Array.from({ length }, (_, i) => `factory${length - i - 1}`),
+  ], indirect: false });
   const chain = module(Array.from({ length }, (_, i) => fn(`f${i}`, i === length - 1
     ? [{ kind: "throw", value: num(1), loc }] : [stmt(call(`f${i + 1}`)), stmt(call(`f${i + 1}`))])));
   cases.push({ name: "caller-first chain with repeated edges", module: chain, mayThrow: chain.functions.map((f) => f.name).reverse(), indirect: false });

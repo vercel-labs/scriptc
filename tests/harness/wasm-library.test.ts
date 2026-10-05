@@ -86,7 +86,7 @@ describe.skipIf(!hasZig).each(["node", "native"] as const)("Wasm library embeddi
   test("exports only the callable ABI and requires named host imports", () => {
     expect(WebAssembly.Module.exports(module).map((e) => e.name).sort()).toEqual([
       "_initialize", "memory", "scriptc_alloc", "scriptc_free", "app_init", "app_collect", "app_reset_results",
-      "app_step", "app_echo", "app_bytes", "app_fail",
+      "app_step", "app_echo", "app_echo_cstring", "app_bytes", "app_fail",
     ].sort());
     expect(WebAssembly.Module.imports(module).filter((e) => e.module === "scriptc").map((e) => e.name).sort()).toEqual(["adjust", "panic", "report"]);
     expect(() => new WebAssembly.Instance(module, { scriptc: {}, wasi_snapshot_preview1: {} })).toThrow();
@@ -103,12 +103,24 @@ describe.skipIf(!hasZig).each(["node", "native"] as const)("Wasm library embeddi
     let view = new DataView(api.memory.buffer);
     const resultPtr = view.getUint32(out, true), resultLen = view.getUint32(out + 4, true);
     const echo = text(resultPtr, resultLen);
+    const cstringInput = new TextEncoder().encode("λ hello");
+    const cstringPtr = api.scriptc_alloc(32);
+    new Uint8Array(api.memory.buffer, cstringPtr, cstringInput.length).set(cstringInput);
+    new Uint8Array(api.memory.buffer)[cstringPtr + cstringInput.length] = 0;
+    const cstringResult = api.app_echo_cstring(cstringPtr);
+    expect(text(cstringResult, new Uint8Array(api.memory.buffer, cstringResult).indexOf(0))).toBe("cstr:λ hello");
+    const nulInput = new TextEncoder().encode("λ\0ignored\0");
+    new Uint8Array(api.memory.buffer, cstringPtr, nulInput.length).set(nulInput);
+    new Uint8Array(api.memory.buffer)[cstringPtr + nulInput.length] = 0;
+    const nulResult = api.app_echo_cstring(cstringPtr);
+    expect(text(nulResult, new Uint8Array(api.memory.buffer, nulResult).indexOf(0))).toBe("cstr:λ");
     new Uint8Array(api.memory.buffer, ptr, 3).set([0, 254, 255]);
     api.app_bytes(ptr, 3, out, out + 4);
     view = new DataView(api.memory.buffer);
     const bytes = Array.from(new Uint8Array(api.memory.buffer, view.getUint32(out, true), view.getUint32(out + 4, true)));
     // An explicit reset entry keeps earlier results live across later calls.
     expect(text(resultPtr, resultLen)).toBe(echo);
+    api.scriptc_free(cstringPtr);
     api.scriptc_free(ptr);
     api.app_reset_results();
     api.app_collect();
@@ -119,10 +131,11 @@ describe.skipIf(!hasZig).each(["node", "native"] as const)("Wasm library embeddi
       const api=await import(${JSON.stringify(join(fixture, "lib.ts"))});
       const values=[api.step(3),api.step(-2),api.step(0.5)];
       const echo=api.echo("λ\\0hello");
+      const echoCString=api.echoCString("λ");
       const bytes=Array.from(api.bytes(new Uint8Array([0,254,255])));
-      console.log(JSON.stringify({values,echo,bytes,reports}));
+      console.log(JSON.stringify({values,echo,echoCString,bytes,reports}));
     `], { encoding: "utf8" });
-    expect({ values, echo, bytes, reports }).toEqual(JSON.parse(reference));
+    expect({ values, echo, echoCString: "cstr:λ", bytes, reports }).toEqual(JSON.parse(reference));
   });
 
   test("instances isolate state and initialization resets the session", () => {

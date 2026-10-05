@@ -18,6 +18,7 @@
   "exports": [
     { "export": "step", "symbol": "app_step", "params": ["f64"], "returns": "f64" },
     { "export": "echo", "symbol": "app_echo", "params": ["string"], "returns": "string" },
+    { "export": "echoCString", "symbol": "app_echo_cstring", "params": ["cstring"], "returns": "cstring" },
     { "export": "bytes", "symbol": "app_bytes", "params": ["bytes"], "returns": "bytes" },
     { "export": "fail", "symbol": "app_fail", "params": [], "returns": "void" }
   ]

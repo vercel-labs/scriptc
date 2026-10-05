@@ -1187,6 +1187,9 @@ export class LlEmitter {
       if (this.mod.lib.exports.some((e) => e.params.includes("string"))) {
         this.declare(`declare ptr @scr_library_str_in(ptr, ${this.sizeType})`);
       }
+      if (this.mod.lib.exports.some((e) => e.params.includes("cstring"))) {
+        this.declare(`declare ptr @scr_library_cstr_in(ptr)`);
+      }
       if (this.mod.lib.exports.some((e) => e.params.includes("bytes"))) {
         this.declare(`declare ptr @scr_library_bytes_in(ptr, ${this.sizeType}, ptr)`);
       }
@@ -1198,6 +1201,9 @@ export class LlEmitter {
       }
       if (this.mod.lib.exports.some((e) => e.returns === "string")) {
         this.declare(`declare void @scr_library_str_out(ptr, ptr, ptr)`);
+      }
+      if (this.mod.lib.exports.some((e) => e.returns === "cstring")) {
+        this.declare(`declare ptr @scr_library_cstr_out(ptr)`);
       }
       if (this.mod.lib.exports.some((e) => e.returns === "bytes")) {
         this.declare(`declare void @scr_library_bytes_out(ptr, ptr, ptr)`);
@@ -1869,6 +1875,11 @@ export class LlEmitter {
             body.push(`  %c${i} = call ptr @scr_library_str_in(ptr %a${i}_ptr, ${this.sizeType} %a${i}_len)`);
             args.push(`ptr %c${i}`);
             break;
+          case "cstring":
+            params.push(`ptr %a${i}_ptr`);
+            body.push(`  %c${i} = call ptr @scr_library_cstr_in(ptr %a${i}_ptr)`);
+            args.push(`ptr %c${i}`);
+            break;
           case "bytes":
             params.push(`ptr %a${i}_ptr`, `${this.sizeType} %a${i}_len`);
             body.push(`  %c${i} = call ptr @scr_library_bytes_in(ptr %a${i}_ptr, ${this.sizeType} %a${i}_len, ptr @sc_lib_bytes_trap_${e.symbol})`);
@@ -1924,6 +1935,15 @@ export class LlEmitter {
             `  call void @scr_library_check_exc()`,
             `  call void @scr_library_str_out(ptr %r, ptr %out, ptr %out_len)`,
             `  ret void`,
+          );
+          break;
+        case "cstring":
+          retType = "ptr";
+          body.push(
+            `  %r = call ptr ${target}(${callArgs})`,
+            `  call void @scr_library_check_exc()`,
+            `  %out = call ptr @scr_library_cstr_out(ptr %r)`,
+            `  ret ptr %out`,
           );
           break;
         case "bytes":

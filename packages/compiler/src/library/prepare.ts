@@ -23,6 +23,7 @@ function libClassFits(cls: string, t: IrType): boolean {
     case "bool":
       return t.kind === "bool";
     case "string":
+    case "cstring":
       return t.kind === "string";
     case "bytes":
       return t.kind === "bytes" && t.elem === "u8";

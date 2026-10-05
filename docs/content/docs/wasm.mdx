@@ -83,7 +83,9 @@ After initialization, <code>counter_step(2)</code> returns <code>2</code>, and a
     <tr><td><code>bool</code>, <code>u8</code>, <code>u32</code>, <code>i32</code></td><td>Wasm i32; booleans use 0 or 1. u32 values may appear as signed JavaScript numbers; use <code>value &gt;&gt;&gt; 0</code> to read them unsigned.</td></tr>
     <tr><td><code>i64</code>, <code>u64</code></td><td>JavaScript BigInt. The existing library integer checks and proofs restrict values to the exact JavaScript number range.</td></tr>
     <tr><td><code>string</code>, <code>bytes</code> parameters</td><td>Two i32 arguments: byte offset and byte length. Strings use UTF-8. Entry parameters are copied into runtime-owned values.</td></tr>
+    <tr><td><code>cstring</code> parameter</td><td>One i32 byte offset to a NUL-terminated UTF-8 string. The module scans to the first NUL and copies the bytes into a runtime-owned value. The host must allocate and write the terminator.</td></tr>
     <tr><td><code>string</code>, <code>bytes</code> results</td><td>Two extra i32 arguments identify writable four-byte output slots. The function writes the result pointer and byte length there, in little-endian order.</td></tr>
+    <tr><td><code>cstring</code> result</td><td>One i32 result: a pointer to a NUL-terminated UTF-8 string owned by the module's result arena. It remains valid until the next result reset, collection, initialization, or automatically resetting export. An embedded NUL in the TypeScript result truncates what a C-string reader observes.</td></tr>
     <tr><td><code>void</code></td><td>No result.</td></tr>
   </tbody>
 </table>

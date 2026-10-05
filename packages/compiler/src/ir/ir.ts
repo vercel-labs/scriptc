@@ -1037,8 +1037,10 @@ export interface IrLibExport {
   /** i64/u64 (ask 4): int64_t/uint64_t at the C edge — inbound values
    * range-check in the wrapper (`inboundIntTrap`), internal call sites
    * and returns are compile-time proven before this lands on the IR. */
-  params: ("f64" | "bool" | "string" | "bytes" | "u8" | "u32" | "i32" | "i64" | "u64")[];
-  returns: "f64" | "bool" | "string" | "bytes" | "void" | "i64" | "u64";
+  params: ("f64" | "bool" | "string" | "cstring" | "bytes" | "u8" | "u32" | "i32" | "i64" | "u64")[];
+  /** `cstring` returns are NUL-terminated pointers held by the result arena;
+   * `string`/`bytes` retain the pointer-and-length output-slot ABI. */
+  returns: "f64" | "bool" | "string" | "cstring" | "bytes" | "void" | "i64" | "u64";
   /** The exact sink-message bytes this wrapper passes to the inbound-bytes
    * marshalling helper's trap — present exactly when a parameter is
    * bytes-classed. Already the assembled structured trap-teaching form

@@ -1804,7 +1804,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       const fits = (cls: string, t: IrType): boolean =>
         cls === "bool"
           ? t.kind === "bool"
-          : cls === "string"
+          : cls === "string" || cls === "cstring"
             ? t.kind === "string"
             : cls === "bytes"
               ? t.kind === "bytes" && t.elem === "u8"

@@ -74,6 +74,15 @@ describe("library profile validation", () => {
     expect(r.profile.exports[1]!.params).toEqual(["u32", "bool"]);
   });
 
+  test("accepts cstring on both sides of an export boundary", () => {
+    const r = loadLibraryProfile(writeProfile({
+      ...good,
+      exports: [{ export: "echo", symbol: "kx_echo", params: ["cstring"], returns: "cstring" }],
+    }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.profile.exports[0]).toMatchObject({ params: ["cstring"], returns: "cstring" });
+  });
+
   test("teachings rider: per-code key wins, 'async' is the shared fallback", () => {
     const r = loadLibraryProfile(
       writeProfile({

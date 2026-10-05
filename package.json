@@ -29,6 +29,7 @@
     "scriptc": "tsx packages/cli/src/main.ts"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@types/node": "^24.0.0",
     "effect": "3.22.2",
     "eslint": "^9.20.0",

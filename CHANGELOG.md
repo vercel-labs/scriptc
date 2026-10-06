@@ -6,6 +6,25 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.2.5
+
+### Features
+
+- **Buffer.from accepts runtime string encodings.** Native string conversion preserves encoding defaults and aliases, with catchable validation errors.
+
+### Performance
+
+- **Filesystem reads and typed-array processing do less copying.** File reads use owned storage directly, while typed-array conversion, copying, and filling avoid unnecessary intermediate work.
+- **Collections and object properties use storage more efficiently.** Array construction and mutation, stable sorting, string-keyed Maps and Sets, and wide object lookup reduce repeated allocation and traversal.
+- **JSON, regular expressions, and string operations scan and allocate less.** Shared scans, batched output, and reused byte and character positions streamline parsing, serialization, replacement, normalization, and navigation.
+- **Native values and compiler queries avoid repeated work.** Safe borrowing, local tagged storage, direct collection reads, reused source metadata, and batched checker requests reduce temporary wrappers and ownership traffic.
+
+### Internal improvements
+
+- **Compiler code has clearer responsibilities and consistent source tooling.** Builtin, conversion, function, container, and native build code is organized into focused modules, with shared contracts and oxlint/oxfmt checks for normal JavaScript and TypeScript sources.
+
+<!-- release:end -->
+
 ## 0.2.4
 
 ### Features
@@ -20,8 +39,6 @@ All notable changes to scriptc will be documented in this file.
 ### Fixes
 
 - **Windows toolchain assets resolve through linked packages.** Native launches locate installed assets from the physical package manifest path.
-
-<!-- release:end -->
 
 ## 0.2.3
 
@@ -41,8 +58,6 @@ All notable changes to scriptc will be documented in this file.
 
 - **Native values keep valid lifetimes across helper and collection operations.** Array borrowing, map reads, string concatenation, and helper calls preserve values for their full use.
 - **TypeScript runtime package sources emit consistently.**
-
-<!-- release:end -->
 
 ## 0.2.2
 

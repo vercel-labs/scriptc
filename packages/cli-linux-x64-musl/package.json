@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/cli-linux-x64-musl",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Native scriptc compiler for linux-x64-musl",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",

@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/runtime-android-arm64",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Precompiled scriptc library runtime pack for Android arm64",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",

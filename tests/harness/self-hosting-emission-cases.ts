@@ -20,7 +20,6 @@ export interface EmissionRequest {
   classObjects: string[];
   sources: { file: string; text: string }[];
   writers?: IrType[];
-  textUnions?: string[];
   joinUnions?: string[];
   indent?: boolean;
 }
@@ -322,12 +321,11 @@ export function emissionCases(): EmissionCase[] {
   textUnion.unions = [{ id: "text", arms: [BOOL, F64, STRING, { kind: "nullT" }, UNDEFINED_T] }];
   const textRequest = emissionRequest();
   textRequest.writers = [{ kind: "union", unionId: "text" }];
-  textRequest.textUnions = ["text", "text"];
-  textRequest.joinUnions = ["text"];
+  textRequest.joinUnions = ["text", "text"];
   add(
-    "union JSON, string and join helpers",
+    "union JSON and direct join helpers",
     textUnion,
-    ["switch i32", "@scr_str_retain"],
+    ["switch i32", "@scr_arr_peek_ref", "@scr_jb_put_number"],
     textRequest,
   );
 

@@ -16,7 +16,6 @@ interface Request {
   classObjects: string[];
   sources: { file: string; text: string }[];
   writers?: IrType[];
-  textUnions?: string[];
   joinUnions?: string[];
   indent?: boolean;
 }
@@ -69,7 +68,6 @@ try {
   const walkers = new LlWalkers(host);
   const helpers: string[] = [];
   for (const type of request.writers ?? []) helpers.push(walkers.jsonWriteHelper(type));
-  for (const union of request.textUnions ?? []) helpers.push(walkers.unionToStrHelper(union));
   for (const union of request.joinUnions ?? []) helpers.push(walkers.unionJoinHelper(union));
   if (request.indent) helpers.push(walkers.jsonIndentHelper());
   const classes = [...graph.values()].map((meta) => ({

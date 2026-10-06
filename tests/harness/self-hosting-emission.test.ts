@@ -119,6 +119,9 @@ for (const backend of ["llvm"] as const) {
           emitted.debug,
         ].join("\n");
         for (const expected of item.contains) expect(definitions, item.name).toContain(expected);
+        if ((item.request.joinUnions?.length ?? 0) > 1) {
+          expect(definitions.match(/define internal ptr @sc_uj_/g), item.name).toHaveLength(1);
+        }
         if (item.name.startsWith("class forest")) {
           expect(
             emitted.classes.map((meta) => [meta.name, meta.root, meta.pre, meta.post]),
@@ -168,10 +171,6 @@ for (const backend of ["llvm"] as const) {
           message: "jsonStringify of unknown union Missing",
         },
         {
-          request: { ...emissionRequest(), textUnions: ["Missing"] },
-          message: "ToString of unknown union Missing",
-        },
-        {
           request: { ...emissionRequest(), joinUnions: ["Missing"] },
           message: "join of unknown union Missing",
         },
@@ -189,11 +188,11 @@ for (const backend of ["llvm"] as const) {
       expect(
         run(
           unsupported,
-          { ...emissionRequest(), textUnions: ["containers"] },
-          "unsupported union stringification",
+          { ...emissionRequest(), joinUnions: ["containers"] },
+          "unsupported union join",
           1,
         ),
-      ).toContain("unionToStr:array");
+      ).toContain("unionJoin:array");
 
       for (const source of [
         "711-inheritance-dispatch.ts",

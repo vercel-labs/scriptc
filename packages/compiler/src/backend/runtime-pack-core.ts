@@ -315,7 +315,7 @@ export function validateRuntimePackIdentity(
     manifest.version !== compilerVersion
   ) {
     throw new RuntimePackError(
-      `runtime pack version mismatch: expected ${target.runtimePackPackage}@${compilerVersion}, found ${packageName}@${packageVersion}`,
+      `runtime pack version mismatch: expected ${target.runtimePackPackage}@${compilerVersion}, found package ${packageName}@${packageVersion} with manifest ${manifest.package}@${manifest.version}`,
       "invalid",
     );
   }

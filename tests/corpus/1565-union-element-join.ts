@@ -29,3 +29,11 @@ console.log(`[${empty.join(",")}]`);
 const one: (string | null)[] = [null];
 console.log(`[${one.join(",")}]`);
 console.log("done");
+
+const longText = "雪🙂\0quoted\"\\".repeat(100);
+const spans: (string | number | null | undefined)[] = [longText, 100000, null, undefined, longText];
+console.log(spans.join("\0separator雪"));
+const checked: unknown = JSON.parse('["雪🙂",123456789,[true,null,"quoted\\\""]]');
+console.log(String(checked));
+const boundaries: (number | boolean | null)[] = [Infinity, -Infinity, NaN, -0, 9007199254740991, true, false, null];
+console.log(boundaries.join(","));

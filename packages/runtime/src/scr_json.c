@@ -208,6 +208,12 @@ void scr_jb_put_str(ScrJsonBuf *b, const ScrStr *s) {
 
 void scr_jb_puts(ScrJsonBuf *b, const char *s) { scr_jb_write(b, s, strlen(s)); }
 
+void scr_jb_put_number(ScrJsonBuf *b, double v) {
+  char buf[32];
+  size_t n = scr_f64_to_str(v, buf);
+  scr_jb_write(b, buf, n);
+}
+
 void scr_jb_put_f64(ScrJsonBuf *b, double v) {
   /* JSON.stringify number rules: non-finite → null, -0 → "0" (String(-0)
    * is "0" too, so scr_f64_to_str would agree — the zero test just makes
@@ -220,9 +226,7 @@ void scr_jb_put_f64(ScrJsonBuf *b, double v) {
     scr_jb_putc(b, '0');
     return;
   }
-  char buf[32];
-  size_t n = scr_f64_to_str(v, buf);
-  scr_jb_write(b, buf, n);
+  scr_jb_put_number(b, v);
 }
 
 /* Find the next quote, backslash or control byte. memcpy keeps the word
@@ -254,32 +258,46 @@ static size_t scr_json_plain_bytes(const char *data, size_t len) {
 }
 
 static void scr_jb_put_json_span(ScrJsonBuf *b, const char *data, size_t len) {
-  scr_jb_putc(b, '"');
-  /* Bulk-copy runs of unescaped bytes (UTF-8 passes through verbatim,
-   * like JS); escapes interrupt the run. */
-  size_t i = 0;
+  if (len > SIZE_MAX - 2) scr_json_oom();
+  size_t run = scr_json_plain_bytes(data, len);
+  /* The overwhelmingly common unescaped string needs one capacity check,
+   * including both quotes, and no per-byte builder calls. */
+  scr_jb_grow(b, run + 2);
+  b->data[b->len++] = '"';
+  if (run) memcpy(b->data + b->len, data, run);
+  b->len += run;
+  size_t i = run;
   while (i < len) {
-    size_t run = scr_json_plain_bytes(data + i, len - i);
-    scr_jb_write(b, data + i, run);
-    i += run;
-    if (i == len) break;
     unsigned char c = (unsigned char)data[i++];
+    char escaped[6] = {'\\', 0, '0', '0', 0, 0};
+    size_t count = 2;
     switch (c) {
-    case '"': scr_jb_puts(b, "\\\""); break;
-    case '\\': scr_jb_puts(b, "\\\\"); break;
-    case '\n': scr_jb_puts(b, "\\n"); break;
-    case '\r': scr_jb_puts(b, "\\r"); break;
-    case '\t': scr_jb_puts(b, "\\t"); break;
-    case '\b': scr_jb_puts(b, "\\b"); break;
-    case '\f': scr_jb_puts(b, "\\f"); break;
+    case '"': escaped[1] = '"'; break;
+    case '\\': escaped[1] = '\\'; break;
+    case '\n': escaped[1] = 'n'; break;
+    case '\r': escaped[1] = 'r'; break;
+    case '\t': escaped[1] = 't'; break;
+    case '\b': escaped[1] = 'b'; break;
+    case '\f': escaped[1] = 'f'; break;
     default: {
-      char esc[8];
-      snprintf(esc, sizeof esc, "\\u%04x", c);
-      scr_jb_puts(b, esc);
+      static const char hex[] = "0123456789abcdef";
+      escaped[1] = 'u';
+      escaped[4] = hex[c >> 4];
+      escaped[5] = hex[c & 15];
+      count = 6;
     }
     }
+    run = scr_json_plain_bytes(data + i, len - i);
+    if (run > SIZE_MAX - count) scr_json_oom();
+    scr_jb_grow(b, count + run);
+    memcpy(b->data + b->len, escaped, count);
+    b->len += count;
+    if (run) memcpy(b->data + b->len, data + i, run);
+    b->len += run;
+    i += run;
   }
-  scr_jb_putc(b, '"');
+  scr_jb_grow(b, 1);
+  b->data[b->len++] = '"';
 }
 
 void scr_jb_put_json_str(ScrJsonBuf *b, const ScrStr *s) {
@@ -300,6 +318,81 @@ ScrStr *scr_jb_finish(ScrJsonBuf *b) {
   if (s->cap > scr_jb_hint) scr_jb_hint = s->cap < (1 << 16) ? s->cap : (1 << 16);
   scr_jb_init(b);
   return s;
+}
+
+/* Write newline and a repeated gap with one reservation. Copies never
+ * overlap: each doubling reads only the already initialized prefix. */
+static void scr_jb_indent(ScrJsonBuf *b, const char *gap, size_t gap_len, size_t depth) {
+  if (gap_len && depth > (SIZE_MAX - 1) / gap_len) scr_json_oom();
+  size_t count = gap_len * depth;
+  scr_jb_grow(b, count + 1);
+  b->data[b->len++] = '\n';
+  if (!count) return;
+  memcpy(b->data + b->len, gap, gap_len);
+  size_t filled = gap_len;
+  while (filled < count) {
+    size_t take = filled < count - filled ? filled : count - filled;
+    memcpy(b->data + b->len + filled, b->data + b->len, take);
+    filled += take;
+  }
+  b->len += count;
+}
+
+ScrStr *scr_json_indent(const ScrStr *compact, const char *gap, size_t gap_len) {
+  if (!gap_len) return scr_str_retain((ScrStr *)compact);
+  /* Node stops copying the gap at its first NUL but still inserts breaks
+   * and colon spaces when the original gap is nonempty. */
+  const char *end = memchr(gap, 0, gap_len);
+  if (end) gap_len = (size_t)(end - gap);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  size_t depth = 0, start = 0, i = 0;
+  while (i < compact->len) {
+    char c = compact->data[i];
+    if (c == '"') {
+      /* Quoted punctuation is data. Scan ordinary runs and skip the byte
+       * after each backslash so an escaped quote cannot end this string. */
+      i++;
+      while (i < compact->len) {
+        i += scr_json_plain_bytes(compact->data + i, compact->len - i);
+        if (i == compact->len) break;
+        if (compact->data[i] == '\\') {
+          i += compact->len - i >= 2 ? 2 : 1;
+        } else {
+          i++;
+          break;
+        }
+      }
+      continue;
+    }
+    if (c == '{' || c == '[') {
+      char closer = c == '{' ? '}' : ']';
+      if (i + 1 < compact->len && compact->data[i + 1] == closer) {
+        i += 2;
+        continue;
+      }
+      scr_jb_write(&b, compact->data + start, i + 1 - start);
+      scr_jb_indent(&b, gap, gap_len, ++depth);
+      start = ++i;
+      continue;
+    }
+    if (c == '}' || c == ']') {
+      scr_jb_write(&b, compact->data + start, i - start);
+      scr_jb_indent(&b, gap, gap_len, --depth);
+      start = i++;
+      continue;
+    }
+    if (c == ',' || c == ':') {
+      scr_jb_write(&b, compact->data + start, i + 1 - start);
+      if (c == ',') scr_jb_indent(&b, gap, gap_len, depth);
+      else scr_jb_putc(&b, ' ');
+      start = ++i;
+      continue;
+    }
+    i++;
+  }
+  scr_jb_write(&b, compact->data + start, compact->len - start);
+  return scr_jb_finish(&b);
 }
 
 /* ── circular-structure detection ──────────────────────────────────────
@@ -6599,8 +6692,9 @@ static bool scr_json_omitted(const ScrDyn *value) {
 
 static void scr_json_gap(ScrJsonBuf *buffer, const ScrStr *gap, size_t depth) {
   if (!gap->len) return;
-  scr_jb_putc(buffer, '\n');
-  for (size_t i = 0; i < depth; i++) scr_jb_write(buffer, gap->data, gap->len);
+  const char *end = memchr(gap->data, 0, gap->len);
+  size_t length = end ? (size_t)(end - gap->data) : gap->len;
+  scr_jb_indent(buffer, gap->data, length, depth);
 }
 
 /* These primitive values cannot invoke toJSON or mutate a containing frame.

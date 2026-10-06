@@ -142,6 +142,40 @@ size_t scr_f64_to_str(double x, char *buf) {
     x = -x;
   }
 
+  /* Every integer through 2^53-1 has an unambiguous exact decimal spelling.
+   * Larger doubles keep the shortest-roundtrip algorithm: their rounded
+   * integer value can differ from JavaScript's chosen decimal digits. */
+  if (x <= 9007199254740991.0) {
+    uint64_t integer = (uint64_t)x;
+    if ((double)integer == x) {
+      static const char pairs[] =
+          "00010203040506070809" "10111213141516171819"
+          "20212223242526272829" "30313233343536373839"
+          "40414243444546474849" "50515253545556575859"
+          "60616263646566676869" "70717273747576777879"
+          "80818283848586878889" "90919293949596979899";
+      char digits[16];
+      char *begin = digits + sizeof digits;
+      while (integer >= 100) {
+        uint64_t quotient = integer / 100;
+        unsigned remainder = (unsigned)(integer - quotient * 100);
+        begin -= 2;
+        memcpy(begin, pairs + remainder * 2, 2);
+        integer = quotient;
+      }
+      if (integer < 10) *--begin = (char)('0' + integer);
+      else {
+        begin -= 2;
+        memcpy(begin, pairs + integer * 2, 2);
+      }
+      size_t count = (size_t)(digits + sizeof digits - begin);
+      memcpy(out, begin, count);
+      out += count;
+      *out = '\0';
+      return (size_t)(out - buf);
+    }
+  }
+
   char digits[18];
   int n;
   int k = scr_f64_digits(x, digits, &n);

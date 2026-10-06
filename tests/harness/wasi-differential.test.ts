@@ -156,6 +156,8 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "1000-json-stringify-basics.ts",
     "1002-json-parse-cast.ts",
     "1010-json-stringify-space.ts",
+    "json-output-bulk.ts",
+    "1565-union-element-join.ts",
     "1020-async-basics.ts",
     "1021-async-ordering.ts",
     "1022-async-exceptions.ts",

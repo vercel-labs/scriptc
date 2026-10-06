@@ -248,6 +248,24 @@ describe("runtime pack manifests", () => {
     expect(dynamic.archives.map((path) => path.split("/").at(-1))).toEqual(["qjs.a"]);
   });
 
+  test("a stale manifest reports its identity independently from the package", async () => {
+    const { packagePath, manifest, root } = await fixture();
+    await writeFile(
+      join(root, "runtime-pack.json"),
+      JSON.stringify({ ...manifest, version: "0.0.0" }),
+    );
+    await expect(
+      loadRuntimePack({
+        target: MACOS_ARM64_TARGET,
+        features: BASE,
+        optimization: "release",
+        resolver: () => packagePath,
+      }),
+    ).rejects.toThrow(
+      `found package @scriptc/runtime-darwin-arm64@${VERSION} with manifest @scriptc/runtime-darwin-arm64@0.0.0`,
+    );
+  });
+
   test("malformed manifests and damaged artifacts fail before linking", async () => {
     const { packagePath, manifest, root } = await fixture();
     expect(() => parseRuntimePackManifest({ ...manifest, format: 2 })).toThrow("malformed");

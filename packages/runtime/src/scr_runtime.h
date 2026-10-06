@@ -4583,6 +4583,8 @@ void scr_jb_puts(ScrJsonBuf *b, const char *s);
 /* JS JSON.stringify number rules: NaN/±Infinity → null, -0 → 0, else
  * shortest-roundtrip via scr_f64_to_str. */
 void scr_jb_put_f64(ScrJsonBuf *b, double v);
+/* Append String(number), including NaN/Infinity, without a temporary string. */
+void scr_jb_put_number(ScrJsonBuf *b, double v);
 /* Quoted + escaped JSON string: \" \\ \n \r \t \b \f, other control chars
  * as \u00XX, everything else (UTF-8 included) verbatim — exactly the JS
  * JSON.stringify escape set for well-formed strings. */
@@ -4598,6 +4600,10 @@ void scr_dyn_isl_tostr_buf(ScrJsonBuf *b, const ScrDyn *d);
  * DROP, array slots holding undefined print null (exactly Node). */
 void scr_jb_put_dyn(ScrJsonBuf *b, const ScrDyn *d);
 ScrStr *scr_jb_finish(ScrJsonBuf *b); /* returns +1; frees the buffer */
+/* Reformat compiler-produced compact JSON with an already resolved gap.
+ * Borrows both inputs; gap_len is a byte length, including embedded NUL.
+ * Returns a new owned string, or retains compact when the gap is empty. */
+ScrStr *scr_json_indent(const ScrStr *compact, const char *gap, size_t gap_len);
 
 void *scr_dyn_retain_v(void *d);
 void scr_dyn_release_v(void *d);
@@ -6696,7 +6702,7 @@ ScrArr *scr_tls_ca_root(void);        /* +1; === getCACertificates("bundled") */
  * ERR_CRYPTO_OPERATION_FAILED and leaves the set unchanged. Borrows. */
 void scr_tls_ca_set_default(ScrArr *certs);
 /* scr_tls.c's anchor consult: true iff setDefaultCACertificates ran;
- * *pem/*len then carry the concatenated NUL-terminated blocks (len 0 =
+ * *pem and *len then carry the concatenated NUL-terminated blocks (len 0 =
  * the empty set — verification fails, Node's own consequence), and *gen
  * a counter that bumps per set so the parsed chain re-parses on change. */
 bool scr_tls_ca_default_override(const char **pem, size_t *len, uint64_t *gen);

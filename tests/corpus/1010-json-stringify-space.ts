@@ -87,3 +87,9 @@ type Point = { label: string; x: number; y: number };
 const back = JSON.parse(JSON.stringify(point, null, 2)) as Point;
 console.log(back.label, back.x, back.y);
 console.log(JSON.stringify(back, null, 2) === JSON.stringify(point, null, 2));
+
+// A NUL ends Node's visible gap; a nonempty gap still inserts line breaks.
+console.log(JSON.stringify(cfg, null, "\0tail"));
+console.log(JSON.stringify(cfg, null, "x\0tail"));
+console.log(JSON.stringify(cfg, null, "雪\t"));
+console.log(JSON.stringify(tricky, null, "雪雪雪雪雪雪"));

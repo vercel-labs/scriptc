@@ -365,40 +365,16 @@ export class LlDyn {
     return value;
   }
 
-  /** Appends an ScrStr's bytes into a ScrJsonBuf (walkers' putScrStr). */
+  /** Appends a borrowed string, preserving its full byte length. */
   private putScrStr(B: BlockBuilder, buf: string, s: string): void {
-    this.host.declare(`declare void @scr_jb_putc(ptr, i8)`);
-    const { len, data } = this.strParts(B, s);
-    const jSlot = B.slot();
-    B.entryAllocas.push(`${jSlot} = alloca ${this.S}`);
-    B.line(`store ${this.S} 0, ptr ${jSlot}`);
-    const lc = B.newLabel("dps.c");
-    const lb = B.newLabel("dps.b");
-    const le = B.newLabel("dps.e");
-    B.br(lc);
-    B.startBlock(lc);
-    const j = B.tmp();
-    const cont = B.tmp();
-    B.line(`${j} = load ${this.S}, ptr ${jSlot}`);
-    B.line(`${cont} = icmp ult ${this.S} ${j}, ${len}`);
-    B.condBr(cont, lb, le);
-    B.startBlock(lb);
-    const cp = B.tmp();
-    const c = B.tmp();
-    B.line(`${cp} = getelementptr inbounds i8, ptr ${data}, ${this.S} ${j}`);
-    B.line(`${c} = load i8, ptr ${cp}`);
-    B.line(`call void @scr_jb_putc(ptr ${buf}, i8 ${c})`);
-    const j2 = B.tmp();
-    B.line(`${j2} = add ${this.S} ${j}, 1`);
-    B.line(`store ${this.S} ${j2}, ptr ${jSlot}`);
-    B.br(lc);
-    B.startBlock(le);
+    this.host.declare(`declare void @scr_jb_put_str(ptr, ptr)`);
+    B.line(`call void @scr_jb_put_str(ptr ${buf}, ptr ${s})`);
   }
 
   private puts(B: BlockBuilder, buf: string, text: string): void {
-    this.host.declare(`declare void @scr_jb_puts(ptr, ptr)`);
+    this.host.declare(`declare void @scr_jb_write(ptr, ptr, ${this.S})`);
     B.line(
-      `call void @scr_jb_puts(ptr ${buf}, ptr ${this.host.cstr(text)}) ; ${JSON.stringify(text)}`,
+      `call void @scr_jb_write(ptr ${buf}, ptr ${this.host.cstr(text)}, ${this.S} ${Buffer.byteLength(text, "utf8")}) ; ${JSON.stringify(text)}`,
     );
   }
 
@@ -2370,7 +2346,6 @@ export class LlDyn {
     host.declare(`declare ptr @scr_jb_finish(ptr)`);
     host.declare(`declare void @scr_jb_putc(ptr, i8)`);
     host.declare(`declare void @scr_jb_puts(ptr, ptr)`);
-    host.declare(`declare ptr @scr_f64_to_scrstr(double)`);
     host.declare(`declare void @scr_str_release(ptr)`);
 
     // The recursive buffer walker.
@@ -2460,10 +2435,8 @@ export class LlDyn {
       {
         // String(n): NaN/Infinity spelled out, not the JSON null.
         const x = this.payloadOf(B, "%d", "double");
-        const s = B.tmp();
-        B.line(`${s} = call ptr @scr_f64_to_scrstr(double ${x})`);
-        this.putScrStr(B, "%b", s);
-        B.line(`call void @scr_str_release(ptr ${s})`);
+        host.declare(`declare void @scr_jb_put_number(ptr, double)`);
+        B.line(`call void @scr_jb_put_number(ptr %b, double ${x})`);
         B.br(done);
       }
       B.startBlock(labels.get(DYN_KIND.STR)!);

@@ -10281,6 +10281,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/json-output-bulk.ts": {
+   "order": [
+    "<repo>/tests/corpus/json-output-bulk.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/json-runtime-options.mjs": {
    "order": [
     "<repo>/tests/corpus/json-runtime-options.mjs"

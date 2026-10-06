@@ -549,9 +549,8 @@ export function emitArrIntrinsic(
     }
     case "join": {
       // Separator borrowed; the result is an owned (+1) string. Union
-      // elements ride the per-union join walker (nullish arms print
-      // empty, everything else through the union ToString) — the C
-      // emitter's sc_uj_*, ported in walkers.ts.
+      // elements use the scalar join walker: nullish arms print empty,
+      // and other arms append their String() spelling directly.
       const sep = emitBorrowedInput(host, e.args[0]!);
       if (elem.kind === "union") {
         const helper = host.walkers.unionJoinHelper(elem.unionId);

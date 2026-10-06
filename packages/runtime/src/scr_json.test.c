@@ -78,6 +78,21 @@ static void json_string_boundaries(void) {
   }
 }
 
+static void json_indent_ownership(void) {
+  const char compact[] = "{\"a\":[],\"b\":[1,{}]}";
+  const char expected[] = "{\n  \"a\": [],\n  \"b\": [\n    1,\n    {}\n  ]\n}";
+  ScrStr *input = scr_str_new(compact, sizeof compact - 1);
+  ScrStr *same = scr_json_indent(input, "", 0);
+  assert(same == input && input->rc == 2);
+  scr_str_release(same);
+  ScrStr *pretty = scr_json_indent(input, "  ", 2);
+  assert(pretty->len == sizeof expected - 1);
+  assert(!memcmp(pretty->data, expected, sizeof expected - 1));
+  scr_str_release(input);
+  assert(!memcmp(pretty->data, expected, sizeof expected - 1));
+  scr_str_release(pretty);
+}
+
 static void checked_storage(void) {
   /* Reuse after deletion, changing field order, embedded NUL and escaped
    * duplicate names must leave independently owned keys and values. */
@@ -339,6 +354,7 @@ static void checked_number_storage(void) {
 
 int main(void) {
   json_string_boundaries();
+  json_indent_ownership();
   scr_init();
   checked_storage();
   shared_property_keys();

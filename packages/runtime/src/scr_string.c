@@ -1317,15 +1317,6 @@ static const struct { size_t rc; size_t len; size_t cap; char data[4]; }
 /* Split owns a fresh array and appends only present string values. Fill an
  * available dense slot directly; ordinary push handles growth and the sparse
  * boundary. The array remains valid after every append, including RC audit. */
-static void scr_str_split_append(ScrArr *out, ScrStr *value) {
-  if (out->len < out->cap) {
-    out->data[out->len] = (uint64_t)(uintptr_t)value;
-    out->present[out->len++] = SCR_ARR_VALUE;
-  } else {
-    scr_arr_push_ref(out, value);
-  }
-}
-
 /* split(separator, limit) with a STRING separator (ECMA-262 22.1.3.23):
  * limit is ToUint32'd; zero returns [] and reaching the limit stops before
  * any later separator probes. The no-limit wrapper supplies 2^32-1.
@@ -1338,38 +1329,107 @@ static void scr_str_split_append(ScrArr *out, ScrStr *value) {
  * yield the two lone surrogate halves, each half is U+FFFD here
  * (divergence 2 — the same substitution the island's boundary marshal
  * applied). Borrows both; returns a +1 string[]. */
-ScrArr *scr_str_split_limit(ScrStr *s, ScrStr *sep, double limit_num) {
-  ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
-  uint32_t limit = scr_to_uint32(limit_num);
-  if (limit == 0) return out;
-  if (sep->len == 0) {
-    size_t i = 0;
-    while (i < s->len) {
-      size_t adv;
-      uint32_t cp = scr_utf8_decode(s->data + i, &adv);
-      if (cp >= 0x10000) { /* two units in JS: both halves become U+FFFD */
-        scr_str_split_append(out, scr_str_retain((ScrStr *)&scr_lit_fffd));
-        if (out->len == limit) return out;
-        scr_str_split_append(out, scr_str_retain((ScrStr *)&scr_lit_fffd));
-      } else {
-        scr_str_split_append(out, scr_str_from_span(s->data + i, adv));
-      }
-      if (out->len == limit) return out;
-      i += adv;
+void scr_str_split_cursor_init(ScrSplitCursor *cursor, uint32_t limit) {
+  cursor->offset = 0;
+  cursor->remaining = limit;
+  cursor->pending_unit = 0;
+}
+
+static ScrStr *scr_str_split_piece(const char *bytes, size_t len, ScrStr **scratch) {
+  if (!scratch || len <= 4) return scr_str_from_span(bytes, len);
+  ScrStr *piece = *scratch;
+  if (piece && piece->rc == 1 && piece->cap >= len) {
+    /* The scratch owner is the only remaining reference. Invalidate all
+     * metadata before replacing bytes, just as unique concatenation does. */
+    scr_short_forget(piece);
+    scr_sidx_purge(piece);
+    memcpy(piece->data, bytes, len);
+    piece->len = len;
+    piece->data[len] = '\0';
+  } else {
+    ScrStr *fresh = scr_str_alloc_raw(len, len < 64 ? 64 : len);
+    memcpy(fresh->data, bytes, len);
+    fresh->data[len] = '\0';
+    *scratch = fresh;
+    scr_str_release(piece);
+    piece = fresh;
+  }
+  return scr_str_retain(piece);
+}
+
+/* Both eager and loop consumers use the same boundary state machine.
+ * Eager consumers select the unit/substring path once before their loop. */
+static const char *scr_str_split_span(ScrStr *s, ScrStr *sep,
+                                     ScrSplitCursor *cursor, bool units,
+                                     size_t *len) {
+  if (cursor->remaining == 0 || cursor->offset > s->len) return NULL;
+  if (units) {
+    if (cursor->pending_unit) {
+      cursor->pending_unit = 0;
+      cursor->remaining--;
+      *len = 3;
+      return scr_lit_fffd.data;
     }
-    return out;
+    if (cursor->offset == s->len) return NULL;
+    size_t start = cursor->offset, adv;
+    uint32_t cp = scr_utf8_decode(s->data + start, &adv);
+    cursor->offset += adv;
+    cursor->remaining--;
+    if (cp >= 0x10000) {
+      cursor->pending_unit = 1;
+      *len = 3;
+      return scr_lit_fffd.data;
+    }
+    *len = adv;
+    return s->data + start;
   }
-  size_t start = 0;
+  size_t start = cursor->offset;
+  const char *found = scr_byte_find(s->data + start, s->len - start,
+                                    sep->data, sep->len);
+  size_t end = found ? (size_t)(found - s->data) : s->len;
+  /* String allocations reserve the header and terminator, so len + 1
+   * cannot overflow. This sentinel includes a final empty trailing piece. */
+  cursor->offset = found ? end + sep->len : s->len + 1;
+  cursor->remaining--;
+  *len = end - start;
+  return s->data + start;
+}
+
+ScrStr *scr_str_split_cursor_next(ScrStr *s, ScrStr *sep, ScrSplitCursor *cursor,
+                                  ScrStr **scratch) {
+  size_t len;
+  const char *bytes = scr_str_split_span(s, sep, cursor, sep->len == 0, &len);
+  if (!bytes) return NULL;
+  if (bytes == scr_lit_fffd.data) return scr_str_retain((ScrStr *)&scr_lit_fffd);
+  return scr_str_split_piece(bytes, len, scratch);
+}
+
+/* Move a bounded batch of pieces into array storage in one operation.
+ * This avoids a second separator scan and preserves sparse overflow. */
+static void scr_str_split_fill(ScrArr *out, ScrStr *s, ScrStr *sep,
+                               ScrSplitCursor *cursor, bool units) {
+  uint64_t slots[64];
   for (;;) {
-    const char *found = scr_byte_find(s->data + start, s->len - start,
-                                       sep->data, sep->len);
-    if (!found) break;
-    size_t at = (size_t)(found - s->data);
-    scr_str_split_append(out, scr_str_from_span(s->data + start, at - start));
-    if (out->len == limit) return out;
-    start = at + sep->len;
+    size_t count = 0, len;
+    const char *bytes;
+    while (count < 64 && (bytes = scr_str_split_span(s, sep, cursor, units, &len))) {
+      ScrStr *piece = bytes == scr_lit_fffd.data
+                       ? scr_str_retain((ScrStr *)&scr_lit_fffd)
+                       : scr_str_from_span(bytes, len);
+      slots[count++] = (uint64_t)(uintptr_t)piece;
+    }
+    if (count) scr_arr_push_many(out, count, slots);
+    if (count < 64) return;
   }
-  scr_str_split_append(out, scr_str_from_span(s->data + start, s->len - start));
+}
+
+ScrArr *scr_str_split_limit(ScrStr *s, ScrStr *sep, double limit_num) {
+  uint32_t limit = scr_to_uint32(limit_num);
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+  ScrSplitCursor cursor;
+  scr_str_split_cursor_init(&cursor, limit);
+  if (sep->len == 0) scr_str_split_fill(out, s, sep, &cursor, true);
+  else scr_str_split_fill(out, s, sep, &cursor, false);
   return out;
 }
 

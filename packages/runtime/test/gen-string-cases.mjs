@@ -78,6 +78,26 @@ function emit(op, input, args, expected) {
   lines.add(`${op}\t${hex(input)}\t${args}\t${expected}`);
 }
 
+// Pin conversion and early exhaustion separately from the broad method
+// oracle: limits can stop between the surrogate halves of an astral unit.
+for (const [input, separator] of [
+  ["", ","],
+  [",a,,b,", ","],
+  ["ababa", "aba"],
+  ["a\0b\0", "\0"],
+  ["a😀b", ""],
+]) {
+  for (const limit of [0, 1, 2, 3, 7, -1, 1.9, NaN, Infinity, 4294967296, 4294967297]) {
+    const pieces = input.split(separator, limit);
+    emit(
+      "splitLimit",
+      input,
+      `${hex(separator)},${num(limit)}`,
+      hex(`${pieces.length}:${pieces.join("\x01")}`),
+    );
+  }
+}
+
 for (const s of strings) {
   const L = s.length;
   const idxs = [

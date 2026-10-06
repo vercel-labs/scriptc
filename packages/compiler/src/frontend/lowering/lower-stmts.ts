@@ -2,6 +2,7 @@ import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
 import { iteratorCanStep, iteratorValue } from "./iterator-consumption.js";
+import { isPrivateSplitConsumer } from "./split-consumers.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Statement lowering: the statement dispatch (lowerStmt), variable
  * declarations including destructuring patterns, scoped blocks, control
@@ -8923,7 +8924,9 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     }
   }
   const elementType = iterable.type.kind === "array" ? iterable.type.elem : tupleSource!.elem;
-  const yieldedT = tupleSource === null ? arrayValueType(lowerer, elementType) : elementType;
+  const privateSplit = !awaitArray && isPrivateSplitConsumer(lowerer, iterSrc, iterable);
+  const yieldedT =
+    tupleSource === null && !privateSplit ? arrayValueType(lowerer, elementType) : elementType;
   let elemValueT = yieldedT;
   let awaitPromiseTag: number | null = null;
   if (awaitArray) {
@@ -8978,12 +8981,15 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   }
   // Native arrays retain their payload ABI; the loop binds the value yielded
   // by Get, which is undefined for both holes and present undefined slots.
-  const sourceT = iterable.type;
-  const source = lowerer.declareHiddenLocal("%arrayIterator", sourceT);
-  const cursor = lowerer.declareHiddenLocal("%arrayCursor", F64);
-  cursor.mutable = true;
   const forValues = (localId: string, body: IrStmt[]): IrStmt => {
     const loc = locOf(stmt);
+    if (privateSplit) {
+      return { kind: "forOf", localId, iterable, body, ...(labels && { labels }), loc };
+    }
+    const sourceT = iterable.type;
+    const source = lowerer.declareHiddenLocal("%arrayIterator", sourceT);
+    const cursor = lowerer.declareHiddenLocal("%arrayCursor", F64);
+    cursor.mutable = true;
     const needsClose = awaitArray
       ? lowerer.declareHiddenLocal("%arrayIteratorNeedsClose", BOOL)
       : null;

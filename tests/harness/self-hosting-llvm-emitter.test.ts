@@ -101,6 +101,7 @@ const programs = [
   "3120-ir-nonfinite-numbers.ts",
   "4031-event-emitter-long-tuples.ts",
   "text-codec-values/main.ts",
+  "string-split-traversal.ts",
   "heap-input-aliases.ts",
   "heap-input-collections.ts",
   "input-lifetime-intervals.ts",

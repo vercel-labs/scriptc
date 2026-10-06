@@ -200,6 +200,40 @@ static void split_storage_asserts(void) {
   scr_str_release(input);
 }
 
+static void split_scratch_asserts(void) {
+  _Static_assert(offsetof(ScrSplitCursor, offset) == 0, "split cursor offset");
+  _Static_assert(offsetof(ScrSplitCursor, remaining) == sizeof(size_t), "split cursor limit");
+  _Static_assert(offsetof(ScrSplitCursor, pending_unit) == sizeof(size_t) + 4, "split cursor pending unit");
+  _Static_assert(sizeof(ScrSplitCursor) == sizeof(size_t) + 8, "split cursor storage");
+  ScrStr *input = scr_str_new("alpha,beta-long,\xE4\xBD\xA0\xE5\xA5\xBD\xE4\xB8\x96\xE7\x95\x8C,test-tail,,last", 44);
+  ScrStr *separator = scr_str_new(",", 1), *scratch = NULL;
+  ScrSplitCursor cursor;
+  scr_str_split_cursor_init(&cursor, UINT32_MAX);
+  ScrStr *first = scr_str_split_cursor_next(input, separator, &cursor, &scratch);
+  total++;
+  if (first != scratch || first->rc != 2 || scr_str_utf16_len(first) != 5) failed++;
+  scr_str_release(first);
+  ScrStr *saved = scr_str_split_cursor_next(input, separator, &cursor, &scratch);
+  total++;
+  if (saved != first || scr_str_utf16_len(saved) != 9) failed++;
+  /* Keep this yield alive: the next piece must allocate independent storage. */
+  ScrStr *mixed = scr_str_split_cursor_next(input, separator, &cursor, &scratch);
+  total++;
+  if (mixed == saved || scr_str_utf16_len(mixed) != 4 ||
+      saved->len != 9 || memcmp(saved->data, "beta-long", 9) != 0) failed++;
+  scr_str_release(mixed);
+  ScrStr *tail = scr_str_split_cursor_next(input, separator, &cursor, &scratch);
+  total++;
+  if (tail != mixed || scr_str_utf16_len(tail) != 9) failed++;
+  scr_str_release(tail);
+  while ((tail = scr_str_split_cursor_next(input, separator, &cursor, &scratch)))
+    scr_str_release(tail);
+  scr_str_release(saved);
+  scr_str_release(scratch);
+  scr_str_release(separator);
+  scr_str_release(input);
+}
+
 static void construction_asserts(void) {
   ScrStr *empty = scr_str_new("", 0);
   ScrStr *value = scr_str_new("a\0\xE6\x97\xA5", 5);
@@ -802,12 +836,16 @@ int main(int argc, char **argv) {
     } else if (strcmp(op, "parseInt") == 0) {
       check_f64(op, args, input, scr_parse_int(input, strtod(args, NULL)),
                 expected_bytes, exp_len);
-    } else if (strcmp(op, "split") == 0) {
+    } else if (strcmp(op, "split") == 0 || strcmp(op, "splitLimit") == 0) {
       /* args = separator hex; expected = "<count>:<pieces joined by 0x01>" */
+      double limit = 4294967295.0;
+      char *comma = strcmp(op, "splitLimit") == 0 ? strchr(args, ',') : NULL;
+      if (comma) { *comma = '\0'; limit = strtod(comma + 1, NULL); }
       size_t sep_len = hex_decode(args, needle_bytes);
+      if (comma) *comma = ',';
       if (sep_len == (size_t)-1) goto badline_release;
       ScrStr *sep = scr_str_new(needle_bytes, sep_len);
-      ScrArr *pieces = scr_str_split(input, sep);
+      ScrArr *pieces = scr_str_split_limit(input, sep, limit);
       size_t count = (size_t)scr_arr_len(pieces);
       size_t cap = 32;
       for (size_t i = 0; i < count; i++) {
@@ -825,6 +863,30 @@ int main(int argc, char **argv) {
         scr_str_release(p);
       }
       check(op, args, input, joined, o, expected_bytes, exp_len);
+      /* Consume and release one piece at a time. Empty pieces must remain
+       * distinct from exhaustion, and resetting must restart the walk. */
+      ScrSplitCursor cursor;
+      for (int pass = 0; pass < 2; pass++) {
+        scr_str_split_cursor_init(&cursor, scr_to_uint32(limit));
+        ScrStr *scratch = NULL;
+        size_t n = 0, used = 32;
+        ScrStr *piece;
+        while ((piece = scr_str_split_cursor_next(input, sep, &cursor, &scratch))) {
+          if (n) joined[used++] = '\x01';
+          memcpy(joined + used, piece->data, piece->len);
+          used += piece->len;
+          n++;
+          scr_str_release(piece);
+        }
+        size_t prefix = (size_t)snprintf(joined, 32, "%zu:", n);
+        total++;
+        if (n != count || prefix > exp_len || used - 32 != exp_len - prefix ||
+            memcmp(joined + 32, expected_bytes + prefix, used - 32) != 0)
+          failed++;
+        total++;
+        if (scr_str_split_cursor_next(input, sep, &cursor, &scratch) != NULL) failed++;
+        scr_str_release(scratch);
+      }
       free(joined);
       scr_arr_release(pieces);
       scr_str_release(sep);
@@ -889,6 +951,7 @@ int main(int argc, char **argv) {
   divergence_asserts();
   construction_asserts();
   split_storage_asserts();
+  split_scratch_asserts();
   accumulation_asserts();
   short_string_asserts();
 #ifdef SCR_SIDX_TEST

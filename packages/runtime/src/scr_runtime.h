@@ -805,6 +805,20 @@ ScrStr *scr_str_trim_end(ScrStr *s);
 struct ScrArr;
 struct ScrArr *scr_str_split(ScrStr *s, ScrStr *sep);
 struct ScrArr *scr_str_split_limit(ScrStr *s, ScrStr *sep, double limit);
+/* Internal dense split traversal. The cursor borrows input strings, returns
+ * one owned piece per step, and uses NULL only for exhaustion. Its layout
+ * is shared with generated stack storage, including wasm32. */
+typedef struct ScrSplitCursor {
+  size_t offset;
+  uint32_t remaining;
+  uint32_t pending_unit;
+} ScrSplitCursor;
+void scr_str_split_cursor_init(ScrSplitCursor *cursor, uint32_t limit);
+/* Optional scratch is a separately owned, NULL-initialized string slot.
+ * A piece that has not escaped can reuse it after the preceding yield is
+ * released. The caller releases the slot on every exit; NULL disables reuse. */
+ScrStr *scr_str_split_cursor_next(ScrStr *s, ScrStr *sep, ScrSplitCursor *cursor,
+                                  ScrStr **scratch);
 
 /* padStart(maxLength, fill)/padEnd — ECMA StringPad, UTF-16 unit counts.
  * Target at or below the length (or empty fill) returns the receiver

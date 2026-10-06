@@ -2201,6 +2201,7 @@ export class Lowerer {
    * (the ctx guard keeps hidden locals out of closures — a cross-function
    * walk falls back to the plain array walk and the fence). */
   readonly matchAllDrainIndexes = new Map<ts.Symbol, { idxsLocalId: string; ctx: FnCtx }>();
+  readonly splitIdentifierUses = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   /** STORED numeric value iterators: `const it = numbers.values()` (and
    * the equivalent `[Symbol.iterator]()` spelling) over number[] or a
    * represented typed array has no first-class IR value, so its statically

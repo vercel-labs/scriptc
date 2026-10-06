@@ -48,6 +48,7 @@ import {
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
   typeKey,
+  STRING,
   VOID,
 } from "../../ir/ir.js";
 import {
@@ -64,6 +65,18 @@ import {
 import { emitCountedLoopLimit } from "./counted-loops.js";
 import { emitLiteralSwitch } from "./switch-dispatch.js";
 import { findBytesBounds } from "./bytes-bounds.js";
+import {
+  emitSplitCursor,
+  emitSplitNext,
+  emitSplitScratch,
+  emitSplitSnapshot,
+  findPrivateSplitLocals,
+  loadSplitSnapshot,
+  storeSplitSnapshot,
+  stringSplit,
+  type StoredSplitSnapshot,
+  type StringSplit,
+} from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { analyzeIntegerRanges, type IntegerRanges } from "../../ir/integer-ranges.js";
@@ -534,6 +547,9 @@ export class LlEmitter {
     finallyDepth: number;
   }[] = [];
   private currentLocals = new Map<string, IrLocal>();
+  private privateSplitLocals = new Map<string, StringSplit>();
+  private storedSplits = new Map<string, StoredSplitSnapshot>();
+  private streamingSplitsEnabled = false;
   private readonly initializerBindings: ReturnType<typeof findInitializerBindings>;
   private numericLocals = new Map<string, IrLocal>();
   private captureIds = new Set<string>();
@@ -3731,6 +3747,11 @@ export class LlEmitter {
     this.unwindCleanups.clear();
     this.jumpTargets = [];
     this.currentLocals = new Map(fn.locals.map((l) => [l.id, l]));
+    // Preserve concrete source bindings for debugger inspection. Suspended
+    // functions keep the established array lifetime across continuations.
+    this.streamingSplitsEnabled = this.debug === null && !fn.async && !fn.generator;
+    this.privateSplitLocals = this.streamingSplitsEnabled ? findPrivateSplitLocals(fn) : new Map();
+    this.storedSplits.clear();
     const initializerBindings = this.initializerBindings.get(fn.name) ?? [];
     const numericFn = withInitializerBindings(fn, initializerBindings);
     this.numericLocals = new Map(numericFn.locals.map((l) => [l.id, l]));
@@ -4061,6 +4082,16 @@ export class LlEmitter {
     switch (s.kind) {
       case "varDecl": {
         const b = this.binding(s.localId);
+        const split = this.privateSplitLocals.get(s.localId);
+        if (split) {
+          const snapshot = storeSplitSnapshot(this, emitSplitSnapshot(this, split));
+          this.storedSplits.set(s.localId, snapshot);
+          this.scopes[this.scopes.length - 1]!.push(
+            { slot: snapshot.sourceSlot, type: STRING },
+            { slot: snapshot.separatorSlot, type: STRING },
+          );
+          break;
+        }
         const localUnion = this.localStackUnions.get(s.localId);
         if (localUnion) {
           const union = emitStackUnion(this, localUnion);
@@ -4723,23 +4754,42 @@ export class LlEmitter {
         if (s.iterable.type.kind !== "array")
           throw new LlvmUnsupportedError(`forOf:${s.iterable.type.kind}`, s.loc);
         const elem = s.iterable.type.elem;
-        const arr = this.emitExpr(s.iterable);
-        const idxSlot = B.slot();
-        B.entryAllocas.push(`${idxSlot} = alloca double`);
-        B.line(`store double ${f64Lit(0)}, ptr ${idxSlot}`);
+        const stored =
+          s.iterable.kind === "varRef" ? this.storedSplits.get(s.iterable.localId) : undefined;
+        const direct = this.streamingSplitsEnabled ? stringSplit(s.iterable) : null;
+        const snapshot = stored
+          ? loadSplitSnapshot(this, stored)
+          : direct
+            ? emitSplitSnapshot(this, direct)
+            : null;
+        const arr = snapshot ? null : this.emitExpr(s.iterable);
+        const cursor = snapshot ? emitSplitCursor(this, snapshot) : null;
+        const scratch = snapshot ? emitSplitScratch(this) : null;
+        const idxSlot = snapshot ? null : B.slot();
+        if (idxSlot) {
+          B.entryAllocas.push(`${idxSlot} = alloca double`);
+          B.line(`store double ${f64Lit(0)}, ptr ${idxSlot}`);
+        }
         const lc = B.newLabel("fof.c");
         const lb = B.newLabel("fof.b");
         const lu = B.newLabel("fof.u");
         const le = B.newLabel("fof.e");
         B.br(lc);
         B.startBlock(lc);
-        const i = B.tmp();
-        const len = B.tmp();
         const inBounds = B.tmp();
-        this.declare(`declare double @scr_arr_len(ptr)`);
-        B.line(`${i} = load double, ptr ${idxSlot}`);
-        B.line(`${len} = call double @scr_arr_len(ptr ${arr.name})`);
-        B.line(`${inBounds} = fcmp olt double ${i}, ${len}`);
+        let cur: string;
+        if (snapshot && cursor && scratch) {
+          cur = emitSplitNext(this, snapshot, cursor, scratch);
+          B.line(`${inBounds} = icmp ne ptr ${cur}, null`);
+        } else {
+          const i = B.tmp(),
+            len = B.tmp();
+          this.declare(`declare double @scr_arr_len(ptr)`);
+          B.line(`${i} = load double, ptr ${idxSlot}`);
+          B.line(`${len} = call double @scr_arr_len(ptr ${arr!.name})`);
+          B.line(`${inBounds} = fcmp olt double ${i}, ${len}`);
+          cur = i;
+        }
         B.condBr(inBounds, lb, le);
         B.startBlock(lb);
         this.jumpTargets.push({
@@ -4757,13 +4807,16 @@ export class LlEmitter {
         this.scopes.push([]);
         const localInfo = this.currentLocals.get(s.localId);
         const slot = `%${mangleLocal(s.localId)}`;
-        const acc = elemAccess(elem);
-        const accTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
-        this.declare(
-          `declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`,
-        );
-        const cur = B.tmp();
-        B.line(`${cur} = call ${accTy} @scr_arr_get_${acc}(ptr ${arr.name}, double ${i})`);
+        if (!snapshot) {
+          const acc = elemAccess(elem);
+          const accTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
+          this.declare(
+            `declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`,
+          );
+          const value = B.tmp();
+          B.line(`${value} = call ${accTy} @scr_arr_get_${acc}(ptr ${arr!.name}, double ${cur})`);
+          cur = value;
+        }
         if (localInfo?.boxed) {
           // Captured loop variable: a fresh box per iteration, matching the
           // fresh const binding. The box takes ownership of a ref element's
@@ -4784,11 +4837,13 @@ export class LlEmitter {
         this.jumpTargets.pop();
         B.br(lu);
         B.startBlock(lu);
-        const i2 = B.tmp();
-        const i3 = B.tmp();
-        B.line(`${i2} = load double, ptr ${idxSlot}`);
-        B.line(`${i3} = fadd double ${i2}, ${f64Lit(1)}`);
-        B.line(`store double ${i3}, ptr ${idxSlot}`);
+        if (idxSlot) {
+          const i2 = B.tmp(),
+            i3 = B.tmp();
+          B.line(`${i2} = load double, ptr ${idxSlot}`);
+          B.line(`${i3} = fadd double ${i2}, ${f64Lit(1)}`);
+          B.line(`store double ${i3}, ptr ${idxSlot}`);
+        }
         B.br(lc);
         B.startBlock(le);
         break;

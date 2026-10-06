@@ -11176,6 +11176,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/string-split-traversal.ts": {
+   "order": [
+    "<repo>/tests/corpus/string-split-traversal.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/structural-class-properties.ts": {
    "order": [
     "<repo>/tests/corpus/structural-class-properties.ts"

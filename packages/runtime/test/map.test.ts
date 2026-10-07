@@ -8,13 +8,13 @@ const execFileAsync = promisify(execFile);
 const testDir = import.meta.dirname;
 const bin = join(testDir, "build", "test_map");
 
-// Compiled once with ASan + the RC audit: test_map.c asserts SameValueZero
+// Compiled with ASan + the RC audit: test_map.c asserts SameValueZero
 // exactness, RC accounting through set/overwrite/delete/clear/release,
 // tombstone compaction bounds under churn, and live-iteration index
 // stability — the sanitized run proves no leak/double-free across all of it.
 beforeAll(async () => {
   await mkdir(join(testDir, "build"), { recursive: true });
-  await execFileAsync("clang", [
+  const args = [
     "-std=c11",
     "-O1",
     "-Wall",
@@ -41,10 +41,16 @@ beforeAll(async () => {
     join(testDir, "../src/scr_error.c"),
     join(testDir, "../src/scr_exception.c"),
     ...(process.platform === "linux" ? ["-D_GNU_SOURCE", "-lm"] : []),
-  ]);
+  ];
+  await execFileAsync("clang", args);
+  // Exercise the wide-table transition without allocating millions of entries.
+  const wide = args.map((arg) => (arg === bin ? bin + "-wide" : arg));
+  await execFileAsync("clang", [...wide, "-DSCR_MAP_COMPACT_BUCKETS=32"]);
 });
 
 test("map runtime: SameValueZero, RC accounting, churn, live iteration", async () => {
-  const { stderr } = await execFileAsync(bin, []);
-  expect(stderr.trim()).toMatch(/^(\d+)\/\1 cases passed$/);
+  for (const path of [bin, bin + "-wide"]) {
+    const { stderr } = await execFileAsync(path, []);
+    expect(stderr.trim()).toMatch(/^(\d+)\/\1 cases passed$/);
+  }
 });

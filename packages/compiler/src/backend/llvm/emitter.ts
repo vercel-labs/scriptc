@@ -71,6 +71,10 @@ import {
   matchByteWindow,
 } from "./byte-windows.js";
 import {
+  canDeferSplitPiece,
+  emitSplitSpanNext,
+  materializeSplitPiece,
+  type SplitSpan,
   emitSplitCursor,
   emitSplitNext,
   emitSplitScratch,
@@ -553,6 +557,7 @@ export class LlEmitter {
   }[] = [];
   private currentLocals = new Map<string, IrLocal>();
   private privateSplitLocals = new Map<string, StringSplit>();
+  readonly splitSpans = new Map<string, SplitSpan>();
   private storedSplits = new Map<string, StoredSplitSnapshot>();
   private streamingSplitsEnabled = false;
   private readonly initializerBindings: ReturnType<typeof findInitializerBindings>;
@@ -3759,6 +3764,7 @@ export class LlEmitter {
     this.streamingSplitsEnabled = this.debug === null && !fn.async && !fn.generator;
     this.privateSplitLocals = this.streamingSplitsEnabled ? findPrivateSplitLocals(fn) : new Map();
     this.storedSplits.clear();
+    this.splitSpans.clear();
     const initializerBindings = this.initializerBindings.get(fn.name) ?? [];
     const numericFn = withInitializerBindings(fn, initializerBindings);
     this.numericLocals = new Map(numericFn.locals.map((l) => [l.id, l]));
@@ -4814,6 +4820,9 @@ export class LlEmitter {
         const arr = snapshot ? null : this.emitExpr(s.iterable);
         const cursor = snapshot ? emitSplitCursor(this, snapshot) : null;
         const scratch = snapshot ? emitSplitScratch(this) : null;
+        const deferred = snapshot && canDeferSplitPiece(s, this.currentLocals.get(s.localId));
+        const spanLength = deferred ? B.slot() : null;
+        if (spanLength) B.entryAllocas.push(`${spanLength} = alloca ${this.sizeType}`);
         const idxSlot = snapshot ? null : B.slot();
         if (idxSlot) {
           B.entryAllocas.push(`${idxSlot} = alloca double`);
@@ -4828,7 +4837,9 @@ export class LlEmitter {
         const inBounds = B.tmp();
         let cur: string;
         if (snapshot && cursor && scratch) {
-          cur = emitSplitNext(this, snapshot, cursor, scratch);
+          cur = spanLength
+            ? emitSplitSpanNext(this, snapshot, cursor, spanLength)
+            : emitSplitNext(this, snapshot, cursor, scratch);
           B.line(`${inBounds} = icmp ne ptr ${cur}, null`);
         } else {
           const i = B.tmp(),
@@ -4866,6 +4877,12 @@ export class LlEmitter {
           B.line(`${value} = call ${accTy} @scr_arr_get_${acc}(ptr ${arr!.name}, double ${cur})`);
           cur = value;
         }
+        if (spanLength) {
+          const length = B.tmp();
+          B.line(`${length} = load ${this.sizeType}, ptr ${spanLength}`);
+          this.splitSpans.set(s.localId, { bytes: cur, length, scratch: scratch! });
+          cur = "null";
+        }
         if (localInfo?.boxed) {
           // Captured loop variable: a fresh box per iteration, matching the
           // fresh const binding. The box takes ownership of a ref element's
@@ -4880,6 +4897,7 @@ export class LlEmitter {
           if (isRefCounted(elem)) this.scopes[this.scopes.length - 1]!.push({ slot, type: elem });
         }
         this.emitStmts(s.body);
+        if (spanLength) this.splitSpans.delete(s.localId);
         const endedWithJump = endsWithJump(s.body);
         const scope = this.scopes.pop()!;
         if (!endedWithJump) this.releaseScope(scope);
@@ -5524,6 +5542,7 @@ export class LlEmitter {
     if (!isRefCounted(e.type)) return this.emitExpr(e);
     if (e.kind === "strLit") return { name: this.internLiteral(e.value), type: e.type };
     if (e.kind === "varRef") {
+      this.materializeSplitLocal(e.localId);
       const binding = this.binding(e.localId);
       // Capture boxes can carry TDZ and caught-value conversion semantics.
       if (binding.kind === "boxed") return this.emitExpr(e);
@@ -5599,6 +5618,11 @@ export class LlEmitter {
       default:
         return false;
     }
+  }
+
+  materializeSplitLocal(localId: string): void {
+    const span = this.splitSpans.get(localId);
+    if (span) materializeSplitPiece(this, localId, span);
   }
 
   emitExpr(e: IrExpr): LlValue {

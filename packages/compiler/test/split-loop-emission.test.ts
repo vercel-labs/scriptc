@@ -46,6 +46,29 @@ async function suspended(input: string): Promise<string> {
   for (const piece of input.split(",")) { await Promise.resolve(); result += piece; }
   return result;
 }
+function lookup(input: string, values: Map<string, number>): number {
+  let result = 0;
+  for (const key of input.split(",")) result += values.get(key) ?? 0;
+  return result;
+}
+function materialized(input: string, values: Map<string, string>): string {
+  let result = "";
+  for (const key of input.split(",")) {
+    const value = values.get(key);
+    if (value === undefined) values.set(key, key + "!");
+    result += key;
+  }
+  return result;
+}
+function capturedKey(input: string, values: Map<string, number>): string {
+  let result = "";
+  for (const key of input.split(",")) {
+    const read = (): string => key;
+    result += String(values.get(key)) + read();
+  }
+  return result;
+}
+console.log(lookup("a,b", new Map<string, number>()), materialized("a,b", new Map<string, string>()), capturedKey("a,b", new Map<string, number>()));
 console.log(direct("a,b", 2), stored("a,b", 2), observed("a,b"), captured("a,b"));
 suspended("a,b").then(console.log);
 `,
@@ -78,6 +101,16 @@ suspended("a,b").then(console.log);
         expect(work).not.toContain("@scr_arr_get_ref");
         expect(work).not.toContain("@scr_union_wrap");
       }
+      const lookup = body(llvm, "lookup");
+      expect(lookup).toContain("@scr_str_split_cursor_span");
+      expect(lookup).toContain("@scr_map_get_span_f64");
+      expect(lookup).not.toContain("@scr_str_split_materialize");
+      expect(lookup).not.toContain("@scr_str_split_cursor_next");
+      const materialized = body(llvm, "materialized");
+      expect(materialized).toContain("@scr_map_get_span_ref");
+      expect(materialized).toContain(`@scr_str_split_materialize(ptr`);
+      expect(materialized).toContain("split.ready");
+      expect(body(llvm, "capturedKey")).not.toContain("@scr_str_split_cursor_span");
       const stored = body(llvm, "stored");
       expect(stored.indexOf("@scr_to_uint32")).toBeLessThan(stored.indexOf("@scr_str_concat"));
       expect(stored.indexOf("@scr_str_concat")).toBeLessThan(
@@ -92,7 +125,7 @@ suspended("a,b").then(console.log);
         pointerBits,
         debugSources: new Map([[entry, await readFile(entry, "utf8")]]),
       });
-      for (const name of ["direct", "stored"]) {
+      for (const name of ["direct", "stored", "lookup", "materialized"]) {
         expect(body(debug, name)).toContain("@scr_str_split_limit");
         expect(body(debug, name)).not.toContain("@scr_str_split_cursor_next");
       }

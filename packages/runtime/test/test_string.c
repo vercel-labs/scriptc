@@ -890,12 +890,21 @@ int main(int argc, char **argv) {
       /* Consume and release one piece at a time. Empty pieces must remain
        * distinct from exhaustion, and resetting must restart the walk. */
       ScrSplitCursor cursor;
-      for (int pass = 0; pass < 2; pass++) {
+      for (int pass = 0; pass < 3; pass++) {
         scr_str_split_cursor_init(&cursor, scr_to_uint32(limit));
         ScrStr *scratch = NULL;
         size_t n = 0, used = 32;
         ScrStr *piece;
-        while ((piece = scr_str_split_cursor_next(input, sep, &cursor, &scratch))) {
+        for (;;) {
+          if (pass == 2) {
+            size_t length;
+            const char *bytes = scr_str_split_cursor_span(input, sep, &cursor, &length);
+            if (!bytes) break;
+            piece = scr_str_split_materialize(bytes, length, &scratch);
+          } else {
+            piece = scr_str_split_cursor_next(input, sep, &cursor, &scratch);
+            if (!piece) break;
+          }
           if (n) joined[used++] = '\x01';
           memcpy(joined + used, piece->data, piece->len);
           used += piece->len;

@@ -1409,6 +1409,18 @@ static const char *scr_str_split_span(ScrStr *s, ScrStr *sep,
   return s->data + start;
 }
 
+/* The source snapshot owns these bytes through the current iteration.
+ * A consumer that stores or otherwise exposes the piece materializes it
+ * with ordinary string ownership instead. */
+const char *scr_str_split_cursor_span(ScrStr *s, ScrStr *sep, ScrSplitCursor *cursor,
+                                     size_t *length) {
+  return scr_str_split_span(s, sep, cursor, sep->len == 0, length);
+}
+
+ScrStr *scr_str_split_materialize(const char *bytes, size_t length, ScrStr **scratch) {
+  return scr_str_split_piece(bytes, length, scratch);
+}
+
 ScrStr *scr_str_split_cursor_next(ScrStr *s, ScrStr *sep, ScrSplitCursor *cursor,
                                   ScrStr **scratch) {
   size_t len;

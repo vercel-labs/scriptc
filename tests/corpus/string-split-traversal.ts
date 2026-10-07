@@ -129,3 +129,65 @@ function* generator(): Generator<string> {
   for (const piece of "one,two".split(",")) yield piece;
 }
 for (const piece of generator()) console.log("generator", piece);
+
+function keyedPieces(input: string, separator: string): string {
+  const values = new Map<string, string>();
+  values.set("first-word", "present");
+  values.set("", "empty");
+  const saved: string[] = [];
+  let result = "";
+  for (const key of input.split(separator, 7)) {
+    const before = values.get(key);
+    if (before === undefined) values.set(key, key + "!");
+    saved.push(key);
+    const after = values.get(key);
+    values.clear();
+    result += String(before) + ":" + String(after) + ";";
+  }
+  return result + saved.join("/");
+}
+console.log("keys", keyedPieces("first-word,,new-word,first-word,", ","));
+console.log("key-unicode", keyedPieces("é世界é中é", "é"), keyedPieces("世界", ""));
+console.log("key-zero", keyedPieces("a\0b\0", "\0"));
+
+function keyExits(input: string): string {
+  const flags = new Map<string, boolean>();
+  flags.set("next", false);
+  flags.set("stop", true);
+  let result = "";
+  outer: for (const key of input.split(",")) {
+    try {
+      const flag = flags.get(key);
+      if (flag === false) continue outer;
+      if (flag === true) break outer;
+      if (key === "throw") throw new Error("key");
+      result += key;
+    } finally { result += "[" + key + "]"; }
+  }
+  return result;
+}
+console.log("key-exits", keyExits("one,next,stop,last"));
+try { keyExits("one,throw,last"); } catch (error) { console.log("key-throw", (error as Error).message); }
+
+const counts = new Map<string, number>();
+counts.set("one", 1);
+counts.set("two", 2);
+let keySum = 0;
+const keyReaders: (() => string)[] = [];
+for (const key of "one,two,missing".split(",")) {
+  keySum += counts.get(key) ?? 0;
+  keyReaders.push(() => key);
+}
+for (let key of "one,two".split(",")) {
+  keySum += counts.get(key) ?? 0;
+  key += "changed";
+  console.log("key-write", key, counts.get(key));
+}
+console.log("key-captures", keySum, keyReaders.map((read) => read()).join("/"));
+
+const optionalValues = new Map<string, string | undefined>();
+optionalValues.set("present", undefined);
+optionalValues.set("text", "value");
+for (const key of "present,missing,text".split(",")) {
+  console.log("key-optional", optionalValues.get(key));
+}

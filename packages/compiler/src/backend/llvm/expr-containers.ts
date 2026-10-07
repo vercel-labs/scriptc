@@ -17,7 +17,11 @@ import {
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 import { F64_INF, f64Lit } from "./common.js";
 import { borrowsStringInputs, emitStringInputs } from "./string-lifetimes.js";
-import { borrowsMapReadInputs, borrowsMapMutationReceiver } from "./map-read-lifetimes.js";
+import {
+  emitMapLookupKey,
+  borrowsMapReadInputs,
+  borrowsMapMutationReceiver,
+} from "./map-read-lifetimes.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 
 export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string {
@@ -890,7 +894,9 @@ export function emitMapLikeIntrinsic(
       // behind a found flag; a miss is the interned undefined-arm
       // instance. When V is itself a union, the stored box IS the
       // result (`undefined` sorts last in canonical arm order).
-      const k = borrowInputs ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
+      const k = emitMapLookupKey(host, e.args[0]!, borrowInputs);
+      const kAcc = k.access;
+      const kTy = k.types;
       if (value.kind === "dyn") {
         host.declare(`declare ptr @scr_map_get_${kAcc}_ref(ptr, ${kTy})`);
         host.declare(`declare ptr @scr_dyn_undefined()`);
@@ -898,7 +904,7 @@ export function emitMapLikeIntrinsic(
         const absent = B.tmp();
         const isnull = B.tmp();
         const result = B.tmp();
-        B.line(`${raw} = call ptr @scr_map_get_${kAcc}_ref(ptr ${r.name}, ${kTy} ${k.name})`);
+        B.line(`${raw} = call ptr @scr_map_get_${kAcc}_ref(ptr ${r.name}, ${k.args})`);
         B.line(`${absent} = call ptr @scr_dyn_undefined()`);
         B.line(`${isnull} = icmp eq ptr ${raw}, null`);
         B.line(`${result} = select i1 ${isnull}, ptr ${absent}, ptr ${raw}`);
@@ -916,7 +922,7 @@ export function emitMapLikeIntrinsic(
         const raw = B.tmp();
         const isnull = B.tmp();
         const t = B.tmp();
-        B.line(`${raw} = call ptr @scr_map_get_${kAcc}_ref(ptr ${r.name}, ${kTy} ${k.name})`);
+        B.line(`${raw} = call ptr @scr_map_get_${kAcc}_ref(ptr ${r.name}, ${k.args})`);
         B.line(`${isnull} = icmp eq ptr ${raw}, null`);
         B.line(`${t} = select i1 ${isnull}, ptr ${absent}, ptr ${raw}`);
         return host.own({ name: t, type: e.type });
@@ -934,7 +940,7 @@ export function emitMapLikeIntrinsic(
         );
         const found = B.tmp();
         B.line(
-          `${found} = call zeroext i1 @scr_map_get_${kAcc}_${value.kind === "f64" ? "f64" : "bool"}(ptr ${r.name}, ${kTy} ${k.name}, ptr ${outSlot})`,
+          `${found} = call zeroext i1 @scr_map_get_${kAcc}_${value.kind === "f64" ? "f64" : "bool"}(ptr ${r.name}, ${k.args}, ptr ${outSlot})`,
         );
         const slot = B.slot();
         B.entryAllocas.push(`${slot} = alloca ptr`);
@@ -964,7 +970,7 @@ export function emitMapLikeIntrinsic(
       }
       host.declare(`declare ptr @scr_map_get_${kAcc}_ref(ptr, ${kTy})`);
       const raw = B.tmp();
-      B.line(`${raw} = call ptr @scr_map_get_${kAcc}_ref(ptr ${r.name}, ${kTy} ${k.name})`);
+      B.line(`${raw} = call ptr @scr_map_get_${kAcc}_ref(ptr ${r.name}, ${k.args})`);
       return host.wrapNullable(raw, raw, value, valueTag, e.type, undefTag);
     }
     case "set": {

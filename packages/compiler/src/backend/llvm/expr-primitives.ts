@@ -38,6 +38,7 @@ export function emitLiteralExpr(
       // tag-only); one reaching the generic dispatch escaped its wrap.
       throw new InternalCompilerError(`llvm emitter bug: bare unitLit '${e.unit}'`);
     case "varRef": {
+      host.materializeSplitLocal(e.localId);
       const integerSlot = host.integerLoopBindings.get(e.localId);
       if (integerSlot !== undefined) {
         const integer = B.tmp();

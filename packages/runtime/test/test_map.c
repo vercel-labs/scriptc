@@ -83,6 +83,10 @@ static void test_string_bucket_collisions(void) {
     bool found = scr_map_get_str_f64(m, probe, &out);
     check(found == (i % 2 != 0) && (!found || out == (double)i),
           "content probe crosses collision-chain tombstones");
+    out = -1;
+    found = scr_map_get_span_f64(m, probe->data, probe->len, &out);
+    check(found == (i % 2 != 0) && (!found || out == (double)i),
+          "span probe crosses collision-chain tombstones");
     scr_map_set_str_f64(m, probe, (double)i + 100);
     check(scr_map_has_str(m, probe), "collision-chain overwrite or reinsertion");
     scr_str_release(probe);
@@ -119,6 +123,40 @@ static void test_string_keys(void) {
   scr_str_release(ka);
   scr_str_release(kb);
   scr_map_release(m);
+}
+
+/* Probes need neither a terminator nor readable padding and never retain
+ * their source. Returned references keep independent snapshot ownership. */
+static void test_span_keys(void) {
+  ScrMap *numbers = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrMap *flags = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_BOOL, NULL, NULL, NULL);
+  ScrMap *refs = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_REF,
+                            scr_str_retain_v, scr_str_release_v, NULL);
+  for (size_t length = 0; length < 70; length++) {
+    char *bytes = malloc(length ? length : 1);
+    for (size_t i = 0; i < length; i++) bytes[i] = (char)(i * 71);
+    ScrStr *key = scr_str_new(bytes, length);
+    scr_map_set_str_f64(numbers, key, (double)length);
+    scr_map_set_str_bool(flags, key, length % 2 != 0);
+    scr_map_set_str_ref(refs, key, scr_str_retain(key));
+    double number = -1;
+    bool flag = false;
+    check(scr_map_get_span_f64(numbers, bytes, length, &number) && number == (double)length,
+          "bounded span finds number key");
+    check(scr_map_get_span_bool(flags, bytes, length, &flag) && flag == (length % 2 != 0),
+          "bounded span finds boolean key");
+    ScrStr *snapshot = scr_map_get_span_ref(refs, bytes, length);
+    scr_map_clear(refs);
+    check(snapshot && scr_str_eq(snapshot, key), "span result survives clearing its map");
+    scr_str_release(snapshot);
+    check(scr_map_delete_str(numbers, key) && !scr_map_get_span_f64(numbers, bytes, length, &number),
+          "span misses deleted entry");
+    scr_str_release(key);
+    free(bytes);
+  }
+  scr_map_release(refs);
+  scr_map_release(flags);
+  scr_map_release(numbers);
 }
 
 static void test_same_value_zero(void) {
@@ -462,6 +500,7 @@ int main(void) {
   test_string_bucket_collisions();
   test_string_keys();
   test_same_value_zero();
+  test_span_keys();
 #ifdef SCR_RC_AUDIT
   test_rc_accounting();
 #endif

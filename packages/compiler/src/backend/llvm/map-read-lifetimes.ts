@@ -140,6 +140,27 @@ export function findMapReadLifetimes(
   return result;
 }
 
+export function emitMapLookupKey(
+  host: LlvmEmitterContext,
+  key: IrExpr,
+  borrow: boolean,
+): { access: string; types: string; args: string } {
+  const span =
+    borrow && key.kind === "varRef" && key.type.kind === "string"
+      ? host.splitSpans.get(key.localId)
+      : undefined;
+  if (span)
+    return {
+      access: "span",
+      types: `ptr, ${host.sizeType}`,
+      args: `ptr ${span.bytes}, ${host.sizeType} ${span.length}`,
+    };
+  const value = borrow ? host.emitReadReceiver(key) : host.emitExpr(key);
+  const access = mapKeyAccess(key.type);
+  const type = mapKeyParamType(access);
+  return { access, types: type, args: `${type} ${value.name}` };
+}
+
 export interface StackMapRead {
   value: LlValue;
   owner: { slot: string; type: IrType } | null;
@@ -152,9 +173,9 @@ export interface StackMapRead {
 export function emitStackMapRead(host: LlvmEmitterContext, read: LocalMapRead): StackMapRead {
   const B = host.B;
   const receiver = host.emitStableReceiver(read.receiver, [read.key]);
-  const key = host.emitReadReceiver(read.key);
-  const access = mapKeyAccess(read.key.type);
-  const keyType = mapKeyParamType(access);
+  const key = emitMapLookupKey(host, read.key, true);
+  const access = key.access;
+  const keyType = key.types;
   const box = B.slot(),
     payload = B.slot(),
     tag = B.slot();
@@ -166,9 +187,7 @@ export function emitStackMapRead(host: LlvmEmitterContext, read: LocalMapRead): 
   if (isRefCounted(read.value)) {
     const raw = B.tmp();
     host.declare(`declare ptr @scr_map_get_${access}_ref(ptr, ${keyType})`);
-    B.line(
-      `${raw} = call ptr @scr_map_get_${access}_ref(ptr ${receiver.name}, ${keyType} ${key.name})`,
-    );
+    B.line(`${raw} = call ptr @scr_map_get_${access}_ref(ptr ${receiver.name}, ${key.args})`);
     B.line(`${found} = icmp ne ptr ${raw}, null`);
     B.line(`store i64 0, ptr ${payload}`);
     B.line(`store ptr ${raw}, ptr ${payload}`);
@@ -178,7 +197,7 @@ export function emitStackMapRead(host: LlvmEmitterContext, read: LocalMapRead): 
     B.line(`store i64 0, ptr ${payload}`);
     host.declare(`declare zeroext i1 @scr_map_get_${access}_${scalar}(ptr, ${keyType}, ptr)`);
     B.line(
-      `${found} = call zeroext i1 @scr_map_get_${access}_${scalar}(ptr ${receiver.name}, ${keyType} ${key.name}, ptr ${payload})`,
+      `${found} = call zeroext i1 @scr_map_get_${access}_${scalar}(ptr ${receiver.name}, ${key.args}, ptr ${payload})`,
     );
     if (read.value.kind === "bool") {
       // The runtime writes a byte; union projections read an i64. Widen

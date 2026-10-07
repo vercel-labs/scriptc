@@ -819,6 +819,11 @@ void scr_str_split_cursor_init(ScrSplitCursor *cursor, uint32_t limit);
  * released. The caller releases the slot on every exit; NULL disables reuse. */
 ScrStr *scr_str_split_cursor_next(ScrStr *s, ScrStr *sep, ScrSplitCursor *cursor,
                                   ScrStr **scratch);
+/* Borrowed split bytes remain valid while the source snapshot is owned.
+ * Materialization returns +1 and uses the same optional scratch contract. */
+const char *scr_str_split_cursor_span(ScrStr *s, ScrStr *sep, ScrSplitCursor *cursor,
+                                     size_t *length);
+ScrStr *scr_str_split_materialize(const char *bytes, size_t length, ScrStr **scratch);
 
 /* padStart(maxLength, fill)/padEnd — ECMA StringPad, UTF-16 unit counts.
  * Target at or below the length (or empty fill) returns the receiver
@@ -1420,7 +1425,7 @@ typedef struct ScrMap {
   size_t ecap;     /* entries capacity */
   ScrMapEntry *entries;
   size_t nbuckets;  /* zero for small linear maps; otherwise power of two >= 2 * nentries */
-  size_t *buckets;  /* entry indices; SIZE_MAX = empty */
+  void *buckets;  /* compact tagged indices, or size_t indices for large tables */
   size_t iter_depth; /* > 0: an iteration is active — no compaction */
   const ScrMapDynOps *dyn_ops;
   const uint8_t *union_keys; /* immutable key-kind table indexed by union tag */
@@ -1428,6 +1433,12 @@ typedef struct ScrMap {
 
 /* Called once on a fresh UNION_VALUE collection, before its first insert. */
 void scr_map_union_keys(ScrMap *map, const uint8_t *kinds);
+/* String-key lookups borrow an exact byte span. Reference results return
+ * +1; scalar outputs are written only on a hit, like the string getters. */
+bool scr_map_get_span_f64(const ScrMap *m, const char *bytes, size_t length, double *out);
+bool scr_map_get_span_bool(const ScrMap *m, const char *bytes, size_t length, bool *out);
+void *scr_map_get_span_ref(const ScrMap *m, const char *bytes, size_t length);
+
 /* Fresh shallow copies with compact storage and independent mutation.
  * keys_only selects a Set; checked views materialize their boxed values. */
 ScrMap *scr_map_clone(const ScrMap *source, bool keys_only);

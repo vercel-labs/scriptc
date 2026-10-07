@@ -187,7 +187,9 @@ static bool scr_map_key_eq(const ScrMap *m, uint64_t stored, uint64_t probe) {
  * A zero entry hash marks a tombstone; cached hashes reject unrelated keys
  * before equality and survive table growth without hashing the keys again.
  * Remap zero to one so every live entry has a nonzero hash. */
-typedef enum { SCR_MAP_LOOKUP_STR, SCR_MAP_LOOKUP_WORD, SCR_MAP_LOOKUP_GENERIC } ScrMapLookup;
+typedef enum { SCR_MAP_LOOKUP_STR, SCR_MAP_LOOKUP_SPAN, SCR_MAP_LOOKUP_WORD, SCR_MAP_LOOKUP_GENERIC } ScrMapLookup;
+
+typedef struct { const char *bytes; size_t length; } ScrMapSpan;
 
 /* Choose equality once per operation. Inlining the traversal with a constant
  * lookup kind keeps the ordinary string/word probe free of key-kind dispatch,
@@ -195,6 +197,11 @@ typedef enum { SCR_MAP_LOOKUP_STR, SCR_MAP_LOOKUP_WORD, SCR_MAP_LOOKUP_GENERIC }
 static inline bool scr_map_lookup_eq(const ScrMap *m, uint64_t stored, uint64_t key,
                                      ScrMapLookup lookup) {
   if (lookup == SCR_MAP_LOOKUP_WORD) return stored == key;
+  if (lookup == SCR_MAP_LOOKUP_SPAN) {
+    const ScrStr *a = scr_map_slot_to_ptr(stored);
+    const ScrMapSpan *b = scr_map_slot_to_ptr(key);
+    return a->len == b->length && scr_key_equal(a->data, b->bytes, a->len);
+  }
   if (lookup == SCR_MAP_LOOKUP_STR) {
     const ScrStr *a = scr_map_slot_to_ptr(stored);
     const ScrStr *b = scr_map_slot_to_ptr(key);
@@ -203,12 +210,57 @@ static inline bool scr_map_lookup_eq(const ScrMap *m, uint64_t stored, uint64_t 
   return scr_map_key_eq(m, stored, key);
 }
 
+/* Compact tables keep a hash fingerprint beside each 24-bit entry index.
+ * Rejecting a collision here avoids loading an unrelated ordered entry.
+ * Larger tables keep full-width indices; collection size remains limited
+ * only by the allocator. Zero is empty in compact tables, so store index+1. */
+#ifndef SCR_MAP_COMPACT_BUCKETS
+#define SCR_MAP_COMPACT_BUCKETS ((size_t)1 << 24)
+#endif
+_Static_assert(SCR_MAP_COMPACT_BUCKETS >= 16 &&
+               SCR_MAP_COMPACT_BUCKETS <= ((size_t)1 << 24) &&
+               (SCR_MAP_COMPACT_BUCKETS & (SCR_MAP_COMPACT_BUCKETS - 1)) == 0,
+               "compact bucket capacity must leave room for every tagged index");
+#define SCR_MAP_INDEX_MASK UINT32_C(0x00ffffff)
+
+static bool scr_map_compact_buckets(size_t count) {
+  return count <= SCR_MAP_COMPACT_BUCKETS;
+}
+
+static size_t scr_map_bucket(const ScrMap *m, size_t slot) {
+  if (scr_map_compact_buckets(m->nbuckets)) {
+    uint32_t index = ((const uint32_t *)m->buckets)[slot] & SCR_MAP_INDEX_MASK;
+    return index ? (size_t)index - 1 : SCR_MAP_EMPTY;
+  }
+  return ((const size_t *)m->buckets)[slot];
+}
+
+static void scr_map_bucket_set(ScrMap *m, size_t slot, size_t entry, uint64_t hash) {
+  if (scr_map_compact_buckets(m->nbuckets)) {
+    ((uint32_t *)m->buckets)[slot] = (uint32_t)(entry + 1) | (uint32_t)(hash >> 32 & UINT32_C(0xff000000));
+  } else {
+    ((size_t *)m->buckets)[slot] = entry;
+  }
+}
+
 static inline __attribute__((always_inline)) size_t scr_map_probe_with(
     const ScrMap *m, uint64_t hash, uint64_t key, ScrMapLookup lookup) {
   if (m->nbuckets == 0) return SCR_MAP_EMPTY;
   size_t mask = m->nbuckets - 1;
+  if (scr_map_compact_buckets(m->nbuckets)) {
+    const uint32_t *buckets = m->buckets;
+    uint32_t tag = (uint32_t)(hash >> 32 & UINT32_C(0xff000000));
+    for (size_t i = hash & mask;; i = (i + 1) & mask) {
+      uint32_t bucket = buckets[i];
+      if (!bucket) return i;
+      if ((bucket & ~SCR_MAP_INDEX_MASK) != tag) continue;
+      size_t b = (bucket & SCR_MAP_INDEX_MASK) - 1;
+      if (m->entries[b].hash == hash && scr_map_lookup_eq(m, m->entries[b].key, key, lookup)) return i;
+    }
+  }
+  const size_t *buckets = m->buckets;
   for (size_t i = hash & mask;; i = (i + 1) & mask) {
-    size_t b = m->buckets[i];
+    size_t b = buckets[i];
     if (b == SCR_MAP_EMPTY) return i;
     if (m->entries[b].hash == hash && scr_map_lookup_eq(m, m->entries[b].key, key, lookup)) return i;
   }
@@ -229,7 +281,7 @@ static inline __attribute__((always_inline)) size_t scr_map_find_with(
     return SCR_MAP_EMPTY;
   }
   size_t slot = scr_map_probe_with(m, hash, key, lookup);
-  return slot == SCR_MAP_EMPTY ? SCR_MAP_EMPTY : m->buckets[slot];
+  return slot == SCR_MAP_EMPTY ? SCR_MAP_EMPTY : scr_map_bucket(m, slot);
 }
 
 static ScrMapLookup scr_map_lookup_kind(const ScrMap *m) {
@@ -268,16 +320,53 @@ static size_t scr_map_find_f64(const ScrMap *m, double key) {
 
 static size_t scr_map_find_str(const ScrMap *m, const ScrStr *key) {
   if (m->nlive == 0) return SCR_MAP_EMPTY;
+  if (m->nbuckets == 0) {
+    uint64_t k = scr_map_slot_from_ptr((void *)key);
+    for (size_t e = 0; e < m->nentries; e++) {
+      if (m->entries[e].hash && scr_map_lookup_eq(m, m->entries[e].key, k, SCR_MAP_LOOKUP_STR)) return e;
+    }
+    return SCR_MAP_EMPTY;
+  }
   return scr_map_find_with(m, scr_map_hash_str(key), scr_map_slot_from_ptr((void *)key),
                            SCR_MAP_LOOKUP_STR);
+}
+
+/* A transient input span follows the same hash, equality and ownership
+ * rules as a string key without allocating or copying the probe. */
+static size_t scr_map_find_span(const ScrMap *m, const char *bytes, size_t length) {
+  if (m->nlive == 0) return SCR_MAP_EMPTY;
+  ScrMapSpan key = { bytes, length };
+  return scr_map_find_with(m, scr_key_hash(bytes, length), scr_map_slot_from_ptr(&key),
+                           SCR_MAP_LOOKUP_SPAN);
+}
+
+bool scr_map_get_span_f64(const ScrMap *m, const char *bytes, size_t length, double *out) {
+  size_t e = scr_map_find_span(m, bytes, length);
+  if (e == SCR_MAP_EMPTY) return false;
+  *out = scr_map_slot_to_f64(m->entries[e].val);
+  return true;
+}
+
+bool scr_map_get_span_bool(const ScrMap *m, const char *bytes, size_t length, bool *out) {
+  size_t e = scr_map_find_span(m, bytes, length);
+  if (e == SCR_MAP_EMPTY) return false;
+  *out = m->entries[e].val != 0;
+  return true;
+}
+
+void *scr_map_get_span_ref(const ScrMap *m, const char *bytes, size_t length) {
+  size_t e = scr_map_find_span(m, bytes, length);
+  return e == SCR_MAP_EMPTY ? NULL : m->val_retain(scr_map_slot_to_ptr(m->entries[e].val));
 }
 
 /* Rebuild the bucket table (size must be a power of two >= 2 * nentries):
  * only live entries are inserted, in dense order — dead markers vanish. */
 static void scr_map_rebuild_buckets(ScrMap *m, size_t nbuckets) {
-  size_t *buckets = malloc(nbuckets * sizeof *buckets);
+  bool compact = scr_map_compact_buckets(nbuckets);
+  size_t bytes = nbuckets * (compact ? sizeof(uint32_t) : sizeof(size_t));
+  void *buckets = malloc(bytes);
   if (!buckets) scr_map_oom();
-  for (size_t i = 0; i < nbuckets; i++) buckets[i] = SCR_MAP_EMPTY;
+  memset(buckets, compact ? 0 : 0xff, bytes);
   free(m->buckets);
   m->buckets = buckets;
   m->nbuckets = nbuckets;
@@ -286,8 +375,8 @@ static void scr_map_rebuild_buckets(ScrMap *m, size_t nbuckets) {
     uint64_t hash = m->entries[e].hash;
     if (!hash) continue;
     size_t i = hash & mask;
-    while (buckets[i] != SCR_MAP_EMPTY) i = (i + 1) & mask;
-    buckets[i] = e;
+    while (scr_map_bucket(m, i) != SCR_MAP_EMPTY) i = (i + 1) & mask;
+    scr_map_bucket_set(m, i, e, hash);
   }
 }
 
@@ -473,7 +562,11 @@ void scr_map_clear(ScrMap *m) {
      * after the clear append past them and ARE visited (Node-exact). */
     m->nentries = 0;
   }
-  for (size_t i = 0; i < m->nbuckets; i++) m->buckets[i] = SCR_MAP_EMPTY;
+  if (m->nbuckets) {
+    bool compact = scr_map_compact_buckets(m->nbuckets);
+    memset(m->buckets, compact ? 0 : 0xff,
+           m->nbuckets * (compact ? sizeof(uint32_t) : sizeof(size_t)));
+  }
 }
 
 /* ── has / delete ──────────────────────────────────────────────────────── */
@@ -531,7 +624,7 @@ bool scr_map_delete_ref(ScrMap *m, const void *key) {
 static void scr_map_set(ScrMap *m, uint64_t hash, uint64_t key, uint64_t val) {
   hash = hash ? hash : 1;
   size_t slot = scr_map_probe(m, hash, key);
-  size_t e = m->nbuckets == 0 ? scr_map_find(m, hash, key) : m->buckets[slot];
+  size_t e = m->nbuckets == 0 ? scr_map_find(m, hash, key) : scr_map_bucket(m, slot);
   if (e != SCR_MAP_EMPTY) {
     uint64_t old = m->entries[e].val;
     m->entries[e].val = val; /* unlink before releasing (cycle collector) */
@@ -545,7 +638,7 @@ static void scr_map_set(ScrMap *m, uint64_t hash, uint64_t key, uint64_t val) {
   if (m->nbuckets && (m->nentries != old_entries || m->nbuckets != old_buckets)) {
     size_t mask = m->nbuckets - 1;
     slot = hash & mask;
-    while (m->buckets[slot] != SCR_MAP_EMPTY) slot = (slot + 1) & mask;
+    while (scr_map_bucket(m, slot) != SCR_MAP_EMPTY) slot = (slot + 1) & mask;
   }
   size_t idx = m->nentries++;
   m->entries[idx].key = key;
@@ -572,7 +665,7 @@ static void scr_map_set(ScrMap *m, uint64_t hash, uint64_t key, uint64_t val) {
   } else if (scr_map_ref_key(m->key_kind)) {
     m->key_retain(scr_map_slot_to_ptr(key)); /* key is borrowed */
   }
-  if (m->nbuckets) m->buckets[slot] = idx;
+  if (m->nbuckets) scr_map_bucket_set(m, slot, idx, hash);
 }
 
 static void scr_map_set_f64_key(ScrMap *m, double key, uint64_t val) {

@@ -55,6 +55,14 @@ export function emitByteNumber(
   const done = B.newLabel("bytes.number.done");
   const bits = spec.width * 8;
   const integer = exactInteger(host, offset, e.args[spec.offsetArg]);
+  const valueRange = spec.write && !spec.dataView && !spec.floating ? byteNumberRange(spec) : null;
+  const knownValue = valueRange ? host.integerRanges.get(e.args[spec.valueArg]!) : null;
+  const checked = !(
+    integer &&
+    host.bytesBounds.has(e) &&
+    (!valueRange ||
+      (knownValue && knownValue.min >= valueRange.min && knownValue.max <= valueRange.max))
+  );
   let index: string,
     fits: string,
     room = "true";
@@ -139,8 +147,11 @@ export function emitByteNumber(
       }
     }
   }
-  let valid = B.tmp();
-  B.line(`${valid} = and i1 ${room}, ${fits}`);
+  let valid = "true";
+  if (checked) {
+    valid = B.tmp();
+    B.line(`${valid} = and i1 ${room}, ${fits}`);
+  }
   if (spec.write && !spec.dataView && !spec.floating) {
     const range = byteNumberRange(spec)!;
     const known = host.integerRanges.get(e.args[spec.valueArg]!);
@@ -158,8 +169,10 @@ export function emitByteNumber(
       valid = both;
     }
   }
-  B.condBr(valid, access, slow);
-  B.startBlock(access);
+  if (checked) {
+    B.condBr(valid, access, slow);
+    B.startBlock(access);
+  }
   const data = host.emitBytesData(receiver.name),
     pointer = B.tmp();
   B.line(`${pointer} = getelementptr inbounds i8, ptr ${data}, ${size} ${index}`);
@@ -232,6 +245,18 @@ export function emitByteNumber(
         }
       }
     }
+  }
+  if (!checked) {
+    if (e.type.kind === "void") return { name: "", type: e.type };
+    if (!readRange) return { name: fastResult, type: e.type };
+    const uint32 = integerType === "i32" ? fastInteger : B.tmp();
+    if (integerType !== "i32") B.line(`${uint32} = trunc i64 ${fastInteger} to i32`);
+    return {
+      name: fastResult,
+      type: e.type,
+      uint32,
+      integer: { name: fastInteger, type: integerType, signed: spec.signed, range: readRange },
+    };
   }
   B.br(fastDone);
   B.startBlock(fastDone);

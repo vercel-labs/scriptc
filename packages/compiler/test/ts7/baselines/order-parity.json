@@ -14390,6 +14390,12 @@
     "<repo>/tests/corpus/typed-array-numeric-import.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/byte-record-windows.ts": {
+   "order": [
+    "<repo>/tests/corpus/byte-record-windows.ts"
+   ],
+   "diags": []
   }
  }
 }

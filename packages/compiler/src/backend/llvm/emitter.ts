@@ -66,6 +66,11 @@ import { emitCountedLoopLimit } from "./counted-loops.js";
 import { emitLiteralSwitch } from "./switch-dispatch.js";
 import { findBytesBounds } from "./bytes-bounds.js";
 import {
+  emitByteWindowGuard,
+  findInitializedByteLoopBindings,
+  matchByteWindow,
+} from "./byte-windows.js";
+import {
   emitSplitCursor,
   emitSplitNext,
   emitSplitScratch,
@@ -560,6 +565,8 @@ export class LlEmitter {
   >();
   private countedLoopsEnabled = false;
   integerRanges: IntegerRanges = new Map();
+  private byteWindowsEnabled = true;
+  private byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
   integerViews = new Map<string, string>();
   /** Enclosing try-with-FINALLY regions, innermost last: a `return`
@@ -3767,6 +3774,11 @@ export class LlEmitter {
     );
     this.integerLoopBindings.clear();
     this.countedLoopsEnabled = this.debug === null && !fn.async && !fn.generator;
+    this.byteWindowsEnabled = this.countedLoopsEnabled;
+    this.byteWindowEntries =
+      this.byteWindowsEnabled && numericFn.locals.some((l) => l.type.kind === "bytes")
+        ? findInitializedByteLoopBindings(fn)
+        : new Map();
     this.integerViews.clear();
     this.fieldPointerTags.clear();
     this.integerArrayBindings.clear();
@@ -4583,6 +4595,43 @@ export class LlEmitter {
           !integerLoop && this.countedLoopsEnabled
             ? matchIntegerCountedForLoop(s, this.numericLocals, this.integerRanges)
             : null;
+        const window =
+          countedLoop && this.byteWindowsEnabled
+            ? matchByteWindow(
+                s,
+                countedLoop,
+                this.numericLocals,
+                this.captureIds,
+                this.integerRanges,
+                this.byteWindowEntries.get(s) ?? new Set(),
+              )
+            : null;
+        if (window) {
+          const valid = emitByteWindowGuard(this, window);
+          const fast = B.newLabel("bytes.window.fast"),
+            slow = B.newLabel("bytes.window.slow"),
+            done = B.newLabel("bytes.window.done");
+          B.condBr(valid, fast, slow);
+          const originalRanges = this.integerRanges,
+            originalBounds = this.bytesBounds;
+          this.byteWindowsEnabled = false;
+          try {
+            B.startBlock(slow);
+            this.emitStmt(s);
+            B.br(done);
+            B.startBlock(fast);
+            this.integerRanges = window.ranges;
+            this.bytesBounds = new Set([...originalBounds, ...window.bounds]);
+            this.emitStmt(s);
+            B.br(done);
+          } finally {
+            this.integerRanges = originalRanges;
+            this.bytesBounds = originalBounds;
+            this.byteWindowsEnabled = true;
+          }
+          B.startBlock(done);
+          break;
+        }
         let countedJoin: string | null = null;
         if (countedLoop?.guarded) {
           const bound = this.emitExpr(countedLoop.limit);

@@ -29,7 +29,8 @@ test("numeric byte pipelines retain checked fallbacks and use field widths on bo
         expect(code).not.toContain("@scr_bytes_retain");
         expect(code).toMatch(/load i32, ptr %\w+, align 1/);
         expect(code).toMatch(/store i32 %\w+, ptr %\w+, align 1/);
-        expect(code).toContain("phi i32");
+        expect(code).toMatch(/(?:s|u)itofp i32/);
+        expect(code).not.toContain("bytes.number.slow");
       }
       // All fields lie inside the extent established by these loop heads.
       for (const name of ["bufferRecords", "viewRecords"]) {

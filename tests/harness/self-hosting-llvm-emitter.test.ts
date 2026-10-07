@@ -111,6 +111,7 @@ const programs = [
   "literal-switch-dispatch.ts",
   "local-union-storage.ts",
   "class-callback-storage.ts",
+  "byte-record-windows.ts",
 ];
 
 for (const backend of ["llvm"] as const) {

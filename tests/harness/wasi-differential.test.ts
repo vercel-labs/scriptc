@@ -181,6 +181,7 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "1409-typedarray-integer-loops.ts",
     "1660-buffer-read-write-num.ts",
     "byte-number-pipeline.ts",
+    "byte-record-windows.ts",
     "counted-loop-numbers.ts",
     "module-byte-loops.ts",
     "1551-dyn-receiver-methods.ts",

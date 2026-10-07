@@ -12704,12 +12704,6 @@
    ],
    "diags": []
   },
-  "<repo>/tests/diagnostics/regex-checker.ts": {
-   "order": [
-    "<repo>/tests/diagnostics/regex-checker.ts"
-   ],
-   "diags": []
-  },
   "<repo>/tests/diagnostics/regex.ts": {
    "order": [
     "<repo>/tests/diagnostics/regex.ts"

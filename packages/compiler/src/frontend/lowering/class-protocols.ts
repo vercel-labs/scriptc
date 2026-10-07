@@ -24,22 +24,50 @@ export class ClassProtocols {
       const target = type.isTypeReference() ? type.getTarget() : type;
       if (target?.isClassOrInterface()) this.checker.getBaseTypes(target).forEach(add);
     };
+    const usesReceiver = (node: ts.Node): boolean =>
+      node.kind === ts.SyntaxKind.ThisKeyword || ts.forEachChild(node, usesReceiver) === true;
     const visit = (node: ts.Node): void => {
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
         for (const clause of node.heritageClauses ?? [])
           if (clause.token === ts.SyntaxKind.ImplementsKeyword)
             for (const protocol of clause.types) add(this.checker.getTypeAtLocation(protocol));
-        for (const member of node.members) {
+        const symbol = node.name ? this.checker.getSymbolAtLocation(node.name) : undefined;
+        const instance = symbol ? this.checker.getDeclaredTypeOfSymbol(symbol) : undefined;
+        for (const property of instance ? this.checker.getPropertiesOfType(instance) : []) {
           if (
-            !ts.isMethodDeclaration(member) ||
-            !ts.isIdentifier(member.name) ||
-            member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword)
+            !this.checker
+              .declarationsOf(property)
+              .some(
+                (member) =>
+                  ts.isMethodDeclaration(member) &&
+                  !member.modifiers?.some(
+                    (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
+                  ),
+              )
           )
             continue;
-          const entries = this.methods.get(member.name.text) ?? [];
+          const entries = this.methods.get(property.name) ?? [];
           entries.push(node);
-          this.methods.set(member.name.text, entries);
+          this.methods.set(property.name, entries);
         }
+      }
+      if (
+        ts.isObjectLiteralExpression(node) &&
+        node.properties.some(
+          (property) =>
+            (ts.isMethodDeclaration(property) ||
+              ts.isGetAccessorDeclaration(property) ||
+              ts.isSetAccessorDeclaration(property)) &&
+            property.body !== undefined &&
+            usesReceiver(property.body),
+        )
+      ) {
+        // Receiver-dependent methods and accessors need a live object even
+        // without a class implementation. Receiver-free methods keep their
+        // native callable fields, including async callbacks crossing islands.
+        add(this.checker.getTypeAtLocation(node));
+        const contextual = this.checker.getContextualType(node);
+        if (contextual) add(contextual);
       }
       ts.forEachChild(node, visit);
     };
@@ -47,9 +75,9 @@ export class ClassProtocols {
     return protocols;
   }
 
-  /** Method protocols require receiver dispatch. Callable data members only
-   * require it when a compatible class actually implements them with methods;
-   * ordinary records of closures retain their fixed native layouts. */
+  /** Class-backed protocols require live receiver dispatch. Other interfaces,
+   * including factories backed by static methods and ordinary records of
+   * closures, retain their fixed native layouts. */
   usesCheckedIdentity(type: ts.Type): boolean {
     if (type.isUnionType()) {
       const present = ts
@@ -95,12 +123,6 @@ export class ClassProtocols {
     for (const property of properties) {
       const memberType = this.checker.getTypeOfSymbol(property);
       if (isGenericCallableMemberType(memberType, this.checker)) continue;
-      if (
-        this.checker
-          .declarationsOf(property)
-          .some((declaration) => declaration.kind === ts.SyntaxKind.MethodSignature)
-      )
-        return true;
       if (this.checker.getCallSignatures(memberType).length === 0) continue;
       for (const declaration of this.methods.get(property.name) ?? []) {
         const classSymbol = declaration.name

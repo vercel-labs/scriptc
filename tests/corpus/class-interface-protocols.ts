@@ -84,3 +84,9 @@ class LiveValue implements LiveIdentity {
 }
 const live: LiveIdentity = new LiveValue();
 console.log(live.id(7), live.value(), live instanceof LiveValue);
+
+interface LabeledShape extends Shape { label:string; }
+class LabeledSquare extends Square { label="inherited"; }
+function readLabeled(value:LabeledShape):number { value.resize(5); return value.area(); }
+const labeled=new LabeledSquare();
+console.log(readLabeled(labeled),labeled.side,labeled.label);

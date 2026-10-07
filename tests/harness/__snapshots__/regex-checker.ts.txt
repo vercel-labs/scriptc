@@ -1,8 +1,0 @@
-regex-checker.ts:5:31 - error SC1120: function replacement values (replacements must be string templates) are not supported yet
-
-  4 | const m = /a(b)/.exec("ab");
-  5 | const fn = "abc".replace(/b/, (s: string) => s);
-    |                               ^~~~~~~~~~~~~~~~
-  6 | 
-
-  hint: supported: literal regexes with the g/i/m/s/u/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates

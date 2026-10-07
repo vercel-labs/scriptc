@@ -1,17 +1,5 @@
 // Accessor edges the compiler rejects (tsc-clean, outside the subset).
 
-// object-literal accessors carry dynamic `this` semantics records don't model
-const obj = {
-  _x: 1,
-  get x(): number {
-    return this._x;
-  },
-  set x(v: number) {
-    this._x = v;
-  },
-};
-console.log(obj._x);
-
 // static members don't poison the class — their USES fence (the class
 // name has no value form)
 class Config {

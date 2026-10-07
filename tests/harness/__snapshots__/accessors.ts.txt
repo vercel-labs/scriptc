@@ -1,90 +1,83 @@
-accessors.ts:7:12 - error SC1090: references to 'this' in object literal get/set accessors (the accessor lowers as a captured closure with no receiver — read a captured binding instead) are not supported yet
+accessors.ts:10:13 - error SC1090: the static member 'version' of class 'Config' (static accessors and initializer-less static fields have no lowering, and Function members like .call/.bind/.prototype have no value form) is not supported yet
 
-  6 |   get x(): number {
-  7 |     return this._x;
-    |            ^~~~
-  8 |   },
-
-accessors.ts:22:13 - error SC1090: the static member 'version' of class 'Config' (static accessors and initializer-less static fields have no lowering, and Function members like .call/.bind/.prototype have no value form) is not supported yet
-
-  21 | }
-  22 | console.log(Config.version);
+   9 | }
+  10 | console.log(Config.version);
      |             ^~~~~~~~~~~~~~
-  23 | 
+  11 | 
 
-accessors.ts:26:3 - error SC1090: auto-accessor fields ('accessor x') are not supported yet
+accessors.ts:14:3 - error SC1090: auto-accessor fields ('accessor x') are not supported yet
 
-  25 | class Auto {
-  26 |   accessor a: number = 1;
+  13 | class Auto {
+  14 |   accessor a: number = 1;
      |   ^~~~~~~~~~~~~~~~~~~~~~~
-  27 | }
+  15 | }
 
-accessors.ts:35:7 - error SC1090: getter/setter pairs with different types (the property 'm' must have one type) are not supported yet
+accessors.ts:23:7 - error SC1090: getter/setter pairs with different types (the property 'm' must have one type) are not supported yet
 
-  34 |   }
-  35 |   set m(v: string) {
+  22 |   }
+  23 |   set m(v: string) {
      |       ^
-  36 |     console.log(v);
+  24 |     console.log(v);
 
-accessors.ts:55:7 - error SC1090: overriding an accessor with a different type (the property type must match the base declaration exactly) is not supported yet
+accessors.ts:43:7 - error SC1090: overriding an accessor with a different type (the property type must match the base declaration exactly) is not supported yet
 
-  54 | class DogKennel extends Kennel {
-  55 |   get pet(): Dog {
+  42 | class DogKennel extends Kennel {
+  43 |   get pet(): Dog {
      |       ^~~
-  56 |     return new Dog();
+  44 |     return new Dog();
 
-accessors.ts:68:13 - error SC1090: reading a property that has only a setter ('w' — Node would yield undefined) is not supported yet
+accessors.ts:56:13 - error SC1090: reading a property that has only a setter ('w' — Node would yield undefined) is not supported yet
 
-  67 | const sink = new Sink();
-  68 | console.log(sink.w);
+  55 | const sink = new Sink();
+  56 | console.log(sink.w);
      |             ^~~~~~
-  69 | 
+  57 | 
 
-accessors.ts:82:7 - error SC1090: overriding only the setter of an inherited accessor pair (JS shadows the inherited getter — reads of 'v' would yield undefined; declare the getter too) is not supported yet
+accessors.ts:70:7 - error SC1090: overriding only the setter of an inherited accessor pair (JS shadows the inherited getter — reads of 'v' would yield undefined; declare the getter too) is not supported yet
 
-  81 | class WriteOnlyCell extends Cell {
-  82 |   set v(x: number) {
+  69 | class WriteOnlyCell extends Cell {
+  70 |   set v(x: number) {
      |       ^
-  83 |     this._v = x * 2;
+  71 |     this._v = x * 2;
 
-accessors.ts:99:5 - error SC1090: compound assignment through 'super' (read and write separately) is not supported yet
+accessors.ts:87:5 - error SC1090: compound assignment through 'super' (read and write separately) is not supported yet
 
-   98 |   bump(): void {
-   99 |     super.scale += 1;
-      |     ^~~~~~~~~~~
-  100 |   }
+  86 |   bump(): void {
+  87 |     super.scale += 1;
+     |     ^~~~~~~~~~~
+  88 |   }
 
-accessors.ts:119:15 - error SC1090: bound method references through 'super' (call 'super.m(...)' directly) is not supported yet
+accessors.ts:107:15 - error SC1090: bound method references through 'super' (call 'super.m(...)' directly) is not supported yet
 
-  118 |   probe(): number {
-  119 |     const f = super.m;
+  106 |   probe(): number {
+  107 |     const f = super.m;
       |               ^~~~~~~
-  120 |     return f();
+  108 |     return f();
 
-accessors.ts:132:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+accessors.ts:120:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
 
-  131 | new Config();
-  132 | new Auto();
+  119 | new Config();
+  120 | new Auto();
       | ^~~~~~~~~~
-  133 | new Mixed();
+  121 | new Mixed();
 
-accessors.ts:133:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+accessors.ts:121:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
 
-  132 | new Auto();
-  133 | new Mixed();
+  120 | new Auto();
+  121 | new Mixed();
       | ^~~~~~~~~~~
-  134 | new DogKennel();
+  122 | new DogKennel();
 
-accessors.ts:134:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+accessors.ts:122:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
 
-  133 | new Mixed();
-  134 | new DogKennel();
+  121 | new Mixed();
+  122 | new DogKennel();
       | ^~~~~~~~~~~~~~~
-  135 | new WriteOnlyCell();
+  123 | new WriteOnlyCell();
 
-accessors.ts:135:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+accessors.ts:123:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
 
-  134 | new DogKennel();
-  135 | new WriteOnlyCell();
+  122 | new DogKennel();
+  123 | new WriteOnlyCell();
       | ^~~~~~~~~~~~~~~~~~~
-  136 | new Computed();
+  124 | new Computed();

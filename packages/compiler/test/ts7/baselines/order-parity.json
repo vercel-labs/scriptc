@@ -14408,6 +14408,12 @@
     "<repo>/tests/corpus/array-numeric-own-keys.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/array-primitive-ordering.ts": {
+   "order": [
+    "<repo>/tests/corpus/array-primitive-ordering.ts"
+   ],
+   "diags": []
   }
  }
 }

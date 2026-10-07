@@ -784,6 +784,42 @@ static void positioned_suffix_eviction_asserts(void) {
 }
 #endif
 
+static void ordering_asserts(void) {
+  const char *suffixes[] = {
+    "", "a", "a\0b", "\xc3\xa9", "\xc3\xaa", "\xe4\xb8\xad",
+    "\xed\x9f\xbf", "\xee\x80\x80", "\xef\xbf\xbf",
+    "\xf0\x90\x80\x80", "\xf0\x90\x80\x81",
+    "\xf0\x9f\x98\x80", "\xf0\x9f\x98\x81", "\xf4\x8f\xbf\xbf"
+  };
+  for (size_t prefix = 0; prefix <= 17; prefix++) {
+    for (size_t left = 0; left < sizeof(suffixes) / sizeof(*suffixes); left++) {
+      for (size_t right = 0; right < sizeof(suffixes) / sizeof(*suffixes); right++) {
+        char ab[32], bb[32];
+        memset(ab, 'x', prefix); memset(bb, 'x', prefix);
+        size_t an = left == 2 ? 3 : strlen(suffixes[left]);
+        size_t bn = right == 2 ? 3 : strlen(suffixes[right]);
+        memcpy(ab + prefix, suffixes[left], an);
+        memcpy(bb + prefix, suffixes[right], bn);
+        ScrStr *a = scr_str_new(ab, prefix + an);
+        ScrStr *b = scr_str_new(bb, prefix + bn);
+        size_t alen = (size_t)scr_str_utf16_len(a), blen = (size_t)scr_str_utf16_len(b);
+        int expected = (alen > blen) - (alen < blen);
+        for (size_t i = 0; i < alen && i < blen; i++) {
+          double au = scr_str_char_code_at(a, i), bu = scr_str_char_code_at(b, i);
+          if (au != bu) { expected = au < bu ? -1 : 1; break; }
+        }
+        int got = scr_str_cmp_u16(a, b);
+        total++;
+        if (((got > 0) - (got < 0)) != expected) {
+          failed++;
+          fprintf(stderr, "UTF-16 ordering mismatch at prefix %zu: %zu/%zu\n", prefix, left, right);
+        }
+        scr_str_release(a); scr_str_release(b);
+      }
+    }
+  }
+}
+
 int main(int argc, char **argv) {
   if (argc > 1 && strncmp(argv[1], "--crash-repeat", 14) == 0) {
     ScrStr *s = scr_str_new("ab", 2);
@@ -981,6 +1017,7 @@ int main(int argc, char **argv) {
   }
   if (in != stdin) fclose(in);
 
+  ordering_asserts();
   divergence_asserts();
   construction_asserts();
   split_storage_asserts();

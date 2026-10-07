@@ -2242,7 +2242,9 @@ function validateFunction(
                                 ? { argTypes: [STRING], result: STRING }
                                 : e.method === "slice"
                                   ? { argTypes: [F64, F64], result: e.receiver.type }
-                                  : e.method === "toReversed"
+                                  : e.method === "toReversed" ||
+                                      e.method === "sortPrimitive" ||
+                                      e.method === "toSortedPrimitive"
                                     ? { argTypes: [], result: e.receiver.type }
                                     : e.method === "reverse"
                                       ? { argTypes: [], result: e.receiver.type }
@@ -2267,6 +2269,14 @@ function validateFunction(
                                                   : e.method === "shift"
                                                     ? { argTypes: [], result: e.type } // union-checked below
                                                     : { argTypes: [], result: F64 }; // length
+        if (
+          (e.method === "sortPrimitive" || e.method === "toSortedPrimitive") &&
+          elem.kind !== "string" &&
+          elem.kind !== "f64" &&
+          elem.kind !== "bool"
+        ) {
+          err(`arrIntrinsic ${e.method} requires primitive elements, got ${elem.kind}`, e.loc);
+        }
         if (e.method === "getNumber" && elem.kind !== "f64") {
           err(`arrIntrinsic getNumber requires f64 elements, got ${elem.kind}`, e.loc);
         }

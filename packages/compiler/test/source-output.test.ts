@@ -200,3 +200,21 @@ test.each(["wasm64-wasi", "totally-invalid"])(
     }
   },
 );
+
+test("default sort refuses erased results that may hide a comparator", async () => {
+  const { entry, outDir } = await fixture(`
+const erased: () => void = () => (a: number, b: number) => a - b;
+const values = [2, 10, 1];
+values.sort(erased() as undefined);
+`);
+  const result = await compile(entry, { outDir, outputKind: "llvm" });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics).toEqual([
+    expect.objectContaining({
+      code: "SC2020",
+      message: expect.stringContaining("erased comparator result"),
+      hint: expect.stringContaining("void expression"),
+    }),
+  ]);
+});

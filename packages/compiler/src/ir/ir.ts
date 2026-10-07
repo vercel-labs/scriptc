@@ -1791,6 +1791,9 @@ export type IrStmt =
  * 0 / +Infinity, the strIntrinsic convention); ref elements retain into
  * the fresh array. */
 export type IrArrIntrinsicMethod =
+  /** Default String ordering for f64/bool/string payloads; no user callbacks. */
+  | "sortPrimitive"
+  | "toSortedPrimitive"
   | "length"
   /** Internal ToNumber(a[index]) for f64-backed arrays: one numeric index,
    * returning the stored number or NaN for a hole/undefined/missing key.

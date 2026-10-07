@@ -405,62 +405,29 @@ int scr_str_cmp(ScrStr *a, ScrStr *b) {
   return a->len < b->len ? -1 : (a->len > b->len ? 1 : 0);
 }
 
-/* UTF-16 code-unit comparison over well-formed UTF-8 (the default
- * Array.sort/toSorted and URLSearchParams.sort order). Byte order ALMOST
- * matches — the exception is U+E000..U+FFFF (3-byte UTF-8, single high code
- * units) vs supplementary code points (4-byte UTF-8, surrogate pairs
- * 0xD800..0xDFFF): bytes put the 4-byte form last, code units put it first.
- * Decode code points and compare their leading UTF-16 units. */
-static uint32_t scr_str_lead_u16(const unsigned char *s, size_t len,
-                                size_t *adv) {
-  unsigned char b = s[0];
-  uint32_t cp;
-  size_t n;
-  if (b < 0x80) {
-    cp = b; n = 1;
-  } else if ((b & 0xe0) == 0xc0) {
-    cp = b & 0x1fu; n = 2;
-  } else if ((b & 0xf0) == 0xe0) {
-    cp = b & 0x0fu; n = 3;
-  } else {
-    cp = b & 0x07u; n = 4;
-  }
-  if (n > len) n = len; /* defensive: strings are well-formed by contract */
-  for (size_t i = 1; i < n; i++) cp = (cp << 6) | (s[i] & 0x3fu);
-  *adv = n;
-  if (cp >= 0x10000) return 0xd800 + ((cp - 0x10000) >> 10);
-  return cp;
-}
-
+/* UTF-16 ordering over well-formed UTF-8. Equal bytes can be skipped even
+ * inside a multibyte character: unequal continuation bytes preserve code
+ * point order. Only differing lead bytes for U+E000..U+FFFF versus a
+ * supplementary character reverse byte order, because the latter starts
+ * with a UTF-16 high surrogate below U+E000. */
 int scr_str_cmp_u16(ScrStr *a, ScrStr *b) {
-  size_t ia = 0, ib = 0;
-  while (ia < a->len && ib < b->len) {
-    size_t na, nb;
-    uint32_t ua = scr_str_lead_u16(
-        (const unsigned char *)a->data + ia, a->len - ia, &na);
-    uint32_t ub = scr_str_lead_u16(
-        (const unsigned char *)b->data + ib, b->len - ib, &nb);
-    if (ua != ub) return ua < ub ? -1 : 1;
-    /* Equal leading units: equal whole code points (both single units or
-     * both pairs with equal highs — lows only differ if cps differ). */
-    if (na == 4 && nb == 4) {
-      uint32_t cpa = 0, cpb = 0;
-      for (size_t i = 0; i < 4; i++) {
-        cpa = (cpa << 6) |
-              (i == 0 ? (unsigned char)a->data[ia] & 0x07u
-                      : (unsigned char)a->data[ia + i] & 0x3fu);
-        cpb = (cpb << 6) |
-              (i == 0 ? (unsigned char)b->data[ib] & 0x07u
-                      : (unsigned char)b->data[ib + i] & 0x3fu);
-      }
-      if (cpa != cpb) return cpa < cpb ? -1 : 1;
-    }
-    ia += na;
-    ib += nb;
+  if (a == b) return 0;
+  size_t common = a->len < b->len ? a->len : b->len;
+  size_t i = 0;
+  while (common - i >= sizeof(uint64_t)) {
+    uint64_t left, right;
+    memcpy(&left, a->data + i, sizeof(left));
+    memcpy(&right, b->data + i, sizeof(right));
+    if (left != right) break;
+    i += sizeof(left);
   }
-  if (ia < a->len) return 1;
-  if (ib < b->len) return -1;
-  return 0;
+  while (i < common && a->data[i] == b->data[i]) i++;
+  if (i == common) return (a->len > b->len) - (a->len < b->len);
+  unsigned char left = (unsigned char)a->data[i];
+  unsigned char right = (unsigned char)b->data[i];
+  if (left >= 0xf0 && right >= 0xee && right <= 0xef) return -1;
+  if (right >= 0xf0 && left >= 0xee && left <= 0xef) return 1;
+  return left < right ? -1 : 1;
 }
 
 /* ── interned strings ─────────────────────────────────────────────────

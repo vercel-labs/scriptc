@@ -94,6 +94,24 @@ export function emitterInputCases(): EmitterInputCase[] {
   );
   add("floating point constants", numbers);
 
+  const primitiveOrder = module();
+  for (const elem of [STRING, F64, BOOL]) {
+    const type = arrayOf(elem);
+    for (const method of ["sortPrimitive", "toSortedPrimitive"] as const) {
+      primitiveOrder.functions[0]!.body.push(
+        effect({
+          kind: "arrIntrinsic",
+          method,
+          receiver: { kind: "arrayLit", elems: [], type, loc },
+          args: [],
+          type,
+          loc,
+        }),
+      );
+    }
+  }
+  add("primitive array ordering", primitiveOrder);
+
   const source = module();
   source.functions[0]!.body = [effect(strLit("line two", { ...loc, start: 12, end: 20 }))];
   add("source locations with multibyte text", source, [

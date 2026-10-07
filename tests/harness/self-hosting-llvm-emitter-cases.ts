@@ -98,6 +98,18 @@ export function llvmEmitterCases(): LlvmEmitterCase[] {
       ],
     });
   }
+  const primitiveOrder = find("primitive array ordering");
+  primitiveOrder.contains.push(
+    "declare ptr @scr_arr_sort_primitive(ptr, i1 zeroext)",
+    "i1 0)",
+    "i1 1)",
+  );
+  cases.push({
+    ...primitiveOrder,
+    name: "WASI 32-bit primitive array ordering",
+    request: llvmEmitterRequest({ pointerBits: 32, wasi: true }),
+    contains: primitiveOrder.contains.slice(1),
+  });
   const library = find("library entry points and identity constants");
   cases.push({
     ...library,

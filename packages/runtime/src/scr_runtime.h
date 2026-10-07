@@ -1215,6 +1215,8 @@ double scr_arr_unshift_bool(ScrArr *a, bool v);
 double scr_arr_unshift_ref(ScrArr *a, void *v);
 double scr_arr_unshift_spread(ScrArr *a, const ScrArr *src);
 ScrArr *scr_arr_reverse(ScrArr *a);
+/* Default primitive String ordering; stable, borrowed receiver, owned result. */
+ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy);
 
 /* pop traps on an empty array; _ref transfers ownership out (+1 to the
  * caller, no release). */

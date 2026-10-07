@@ -365,6 +365,38 @@ test.each(["copyWithin", "fill", "fillUndefined"] as const)(
   },
 );
 
+test.each(["sortPrimitive", "toSortedPrimitive"] as const)(
+  "primitive ordering %s validates its serialized element and result contract",
+  (method) => {
+    for (const elem of [STRING, F64, BOOL]) {
+      const type = arrayOf(elem);
+      const expr: IrExpr & { kind: "arrIntrinsic" } = {
+        kind: "arrIntrinsic",
+        method,
+        receiver: { kind: "arrayLit", elems: [], type, loc },
+        args: [],
+        type,
+        loc,
+      };
+      const mod = expressionModule(expr, []);
+      expect(validateModule(mod)).toEqual([]);
+      expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+      for (const change of [
+        { args: [{ kind: "numLit" as const, value: 1, type: F64, loc }] },
+        { type: F64 },
+        {
+          receiver: { kind: "arrayLit" as const, elems: [], type: arrayOf(type), loc },
+          type: arrayOf(type),
+        },
+      ]) {
+        expect(validateModule(expressionModule({ ...expr, ...change }, [])).length).toBeGreaterThan(
+          0,
+        );
+      }
+    }
+  },
+);
+
 function expressionModule(expr: IrExpr, unions: IrUnionDef[]): IrModule {
   return {
     irVersion: 13,

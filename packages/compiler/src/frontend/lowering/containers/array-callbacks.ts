@@ -44,6 +44,7 @@ import {
   callArrayCallback,
 } from "./array-iteration.js";
 import { dynamicReceiverThrows } from "./dynamic-receivers.js";
+import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
 
 /** `a.map(fn)` / `a.filter(fn)` / `a.forEach(fn)` desugar to a direct
  * call of a synthetic module function — one per method + element/result
@@ -1400,21 +1401,17 @@ function reduceHelper(
  * function like the other array HOFs. sort mutates and returns the receiver;
  * toSorted takes its shallow snapshot INSIDE the helper, after the receiver
  * and comparator expressions have both been evaluated, then sorts and
- * returns that copy without touching the receiver. The helper uses a stable
- * bottom-up merge sort with an ordered-boundary check: ordered inputs use a
- * linear number of comparator calls, but buffer movement remains O(n log n)
- * even when every boundary is already ordered. During a merge, an element
+ * returns that copy without touching the receiver. The helper merges stable
+ * natural runs, reversing only strict descending runs and extending short
+ * runs with insertion sort. Ordered boundaries skip merging. During a merge, an element
  * moves right only while cmp(left, right) > 0, so a NaN or 0 result keeps
  * the left element first. Undefined values sink without reaching the user
  * comparator. The callback sequence differs from V8's TimSort, so exact
  * order and count parity are not claimed; results agree for consistent
- * comparators. The comparator-less form lowers for STRING elements only —
- * JS's default converts every element to string and compares UTF-16 units,
- * so the interned synthesized comparator selects the runtime's code-unit
- * ordering rather than scriptc's documented code-point relational
- * operators. For numbers that default is the notorious string sort
- * ([10, 9, 1] → [1, 10, 9]), deliberately fenced toward an explicit
- * comparator. */
+ * comparators. Without a comparator, string, number and boolean arrays use
+ * native stable ordering: their String conversions cannot call user code.
+ * Strings compare UTF-16 units; numbers compare their decimal spellings
+ * ([10, 9, 1] → [1, 10, 9]). Other element types still need a comparator. */
 export function lowerArraySortCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1425,31 +1422,69 @@ export function lowerArraySortCall(
   const loc = locOf(call);
   const method = access.name.text === "toSorted" ? "toSorted" : "sort";
   const copyFirst = method === "toSorted";
-  if (call.arguments.length === 0 && elem.kind === "string") {
-    const receiver = lowerer.lowerExpr(access.expression);
-    const cmp = defaultStringCmpHelper(lowerer, loc);
-    const fnT = funcOf([STRING, STRING], F64);
-    const key = `${method}:${typeKey(STRING)}:2`;
-    let helper = lowerer.arrHofHelpers.get(key);
-    if (!helper) {
-      helper = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
-      lowerer.arrHofHelpers.set(key, helper);
-      lowerer.liftedFns.push(buildArraySortFn(helper, STRING, 2, copyFirst, null, loc));
-    }
-    const fnArg: IrExpr = { kind: "closure", fnName: cmp, captures: [], type: fnT, loc };
-    return { kind: "call", callee: helper, args: [receiver, fnArg], type: arrT, loc };
+  if (
+    call.arguments.length === 0 &&
+    (elem.kind === "string" || elem.kind === "f64" || elem.kind === "bool")
+  ) {
+    return {
+      kind: "arrIntrinsic",
+      method: copyFirst ? "toSortedPrimitive" : "sortPrimitive",
+      receiver: lowerer.lowerExpr(access.expression),
+      args: [],
+      type: arrT,
+      loc,
+    };
   }
   if (call.arguments.length !== 1) {
     lowerer.noLowering(
       `.${method} with ${call.arguments.length} arguments`,
       call,
-      "the default string-conversion ordering lowers only for string[] — pass a comparator: " +
-        `${method}((a, b) => a - b) for numbers`,
+      "default ordering supports string[], number[] and boolean[]; other element types need a comparator",
     );
   }
   const receiver = lowerer.lowerExpr(access.expression);
   const argNode = call.arguments[0]!;
-  let fnArg = lowerer.lowerExpr(argNode);
+  const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, argNode);
+  let unwrappedArg = argNode;
+  while (
+    ts.isParenthesizedExpression(unwrappedArg) ||
+    ts.isAsExpression(unwrappedArg) ||
+    ts.isTypeAssertion(unwrappedArg) ||
+    ts.isSatisfiesExpression(unwrappedArg)
+  )
+    unwrappedArg = unwrappedArg.expression;
+  if (undefinedArg?.type.kind === "void" && !ts.isVoidExpression(unwrappedArg)) {
+    lowerer.noLowering(
+      `.${method} with an erased comparator result`,
+      argNode,
+      "pass the comparator directly, or use void expression to explicitly select default ordering",
+    );
+  }
+  if (
+    undefinedArg !== null &&
+    (undefinedArg.type.kind === "undefinedT" || ts.isVoidExpression(unwrappedArg)) &&
+    (elem.kind === "string" || elem.kind === "f64" || elem.kind === "bool")
+  ) {
+    // A type assertion alone cannot turn a function value into undefined.
+    // The explicit undefined expression can mutate or replace the receiver.
+    // Keep its original value alive and run the argument before sorting.
+    const saved = lowerer.declareHiddenLocal("%sortReceiver", arrT);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: saved.id, init: receiver, loc }],
+      result: defaultAfterUndefined(undefinedArg, {
+        kind: "arrIntrinsic",
+        method: copyFirst ? "toSortedPrimitive" : "sortPrimitive",
+        receiver: varRef(saved.id, arrT, loc),
+        args: [],
+        type: arrT,
+        loc,
+      }),
+      type: arrT,
+      loc,
+    };
+  }
+  let fnArg = undefinedArg ?? lowerer.lowerExpr(argNode);
   // Reusable JS comparators often accept checked values. Adapt the array's
   // element ABI just as other array callbacks do before sorting.
   if (
@@ -1499,67 +1534,6 @@ export function lowerArraySortCall(
     );
   }
   return { kind: "call", callee: helper, args: [receiver, fnArg], type: arrT, loc };
-}
-
-/** JS's default sort comparator for STRING elements, interned once:
- *
- *   (a, b) => a < b ? -1 : a > b ? 1 : 0
- *
- * The dedicated UTF-16 comparison flag keeps this exact across
- * supplementary-plane code points and U+E000..U+FFFF, where the runtime's
- * ordinary code-point relational order deliberately differs. */
-function defaultStringCmpHelper(lowerer: Lowerer, loc: SrcLoc): string {
-  const key = "sortCmpStr";
-  const existing = lowerer.arrHofHelpers.get(key);
-  if (existing) return existing;
-  const name = `%arr.sortCmpStr`;
-  lowerer.arrHofHelpers.set(key, name);
-
-  const cmp = (op: "<" | ">"): IrExpr => ({
-    kind: "strCmp",
-    op,
-    left: varRef("a.0", STRING, loc),
-    right: varRef("b.0", STRING, loc),
-    utf16: true,
-    type: BOOL,
-    loc,
-  });
-  const body: IrStmt[] = [
-    {
-      kind: "return",
-      value: {
-        kind: "ternary",
-        cond: cmp("<"),
-        then: numLit(-1, loc),
-        else_: {
-          kind: "ternary",
-          cond: cmp(">"),
-          then: numLit(1, loc),
-          else_: numLit(0, loc),
-          type: F64,
-          loc,
-        },
-        type: F64,
-        loc,
-      },
-      loc,
-    },
-  ];
-  lowerer.liftedFns.push({
-    name,
-    params: [
-      { localId: "a.0", name: "a", type: STRING },
-      { localId: "b.0", name: "b", type: STRING },
-    ],
-    returnType: F64,
-    locals: [
-      { id: "a.0", name: "a", type: STRING, mutable: true },
-      { id: "b.0", name: "b", type: STRING, mutable: true },
-    ],
-    body,
-    loc,
-  });
-  return name;
 }
 
 /** `d.filter(pred)` on a dyn receiver: the receiver must BE a dyn array

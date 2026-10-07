@@ -169,7 +169,7 @@ Callback values use checked storage. Typed records and arrays retain identity an
 
 Strings are stored as UTF-8. Length and string methods use UTF-16 semantics, but relational comparisons such as `<` and `>` use code-point order. Operations that split a surrogate pair produce U+FFFD. `localeCompare` compares code units without ICU collation.
 
-`sort` and `toSorted` use stable bottom-up merge sort, while V8 uses TimSort. Consistent comparators produce the same sorted results, but comparator call order and count can differ. Ordered inputs use a linear number of comparator calls; merge-buffer movement remains O(n log n).
+`sort` and `toSorted` use stable natural merge sort. Default ordering supports string, number, and boolean arrays, comparing their string forms in UTF-16 order; for example, `[2, 10, 1].sort()` produces `[1, 10, 2]`. `sort` preserves holes at the end, while `toSorted` produces a fresh array with holes filled by `undefined`. With an explicit comparator, consistent comparators produce the same sorted results as Node, but callback order and count can differ.
 
 ### Dates and timezones
 

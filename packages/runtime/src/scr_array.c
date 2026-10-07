@@ -1657,6 +1657,169 @@ ScrArr *scr_arr_slice(ScrArr *a, double start, double end) {
   return out;
 }
 
+/* Default ordering of primitive arrays cannot call user code. Keep each
+ * payload owned by its source while sorting raw slots, then publish the
+ * complete permutation without per-comparison retains or releases. */
+typedef struct {
+  uint64_t value;
+  char text[32];
+} ScrNumberSortKey;
+
+typedef struct {
+  ScrElemKind kind;
+  const ScrNumberSortKey *numbers;
+} ScrPrimitiveOrder;
+
+static int scr_arr_primitive_compare(uint64_t left, uint64_t right,
+                                      const ScrPrimitiveOrder *order) {
+  if (order->kind == SCR_ELEM_STR)
+    return scr_str_cmp_u16(scr_slot_to_ptr(left), scr_slot_to_ptr(right));
+  if (order->kind == SCR_ELEM_BOOL) return (left > right) - (left < right);
+  return strcmp(order->numbers[left].text, order->numbers[right].text);
+}
+
+/* Natural runs preserve ordered inputs. Reverse strictly descending runs
+ * only, insert after ties, and merge from the left on equality. Allocate
+ * scratch only when there is more than one completed run. */
+static void scr_arr_primitive_order(uint64_t *values, size_t count,
+                                     const ScrPrimitiveOrder *order) {
+  if (count < 2) return;
+  size_t local_runs[64], *runs = local_runs, run_cap = 64, run_count = 1;
+  runs[0] = 0;
+  for (size_t start = 0; start < count;) {
+    size_t end = start + 1;
+    if (end < count) {
+      bool descending = scr_arr_primitive_compare(values[start], values[end], order) > 0;
+      end++;
+      while (end < count &&
+             (scr_arr_primitive_compare(values[end - 1], values[end], order) > 0) == descending)
+        end++;
+      if (descending) {
+        for (size_t left = start, right = end - 1; left < right; left++, right--) {
+          uint64_t value = values[left];
+          values[left] = values[right];
+          values[right] = value;
+        }
+      }
+    }
+    size_t limit = count - start < 16 ? count : start + 16;
+    while (end < limit) {
+      uint64_t value = values[end];
+      size_t low = start, high = end;
+      while (low < high) {
+        size_t mid = low + (high - low) / 2;
+        if (scr_arr_primitive_compare(values[mid], value, order) > 0) high = mid;
+        else low = mid + 1;
+      }
+      memmove(values + low + 1, values + low, (end - low) * sizeof(*values));
+      values[low] = value;
+      end++;
+    }
+    if (run_count == run_cap) {
+      if (run_cap > SIZE_MAX / 2 / sizeof(*runs)) scr_arr_oom();
+      size_t *next = malloc(run_cap * 2 * sizeof(*runs));
+      if (!next) scr_arr_oom();
+      memcpy(next, runs, run_count * sizeof(*runs));
+      if (runs != local_runs) free(runs);
+      runs = next;
+      run_cap *= 2;
+    }
+    runs[run_count++] = end;
+    start = end;
+  }
+  if (run_count > 2) {
+    if (count > SIZE_MAX / sizeof(*values)) scr_arr_oom();
+    uint64_t *scratch = malloc(count * sizeof(*scratch));
+    if (!scratch) scr_arr_oom();
+    uint64_t *src = values, *dst = scratch;
+    while (run_count > 2) {
+      size_t next_run = 1;
+      for (size_t run = 0; run + 1 < run_count; run += 2) {
+        size_t start = runs[run], mid = runs[run + 1];
+        size_t end = run + 2 < run_count ? runs[run + 2] : count;
+        if (mid == end || scr_arr_primitive_compare(src[mid - 1], src[mid], order) <= 0) {
+          memcpy(dst + start, src + start, (end - start) * sizeof(*dst));
+        } else {
+          size_t left = start, right = mid, out = start;
+          while (left < mid && right < end) {
+            dst[out++] = scr_arr_primitive_compare(src[left], src[right], order) > 0
+                ? src[right++] : src[left++];
+          }
+          if (left < mid) memcpy(dst + out, src + left, (mid - left) * sizeof(*dst));
+          else if (right < end) memcpy(dst + out, src + right, (end - right) * sizeof(*dst));
+        }
+        runs[next_run++] = end;
+      }
+      run_count = next_run;
+      uint64_t *swap = src; src = dst; dst = swap;
+    }
+    if (src != values) memcpy(values, src, count * sizeof(*values));
+    free(scratch);
+  }
+  if (runs != local_runs) free(runs);
+}
+
+ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy) {
+  if (a->elem != SCR_ELEM_STR && a->elem != SCR_ELEM_F64 && a->elem != SCR_ELEM_BOOL)
+    scr_trap("scriptc: invalid primitive array ordering\n");
+  if (a->len == 0) return copy ? scr_arr_new(a->elem, 0) : scr_arr_retain(a);
+  size_t dense = a->len < a->cap ? a->len : a->cap;
+  size_t count = 0, undefined_count = 0;
+  for (size_t i = 0; i < dense; i++) {
+    count += a->present[i] == SCR_ARR_VALUE;
+    undefined_count += a->present[i] == SCR_ARR_UNDEFINED;
+  }
+  for (size_t i = 0; i < a->sparse_len; i++) {
+    count += a->sparse[i].state == SCR_ARR_VALUE;
+    undefined_count += a->sparse[i].state == SCR_ARR_UNDEFINED;
+  }
+  if (count > SIZE_MAX / sizeof(uint64_t)) scr_arr_oom();
+  uint64_t *values = count ? malloc(count * sizeof(*values)) : NULL;
+  if (count && !values) scr_arr_oom();
+  size_t used = 0;
+  for (size_t i = 0; i < dense; i++)
+    if (a->present[i] == SCR_ARR_VALUE) values[used++] = a->data[i];
+  for (size_t i = 0; i < a->sparse_len; i++)
+    if (a->sparse[i].state == SCR_ARR_VALUE) values[used++] = a->sparse[i].slot;
+  ScrNumberSortKey *numbers = NULL;
+  if (a->elem == SCR_ELEM_F64 && count > 1) {
+    if (count > SIZE_MAX / sizeof(*numbers)) scr_arr_oom();
+    numbers = malloc(count * sizeof(*numbers));
+    if (!numbers) scr_arr_oom();
+    for (size_t i = 0; i < count; i++) {
+      numbers[i].value = values[i];
+      scr_f64_to_str(scr_slot_to_f64(values[i]), numbers[i].text);
+      values[i] = i;
+    }
+  }
+  ScrPrimitiveOrder order = {a->elem, numbers};
+  scr_arr_primitive_order(values, count, &order);
+  if (numbers) {
+    for (size_t i = 0; i < count; i++) values[i] = numbers[values[i]].value;
+    free(numbers);
+  }
+  size_t present = copy ? a->len : count + undefined_count;
+  ScrArr *out = copy ? scr_arr_new(a->elem, present) : a;
+  if (copy) out->len = a->len;
+  if (!copy && scr_arr_is_dense(a)) {
+    if (count) memcpy(a->data, values, count * sizeof(*values));
+    memset(a->present, SCR_ARR_VALUE, count);
+    memset(a->present + count, SCR_ARR_UNDEFINED, undefined_count);
+    scr_arr_clear_dense(a, count + undefined_count, a->len - count - undefined_count);
+    if (undefined_count) memset(a->data + count, 0, undefined_count * sizeof(*a->data));
+  } else {
+    ScrArrStorage old = {0};
+    if (!copy) old = scr_arr_take_storage(a);
+    for (size_t i = 0; i < count; i++)
+      scr_arr_store_owned(out, i, copy ? scr_elem_retain_slot(a, values[i]) : values[i]);
+    for (size_t i = count; i < present; i++)
+      scr_arr_store_state_owned(out, i, 0, SCR_ARR_UNDEFINED);
+    if (!copy) scr_arr_free_storage(&old);
+  }
+  free(values);
+  return copy ? out : scr_arr_retain(a);
+}
+
 ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
   size_t cap = 64;
   /* String widths are already known. Size once to avoid growth and copying

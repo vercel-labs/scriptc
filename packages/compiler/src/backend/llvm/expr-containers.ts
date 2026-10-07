@@ -583,6 +583,15 @@ export function emitArrIntrinsic(
       B.line(`${t} = call ptr @scr_arr_to_reversed(ptr ${r.name})`);
       return host.own({ name: t, type: e.type });
     }
+    case "sortPrimitive":
+    case "toSortedPrimitive": {
+      host.declare(`declare ptr @scr_arr_sort_primitive(ptr, i1 zeroext)`);
+      const result = B.tmp();
+      B.line(
+        `${result} = call ptr @scr_arr_sort_primitive(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0})`,
+      );
+      return host.own({ name: result, type: e.type });
+    }
     case "reverse": {
       // Mutates in place and returns the same receiver as a fresh +1.
       host.declare(`declare ptr @scr_arr_reverse(ptr)`);

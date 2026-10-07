@@ -145,6 +145,7 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "local-union-storage.ts",
     "class-callback-storage.ts",
     "array-sort-runs.ts",
+    "array-primitive-ordering.ts",
     "uint8array-sort-domains.ts",
     "buffer-codec-boundaries.ts",
     "text-encode-into-boundaries.ts",

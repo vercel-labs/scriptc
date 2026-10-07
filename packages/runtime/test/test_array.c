@@ -745,6 +745,85 @@ static void test_bulk_reference_ownership(void) {
   check(scr_arr_live_count() == arrays0, "bulk reference operations release every array");
 }
 
+typedef struct {
+  ScrStr *value;
+  size_t position;
+} SortExpected;
+
+static int compare_expected(const void *left, const void *right) {
+  const SortExpected *a = left, *b = right;
+  int order = scr_str_cmp_u16(a->value, b->value);
+  return order ? order : (a->position > b->position) - (a->position < b->position);
+}
+
+static void test_primitive_sort(void) {
+  long strings0 = scr_str_live_count(), arrays0 = scr_arr_live_count();
+  /* More than 64 short runs exercises run-vector growth and odd merges.
+   * Distinct allocations with equal contents make stability observable. */
+  enum { count = 2051 };
+  SortExpected expected[count];
+  ScrArr *words = scr_arr_new(SCR_ELEM_STR, 0);
+  for (size_t i = 0; i < count; i++) {
+    char text[32];
+    snprintf(text, sizeof(text), "word-%03zu", (i * 71) % 97);
+    ScrStr *word = scr_str_new(text, strlen(text));
+    expected[i] = (SortExpected){word, i};
+    scr_arr_push_ref(words, word);
+  }
+  qsort(expected, count, sizeof(*expected), compare_expected);
+  ScrArr *copy = scr_arr_sort_primitive(words, true);
+  check(copy != words, "default toSorted creates a fresh array");
+  ScrArr *same = scr_arr_sort_primitive(words, false);
+  check(same == words, "default sort retains receiver identity");
+  scr_arr_release(same);
+  for (size_t i = 0; i < count; i++) {
+    check(scr_arr_peek_ref(words, i) == expected[i].value,
+          "stable default order preserves string identity");
+    check(scr_arr_peek_ref(copy, i) == expected[i].value,
+          "copy has the same stable string order");
+  }
+  scr_arr_release(words);
+  check(scr_str_live_count() == strings0 + count, "copy owns every string after source release");
+  scr_arr_release(copy);
+
+  ScrArr *sparse = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_f64(sparse, 4294967294.0, -0.0);
+  scr_arr_set_f64(sparse, 10, 0.0);
+  scr_arr_set_f64(sparse, 3, 2);
+  scr_arr_set_f64(sparse, 1, 10);
+  scr_arr_set_undefined(sparse, 1048576);
+  scr_arr_set_f64(sparse, -1, 77);
+  scr_arr_release(scr_arr_sort_primitive(sparse, false));
+  check_f64(scr_arr_len(sparse), 4294967295.0, "sort preserves sparse maximum length");
+  check(!signbit(scr_arr_get_f64(sparse, 0)) && signbit(scr_arr_get_f64(sparse, 1)),
+        "equal numeric spellings retain original index order");
+  check_f64(scr_arr_get_f64(sparse, 2), 10, "default numbers compare string spellings");
+  check_f64(scr_arr_get_f64(sparse, 3), 2, "default numeric order is lexical");
+  check(scr_arr_state(sparse, 4) == SCR_ARR_UNDEFINED &&
+        scr_arr_state(sparse, 5) == SCR_ARR_HOLE &&
+        !scr_arr_has(sparse, 4294967294.0), "undefined precedes sparse holes");
+  check_f64(scr_arr_get_f64(sparse, -1), 77, "sort keeps ordinary numeric properties");
+  scr_arr_release(sparse);
+
+  ScrArr *holes = scr_arr_new(SCR_ELEM_BOOL, 0);
+  scr_arr_set_bool(holes, 4, true);
+  scr_arr_set_bool(holes, 1, false);
+  scr_arr_set_undefined(holes, 3);
+  copy = scr_arr_sort_primitive(holes, true);
+  check(!scr_arr_get_bool(copy, 0) && scr_arr_get_bool(copy, 1), "default boolean order");
+  for (size_t i = 2; i < 5; i++)
+    check(scr_arr_state(copy, i) == SCR_ARR_UNDEFINED, "toSorted materializes holes");
+  check(!scr_arr_has(holes, 0), "toSorted leaves source holes intact");
+  scr_arr_release(copy);
+  scr_arr_release(holes);
+  ScrArr *empty = scr_arr_new(SCR_ELEM_STR, 0);
+  scr_arr_release(scr_arr_sort_primitive(empty, false));
+  scr_arr_release(scr_arr_sort_primitive(empty, true));
+  scr_arr_release(empty);
+  check(scr_str_live_count() == strings0, "primitive sorting releases all strings");
+  check(scr_arr_live_count() == arrays0, "primitive sorting releases all arrays");
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -767,6 +846,7 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  test_primitive_sort();
   test_f64_basics();
   test_numeric_read();
   test_borrowed_ref_read();

@@ -187,13 +187,30 @@ static bool scr_map_key_eq(const ScrMap *m, uint64_t stored, uint64_t probe) {
  * A zero entry hash marks a tombstone; cached hashes reject unrelated keys
  * before equality and survive table growth without hashing the keys again.
  * Remap zero to one so every live entry has a nonzero hash. */
-static size_t scr_map_probe(const ScrMap *m, uint64_t hash, uint64_t key) {
+typedef enum { SCR_MAP_LOOKUP_STR, SCR_MAP_LOOKUP_WORD, SCR_MAP_LOOKUP_GENERIC } ScrMapLookup;
+
+/* Choose equality once per operation. Inlining the traversal with a constant
+ * lookup kind keeps the ordinary string/word probe free of key-kind dispatch,
+ * while boxed keys retain their complete value/identity semantics. */
+static inline bool scr_map_lookup_eq(const ScrMap *m, uint64_t stored, uint64_t key,
+                                     ScrMapLookup lookup) {
+  if (lookup == SCR_MAP_LOOKUP_WORD) return stored == key;
+  if (lookup == SCR_MAP_LOOKUP_STR) {
+    const ScrStr *a = scr_map_slot_to_ptr(stored);
+    const ScrStr *b = scr_map_slot_to_ptr(key);
+    return a == b || (a->len == b->len && scr_key_equal(a->data, b->data, a->len));
+  }
+  return scr_map_key_eq(m, stored, key);
+}
+
+static inline __attribute__((always_inline)) size_t scr_map_probe_with(
+    const ScrMap *m, uint64_t hash, uint64_t key, ScrMapLookup lookup) {
   if (m->nbuckets == 0) return SCR_MAP_EMPTY;
   size_t mask = m->nbuckets - 1;
   for (size_t i = hash & mask;; i = (i + 1) & mask) {
     size_t b = m->buckets[i];
     if (b == SCR_MAP_EMPTY) return i;
-    if (m->entries[b].hash == hash && scr_map_key_eq(m, m->entries[b].key, key)) return i;
+    if (m->entries[b].hash == hash && scr_map_lookup_eq(m, m->entries[b].key, key, lookup)) return i;
   }
 }
 
@@ -201,16 +218,58 @@ static size_t scr_map_probe(const ScrMap *m, uint64_t hash, uint64_t key) {
 
 /* Small collections keep only their ordered entries. Cached hashes make
  * the bounded scan cheap without allocating a separate bucket table. */
-static size_t scr_map_find(const ScrMap *m, uint64_t hash, uint64_t key) {
+static inline __attribute__((always_inline)) size_t scr_map_find_with(
+    const ScrMap *m, uint64_t hash, uint64_t key, ScrMapLookup lookup) {
+  if (m->nlive == 0) return SCR_MAP_EMPTY;
   hash = hash ? hash : 1;
   if (m->nbuckets == 0) {
     for (size_t e = 0; e < m->nentries; e++) {
-      if (m->entries[e].hash == hash && scr_map_key_eq(m, m->entries[e].key, key)) return e;
+      if (m->entries[e].hash == hash && scr_map_lookup_eq(m, m->entries[e].key, key, lookup)) return e;
     }
     return SCR_MAP_EMPTY;
   }
-  size_t slot = scr_map_probe(m, hash, key);
+  size_t slot = scr_map_probe_with(m, hash, key, lookup);
   return slot == SCR_MAP_EMPTY ? SCR_MAP_EMPTY : m->buckets[slot];
+}
+
+static ScrMapLookup scr_map_lookup_kind(const ScrMap *m) {
+  switch (m->key_kind) {
+  case SCR_MAP_KEY_STR: return SCR_MAP_LOOKUP_STR;
+  case SCR_MAP_KEY_F64:
+  case SCR_MAP_KEY_BOOL:
+  case SCR_MAP_KEY_REF:
+  case SCR_MAP_KEY_NULL:
+  case SCR_MAP_KEY_UNDEFINED: return SCR_MAP_LOOKUP_WORD;
+  default: return SCR_MAP_LOOKUP_GENERIC;
+  }
+}
+
+static size_t scr_map_probe(const ScrMap *m, uint64_t hash, uint64_t key) {
+  switch (scr_map_lookup_kind(m)) {
+  case SCR_MAP_LOOKUP_STR: return scr_map_probe_with(m, hash, key, SCR_MAP_LOOKUP_STR);
+  case SCR_MAP_LOOKUP_WORD: return scr_map_probe_with(m, hash, key, SCR_MAP_LOOKUP_WORD);
+  default: return scr_map_probe_with(m, hash, key, SCR_MAP_LOOKUP_GENERIC);
+  }
+}
+
+static size_t scr_map_find(const ScrMap *m, uint64_t hash, uint64_t key) {
+  switch (scr_map_lookup_kind(m)) {
+  case SCR_MAP_LOOKUP_STR: return scr_map_find_with(m, hash, key, SCR_MAP_LOOKUP_STR);
+  case SCR_MAP_LOOKUP_WORD: return scr_map_find_with(m, hash, key, SCR_MAP_LOOKUP_WORD);
+  default: return scr_map_find_with(m, hash, key, SCR_MAP_LOOKUP_GENERIC);
+  }
+}
+
+static size_t scr_map_find_f64(const ScrMap *m, double key) {
+  if (m->nlive == 0) return SCR_MAP_EMPTY;
+  uint64_t k = scr_map_f64_bits(key);
+  return scr_map_find_with(m, scr_map_hash_word(k), k, SCR_MAP_LOOKUP_WORD);
+}
+
+static size_t scr_map_find_str(const ScrMap *m, const ScrStr *key) {
+  if (m->nlive == 0) return SCR_MAP_EMPTY;
+  return scr_map_find_with(m, scr_map_hash_str(key), scr_map_slot_from_ptr((void *)key),
+                           SCR_MAP_LOOKUP_STR);
 }
 
 /* Rebuild the bucket table (size must be a power of two >= 2 * nentries):
@@ -420,13 +479,11 @@ void scr_map_clear(ScrMap *m) {
 /* ── has / delete ──────────────────────────────────────────────────────── */
 
 bool scr_map_has_f64(const ScrMap *m, double key) {
-  uint64_t k = scr_map_f64_bits(key);
-  return scr_map_find(m, scr_map_hash_word(k), k) != SCR_MAP_EMPTY;
+  return scr_map_find_f64(m, key) != SCR_MAP_EMPTY;
 }
 
 bool scr_map_has_str(const ScrMap *m, const ScrStr *key) {
-  uint64_t k = scr_map_slot_from_ptr((void *)key);
-  return scr_map_find(m, scr_map_hash_str(key), k) != SCR_MAP_EMPTY;
+  return scr_map_find_str(m, key) != SCR_MAP_EMPTY;
 }
 
 static bool scr_map_delete_found(ScrMap *m, size_t e) {
@@ -439,19 +496,21 @@ static bool scr_map_delete_found(ScrMap *m, size_t e) {
 }
 
 bool scr_map_delete_f64(ScrMap *m, double key) {
-  uint64_t k = scr_map_f64_bits(key);
-  return scr_map_delete_found(m, scr_map_find(m, scr_map_hash_word(k), k));
+  return scr_map_delete_found(m, scr_map_find_f64(m, key));
 }
 
 bool scr_map_delete_str(ScrMap *m, const ScrStr *key) {
-  uint64_t k = scr_map_slot_from_ptr((void *)key);
-  return scr_map_delete_found(m, scr_map_find(m, scr_map_hash_str(key), k));
+  return scr_map_delete_found(m, scr_map_find_str(m, key));
 }
 
 /* REF keys: identity hashing over the pointer bits (see the header's
  * SCR_MAP_KEY_REF note). Probes never retain; storage does. */
 static size_t scr_map_find_ref(const ScrMap *m, const void *key) {
+  if (m->nlive == 0) return SCR_MAP_EMPTY;
   uint64_t k = scr_map_slot_from_ptr((void *)key);
+  if (m->key_kind == SCR_MAP_KEY_REF) {
+    return scr_map_find_with(m, scr_map_hash_word(k), k, SCR_MAP_LOOKUP_WORD);
+  }
   return scr_map_find(m, scr_map_hash_key(m, k), k);
 }
 
@@ -570,15 +629,6 @@ ScrMap *scr_set_new_ref(void *(*elem_retain)(void *), void (*elem_release)(void 
 
 /* ── get ───────────────────────────────────────────────────────────────── */
 
-static size_t scr_map_find_f64(const ScrMap *m, double key) {
-  uint64_t k = scr_map_f64_bits(key);
-  return scr_map_find(m, scr_map_hash_word(k), k);
-}
-
-static size_t scr_map_find_str(const ScrMap *m, const ScrStr *key) {
-  return scr_map_find(m, scr_map_hash_str(key), scr_map_slot_from_ptr((void *)key));
-}
-
 bool scr_map_get_f64_f64(const ScrMap *m, double key, double *out) {
   size_t e = scr_map_find_f64(m, key);
   if (e == SCR_MAP_EMPTY) return false;
@@ -641,8 +691,9 @@ void *scr_map_get_ref_ref(const ScrMap *m, const void *key) {
 
 /* Boolean keys use unboxed 0/1 slots and the same probe path. */
 static size_t scr_map_find_bool(const ScrMap *m, bool key) {
+  if (m->nlive == 0) return SCR_MAP_EMPTY;
   uint64_t slot = key ? 1 : 0;
-  return scr_map_find(m, scr_map_hash_word(slot), slot);
+  return scr_map_find_with(m, scr_map_hash_word(slot), slot, SCR_MAP_LOOKUP_WORD);
 }
 
 bool scr_map_has_bool(const ScrMap *m, bool key) {

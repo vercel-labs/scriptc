@@ -10,6 +10,7 @@
  * - live-iteration index stability while iter_depth is held.
  */
 #include "../src/scr_runtime.h"
+#include "../src/scr_key.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -34,6 +35,66 @@ static void check(bool ok, const char *what) {
 }
 
 static ScrStr *S(const char *s) { return scr_str_new(s, strlen(s)); }
+
+/* Exact-sized allocations leave no readable terminator or tail padding.
+ * Exercise the load boundaries at each alignment, including embedded zero
+ * bytes and a mismatch at every position. */
+static void test_key_bytes(void) {
+  for (size_t length = 0; length <= 65; length++) {
+    for (size_t offset = 0; offset < 8; offset++) {
+      char *allocation = malloc(offset + length + 1);
+      char *a = allocation + offset + 1;
+      char *b = malloc(length ? length : 1);
+      for (size_t i = 0; i < length; i++) a[i] = b[i] = (char)(i * 71);
+      uint64_t hash = scr_key_hash(a, length);
+      check(hash == scr_key_hash(b, length) && scr_key_equal(a, b, length),
+            "unaligned content-equal byte keys agree");
+      for (size_t i = 0; i < length; i++) {
+        b[i] ^= 1;
+        check(!scr_key_equal(a, b, length), "every key byte participates in equality");
+        b[i] ^= 1;
+      }
+      free(b);
+      free(allocation);
+    }
+  }
+}
+
+static void test_string_bucket_collisions(void) {
+  ScrMap *m = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrStr *keys[12];
+  size_t count = 0;
+  for (unsigned i = 0; i < 65536 && count < 12; i++) {
+    char bytes[9];
+    snprintf(bytes, sizeof bytes, "%08x", i);
+    if ((scr_key_hash(bytes, 8) & 127) != 0) continue;
+    keys[count] = scr_str_new(bytes, 8);
+    scr_map_set_str_f64(m, keys[count], (double)count);
+    count++;
+  }
+  check(count == 12 && m->nbuckets == 32, "colliding keys promote to bucket storage");
+  scr_map_iter_enter(m);
+  for (size_t i = 0; i < count; i += 2) {
+    check(scr_map_delete_str(m, keys[i]), "collision chain deletion");
+  }
+  for (size_t i = 0; i < count; i++) {
+    ScrStr *probe = scr_str_new(keys[i]->data, keys[i]->len);
+    double out = -1;
+    bool found = scr_map_get_str_f64(m, probe, &out);
+    check(found == (i % 2 != 0) && (!found || out == (double)i),
+          "content probe crosses collision-chain tombstones");
+    scr_map_set_str_f64(m, probe, (double)i + 100);
+    check(scr_map_has_str(m, probe), "collision-chain overwrite or reinsertion");
+    scr_str_release(probe);
+    scr_str_release(keys[i]);
+  }
+  scr_map_iter_exit(m);
+  scr_map_clear(m);
+  ScrStr *empty = S("");
+  check(!scr_map_has_str(m, empty), "cleared bucket table misses without hashing");
+  scr_str_release(empty);
+  scr_map_release(m);
+}
 
 static void test_string_keys(void) {
   ScrMap *m = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL, NULL, NULL);
@@ -397,6 +458,8 @@ static void test_identity_cycles(void) {
 #endif
 
 int main(void) {
+  test_key_bytes();
+  test_string_bucket_collisions();
   test_string_keys();
   test_same_value_zero();
 #ifdef SCR_RC_AUDIT

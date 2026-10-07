@@ -16,10 +16,36 @@ static inline uint64_t scr_key_mix(uint64_t value) {
   return value ^ (value >> 31);
 }
 
+/* Pack at most eight bytes with fixed-size, unaligned loads. The overlapping
+ * ends cover every byte at lengths four through eight; the three selected
+ * bytes cover lengths one through three. No terminator or padding is read. */
+static inline uint64_t scr_key_short_word(const char *bytes, size_t length) {
+  if (length >= 4) {
+    uint32_t first, last;
+    memcpy(&first, bytes, sizeof first);
+    memcpy(&last, bytes + length - sizeof last, sizeof last);
+    return ((uint64_t)first << 32) | last;
+  }
+  if (length == 0) return 0;
+  return ((uint64_t)(unsigned char)bytes[0] << 16) |
+         ((uint64_t)(unsigned char)bytes[length / 2] << 8) |
+         (unsigned char)bytes[length - 1];
+}
+
+/* Callers check equal lengths first. Short keys need no out-of-line memcmp;
+ * longer keys keep the platform's bulk comparison. */
+static inline bool scr_key_equal(const char *a, const char *b, size_t length) {
+  if (a == b) return true;
+  if (length <= 8) return scr_key_short_word(a, length) == scr_key_short_word(b, length);
+  return memcmp(a, b, length) == 0;
+}
+
 /* Unaligned loads stay inside the input. Hashing is process-local, so host
- * byte order is immaterial; equal byte strings always follow the same path. */
+ * byte order is immaterial; equal byte strings always follow the same path.
+ * Short keys need one avalanche and no variable-size tail copy. */
 static inline uint64_t scr_key_hash(const char *bytes, size_t length) {
   uint64_t hash = UINT64_C(0x9e3779b97f4a7c15) ^ length;
+  if (length <= 8) return scr_key_mix(hash ^ scr_key_short_word(bytes, length));
   size_t i = 0;
   while (length - i >= sizeof(uint64_t)) {
     uint64_t word;
@@ -27,9 +53,7 @@ static inline uint64_t scr_key_hash(const char *bytes, size_t length) {
     hash = scr_key_mix(hash ^ word);
     i += sizeof word;
   }
-  uint64_t tail = 0;
-  if (i < length) memcpy(&tail, bytes + i, length - i);
-  return scr_key_mix(hash ^ tail);
+  return scr_key_mix(hash ^ scr_key_short_word(bytes + i, length - i));
 }
 
 static inline bool scr_key_array_index(const char *key, size_t length, uint32_t *out) {

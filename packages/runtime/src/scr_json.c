@@ -973,7 +973,7 @@ static SCR_TL size_t scr_dyn_property_hints[SCR_DYN_PROPERTY_HINTS];
 static ScrDynEntry *scr_dyn_find_linear_entry(const ScrDyn *object, const char *key, size_t length) {
   for (size_t i = 0; i < object->v.obj.len; i++) {
     ScrDynEntry *entry = &object->v.obj.entries[i];
-    if (entry->key_len == length && !memcmp(entry->key, key, length)) return entry;
+    if (entry->key_len == length && scr_key_equal(entry->key, key, length)) return entry;
   }
   return NULL;
 }
@@ -984,7 +984,7 @@ static __attribute__((noinline)) ScrDynEntry *scr_dyn_find_indexed_entry(
   size_t slot = scr_key_hash(key, length) & (index->buckets - 1);
   while (index->slots[slot]) {
     ScrDynEntry *entry = &object->v.obj.entries[index->slots[slot] - 1];
-    if (entry->key_len == length && !memcmp(entry->key, key, length)) return entry;
+    if (entry->key_len == length && scr_key_equal(entry->key, key, length)) return entry;
     slot = (slot + 1) & (index->buckets - 1);
   }
   return NULL;
@@ -997,7 +997,7 @@ static ScrDynEntry *scr_dyn_find_entry(const ScrDyn *object, const char *key, si
   size_t hint = scr_dyn_property_hints[slot];
   if (hint < object->v.obj.len) {
     ScrDynEntry *entry = &object->v.obj.entries[hint];
-    if (entry->key_len == length && !memcmp(entry->key, key, length)) return entry;
+    if (entry->key_len == length && scr_key_equal(entry->key, key, length)) return entry;
   }
   ScrDynEntry *entry = scr_dyn_find_linear_entry(object, key, length);
   if (entry) scr_dyn_property_hints[slot] = (size_t)(entry - object->v.obj.entries);

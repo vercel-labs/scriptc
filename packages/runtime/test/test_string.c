@@ -36,6 +36,7 @@ size_t scr_sidx_test_searches(void);
 void scr_sidx_test_reset_cache(void);
 size_t scr_sidx_test_entries(void);
 size_t scr_sidx_test_points(void);
+size_t scr_sidx_test_active(void);
 #endif
 
 #define MAX_FIELD 8192
@@ -442,6 +443,27 @@ static void sidx_fail(const char *what) {
   fprintf(stderr, "SIDX: %s\n", what);
 }
 
+static void index_activity_asserts(void) {
+  scr_sidx_test_reset_cache();
+  ScrStr *strings[9];
+  for (size_t i = 0; i < 9; i++) {
+    strings[i] = scr_str_new("\xc3\xa9x", 3);
+    if (scr_str_utf16_len(strings[i]) != 2) sidx_fail("cursor activation length");
+    if (scr_sidx_test_active() != (i < 4 ? i + 1 : 4))
+      sidx_fail("cursor activation or eviction count");
+  }
+  for (size_t i = 0; i < 9; i++) scr_str_release(strings[i]);
+  if (scr_sidx_test_active() != 0) sidx_fail("last cursor release stayed active");
+  ScrStr *s = scr_str_new("\xe4\xb8\xad", 3);
+  (void)scr_str_utf16_len(s);
+  scr_sidx_test_reset_cache();
+  if (scr_sidx_test_active() != 0) sidx_fail("cache reset stayed active");
+  if (scr_str_char_code_at(s, 0) != 0x4e2d || scr_sidx_test_active() != 1)
+    sidx_fail("cache reactivation after reset");
+  scr_str_release(s);
+  if (scr_sidx_test_active() != 0) sidx_fail("reactivated cursor was not purged");
+}
+
 /* The counter is deliberately about code-point decoder steps, not elapsed
  * time. After length primes sparse anchors, alternating distant UTF-16
  * operations must stay proportional to query count × the 4 KiB stride. */
@@ -637,6 +659,7 @@ static void sparse_all_ascii_end_asserts(void) {
  * materialize every checkpoint interval at that transition rather than
  * retaining only the hot cursor or an old-end anchor. */
 static void sparse_append_threshold_asserts(void) {
+  scr_sidx_test_reset_cache();
   enum { BEFORE = 32700, EXTRA = 200, QUERIES = 8 };
   ScrStr *eacute = scr_str_new("\xC3\xA9", 2);
   ScrStr *s = scr_str_repeat(eacute, BEFORE); /* 65,400 bytes: below 64KiB */
@@ -649,7 +672,7 @@ static void sparse_append_threshold_asserts(void) {
   ScrStr *more = scr_str_repeat(eacute, EXTRA);
   handoff_append(&s, more); /* in-place non-ASCII threshold crossing */
   if (scr_str_utf16_len(s) != (double)(BEFORE + 1 + EXTRA) ||
-      scr_sidx_test_points() == 0) {
+      scr_sidx_test_points() == 0 || scr_sidx_test_active() != 1) {
     sidx_fail("mixed threshold append did not materialize checkpoints");
   }
 
@@ -666,6 +689,7 @@ static void sparse_append_threshold_asserts(void) {
   scr_str_release(one);
   scr_str_release(s);
   scr_str_release(eacute);
+  if (scr_sidx_test_active() != 0) sidx_fail("transferred sparse entry was not purged");
   scr_sidx_test_reset_cache();
 }
 
@@ -959,6 +983,7 @@ int main(int argc, char **argv) {
   sparse_ascii_prefix_asserts();
   sparse_all_ascii_end_asserts();
   sparse_append_threshold_asserts();
+  index_activity_asserts();
   local_navigation_asserts();
   positioned_suffix_eviction_asserts();
 #endif

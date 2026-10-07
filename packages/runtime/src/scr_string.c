@@ -1,4 +1,5 @@
 #include "scr_runtime.h"
+#include "scr_key.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -89,8 +90,12 @@ static SCR_TL ScrSidx scr_sidx_cursor_tab[SCR_SIDX_N];
 static SCR_TL unsigned scr_sidx_sparse_clock;
 static SCR_TL unsigned scr_sidx_cursor_clock;
 static SCR_TL bool scr_sidx_cleanup_registered;
+/* Counts both tiers, independent of the wrapping eviction clocks. A transfer
+ * moves one active entry; only clearing or initializing changes the count. */
+static SCR_TL size_t scr_sidx_active;
 
 static void scr_sidx_clear(ScrSidx *e) {
+  if (e->s) scr_sidx_active--;
   free(e->points);
   memset(e, 0, sizeof(*e));
 }
@@ -121,6 +126,7 @@ void scr_sidx_test_reset_steps(void) {
 size_t scr_sidx_test_walk_steps(void) { return scr_sidx_walk_steps; }
 size_t scr_sidx_test_searches(void) { return scr_sidx_searches; }
 void scr_sidx_test_reset_cache(void) { scr_sidx_reset_all(); }
+size_t scr_sidx_test_active(void) { return scr_sidx_active; }
 size_t scr_sidx_test_entries(void) {
   size_t n = 0;
   for (int i = 0; i < SCR_SIDX_N; i++)
@@ -140,7 +146,9 @@ size_t scr_sidx_test_points(void) {
 #define SCR_SIDX_SEARCH() ((void)0)
 #endif
 
-static void scr_sidx_purge(const ScrStr *s) {
+/* Share cleanup across release and scratch reuse; callers inline only the
+ * empty-cache check. */
+static __attribute__((noinline)) void scr_sidx_purge_active(const ScrStr *s) {
   /* These are deliberately fixed four-entry tables, never an unbounded
    * receiver registry. Releasing an unrelated temporary therefore does at
    * most eight pointer comparisons and cannot grow with live strings. */
@@ -152,9 +160,14 @@ static void scr_sidx_purge(const ScrStr *s) {
   }
 }
 
+static void scr_sidx_purge(const ScrStr *s) {
+  if (scr_sidx_active) scr_sidx_purge_active(s);
+}
+
 static void scr_sidx_init(ScrSidx *e, const ScrStr *s) {
   memset(e, 0, sizeof(*e));
   e->s = s;
+  scr_sidx_active++;
   e->u16len = SCR_U16_UNKNOWN;
 }
 
@@ -208,6 +221,7 @@ static ScrSidx *scr_sidx(const ScrStr *s) {
  * receiver may move from the cursor tier to the sparse tier on its next
  * lookup, so invalidate either possible entry. */
 static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
+  if (scr_sidx_active == 0) return;
   for (int i = 0; i < SCR_SIDX_N; i++) {
     ScrSidx *entries[] = {&scr_sidx_sparse_tab[i], &scr_sidx_cursor_tab[i]};
     for (size_t j = 0; j < sizeof(entries) / sizeof(entries[0]); j++) {
@@ -381,7 +395,7 @@ ScrStr *scr_str_concat_parts(ScrStr *const *parts, size_t count) {
 }
 
 bool scr_str_eq(ScrStr *a, ScrStr *b) {
-  return a == b || (a->len == b->len && memcmp(a->data, b->data, a->len) == 0);
+  return a == b || (a->len == b->len && scr_key_equal(a->data, b->data, a->len));
 }
 
 int scr_str_cmp(ScrStr *a, ScrStr *b) {

@@ -38,7 +38,7 @@ export interface CallLifetimes {
    * callable invocation, or other proven parameters.
    * This is a lifetime fact, not a purity or nonthrowing guarantee. */
   parameters: Map<string, Set<number>>;
-  /** Immutable locals with the same use restriction. Their initialization
+  /** Stable locals with the same use restriction. Their initialization
    * and ownership still need a separate representation proof. */
   locals: Map<string, Set<string>>;
   /** Projection-only local uses, allowing statement assignments. Each
@@ -46,11 +46,10 @@ export interface CallLifetimes {
   projectedLocals: Map<string, Set<string>>;
 }
 
-function eligible(local: IrLocal, parameter = false): boolean {
+function eligible(local: IrLocal): boolean {
   // Source parameters are writable bindings even when the body never
   // assigns them. Actual writes are rejected by collectUses below.
   return (
-    (parameter || !local.mutable) &&
     !local.boxed &&
     !local.tdz &&
     (local.type.kind === "union" ||
@@ -151,6 +150,10 @@ function collectUses(fn: IrFunction): Uses {
         if (inExpression) uses.invalid.add(node.localId);
         break;
       case "forOf":
+        // The binding is initialized afresh for each iteration. Its uses
+        // can project a borrowed element while the loop owns the array.
+        uses.declarations.set(node.localId, (uses.declarations.get(node.localId) ?? 0) + 1);
+        break;
       case "rethrow":
         uses.invalid.add(node.localId);
         uses.written.add(node.localId);
@@ -221,7 +224,7 @@ export function analyzeCallLifetimes(functions: ReadonlyMap<string, IrFunction>)
         const local = locals.get(param.localId);
         const safe =
           local !== undefined &&
-          eligible(local, true) &&
+          eligible(local) &&
           !uses.written.has(param.localId) &&
           !uses.invalid.has(param.localId) &&
           !uses.declarations.has(param.localId);
@@ -272,7 +275,7 @@ export function analyzeCallLifetimes(functions: ReadonlyMap<string, IrFunction>)
     for (const local of fn.locals) {
       if (
         params.has(local.id) ||
-        !eligible(local, true) ||
+        !eligible(local) ||
         uses.invalid.has(local.id) ||
         uses.declarations.get(local.id) !== 1
       )

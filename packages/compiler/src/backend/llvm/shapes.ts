@@ -424,6 +424,12 @@ export function retainBody(
   ];
 }
 
+/** Scalar fields and native strings cannot form recursive ownership chains.
+ * Other reference kinds conservatively share the runtime destruction budget. */
+export function needsBoundedRelease(type: IrType): boolean {
+  return isRefCounted(type) && type.kind !== "string";
+}
+
 /** Common NULL/immortal/decrement skeleton for ordinary object releases.
  * `freeBody` owns the zero-ref teardown and must leave the current block at
  * its end; traced objects also get the possible-cycle-root branch. */
@@ -433,9 +439,21 @@ export function releaseBody(
   traced: boolean,
   freeBody: string[],
   comment = "",
+  bounded = true,
 ): string[] {
   const S = host.sizeType;
+  if (bounded) host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
+  const destroy = `${fnName}_destroy`;
   const lines = [
+    ...(bounded
+      ? [
+          `define internal void @${destroy}(ptr %o) ${FN_ATTRS} {`,
+          `entry:`,
+          ...freeBody,
+          `  ret void`,
+          `}`,
+        ]
+      : []),
     `define internal void @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment}` : ""}`,
     `entry:`,
     `  %isnull = icmp eq ptr %o, null`,
@@ -450,10 +468,12 @@ export function releaseBody(
     `  %dead = icmp eq ${S} %n, 0`,
     `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
     `free:`,
-    ...freeBody,
+    ...(traced ? [`  call void @scr_cyc_on_dead(ptr %o)`] : []),
+    ...(bounded ? [`  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`] : freeBody),
     `  br label %done`,
   ];
   if (traced) {
+    host.declare(`declare void @scr_cyc_on_dead(ptr)`);
     host.declare(`declare void @scr_cyc_on_release(ptr)`);
     lines.push(
       `root:`,
@@ -506,10 +526,6 @@ export function emitRecordShapes(
     // traced shapes route through the collector (on_dead/on_release,
     // scr_cyc_free) exactly like shapes.ts.
     const freeBody: string[] = [];
-    if (traced) {
-      host.declare(`declare void @scr_cyc_on_dead(ptr)`);
-      freeBody.push(`  call void @scr_cyc_on_dead(ptr %o)`);
-    }
     let t = 0;
     for (const m of refMembers) {
       freeBody.push(
@@ -528,7 +544,17 @@ export function emitRecordShapes(
       host.declare(`declare void @scr_weak_dispose(ptr)`);
       freeBody.push(`  call void @scr_weak_dispose(ptr %o)`, `  call void @free(ptr %o)`);
     }
-    defs.push(...releaseBody(host, mangleRecordRelease(shape.id), traced, freeBody), ``);
+    defs.push(
+      ...releaseBody(
+        host,
+        mangleRecordRelease(shape.id),
+        traced,
+        freeBody,
+        "",
+        refMembers.some((member) => needsBoundedRelease(member.type)),
+      ),
+      ``,
+    );
 
     // new: zeroed allocation (+ the overflow map on index-signature
     // shapes), rc = 1, alloc note. Traced shapes allocate with the

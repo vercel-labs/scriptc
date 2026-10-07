@@ -548,51 +548,56 @@ ScrArr *scr_arr_new_ref(void *(*elem_retain)(void *),
   return a;
 }
 
+static void scr_arr_destroy(void *object) {
+  ScrArr *a = object;
+  scr_dyn_release(a->metadata);
+  a->metadata = NULL;
+  if (scr_elem_is_ref(a->elem)) {
+    for (size_t i = 0, end = a->len < a->cap ? a->len : a->cap; i < end; i++) {
+      if (a->present[i] != SCR_ARR_HOLE) {
+        uint64_t old = a->data[i];
+        uint8_t state = a->present[i];
+        a->present[i] = 0;
+        a->data[i] = 0;
+        if (state == SCR_ARR_VALUE) scr_elem_release(a, old);
+      }
+    }
+    while (a->sparse_len > 0) {
+      size_t i = a->sparse_len - 1;
+      uint64_t old = a->sparse[i].slot;
+      uint8_t state = a->sparse[i].state;
+      a->sparse_len = i;
+      if (state == SCR_ARR_VALUE) scr_elem_release(a, old);
+    }
+    while (a->prop_len > 0) {
+      size_t i = a->prop_len - 1;
+      uint64_t old = a->props[i].slot;
+      uint8_t state = a->props[i].state;
+      free(a->props[i].key);
+      a->prop_len = i;
+      if (state == SCR_ARR_VALUE) scr_elem_release(a, old);
+    }
+  }
+  if (a->elem_trace) {
+    scr_arr_gc_free(a);
+  } else {
+    free(a->data);
+    free(a->sparse);
+    for (size_t i = 0; i < a->prop_len; i++) free(a->props[i].key);
+    free(a->props);
+#ifdef SCR_RC_AUDIT
+    scr_live_arrays--;
+#endif
+    scr_weak_dispose(a);
+    free(a);
+  }
+}
+
 void scr_arr_release(ScrArr *a) {
   if (!a || a->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--a->rc == 0) {
     if (a->elem_trace) scr_cyc_on_dead(a);
-    scr_dyn_release(a->metadata);
-    a->metadata = NULL;
-    if (scr_elem_is_ref(a->elem)) {
-      for (size_t i = 0, end = a->len < a->cap ? a->len : a->cap; i < end; i++) {
-        if (a->present[i] != SCR_ARR_HOLE) {
-          uint64_t old = a->data[i];
-          uint8_t state = a->present[i];
-          a->present[i] = 0;
-          a->data[i] = 0;
-          if (state == SCR_ARR_VALUE) scr_elem_release(a, old);
-        }
-      }
-      while (a->sparse_len > 0) {
-        size_t i = a->sparse_len - 1;
-        uint64_t old = a->sparse[i].slot;
-        uint8_t state = a->sparse[i].state;
-        a->sparse_len = i;
-        if (state == SCR_ARR_VALUE) scr_elem_release(a, old);
-      }
-      while (a->prop_len > 0) {
-        size_t i = a->prop_len - 1;
-        uint64_t old = a->props[i].slot;
-        uint8_t state = a->props[i].state;
-        free(a->props[i].key);
-        a->prop_len = i;
-        if (state == SCR_ARR_VALUE) scr_elem_release(a, old);
-      }
-    }
-    if (a->elem_trace) {
-      scr_arr_gc_free(a);
-    } else {
-      free(a->data);
-      free(a->sparse);
-      for (size_t i = 0; i < a->prop_len; i++) free(a->props[i].key);
-      free(a->props);
-#ifdef SCR_RC_AUDIT
-      scr_live_arrays--;
-#endif
-      scr_weak_dispose(a);
-      free(a);
-    }
+    scr_rc_destroy(a, scr_arr_destroy);
   } else if (a->elem_trace) {
     scr_cyc_on_release(a); /* possible cycle root; may collect */
   }
@@ -981,6 +986,10 @@ void *scr_arr_get_ref(ScrArr *a, double i) {
   else if (a->elem == SCR_ELEM_REF) p = a->elem_retain(p);
   else scr_arr_retain((ScrArr *)p);
   return p;
+}
+
+void *scr_arr_borrow_ref(ScrArr *a, double i) {
+  return scr_slot_to_ptr(scr_arr_require_slot(a, i));
 }
 
 /* ── writes: i == len appends ──────────────────────────────────────────── */

@@ -380,6 +380,12 @@ static inline ScrCycHdr *scr_cyc_hdr(void *obj) { return (ScrCycHdr *)obj - 1; }
 void *scr_cyc_alloc(size_t size, ScrTraceFn trace, ScrCycFreeFn free_fn);
 void scr_cyc_free(void *obj); /* frees the block, header included */
 
+/* Dispose an object whose reference count already reached zero. The caller
+ * removes its cycle candidate first. Nested disposals keep bounded stack
+ * depth; deeper objects wait until the outer disposal drains the worklist.
+ * The callback owns the object and must release its children and free it. */
+void scr_rc_destroy(void *obj, void (*destroy)(void *));
+
 /* RC hooks for cycle-headered types. on_release: rc was decremented and
  * stayed above zero — buffer the object as a possible cycle root (may run
  * a collection when the buffer crosses the threshold; the caller must not
@@ -1163,6 +1169,7 @@ double scr_arr_get_number(const ScrArr *a, double i);
 bool scr_arr_index_eq(const ScrArr *a, double i, const ScrArr *b, double j);
 bool scr_arr_get_bool(ScrArr *a, double i);  /* trap missing/hole */
 void *scr_arr_get_ref(ScrArr *a, double i);  /* trap missing/hole; +1 */
+void *scr_arr_borrow_ref(ScrArr *a, double i); /* same checks; borrowed */
 /* Borrow a non-null reference element, or NULL for a hole/undefined/missing
  * property. Keep the array alive and retain before removing its element.
  * This read does not invoke retain callbacks or mutate runtime state. */

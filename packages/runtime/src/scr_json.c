@@ -914,6 +914,8 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 
 static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
 
+static void scr_dyn_destroy(void *ptr) { scr_dyn_dispose(ptr, false); }
+
 void scr_dyn_release(ScrDyn *d) {
   if (!d || d->rc == SIZE_MAX) return;
   if (--d->rc != 0) {
@@ -924,7 +926,7 @@ void scr_dyn_release(ScrDyn *d) {
     return;
   }
   scr_cyc_on_dead(d);
-  scr_dyn_dispose(d, false);
+  scr_rc_destroy(d, scr_dyn_destroy);
 }
 
 /* Small objects retain their compact linear representation. A wide object

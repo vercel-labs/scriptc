@@ -73,32 +73,44 @@ static void scr_domex_gcfree(void *obj) {
 
 /* The DIRECT release stored in the builtin vtables (the compiler emits the
  * analogous sc_reld_* for user subclasses). */
+static void scr_error_destroy(void *obj) {
+  ScrError *e = (ScrError *)obj;
+  scr_str_release(e->name);
+  scr_str_release(e->message);
+  scr_str_release(e->code);
+  scr_str_release(e->stack_frames);
+  scr_str_release(e->stack);
+  if (e->error_cause && scr_error_cause_drop) scr_error_cause_drop(obj);
+  scr_obj_free_note();
+  if (scr_error_traced) scr_cyc_free(e);
+  else free(e);
+}
+
 static void scr_error_reld(void *obj) {
   ScrError *e = (ScrError *)obj;
   if (--e->rc == 0) {
     if (scr_error_traced) scr_cyc_on_dead(e);
-    scr_str_release(e->name);
-    scr_str_release(e->message);
-    scr_str_release(e->code); /* NULL-safe: absent on most errors */
-    scr_str_release(e->stack_frames);
-    scr_str_release(e->stack);
-    if (e->error_cause && scr_error_cause_drop) scr_error_cause_drop(obj);
-    scr_obj_free_note();
-    if (scr_error_traced) scr_cyc_free(e);
-    else free(e);
+    scr_rc_destroy(obj, scr_error_destroy);
   } else if (scr_error_traced) {
     scr_cyc_on_release(e); /* possible cycle root; may collect */
   }
 }
 
-/* The DOMException vtable's direct release: the cause drops first, then
- * the shared ScrError teardown (through the hook — see scr_domex_gcfree). */
+static void scr_domex_destroy(void *obj) {
+  ScrDomException *d = (ScrDomException *)obj;
+  if (d->cause != NULL && scr_domex_cause_drop != NULL) scr_domex_cause_drop(obj);
+  scr_error_destroy(obj);
+}
+
+/* Both cause chains participate in the shared destruction depth budget. */
 static void scr_domex_reld(void *obj) {
   ScrDomException *d = (ScrDomException *)obj;
-  if (d->rc == 1 && d->cause != NULL && scr_domex_cause_drop != NULL) {
-    scr_domex_cause_drop(obj);
+  if (--d->rc == 0) {
+    if (scr_error_traced) scr_cyc_on_dead(d);
+    scr_rc_destroy(obj, scr_domex_destroy);
+  } else if (scr_error_traced) {
+    scr_cyc_on_release(d);
   }
-  scr_error_reld(obj);
 }
 
 /* Defaults cover only the instants before main() stamps the program's real

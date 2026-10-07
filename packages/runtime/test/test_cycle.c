@@ -357,6 +357,29 @@ static void check_cross_generation_edges(void) {
   check(freed == before + 4, "cross-generation cycle lost its candidate");
 }
 
+static void check_deep_cross_generation_chain(void) {
+  enum { DEPTH = 100000 };
+  size_t before = freed;
+  Node *chain = NULL;
+  for (size_t i = 0; i < DEPTH; i++) {
+    Node *node = scr_cyc_alloc(sizeof(*node), node_trace, node_free);
+    node->rc = 1;
+    node->next = chain;
+    chain = node;
+  }
+  chain->rc++;
+  release_live(chain);
+  scr_collect_cycles(); /* promote the externally live chain */
+  check(freed == before, "promotion freed an owned deep chain");
+  Node *young = make_ring(2);
+  young->other = chain; /* the last external owner moves into the nursery */
+  release_live(young);
+  scr_cyc_collect_scheduled();
+  scr_collect_cycles();
+  check(freed == before + DEPTH + 2,
+        "cross-generation destruction leaked a deep chain");
+}
+
 static void check_teardown_rebuffers_and_immortals(void) {
   size_t before = freed;
   static Node immortal = { .rc = SIZE_MAX };
@@ -403,6 +426,7 @@ int main(void) {
   check_disconnected_survivors();
   check_deferred_white_restoration();
   check_cross_generation_edges();
+  check_deep_cross_generation_chain();
   check_teardown_rebuffers_and_immortals();
   printf("cycle collection checks passed: threshold=%zu\n",
          configured_nursery_threshold());

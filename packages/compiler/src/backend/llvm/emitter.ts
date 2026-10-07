@@ -129,6 +129,7 @@ import {
 import { BlockBuilder } from "./blocks.js";
 import {
   emitLocalArrayRead,
+  emitBorrowedArrayRead,
   findLocalArrayReads,
   findCallArrayReads,
   OptionalArrayReads,
@@ -145,6 +146,7 @@ import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { ReferenceEffects } from "./reference-effects.js";
 import { LlvmDebugInfo } from "./debug-info.js";
 import { StackCallbacks } from "./stack-callbacks.js";
+import { findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { StackCaptures } from "./stack-captures.js";
 import {
   f64Lit,
@@ -370,6 +372,7 @@ function llStrBytes(text: string): string {
 
 export class LlEmitter {
   localArrayReads = new Map<string, LocalArrayRead>();
+  private loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   private localStackUnions = new Map<string, IrExpr & { kind: "unionWrap" }>();
   private localUnionStorageProofs = new Map<string, LocalUnionStorageProof>();
   private localUnionStorage = new Map<string, LocalUnionStorage>();
@@ -3804,6 +3807,15 @@ export class LlEmitter {
     this.integerViews.clear();
     this.fieldPointerTags.clear();
     this.integerArrayBindings.clear();
+    this.loopArrayBorrows =
+      this.debug === null
+        ? findLoopArrayBorrows(
+            fn,
+            this.callLifetimes,
+            this.referenceEffects,
+            this.optionalArrayReads,
+          )
+        : new Set();
     this.localArrayReads = findLocalArrayReads(
       fn,
       this.fnByName,
@@ -3811,6 +3823,7 @@ export class LlEmitter {
       this.referenceEffects.functions,
       this.callLifetimes,
       this.optionalArrayReads,
+      this.loopArrayBorrows,
     );
     this.callArrayReads = findCallArrayReads(
       fn,
@@ -4211,14 +4224,17 @@ export class LlEmitter {
           }
           break;
         }
-        // A lexical const alias cannot outlive its unchanged local owner.
+        if (this.loopArrayBorrows.has(s) && s.init.kind === "arrayGet") {
+          emitBorrowedArrayRead(this, s.init, b.slot);
+          break;
+        }
+        // A stable lexical alias cannot outlive its unchanged local owner.
         // Whole-value uses still retain their own copies, so returning or
         // storing the alias preserves the ordinary heap representation.
         // Boxed captures, reassigned sources and projections need ownership.
         if (
           b.kind === "local" &&
           b.local &&
-          !b.local.mutable &&
           isRefCounted(b.type) &&
           this.stableCallBindings.has(s.localId) &&
           this.canBorrowCallArgument(s.init)
@@ -4894,14 +4910,14 @@ export class LlEmitter {
         this.scopes.push([]);
         const localInfo = this.currentLocals.get(s.localId);
         const slot = `%${mangleLocal(s.localId)}`;
+        const borrowedElement = !snapshot && this.loopArrayBorrows.has(s);
         if (!snapshot) {
           const acc = elemAccess(elem);
           const accTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
-          this.declare(
-            `declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`,
-          );
+          const getter = borrowedElement ? "scr_arr_borrow_ref" : `scr_arr_get_${acc}`;
+          this.declare(`declare ${acc === "bool" ? "zeroext i1" : accTy} @${getter}(ptr, double)`);
           const value = B.tmp();
-          B.line(`${value} = call ${accTy} @scr_arr_get_${acc}(ptr ${arr!.name}, double ${cur})`);
+          B.line(`${value} = call ${accTy} @${getter}(ptr ${arr!.name}, double ${cur})`);
           cur = value;
         }
         if (spanLength) {
@@ -4921,7 +4937,8 @@ export class LlEmitter {
           this.scopes[this.scopes.length - 1]!.push({ slot, type: elem, boxed: true });
         } else {
           B.line(`store ${this.llType(elem)} ${cur}, ptr ${slot}`);
-          if (isRefCounted(elem)) this.scopes[this.scopes.length - 1]!.push({ slot, type: elem });
+          if (isRefCounted(elem) && !borrowedElement)
+            this.scopes[this.scopes.length - 1]!.push({ slot, type: elem });
         }
         this.emitStmts(s.body);
         if (spanLength) this.splitSpans.delete(s.localId);

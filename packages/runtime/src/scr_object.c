@@ -32,14 +32,19 @@ ScrClassObj *scr_classobj_new(const ScrClassObj *template, size_t ncaps) {
   return c;
 }
 
+static void scr_classobj_destroy(void *object) {
+  ScrClassObj *c = object;
+  for (size_t i = 0; i < c->ncaps; i++) scr_box_release(c->caps[i]);
+  scr_box_release(c->prototype_data);
+  scr_box_release(c->static_data);
+  scr_classobj_gcfree(c);
+}
+
 void scr_classobj_release(ScrClassObj *c) {
   if (!c || c->rc == SIZE_MAX) return;
   if (--c->rc == 0) {
     scr_cyc_on_dead(c);
-    for (size_t i = 0; i < c->ncaps; i++) scr_box_release(c->caps[i]);
-    scr_box_release(c->prototype_data);
-    scr_box_release(c->static_data);
-    scr_classobj_gcfree(c);
+    scr_rc_destroy(c, scr_classobj_destroy);
   } else {
     scr_cyc_on_release(c);
   }

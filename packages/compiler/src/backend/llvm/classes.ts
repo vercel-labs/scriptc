@@ -31,6 +31,7 @@ import {
   FN_ATTRS,
   llFieldType,
   releaseBody,
+  needsBoundedRelease,
   releaseSym,
   retainBody,
   traceAdapter,
@@ -410,6 +411,10 @@ export function emitClassShapes(
       ...cls.fields.map((f, i) => ({ name: f.name, type: f.type, index: fieldIndex(i) })),
     ];
     const refFields = indexedFields.filter((f) => isRefCounted(f.type));
+    const bounded =
+      isEmitterRooted ||
+      isStreamRooted ||
+      refFields.some((field) => needsBoundedRelease(field.type));
     const sizeOf = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 1) to ${host.sizeType})`;
     // An embedded prefix slot (the emitter registry at 2, the stream
     // state at 4) handed to one of the runtime's prefix helpers —
@@ -441,10 +446,6 @@ export function emitClassShapes(
     // (the public one on standalone classes, the DIRECT one on hierarchy
     // members). Runs at rc == 0.
     const teardown = (lines: string[]): void => {
-      if (traced) {
-        host.declare(`declare void @scr_cyc_on_dead(ptr)`);
-        lines.push(`  call void @scr_cyc_on_dead(ptr %o)`);
-      }
       refFields.forEach((f, t) => {
         lines.push(
           `  %f${t} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
@@ -502,7 +503,22 @@ export function emitClassShapes(
         `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
         `free:`,
       ];
-      teardown(reld);
+      if (traced) {
+        host.declare(`declare void @scr_cyc_on_dead(ptr)`);
+        reld.push(`  call void @scr_cyc_on_dead(ptr %o)`);
+      }
+      if (bounded) {
+        const destroy = `${mangleClassReleaseDirect(cls.name)}_destroy`;
+        const destroyBody: string[] = [
+          `define internal void @${destroy}(ptr %o) ${FN_ATTRS} {`,
+          `entry:`,
+        ];
+        teardown(destroyBody);
+        destroyBody.push(`  ret void`, `}`, ``);
+        defs.push(...destroyBody);
+        host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
+        reld.push(`  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`);
+      } else teardown(reld);
       reld.push(`  br label %done`);
       if (traced) {
         host.declare(`declare void @scr_cyc_on_release(ptr)`);
@@ -518,7 +534,14 @@ export function emitClassShapes(
       const freeBody: string[] = [];
       teardown(freeBody);
       defs.push(
-        ...releaseBody(host, mangleClassRelease(cls.name), traced, freeBody, `release ${cls.name}`),
+        ...releaseBody(
+          host,
+          mangleClassRelease(cls.name),
+          traced,
+          freeBody,
+          `release ${cls.name}`,
+          bounded,
+        ),
         ``,
       );
     }

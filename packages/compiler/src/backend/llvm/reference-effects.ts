@@ -107,6 +107,7 @@ function statementPreservesEdges(s: IrStmt, privateLocals?: ReadonlySet<string>)
     case "throw":
     case "if":
     case "for":
+    case "forOf":
     case "while":
     case "doWhile":
     case "block":
@@ -194,5 +195,12 @@ export class ReferenceEffects {
       ) && everyExprChild(value, expr, stmt);
     this.expressions.set(value, result);
     return result;
+  }
+
+  preservesScope(body: IrStmt[]): boolean {
+    return everyStmtList(body, {
+      stmt: (stmt) => statementPreservesEdges(stmt),
+      expr: (expr) => this.preserves(expr),
+    });
   }
 }

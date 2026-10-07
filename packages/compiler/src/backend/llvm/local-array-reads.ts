@@ -3,6 +3,7 @@ import {
   typeEquals,
   type IrExpr,
   type IrFunction,
+  type IrStmt,
   type IrType,
   type IrUnionDef,
 } from "../../ir/ir.js";
@@ -163,6 +164,7 @@ export function findLocalArrayReads(
   arrayPreservingFunctions: ReadonlySet<string>,
   lifetimes: CallLifetimes = analyzeCallLifetimes(functions),
   reads = new OptionalArrayReads(functions, unions),
+  loopBorrows: ReadonlySet<IrStmt> = new Set(),
 ): Map<string, LocalArrayRead> {
   const result = new Map<string, LocalArrayRead>();
   if (fn.async || fn.generator) return result;
@@ -178,21 +180,13 @@ export function findLocalArrayReads(
     stmt: (node) => {
       if (node.kind !== "varDecl" || !node.init) return true;
       const local = locals.get(node.localId);
-      if (
-        !local ||
-        local.mutable ||
-        local.boxed ||
-        local.tdz ||
-        captures.has(local.id) ||
-        params.has(local.id)
-      )
+      if (!local || local.boxed || local.tdz || captures.has(local.id) || params.has(local.id))
         return true;
       const read = reads.get(node.init);
       if (read && lifetimes.locals.get(fn.name)?.has(local.id)) {
         if (
-          borrow &&
           read.array.kind === "varRef" &&
-          stableParams.has(read.array.localId) &&
+          ((borrow && stableParams.has(read.array.localId)) || loopBorrows.has(node)) &&
           !locals.get(read.array.localId)?.boxed
         )
           read.borrow = true;
@@ -261,6 +255,125 @@ export function emitCallArrayRead(host: LlvmEmitterContext, read: LocalArrayRead
   return { name: value, type: read.type };
 }
 
+/** Share the checked dense lookup between optional stack boxes and strict
+ * borrowed reads. Capacity, length, and presence guards precede every load;
+ * sparse and noncanonical indices keep their runtime lookup semantics. */
+function emitDenseReferenceArrayRead(
+  host: LlvmEmitterContext,
+  array: LlValue,
+  index: LlValue,
+  integerIndex: string | null,
+  present: (value: string) => void,
+  no: string,
+  slow: string,
+  join: string,
+): void {
+  const B = host.B;
+  const range = B.newLabel("local.array.range"),
+    dense = B.newLabel("local.array.dense");
+  // The dense path uses the existing ScrArr ABI. Sparse indices and
+  // noncanonical numeric properties retain the runtime lookup semantics.
+  const capPtr = B.tmp(),
+    cap = B.tmp(),
+    capNumber = B.tmp(),
+    nonnegative = B.tmp(),
+    belowCap = B.tmp(),
+    inRange = B.tmp();
+  B.line(`${capPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 2`);
+  host.markMemoryPointer(capPtr, "array:header");
+  B.line(`${cap} = load ${host.sizeType}, ptr ${capPtr}${host.fieldAliasAttachment(capPtr)}`);
+  if (integerIndex) B.line(`${inRange} = icmp ult ${host.sizeType} ${integerIndex}, ${cap}`);
+  else {
+    B.line(`${capNumber} = uitofp ${host.sizeType} ${cap} to double`);
+    B.line(`${nonnegative} = fcmp oge double ${index.name}, 0.0`);
+    B.line(`${belowCap} = fcmp olt double ${index.name}, ${capNumber}`);
+    B.line(`${inRange} = and i1 ${nonnegative}, ${belowCap}`);
+  }
+  B.condBr(inRange, range, slow);
+  B.startBlock(range);
+  const offset = integerIndex ?? B.tmp(),
+    roundTrip = B.tmp(),
+    integral = B.tmp();
+  if (integerIndex) B.br(dense);
+  else {
+    B.line(`${offset} = fptoui double ${index.name} to ${host.sizeType}`);
+    B.line(`${roundTrip} = uitofp ${host.sizeType} ${offset} to double`);
+    B.line(`${integral} = fcmp oeq double ${index.name}, ${roundTrip}`);
+    B.condBr(integral, dense, slow);
+  }
+  B.startBlock(dense);
+  const lenPtr = B.tmp(),
+    len = B.tmp(),
+    belowLen = B.tmp();
+  B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 1`);
+  host.markMemoryPointer(lenPtr, "array:header");
+  B.line(`${len} = load ${host.sizeType}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
+  B.line(`${belowLen} = icmp ult ${host.sizeType} ${offset}, ${len}`);
+  const stateLabel = B.newLabel("local.array.state"),
+    valueLabel = B.newLabel("local.array.value");
+  B.condBr(belowLen, stateLabel, no);
+  B.startBlock(stateLabel);
+  const statesPtr = B.tmp(),
+    states = B.tmp(),
+    statePtr = B.tmp(),
+    denseState = B.tmp(),
+    densePresent = B.tmp();
+  B.line(`${statesPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 8`);
+  host.markMemoryPointer(statesPtr, "array:header");
+  B.line(`${states} = load ptr, ptr ${statesPtr}${host.fieldAliasAttachment(statesPtr)}`);
+  B.line(`${statePtr} = getelementptr inbounds i8, ptr ${states}, ${host.sizeType} ${offset}`);
+  host.markMemoryPointer(statePtr, "array:present");
+  B.line(`${denseState} = load i8, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
+  B.line(`${densePresent} = icmp eq i8 ${denseState}, 1`);
+  B.condBr(densePresent, valueLabel, no);
+  B.startBlock(valueLabel);
+  const dataPtr = B.tmp(),
+    data = B.tmp(),
+    valuePtr = B.tmp(),
+    raw = B.tmp();
+  B.line(`${dataPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 7`);
+  host.markMemoryPointer(dataPtr, "array:header");
+  B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
+  B.line(`${valuePtr} = getelementptr inbounds i64, ptr ${data}, ${host.sizeType} ${offset}`);
+  host.markMemoryPointer(valuePtr, "array:elements");
+  B.line(`${raw} = load ptr, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  present(raw);
+  B.br(join);
+}
+
+/** An iteration-preserving proof keeps the array's element alive. Dense
+ * values need no runtime call; every exceptional lookup still uses the same
+ * strict hole and missing-property checks as an ordinary owned read. */
+export function emitBorrowedArrayRead(
+  host: LlvmEmitterContext,
+  read: IrExpr & { kind: "arrayGet" },
+  slot: string,
+): void {
+  const B = host.B;
+  const array = host.emitStableReceiver(read.arr, [read.index]);
+  const integerIndex = host.emitIntegerLoopIndex(read.index);
+  const index = host.emitExpr(read.index);
+  const slow = B.newLabel("borrow.array.slow"),
+    join = B.newLabel("borrow.array.join");
+  emitDenseReferenceArrayRead(
+    host,
+    array,
+    index,
+    integerIndex,
+    (value) => B.line(`store ptr ${value}, ptr ${slot}`),
+    slow,
+    slow,
+    join,
+  );
+  B.startBlock(slow);
+  host.declare("declare ptr @scr_arr_borrow_ref(ptr, double)");
+  const value = B.tmp();
+  B.line(`${value} = call ptr @scr_arr_borrow_ref(ptr ${array.name}, double ${index.name})`);
+  B.line(`store ptr ${value}, ptr ${slot}`);
+  B.br(join);
+  B.startBlock(join);
+}
+
 /** A private stack box keeps the ordinary tag/projection ABI. Its payload
  * either borrows from an array parameter proven to keep it alive, or owns
  * one reference released on every lexical exit, including exceptions. The
@@ -281,82 +394,18 @@ export function emitLocalArrayRead(
   B.entryAllocas.push(`${box} = alloca %ScrUnion`);
   B.entryAllocas.push(`${payload} = getelementptr inbounds %ScrUnion, ptr ${box}, i32 0, i32 5`);
   B.entryAllocas.push(`${tag} = getelementptr inbounds %ScrUnion, ptr ${box}, i32 0, i32 1`);
-  const range = B.newLabel("local.array.range"),
-    dense = B.newLabel("local.array.dense"),
-    slow = B.newLabel("local.array.slow");
+  const slow = B.newLabel("local.array.slow");
   const no = B.newLabel("local.array.missing"),
     join = B.newLabel("local.array.join");
-  if (inline) {
-    // The dense path uses the existing ScrArr ABI. Sparse indices and
-    // noncanonical numeric properties retain the runtime lookup semantics.
-    const capPtr = B.tmp(),
-      cap = B.tmp(),
-      capNumber = B.tmp(),
-      nonnegative = B.tmp(),
-      belowCap = B.tmp(),
-      inRange = B.tmp();
-    B.line(`${capPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 2`);
-    host.markMemoryPointer(capPtr, "array:header");
-    B.line(`${cap} = load ${host.sizeType}, ptr ${capPtr}${host.fieldAliasAttachment(capPtr)}`);
-    if (integerIndex) B.line(`${inRange} = icmp ult ${host.sizeType} ${integerIndex}, ${cap}`);
-    else {
-      B.line(`${capNumber} = uitofp ${host.sizeType} ${cap} to double`);
-      B.line(`${nonnegative} = fcmp oge double ${index.name}, 0.0`);
-      B.line(`${belowCap} = fcmp olt double ${index.name}, ${capNumber}`);
-      B.line(`${inRange} = and i1 ${nonnegative}, ${belowCap}`);
-    }
-    B.condBr(inRange, range, slow);
-    B.startBlock(range);
-    const offset = integerIndex ?? B.tmp(),
-      roundTrip = B.tmp(),
-      integral = B.tmp();
-    if (integerIndex) B.br(dense);
-    else {
-      B.line(`${offset} = fptoui double ${index.name} to ${host.sizeType}`);
-      B.line(`${roundTrip} = uitofp ${host.sizeType} ${offset} to double`);
-      B.line(`${integral} = fcmp oeq double ${index.name}, ${roundTrip}`);
-      B.condBr(integral, dense, slow);
-    }
-    B.startBlock(dense);
-    const lenPtr = B.tmp(),
-      len = B.tmp(),
-      belowLen = B.tmp();
-    B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 1`);
-    host.markMemoryPointer(lenPtr, "array:header");
-    B.line(`${len} = load ${host.sizeType}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
-    B.line(`${belowLen} = icmp ult ${host.sizeType} ${offset}, ${len}`);
-    const stateLabel = B.newLabel("local.array.state"),
-      valueLabel = B.newLabel("local.array.value");
-    B.condBr(belowLen, stateLabel, no);
-    B.startBlock(stateLabel);
-    const statesPtr = B.tmp(),
-      states = B.tmp(),
-      statePtr = B.tmp(),
-      denseState = B.tmp(),
-      densePresent = B.tmp();
-    B.line(`${statesPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 8`);
-    host.markMemoryPointer(statesPtr, "array:header");
-    B.line(`${states} = load ptr, ptr ${statesPtr}${host.fieldAliasAttachment(statesPtr)}`);
-    B.line(`${statePtr} = getelementptr inbounds i8, ptr ${states}, ${host.sizeType} ${offset}`);
-    host.markMemoryPointer(statePtr, "array:present");
-    B.line(`${denseState} = load i8, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
-    B.line(`${densePresent} = icmp eq i8 ${denseState}, 1`);
-    B.condBr(densePresent, valueLabel, no);
-    B.startBlock(valueLabel);
-    const dataPtr = B.tmp(),
-      data = B.tmp(),
-      valuePtr = B.tmp(),
-      raw = B.tmp();
-    B.line(`${dataPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 7`);
-    host.markMemoryPointer(dataPtr, "array:header");
-    B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
-    B.line(`${valuePtr} = getelementptr inbounds i64, ptr ${data}, ${host.sizeType} ${offset}`);
-    host.markMemoryPointer(valuePtr, "array:elements");
-    B.line(`${raw} = load ptr, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
-    B.line(`store ptr ${read.borrow ? raw : host.retainValue(raw, read.element)}, ptr ${payload}`);
+  const storeValue = (value: string): void => {
+    B.line(
+      `store ptr ${read.borrow ? value : host.retainValue(value, read.element)}, ptr ${payload}`,
+    );
     B.line(`store i32 ${read.presentTag}, ptr ${tag}`);
-    B.br(join);
-  } else B.br(slow);
+  };
+  if (inline)
+    emitDenseReferenceArrayRead(host, array, index, integerIndex, storeValue, no, slow, join);
+  else B.br(slow);
   B.startBlock(slow);
   const value = B.tmp(),
     present = B.tmp();
@@ -366,10 +415,7 @@ export function emitLocalArrayRead(
   const slowValue = B.newLabel("local.array.slow.value");
   B.condBr(present, slowValue, no);
   B.startBlock(slowValue);
-  B.line(
-    `store ptr ${read.borrow ? value : host.retainValue(value, read.element)}, ptr ${payload}`,
-  );
-  B.line(`store i32 ${read.presentTag}, ptr ${tag}`);
+  storeValue(value);
   B.br(join);
   B.startBlock(no);
   B.line(`store ptr null, ptr ${payload}`);

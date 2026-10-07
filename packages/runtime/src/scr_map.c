@@ -518,23 +518,28 @@ ScrMap *scr_map_retain(ScrMap *m) {
   return m;
 }
 
+static void scr_map_destroy(void *object) {
+  ScrMap *m = object;
+  scr_weak_dispose(m);
+  for (size_t e = 0; e < m->nentries; e++) {
+    if (!m->entries[e].hash) continue;
+    scr_map_release_key(m, m->entries[e].key);
+    scr_map_release_val(m, m->entries[e].val);
+  }
+  free(m->entries);
+  free(m->buckets);
+#ifdef SCR_RC_AUDIT
+  scr_live_maps--;
+#endif
+  if (m->key_trace || m->val_trace) scr_cyc_free(m);
+  else free(m);
+}
+
 void scr_map_release(ScrMap *m) {
   if (!m || m->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--m->rc == 0) {
-    scr_weak_dispose(m);
     if (m->key_trace || m->val_trace) scr_cyc_on_dead(m);
-    for (size_t e = 0; e < m->nentries; e++) {
-      if (!m->entries[e].hash) continue;
-      scr_map_release_key(m, m->entries[e].key);
-      scr_map_release_val(m, m->entries[e].val);
-    }
-    free(m->entries);
-    free(m->buckets);
-#ifdef SCR_RC_AUDIT
-    scr_live_maps--;
-#endif
-    if (m->key_trace || m->val_trace) scr_cyc_free(m);
-    else free(m);
+    scr_rc_destroy(m, scr_map_destroy);
   } else if (m->key_trace || m->val_trace) {
     scr_cyc_on_release(m); /* possible cycle root; may collect — m is done */
   }

@@ -107,10 +107,58 @@ static void scr_cyc_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }
 
+typedef struct {
+  void *object;
+  void (*destroy)(void *);
+} ScrDestroyEntry;
+
+/* Keep shallow destruction synchronous without allocating. A chain may mix
+ * program layouts, unions and runtime containers, so one instance-local
+ * depth budget covers every participating destructor. Queued zero-count
+ * objects still own their children until their callback runs. */
+#define SCR_DESTROY_DEPTH 64
+static SCR_TL unsigned scr_destroy_depth;
+static SCR_TL ScrDestroyEntry *scr_destroy_pending;
+static SCR_TL size_t scr_destroy_count, scr_destroy_capacity;
+
+void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
+  if (scr_destroy_depth == SCR_DESTROY_DEPTH) {
+    if (scr_destroy_count == scr_destroy_capacity) {
+      size_t capacity = scr_destroy_capacity ? scr_destroy_capacity * 2 : 64;
+      if (capacity < scr_destroy_capacity || capacity > SIZE_MAX / sizeof(ScrDestroyEntry))
+        scr_cyc_oom();
+      ScrDestroyEntry *entries = realloc(scr_destroy_pending, capacity * sizeof(*entries));
+      if (!entries) scr_cyc_oom();
+      scr_destroy_pending = entries;
+      scr_destroy_capacity = capacity;
+    }
+    scr_destroy_pending[scr_destroy_count++] = (ScrDestroyEntry){ obj, destroy };
+    return;
+  }
+  scr_destroy_depth++;
+  destroy(obj);
+  scr_destroy_depth--;
+  if (scr_destroy_depth) return;
+  while (scr_destroy_count) {
+    ScrDestroyEntry entry = scr_destroy_pending[--scr_destroy_count];
+    scr_destroy_depth = 1;
+    entry.destroy(entry.object);
+    scr_destroy_depth = 0;
+  }
+  /* Deep teardown is exceptional; don't retain its peak queue allocation
+   * throughout an otherwise idle executable or embedded runtime instance. */
+  if (scr_destroy_pending) {
+    free(scr_destroy_pending);
+    scr_destroy_pending = NULL;
+    scr_destroy_capacity = 0;
+  }
+}
+
 /* Live cycle-headered objects — what the full-pass trigger watches. */
 static SCR_TL size_t scr_cyc_live = 0;
 
 void *scr_cyc_alloc(size_t size, ScrTraceFn trace, ScrCycFreeFn free_fn) {
+  if (size > SIZE_MAX - sizeof(ScrCycHdr)) scr_cyc_oom();
   ScrCycHdr *h = calloc(1, sizeof(ScrCycHdr) + size);
   if (!h) scr_cyc_oom();
   h->trace = trace;
@@ -464,8 +512,14 @@ static void scr_xg_child_visit(void *child, void *ctx) {
 }
 
 /* One genuine release, generically: the header carries everything needed. */
-static void scr_xg_release(void *obj) {
+static void scr_xg_destroy(void *obj) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
+  h->trace(obj, scr_xg_child_visit, NULL);
+  h->free_fn(obj);
+  scr_xg_freed++;
+}
+
+static void scr_xg_release(void *obj) {
   if (SCR_RC(obj) > 1) {
     SCR_RC(obj) -= 1;
     scr_cyc_on_release(obj); /* lost a reference: a possible cycle root */
@@ -473,9 +527,7 @@ static void scr_xg_release(void *obj) {
   }
   SCR_RC(obj) = 0;
   scr_cyc_on_dead(obj); /* out of its candidate buffer before the block goes */
-  h->trace(obj, scr_xg_child_visit, NULL); /* the traced children */
-  h->free_fn(obj); /* the untraced ones, then the block */
-  scr_xg_freed++;
+  scr_rc_destroy(obj, scr_xg_destroy);
 }
 
 /* One pass over every candidate at or below `gen_limit`; returns how many

@@ -67,15 +67,20 @@ ScrUnion *scr_union_new_ref(uint32_t tag, void *v, void *(*retain)(void *),
   return u;
 }
 
+static void scr_union_destroy(void *object) {
+  ScrUnion *u = object;
+  if (u->arm_release) u->arm_release(scr_union_peek(u));
+#ifdef SCR_RC_AUDIT
+  scr_live_unions--;
+#endif
+  scr_cyc_free(u);
+}
+
 void scr_union_release(ScrUnion *u) {
   if (!u || u->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--u->rc == 0) {
     scr_cyc_on_dead(u);
-    if (u->arm_release) u->arm_release(scr_union_peek(u));
-#ifdef SCR_RC_AUDIT
-    scr_live_unions--;
-#endif
-    scr_cyc_free(u);
+    scr_rc_destroy(u, scr_union_destroy);
   } else {
     scr_cyc_on_release(u); /* possible cycle root; may collect — u is done */
   }

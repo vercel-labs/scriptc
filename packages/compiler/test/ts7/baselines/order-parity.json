@@ -9386,6 +9386,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/deep-reference-teardown.ts": {
+   "order": [
+    "<repo>/tests/corpus/deep-reference-teardown.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/default-undefined-parameters.ts": {
    "order": [
     "<repo>/tests/corpus/default-undefined-parameters.ts"
@@ -10387,6 +10393,12 @@
   "<repo>/tests/corpus/logical-runtime-optional-record.ts": {
    "order": [
     "<repo>/tests/corpus/logical-runtime-optional-record.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/loop-reference-lifetimes.ts": {
+   "order": [
+    "<repo>/tests/corpus/loop-reference-lifetimes.ts"
    ],
    "diags": []
   },

@@ -167,6 +167,34 @@ test("private optional array results use local tags and borrowed payloads on bot
   }
 });
 
+test("unchanged let bindings keep optional array payloads private", () => {
+  const mod = fixture();
+  mod.functions[2]!.locals[2]!.mutable = true;
+  expect(candidates(mod).get("value")?.borrow).toBe(true);
+  expect(workBody(mod)).not.toContain("@sc_rretain_");
+});
+
+test("preserving loops borrow from local array owners despite unrelated mutation", () => {
+  const mod = fixture();
+  const work = mod.functions[2]!;
+  work.locals[2]!.mutable = true;
+  work.body = [
+    { kind: "arraySetLength", arr: ref("a", array), length: num(1), loc },
+    { kind: "for", init: null, cond: null, update: null, body: work.body, loc },
+  ];
+  expect(candidates(mod).get("value")?.borrow).not.toBe(true);
+  for (const pointerBits of [32, 64] as const) {
+    const body = workBody(mod, pointerBits);
+    expect(body).toContain("@scr_arr_peek_ref");
+    expect(body).not.toContain("@sc_rretain_");
+    expect(body).not.toContain("@sc_rrelease_");
+  }
+  const loop = work.body[1]!;
+  if (loop.kind !== "for") throw new Error("expected loop");
+  loop.body.splice(1, 0, { kind: "arraySetLength", arr: ref("a", array), length: num(0), loc });
+  expect(workBody(mod)).toContain("@sc_rretain_");
+});
+
 test("array mutation preserves a separate payload owner and exceptional cleanup", () => {
   const mod = fixture();
   mod.functions[2]!.body.splice(1, 0, {
@@ -209,7 +237,6 @@ test.each([
   "assign",
   "boxed",
   "tdz",
-  "mutable",
   "duplicate",
   "async",
   "effectful producer",
@@ -228,7 +255,6 @@ test.each([
     fn.body.push({ kind: "assign", localId: "value", value: unionValue, loc });
   if (reason === "boxed") local.boxed = true;
   if (reason === "tdz") local.tdz = true;
-  if (reason === "mutable") local.mutable = true;
   if (reason === "duplicate") fn.body.push(fn.body[0]!);
   if (reason === "async") fn.async = true;
   if (reason === "effectful producer")

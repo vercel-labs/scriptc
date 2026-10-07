@@ -112,15 +112,20 @@ static void scr_box_release_payload(ScrBox *b, void *p) {
   }
 }
 
+static void scr_box_destroy(void *object) {
+  ScrBox *b = object;
+  scr_box_release_payload(b, scr_box_ptr(b));
+#ifdef SCR_RC_AUDIT
+  scr_live_boxes--;
+#endif
+  scr_cyc_free(b);
+}
+
 void scr_box_release(ScrBox *b) {
   if (!b || b->rc == SIZE_MAX) return; /* NULL: a switch jumped past the decl */
   if (--b->rc == 0) {
     scr_cyc_on_dead(b);
-    scr_box_release_payload(b, scr_box_ptr(b));
-#ifdef SCR_RC_AUDIT
-    scr_live_boxes--;
-#endif
-    scr_cyc_free(b);
+    scr_rc_destroy(b, scr_box_destroy);
   } else {
     scr_cyc_on_release(b); /* possible cycle root; may collect — b is done */
   }
@@ -193,16 +198,21 @@ ScrClosure *scr_closure_new(void *fn, size_t ncaps) {
   return c;
 }
 
+static void scr_closure_destroy(void *object) {
+  ScrClosure *c = object;
+  for (size_t i = 0; i < c->ncaps; i++) scr_box_release(c->caps[i]);
+  scr_box_release(c->props); /* NULL-tolerant */
+#ifdef SCR_RC_AUDIT
+  scr_live_closures--;
+#endif
+  scr_cyc_free(c);
+}
+
 void scr_closure_release(ScrClosure *c) {
   if (!c || c->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--c->rc == 0) {
     scr_cyc_on_dead(c);
-    for (size_t i = 0; i < c->ncaps; i++) scr_box_release(c->caps[i]);
-    scr_box_release(c->props); /* NULL-tolerant */
-#ifdef SCR_RC_AUDIT
-    scr_live_closures--;
-#endif
-    scr_cyc_free(c);
+    scr_rc_destroy(c, scr_closure_destroy);
   } else {
     scr_cyc_on_release(c); /* possible cycle root; may collect — c is done */
   }

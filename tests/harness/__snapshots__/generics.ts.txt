@@ -17,21 +17,14 @@ generics.ts:44:7 - error SC2001: values of type 'typeof Box' cannot be compiled 
   43 | // The uninstantiated family as a value: no thunk, no single ctor ABI.
   44 | const BoxAlias = Box;
      |       ^~~~~~~~
-  45 | // A base that mentions the class's own type parameters would differ per
+  45 | // Each specialization resolves the matching concrete base layout while
 
 generics.ts:44:18 - error SC1090: generic classes as values ('typeof Box' keeps the type parameter — instantiation expressions ('Box<number>') and concrete constructor-typed slots compile) are not supported yet
 
   43 | // The uninstantiated family as a value: no thunk, no single ctor ABI.
   44 | const BoxAlias = Box;
      |                  ^~~
-  45 | // A base that mentions the class's own type parameters would differ per
-
-generics.ts:47:26 - error SC1090: generic classes whose 'extends' clause mentions their own type parameters (each instantiation would need a different base) are not supported yet
-
-  46 | // instantiation — no single family interval can cover them.
-  47 | class Chained<T> extends Box<T> {
-     |                          ^~~~~~
-  48 |   constructor(v: T) {
+  45 | // Each specialization resolves the matching concrete base layout while
 
 generics.ts:53:20 - error SC1090: generic class expressions are not supported yet
 
@@ -39,10 +32,3 @@ generics.ts:53:20 - error SC1090: generic class expressions are not supported ye
   53 | const ExprFamily = class <T> {
      |                    ^~~~~~~~~~~
   54 |   x: T | undefined;
-
-generics.ts:66:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
-
-  65 | new Box(1);
-  66 | new Chained(2);
-     | ^~~~~~~~~~~~~~
-  67 | new ExprFamily<number>();

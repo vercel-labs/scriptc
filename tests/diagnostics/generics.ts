@@ -1,6 +1,6 @@
-// Top-level generic function declarations monomorphize (calls, and VALUES
-// whose reference pins one concrete signature); every other generic form
-// stays rejected with a specific message.
+// Concrete generic functions and classes monomorphize. Forms without a
+// statically resolved body or constructor retain their specific
+// diagnostics.
 function id<T>(x: T): T {
   return x;
 }
@@ -42,8 +42,8 @@ class Box<T> {
 }
 // The uninstantiated family as a value: no thunk, no single ctor ABI.
 const BoxAlias = Box;
-// A base that mentions the class's own type parameters would differ per
-// instantiation — no single family interval can cover them.
+// Each specialization resolves the matching concrete base layout while
+// every specialization retains the declaration's JavaScript class identity.
 class Chained<T> extends Box<T> {
   constructor(v: T) {
     super(v);

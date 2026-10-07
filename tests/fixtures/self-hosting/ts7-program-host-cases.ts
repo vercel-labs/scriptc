@@ -53,6 +53,10 @@ export function runProgramHost(createHost: (options: Ts7HostOptions) => Ts7Host,
       check(program.getSourceFile(shadow)!.text === "export const shadow = 7;\n", "shadow BOM stripping");
       check(program.getSourceFile(hidden) === undefined, "hidden file");
       check(program.getSourceFileNames().some((file) => basename(file) === "dep.ts"), "module resolution");
+      const implementations = program.getImplementationSourceFiles();
+      check(implementations.length > 0 && implementations.every((file) => !file.isDeclarationFile), "implementation source selection");
+      check(implementations === program.getImplementationSourceFiles(), "implementation source cache");
+      check(implementations.some((file) => file === source), "implementation source identity");
       check(program.getSourceFiles() === program.getSourceFiles(), "source file cache");
       const checker = program.getTypeChecker();
       check(checker === program.getTypeChecker(), "checker cache");
@@ -96,6 +100,9 @@ export function runProgramHost(createHost: (options: Ts7HostOptions) => Ts7Host,
     let refused = false;
     try { program.getSourceFiles(); } catch { refused = true; }
     check(refused, "disposed source cache");
+    refused = false;
+    try { program.getImplementationSourceFiles(); } catch { refused = true; }
+    check(refused, "disposed implementation source cache");
     refused = false;
     try { program.getTypeChecker(); } catch { refused = true; }
     check(refused, "disposed checker cache");

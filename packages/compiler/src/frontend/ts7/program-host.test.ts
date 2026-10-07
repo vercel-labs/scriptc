@@ -39,6 +39,37 @@ function makeHost(directory: string): { host: Ts7Host; api: Ts7Api; connection: 
 
 const options: Ts7CompilerOptions = { strict: true, noEmit: true, types: [] };
 
+test("implementation discovery leaves declaration trees lazy without skipping their diagnostics", () => {
+  const { directory, entry } = fixture();
+  const declaration = join(directory, "types.d.ts");
+  const unusual = join(directory, "styles.d.css.ts");
+  writeFileSync(declaration, "declare const broken: MissingType;\n");
+  writeFileSync(unusual, "declare const styles: string;\n");
+  const { host } = makeHost(directory);
+  const program = host.createProgram([entry, declaration, unusual], options);
+  const fetch = vi.spyOn(program.project.program, "getSourceFile");
+  const names = vi.spyOn(program.project.program, "getSourceFileNames");
+  try {
+    const files = program.getImplementationSourceFiles();
+    expect(files.map((file) => file.fileName)).toEqual([tsgoPath(entry)]);
+    expect(fetch.mock.calls.some(([name]) => String(name).endsWith(".d.ts"))).toBe(false);
+    expect(program.getImplementationSourceFiles()).toBe(files);
+    expect(names).toHaveBeenCalledTimes(1);
+    expect(program.getSemanticDiagnostics().some((diagnostic) => diagnostic.code === 2304)).toBe(
+      true,
+    );
+    expect(program.getSourceFile(declaration)?.isDeclarationFile).toBe(true);
+    const all = program.getSourceFiles();
+    expect(all.filter((file) => !file.isDeclarationFile)).toEqual(files);
+    expect(all.find((file) => file.fileName === tsgoPath(entry))).toBe(files[0]);
+    expect(names).toHaveBeenCalledTimes(1);
+  } finally {
+    program.dispose();
+  }
+  expect(() => program.getImplementationSourceFiles()).toThrow("disposed");
+  expect(() => program.getSourceFileNames()).toThrow("disposed");
+});
+
 test("the factory receives one connection with the host's filesystem and timing", () => {
   const { directory, entry } = fixture();
   const factory = vi.fn((connection: Ts7ApiOptions) => new Ts7Api(connection));

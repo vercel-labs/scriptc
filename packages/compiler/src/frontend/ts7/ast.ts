@@ -113,18 +113,22 @@ export function forEachChild<T>(
 export function walkPreorder(
   root: Node,
   cb: (node: Node, depth: number) => void | "skip" | "stop",
+  kinds?: ReadonlySet<SyntaxKind>,
 ): void {
   const file = root.file;
   const stack: number[] = [root.index];
   const depths: number[] = [0];
   while (stack.length > 0) {
-    const n = file.node(stack.pop()!);
+    const index = stack.pop()!;
     const depth = depths.pop()!;
-    const verdict = cb(n, depth);
+    const node =
+      kinds === undefined || kinds.has(file.wire.kind(index)) ? file.node(index) : undefined;
+    const verdict = node === undefined ? undefined : cb(node, depth);
     if (verdict === "stop") return;
     if (verdict === "skip") continue;
     const first = stack.length;
-    n.appendChildIndices(stack);
+    if (kinds === undefined) node!.appendChildIndices(stack);
+    else file.wire.appendChildIndices(index, stack);
     // The wire visits siblings in source order. Reverse only this new
     // segment so the stack visits the first child before later siblings.
     for (let left = first, right = stack.length - 1; left < right; left++, right--) {

@@ -172,7 +172,7 @@ function usedInHeritageClause(lowerer: Lowerer, sym: ts.Symbol): boolean {
     }
     n.forEachChild(visit);
   };
-  for (const file of lowerer.program.getSourceFiles()) {
+  for (const file of lowerer.program.getImplementationSourceFiles()) {
     if (found) break;
     if (file.isDeclarationFile) continue;
     file.forEachChild(visit);
@@ -368,7 +368,7 @@ export function deadUnmappableBinding(
     }
     n.forEachChild(visit);
   };
-  for (const file of lowerer.program.getSourceFiles()) {
+  for (const file of lowerer.program.getImplementationSourceFiles()) {
     if (!dead) break;
     if (file.isDeclarationFile) continue;
     file.forEachChild(visit);

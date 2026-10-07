@@ -387,7 +387,7 @@ function propMutatedSymbols(lowerer: Lowerer): Set<ts.Symbol> {
       /* not a candidate */
     }
   };
-  for (const sf of lowerer.program.getSourceFiles()) {
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
     if (sf.isDeclarationFile) continue;
     const walk = (node: ts.Node): void => {
       ts.forEachChild(node, walk);

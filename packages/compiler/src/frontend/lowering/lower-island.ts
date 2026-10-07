@@ -335,7 +335,7 @@ function requestInitPropMutatedSymbols(lowerer: Lowerer): Set<ts.Symbol> {
       /* not a traceable RequestInit candidate */
     }
   };
-  for (const source of lowerer.program.getSourceFiles()) {
+  for (const source of lowerer.program.getImplementationSourceFiles()) {
     if (source.isDeclarationFile) continue;
     const walk = (node: ts.Node): void => {
       if (

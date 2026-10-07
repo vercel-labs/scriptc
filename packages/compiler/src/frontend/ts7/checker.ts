@@ -16,8 +16,8 @@ import { InternalCompilerError } from "../../errors.js";
  *    finding), so this layer is where reuse lives.
  *
  * 2. PHASE-AWARE BATCH PREFETCH. Ordinary callers keep the whole-file
- *    first-miss fallback, but the compiler explicitly batches declaration
- *    headers, top-level code, and each newly reachable body wave. Managed
+ *    first-miss fallback for implementation files. The compiler explicitly
+ *    batches declaration headers, top-level code, and each newly reachable body wave. Managed
  *    files then use direct memoized misses instead of accidentally sweeping
  *    every unreachable body. prefetchSourceFile() retains the whole-file
  *    escape hatch. Symbol prefetch also batch-fetches getTypeOfSymbol over
@@ -48,7 +48,7 @@ import type {
 } from "./semantic-types.js";
 import type { SemanticChecker as Checker } from "./semantic-checker.js";
 import type { SemanticProject as Project } from "./semantic-model.js";
-import { walkPreorder } from "./ast.js";
+import { isTypeNode, walkPreorder } from "./ast.js";
 import { SignatureKind, SyntaxKind, TypeFlags } from "./enums.js";
 
 /** Array-overload chunk size: large enough that per-request overhead
@@ -133,7 +133,7 @@ const DEFERRED_BODY_OWNERS = new Set<SyntaxKind>([
   SyntaxKind.SetAccessor,
 ]);
 
-type PrefetchWalk = "all" | "structure" | "reachable";
+type PrefetchWalk = "all" | "runtime" | "structure" | "reachable";
 
 function isClassLikeKind(kind: SyntaxKind): boolean {
   return kind === SyntaxKind.ClassDeclaration || kind === SyntaxKind.ClassExpression;
@@ -144,7 +144,7 @@ function isClassMember(node: Node | undefined): boolean {
 }
 
 function isDeferredExecutableRoot(node: Node, walk: PrefetchWalk): boolean {
-  if (walk === "all") return false;
+  if (walk === "all" || walk === "runtime") return false;
   const parent = node.parent;
   if (parent === undefined) return false;
   if (DEFERRED_BODY_OWNERS.has(parent.kind) && parent.body === node) {
@@ -177,6 +177,20 @@ function collectNodes(roots: readonly Node[], walk: PrefetchWalk = "all"): Node[
   const seen = new Set<Node>();
   for (const root of roots) {
     walkPreorder(root, (n, depth) => {
+      // Managed waves prepare runtime lowering. Type-only syntax is still
+      // checked by tsgo, but its metadata need not cross the process boundary
+      // unless a consumer asks for it. Class heritage expressions remain
+      // runtime inputs, and explicit roots retain the full query contract.
+      if (
+        n !== root &&
+        walk !== "all" &&
+        (n.kind === SyntaxKind.InterfaceDeclaration ||
+          n.kind === SyntaxKind.TypeAliasDeclaration ||
+          n.kind === SyntaxKind.TypeParameter ||
+          (isTypeNode(n) && n.kind !== SyntaxKind.ExpressionWithTypeArguments))
+      ) {
+        return "skip";
+      }
       if (n !== root && isDeferredExecutableRoot(n, walk)) return "skip";
       if (!seen.has(n)) {
         seen.add(n);
@@ -350,11 +364,13 @@ export class CheckerFacade {
   /** Batches symbol queries for every identifier under roots without the
    * usual companion getTypeOfSymbol batch. Preflight uses this for AST
    * analyses that themselves inspect deferred bodies for binding identity:
-   * those scans need symbols, but do not consume the symbols' types. */
-  prefetchSymbolRoots(roots: readonly Node[]): void {
+   * those scans need symbols, but do not consume the symbols' types.
+   * Runtime-only analyses may omit erased type syntax while still walking
+   * every deferred executable body. Other callers keep the full walk. */
+  prefetchSymbolRoots(roots: readonly Node[], runtimeOnly = false): void {
     this.ensureActive();
     this.markManaged(roots);
-    this.prefetchSymbolNodes(collectNodes(roots), false, false);
+    this.prefetchSymbolNodes(collectNodes(roots, runtimeOnly ? "runtime" : "all"), false, false);
   }
 
   /** Exact-node sibling of prefetchSymbolRoots for analyses that first
@@ -477,6 +493,10 @@ export class CheckerFacade {
   private autoPrefetch(node: Node, kind: "types" | "symbols"): void {
     if (this.options.autoPrefetch === false) return;
     const sf = node.getSourceFile();
+    // A referenced declaration rarely needs the rest of its library's
+    // metadata. Keep those queries direct; explicit whole-file prefetch
+    // remains available to consumers that do need the complete surface.
+    if (sf.isDeclarationFile) return;
     if (kind === "types") {
       if (!this.cache.managedTypes.has(sf)) this.prefetchTypes(sf);
     } else if (!this.cache.managedSymbols.has(sf)) {

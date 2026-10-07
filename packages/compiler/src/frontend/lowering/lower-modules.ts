@@ -150,7 +150,7 @@ export function appendForkModules(
 ): void {
   if (order.length === 0) return;
   const byPath = new Map(
-    program.getSourceFiles().map((sf) => [resolvePath(sf.fileName), sf] as const),
+    program.getImplementationSourceFiles().map((sf) => [resolvePath(sf.fileName), sf] as const),
   );
   const state = new Map<ts.SourceFile, "visiting" | "done">();
   for (const sf of order) state.set(sf, "done");

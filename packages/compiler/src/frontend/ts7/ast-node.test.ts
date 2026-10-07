@@ -14,6 +14,7 @@ import {
   NODE_LEN,
   NODE_OFFSET_NEXT,
   NODE_OFFSET_PARENT,
+  NODE_OFFSET_DATA,
 } from "./ast-schema.generated.js";
 import { walkPreorder } from "./ast.js";
 import { ts7Executable } from "./rpc-api.js";
@@ -465,5 +466,58 @@ test("child traversal still rejects a sibling belonging to another parent", () =
   );
   expect(() => walkPreorder(new AstFile(broken).node(parent), () => undefined)).toThrow(
     "sibling belongs to another parent",
+  );
+  expect(() => walkPreorder(new AstFile(broken).node(parent), () => undefined, new Set())).toThrow(
+    "sibling belongs to another parent",
+  );
+});
+
+test("selective preorder preserves semantic order and depth without materializing other nodes", () => {
+  const { bytes, oracle } = decoded.get("main.ts")!;
+  const kinds = new Set<AstNode["kind"]>([AstKind.ClassDeclaration, AstKind.Identifier]);
+  const expected: [number, number][] = [];
+  const visit = (node: OracleNode, depth: number): void => {
+    if (kinds.has(node.kind)) expected.push([node.index, depth]);
+    if (node.kind === AstKind.ClassDeclaration) return;
+    node.forEachChild((child) => visit(child as OracleNode, depth + 1));
+  };
+  visit(oracle.getOrCreateNodeAtIndex(1), 0);
+  let materialized = 0;
+  const file = new AstFile(bytes, undefined, () => {
+    materialized++;
+  });
+  const actual: [number, number][] = [];
+  walkPreorder(
+    file.root,
+    (node, depth) => {
+      actual.push([node.index, depth]);
+      return node.kind === AstKind.ClassDeclaration ? "skip" : undefined;
+    },
+    kinds,
+  );
+  expect(actual).toEqual(expected);
+  expect(materialized).toBe(expected.length);
+  const prefix: number[] = [];
+  walkPreorder(
+    file.root,
+    (node) => {
+      prefix.push(node.index);
+      return "stop";
+    },
+    kinds,
+  );
+  expect(prefix).toEqual([expected[0]![0]]);
+});
+
+test("selective traversal validates list counts even when no kind is selected", () => {
+  const { file, bytes } = decoded.get("main.ts")!;
+  const list = file.wire.children(1).find((index) => file.wire.kind(index) === KIND_NODE_LIST)!;
+  expect(list).toBeGreaterThan(0);
+  const broken = bytes.slice();
+  const words = new DataView(broken.buffer, broken.byteOffset, broken.byteLength);
+  const nodes = words.getUint32(HEADER_OFFSET_NODES, true);
+  words.setUint32(nodes + list * NODE_LEN + NODE_OFFSET_DATA, file.wire.data(list) + 1, true);
+  expect(() => walkPreorder(new AstFile(broken).root, () => undefined, new Set())).toThrow(
+    "node list length does not match its links",
   );
 });

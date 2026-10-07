@@ -278,6 +278,33 @@ export class AstWireFile {
     return children;
   }
 
+  /** The semantic walk flattens lists and omits attached JSDoc trees.
+   * Validate the same list links as list(), without materializing nodes
+   * that a selective syntax scan will never inspect. */
+  appendChildIndices(index: number, output: number[]): void {
+    for (let child = this.firstChild(index); child !== 0; child = this.next(child)) {
+      if (this.parent(child) !== index)
+        throw new AstDecodeError("sibling belongs to another parent");
+      const kind = this.kind(child);
+      if (kind === KIND_NODE_LIST) {
+        const count = this.data(child);
+        if (count > this.nodeCount - child - 1)
+          throw new AstDecodeError("node list length exceeds the response");
+        const start = output.length;
+        for (let item = this.firstChild(child); item !== 0; item = this.next(item)) {
+          if (this.parent(item) !== child)
+            throw new AstDecodeError("sibling belongs to another parent");
+          if (this.kind(item) === KIND_NODE_LIST) throw new AstDecodeError("expected a node index");
+          output.push(item);
+        }
+        if (output.length - start !== count)
+          throw new AstDecodeError("node list length does not match its links");
+      } else if (kind !== AstKind.JSDoc) {
+        output.push(child);
+      }
+    }
+  }
+
   namedChild(index: number, name: string): number {
     const order = astChildOrder(this.kind(index), name);
     return order < 0 ? 0 : this.childAtOrder(index, order);

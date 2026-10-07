@@ -426,6 +426,80 @@ void top;
   expect(counts).toEqual(warm);
 });
 
+test("managed waves leave erased type syntax on demand and retain runtime heritage", () => {
+  const w = buildTwoWorlds(
+    {
+      "type-metadata.ts": `
+interface Shape { value: number; }
+type Alias = Shape;
+class Base {}
+class Child extends Base {}
+function identity<T extends Shape>(value: T): T { return value; }
+const item: Alias = identity({ value: 1 });
+`,
+    },
+    host,
+  );
+  worlds.push(w);
+  const raw = w.p7.project.checker;
+  const { proxy, counts, calls } = countingChecker(raw);
+  const facade = new CheckerFacade(proxy);
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const fn = sf.statements.find(ad.isFunctionDeclaration)!;
+  const references: Node[] = [];
+  ad.walkPreorder(sf, (node) => {
+    if (ad.isTypeReferenceNode(node)) references.push(node.typeName);
+  });
+  expect(references.length).toBeGreaterThan(0);
+  facade.prefetchSourceFileStructures([sf]);
+  facade.prefetchSymbolRoots([sf], true);
+  facade.prefetchRoots([fn.body!]);
+  const queried = (method: string): Node[] =>
+    calls[method]!.flatMap(([nodes]) => (Array.isArray(nodes) ? nodes : [nodes])) as Node[];
+  expect(queried("getTypeAtLocation").some((node) => references.includes(node))).toBe(false);
+  expect(queried("getSymbolAtLocation").some((node) => references.includes(node))).toBe(false);
+  const child = sf.statements.filter(ad.isClassDeclaration)[1]!;
+  const base = child.heritageClauses![0]!.types[0]!.expression;
+  expect(queried("getTypeAtLocation")).toContain(base);
+
+  const reference = references[0]!;
+  const before = { ...counts };
+  expect(facade.getTypeAtLocation(reference)).toBe(raw.getTypeAtLocation(reference));
+  expect(facade.getSymbolAtLocation(reference)).toBe(raw.getSymbolAtLocation(reference));
+  expect(counts["getTypeAtLocation"]).toBe(before["getTypeAtLocation"]! + 1);
+  expect(counts["getSymbolAtLocation"]).toBe(before["getSymbolAtLocation"]! + 1);
+  const warm = { ...counts };
+  facade.getTypeAtLocation(reference);
+  facade.getSymbolAtLocation(reference);
+  expect(counts).toEqual(warm);
+});
+
+test("declaration misses stay direct while explicit whole-file prefetch remains available", () => {
+  const w = buildTwoWorlds(
+    { "api.d.ts": "export interface Box { value: number; label: string; }" },
+    host,
+  );
+  worlds.push(w);
+  const raw = w.p7.project.checker;
+  const { proxy, counts, calls } = countingChecker(raw);
+  const facade = new CheckerFacade(proxy);
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  expect(sf.isDeclarationFile).toBe(true);
+  const declaration = sf.statements.find(ad.isInterfaceDeclaration)!;
+  const name = declaration.members.find(ad.isPropertySignature)!.name;
+  expect(facade.getSymbolAtLocation(name)).toBe(raw.getSymbolAtLocation(name));
+  expect(facade.getTypeAtLocation(name)).toBe(raw.getTypeAtLocation(name));
+  expect(calls["getSymbolAtLocation"]).toEqual([[name]]);
+  expect(calls["getTypeAtLocation"]).toEqual([[name]]);
+  const warm = { ...counts };
+  facade.getSymbolAtLocation(name);
+  facade.getTypeAtLocation(name);
+  expect(counts).toEqual(warm);
+  facade.prefetchSourceFile(sf);
+  expect(calls["getSymbolAtLocation"]!.some(([nodes]) => Array.isArray(nodes))).toBe(true);
+  expect(calls["getTypeAtLocation"]!.some(([nodes]) => Array.isArray(nodes))).toBe(true);
+});
+
 test("managed misses stay direct instead of falling back to whole-file prefetch", () => {
   const w = buildTwoWorlds(
     {

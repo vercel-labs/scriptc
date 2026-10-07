@@ -3600,7 +3600,7 @@ export class Lowerer {
     // facade's panic fence, then keep lookup free of lowering side effects:
     // resolveValueSymbol also flushes deferred diagnostics and applies
     // merged-namespace fences, whose authority remains ordinary lowering.
-    this.checker.prefetchSymbolRoots(sourceFiles);
+    this.checker.prefetchSymbolRoots(sourceFiles, true);
     const symbolOf = (node: ts.Node): ts.Symbol | null => {
       const s = this.checker.getSymbolAtLocation(node);
       if (!s) return null;

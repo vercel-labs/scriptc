@@ -268,6 +268,8 @@ export class Ts7Host {
 export class Ts7Program {
   readonly analysis = new ProgramAnalysis();
   private sourceFilesCache: readonly SourceFile[] | null = null;
+  private implementationFilesCache: readonly SourceFile[] | null = null;
+  private sourceFileNamesCache: readonly string[] | null = null;
   private checkerFacade: CheckerFacade | null = null;
   private disposed = false;
 
@@ -289,7 +291,26 @@ export class Ts7Program {
   }
 
   getSourceFileNames(): readonly string[] {
-    return this.project.program.getSourceFileNames();
+    this.snapshot.ensureActive();
+    return (this.sourceFileNamesCache ??= this.project.program.getSourceFileNames());
+  }
+
+  /** Runtime discovery needs implementation trees, while tsgo still checks
+   * the whole program. Skip conventional declaration names before asking
+   * for their ASTs; unusual declaration extensions retain the checked path.
+   * Declaration lookup and getSourceFiles() remain available on demand. */
+  getImplementationSourceFiles(): readonly SourceFile[] {
+    this.snapshot.ensureActive();
+    if (this.implementationFilesCache === null) {
+      const files: SourceFile[] = [];
+      for (const name of this.getSourceFileNames()) {
+        if (name.endsWith(".d.ts") || name.endsWith(".d.mts") || name.endsWith(".d.cts")) continue;
+        const file = this.getSourceFile(name);
+        if (file !== undefined && !file.isDeclarationFile) files.push(file);
+      }
+      this.implementationFilesCache = files;
+    }
+    return this.implementationFilesCache;
   }
 
   /** Materializes every file of the program (5.9.3's getSourceFiles shape).
@@ -300,7 +321,7 @@ export class Ts7Program {
     if (this.sourceFilesCache === null) {
       const program = this.project.program;
       const files: SourceFile[] = [];
-      for (const name of program.getSourceFileNames()) {
+      for (const name of this.getSourceFileNames()) {
         const file = program.getSourceFile(name);
         if (file !== undefined) files.push(file);
       }
@@ -353,6 +374,8 @@ export class Ts7Program {
     this.checkerFacade?.dispose();
     this.checkerFacade = null;
     this.sourceFilesCache = null;
+    this.implementationFilesCache = null;
+    this.sourceFileNamesCache = null;
     try {
       this.snapshot.dispose();
     } finally {

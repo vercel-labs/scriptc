@@ -117,6 +117,7 @@ import {
 } from "./tsc-codes.js";
 import { trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { forkTargetPaths } from "./fork-target.js";
+import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 
 const BASE_OPTIONS: ts.Ts7CompilerOptions = {
@@ -523,23 +524,22 @@ function externalTypeFileClosure7(
  * an explicit root, to a fixpoint, so the same TS 7 AST/checker world owns
  * their exports and transitive graph. */
 function createRequireProgramRoots7(program: ts.Program): string[] {
-  const known = new Set(program.getSourceFiles().map((sf) => tsgoPath(resolve(sf.fileName))));
+  const known = new Set(program.getSourceFileNames().map((name) => tsgoPath(resolve(name))));
   const roots = new Set<string>();
-  for (const sf of program.getSourceFiles()) {
+  for (const sf of program.getImplementationSourceFiles()) {
     if (sf.isDeclarationFile || sf.fileName.endsWith(".json")) continue;
     const calls: { callee: ts.Identifier; spec: string }[] = [];
-    ts.walkPreorder(sf, (node) => {
+    for (const node of moduleSourceCandidates(program, sf).calls) {
       if (
-        !ts.isCallExpression(node) ||
         node.questionDotToken !== undefined ||
         node.arguments.length !== 1 ||
         !ts.isStringLiteralLike(node.arguments[0]!) ||
         !ts.isIdentifier(node.expression)
       ) {
-        return undefined;
+        continue;
       }
       calls.push({ callee: node.expression, spec: node.arguments[0]!.text });
-    });
+    }
     // Root discovery only needs the callee's binding. A first-miss lookup
     // otherwise fetches symbols and types for every identifier in the file,
     // including all unreachable bodies in large published packages.
@@ -594,7 +594,7 @@ export function entryPackageFilePredicate(entryPath: string): (file: string) => 
 function entryPackageProgramRoots7(program: ts.Program, entryPath: string): string[] {
   const belongsToEntry = entryPackageFilePredicate(entryPath);
   const roots = new Set<string>();
-  for (const sf of program.getSourceFiles()) {
+  for (const sf of program.getImplementationSourceFiles()) {
     if (
       sf.isDeclarationFile ||
       (!belongsToEntry(sf.fileName) && npmStaticPackageOfPath(sf.fileName) === null)
@@ -668,7 +668,7 @@ function loadProgram7(
       const candidates = [
         ...entryPackageProgramRoots7(program, entryPath),
         ...createRequireProgramRoots7(program),
-        ...forkTargetPaths(program, program.getSourceFiles()),
+        ...forkTargetPaths(program, program.getImplementationSourceFiles()),
       ];
       const extraRoots = candidates.filter(
         (root, index) => !programRoots.includes(root) && candidates.indexOf(root) === index,
@@ -2488,27 +2488,10 @@ function preflight7(load: LoadResult): {
       if (r !== null && r.workspaceDir !== undefined)
         registerWorkspacePackage(r.packageName, r.workspaceDir);
     };
-    for (const sf of program.getSourceFiles()) {
+    for (const sf of program.getImplementationSourceFiles()) {
       if (sf.isDeclarationFile || sf.fileName.endsWith(".json")) continue;
-      ts.walkPreorder(sf, (n) => {
-        if (
-          (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) &&
-          n.moduleSpecifier !== undefined &&
-          ts.isStringLiteral(n.moduleSpecifier)
-        ) {
-          probe(sf.fileName, n.moduleSpecifier.text);
-          return "skip";
-        }
-        if (ts.isCallExpression(n)) {
-          const arg = n.arguments[0];
-          const isImportCall = n.expression.kind === ts.SyntaxKind.ImportKeyword;
-          const isRequireCall = ts.isIdentifier(n.expression) && n.expression.text === "require";
-          if ((isImportCall || isRequireCall) && arg !== undefined && ts.isStringLiteralLike(arg)) {
-            probe(sf.fileName, arg.text);
-          }
-        }
-        return undefined;
-      });
+      for (const specifier of moduleSourceCandidates(program, sf).specifiers)
+        probe(sf.fileName, specifier);
     }
   }
 
@@ -2691,7 +2674,7 @@ function preflight7(load: LoadResult): {
   // reachable bodies are added by lowering's worklists.
   const ambient = ambientDtsPath();
   const programFiles = program
-    .getSourceFiles()
+    .getImplementationSourceFiles()
     .filter(
       (sf) =>
         sf.fileName !== ambient &&
@@ -2709,7 +2692,7 @@ function preflight7(load: LoadResult): {
         programFiles,
         [
           ...createRequireProgramRoots7(program),
-          ...forkTargetPaths(program, program.getSourceFiles()),
+          ...forkTargetPaths(program, program.getImplementationSourceFiles()),
         ],
         (sf, spec, resolutionKind) =>
           resolveImport7(program, sf, spec, resolutionKind) ??

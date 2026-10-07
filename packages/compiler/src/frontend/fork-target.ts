@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as ts from "./ts7/adapter.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
+import { moduleSourceCandidates } from "./module-source-candidates.js";
 
 function strip(expr: ts.Expression): ts.Expression {
   let current = expr;
@@ -281,15 +282,13 @@ export function forkTargetPaths(program: ts.Program, files: readonly ts.SourceFi
   const seen = new Set<string>();
   for (const sourceFile of files) {
     if (sourceFile.isDeclarationFile || sourceFile.fileName.endsWith(".json")) continue;
-    ts.walkPreorder(sourceFile, (node) => {
-      if (!ts.isCallExpression(node)) return undefined;
+    for (const node of moduleSourceCandidates(program, sourceFile).calls) {
       const target = forkCallModulePath(program, node);
       if (target !== null && !seen.has(target)) {
         seen.add(target);
         targets.push(target);
       }
-      return undefined;
-    });
+    }
   }
   return targets;
 }

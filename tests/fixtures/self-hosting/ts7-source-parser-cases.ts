@@ -15,10 +15,18 @@ export function runSourceParser(parser: Ts7SourceParser, input: string, output: 
     const file = parser.parse(item.path, item.text, item.kind);
     let nodes = 0;
     let optional = 0;
-    syntax.walkPreorder(file, (node) => {
+    const kinds = new Set([syntax.SyntaxKind.Identifier, syntax.SyntaxKind.CallExpression]);
+    const expected: string[] = [];
+    syntax.walkPreorder(file, (node, depth) => {
       nodes++;
       if (node.questionToken !== undefined) optional++;
+      if (kinds.has(node.kind)) expected.push(`${node.kind}:${node.pos}:${depth}`);
     });
+    const selected: string[] = [];
+    syntax.walkPreorder(file, (node, depth) => {
+      selected.push(`${node.kind}:${node.pos}:${depth}`);
+    }, kinds);
+    if (JSON.stringify(selected) !== JSON.stringify(expected)) throw new Error("selective traversal changed syntax order or depth");
     return {
       text: file.text,
       nodes,

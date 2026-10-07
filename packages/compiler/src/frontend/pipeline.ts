@@ -455,7 +455,7 @@ function loadFrontend(
       entryContractFacts(
         finalLoad.entry,
         finalLoad.program
-          .getSourceFiles()
+          .getImplementationSourceFiles()
           .filter((sf) => !sf.isDeclarationFile && npmStaticPackageOfPath(sf.fileName) === null),
       ),
     // Runtime evaluation order first, then any type-only program modules
@@ -470,7 +470,7 @@ function loadFrontend(
         [
           finalLoad.entry,
           ...finalLoad.moduleOrder,
-          ...finalLoad.program.getSourceFiles().filter((sf) => !sf.isDeclarationFile),
+          ...finalLoad.program.getImplementationSourceFiles().filter((sf) => !sf.isDeclarationFile),
         ].map((sf) => [sf.fileName, sf.text]),
       ),
     lower: (opts) =>

@@ -85,8 +85,9 @@ export function emitCallExpr(
             if (canStackUnion(a, host.unionsById)) return emitStackUnion(host, a).value;
           }
           if (inputs[index]) return host.emitReadReceiver(a);
+          return host.emitExpr(a);
         }
-        return host.emitExpr(a);
+        return host.emitOwnedArgument(a);
       });
       // A borrowed parameter's owned argument stays in the caller frame.
       // This also preserves snapshots when a later argument mutates its
@@ -604,7 +605,7 @@ export function emitCallExpr(
         throw new LlvmUnsupportedError("callValue:arity", e.loc);
       const callee = host.stackCallbacks.emit(host, e.callee) ?? emitBorrowedInput(host, e.callee);
       const receiver = e.receiver === undefined ? null : host.emitExpr(e.receiver);
-      const args = e.args.map((a) => host.emitExpr(a));
+      const args = e.args.map((a) => host.emitOwnedArgument(a));
       for (const a of args) host.moveTemp(a);
       const knownName =
         e.callee.kind === "closure"

@@ -7873,6 +7873,30 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/4032-discriminant-tag-dispatch.ts": {
+   "order": [
+    "<repo>/tests/corpus/4032-discriminant-tag-dispatch.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4033-number-remainder-integers.ts": {
+   "order": [
+    "<repo>/tests/corpus/4033-number-remainder-integers.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4034-captured-callback-bindings.ts": {
+   "order": [
+    "<repo>/tests/corpus/4034-captured-callback-bindings.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4035-final-local-reads.ts": {
+   "order": [
+    "<repo>/tests/corpus/4035-final-local-reads.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/404-rc-stress.ts": {
    "order": [
     "<repo>/tests/corpus/404-rc-stress.ts"

@@ -15,6 +15,7 @@ import { exactInteger, widenInteger, integerNumber } from "./integer-values.js";
 import { integerArithmeticRange } from "../../ir/integer-ranges.js";
 import { emitArrayValues } from "./expr-containers.js";
 import { emitSignedIntegerRemainder } from "./integer-remainder.js";
+import { discriminantComparison, emitDiscriminantEquality } from "./discriminant-dispatch.js";
 
 export function emitLiteralExpr(
   host: LlvmEmitterContext,
@@ -98,6 +99,60 @@ export function emitLiteralExpr(
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** JavaScript `%` on doubles. Integral operands below 2^53 with a nonzero
+ * divisor take an exact integer remainder; the dividend's sign, including
+ * -0, carries to the result exactly as fmod does. Every other operand pair
+ * keeps the ordinary floating remainder. */
+function emitRemainder(host: LlvmEmitterContext, left: string, right: string): string {
+  const B = host.B;
+  host.declare(`declare i64 @llvm.fptosi.sat.i64.f64(double)`);
+  host.declare(`declare double @llvm.fabs.f64(double)`);
+  host.declare(`declare double @llvm.copysign.f64(double, double)`);
+  const integral = (value: string): { integer: string; ok: string } => {
+    const integer = B.tmp(),
+      back = B.tmp(),
+      exact = B.tmp(),
+      magnitude = B.tmp(),
+      safe = B.tmp(),
+      ok = B.tmp();
+    B.line(`${integer} = call i64 @llvm.fptosi.sat.i64.f64(double ${value})`);
+    B.line(`${back} = sitofp i64 ${integer} to double`);
+    B.line(`${exact} = fcmp oeq double ${back}, ${value}`);
+    B.line(`${magnitude} = call double @llvm.fabs.f64(double ${value})`);
+    B.line(`${safe} = fcmp olt double ${magnitude}, ${f64Lit(9007199254740992)}`);
+    B.line(`${ok} = and i1 ${exact}, ${safe}`);
+    return { integer, ok };
+  };
+  const dividend = integral(left);
+  const divisor = integral(right);
+  const nonzero = B.tmp(),
+    divisorOk = B.tmp(),
+    fast = B.tmp();
+  B.line(`${nonzero} = icmp ne i64 ${divisor.integer}, 0`);
+  B.line(`${divisorOk} = and i1 ${divisor.ok}, ${nonzero}`);
+  B.line(`${fast} = and i1 ${dividend.ok}, ${divisorOk}`);
+  const fastLabel = B.newLabel("rem.int");
+  const slowLabel = B.newLabel("rem.float");
+  const done = B.newLabel("rem.done");
+  B.condBr(fast, fastLabel, slowLabel);
+  B.startBlock(fastLabel);
+  const remainder = B.tmp(),
+    integerValue = B.tmp(),
+    exact = B.tmp();
+  B.line(`${remainder} = srem i64 ${dividend.integer}, ${divisor.integer}`);
+  B.line(`${integerValue} = sitofp i64 ${remainder} to double`);
+  B.line(`${exact} = call double @llvm.copysign.f64(double ${integerValue}, double ${left})`);
+  B.br(done);
+  B.startBlock(slowLabel);
+  const floating = B.tmp();
+  B.line(`${floating} = frem double ${left}, ${right}`);
+  B.br(done);
+  B.startBlock(done);
+  const result = B.tmp();
+  B.line(`${result} = phi double [ ${exact}, %${fastLabel} ], [ ${floating}, %${slowLabel} ]`);
+  return result;
 }
 
 export function emitOperatorExpr(
@@ -235,6 +290,7 @@ export function emitOperatorExpr(
             return { name: t, type: e.type };
           }
         }
+        if (e.op === "%") return { name: emitRemainder(host, l.name, r.name), type: e.type };
         if (arith[e.op] !== undefined) B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
         else B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
       } else if (bit[e.op] !== undefined) {
@@ -406,6 +462,11 @@ export function emitStringExpr(
       return host.own({ name: t, type: e.type });
     }
     case "strEq": {
+      const comparison = discriminantComparison(e.left, e.right);
+      const tagged =
+        comparison &&
+        emitDiscriminantEquality(host, comparison.read, comparison.literal, e.negated);
+      if (tagged) return { name: tagged, type: e.type };
       const [l, r] = emitStringInputs(host, [e.left, e.right]);
       host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
       const eq = B.tmp();

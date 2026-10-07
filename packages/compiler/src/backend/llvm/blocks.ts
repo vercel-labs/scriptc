@@ -63,6 +63,11 @@ export class BlockBuilder {
     return `%s${this.tempCounter++}`;
   }
 
+  /** Label of the block now receiving lines (a phi's incoming edge). */
+  currentLabel(): string {
+    return this.cur.label;
+  }
+
   isTerminated(): boolean {
     return this.cur.term !== null;
   }

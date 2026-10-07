@@ -288,6 +288,14 @@ import {
   vAdapters,
 } from "./shapes.js";
 import type { ExprOf, LibCallExpr, LlStreamTypedRefAdapter, LlValue } from "./expr-context.js";
+import { immutableBoxes } from "./immutable-boxes.js";
+import { lastUseReads } from "./last-uses.js";
+import {
+  discriminantTags,
+  emitUnionStringField,
+  recordFieldWrites,
+  type DiscriminantTags,
+} from "./discriminant-dispatch.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -3293,6 +3301,21 @@ export class LlEmitter {
     B.terminate(`unreachable`);
   }
 
+  /** Branch on a union's tag to `target(tag)` for every arm; an invalid tag
+   * reaches the runtime ABI's abort like unionTagSwitch. */
+  unionTagRoutes(uName: string, def: IrUnionDef, target: (tag: number) => string): void {
+    const B = this.B;
+    const tag = this.unionTag(uName);
+    const bad = B.newLabel("u.bad");
+    B.terminate(
+      `switch i32 ${tag}, label %${bad} [ ${def.arms.map((_, i) => `i32 ${i}, label %${target(i)}`).join(" ")} ]`,
+    );
+    B.startBlock(bad);
+    this.needsBadTag = true;
+    B.line(`call void @sc_bad_tag()`);
+    B.terminate(`unreachable`);
+  }
+
   /** The +1 extraction of a union's single narrowed arm (unionNarrow /
    * the nullish-family reads): scalars via the runtime getters, ref arms
    * a retained peek. */
@@ -3395,6 +3418,77 @@ export class LlEmitter {
     if (!shape)
       throw new InternalCompilerError(`llvm emitter bug: unknown record shape ${shapeId}`);
     return shape;
+  }
+
+  private fieldWrites: Set<string> | null = null;
+  private stableBoxes: Set<string> | null = null;
+  private finalReads: ReadonlySet<IrExpr> | null = null;
+  private currentFn: IrFunction | null = null;
+
+  /** Final reads of the function being emitted, computed on first use.
+   * Debug builds keep every local's value visible until its scope ends. */
+  private isFinalRead(value: IrExpr): boolean {
+    if (this.finalReads === null) {
+      const fn = this.currentFn;
+      this.finalReads =
+        fn === null || this.debug !== null
+          ? new Set()
+          : lastUseReads(
+              fn.body,
+              new Set(
+                fn.locals
+                  .filter((local) => !local.boxed && !local.tdz && isRefCounted(local.type))
+                  .map((local) => local.id),
+              ),
+            );
+    }
+    return this.finalReads.has(value);
+  }
+  private currentFnName = "";
+
+  /** An owned read for a consumer that takes ownership: a local's final
+   * read moves its reference out of the slot instead of retaining a copy.
+   * Only plain locals whose reference an enclosing scope owns qualify. */
+  emitOwnedArgument(value: IrExpr): LlValue {
+    if (value.kind === "varRef" && this.isFinalRead(value)) {
+      const binding = this.binding(value.localId);
+      const owned =
+        binding.kind === "local" &&
+        binding.local !== undefined &&
+        !binding.local.boxed &&
+        !binding.local.tdz &&
+        isRefCounted(value.type) &&
+        binding.type.kind === value.type.kind &&
+        !this.splitSpans.has(value.localId) &&
+        this.scopes.some((scope) =>
+          scope.some((entry) => entry.slot === binding.slot && !entry.boxed),
+        );
+      if (owned) {
+        const moved = this.B.tmp();
+        this.B.line(`${moved} = load ptr, ptr ${binding.slot}`);
+        this.B.line(`store ptr null, ptr ${binding.slot} ; ${binding.local!.name} moved`);
+        return this.own({ name: moved, type: value.type });
+      }
+    }
+    return this.emitExpr(value);
+  }
+
+  /** A boxed binding no function ever writes after initialization. */
+  private immutableBox(localId: string): boolean {
+    this.stableBoxes ??= immutableBoxes(this.mod);
+    return this.stableBoxes.has(`${this.currentFnName}\0${localId}`);
+  }
+  private readonly discriminantTagCache = new Map<string, DiscriminantTags | null>();
+
+  /** Arms whose `field` the union tag alone determines (see
+   * discriminant-dispatch.ts); null when none does. */
+  discriminantTags(def: IrUnionDef, field: string): DiscriminantTags | null {
+    const key = `${def.id}\0${field}`;
+    if (this.discriminantTagCache.has(key)) return this.discriminantTagCache.get(key)!;
+    this.fieldWrites ??= recordFieldWrites(this.mod);
+    const tags = discriminantTags(def, field, (id) => this.recordShape(id), this.fieldWrites);
+    this.discriminantTagCache.set(key, tags);
+    return tags;
   }
 
   /** Record prefixes with the same LLVM storage types put a field at the
@@ -3794,6 +3888,9 @@ export class LlEmitter {
     this.currentLocals = new Map(fn.locals.map((l) => [l.id, l]));
     this.currentConstantCallbacks =
       this.debug === null ? (this.constantCallbacks.get(fn.name) ?? new Map()) : new Map();
+    this.currentFnName = fn.name;
+    this.finalReads = null;
+    this.currentFn = fn;
     // Preserve concrete source bindings for debugger inspection. Suspended
     // functions keep the established array lifetime across continuations.
     this.streamingSplitsEnabled = this.debug === null && !fn.async && !fn.generator;
@@ -4095,15 +4192,28 @@ export class LlEmitter {
     if (value.kind === "strLit") return true;
     if (value.kind !== "varRef") return false;
     const binding = this.binding(value.localId);
+    // An unwritten box keeps its value for the box's whole life, and the
+    // declaring frame or running closure keeps the box alive across the use.
+    // Dynamic boxes keep their untraced contract: the runtime and embedded
+    // engine can reach them outside IR writes, so they stay snapshotted.
+    if (binding.kind === "boxed")
+      return (
+        value.type.kind !== "dyn" &&
+        value.type.kind !== "jsval" &&
+        this.canBorrowReceiver(value) &&
+        this.immutableBox(value.localId)
+      );
     return (
       binding.kind === "local" &&
       binding.local !== undefined &&
+      !binding.local.boxed &&
+      !binding.local.tdz &&
       (!binding.local.mutable ||
         this.stableCallBindings.has(value.localId) ||
         this.borrowedParameters.has(value.localId) ||
-        this.localUnionStorage.has(value.localId)) &&
-      !binding.local.boxed &&
-      !binding.local.tdz
+        this.localUnionStorage.has(value.localId) ||
+        // Nothing reads or writes a final read's binding until the statement ends.
+        this.isFinalRead(value))
     );
   }
 
@@ -5034,7 +5144,7 @@ export class LlEmitter {
         // scope entry during each copy so a throwing finally releases it.
         let v: LlValue | null = null;
         if (s.value !== null) {
-          v = this.emitExpr(s.value);
+          v = this.emitOwnedArgument(s.value);
           this.moveTemp(v);
         }
         if (this.finallyStack.length > 0) {
@@ -5305,7 +5415,8 @@ export class LlEmitter {
     // discriminant it stays alive across every test and body, released
     // when the switch statement ends (break lands past this statement's
     // frame release — releaseForJump keeps the target's own frame).
-    const disc = this.emitExpr(s.disc);
+    const tagged = this.discriminantSwitch(s);
+    const disc = tagged ? null : this.emitExpr(s.disc);
     for (const c of s.cases) {
       for (const stmt of c.body) {
         if (stmt.kind !== "varDecl") continue;
@@ -5319,7 +5430,9 @@ export class LlEmitter {
     const caseLabels = s.cases.map(() => B.newLabel("sw.c"));
     const defaultIdx = s.cases.findIndex((c) => c.test === null);
     const fallback = defaultIdx >= 0 ? caseLabels[defaultIdx]! : end;
-    if (!emitLiteralSwitch(this, disc, s.cases, caseLabels, fallback)) {
+    if (tagged) {
+      this.emitDiscriminantDispatch(tagged, s.cases, caseLabels, fallback);
+    } else if (!emitLiteralSwitch(this, disc!, s.cases, caseLabels, fallback)) {
       s.cases.forEach((c, i) => {
         if (c.test === null) return;
         // Lazy source-order test evaluation (a test after the match never
@@ -5329,11 +5442,11 @@ export class LlEmitter {
         const hit = B.tmp();
         if (c.test.type.kind === "string") {
           this.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
-          B.line(`${hit} = call zeroext i1 @scr_str_eq(ptr ${disc.name}, ptr ${t.name})`);
+          B.line(`${hit} = call zeroext i1 @scr_str_eq(ptr ${disc!.name}, ptr ${t.name})`);
         } else if (c.test.type.kind === "bool") {
-          B.line(`${hit} = icmp eq i1 ${disc.name}, ${t.name}`);
+          B.line(`${hit} = icmp eq i1 ${disc!.name}, ${t.name}`);
         } else {
-          B.line(`${hit} = fcmp oeq double ${disc.name}, ${t.name}`);
+          B.line(`${hit} = fcmp oeq double ${disc!.name}, ${t.name}`);
         }
         this.releaseFrame(this.frames.pop()!);
         const next = B.newLabel("sw.t");
@@ -5367,6 +5480,58 @@ export class LlEmitter {
     if (!lastBody || !endsWithJump(lastBody)) this.releaseScope(scope);
     B.br(end);
     B.startBlock(end);
+  }
+
+  /** A string-literal switch over a discriminant read with fixed arms:
+   * evaluates only the union receiver, which lives for the statement. */
+  private discriminantSwitch(
+    s: IrStmt & { kind: "switch" },
+  ): { union: string; def: IrUnionDef; field: string; tags: DiscriminantTags } | null {
+    const read = s.disc;
+    if (read.kind !== "unionDisc" || read.type.kind !== "string") return null;
+    if (!s.cases.every((c) => c.test === null || c.test.kind === "strLit")) return null;
+    const def = this.unionsById.get(read.unionId);
+    const tags = def ? this.discriminantTags(def, read.field) : null;
+    if (!def || !tags) return null;
+    return { union: this.emitReadReceiver(read.value).name, def, field: read.field, tags };
+  }
+
+  /** Branch each arm to the first case its value matches, in source order:
+   * a fixed arm by its known literal; every other arm shares one field read
+   * and comparison chain. */
+  private emitDiscriminantDispatch(
+    plan: { union: string; def: IrUnionDef; field: string; tags: DiscriminantTags },
+    cases: { test: IrExpr | null }[],
+    caseLabels: string[],
+    fallback: string,
+  ): void {
+    const B = this.B;
+    const literals = cases.map((c) => (c.test?.kind === "strLit" ? c.test.value : null));
+    const read = B.newLabel("sw.read");
+    let reads = false;
+    this.unionTagRoutes(plan.union, plan.def, (tag) => {
+      const fixed = plan.tags[tag] ?? null;
+      if (fixed === null) {
+        reads = true;
+        return read;
+      }
+      const index = literals.indexOf(fixed);
+      return index >= 0 ? caseLabels[index]! : fallback;
+    });
+    if (!reads) return;
+    B.startBlock(read);
+    this.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
+    const value = emitUnionStringField(this, plan.union, plan.def, plan.field);
+    cases.forEach((c, i) => {
+      if (c.test === null) return;
+      const literal = this.emitExpr(c.test);
+      const hit = B.tmp();
+      B.line(`${hit} = call zeroext i1 @scr_str_eq(ptr ${value}, ptr ${literal.name})`);
+      const next = B.newLabel("sw.t");
+      B.condBr(hit, caseLabels[i]!, next);
+      B.startBlock(next);
+    });
+    B.br(fallback);
   }
 
   /** Evaluates a condition (IR conds are bool-typed) and releases its

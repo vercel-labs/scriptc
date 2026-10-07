@@ -84,3 +84,29 @@ test.each([32, 64] as const)(
     expect(one).toContain("@scr_str_utf16_len");
   },
 );
+
+test("number remainders take an exact integer path before the floating remainder", () => {
+  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const mod = fixture();
+  mod.functions[0]!.params = [{ name: "x", localId: "x", type: F64 }];
+  mod.functions[0]!.locals = [{ id: "x", name: "x", type: F64, mutable: false }];
+  mod.functions[0]!.body = [
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "bin",
+        op: "%",
+        left: { kind: "varRef", localId: "x", type: F64, loc },
+        right: num(7),
+        type: F64,
+        loc,
+      },
+      loc,
+    },
+  ];
+  const llvm = emitLlvmModule(mod);
+  expect(llvm).toContain("@llvm.fptosi.sat.i64.f64");
+  expect(llvm).toMatch(/ = srem i64 /);
+  expect(llvm).toMatch(/@llvm\.copysign\.f64\(double %t\d+, double %t\d+\)/);
+  expect(llvm).toMatch(/ = frem double %t\d+, 0x401C000000000000$/m);
+});

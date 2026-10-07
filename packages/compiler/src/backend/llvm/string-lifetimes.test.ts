@@ -164,12 +164,31 @@ test("a later global write keeps mutable string arguments owned", () => {
   const compare = fn("compare", ["text"], equal(ref("text"), call("source", [], STRING)));
   // A later write anywhere in this function rules out parameter borrowing.
   compare.body.unshift({ kind: "assign", localId: "text", value: str("first"), loc });
+  // A later read keeps this comparison from being the binding's final use.
+  compare.body.splice(compare.body.length - 1, 0, {
+    kind: "exprStmt",
+    expr: equal(ref("text"), call("source", [], STRING)),
+    loc,
+  });
   const module = mod(source, compare);
   module.globals = [{ id: "%g.changed", name: "changed", type: STRING, mutable: true }];
   const ir = body(module, "sc_f_compare");
   const sourceCall = ir.indexOf("@sc_f_source");
   expect(sourceCall).toBeGreaterThan(0);
   expect(ir.slice(0, sourceCall)).toContain("@scr_str_retain_v");
+});
+
+test("a mutable local's final read borrows its slot across later operands", () => {
+  const source = fn("source", [], str("next"));
+  source.body.unshift({ kind: "assign", localId: "%g.changed", value: str("effect"), loc });
+  const compare = fn("compare", ["text"], equal(ref("text"), call("source", [], STRING)));
+  compare.body.unshift({ kind: "assign", localId: "text", value: str("first"), loc });
+  const module = mod(source, compare);
+  module.globals = [{ id: "%g.changed", name: "changed", type: STRING, mutable: true }];
+  // No callee can write an unboxed local, and nothing reads it afterwards.
+  const ir = body(module, "sc_f_compare");
+  expect(ir.slice(0, ir.indexOf("@sc_f_source"))).not.toContain("@scr_str_retain_v");
+  expect(ir).toContain("@scr_str_eq");
 });
 
 test("immutable lexical owners survive arbitrary later operands", () => {

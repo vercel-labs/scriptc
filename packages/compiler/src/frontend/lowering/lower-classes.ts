@@ -1431,6 +1431,8 @@ function collectClassShapeDeferring(lowerer: Lowerer, decl: ts.ClassDeclaration)
         : undefined;
       if (
         baseDeclaration &&
+        !lowerer.isStdlibSymbol(baseSymbol ?? undefined) &&
+        !baseDeclaration.getSourceFile().isDeclarationFile &&
         (baseDeclaration.getSourceFile() !== decl.getSourceFile() ||
           baseDeclaration.getStart() < decl.getStart())
       )

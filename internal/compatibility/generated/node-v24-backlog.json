@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 42,
-        "verify-gap": 2447,
-        "audit-partial": 717,
+        "verify-gap": 2427,
+        "audit-partial": 737,
         "classify": 2,
         "implement": 80
       },
@@ -107505,12 +107505,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.MessagePort",
+          "tests": [
+            "tests/corpus/native-worker-commonjs.cjs",
+            "tests/corpus/native-worker-port-lifetime.ts",
+            "tests/corpus/native-worker-references.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -107540,12 +107544,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.port.close",
+          "tests": [
+            "tests/corpus/native-worker-port-lifetime.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -107575,12 +107581,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.port.postMessage",
+          "tests": [
+            "tests/corpus/native-worker-message-graphs.ts",
+            "tests/corpus/native-worker-shared-views.ts",
+            "tests/corpus/native-worker-clone-errors.ts",
+            "tests/corpus/native-worker-delayed-messages.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -107610,12 +107621,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.port.hasRef",
+          "tests": [
+            "tests/corpus/native-worker-port-lifetime.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -107645,12 +107658,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.port.ref",
+          "tests": [
+            "tests/corpus/native-worker-port-lifetime.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -107680,12 +107695,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.port.start",
+          "tests": [
+            "tests/corpus/native-worker-port-lifetime.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -107715,12 +107732,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.port.unref",
+          "tests": [
+            "tests/corpus/native-worker-port-lifetime.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -107750,12 +107769,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.'close'",
+          "tests": [
+            "tests/corpus/native-worker-port-lifetime.ts",
+            "tests/corpus/native-worker-messages.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -107783,12 +107805,15 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.'message'",
+          "tests": [
+            "tests/corpus/native-worker-port-lifetime.ts",
+            "tests/corpus/native-worker-messages.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -107849,12 +107874,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.Worker",
+          "tests": [
+            "tests/corpus/native-worker-messages.ts",
+            "tests/corpus/native-worker-commonjs.cjs",
+            "tests/corpus/native-worker-environment.ts",
+            "tests/corpus/native-worker-roots/main.ts"
+          ]
         },
         "dynamic": {
           "status": "refused",
@@ -107981,12 +108011,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker.postMessage",
+          "tests": [
+            "tests/corpus/native-worker-message-graphs.ts",
+            "tests/corpus/native-worker-shared-views.ts",
+            "tests/corpus/native-worker-clone-errors.ts",
+            "tests/corpus/native-worker-delayed-messages.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -108014,12 +108049,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker.ref",
+          "tests": [
+            "tests/corpus/native-worker-references.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -108113,12 +108150,17 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker.terminate",
+          "tests": [
+            "tests/corpus/native-worker-terminate-loop.ts",
+            "tests/corpus/native-worker-terminate-wait.ts",
+            "tests/corpus/native-worker-terminate-suspended.ts",
+            "tests/corpus/native-worker-loop-cancellation.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -108146,12 +108188,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker.unref",
+          "tests": [
+            "tests/corpus/native-worker-references.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -108416,9 +108460,11 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:node-builtin.worker_threads.threadId",
+          "source": "compiler-feature:worker_threads.threadId",
           "tests": [
-            "tests/corpus/957-builtins-namespace.ts"
+            "tests/corpus/native-worker-commonjs.cjs",
+            "tests/corpus/native-worker-port-lifetime.ts",
+            "tests/corpus/native-worker-references.ts"
           ]
         },
         "dynamic": {
@@ -108482,12 +108528,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.'error'",
+          "tests": [
+            "tests/corpus/native-worker-references.ts",
+            "tests/corpus/native-worker-error.ts",
+            "tests/corpus/native-worker-exit-listeners.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -108515,12 +108565,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.'exit'",
+          "tests": [
+            "tests/corpus/native-worker-references.ts",
+            "tests/corpus/native-worker-error.ts",
+            "tests/corpus/native-worker-exit-listeners.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -108548,12 +108602,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.'message'",
+          "tests": [
+            "tests/corpus/native-worker-references.ts",
+            "tests/corpus/native-worker-error.ts",
+            "tests/corpus/native-worker-exit-listeners.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -108614,12 +108672,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.'online'",
+          "tests": [
+            "tests/corpus/native-worker-references.ts",
+            "tests/corpus/native-worker-error.ts",
+            "tests/corpus/native-worker-exit-listeners.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -108956,9 +109018,11 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:node-builtin.worker_threads.isMainThread",
+          "source": "compiler-feature:worker_threads.isMainThread",
           "tests": [
-            "tests/corpus/957-builtins-namespace.ts"
+            "tests/corpus/native-worker-commonjs.cjs",
+            "tests/corpus/native-worker-port-lifetime.ts",
+            "tests/corpus/native-worker-references.ts"
           ]
         },
         "dynamic": {
@@ -108989,12 +109053,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.parentPort",
+          "tests": [
+            "tests/corpus/native-worker-commonjs.cjs",
+            "tests/corpus/native-worker-port-lifetime.ts",
+            "tests/corpus/native-worker-references.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",
@@ -109098,9 +109166,11 @@
           "action": "audit-partial",
           "verification": "test-backed",
           "confidence": "high",
-          "source": "surface-manifest:node-builtin.worker_threads.threadId",
+          "source": "compiler-feature:worker_threads.threadId",
           "tests": [
-            "tests/corpus/957-builtins-namespace.ts"
+            "tests/corpus/native-worker-commonjs.cjs",
+            "tests/corpus/native-worker-port-lifetime.ts",
+            "tests/corpus/native-worker-references.ts"
           ]
         },
         "dynamic": {
@@ -109164,12 +109234,16 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:worker_threads",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:worker_threads.worker_threads.workerData",
+          "tests": [
+            "tests/corpus/native-worker-commonjs.cjs",
+            "tests/corpus/native-worker-port-lifetime.ts",
+            "tests/corpus/native-worker-references.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",

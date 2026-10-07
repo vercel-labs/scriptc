@@ -1,3 +1,4 @@
+import { withWorkerRuntimeVariants } from "./worker-matrix.mjs";
 import { withLibraryRuntimeFlavors } from "./library-matrix.mjs";
 
 /**
@@ -9,6 +10,8 @@ const any = (...features) => ({ any: features });
 const all = (...features) => ({ all: features });
 
 const BASE_RUNTIME_SOURCES = [
+  "scr_context.c",
+  "scr_shared.c",
   "scr_number.c",
   "scr_bigint.c",
   "scr_string.c",
@@ -125,23 +128,25 @@ export function createRuntimePackMatrix({
     { id: "zlib", predicate: "zlibEffective" },
     { id: "mbedtls", predicate: "tlsEffective" },
   ];
-  const matrix = withLibraryRuntimeFlavors({
-    schema: "scriptc.runtime-pack-matrix.v1",
-    target,
-    flavors: { release: { optimization: "-O2" }, dev: { optimization: "-O0" } },
-    executable_section_elimination: { compile_flags: compileFlags },
-    runtime_units: [
-      ...BASE_RUNTIME_SOURCES.filter((source) => !omitRuntimeSources.includes(source)).map(
-        (source) => ({ source, predicate: true }),
-      ),
-      ...extraRuntimeSources.map((source) => ({ source, predicate: true })),
-      ...OPTIONAL.filter(([source]) => !omitOptionalSources.includes(source)).map(
-        ([source, predicate]) => ({ source, predicate }),
-      ),
-    ].map((unit) => ({ ...unit, variants: variantsFor(unit.source) })),
-    archives: vendorArchives.filter(({ id }) => !omitArchives.includes(id)),
-    system_libraries: systemLibraries,
-  });
+  const matrix = withLibraryRuntimeFlavors(
+    withWorkerRuntimeVariants({
+      schema: "scriptc.runtime-pack-matrix.v1",
+      target,
+      flavors: { release: { optimization: "-O2" }, dev: { optimization: "-O0" } },
+      executable_section_elimination: { compile_flags: compileFlags },
+      runtime_units: [
+        ...BASE_RUNTIME_SOURCES.filter((source) => !omitRuntimeSources.includes(source)).map(
+          (source) => ({ source, predicate: true }),
+        ),
+        ...extraRuntimeSources.map((source) => ({ source, predicate: true })),
+        ...OPTIONAL.filter(([source]) => !omitOptionalSources.includes(source)).map(
+          ([source, predicate]) => ({ source, predicate }),
+        ),
+      ].map((unit) => ({ ...unit, variants: variantsFor(unit.source) })),
+      archives: vendorArchives.filter(({ id }) => !omitArchives.includes(id)),
+      system_libraries: systemLibraries,
+    }),
+  );
   if (libraryOnly) {
     matrix.flavors = Object.fromEntries(
       Object.entries(matrix.flavors).filter(([name]) => name.startsWith("library-")),

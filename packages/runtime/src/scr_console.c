@@ -107,9 +107,12 @@ static void scr_enable_utf8_console_output(void) {
 }
 #endif
 
-void scr_runtime_abi_v6(void) {}
+void scr_runtime_abi_v7(void) {}
 
 void scr_init(void) {
+#ifdef SCR_WORKERS
+  if (scr_context_is_main()) {
+#endif
 #ifdef _WIN32
   /* The CRT opens std streams in TEXT mode, which writes \n as \r\n. Node
    * on Windows does NOT translate — console.log emits \n whether stdout is
@@ -133,16 +136,19 @@ void scr_init(void) {
    * stream immediately. */
   static char outbuf[1 << 16];
   setvbuf(stdout, outbuf, _IOFBF, sizeof outbuf);
+#ifdef SCR_WORKERS
+  }
+#endif
   /* atexit is LIFO; registration order makes exit run: library cleanup
    * (registered later, in scr_lib_init) → cycle collection → RC audit →
    * flush → Windows console-code-page restore. The final collection frees
    * cycles the program dropped, so the audit (and ASan's leak check) see
    * them as freed, not leaked. */
-  atexit(scr_flush_at_exit);
+  scr_atexit(scr_flush_at_exit);
 #ifdef SCR_RC_AUDIT
-  atexit(scr_rc_audit_at_exit);
+  scr_atexit(scr_rc_audit_at_exit);
 #endif
-  atexit(scr_collect_cycles_at_exit);
+  scr_atexit(scr_collect_cycles_at_exit);
 }
 #endif /* !SCR_LIB — a library artifact never touches host stdio modes/buffering and
         * registers no atexit handlers: scr_init and its exit hooks (the
@@ -154,7 +160,7 @@ void scr_init(void) {
  * the stream differs. */
 /* A real definition lets relocatable library links localize this hook;
  * a tentative common symbol stays externally visible on Mach-O. */
-bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len) = NULL;
+SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len) = NULL;
 
 static void scr_console_write(FILE *out, size_t n, const ScrLogArg *args) {
   if (scr_stdio_write_hook) {
@@ -192,6 +198,15 @@ static void scr_console_write(FILE *out, size_t n, const ScrLogArg *args) {
     if (scr_exc_pending()) scr_exc_clear();
     return;
   }
+  /* Formatting a single line uses several libc calls. Hold the stream lock
+   * for that whole chunk so concurrent workers cannot interleave arguments. */
+#ifdef SCR_WORKERS
+#ifdef _WIN32
+  _lock_file(out);
+#else
+  flockfile(out);
+#endif
+#endif
   char numbuf[32];
   for (size_t i = 0; i < n; i++) {
     if (i > 0) fputc(' ', out);
@@ -221,6 +236,13 @@ static void scr_console_write(FILE *out, size_t n, const ScrLogArg *args) {
    * Keep the C buffer only as a formatter coalescing detail: a caller
    * observing a live child must see this line before the next JS turn. */
   fflush(out);
+#ifdef SCR_WORKERS
+#ifdef _WIN32
+  _unlock_file(out);
+#else
+  funlockfile(out);
+#endif
+#endif
 }
 
 void scr_console_log(size_t n, const ScrLogArg *args) {

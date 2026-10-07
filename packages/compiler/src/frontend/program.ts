@@ -117,6 +117,7 @@ import {
 } from "./tsc-codes.js";
 import { trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { forkTargetPaths } from "./fork-target.js";
+import { workerTargetPaths } from "./worker-target.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 
@@ -669,6 +670,7 @@ function loadProgram7(
         ...entryPackageProgramRoots7(program, entryPath),
         ...createRequireProgramRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
+        ...workerTargetPaths(program, program.getImplementationSourceFiles()),
       ];
       const extraRoots = candidates.filter(
         (root, index) => !programRoots.includes(root) && candidates.indexOf(root) === index,
@@ -2693,6 +2695,7 @@ function preflight7(load: LoadResult): {
         [
           ...createRequireProgramRoots7(program),
           ...forkTargetPaths(program, program.getImplementationSourceFiles()),
+          ...workerTargetPaths(program, program.getImplementationSourceFiles()),
         ],
         (sf, spec, resolutionKind) =>
           resolveImport7(program, sf, spec, resolutionKind) ??

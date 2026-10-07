@@ -161,6 +161,22 @@ test("early dev cache restores the matching dSYM and rejects a missing payload",
   expect(await readEarlyExecutableCache(f.root, f.options)).toBeNull();
 });
 
+test("early executable cache preserves worker runtime selection when only frontend output restores", async () => {
+  const f = await fixture();
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  await publishEarlyExecutableCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    native: { ...native, workers: true },
+    executableRestored: false,
+    frontend: tracker.snapshot(),
+  });
+  const restored = await readEarlyExecutableCache(f.root, f.options);
+  expect(restored?.native.workers).toBe(true);
+  expect(restored?.executableRestored).toBe(false);
+});
+
 test("early executable cache misses on source and resolution changes", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();

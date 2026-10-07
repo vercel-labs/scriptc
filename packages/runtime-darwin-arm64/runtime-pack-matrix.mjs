@@ -1,3 +1,4 @@
+import { withWorkerRuntimeVariants } from "../runtime-pack-common/worker-matrix.mjs";
 import { withLibraryRuntimeFlavors } from "../runtime-pack-common/library-matrix.mjs";
 
 /**
@@ -11,6 +12,8 @@ const any = (...features) => ({ any: features });
 const all = (...features) => ({ all: features });
 
 const BASE_RUNTIME_SOURCES = [
+  "scr_context.c",
+  "scr_shared.c",
   "scr_number.c",
   "scr_bigint.c",
   "scr_string.c",
@@ -119,29 +122,31 @@ function variantsFor(source) {
   return variants;
 }
 
-export const RUNTIME_PACK_MATRIX = withLibraryRuntimeFlavors({
-  schema: "scriptc.runtime-pack-matrix.v1",
-  target: {
-    name: "macos-arm64",
-    llvm_triple: "arm64-apple-macosx14.0.0",
-    architecture: "arm64",
-    object_format: "macho",
-    minimum_os: "14.0",
-  },
-  flavors: { release: { optimization: "-O2" }, dev: { optimization: "-O0" } },
-  executable_section_elimination: EXECUTABLE_SECTION_ELIMINATION,
-  runtime_units: [
-    ...BASE_RUNTIME_SOURCES.map((source) => ({ source, predicate: true })),
-    ...optional.map(([source, predicate]) => ({ source, predicate })),
-  ].map((unit) => ({ ...unit, variants: variantsFor(unit.source) })),
-  archives: [
-    { id: "quickjs", predicate: "dynamic" },
-    { id: "libregexp", predicate: { all: ["regex"], not: ["dynamic"] } },
-    { id: "zlib", predicate: "zlibEffective" },
-    { id: "mbedtls", predicate: "tlsEffective" },
-  ],
-  system_libraries: [
-    { name: "System", predicate: true },
-    { name: "m", predicate: "dynamic" },
-  ],
-});
+export const RUNTIME_PACK_MATRIX = withLibraryRuntimeFlavors(
+  withWorkerRuntimeVariants({
+    schema: "scriptc.runtime-pack-matrix.v1",
+    target: {
+      name: "macos-arm64",
+      llvm_triple: "arm64-apple-macosx14.0.0",
+      architecture: "arm64",
+      object_format: "macho",
+      minimum_os: "14.0",
+    },
+    flavors: { release: { optimization: "-O2" }, dev: { optimization: "-O0" } },
+    executable_section_elimination: EXECUTABLE_SECTION_ELIMINATION,
+    runtime_units: [
+      ...BASE_RUNTIME_SOURCES.map((source) => ({ source, predicate: true })),
+      ...optional.map(([source, predicate]) => ({ source, predicate })),
+    ].map((unit) => ({ ...unit, variants: variantsFor(unit.source) })),
+    archives: [
+      { id: "quickjs", predicate: "dynamic" },
+      { id: "libregexp", predicate: { all: ["regex"], not: ["dynamic"] } },
+      { id: "zlib", predicate: "zlibEffective" },
+      { id: "mbedtls", predicate: "tlsEffective" },
+    ],
+    system_libraries: [
+      { name: "System", predicate: true },
+      { name: "m", predicate: "dynamic" },
+    ],
+  }),
+);

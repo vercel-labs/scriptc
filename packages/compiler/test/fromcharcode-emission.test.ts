@@ -7,7 +7,7 @@ test("scalar fromCharCode avoids a heap argument pack in LLVM", () => {
   const loc = { file: "scalar-char.ts", start: 0, end: 0 };
   const value: IrExpr = { kind: "numLit", value: 65, type: F64, loc };
   const mod: IrModule = {
-    irVersion: 13,
+    irVersion: 14,
     sourceFile: loc.file,
     entry: "__main",
     globals: [],

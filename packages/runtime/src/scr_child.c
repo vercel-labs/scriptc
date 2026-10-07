@@ -1261,9 +1261,9 @@ struct ScrChildWriter {
   struct ScrChildWriter *next; /* the service registry (+1) */
 };
 
-static ScrChildStream *scr_child_streams = NULL;
-static size_t scr_child_streams_watching = 0;
-static ScrChildWriter *scr_child_writers = NULL;
+static SCR_TL ScrChildStream *scr_child_streams = NULL;
+static SCR_TL size_t scr_child_streams_watching = 0;
+static SCR_TL ScrChildWriter *scr_child_writers = NULL;
 static bool scr_child_writers_pending(void);
 static void scr_child_writers_service(void);
 static void scr_child_writer_child_settled(ScrChildWriter *w);
@@ -1304,14 +1304,14 @@ struct ScrChild {
   struct ScrChild *next; /* the pending registry */
 };
 
-static ScrChild *scr_children = NULL;
-static ScrChild *scr_children_closing = NULL;
-static size_t scr_children_reffed_n = 0;
+static SCR_TL ScrChild *scr_children = NULL;
+static SCR_TL ScrChild *scr_children_closing = NULL;
+static SCR_TL size_t scr_children_reffed_n = 0;
 /* Pending children the handle wait can NOT represent — spawn failures
  * awaiting their first-pass settle. While any exist, scr_children_wait
  * declines and the loop keeps the ~1ms polling cap (the POSIX arm's
  * unwatched fallback, exactly). */
-static size_t scr_children_unwatched = 0;
+static SCR_TL size_t scr_children_unwatched = 0;
 
 static void scr_child_drop_terminal_listeners(ScrChild *c) {
   scr_child_drop_spawn_listeners(c);
@@ -1685,7 +1685,7 @@ void scr_child_stream_thunk_str(ScrClosure *cb, ScrStr *chunk) {
 
 #define SCR_CHILD_WRITER_HWM 16384
 
-static const char *scr_child_writer_err_code = NULL;
+static SCR_TL const char *scr_child_writer_err_code = NULL;
 
 static void scr_child_writer_drop_zero_listeners(ScrChildWriter *w) {
   for (size_t i = 0; i < w->n_drain; i++) scr_closure_release(w->drain_ls[i].cb);
@@ -1908,6 +1908,7 @@ bool scr_child_writer_write_string(ScrChildWriter *w, const ScrStr *data) {
 }
 
 bool scr_child_writer_write_bytes(ScrChildWriter *w, const ScrBytes *data) {
+  SCR_BYTES_SNAPSHOT(data);
   return scr_child_writer_write(w, data->data, data->len);
 }
 
@@ -2431,12 +2432,12 @@ void scr_child_err_thunk0(ScrClosure *cb, ScrStr *msg) {
   ((void (*)(ScrClosure *))cb->fn)(cb);
 }
 
-static const char *scr_child_err_code = NULL;
+static SCR_TL const char *scr_child_err_code = NULL;
 
 /* The errno name embedded in an errnoException-style message — the
  * POSIX arm's parser, shared story (see its comment). */
 static const char *scr_err_msg_code(const ScrStr *msg) {
-  static char buf[32];
+  static SCR_TL char buf[32];
   const char *sp = strchr((const char *)msg->data, ' ');
   if (sp == NULL || sp[1] != 'E') return NULL;
   const char *tok = sp + 1;
@@ -3541,11 +3542,11 @@ struct ScrChildWriter {
   struct ScrChildWriter *next; /* the service registry (+1) */
 };
 
-static ScrChildStream *scr_child_streams = NULL;
+static SCR_TL ScrChildStream *scr_child_streams = NULL;
 /* Streams with a live consumer (data listener, not yet EOF): the loop's
  * keep-alive and service predicate. */
-static size_t scr_child_streams_watching = 0;
-static ScrChildWriter *scr_child_writers = NULL;
+static SCR_TL size_t scr_child_streams_watching = 0;
+static SCR_TL ScrChildWriter *scr_child_writers = NULL;
 static bool scr_child_writers_pending(void);
 static void scr_child_writers_service(void);
 static void scr_child_writer_child_settled(ScrChildWriter *w);
@@ -3588,18 +3589,18 @@ struct ScrChild {
   struct ScrChild *next; /* the pending registry */
 };
 
-static ScrChild *scr_children = NULL; /* unsettled children (registry +1) */
-static ScrChild *scr_children_closing = NULL; /* exited, waiting for stdio EOF */
-static size_t scr_children_reffed_n = 0; /* unsettled AND reffed (liveness) */
+static SCR_TL ScrChild *scr_children = NULL; /* unsettled children (registry +1) */
+static SCR_TL ScrChild *scr_children_closing = NULL; /* exited, waiting for stdio EOF */
+static SCR_TL size_t scr_children_reffed_n = 0; /* unsettled AND reffed (liveness) */
 
 /* Children the kqueue can NOT wake the loop for (spawn failures awaiting
  * their first-pass settle, exit-filter registration failures, every child
  * on a non-kqueue platform): while any exist, scr_children_wait refuses
  * and the loop keeps the polling cap for them. */
-static size_t scr_children_unwatched = 0;
+static SCR_TL size_t scr_children_unwatched = 0;
 
 #ifdef SCR_HAVE_KQUEUE
-static int scr_child_kq = -1; /* created with the first spawn; lives forever */
+static SCR_TL int scr_child_kq = -1; /* created with the first spawn; lives forever */
 
 /* Arms NOTE_EXIT for a freshly spawned pid. False = the child cannot be
  * watched (it already exited and EVFILT_PROC refuses zombies — the very
@@ -3622,7 +3623,7 @@ static void scr_child_unwatch(pid_t pid) { (void)pid; }
 #endif
 
 #ifdef SCR_CHILD_HAVE_PIDFD
-static int scr_child_ep = -1; /* created with the first spawn; lives forever */
+static SCR_TL int scr_child_ep = -1; /* created with the first spawn; lives forever */
 
 /* pid -> pidfd, so the reap can CLOSE the pidfd (it polls readable from
  * exit until closed — kqueue's ONESHOT drop has no epoll analogue). A
@@ -3632,8 +3633,8 @@ typedef struct {
   int pidfd;
 } ScrChildPidfd;
 
-static ScrChildPidfd *scr_child_pidfds = NULL;
-static size_t scr_child_pidfds_n = 0, scr_child_pidfds_cap = 0;
+static SCR_TL ScrChildPidfd *scr_child_pidfds = NULL;
+static SCR_TL size_t scr_child_pidfds_n = 0, scr_child_pidfds_cap = 0;
 
 /* Arms an exit wakeup for a freshly spawned pid: pidfd_open registered
  * EPOLLIN. False = the child cannot be watched (ENOSYS on pre-5.3
@@ -4225,7 +4226,7 @@ void scr_child_stream_thunk_str(ScrClosure *cb, ScrStr *chunk) {
 
 #define SCR_CHILD_WRITER_HWM 65536
 
-static const char *scr_child_writer_err_code = NULL;
+static SCR_TL const char *scr_child_writer_err_code = NULL;
 
 static void scr_child_writer_drop_zero_listeners(ScrChildWriter *w) {
   for (size_t i = 0; i < w->n_drain; i++) scr_closure_release(w->drain_ls[i].cb);
@@ -4432,6 +4433,7 @@ bool scr_child_writer_write_string(ScrChildWriter *w, const ScrStr *data) {
 }
 
 bool scr_child_writer_write_bytes(ScrChildWriter *w, const ScrBytes *data) {
+  SCR_BYTES_SNAPSHOT(data);
   return scr_child_writer_write(w, data->data, data->len);
 }
 
@@ -4970,6 +4972,22 @@ void scr_children_teardown(void) {
     scr_child_drop_listeners(c);
     scr_child_release(c);
   }
+#ifdef SCR_WORKERS
+  /* Watchers belong to the script context, which can end long before the
+   * process. Release their OS handles and reusable pid index at loop exit. */
+#ifdef SCR_HAVE_KQUEUE
+  if (scr_child_kq >= 0) close(scr_child_kq);
+  scr_child_kq = -1;
+#endif
+#ifdef SCR_CHILD_HAVE_PIDFD
+  for (size_t i = 0; i < scr_child_pidfds_n; i++) close(scr_child_pidfds[i].pidfd);
+  free(scr_child_pidfds);
+  scr_child_pidfds = NULL;
+  scr_child_pidfds_n = scr_child_pidfds_cap = 0;
+  if (scr_child_ep >= 0) close(scr_child_ep);
+  scr_child_ep = -1;
+#endif
+#endif
 }
 
 void scr_child_on_exit(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn) {
@@ -5039,7 +5057,7 @@ void scr_child_err_thunk0(ScrClosure *cb, ScrStr *msg) {
  * Node's `code` on the constructed error (the thunk signature is shared
  * with scr_net.c's error events, which parse theirs out of the message
  * below). NULL outside a spawn-failure settle. */
-static const char *scr_child_err_code = NULL;
+static SCR_TL const char *scr_child_err_code = NULL;
 
 /* [.code on event errors — net/http/dgram parity with spawn failures]
  * The errno name embedded in an errnoException-style message ("connect
@@ -5054,7 +5072,7 @@ static const char *scr_child_err_code = NULL;
  * valid until the next call, or NULL for code-less messages ("socket
  * hang up" stays undefined — divergence 54's documented bound). */
 static const char *scr_err_msg_code(const ScrStr *msg) {
-  static char buf[32];
+  static SCR_TL char buf[32];
   const char *sp = strchr((const char *)msg->data, ' ');
   if (sp == NULL || sp[1] != 'E') return NULL;
   const char *tok = sp + 1;
@@ -5541,10 +5559,10 @@ struct ScrIpc {
   struct ScrIpc *next;
 };
 
-static ScrIpc *scr_ipcs = NULL;
-static ScrIpc *scr_process_ipc = NULL;
-static double scr_process_fork_id = -2;
-static bool scr_ipc_cleanup_registered = false;
+static SCR_TL ScrIpc *scr_ipcs = NULL;
+static SCR_TL ScrIpc *scr_process_ipc = NULL;
+static SCR_TL double scr_process_fork_id = -2;
+static SCR_TL bool scr_ipc_cleanup_registered = false;
 
 static ScrIpc *scr_ipc_retain(ScrIpc *ipc) {
   if (ipc && ipc->rc != SIZE_MAX) ipc->rc++;
@@ -5633,7 +5651,7 @@ static void scr_ipc_stream_data(ScrClosure *closure, ScrBytes *chunk) {
     if (!ipc->buffer) scr_trap("out of memory");
     ipc->buffer_cap = cap;
   }
-  memcpy(ipc->buffer + ipc->buffer_len, chunk->data, chunk->len);
+  scr_bytes_read(chunk, 0, ipc->buffer + ipc->buffer_len, chunk->len);
   ipc->buffer_len = need;
   size_t consumed = 0;
   for (size_t i = 0; i < ipc->buffer_len; i++) {
@@ -5705,7 +5723,7 @@ static ScrIpc *scr_ipc_new(ScrChildStream *reader, ScrChildWriter *writer) {
                             &scr_ipc_writer_error, false);
   if (!scr_ipc_cleanup_registered) {
     scr_ipc_cleanup_registered = true;
-    atexit(scr_ipc_global_cleanup);
+    scr_atexit(scr_ipc_global_cleanup);
   }
   return ipc;
 }

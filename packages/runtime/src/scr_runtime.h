@@ -35,7 +35,7 @@ char *strcasestr(const char *hay, const char *needle);
 void arc4random_buf(void *buf, size_t n);
 #endif
 
-/* ── thread-instanced library state ─────────────────────────────────────
+/* ── runtime instance state ─────────────────────────────────────────────
  * Archives built under the profile's abi.instance_per_thread compile every
  * TU with -DSCR_THREAD_INSTANCES, and SCR_TL moves each unit's mutable
  * state — and the emitted program's globals — into thread-local storage.
@@ -44,10 +44,10 @@ void arc4random_buf(void *buf, size_t n);
  * registration, poison flag, and program state. The instance's lifetime is
  * the thread's; the one-thread-per-instance contract (an instance is never
  * entered from two threads) is unchanged — this mode adds instances, not
- * thread awareness. Expands to nothing everywhere else, so executable
- * builds and classic library builds carry the exact bytes they always
- * carried. Truly immutable tables (static const data) stay shared. */
-#if defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)
+ * thread awareness. Worker executables use the same isolation for their
+ * collectors, caches and scheduler state. Expands to nothing for ordinary
+ * executables and classic libraries. Immutable tables stay shared. */
+#if (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS)
 #define SCR_TL _Thread_local
 #else
 #define SCR_TL
@@ -62,7 +62,7 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v6(void);
+void scr_runtime_abi_v7(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
  * Every unrecoverable runtime trap — OOM, semantic range traps, internal-
@@ -276,9 +276,40 @@ void scr_library_str_out(ScrStr *s, const uint8_t **out, size_t *out_len);
 void scr_library_bytes_out(ScrBytes *b, const uint8_t **out, size_t *out_len);
 
 #define scr_atexit(fn) scr_library_register_reset(fn)
+#elif defined(SCR_WORKERS)
+/* Executable workers drain their own cleanup stack before their TLS dies.
+ * Registering their callbacks with libc would execute them on the process
+ * exit thread against a different runtime instance. */
+int scr_context_atexit(void (*fn)(void));
+void scr_context_cleanup(void);
+void scr_context_enter(uint64_t thread_id);
+uint64_t scr_context_thread_id(void);
+void scr_context_stop_flag(const void *flag);
+void scr_context_stop(int code);
+bool scr_context_stopping(void);
+bool scr_context_checkpoint(void);
+void scr_loop_context_shutdown(void);
+extern SCR_TL void (*scr_context_report_error)(void);
+typedef struct ScrContextEnv ScrContextEnv;
+ScrContextEnv *scr_context_env_capture(void);
+void scr_context_env_free(ScrContextEnv *environment);
+void scr_context_env_enter(ScrContextEnv *environment);
+bool scr_context_env_set(const char *name, const char *value);
+const char *scr_context_getenv(const char *name);
+struct ScrArr *scr_context_env_pairs(void);
+#define scr_atexit(fn) scr_context_atexit(fn)
 #else
 #define scr_atexit(fn) atexit(fn)
 #endif /* SCR_LIB */
+
+/* Also used by ordinary event-loop builds, where this always returns true. */
+bool scr_context_is_main(void);
+
+#ifdef SCR_WORKERS
+#define scr_getenv(name) scr_context_getenv(name)
+#else
+#define scr_getenv(name) getenv(name)
+#endif
 
 /* ── cycle collection (scr_cycle.c) ───────────────────────────────────
  * Reference counting alone cannot free cycles, so every object that can
@@ -403,6 +434,7 @@ static inline void scr_cyc_mark_live(void *obj) {
  * after and wants nothing reclaimable left), and it costs a walk of the
  * live heap — do not put it on a per-turn path. */
 void scr_collect_cycles(void);
+void scr_cyc_context_cleanup(void);
 
 /* One pass on the normal generational schedule, for callers that reach a
  * natural collection point rather than a threshold (the event loop between
@@ -1884,6 +1916,9 @@ extern SCR_TL ScrVt scr_emitter_vt; /* main() stamps pre/post */
 extern SCR_TL double scr_emitter_default_max;
 
 ScrEmitter *scr_emitter_new(void); /* +1, collector-headered */
+/* Internal owner hook; observes listener presence without running script. */
+void scr_emitter_observe(ScrEmitter *em,
+                        void (*observe)(void *, const ScrStr *, bool), void *context);
 void scr_emitter_init(void *obj);  /* super() into the prefix (no-op today) */
 ScrEmitter *scr_emitter_retain(ScrEmitter *em);
 void scr_emitter_release(ScrEmitter *em); /* dispatches through em->vt */
@@ -1961,6 +1996,7 @@ ScrEmitter *scr_emitter_remove_all(ScrEmitter *em, ScrStr *name, bool all);
  * emit('error', err): no listener ⇒ THROWS err (borrowed; +1 taken). */
 bool scr_emitter_emit(ScrEmitter *em, ScrStr *name, ...);
 bool scr_emitter_emit_flex(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc);
+bool scr_emitter_emit_error_flex(ScrEmitter *em, ScrDyn *error);
 bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err);
 double scr_emitter_listener_count(ScrEmitter *em, ScrStr *name);
 double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *fn);
@@ -1982,7 +2018,7 @@ bool scr_emitter_has(ScrEmitter *em, const char *name);
  * the END of scr_emitter_on with the emitter and the event name, so the
  * stream unit can start flowing on the first 'data' listener. NULL when
  * the stream unit is not linked; emitter behavior is byte-identical. */
-extern void (*scr_emitter_on_hook)(ScrEmitter *em, ScrStr *name);
+extern SCR_TL void (*scr_emitter_on_hook)(ScrEmitter *em, ScrStr *name);
 
 /* ── node:stream (scr_stream.c, link-gated by moduleUsesStream) ───────
  * The runtime-provided stream classes (Readable/Writable/Duplex/
@@ -2023,7 +2059,7 @@ typedef struct ScrStream {
   ScrStreamState *st;
 } ScrStream;
 
-extern ScrVt scr_readable_vt, scr_writable_vt, scr_duplex_vt,
+extern SCR_TL ScrVt scr_readable_vt, scr_writable_vt, scr_duplex_vt,
     scr_transform_vt, scr_passthrough_vt; /* main() stamps pre/post */
 
 /* Compiler-emitted option-callback invoke adapters (the leading-`this`
@@ -2334,6 +2370,9 @@ typedef enum {
    * functions, and checked-dynamic primitives). The payload uses the
    * same ownership as REF. */
   SCR_EXC_PRIMITIVE_REF,
+  /* Noncatchable context shutdown. Owns no payload; generated unwinding
+   * releases locals while bypassing user catch and finally handlers. */
+  SCR_EXC_TERMINATE,
 } ScrExcKind;
 
 /* One cell per fiber (JS has one exception in flight per execution
@@ -2451,7 +2490,7 @@ ScrDyn *scr_caught_to_dyn(const ScrCaught *c);
 void scr_exc_print_uncaught(void);
 /* Optional native process exception registry. Hook returns 1 when handled,
  * 0 when unhandled, and -1 when a handler itself threw (Node exit 7). */
-extern int (*scr_uncaught_exception_hook)(bool from_promise);
+extern SCR_TL int (*scr_uncaught_exception_hook)(bool from_promise);
 bool scr_exc_handle_uncaught(bool from_promise);
 void scr_process_on_uncaught_exception(ScrDyn *fn, bool once, bool monitor);
 void scr_process_off_uncaught_exception(ScrDyn *fn, bool monitor);
@@ -2513,7 +2552,7 @@ ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
  * internal stdio formatting buffer never delays live output. */
 bool scr_stdio_write(int fd, const void *data, size_t len);
 int scr_stdio_write_raw(int fd, const void *data, size_t len);
-extern bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len);
+extern SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len);
 /* process.stdout/.stderr .write — raw bytes (no newline or formatting; data
  * borrowed), promptly visible and ordered with console output. Constantly
  * true (the synchronous runtime never queues backpressure). */
@@ -2676,15 +2715,11 @@ void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
 
-/* Atomics.wait(int32Array, idx, expected, timeoutMs): "not-equal" when
- * the element differs from expected, else a real nanosleep for the
- * timeout and "timed-out" (+1 string either way). scriptc has no
- * threads, so nothing can ever notify — for every compilable program
- * this IS the spec's behavior and "ok" is unreachable (the compiler
- * requires the timeout argument; an infinite wait would be a certain
- * deadlock). Out-of-range indices trap like every bytes access. */
-typedef struct ScrBytes ScrBytes; /* full definition below (C11 repeat) */
-ScrStr *scr_atomics_wait(ScrBytes *arr, double idx, double expected, double timeout_ms);
+/* Sequentially consistent integer operations and shared Int32 wait queues. */
+typedef struct ScrBytes ScrBytes;
+ScrStr *scr_atomics_wait(ScrBytes *, double, double, double);
+double scr_atomics_notify(ScrBytes *, double, double);
+double scr_atomics_op(ScrBytes *, double, double, double, double);
 
 /* isatty(3) over an fd (0/1/2): a real boolean — false where Node's
  * non-TTY streams expose undefined (SEMANTICS.md). stdin_destroy is a
@@ -3709,6 +3744,9 @@ typedef enum {
   SCR_DYNH_CONSOLE,        /* stored global console value */
   SCR_DYNH_SEARCH_PARAMS,  /* live WHATWG URLSearchParams */
   SCR_DYNH_FETCH_REQUEST,
+  SCR_DYNH_WORKER,
+  SCR_DYNH_MESSAGE_PORT,
+  SCR_DYNH_SHARED_ARRAY_BUFFER,
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 
@@ -4386,7 +4424,7 @@ ScrDyn *scr_dyn_new_promise(ScrPromise *p); /* scr_async_dyn.c (gated) */
 /* The allocator view the gated boxes use; installs the release arm's
  * promise-release edge (runtime-internal). */
 ScrDyn *scr_dyn_alloc_promise(void (*release_fn)(ScrPromise *p));
-extern void (*scr_dyn_promise_release_fn)(ScrPromise *p);
+extern SCR_TL void (*scr_dyn_promise_release_fn)(ScrPromise *p);
 ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
                                      void (*adapt)(ScrPromise *dst, ScrPromise *src));
 /* BORROWED peek at the boxed promise; NULL when d is not a promise box. */
@@ -4761,7 +4799,13 @@ typedef struct ScrAlsCtx {
   ScrAlsEntry entries[]; /* flexible */
 } ScrAlsCtx;
 /* Runtime-internal (the fiber machinery's always-linked core). */
-extern ScrAlsCtx **scr_als_active;
+extern SCR_TL ScrAlsCtx **scr_als_active;
+#ifdef SCR_WORKERS
+ScrAlsCtx **scr_als_slot(void);
+#define SCR_ALS_SLOT() scr_als_slot()
+#else
+#define SCR_ALS_SLOT() scr_als_active
+#endif
 ScrAlsCtx *scr_als_ctx_retain(ScrAlsCtx *c);
 void scr_als_ctx_release(ScrAlsCtx *c);
 double scr_als_new(void);
@@ -4792,12 +4836,12 @@ void scr_process_off_rejection_handled(ScrDyn *fn);
 /* The checkpoint delivery hook the registration above installs
  * (scr_async_dyn.c → scr_report_unhandled_rejections; NULL = default
  * report). Runtime-internal. */
-extern bool (*scr_urj_deliver_fn)(ScrPromise *p);
+extern SCR_TL bool (*scr_urj_deliver_fn)(ScrPromise *p);
 /* The late-handled hook (scr_async_dyn.c installs it when a
  * 'rejectionHandled' listener registers): scr_async.c calls it when a
  * promise the report already delivered as unhandled gains a handler.
  * Runtime-internal. */
-extern void (*scr_rjh_notify_fn)(ScrPromise *p);
+extern SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p);
 /* The attach-time handled mark (a dyn then/catch carrying a rejection
  * handler, or the module loader taking ownership of an evaluation
  * promise): marks pending and rejected sources observed at Node's attach
@@ -5028,8 +5072,8 @@ void scr_stdin_data_thunk_bytes(ScrClosure *cb, ScrBytes *chunk);
  * not the unit is present. */
 void scr_loop_set_events(bool (*pending)(void), bool (*watching)(void),
                           void (*dispatch)(void), int (*pollfds)(int out[2]));
-extern void (*scr_process_exit_hook)(double code);
-extern void (*scr_stdin_destroy_hook)(void);
+extern SCR_TL void (*scr_process_exit_hook)(double code);
+extern SCR_TL void (*scr_stdin_destroy_hook)(void);
 void scr_exit_code_note(int code);
 int scr_exit_code_hint_get(void);
 /* The pollable child-exit wake fd (the child kqueue / pidfd epoll) for the loop's
@@ -5820,6 +5864,8 @@ typedef enum ScrBytesElem {
   SCR_BYTES_U8C, /* Uint8ClampedArray */
 } ScrBytesElem;
 
+typedef struct ScrSharedBytes ScrSharedBytes;
+
 typedef struct ScrBytes {
   size_t rc;
   size_t len; /* ELEMENT count, fixed at construction */
@@ -5833,8 +5879,43 @@ typedef struct ScrBytes {
   bool is_buffer; /* Buffer brand belongs to the view, not its backing. */
   bool is_data_view; /* DataView is distinct from a numeric typed array. */
   bool external; /* Root aliases foreign memory; releasing it never frees data. */
+  ScrSharedBytes *shared; /* Neutral backing, borrowed by views from their local owner. */
 } ScrBytes;
 
+/* Internal scoped locking is only for leaf memory operations. Never hold this
+ * guard across a script callback, blocking I/O, or a fiber suspension. */
+void scr_shared_enter(void);
+void scr_shared_leave(void);
+bool scr_shared_guard(const ScrBytes *, const ScrBytes *);
+void scr_shared_guard_release(bool *);
+#if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
+#define SCR_SHARED_GUARD(a, b) bool scr_shared_held __attribute__((cleanup(scr_shared_guard_release))) = scr_shared_guard(a, b)
+#else
+#define SCR_SHARED_GUARD(a, b) ((void)0)
+#endif
+ScrSharedBytes *scr_shared_retain(ScrSharedBytes *);
+void scr_shared_release(ScrSharedBytes *);
+void scr_bytes_make_shared(ScrBytes *);
+ScrBytes *scr_shared_wrap(ScrSharedBytes *);
+void scr_bytes_read(const ScrBytes *, size_t, void *, size_t);
+void scr_bytes_write(ScrBytes *, size_t, const void *, size_t);
+ScrStr *scr_bytes_string(const ScrBytes *, size_t, size_t);
+ScrBytes *scr_bytes_snapshot(const ScrBytes *);
+void scr_bytes_snapshot_release(ScrBytes **);
+ScrBytes *scr_bytes_local_copy(ScrBytes *); /* +1; shared inputs are copied */
+void scr_bytes_require_unshared(const ScrBytes *);
+/* Snapshot before passing byte pointers to I/O or callback-capable consumers.
+ * The copy is local, so neither a lock nor shared raw memory escapes. */
+#if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
+#define SCR_BYTES_SNAPSHOT(name) \
+  ScrBytes *scr_snapshot_##name __attribute__((cleanup(scr_bytes_snapshot_release))) = scr_bytes_snapshot(name); \
+  if (scr_snapshot_##name) name = scr_snapshot_##name
+#else
+#define SCR_BYTES_SNAPSHOT(name) ((void)0)
+#endif
+ScrDyn *scr_shared_array_buffer_new(ScrDyn *);
+bool scr_shared_array_buffer_is(const ScrDyn *);
+bool scr_buffer_storage_is(const ScrDyn *);
 ScrBytes *scr_bytes_from_external(void *data, size_t length);
 ScrDyn *scr_ffi_memory_module(ScrDyn *catalog);
 ScrDyn *scr_ffi_argument(ScrDyn *value, ScrStr *type);

@@ -184,6 +184,7 @@ static bool util_deep_equal(const ScrDyn *a, const ScrDyn *b, bool skip,
   if (a->kind == SCR_DYN_BYTES) {
     const ScrBytes *x = a->v.bytes, *y = b->v.bytes;
     if (x->elem != y->elem || x->len != y->len) return false;
+    SCR_SHARED_GUARD(x, y);
     size_t length = x->len * scr_bytes_elem_size(x->elem);
     if (length && memcmp(x->data, y->data, length)) return false;
   }

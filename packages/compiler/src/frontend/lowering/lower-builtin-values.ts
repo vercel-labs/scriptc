@@ -1,9 +1,9 @@
+import { lowerWorkerMetadata } from "./builtins/workers.js";
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
   DYN,
   F64,
-  NULL_T,
   STRING,
   UNDEFINED_T,
   arrayOf,
@@ -416,8 +416,9 @@ export function lowerNumberParserValue(
   };
 }
 
-// These module values expose existing native callable lowerings and main-thread
-// metadata. Other exports keep an explicit runtime refusal, including Worker.
+// These module values expose native callable lowerings and current-thread
+// metadata. Stored Worker constructors remain refused: native worker roots
+// must be resolved from the source at compilation time.
 const MODULES = ["path/posix", "path/win32", "os", "worker_threads", "util/types"] as const;
 
 const box = (value: IrExpr): IrExpr =>
@@ -515,17 +516,18 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
       if (callable) add(member, callable);
     }
     for (const member of Object.keys(BUILTIN_MODULE_CONSTS[module] ?? {})) {
+      const worker = module === "worker_threads" ? lowerWorkerMetadata(member, loc) : null;
       const value = builtinModuleConstOf(lowerer, module, member);
-      if (value !== undefined) add(member, builtinConstLit(value, loc));
+      if (worker) add(member, worker);
+      else if (value !== undefined) add(member, builtinConstLit(value, loc));
     }
     if (module.startsWith("path/")) {
       add("posix", moduleValue(lowerer, "path/posix", loc));
       add("win32", moduleValue(lowerer, "path/win32", loc));
     }
     if (module === "worker_threads") {
-      add("isInternalThread", { kind: "boolLit", value: false, type: BOOL, loc });
-      add("parentPort", { kind: "unitLit", unit: "null", type: NULL_T, loc });
-      add("workerData", { kind: "unitLit", unit: "null", type: NULL_T, loc });
+      for (const member of ["isInternalThread", "parentPort", "workerData"])
+        add(member, lowerWorkerMetadata(member, loc)!);
     }
     body.push({
       kind: "return",

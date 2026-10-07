@@ -115,7 +115,7 @@ static const char *scr_http_reason(int code) {
   return "unknown";
 }
 
-static ScrDyn *scr_http_status_codes_value;
+static SCR_TL ScrDyn *scr_http_status_codes_value;
 
 static void scr_http_status_codes_cleanup(void) {
   scr_dyn_release(scr_http_status_codes_value);
@@ -135,7 +135,7 @@ ScrDyn *scr_http_status_codes(void) {
       scr_str_release(value);
     }
     scr_http_status_codes_value = codes;
-    atexit(scr_http_status_codes_cleanup);
+    scr_atexit(scr_http_status_codes_cleanup);
   }
   return scr_dyn_retain(scr_http_status_codes_value);
 }
@@ -148,7 +148,7 @@ static const char *const scr_http_methods_table[] = {
   "SOURCE", "SUBSCRIBE", "TRACE", "UNBIND", "UNLINK", "UNLOCK", "UNSUBSCRIBE",
 };
 
-static ScrArr *scr_http_methods_value;
+static SCR_TL ScrArr *scr_http_methods_value;
 
 static void scr_http_methods_cleanup(void) {
   scr_arr_release(scr_http_methods_value);
@@ -164,7 +164,7 @@ ScrArr *scr_http_methods(void) {
       scr_arr_push_ref(methods, scr_str_new(name, strlen(name)));
     }
     scr_http_methods_value = methods;
-    atexit(scr_http_methods_cleanup);
+    scr_atexit(scr_http_methods_cleanup);
   }
   return scr_arr_retain(scr_http_methods_value);
 }
@@ -179,12 +179,12 @@ ScrArr *scr_http_methods(void) {
  * a request-registration hook so server.on("request", ...) on an
  * h2-tagged server ctx routes to the h2 request list. The vtable's
  * typedef lives in scr_runtime.h (both units name it). */
-static const ScrHttpH2Ops *scr_http_h2_ops = NULL;
-static void (*scr_http_h2_request_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
+static SCR_TL const ScrHttpH2Ops *scr_http_h2_ops = NULL;
+static SCR_TL void (*scr_http_h2_request_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
                                          void *fn, bool once) = NULL;
-static void (*scr_http_h2_connect_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
+static SCR_TL void (*scr_http_h2_connect_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
                                         void *h1_fn, void *h2_fn, bool once) = NULL;
-static void (*scr_http_h2_upgrade_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
+static SCR_TL void (*scr_http_h2_upgrade_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
                                         void *fn, bool once) = NULL;
 
 void scr_http_set_h2_ops(const ScrHttpH2Ops *ops) { scr_http_h2_ops = ops; }
@@ -247,7 +247,7 @@ struct ScrHttpReq {
 };
 
 #ifdef SCR_RC_AUDIT
-static long scr_http_live = 0;
+static SCR_TL long scr_http_live = 0;
 long scr_http_live_count(void) { return scr_http_live; }
 #endif
 
@@ -1510,6 +1510,7 @@ void scr_http_res_write_str(ScrHttpRes *r, ScrStr *data /*borrowed*/) {
 }
 
 void scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
+  SCR_BYTES_SNAPSHOT(data);
   double expected;
   if (r->head_sent && scr_http_res_expected_length(r, &expected) &&
       (double)(r->strict_bytes_written + (data->len * scr_bytes_elem_size(data->elem))) > expected) {
@@ -1642,6 +1643,7 @@ void scr_http_res_end_str(ScrHttpRes *r, ScrStr *data /*borrowed*/) {
 }
 
 void scr_http_res_end_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
+  SCR_BYTES_SNAPSHOT(data);
   scr_http_res_end_raw(r, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)));
 }
 
@@ -1790,8 +1792,8 @@ typedef struct {
   void *h; /* +1 */
 } ScrHttpEmit;
 
-static ScrHttpEmit *scr_http_emits = NULL;
-static size_t scr_http_emits_head = 0, scr_http_emits_len = 0, scr_http_emits_cap = 0;
+static SCR_TL ScrHttpEmit *scr_http_emits = NULL;
+static SCR_TL size_t scr_http_emits_head = 0, scr_http_emits_len = 0, scr_http_emits_cap = 0;
 
 static void scr_http_client_release_internal(struct ScrHttpClientReq *c);
 static void scr_http_client_settle(struct ScrHttpClientReq *c);
@@ -1804,7 +1806,7 @@ static void scr_http_client_emit_abort(struct ScrHttpClientReq *c);
  * has drained for the last time, teardown paths that would queue close
  * emits (scr_net_cleanup_atexit freeing in-flight parsers) discard the
  * payload instead — nothing will ever sweep again. */
-static bool scr_http_exiting = false;
+static SCR_TL bool scr_http_exiting = false;
 
 static void scr_http_emit_release(ScrHttpEmit *e);
 
@@ -2007,10 +2009,10 @@ static void scr_http_cleanup_atexit(void) {
 /* One-time wiring into the net sweep (both createServer and request call
  * through here). */
 static void scr_http_install(void) {
-  static bool installed = false;
+  static SCR_TL bool installed = false;
   if (installed) return;
   installed = true;
-  atexit(scr_http_cleanup_atexit);
+  scr_atexit(scr_http_cleanup_atexit);
   scr_net_set_proto_sweep(&scr_http_proto_pending, &scr_http_proto_sweep);
 }
 
@@ -3186,7 +3188,7 @@ struct ScrHttpClientReq {
   struct ScrHttpClientReq *next;
 };
 
-static ScrHttpClientReq *scr_http_clients = NULL; /* registry: +1 each */
+static SCR_TL ScrHttpClientReq *scr_http_clients = NULL; /* registry: +1 each */
 
 ScrHttpClientReq *scr_http_client_retain(ScrHttpClientReq *c) {
   if (c->rc != SIZE_MAX) c->rc++;
@@ -3552,6 +3554,7 @@ void scr_http_client_write_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/) {
 }
 
 void scr_http_client_write_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/) {
+  SCR_BYTES_SNAPSHOT(data);
   scr_http_client_write_raw(c, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)));
 }
 
@@ -3608,6 +3611,7 @@ void scr_http_client_end_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/) {
 }
 
 void scr_http_client_end_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/) {
+  SCR_BYTES_SNAPSHOT(data);
   scr_http_client_end_raw(c, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)));
 }
 
@@ -4277,7 +4281,7 @@ typedef struct ScrHttpAgent {
   struct ScrHttpAgent *next;
 } ScrHttpAgent;
 
-static ScrHttpAgent *scr_http_agents = NULL; /* registry: +1 each, atexit-swept */
+static SCR_TL ScrHttpAgent *scr_http_agents = NULL; /* registry: +1 each, atexit-swept */
 
 static ScrHttpAgent *scr_http_agent_retain(ScrHttpAgent *a) {
   a->rc++;

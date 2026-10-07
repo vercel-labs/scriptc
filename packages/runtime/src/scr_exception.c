@@ -37,11 +37,11 @@ _Noreturn void scr_trap_fmt(const char *fmt, ...) {
 #endif /* !SCR_LIB */
 
 static SCR_TL ScrExcCell scr_main_exc; /* fiber zero (the main stack) */
-#if defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)
+#if (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS)
 /* A thread-local pointer cannot be initialized with &scr_main_exc — the
  * address of a thread-local is not a constant expression — so NULL stands
- * for the main cell and every read resolves it. Fibers never exist in
- * library artifacts, so the cell only ever IS the main cell here. */
+ * for the main cell and every read resolves it. Worker executables also
+ * switch this pointer as fibers enter and leave their own exception cells. */
 static SCR_TL ScrExcCell *scr_cur;
 #define SCR_EXC_CUR() (scr_cur ? scr_cur : &scr_main_exc)
 #else
@@ -117,7 +117,12 @@ ScrStr *scr_stack_capture(void) {
 #define scr_exc_release_fn (SCR_EXC_CUR()->release_fn)
 #define scr_exc_trace_fn (SCR_EXC_CUR()->trace_fn)
 
-bool scr_exc_pending(void) { return scr_exc_kind != SCR_EXC_NONE; }
+bool scr_exc_pending(void) {
+#ifdef SCR_WORKERS
+  if (scr_context_checkpoint()) return true;
+#endif
+  return scr_exc_kind != SCR_EXC_NONE;
+}
 
 /* Release the current payload (if any) and reset to NONE. Shared by clear,
  * the uncaught printer, and every throw (replace semantics). */
@@ -212,12 +217,13 @@ void scr_rethrow(const ScrCaught *c) {
     break;
   case SCR_EXC_NONE:
     break; /* unreachable: take() never stores NONE */
+  case SCR_EXC_TERMINATE:
   case SCR_EXC_GENRET:
     /* The generator-return sentinel, stashed across an exception-path
      * finally (emitTryCatch): re-raising restores the bare kind — no
      * payload exists. */
     scr_exc_reset();
-    scr_exc_kind = SCR_EXC_GENRET;
+    scr_exc_kind = c->kind;
     break;
   }
 }
@@ -279,6 +285,7 @@ ScrStr *scr_caught_to_string(const ScrCaught *c) {
      * boxes print this too where Node would vary (SEMANTICS.md). */
     return scr_str_new("[object Object]", 15);
   case SCR_EXC_NONE:
+  case SCR_EXC_TERMINATE:
   case SCR_EXC_GENRET: /* unreachable: take() never stores NONE/the sentinel */
     break;
   }
@@ -428,10 +435,13 @@ static SCR_TL int scr_exit_code_hint = 0;
 void scr_exit_code_note(int code) { scr_exit_code_hint = code; }
 int scr_exit_code_hint_get(void) { return scr_exit_code_hint; }
 
-int (*scr_uncaught_exception_hook)(bool from_promise) = NULL;
-static bool scr_uncaught_handler_failed = false;
+SCR_TL int (*scr_uncaught_exception_hook)(bool from_promise) = NULL;
+static SCR_TL bool scr_uncaught_handler_failed = false;
 
 bool scr_exc_handle_uncaught(bool from_promise) {
+#ifdef SCR_WORKERS
+  if (scr_context_stopping()) return false;
+#endif
   if (!scr_exc_pending()) return true;
   if (!scr_uncaught_exception_hook || scr_uncaught_handler_failed) return false;
   int result = scr_uncaught_exception_hook(from_promise);
@@ -440,6 +450,14 @@ bool scr_exc_handle_uncaught(bool from_promise) {
 }
 
 void scr_exc_print_uncaught(void) {
+#ifdef SCR_WORKERS
+  if (scr_context_stopping()) { scr_exc_clear(); return; }
+  if (scr_context_report_error) {
+    scr_exit_code_note(scr_uncaught_handler_failed ? 7 : 1);
+    scr_context_report_error();
+    return;
+  }
+#endif
   scr_exit_code_note(scr_uncaught_handler_failed ? 7 : 1);
   /* Settle any runtime-internal stdout fragment before the stderr line when
    * both share an fd. JavaScript-visible writes already flush themselves. */
@@ -477,6 +495,7 @@ void scr_exc_print_uncaught(void) {
     break;
   case SCR_EXC_NONE: /* main only calls this when pending */
   case SCR_EXC_GENRET: /* unreachable: the trampoline consumes the sentinel */
+  case SCR_EXC_TERMINATE:
     fputs("(no exception)", stderr);
     break;
   }

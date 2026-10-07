@@ -1,6 +1,6 @@
 // The RouteStore synchronous-sleep idiom, whole: a STATIC readonly class
 // field holding `new Int32Array(new SharedArrayBuffer(4))`, slept on with
-// Atomics.wait(buf, 0, 0, ms). No threads exist, so the wait always times
+// Atomics.wait(buf, 0, 0, ms). This program has no notifying worker, so it times
 // out — a true synchronous sleep. Timing facts are BOUNDED (slept at
 // least ~ms, well under a generous ceiling), never exact tick counts.
 // Plus the i32 element semantics (sign, ToInt32 wrap) and the static

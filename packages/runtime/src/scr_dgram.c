@@ -346,12 +346,12 @@ struct ScrDgramSocket {
 };
 
 #ifdef SCR_RC_AUDIT
-static long scr_dgram_live = 0;
+static SCR_TL long scr_dgram_live = 0;
 long scr_dgram_live_count(void) { return scr_dgram_live; }
 #endif
 
-static ScrDgramSocket *scr_dgram_socks = NULL; /* registry: +1 each, tail-appended */
-static ScrPoller *scr_dgram_poller = NULL;
+static SCR_TL ScrDgramSocket *scr_dgram_socks = NULL; /* registry: +1 each, tail-appended */
+static SCR_TL ScrPoller *scr_dgram_poller = NULL;
 
 /* Pending dns.lookup deliveries (already resolved — getaddrinfo ran at
  * the call; the sweep fires them FIFO). */
@@ -364,7 +364,7 @@ typedef struct ScrDnsPending {
   struct ScrDnsPending *next;
 } ScrDnsPending;
 
-static ScrDnsPending *scr_dns_pending = NULL;
+static SCR_TL ScrDnsPending *scr_dns_pending = NULL;
 
 /* ── RC ──────────────────────────────────────────────────────────────── */
 
@@ -645,6 +645,7 @@ void scr_dgram_send_str(ScrDgramSocket *s, ScrStr *data, double port, ScrStr *ho
 }
 
 void scr_dgram_send_bytes(ScrDgramSocket *s, ScrBytes *data, double port, ScrStr *host) {
+  SCR_BYTES_SNAPSHOT(data);
   scr_dgram_send_raw(s, (const char *)data->data, data->len, port, host);
 }
 
@@ -1011,10 +1012,10 @@ static void scr_dgram_cleanup_atexit(void) {
 }
 
 void scr_dgram_install(void) {
-  static bool installed = false;
+  static SCR_TL bool installed = false;
   if (installed) return;
   installed = true;
-  atexit(scr_dgram_cleanup_atexit);
+  scr_atexit(scr_dgram_cleanup_atexit);
   scr_loop_set_dgram(&scr_dgram_pending, &scr_dgram_dispatch, &scr_dgram_pollfd);
 }
 
@@ -1167,8 +1168,10 @@ void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a
     scr_throw_lowering_fence(fence);
     return;
   }
+  const ScrBytes *byte_input = buffer->kind == SCR_DYN_BYTES ? buffer->v.bytes : NULL;
+  SCR_BYTES_SNAPSHOT(byte_input);
   const char *data = buffer->kind == SCR_DYN_STR ? buffer->v.str->data
-                                                 : (const char *)buffer->v.bytes->data;
+                                                 : (const char *)byte_input->data;
   size_t datalen = buffer->kind == SCR_DYN_STR ? buffer->v.str->len
                                                : (size_t)scr_bytes_byte_len(buffer->v.bytes);
   if (sliced) {

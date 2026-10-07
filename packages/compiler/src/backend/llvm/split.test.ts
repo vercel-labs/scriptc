@@ -76,13 +76,83 @@ test("splits generated LLVM functions and promotes only private cross-shard defi
   ).toBe(true);
 });
 
-test("thread-local program state conservatively keeps the single-TU path", () => {
+test("thread-local definitions and declarations preserve their storage model across shards", () => {
   const tls = SAMPLE.replace(
     "@hidden_value = internal global i64 7",
     "@hidden_value = internal thread_local global i64 7",
   );
-  expect(splitLlvmProgram(tls, { minimumBytes: 0, targetBytes: 64 * 1024 })).toBeNull();
+  const split = splitLlvmProgram(tls, { minimumBytes: 0, targetBytes: 64 * 1024 })!;
+  expect(split.shards[0]!.source).toContain("@hidden_value = hidden thread_local global i64 7");
+  for (const shard of split.shards.slice(1)) {
+    expect(shard.source).toContain("@hidden_value = external hidden thread_local global i64");
+  }
 });
+
+test.skipIf(process.platform === "win32")(
+  "split and merged native modules keep globals independent on concurrent threads",
+  async () => {
+    const source = `%State = type { i64, i64 }
+@state = internal thread_local global %State { i64 7, i64 0 }
+@foreign = external thread_local global i64
+
+define void @set_owner(i64 %owner) {
+entry:
+  store i64 %owner, ptr getelementptr inbounds (%State, ptr @state, i64 0, i32 1)
+  ret void
+}
+
+define i64 @get_owner() {
+entry:
+  %owner = load i64, ptr getelementptr inbounds (%State, ptr @state, i64 0, i32 1)
+  ret i64 %owner
+}
+
+define i64 @next_value() {
+entry:
+  %current = load i64, ptr @state
+  %next = add i64 %current, 1
+  store i64 %next, ptr @state
+  %other = load i64, ptr @foreign
+  %after = add i64 %other, 1
+  store i64 %after, ptr @foreign
+  %result = add i64 %current, %other
+  ret i64 %result
+}
+`;
+    const split = splitLlvmProgram(source, { minimumBytes: 0, targetBytes: 64 * 1024 })!;
+    expect(split.shards.length).toBeGreaterThan(2);
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-llvm-thread-state-"));
+    scratch.push(dir);
+    const objects: string[] = [];
+    for (const shard of split.shards) {
+      const path = join(dir, shard.name);
+      const object = `${path}.o`;
+      await writeFile(path, shard.source);
+      execFileSync("clang", ["-Wno-override-module", "-O2", "-c", path, "-o", object]);
+      objects.push(object);
+    }
+    const combined = join(dir, "combined.o");
+    execFileSync("ld", ["-r", ...objects, "-o", combined]);
+    if (process.platform === "linux") {
+      const keep = join(dir, "keep.txt");
+      await writeFile(keep, "set_owner\nget_owner\nnext_value\n");
+      execFileSync("objcopy", [`--keep-global-symbols=${keep}`, combined]);
+    }
+    const binary = join(dir, "thread-state");
+    execFileSync("clang", [
+      "-std=c11",
+      "-O2",
+      "-pthread",
+      join(import.meta.dirname, "split-thread-state.test.c"),
+      combined,
+      "-o",
+      binary,
+    ]);
+    expect(execFileSync(binary, { encoding: "utf8", timeout: 10000 })).toBe(
+      "thread state stays isolated across compiled partitions\n",
+    );
+  },
+);
 
 test("shared metadata bounds shard growth while preserving every definition", () => {
   const names = Array.from({ length: 120 }, (_, i) => `metadata_pad_${i}`);

@@ -121,11 +121,11 @@ struct ScrWatcher {
   struct ScrWatcher *next; /* the open-watcher registry (+1 each) */
 };
 
-static ScrWatcher *scr_watchers = NULL;
-static size_t scr_watchers_open = 0; /* liveness: open (unclosed) watchers */
+static SCR_TL ScrWatcher *scr_watchers = NULL;
+static SCR_TL size_t scr_watchers_open = 0; /* liveness: open (unclosed) watchers */
 
 #ifdef SCR_HAVE_KQUEUE
-static int scr_watch_kq = -1; /* created with the first watch; lives forever */
+static SCR_TL int scr_watch_kq = -1; /* created with the first watch; lives forever */
 
 /* Arms the vnode filter for a watcher's current fd. EV_CLEAR: state resets
  * at delivery, so an unserviced event never busy-spins the idle poll (the
@@ -145,7 +145,7 @@ static bool scr_watch_arm(ScrWatcher *w) {
 #endif
 
 #ifdef SCR_HAVE_INOTIFY
-static int scr_watch_ino = -1; /* created with the first watch; lives forever */
+static SCR_TL int scr_watch_ino = -1; /* created with the first watch */
 
 /* libuv's subscription mask: name-level events for directory watches,
  * self events for the file case, IN_IGNORED arriving for free. */
@@ -557,12 +557,22 @@ static void scr_watch_cleanup_atexit(void) {
     scr_watcher_drop_listeners(w);
     scr_watcher_release(w);
   }
+#ifdef SCR_WORKERS
+#ifdef SCR_HAVE_KQUEUE
+  if (scr_watch_kq >= 0) close(scr_watch_kq);
+  scr_watch_kq = -1;
+#endif
+#ifdef SCR_HAVE_INOTIFY
+  if (scr_watch_ino >= 0) close(scr_watch_ino);
+  scr_watch_ino = -1;
+#endif
+#endif
 }
 
 void scr_watch_install(void) {
-  static bool installed = false;
+  static SCR_TL bool installed = false;
   if (installed) return;
   installed = true;
-  atexit(scr_watch_cleanup_atexit);
+  scr_atexit(scr_watch_cleanup_atexit);
   scr_loop_set_watch(&scr_watch_pending, &scr_watch_dispatch, &scr_watch_pollfd);
 }

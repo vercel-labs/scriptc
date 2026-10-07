@@ -42,9 +42,9 @@ typedef struct {
   size_t nbinds, binds_cap;
 } ScrDcChannel;
 
-static ScrDcChannel *dc_channels = NULL;
-static size_t dc_nchannels = 0, dc_cap = 0;
-static bool dc_teardown_registered = false;
+static SCR_TL ScrDcChannel *dc_channels = NULL;
+static SCR_TL size_t dc_nchannels = 0, dc_cap = 0;
+static SCR_TL bool dc_teardown_registered = false;
 
 static void scr_dc_teardown(void) {
   for (size_t i = 0; i < dc_nchannels; i++) {
@@ -75,7 +75,7 @@ static size_t dc_intern(ScrStr *name) {
   }
   if (!dc_teardown_registered) {
     dc_teardown_registered = true;
-    atexit(scr_dc_teardown);
+    scr_atexit(scr_dc_teardown);
   }
   ScrDcChannel *ch = &dc_channels[dc_nchannels];
   ch->name = scr_str_retain(name);
@@ -358,9 +358,9 @@ enum { DC_TC_START, DC_TC_END, DC_TC_ASYNC_START, DC_TC_ASYNC_END, DC_TC_ERROR }
 
 static const char *const dc_trace_events[5] = {"start", "end", "asyncStart", "asyncEnd", "error"};
 
-static ScrDcTracing *dc_tracings = NULL;
-static size_t dc_ntracings = 0, dc_tracings_cap = 0;
-static bool dc_tracings_teardown_registered = false;
+static SCR_TL ScrDcTracing *dc_tracings = NULL;
+static SCR_TL size_t dc_ntracings = 0, dc_tracings_cap = 0;
+static SCR_TL bool dc_tracings_teardown_registered = false;
 
 static void scr_dc_tracings_teardown(void) {
   free(dc_tracings);
@@ -379,7 +379,7 @@ static double dc_tracing_register(const size_t ch[5]) {
   }
   if (!dc_tracings_teardown_registered) {
     dc_tracings_teardown_registered = true;
-    atexit(scr_dc_tracings_teardown);
+    scr_atexit(scr_dc_tracings_teardown);
   }
   for (size_t i = 0; i < 5; i++) dc_tracings[dc_ntracings].ch[i] = ch[i];
   dc_ntracings++;

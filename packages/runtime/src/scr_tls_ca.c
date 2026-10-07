@@ -33,16 +33,23 @@
 /* The per-type caches: +1 held here for the process lifetime (an atexit
  * teardown releases them so the RC audit stays clean). 'default' also
  * keeps the concatenated PEM buffer scr_tls.c parses into anchors. */
-static ScrArr *scr_ca_bundled = NULL;
-static ScrArr *scr_ca_system = NULL;
-static ScrArr *scr_ca_extra = NULL;
-static ScrArr *scr_ca_default = NULL;
-static char *scr_ca_extra_buf = NULL;
-static size_t scr_ca_extra_len = 0;
-static bool scr_ca_installed = false;
-static char *scr_ca_override_buf = NULL;
-static size_t scr_ca_override_len = 0;
-static uint64_t scr_ca_override_gen = 0; /* 0 = never set */
+static SCR_TL ScrArr *scr_ca_bundled = NULL;
+static SCR_TL ScrArr *scr_ca_system = NULL;
+static SCR_TL ScrArr *scr_ca_extra = NULL;
+static SCR_TL ScrArr *scr_ca_default = NULL;
+static SCR_TL char *scr_ca_extra_buf = NULL;
+static SCR_TL size_t scr_ca_extra_len = 0;
+static SCR_TL bool scr_ca_installed = false;
+static SCR_TL char *scr_ca_override_buf = NULL;
+static SCR_TL size_t scr_ca_override_len = 0;
+static SCR_TL uint64_t scr_ca_override_gen = 0; /* 0 = never set */
+
+#ifdef SCR_WORKERS
+/* Published during executable startup, before any worker exists. The main
+ * context owns these raw bytes until all its children have been joined. */
+static const char *scr_ca_initial_extra;
+static size_t scr_ca_initial_extra_len;
+#endif
 
 static void scr_ca_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
@@ -62,12 +69,12 @@ static void scr_ca_teardown(void) {
   scr_ca_override_buf = NULL;
 }
 
-static bool scr_ca_teardown_armed = false;
+static SCR_TL bool scr_ca_teardown_armed = false;
 
 static void scr_ca_arm_teardown(void) {
   if (!scr_ca_teardown_armed) {
     scr_ca_teardown_armed = true;
-    atexit(scr_ca_teardown);
+    scr_atexit(scr_ca_teardown);
   }
 }
 
@@ -145,10 +152,25 @@ void scr_tls_ca_install(void) {
   if (scr_ca_installed) return;
   scr_ca_installed = true;
   scr_ca_arm_teardown();
+#ifdef SCR_WORKERS
+  if (!scr_context_is_main()) {
+    if (scr_ca_initial_extra) {
+      scr_ca_extra_len = scr_ca_initial_extra_len;
+      scr_ca_extra_buf = malloc(scr_ca_extra_len + 1);
+      if (!scr_ca_extra_buf) scr_ca_oom();
+      memcpy(scr_ca_extra_buf, scr_ca_initial_extra, scr_ca_extra_len + 1);
+    }
+    return;
+  }
+#endif
   const char *path = getenv("NODE_EXTRA_CA_CERTS");
   if (path != NULL && path[0] != '\0') {
     scr_ca_extra_buf = scr_ca_read_file(path, &scr_ca_extra_len);
   }
+#ifdef SCR_WORKERS
+  scr_ca_initial_extra = scr_ca_extra_buf;
+  scr_ca_initial_extra_len = scr_ca_extra_len;
+#endif
 }
 
 bool scr_tls_ca_extra_pem(const char **pem, size_t *len) {

@@ -75,6 +75,7 @@ export interface RuntimePackManifest {
 }
 
 export interface RuntimeFeatureSet extends NativeLinkFeatures {
+  workers: boolean;
   nativeFetch: boolean;
   netIslandEffective: boolean;
   netEffective: boolean;
@@ -263,6 +264,7 @@ export function effectiveRuntimeFeatures(
   const tlsCaEffective = features.tlsCa || tlsEffective;
   return {
     ...features,
+    workers: features.workers === true,
     nativeFetch,
     netIslandEffective,
     netEffective,
@@ -296,6 +298,12 @@ function selectVariant(unit: RuntimePackUnit, features: RuntimeFeatureSet): Runt
   const selected = matches[0];
   if (selected === undefined) {
     throw new RuntimePackError(`runtime pack has no variant for ${unit.source}`, "invalid");
+  }
+  if ((features.workers === true) !== selected.defines.includes("SCR_WORKERS")) {
+    throw new RuntimePackError(
+      `runtime pack has an incompatible thread-state variant for ${unit.source}; reinstall the matching runtime package`,
+      "invalid",
+    );
   }
   return selected;
 }
@@ -346,6 +354,11 @@ export function selectRuntimePackArtifacts(
   mode: RuntimePackMode = "executable",
 ): RuntimePackArtifacts {
   const features = effectiveRuntimeFeatures(requested, env);
+  if (
+    features.workers &&
+    (mode !== "executable" || features.dynamic || manifest.target.object_format === "wasm")
+  )
+    throw new RuntimePackError("worker threads require a native static executable", "unsupported");
   const key: RuntimePackFlavor = mode === "executable" ? flavor : `${mode}-${flavor}`;
   const selectedFlavor =
     mode === "library"

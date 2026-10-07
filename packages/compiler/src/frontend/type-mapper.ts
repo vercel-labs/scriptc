@@ -2161,6 +2161,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (isStdlibInterface("Immediate")) return F64;
   if (
     isStdlibInterface("ArrayBuffer") ||
+    isStdlibInterface("SharedArrayBuffer") ||
     isStdlibInterface("PropertyDescriptor") ||
     isStdlibInterface("ProcessVersions")
   )
@@ -2260,6 +2261,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
           ctx.isStdlibFile(d.getSourceFile()) &&
           isDeclaredInAmbientModule(d, "fs"),
+      )
+  )
+    return DYN;
+  if (
+    (psym?.name === "Worker" || psym?.name === "MessagePort") &&
+    checker
+      .declarationsOf(psym)
+      .some(
+        (d) =>
+          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientModule(d, "worker_threads"),
       )
   )
     return DYN;

@@ -81,7 +81,7 @@ function fixture(): IrModule {
     ],
   };
   return {
-    irVersion: 13,
+    irVersion: 14,
     sourceFile: loc.file,
     entry: "main",
     unions: [{ id: "optional", arms: [STRING, UNDEFINED_T] }],

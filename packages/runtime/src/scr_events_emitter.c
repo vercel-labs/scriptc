@@ -97,6 +97,11 @@ struct ScrEeReg {
    * only removeAllListeners deletes: the named form drops the one key,
    * the no-argument wipe resets everything and leaves shape mode. */
   bool shape;
+  /* Owner-internal observation of empty/nonempty listener transitions. It
+   * runs before user meta events and must never invoke script or mutate the
+   * emitter. The owner keeps the borrowed context alive with the emitter. */
+  void (*observe)(void *context, const ScrStr *name, bool present);
+  void *observer_context;
 };
 
 /* The vtable of BARE `new EventEmitter()` instances; the emitted main()
@@ -111,7 +116,7 @@ static SCR_TL bool scr_ee_trace_hint_shown = false;
 
 /* Post-registration hook (scr_runtime.h): the stream unit's flow kick.
  * NULL in stream-free builds — behavior byte-identical. */
-void (*scr_emitter_on_hook)(ScrEmitter *em, ScrStr *name) = NULL;
+SCR_TL void (*scr_emitter_on_hook)(ScrEmitter *em, ScrStr *name) = NULL;
 
 /* ── entries and buckets ──────────────────────────────────────────────── */
 
@@ -135,6 +140,18 @@ static ScrEeReg *scr_ee_reg_ensure(ScrEmitter *em) {
     em->reg->max = -1;
   }
   return em->reg;
+}
+
+void scr_emitter_observe(ScrEmitter *em,
+                        void (*observe)(void *, const ScrStr *, bool), void *context) {
+  ScrEeReg *reg = scr_ee_reg_ensure(em);
+  reg->observe = observe;
+  reg->observer_context = context;
+}
+
+static void scr_ee_observe(ScrEmitter *em, const ScrStr *name, bool present) {
+  ScrEeReg *reg = em->reg;
+  if (reg->observe) reg->observe(reg->observer_context, name, present);
 }
 
 static ScrEeBucket *scr_ee_bucket_find(ScrEeReg *reg, const char *name, size_t len) {
@@ -368,6 +385,7 @@ static ScrEmitter *scr_ee_add(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*mov
     b->ls[b->n] = e;
   }
   b->n++;
+  if (b->n == 1) scr_ee_observe(em, name, true);
   scr_ee_warn_maybe(em, b);
   if (scr_emitter_on_hook != NULL) scr_emitter_on_hook(em, name);
   return scr_emitter_retain(em);
@@ -461,6 +479,7 @@ static void scr_ee_remove_at(ScrEmitter *em, ScrEeBucket *b, size_t i) {
   memmove(b->ls + i, b->ls + i + 1, (b->n - i - 1) * sizeof *b->ls);
   b->n--;
   ScrStr *name = scr_str_retain(b->name);
+  if (b->n == 0) scr_ee_observe(em, name, false);
   if (b->n == 0 && !em->reg->shape) scr_ee_bucket_drop(em->reg, b);
   scr_ee_entry_unref(e);
   scr_ee_emit_meta(em, "removeListener", name);
@@ -519,6 +538,7 @@ static void scr_ee_remove_all_named(ScrEmitter *em, ScrEeBucket *b, bool meta) {
   if (!meta) {
     for (size_t i = 0; i < b->n; i++) scr_ee_entry_unref(b->ls[i]);
     b->n = 0;
+    scr_ee_observe(em, b->name, false);
     scr_ee_bucket_drop(em->reg, b);
     return;
   }
@@ -693,6 +713,19 @@ bool scr_emitter_emit_flex(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, si
     scr_trap("scriptc: computed event collided with the error event\n");
   }
   return scr_ee_emit_core(em, name, NULL, args, argc);
+}
+
+/* Handle event registries use checked callbacks for every tuple, including
+ * errors. Keep this separate from the statically typed Error ABI above. */
+bool scr_emitter_emit_error_flex(ScrEmitter *em, ScrDyn *error) {
+  if (!scr_ee_has(em->reg, "error")) {
+    scr_dyn_throw(scr_dyn_retain(error));
+    return false;
+  }
+  ScrStr *name = scr_str_new("error", 5);
+  bool had = scr_ee_emit_core(em, name, NULL, &error, 1);
+  scr_str_release(name);
+  return had;
 }
 
 /* emit('error', err) — Node's special event: with no 'error' listener the

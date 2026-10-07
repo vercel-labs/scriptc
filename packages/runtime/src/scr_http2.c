@@ -215,7 +215,7 @@ typedef struct ScrH2HuffNode {
   int sym; /* -1 = interior */
 } ScrH2HuffNode;
 
-static ScrH2HuffNode *scr_h2_huff_root = NULL;
+static SCR_TL ScrH2HuffNode *scr_h2_huff_root = NULL;
 
 static ScrH2HuffNode *scr_h2_huff_node(void) {
   ScrH2HuffNode *n = calloc(1, sizeof *n);
@@ -762,8 +762,8 @@ struct ScrH2Session {
 /* ── refcounts + the RC audit ────────────────────────────────────────── */
 
 #ifdef SCR_RC_AUDIT
-static long scr_h2_sessions_live = 0;
-static long scr_h2_streams_live = 0;
+static SCR_TL long scr_h2_sessions_live = 0;
+static SCR_TL long scr_h2_streams_live = 0;
 long scr_http2_live_count(void) { return scr_h2_sessions_live + scr_h2_streams_live; }
 #endif
 
@@ -885,9 +885,9 @@ typedef struct {
   void *h; /* +1, typed by kind */
 } ScrH2Emit;
 
-static ScrH2Emit *scr_h2_emits = NULL;
-static size_t scr_h2_emits_head = 0, scr_h2_emits_len = 0, scr_h2_emits_cap = 0;
-static bool scr_h2_exiting = false;
+static SCR_TL ScrH2Emit *scr_h2_emits = NULL;
+static SCR_TL size_t scr_h2_emits_head = 0, scr_h2_emits_len = 0, scr_h2_emits_cap = 0;
+static SCR_TL bool scr_h2_exiting = false;
 
 static void scr_h2_emit_release(ScrH2Emit *e) {
   switch (e->kind) {
@@ -1249,10 +1249,10 @@ static void scr_h2_connect_hook(void *ctx, ScrClosure *cb, void *h1_fn, void *h2
 static void scr_h2_upgrade_hook(void *ctx, ScrClosure *cb, void *fn, bool once);
 
 static void scr_http2_install(void) {
-  static bool installed = false;
+  static SCR_TL bool installed = false;
   if (installed) return;
   installed = true;
-  atexit(scr_h2_cleanup_atexit);
+  scr_atexit(scr_h2_cleanup_atexit);
   scr_net_set_proto_sweep(&scr_h2_proto_pending, &scr_h2_proto_sweep);
   /* the compat seam: scr_http.c routes h2-backed responses through the
    * ops vtable and h2-tagged 'request' registrations through the hook */
@@ -1887,6 +1887,7 @@ void scr_http2_stream_write_str(ScrH2Stream *st, ScrStr *data /*borrowed*/) {
 }
 
 void scr_http2_stream_write_bytes(ScrH2Stream *st, ScrBytes *data /*borrowed*/) {
+  SCR_BYTES_SNAPSHOT(data);
   scr_h2_stream_send(st, (const char *)data->data, (size_t)(data->len * scr_bytes_elem_size(data->elem)));
 }
 
@@ -1904,6 +1905,7 @@ void scr_http2_stream_end_str(ScrH2Stream *st, ScrStr *data /*borrowed*/) {
 }
 
 void scr_http2_stream_end_bytes(ScrH2Stream *st, ScrBytes *data /*borrowed*/) {
+  SCR_BYTES_SNAPSHOT(data);
   if (st->destroyed || st->want_end || scr_h2_stream_local_closed(st)) return;
   scr_h2_buf_put(&st->wbuf, (const char *)data->data, (size_t)(data->len * scr_bytes_elem_size(data->elem)));
   st->want_end = true;

@@ -1704,7 +1704,7 @@
       "kind": "node-builtin",
       "name": "process.getBuiltinModule",
       "status": "static",
-      "note": "native path and os export subsets plus main-thread worker_threads metadata; other modules and exports throw SC2020"
+      "note": "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020"
     },
     {
       "id": "node-builtin.process.getgid",
@@ -2234,11 +2234,25 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.worker_threads.Worker",
+      "kind": "node-builtin",
+      "name": "worker_threads.Worker",
+      "status": "static",
+      "note": "native threads with statically compiled entry points, workerData, argv and message events"
+    },
+    {
       "id": "node-builtin.worker_threads.isMainThread",
       "kind": "node-builtin",
       "name": "worker_threads.isMainThread",
       "status": "static",
       "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.worker_threads.metadata",
+      "kind": "node-builtin",
+      "name": "worker_threads metadata",
+      "status": "static",
+      "note": "current-thread metadata and the worker's parent message port"
     },
     {
       "id": "node-builtin.worker_threads.threadId",
@@ -2638,6 +2652,13 @@
       "kind": "stdlib",
       "name": "Array.prototype.with",
       "status": "static"
+    },
+    {
+      "id": "stdlib.atomics",
+      "kind": "stdlib",
+      "name": "Atomics",
+      "status": "static",
+      "note": "8-, 16- and 32-bit integer operations, plus Int32Array wait and notify"
     },
     {
       "id": "stdlib.date.UTC",
@@ -3993,6 +4014,13 @@
       "name": "Set.prototype.values",
       "status": "static",
       "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+    },
+    {
+      "id": "stdlib.sharedArrayBuffer",
+      "kind": "stdlib",
+      "name": "SharedArrayBuffer",
+      "status": "static",
+      "note": "fixed shared storage with context-local typed-array and DataView wrappers"
     },
     {
       "id": "stdlib.string.at",

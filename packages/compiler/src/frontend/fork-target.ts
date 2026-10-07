@@ -1,8 +1,25 @@
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as ts from "./ts7/adapter.js";
+import { fallbackDtsPath, isNodeTypesPath, tsgoPath } from "./dts-paths.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
+
+export function isNodeGlobal(program: ts.Program, expression: ts.Identifier): boolean {
+  const checker = program.getTypeChecker();
+  const symbol = checker.getSymbolAtLocation(expression);
+  const declarations = symbol ? checker.declarationsOf(symbol) : [];
+  return (
+    declarations.length > 0 &&
+    declarations.every((declaration) => {
+      const source = declaration.getSourceFile();
+      return (
+        source.isDeclarationFile &&
+        (tsgoPath(source.fileName) === fallbackDtsPath() || isNodeTypesPath(source.fileName))
+      );
+    })
+  );
+}
 
 function strip(expr: ts.Expression): ts.Expression {
   let current = expr;
@@ -64,7 +81,7 @@ export function isBuiltinMemberImport(
 /** True when an identifier is the namespace/default binding for one Node
  * builtin module. JavaScript default imports of CommonJS builtins expose the
  * same module object as namespace imports, matching lowering's provenance. */
-function isBuiltinNamespaceImport(
+export function isBuiltinNamespaceImport(
   program: ts.Program,
   ident: ts.Identifier,
   moduleName: string,
@@ -217,7 +234,8 @@ function staticString(
   if (
     ts.isNewExpression(current) &&
     ts.isIdentifier(current.expression) &&
-    current.expression.text === "URL"
+    (isBuiltinMemberImport(program, current.expression, "url", "URL") ||
+      (current.expression.text === "URL" && isNodeGlobal(program, current.expression)))
   ) {
     const args = current.arguments ?? [];
     if (args.length < 1 || args.length > 2) return null;

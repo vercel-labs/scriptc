@@ -451,6 +451,7 @@ async function compileExecutableNative(
     dgram: features.dgram,
     watch: features.watch,
     foreignFfi: features.foreignFfi,
+    ...(features.workers ? { workers: true } : {}),
     nodeTest: features.nodeTest,
     tls: features.tls,
     tlsCa: features.tlsCa,

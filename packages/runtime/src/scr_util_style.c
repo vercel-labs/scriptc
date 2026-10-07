@@ -148,7 +148,7 @@ static ScrStr *util_style_replace(const ScrStr *text, const char *close,
 }
 
 static bool util_style_env_nonempty(const char *name) {
-  const char *value = getenv(name);
+  const char *value = scr_getenv(name);
   return value && *value;
 }
 
@@ -174,7 +174,7 @@ done:
 /* styleText only needs the color/no-color distinction, rather than the
  * full 4/8/24-bit depth. Follow the ordering of Node 24 internal/tty. */
 static bool util_style_terminal_colors(void) {
-  const char *force = getenv("FORCE_COLOR");
+  const char *force = scr_getenv("FORCE_COLOR");
   if (force) {
     bool enabled = !strcmp(force, "") || !strcmp(force, "true") ||
       !strcmp(force, "1") || !strcmp(force, "2") || !strcmp(force, "3");
@@ -192,21 +192,21 @@ static bool util_style_terminal_colors(void) {
     }
     return enabled;
   }
-  const char *term = getenv("TERM");
+  const char *term = scr_getenv("TERM");
   if (util_style_env_nonempty("NO_COLOR") || util_style_env_nonempty("NODE_DISABLE_COLORS") ||
       (term && !strcmp(term, "dumb"))) return false;
 #ifdef _WIN32
   return true;
 #endif
   if (util_style_env_nonempty("TMUX")) return true;
-  if (getenv("TF_BUILD") && getenv("AGENT_NAME")) return true;
-  if (getenv("CI")) {
+  if (scr_getenv("TF_BUILD") && scr_getenv("AGENT_NAME")) return true;
+  if (scr_getenv("CI")) {
     static const char *const ci[] = { "APPVEYOR", "BUILDKITE", "CIRCLECI", "DRONE", "GITEA_ACTIONS", "GITHUB_ACTIONS", "GITLAB_CI", "TRAVIS" };
-    for (size_t i = 0; i < sizeof ci / sizeof ci[0]; i++) if (getenv(ci[i])) return true;
-    const char *name = getenv("CI_NAME");
+    for (size_t i = 0; i < sizeof ci / sizeof ci[0]; i++) if (scr_getenv(ci[i])) return true;
+    const char *name = scr_getenv("CI_NAME");
     return name && !strcmp(name, "codeship");
   }
-  const char *teamcity = getenv("TEAMCITY_VERSION");
+  const char *teamcity = scr_getenv("TEAMCITY_VERSION");
   if (teamcity) {
     const char *p = teamcity;
     if (!strncmp(p, "9.", 2)) {
@@ -218,10 +218,10 @@ static bool util_style_terminal_colors(void) {
     while (*p >= '0' && *p <= '9') p++;
     return p - teamcity >= 2 && *p == '.';
   }
-  const char *program = getenv("TERM_PROGRAM");
+  const char *program = scr_getenv("TERM_PROGRAM");
   if (program && (!strcmp(program, "iTerm.app") || !strcmp(program, "HyperTerm") ||
                   !strcmp(program, "MacTerm") || !strcmp(program, "Apple_Terminal"))) return true;
-  const char *colorterm = getenv("COLORTERM");
+  const char *colorterm = scr_getenv("COLORTERM");
   if (colorterm && (!strcmp(colorterm, "truecolor") || !strcmp(colorterm, "24bit"))) return true;
   if (term) {
     if (strstr(term, "truecolor") || !strncmp(term, "xterm-256", 9)) return true;
@@ -294,7 +294,7 @@ ScrStr *scr_util_style_text(const ScrDyn *format, const ScrDyn *text, const ScrD
           scr_dyn_arg_type_fail("stream", "an instance of ReadableStream, WritableStream, or Stream", stream); goto done;
         }
       }
-      colorize = getenv("FORCE_COLOR") ? util_style_terminal_colors() :
+      colorize = scr_getenv("FORCE_COLOR") ? util_style_terminal_colors() :
         scr_process_is_tty(fd) && util_style_terminal_colors();
     }
   }

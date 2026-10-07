@@ -601,7 +601,7 @@ interface BufferConstructor {
   from(data: string, encoding?: BufferEncoding): Buffer;
   /* The ArrayBuffer form is the VIEW construction: x.buffer with an
    * optional byte offset/length shares x's storage (the subarray rule). */
-  from(data: ArrayBuffer, byteOffset?: number, length?: number): Buffer;
+  from(data: ArrayBuffer | SharedArrayBuffer, byteOffset?: number, length?: number): Buffer;
   from(data: Uint8Array | readonly number[]): Buffer;
   alloc(size: number, fill?: string | number | Uint8Array, encoding?: BufferEncoding): Buffer;
   compare(buf1: Uint8Array, buf2: Uint8Array): number;
@@ -4096,23 +4096,61 @@ declare module "node:dns" {
   export * from "dns";
 }
 
-/* node:worker_threads — the MAIN-THREAD slice only. A compiled binary is
- * always the main thread (no JS-engine thread machinery exists), so
- * isMainThread lowers to `true` and threadId to 0 — Node's main-thread
- * answers exactly. Worker itself is declared surface without a lowering:
- * constructing one fences at the site; the CLASS as a value participates
- * in identity-only flows. */
+/* node:worker_threads — native workers use statically compiled entry points.
+ * Lowering and runtime diagnostics define the supported options and methods. */
 declare module "worker_threads" {
   export const isMainThread: boolean;
+  export const isInternalThread: boolean;
   export const threadId: number;
-  export class Worker {
-    constructor(filename: string | URL, options?: unknown);
-    on(event: string, listener: (...args: unknown[]) => void): void;
-    postMessage(value: unknown): void;
-    terminate(): Promise<number>;
+  export interface WorkerOptions {
+    workerData?: unknown;
+    transferList?: readonly unknown[];
+    argv?: readonly unknown[];
+    name?: string;
+    [option: string]: unknown;
   }
-  export const parentPort: unknown;
-  export const workerData: unknown;
+  export class Worker {
+    constructor(filename: string | URL, options?: WorkerOptions);
+    readonly threadId: number;
+    on(event: "online", listener: () => void): this;
+    on(event: "message", listener: (value: any) => void): this;
+    on(event: "error", listener: (error: Error) => void): this;
+    on(event: "exit", listener: (code: number) => void): this;
+    on(event: string, listener: (...args: any[]) => void): this;
+    once(event: string, listener: (...args: any[]) => void): this;
+    off(event: string, listener: (...args: any[]) => void): this;
+    addListener(event: string, listener: (...args: any[]) => void): this;
+    removeListener(event: string, listener: (...args: any[]) => void): this;
+    prependListener(event: string, listener: (...args: any[]) => void): this;
+    prependOnceListener(event: string, listener: (...args: any[]) => void): this;
+    postMessage(value: unknown, transferList?: readonly unknown[]): void;
+    ref(): void;
+    unref(): void;
+    terminate(): Promise<number>;
+    removeAllListeners(event?: string): this;
+    listenerCount(event: string, listener?: (...args: any[]) => void): number;
+  }
+  export class MessagePort {
+    on(event: "message", listener: (value: any) => void): this;
+    on(event: "close", listener: () => void): this;
+    on(event: string, listener: (...args: any[]) => void): this;
+    once(event: string, listener: (...args: any[]) => void): this;
+    off(event: string, listener: (...args: any[]) => void): this;
+    addListener(event: string, listener: (...args: any[]) => void): this;
+    removeListener(event: string, listener: (...args: any[]) => void): this;
+    prependListener(event: string, listener: (...args: any[]) => void): this;
+    prependOnceListener(event: string, listener: (...args: any[]) => void): this;
+    postMessage(value: unknown, transferList?: readonly unknown[]): void;
+    start(): void;
+    close(callback?: () => void): void;
+    ref(): void;
+    unref(): void;
+    hasRef(): boolean;
+    removeAllListeners(event?: string): this;
+    listenerCount(event: string, listener?: (...args: any[]) => void): number;
+  }
+  export const parentPort: MessagePort | null;
+  export const workerData: any;
 }
 declare module "node:worker_threads" {
   export * from "worker_threads";

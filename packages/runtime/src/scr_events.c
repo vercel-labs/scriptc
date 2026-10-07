@@ -185,6 +185,7 @@ static bool scr_signal_check(ScrStr *name, ScrDyn *cb) {
 
 void scr_signal_on(ScrStr *name, ScrDyn *cb, bool once) {
   if (!scr_signal_check(name, cb)) return;
+  if (!scr_context_is_main()) return;
 #ifdef __wasi__
   (void)once;
   scr_trap("scriptc: internal error: OS signal surface reached on WASI\n");
@@ -262,6 +263,7 @@ static void scr_sig_remove(ScrSigReg *reg, size_t i) {
 
 void scr_signal_off(ScrStr *name, ScrDyn *cb) {
   if (!scr_signal_check(name, cb)) return;
+  if (!scr_context_is_main()) return;
   int sig = scr_signal_from_name(name);
   if (sig < 0) sig = 0;
   ScrSigReg *reg = scr_sig_regs;
@@ -359,20 +361,20 @@ typedef struct {
   bool once;
 } ScrStdinErrL;
 
-static ScrStdinDataL *scr_stdin_data = NULL;
-static size_t scr_stdin_ndata = 0, scr_stdin_data_cap = 0;
-static ScrStdinEndL *scr_stdin_end = NULL;
-static size_t scr_stdin_nend = 0, scr_stdin_end_cap = 0;
-static ScrStdinErrL *scr_stdin_err = NULL;
-static size_t scr_stdin_nerr = 0, scr_stdin_err_cap = 0;
-static ScrPromise *scr_stdin_waiter = NULL; /* parked for-await next() */
-static bool scr_stdin_eof = false;
-static bool scr_stdin_destroyed = false;
-static bool scr_stdin_paused = false;
-static bool scr_stdin_resumed = false;
-static bool scr_stdin_read_eof = false;
-static ScrBytes *scr_stdin_buffer;
-static size_t scr_stdin_read_demand;
+static SCR_TL ScrStdinDataL *scr_stdin_data = NULL;
+static SCR_TL size_t scr_stdin_ndata = 0, scr_stdin_data_cap = 0;
+static SCR_TL ScrStdinEndL *scr_stdin_end = NULL;
+static SCR_TL size_t scr_stdin_nend = 0, scr_stdin_end_cap = 0;
+static SCR_TL ScrStdinErrL *scr_stdin_err = NULL;
+static SCR_TL size_t scr_stdin_nerr = 0, scr_stdin_err_cap = 0;
+static SCR_TL ScrPromise *scr_stdin_waiter = NULL; /* parked for-await next() */
+static SCR_TL bool scr_stdin_eof = false;
+static SCR_TL bool scr_stdin_destroyed = false;
+static SCR_TL bool scr_stdin_paused = false;
+static SCR_TL bool scr_stdin_resumed = false;
+static SCR_TL bool scr_stdin_read_eof = false;
+static SCR_TL ScrBytes *scr_stdin_buffer;
+static SCR_TL size_t scr_stdin_read_demand;
 
 void scr_stdin_on_data(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrBytes *),
                         bool once) {
@@ -682,15 +684,15 @@ typedef struct {
   ScrDyn *write_error;
 } ScrStdio;
 
-static ScrStdio scr_stdio_streams[3] = {{.fd = 0}, {.fd = 1}, {.fd = 2}};
+static SCR_TL ScrStdio scr_stdio_streams[3] = {{.fd = 0}, {.fd = 1}, {.fd = 2}};
 enum { STDIO_WRITE, STDIO_ON, STDIO_ONCE, STDIO_OFF, STDIO_PAUSE, STDIO_RESUME,
        STDIO_IS_PAUSED, STDIO_READ, STDIO_RAW, STDIO_DESTROY, STDIO_METHOD_COUNT };
 static const char *const scr_stdio_names[] = {
   "write", "on", "once", "removeListener", "pause", "resume", "isPaused", "read", "setRawMode", "destroy"
 };
-static ScrDyn *scr_stdio_methods[STDIO_METHOD_COUNT];
-static bool scr_stdio_initialized;
-static bool scr_stdio_raw;
+static SCR_TL ScrDyn *scr_stdio_methods[STDIO_METHOD_COUNT];
+static SCR_TL bool scr_stdio_initialized;
+static SCR_TL bool scr_stdio_raw;
 
 static ScrDyn *scr_stdio_refusal(const char *name) {
   char message[192];
@@ -868,7 +870,7 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
       bytes = scr_bytes_from_str(arg->v.str, enc);
       scr_str_release(enc);
     } else if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem == SCR_BYTES_U8) {
-      bytes = scr_bytes_retain(arg->v.bytes);
+      bytes = arg->v.bytes->shared ? scr_bytes_copy(arg->v.bytes) : scr_bytes_retain(arg->v.bytes);
     } else {
       scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer, TypedArray, or DataView", arg);
       goto done;
@@ -1091,20 +1093,29 @@ typedef struct {
   bool once;
 } ScrExitListener;
 
-static ScrExitListener *scr_exit_ls = NULL;
-static size_t scr_exit_n = 0, scr_exit_cap = 0;
-static bool scr_exit_ran = false;
+static SCR_TL ScrExitListener *scr_exit_ls = NULL;
+static SCR_TL size_t scr_exit_n = 0, scr_exit_cap = 0;
+static SCR_TL bool scr_exit_ran = false;
 
 void scr_run_exit_listeners(double code) {
   if (scr_exit_ran) return; /* process.exit inside a listener: no recursion */
   scr_exit_ran = true;
   scr_process_in_exit = true; /* process._exiting — Node's flag */
   for (size_t i = 0; i < scr_exit_n; i++) {
+#ifdef SCR_WORKERS
+    if (scr_context_stopping()) break;
+#endif
     scr_exit_ls[i].fn(scr_exit_ls[i].cb, code);
+#ifdef SCR_WORKERS
+    if (scr_context_stopping()) break;
+#endif
     if (scr_exc_pending()) {
       /* Node: a throw in an 'exit' listener is fatal (exit code 7). */
       scr_exc_print_uncaught();
       fflush(stdout);
+#ifdef SCR_WORKERS
+      if (!scr_context_is_main()) { scr_context_stop(7); break; }
+#endif
       _Exit(7);
     }
   }
@@ -1172,14 +1183,16 @@ void scr_stdin_data_thunk_bytes(ScrClosure *cb, ScrBytes *chunk) {
 static bool scr_events_pending(void) { return scr_stdin_pending(); }
 
 static bool scr_events_watching(void) {
-  return scr_sig_watched > 0 || scr_stdin_pending();
+  return (scr_context_is_main() && scr_sig_watched > 0) || scr_stdin_pending();
 }
 
 /* One dispatch pass at a loop turn: wake-pipe bytes are consumed (safe
  * any time), flagged signals fire, and stdin is probed/served. */
 static void scr_events_dispatch(void) {
-  scr_wake_pipe_drain();
-  scr_signals_drain();
+  if (scr_context_is_main()) {
+    scr_wake_pipe_drain();
+    scr_signals_drain();
+  }
   if (scr_exc_pending()) return;
   scr_stdin_service();
 }
@@ -1188,8 +1201,8 @@ static void scr_events_dispatch(void) {
  * any signal is watched, fd 0 while stdin has a consumer. */
 static int scr_events_pollfds(int out[2]) {
   int n = 0;
-  if (scr_sig_watched > 0 && scr_wake_pipe[0] >= 0) out[n++] = scr_wake_pipe[0];
-  if (scr_stdin_pending()) out[n++] = 0;
+  if (scr_context_is_main() && scr_sig_watched > 0 && scr_wake_pipe[0] >= 0) out[n++] = scr_wake_pipe[0];
+  if (scr_context_is_main() && scr_stdin_pending()) out[n++] = 0;
   return n;
 }
 
@@ -1206,7 +1219,7 @@ static void scr_exit_atexit(void) { scr_run_exit_listeners((double)scr_exit_code
  * listeners fire first, then everything releases, then the RC audit sees
  * a clean heap. */
 static void scr_events_cleanup_atexit(void) {
-  scr_sig_cleanup();
+  if (scr_context_is_main()) scr_sig_cleanup();
   scr_stdin_settle_done();
   scr_stdin_drop_listeners();
   scr_bytes_release(scr_stdin_buffer);
@@ -1215,15 +1228,16 @@ static void scr_events_cleanup_atexit(void) {
 }
 
 void scr_events_install(void) {
-  static bool installed = false;
+  static SCR_TL bool installed = false;
   if (installed) return;
   installed = true;
+  if (!scr_context_is_main()) scr_stdin_read_eof = true;
 #ifdef __wasi__
   int stdin_flags = fcntl(0, F_GETFL, 0);
   if (stdin_flags >= 0) (void)fcntl(0, F_SETFL, stdin_flags | O_NONBLOCK);
 #endif
-  atexit(scr_events_cleanup_atexit);
-  atexit(scr_exit_atexit);
+  scr_atexit(scr_events_cleanup_atexit);
+  scr_atexit(scr_exit_atexit);
   scr_loop_set_events(&scr_events_pending, &scr_events_watching, &scr_events_dispatch,
                        &scr_events_pollfds);
   scr_process_exit_hook = &scr_run_exit_listeners;

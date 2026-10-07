@@ -26,7 +26,7 @@ function fn(name: string, body: IrStmt[], locals: IrLocal[] = [local]): IrFuncti
   return { name, body, locals, params: [], returnType: VOID, loc };
 }
 function moduleWith(...functions: IrFunction[]): IrModule {
-  return { irVersion: 13, sourceFile: loc.file, entry: "caller", functions };
+  return { irVersion: 14, sourceFile: loc.file, entry: "caller", functions };
 }
 const assignment: IrStmt = { kind: "assign", localId: local.id, value, loc };
 const expression: IrExpr = { kind: "assignExpr", localId: local.id, value, type: F64, loc };

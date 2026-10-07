@@ -37,6 +37,8 @@ export const NATIVE_RECIPE_IMPLEMENTATION_PATHS = [
 ].map((stem) => join(backendDir, `${stem}${extname(implementationPath)}`));
 
 export const EXECUTABLE_RUNTIME_SOURCES = [
+  "scr_context.c",
+  "scr_shared.c",
   "scr_number.c",
   "scr_bigint.c",
   "scr_string.c",

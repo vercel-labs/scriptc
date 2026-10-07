@@ -47,6 +47,13 @@ export function finishRuntimeCall(
 /** Strings inline their bytes; Buffer views carry a separate data pointer. */
 export function rawBytes(host: LlvmEmitterContext, value: LlValue): AbiArgument[] {
   const B = host.B;
+  if (host.mod.workers && value.type.kind === "bytes") {
+    // Native consumers can block or invoke callbacks. Keep a local copy of
+    // shared storage alive in the ownership frame instead of escaping its
+    // raw pointer or holding the shared-memory lock across the call.
+    const name = callRuntime(host, "scr_bytes_local_copy", "ptr", [ptr(value.name)]);
+    value = host.own({ name, type: value.type });
+  }
   const lengthPtr = B.tmp(),
     length = B.tmp(),
     data = B.tmp();

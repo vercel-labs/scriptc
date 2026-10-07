@@ -72,6 +72,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
             archives: [artifact],
             systemLibraries: [],
             features: {
+              workers: false,
               dynamic: false,
               regex: true,
               copying: false,

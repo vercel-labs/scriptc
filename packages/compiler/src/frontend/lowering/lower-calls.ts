@@ -3411,7 +3411,15 @@ function lowerDynReceiverMethodCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (lowerer.chainBlocked(call, access)) return null;
-  if (stdlibGlobalNameOf(lowerer, access.expression) !== null) return null;
+  if (stdlibGlobalNameOf(lowerer, access.expression) !== null) {
+    // A named builtin import can resolve to its ambient declaration, too.
+    // parentPort is an instance value whose methods use the native handle;
+    // it must work without a non-null assertion or a namespace spelling.
+    const binding = ts.isIdentifier(access.expression)
+      ? lowerer.builtinImportOf(access.expression)
+      : null;
+    if (binding?.module !== "worker_threads" || binding.member !== "parentPort") return null;
+  }
   // Only checker-untyped receivers: `any`/`unknown`, or the `any[]` an
   // Array.isArray guard narrows them to (the value is STILL the checked-dynamic tree
   // array — scalar narrowings bridge through maybeNarrow's dynCheck and
@@ -4034,6 +4042,11 @@ const DYN_DISPATCH_METHODS = new Set([
   "additionalHeaders",
   "altsvc",
   "origin",
+  // Worker and MessagePort methods use the owning context's handle adapter.
+  "postMessage",
+  "terminate",
+  "start",
+  "hasRef",
 ]);
 
 export function lowerDynDispatchMethodCall(

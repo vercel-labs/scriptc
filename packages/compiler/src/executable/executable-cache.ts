@@ -48,6 +48,7 @@ export interface EarlyExecutableNativeFeatures {
   /** Omitted is the historical release posture. */
   optimization?: "dev";
   dynamic: boolean;
+  workers?: boolean;
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
@@ -194,7 +195,9 @@ function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeat
   return validSharedNativeFeatures<EarlyExecutableNativeFeatures>(
     value,
     BOOLEAN_NATIVE_KEYS,
-    (native) => native.optimization === undefined || native.optimization === "dev",
+    (native) =>
+      (native.optimization === undefined || native.optimization === "dev") &&
+      (native.workers === undefined || typeof native.workers === "boolean"),
   );
 }
 

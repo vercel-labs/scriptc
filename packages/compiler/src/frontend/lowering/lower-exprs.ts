@@ -1,3 +1,4 @@
+import { lowerWorkerMetadata } from "./builtins/workers.js";
 import {
   dynUndefinedExpr,
   nodeThrowExpr,
@@ -1398,6 +1399,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     {
       const bi = lowerer.builtinImportOf(expr);
       if (bi) {
+        if (bi.module === "worker_threads") {
+          const value = lowerWorkerMetadata(bi.member, loc);
+          if (value) return value;
+        }
         const c = builtinModuleConstOf(lowerer, bi.module, bi.member);
         if (c !== undefined) return builtinConstLit(c, loc);
         // module.builtinModules — the baked Node v24 list, a fresh
@@ -1632,8 +1637,7 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
           Reflect:
             "reflective property access has no static lowering — read and call members directly",
           Intl: 'native Intl supports default Unicode grapheme segmentation and the composed new Intl.NumberFormat("en-US").format(x); locale negotiation and other ICU-backed operations remain unsupported',
-          SharedArrayBuffer:
-            "no shared-memory threads exist in a compiled program — Uint8Array is the byte storage",
+          SharedArrayBuffer: "use direct new SharedArrayBuffer(length) for fixed shared storage",
           ArrayBuffer:
             "ArrayBuffer constructor values have no native lowering; use new ArrayBuffer(length) for fixed-length shared storage",
           WeakRef:
@@ -11602,6 +11606,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (lowerer.isStdlibGlobal(expr.right, "DataView")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "dyn.dataViewIs", args: [value], type: BOOL, loc };
+  }
+  if (lowerer.isStdlibGlobal(expr.right, "SharedArrayBuffer")) {
+    const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+    return { kind: "libCall", fn: "sharedArrayBuffer.is", args: [value], type: BOOL, loc };
   }
   if (lowerer.isStdlibGlobal(expr.right, "ArrayBuffer")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);

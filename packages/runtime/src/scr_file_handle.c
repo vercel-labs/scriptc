@@ -385,6 +385,7 @@ void scr_file_handle_write_file(ScrFileHandle *h, ScrStr *data) {
 }
 
 void scr_file_handle_write_file_bytes(ScrFileHandle *h, ScrBytes *data) {
+  SCR_BYTES_SNAPSHOT(data);
   scr_file_handle_write_all(h, data->data,
                             data->len * scr_bytes_elem_size(data->elem));
 }

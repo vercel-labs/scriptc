@@ -48,6 +48,8 @@ export interface CcOptions {
    * static runtime selection; executable section GC may still remove
    * unreachable static-runtime code. */
   dynamic?: boolean;
+  /** Isolated native Worker contexts; every runtime object must use TLS. */
+  workers?: boolean;
   /** The program contains a regex construct (index.ts detects it on the
    * IR): compiles scr_regex.c and links the vendored libregexp — as cached
    * standalone objects in static builds, from the engine archive under

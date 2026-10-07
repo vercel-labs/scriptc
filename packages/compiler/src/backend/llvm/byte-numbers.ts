@@ -46,6 +46,7 @@ export function emitByteNumber(
   little: string,
   fallback: () => LlValue,
 ): LlValue {
+  if (host.mod.workers) return fallback();
   const B = host.B,
     size = host.sizeType;
   const slow = B.newLabel("bytes.number.slow"),

@@ -1,3 +1,4 @@
+import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
@@ -233,6 +234,7 @@ import {
   buildMain,
   appendDynamicImportModules,
   appendForkModules,
+  appendWorkerModules,
 } from "./lower-modules.js";
 import { prepareCjsModuleGraph } from "./lower-node-module.js";
 import {
@@ -805,6 +807,7 @@ export interface LowererMode {
   libraryCallbacks?: boolean;
   /** Statically resolved child_process.fork program roots, in stable target-id order. */
   forkTargets?: readonly ts.SourceFile[];
+  workerTargets?: readonly ts.SourceFile[];
   /** Program-validated ambient declaration symbols for each FFI name.
    * Undefined in discovery's legacy call-local validation path. */
   ffiBindingSymbols?: ReadonlyMap<string, ReadonlySet<ts.Symbol>>;
@@ -878,6 +881,7 @@ export function lowerToIr(
   const extraModuleCycleDiags: ScrDiagnostic[] = [];
   const cycleKeys = new Set<string>();
   const forkTargets: ts.SourceFile[] = [];
+  const workerTargets: ts.SourceFile[] = [];
   const onExtraCycle = (cycle: string, reason: string): void => {
     const key = `${cycle}\0${reason}`;
     if (cycleKeys.has(key)) return;
@@ -894,6 +898,7 @@ export function lowerToIr(
     const before = moduleOrder.length;
     appendDynamicImportModules(program, moduleOrder, onExtraCycle);
     appendForkModules(program, moduleOrder, forkTargets, onExtraCycle);
+    appendWorkerModules(program, moduleOrder, workerTargets, onExtraCycle);
     if (moduleOrder.length === before) break;
     if (pass === 31) throw new Error("dynamic import and fork module discovery did not converge");
   }
@@ -909,6 +914,7 @@ export function lowerToIr(
     ffiImports,
     libraryCallbacks,
     forkTargets,
+    workerTargets,
     externalTypes,
     externalTypeSpecifiersByFile,
   });
@@ -929,6 +935,7 @@ export function lowerToIr(
           ffiImports,
           libraryCallbacks,
           forkTargets,
+          workerTargets,
           externalTypes,
           externalTypeSpecifiersByFile,
           ffiBindingSymbols: ffiValidation.symbolsByName,
@@ -956,6 +963,7 @@ export function lowerToIr(
       ffiImports,
       libraryCallbacks,
       forkTargets,
+      workerTargets,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       externalTypes,
       externalTypeSpecifiersByFile,
@@ -976,6 +984,7 @@ export function lowerToIr(
     ffiImports,
     libraryCallbacks,
     forkTargets,
+    workerTargets,
     ffiBindingSymbols: ffiValidation.symbolsByName,
     externalTypes,
     externalTypeSpecifiersByFile,
@@ -2324,6 +2333,9 @@ export class Lowerer {
   readonly fileTag = new Map<ts.SourceFile, string>();
   /** Embedded fork roots and their private startup ids. */
   readonly forkTargets: readonly ts.SourceFile[];
+  readonly workerTargets: readonly ts.SourceFile[];
+  readonly workerTargetIdByPath = new Map<string, number>();
+  usesWorkers = false;
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -2552,6 +2564,10 @@ export class Lowerer {
     this.startupCrash = mode.startupCrash ?? null;
     this.ffiImports = mode.ffiImports ?? [];
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
+    this.workerTargets = mode.workerTargets ?? [];
+    this.workerTargets.forEach((sf, id) => {
+      this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
+    });
     this.forkTargets = mode.forkTargets ?? [];
     this.forkTargets.forEach((sf, id) => {
       this.forkTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
@@ -4871,7 +4887,7 @@ export class Lowerer {
       this.diags.length > 0
         ? null
         : {
-            irVersion: 13,
+            irVersion: 14,
             sourceFile: this.entry.fileName,
             functions,
             classes: artifacts.classes,
@@ -4880,6 +4896,7 @@ export class Lowerer {
             globals: this.globalsList,
             ...(this.npmEmbedded ? { embedded: this.npmEmbedded } : {}),
             entry: ENTRY_NAME,
+            ...(this.usesWorkers ? { workers: true } : {}),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
@@ -5806,10 +5823,9 @@ export class Lowerer {
         "the rest is ICU locale data the binary does not carry";
       const typeHints: Record<string, string | undefined> = {
         ArrayBuffer:
-          "no free-standing ArrayBuffer value exists — typed arrays own their storage " +
-          "(new Uint8Array(n) allocates; new Uint8Array(new ArrayBuffer(n)) erases the buffer into the view)",
+          "fixed ArrayBuffer storage and typed-array views are supported; resizable and detached storage are not modeled",
         SharedArrayBuffer:
-          "no shared-memory threads exist in a compiled program — Uint8Array is the byte storage",
+          "fixed SharedArrayBuffer storage is supported; growable shared storage is not modeled",
         NumberFormat: intlHint,
         DateTimeFormat: intlHint,
         DurationFormat: intlHint,
@@ -10160,6 +10176,10 @@ export class Lowerer {
     // write twin routes through emitter.setDefaultMaxChk).
     if (bi.module === "events" && bi.member === "defaultMaxListeners") {
       return { kind: "libCall", fn: "emitter.getDefaultMax", args: [], type: F64, loc };
+    }
+    if (bi.module === "worker_threads") {
+      const value = lowerWorkerMetadata(bi.member, loc);
+      if (value) return value;
     }
     const c = builtinModuleConstOf(this, bi.module, bi.member);
     if (c !== undefined) return builtinConstLit(c, loc);

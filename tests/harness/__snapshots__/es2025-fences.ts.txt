@@ -16,32 +16,14 @@ es2025-fences.ts:15:27 - error SC2020: 'resizable ArrayBuffer construction' is p
 
   hint: fixed-length ArrayBuffers accept a byte length; resizable storage is not supported yet
 
-es2025-fences.ts:18:7 - error SC2020: 'SharedArrayBuffer' is part of the standard library types but has no scriptc lowering yet
-
-  17 | // SharedArrayBuffer growth.
-  18 | const sab = new SharedArrayBuffer(8, { maxByteLength: 16 });
-     |       ^~~
-  19 | sab.grow(16);
-
-  hint: no shared-memory threads exist in a compiled program — Uint8Array is the byte storage
-
-es2025-fences.ts:18:13 - error SC2020: 'new SharedArrayBuffer' is part of the standard library types but has no scriptc lowering yet
+es2025-fences.ts:18:13 - error SC2020: 'resizable ArrayBuffer construction' is part of the standard library types but has no scriptc lowering yet
 
   17 | // SharedArrayBuffer growth.
   18 | const sab = new SharedArrayBuffer(8, { maxByteLength: 16 });
      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   19 | sab.grow(16);
 
-  hint: no shared-memory threads exist in a compiled program — Uint8Array is the byte storage
-
-es2025-fences.ts:19:1 - error SC2020: 'SharedArrayBuffer.grow' is part of the standard library types but has no scriptc lowering yet
-
-  18 | const sab = new SharedArrayBuffer(8, { maxByteLength: 16 });
-  19 | sab.grow(16);
-     | ^~~~~~~~
-  20 | 
-
-  hint: no shared-memory threads exist in a compiled program — Uint8Array is the byte storage (a fixed-length allocation: grow has nothing to share it with)
+  hint: fixed-length ArrayBuffers accept a byte length; resizable storage is not supported yet
 
 es2025-fences.ts:23:7 - error SC2009: values of type '{ async: false; value: "not-equal" | "timed-out"; } | { async: true; value: Promise<"ok" | "timed-out">; }' cannot be compiled: the union shape is supported, but its arm '{ async: false; value: "not-equal" | "timed-out"; }' does not compile
 
@@ -59,7 +41,7 @@ es2025-fences.ts:23:16 - error SC2020: 'Atomics.waitAsync' is part of the standa
      |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   24 | 
 
-  hint: Atomics.wait(int32Array, idx, expected, timeoutMs) is the supported Atomics surface (scriptc has no threads — wait is the synchronous-sleep idiom, and nothing else has anyone to race)
+  hint: use integer load, store, exchange, compareExchange, add, sub, and, or, xor, wait or notify
 
 es2025-fences.ts:26:7 - error SC2020: 'Float16Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet
 

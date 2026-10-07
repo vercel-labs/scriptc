@@ -183,11 +183,11 @@ struct ScrStreamState {
  * user class whose preorder number happens to collide (scr_stream_is
  * below tests interval membership for compiler-emitted subclasses). */
 static void scr_stream_release_direct(void *obj);
-ScrVt scr_readable_vt = {1, 0, &scr_stream_release_direct};
-ScrVt scr_writable_vt = {1, 0, &scr_stream_release_direct};
-ScrVt scr_duplex_vt = {1, 0, &scr_stream_release_direct};
-ScrVt scr_transform_vt = {1, 0, &scr_stream_release_direct};
-ScrVt scr_passthrough_vt = {1, 0, &scr_stream_release_direct};
+SCR_TL ScrVt scr_readable_vt = {1, 0, &scr_stream_release_direct};
+SCR_TL ScrVt scr_writable_vt = {1, 0, &scr_stream_release_direct};
+SCR_TL ScrVt scr_duplex_vt = {1, 0, &scr_stream_release_direct};
+SCR_TL ScrVt scr_transform_vt = {1, 0, &scr_stream_release_direct};
+SCR_TL ScrVt scr_passthrough_vt = {1, 0, &scr_stream_release_direct};
 
 static bool scr_vt_within(const ScrVt *vt, const ScrVt *cls) {
   return cls->pre <= vt->pre && vt->pre <= cls->post;
@@ -353,8 +353,8 @@ typedef struct ScrStreamTick {
   struct ScrStreamTick *next;
 } ScrStreamTick;
 
-static ScrStreamTick *scr_st_head = NULL;
-static ScrStreamTick *scr_st_tail = NULL;
+static SCR_TL ScrStreamTick *scr_st_head = NULL;
+static SCR_TL ScrStreamTick *scr_st_tail = NULL;
 
 static void scr_stream_dispatch_one(void);
 
@@ -512,7 +512,7 @@ static void *scr_stream_rbuf_take(ScrStreamState *st, size_t n) {
     ScrBytes *head = st->r.buf[0];
     size_t avail = head->len - st->r.head_off;
     size_t take = avail < n - at ? avail : n - at;
-    memcpy(out->data + at, head->data + st->r.head_off, take);
+    scr_bytes_read(head, st->r.head_off, out->data + at, take);
     at += take;
     st->r.head_off += take;
     if (st->r.head_off == head->len) {
@@ -2544,7 +2544,7 @@ ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc) {
     ScrBytes *view = chunk;
     if (i == 0 && skip > 0) {
       view = scr_bytes_new(SCR_BYTES_U8, (double)(chunk->len - skip));
-      memcpy(view->data, chunk->data + skip, chunk->len - skip);
+      scr_bytes_read(chunk, skip, view->data, chunk->len - skip);
     }
     ScrStr *piece = scr_strdec_write(st->r.enc, st->r.dec_pending, view);
     st->r.dec_pending = scr_strdec_next(st->r.enc, st->r.dec_pending, view);

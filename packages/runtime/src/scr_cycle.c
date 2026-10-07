@@ -244,7 +244,7 @@ static SCR_TL unsigned scr_cyc_backlog_shift = 0;
 static size_t scr_cyc_nursery_threshold(void) {
   static SCR_TL size_t cached = 0;
   if (cached == 0) {
-    const char *env = getenv("SCR_CYCLE_THRESHOLD");
+    const char *env = scr_getenv("SCR_CYCLE_THRESHOLD");
     long v = env ? strtol(env, NULL, 10) : 0;
     cached = v > 0 ? (size_t)v : SCR_CYC_NURSERY_CANDIDATES;
   }
@@ -673,5 +673,17 @@ void scr_collect_cycles(void) {
    * continue, it terminates. */
   while (scr_cyc_pass(SCR_CYC_MATURE)
          && (scr_roots[SCR_CYC_NURSERY].n || scr_roots[SCR_CYC_MATURE].n)) {
+  }
+}
+
+/* Worker TLS becomes unreachable when its OS thread returns. Release the
+ * reusable traversal buffers after all context-owned roots are retired. */
+void scr_cyc_context_cleanup(void) {
+  scr_collect_cycles();
+  ScrVec *vectors[] = {&scr_roots[SCR_CYC_NURSERY], &scr_roots[SCR_CYC_MATURE],
+    &scr_cands, &scr_promote, &scr_pending, &scr_restore_pending, &scr_white, &scr_xgen};
+  for (size_t i = 0; i < sizeof vectors / sizeof vectors[0]; i++) {
+    free(vectors[i]->v);
+    *vectors[i] = (ScrVec){0};
   }
 }

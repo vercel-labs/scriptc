@@ -2,6 +2,7 @@ import * as ts from "./ts7/adapter.js";
 
 export interface ModuleSourceCandidates {
   calls: ts.CallExpression[];
+  constructions: ts.NewExpression[];
   specifiers: string[];
 }
 
@@ -9,6 +10,7 @@ const MODULE_SOURCE_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.ImportDeclaration,
   ts.SyntaxKind.ExportDeclaration,
   ts.SyntaxKind.CallExpression,
+  ts.SyntaxKind.NewExpression,
 ]);
 
 /** Root discovery and import admission inspect the same immutable syntax.
@@ -20,7 +22,7 @@ export function moduleSourceCandidates(
 ): ModuleSourceCandidates {
   const cached = program.analysis.moduleSourceCandidates.get(source);
   if (cached !== undefined) return cached;
-  const result: ModuleSourceCandidates = { calls: [], specifiers: [] };
+  const result: ModuleSourceCandidates = { calls: [], constructions: [], specifiers: [] };
   ts.walkPreorder(
     source,
     (node) => {
@@ -44,6 +46,7 @@ export function moduleSourceCandidates(
           result.specifiers.push(arg.text);
         }
       }
+      if (ts.isNewExpression(node)) result.constructions.push(node);
       return undefined;
     },
     MODULE_SOURCE_KINDS,

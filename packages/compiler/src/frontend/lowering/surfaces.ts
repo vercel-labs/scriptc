@@ -1640,10 +1640,9 @@ export const BUILTIN_MODULE_FNS: Record<
  * a literal of its value's kind. The bare-module values are the TARGET
  * platform's (builtinModuleConstOf swaps the win32 values in under a win32
  * triple — Node's own platform conditionals); the named namespaces answer
- * THEIR platform's constants everywhere. worker_threads/cluster carry the
- * main-thread truths: a compiled binary IS the main thread (no JS-engine
- * thread machinery) and never runs as a cluster worker (cluster forks the
- * node binary itself) — Node's own answers for a directly-run script. */
+ * THEIR platform's constants everywhere. Worker metadata uses these names
+ * for inventory but reads the current runtime context in its dedicated
+ * lowering. Cluster metadata describes a directly-run native executable. */
 export const BUILTIN_MODULE_CONSTS: Record<
   string,
   Record<string, string | number | boolean | undefined> | undefined
@@ -1754,6 +1753,34 @@ export interface AmbientSurfaceRow {
 }
 
 export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
+  {
+    id: "node-builtin.worker_threads.Worker",
+    kind: "node-builtin",
+    name: "worker_threads.Worker",
+    fns: ["worker.new"],
+    note: "native threads with statically compiled entry points, workerData, argv and message events",
+  },
+  {
+    id: "node-builtin.worker_threads.metadata",
+    kind: "node-builtin",
+    name: "worker_threads metadata",
+    fns: ["worker.isMainThread", "worker.threadId", "worker.data", "worker.parentPort"],
+    note: "current-thread metadata and the worker's parent message port",
+  },
+  {
+    id: "stdlib.sharedArrayBuffer",
+    kind: "stdlib",
+    name: "SharedArrayBuffer",
+    fns: ["sharedArrayBuffer.new"],
+    note: "fixed shared storage with context-local typed-array and DataView wrappers",
+  },
+  {
+    id: "stdlib.atomics",
+    kind: "stdlib",
+    name: "Atomics",
+    fns: ["atomics.op", "atomics.wait", "atomics.notify"],
+    note: "8-, 16- and 32-bit integer operations, plus Int32Array wait and notify",
+  },
   {
     id: "node-builtin.fs.callbacks",
     kind: "node-builtin",
@@ -1945,7 +1972,7 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     kind: "node-builtin",
     name: "process.getBuiltinModule",
     fns: ["process.builtinId", "process.builtinModule", "process.builtinUnsupported"],
-    note: "native path and os export subsets plus main-thread worker_threads metadata; other modules and exports throw SC2020",
+    note: "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020",
   },
   {
     id: "node-builtin.process.versions",
@@ -2608,8 +2635,7 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
       "allocate a new buffer and copy through typed-array views instead";
   } else if (container === "SharedArrayBuffer" || container.startsWith("SharedArrayBuffer<")) {
     hint =
-      "no shared-memory threads exist in a compiled program — Uint8Array is the byte storage " +
-      "(a fixed-length allocation: grow has nothing to share it with)";
+      "native SharedArrayBuffer storage is fixed-length; growable shared buffers are unsupported";
   } else if (
     container === "Intl" ||
     container.startsWith("Intl.") ||

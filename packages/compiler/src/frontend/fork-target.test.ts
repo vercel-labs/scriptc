@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { forkTargetPaths } from "./fork-target.js";
+import { fallbackDtsPath } from "./dts-paths.js";
 import { Ts7Host } from "./ts7/program-host.js";
 import { Ts7Api } from "./ts7/rpc-api.js";
 import { ModuleKind, ModuleResolutionKind } from "./ts7/enums.js";
@@ -10,11 +11,7 @@ import { ModuleKind, ModuleResolutionKind } from "./ts7/enums.js";
 test("fork discovery batches only candidate bindings and preserves aliases and shadowing", () => {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-fork-discovery-"));
   const entry = join(directory, "main.ts");
-  const declarations = join(directory, "builtins.d.ts");
-  writeFileSync(
-    declarations,
-    'declare module "node:child_process" { export function fork(path: unknown): void; }',
-  );
+  const declarations = fallbackDtsPath();
   writeFileSync(
     join(directory, "facade.ts"),
     'export { fork as launch } from "node:child_process";',

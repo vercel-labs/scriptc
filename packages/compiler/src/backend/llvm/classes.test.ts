@@ -9,7 +9,7 @@ const loc = { file: "class-membership.ts", start: 0, end: 1 };
 test("leaf layouts keep direct teardown while recursive layouts share the depth budget", () => {
   const linked = { kind: "object" as const, className: "Linked" };
   const mod: IrModule = {
-    irVersion: 13,
+    irVersion: 14,
     sourceFile: loc.file,
     entry: "main",
     functions: [{ name: "main", params: [], returnType: VOID, locals: [], body: [], loc }],
@@ -61,7 +61,7 @@ function graph() {
     { name: "FlippedString", base: "PairString", genericOf: "Flipped" },
   ];
   const mod: IrModule = {
-    irVersion: 13,
+    irVersion: 14,
     sourceFile: loc.file,
     entry: "main",
     functions: [],
@@ -95,7 +95,7 @@ test.each(["i32", "i64"])(
     expect(helper).toContain("label %ordinary");
     expect(helper).toContain("or i1");
     const ordinary: IrModule = {
-      irVersion: 13,
+      irVersion: 14,
       sourceFile: loc.file,
       entry: "main",
       functions: [],

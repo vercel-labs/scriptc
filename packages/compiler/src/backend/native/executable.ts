@@ -127,6 +127,8 @@ export async function compileCInternal(
   const sanitize = opts.sanitize ?? false;
   const optimization = opts.optimization ?? "release";
   const dynamic = opts.dynamic ?? false;
+  if (opts.workers && (dynamic || targetPlatform(resolveCc()) === "wasi"))
+    throw new Error("worker threads require a native static executable");
   const regex = opts.regex ?? false;
   // fetch's implementation switch: the default is the NATIVE bridge
   // (scr_fetch.c over scr_net + scr_tls + scr_http's client parser +
@@ -547,6 +549,7 @@ export async function compileCInternal(
     ...debugFlags,
     ...driver.targetArgs,
     ...threadArgs,
+    ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(sanitize
       ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
@@ -569,6 +572,11 @@ export async function compileCInternal(
     "-I",
     rtDir,
     ...runtimeSources.map((f) => rt(join(rtDir, f))),
+    ...(opts.workers
+      ? ["scr_worker.c", "scr_worker_events.c", "scr_mailbox.c", "scr_message.c"].map((f) =>
+          rt(join(rtDir, f)),
+        )
+      : []),
     ...(opts.copying ? [rt(join(rtDir, "scr_copying.c"))] : []),
     ...(opts.fileHandle ? [rt(join(rtDir, "scr_file_handle.c"))] : []),
     // win32 targets compile the libc-shim TU (stpcpy, arc4random_buf,
@@ -589,9 +597,9 @@ export async function compileCInternal(
     ...(opts.inspect
       ? [rt(join(rtDir, "scr_inspect.c")), rt(join(rtDir, "scr_console_native.c"))]
       : []),
-    ...(opts.dynInvoke || nativeFetch ? [rt(join(rtDir, "scr_dyn_invoke.c"))] : []),
+    ...(opts.dynInvoke || opts.workers || nativeFetch ? [rt(join(rtDir, "scr_dyn_invoke.c"))] : []),
     ...(opts.dc ? [rt(join(rtDir, "scr_dc.c"))] : []),
-    ...(opts.dynAsync || opts.dynInvoke || opts.dc || opts.fileHandle || nativeFetch
+    ...(opts.dynAsync || opts.dynInvoke || opts.workers || opts.dc || opts.fileHandle || nativeFetch
       ? [rt(join(rtDir, "scr_async_dyn.c"))]
       : []),
     // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the LINK (system
@@ -611,12 +619,12 @@ export async function compileCInternal(
     // installer exactly then.
     ...(opts.zlib && opts.dynamic ? [rt(join(rtDir, "scr_zlib_island.c"))] : []),
     ...(opts.events ? [rt(join(rtDir, "scr_events.c")), rt(join(rtDir, "scr_readline.c"))] : []),
-    ...(opts.emitter ? [rt(join(rtDir, "scr_events_emitter.c"))] : []),
+    ...(opts.emitter || opts.workers ? [rt(join(rtDir, "scr_events_emitter.c"))] : []),
     // The checked-dynamic HANDLE support unit (listener gate + runtime
     // adapter closures): every referencing unit is one of the emitter or
     // net families (http implies net), so handle-free binaries keep
     // their exact size class.
-    ...(opts.emitter || net ? [rt(join(rtDir, "scr_dyn_handle.c"))] : []),
+    ...(opts.emitter || opts.workers || net ? [rt(join(rtDir, "scr_dyn_handle.c"))] : []),
     ...(opts.symbol ? [rt(join(rtDir, "scr_symbol.c"))] : []),
     ...(opts.assert && opts.bigint ? [rt(join(rtDir, "scr_bigint_assert.c"))] : []),
     ...(opts.qs ? [rt(join(rtDir, "scr_qs.c"))] : []),
@@ -753,6 +761,7 @@ export async function compileCInternal(
     ...debugFlags,
     ...driver.targetArgs,
     ...threadArgs,
+    ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(sanitize
       ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
@@ -974,6 +983,7 @@ export async function compileCInternal(
   const linkProbeArgs = [
     ...(sanitize ? ["-fsanitize=address"] : []),
     ...threadArgs,
+    ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),
     ...(tls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),

@@ -11,6 +11,7 @@ import type { NativeLinkFeatures } from "./native-link-info.js";
 export function executableLinkFeatures(mod: IrModule, dynamic: boolean): NativeLinkFeatures {
   const features = moduleRuntimeFeatures(mod);
   return {
+    ...(mod.workers ? { workers: true } : {}),
     dynamic,
     regex: features.regex,
     copying: features.copying,

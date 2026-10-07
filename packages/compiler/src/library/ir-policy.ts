@@ -59,6 +59,7 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["als.", "AsyncLocalStorage"],
   ["urj.", "unhandled-rejection tracking"],
   ["dc.", "the diagnostics_channel surface"],
+  ["worker.new", "native worker threads"],
 ];
 
 /** Value/type kinds whose mere presence means an excluded unit's code (or
@@ -131,6 +132,7 @@ export function moduleLibAsyncSurface(mod: IrModule): { surface: string; loc: Sr
   // fine-grained table missed must still refuse.
   const features = moduleRuntimeFeatures(mod);
   const coarse: [boolean, string][] = [
+    [mod.workers === true, "native worker threads"],
     [features.processEvents, "process signal/exit listeners or the stdin event surface"],
     [features.net, "the node:net surface"],
     [features.http, "the node:http surface"],

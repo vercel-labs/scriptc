@@ -12,6 +12,7 @@ import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
 import { LIB_FN_SYMS, USES_TIMERS_LIB_FNS } from "./lib-shared.js";
 import { DYN_KIND } from "./dyn.js";
+import { rawBytes } from "./lib-abi.js";
 
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -234,32 +235,10 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
             : "scr_http_request";
     let callArgs = head.map((a) => `${host.llType(a.type)} ${a.name}`);
     if (isTlsOptions) {
-      const ca = args[8]!;
-      const caLenPtr = B.tmp();
-      const caLen = B.tmp();
-      let caData: string;
-      if (ca.type.kind === "string") {
-        caData = B.tmp();
-        B.line(`${caLenPtr} = getelementptr inbounds %ScrStr, ptr ${ca.name}, i64 0, i32 1`);
-        B.line(`${caLen} = load ${host.sizeType}, ptr ${caLenPtr}`);
-        B.line(
-          `${caData} = getelementptr inbounds i8, ptr ${ca.name}, i64 ${host.abiOffset(24, 12)}`,
-        );
-      } else if (ca.type.kind === "bytes" && ca.type.elem === "u8") {
-        const caDataPtr = B.tmp();
-        caData = B.tmp();
-        B.line(
-          `${caLenPtr} = getelementptr inbounds i8, ptr ${ca.name}, i64 ${host.abiOffset(8, 4)}`,
-        );
-        B.line(`${caLen} = load ${host.sizeType}, ptr ${caLenPtr}`);
-        B.line(
-          `${caDataPtr} = getelementptr inbounds i8, ptr ${ca.name}, i64 ${host.abiOffset(24, 12)}`,
-        );
-        B.line(`${caData} = load ptr, ptr ${caDataPtr}`);
-      } else {
-        throw new InternalCompilerError(`llvm emitter bug: ${e.fn} CA is not a string or Buffer`);
-      }
-      callArgs = [...callArgs.slice(0, 8), `ptr ${caData}`, `${host.sizeType} ${caLen}`];
+      callArgs = [
+        ...callArgs.slice(0, 8),
+        ...rawBytes(host, args[8]!).map((arg) => `${arg.type} ${arg.name}`),
+      ];
       host.declare(
         `declare ptr @scr_https_request(ptr, double, ptr, ptr, double, ptr, i1 zeroext, i1 zeroext, ptr, ${host.sizeType}, ptr, ptr)`,
       );
@@ -364,6 +343,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "stdin":
       return host.emitProcessLibCall(e);
     case "module":
+    case "worker":
       return host.emitGenericLibCall(e);
     case "error":
     case "regex":
@@ -394,6 +374,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "weakMap":
     case "weakSet":
     case "ffi":
+    case "sharedArrayBuffer":
     case "arrayBuffer":
     case "util":
     case "bigint":

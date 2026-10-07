@@ -629,6 +629,7 @@ ScrStr *scr_insp_regex(ScrRegex *re) {
  * runs before the depth check in Node). u8 element kind only (the
  * frontend fences the rest). */
 ScrStr *scr_insp_buffer(ScrBytes *b) {
+  SCR_SHARED_GUARD(b, NULL);
   InspBuf out = {0};
   ib_cstr(&out, "<Buffer ");
   size_t max = b->len < 50 ? b->len : 50;

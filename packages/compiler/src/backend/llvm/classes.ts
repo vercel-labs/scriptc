@@ -661,6 +661,7 @@ export function emitClassObjDefs(
   classObjs: Map<string, { nameSym: string }>,
   fnByName: Map<string, IrFunction>,
   llType: (t: IrType) => string,
+  threadLocal = false,
 ): string[] {
   const out: string[] = [];
   for (const [className, { nameSym }] of classObjs) {
@@ -744,7 +745,7 @@ export function emitClassObjDefs(
       `  call void @${mangleFunction(`%${className}.constructor`)}(${[`ptr %r`, ...ctorArgs].join(", ")})`,
       `  ret ptr %o`,
       `}`,
-      `@${mangleClassObj(className)} = internal global %ScrClassObj ` +
+      `@${mangleClassObj(className)} = internal ${threadLocal ? "thread_local " : ""}global %ScrClassObj ` +
         `{ ${host.sizeType} -1, ${host.sizeType} ${intervalMeta.pre}, ${host.sizeType} ${intervalMeta.post}, ptr @${mangleCtorThunk(className)}, ptr ${nameSym}, ${host.sizeType} 0, ${host.sizeType} ${meta.def.jsLength ?? 0}, ptr null, ptr null } ; class ${className}`,
       ``,
     );

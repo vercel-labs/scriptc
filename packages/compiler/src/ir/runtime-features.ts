@@ -76,15 +76,18 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
     fileHandle: false,
     fetch: mod.embedded?.modules.some((m) => m.usesFetch === true) ?? false,
     processEvents: false,
-    emitter: (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
+    emitter:
+      mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
     stream: (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     zlib: mod.embedded?.edges.some((e) => e.to === "node:zlib") ?? false,
     dc: false,
     assert: false,
-    dynInvoke: false,
-    dynAsync: mod.functions.some(
-      (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
-    ),
+    dynInvoke: mod.workers === true,
+    dynAsync:
+      mod.workers === true ||
+      mod.functions.some(
+        (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
+      ),
     inspect: false,
     childProcess: false,
     net: false,

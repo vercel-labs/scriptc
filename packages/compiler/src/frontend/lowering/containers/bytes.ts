@@ -2,7 +2,6 @@ import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import { BUF_NUM_METHODS } from "./buffer-numeric-methods.js";
 import * as ts from "../../ts7/adapter.js";
 import {
-  BYTES_ELEMENT_SIZE,
   BIGINT_T,
   BOOL,
   BYTES_U8,
@@ -153,7 +152,11 @@ export function lowerBytesNew(
   expr: ts.NewExpression,
   symbol: ts.Symbol | null | undefined,
 ): IrExpr | null {
-  if (symbol != null && symbol.name === "ArrayBuffer" && lowerer.isStdlibSymbol(symbol)) {
+  if (
+    symbol != null &&
+    (symbol.name === "ArrayBuffer" || symbol.name === "SharedArrayBuffer") &&
+    lowerer.isStdlibSymbol(symbol)
+  ) {
     const args = expr.arguments ?? [];
     if (args.length > 1 || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
@@ -165,7 +168,13 @@ export function lowerBytesNew(
     const length = args[0]
       ? lowerer.coerceInto(args[0], lowerer.lowerExpr(args[0]), DYN)
       : dynUndefinedExpr(locOf(expr));
-    return { kind: "libCall", fn: "arrayBuffer.new", args: [length], type: DYN, loc: locOf(expr) };
+    return {
+      kind: "libCall",
+      fn: symbol.name === "SharedArrayBuffer" ? "sharedArrayBuffer.new" : "arrayBuffer.new",
+      args: [length],
+      type: DYN,
+      loc: locOf(expr),
+    };
   }
   if (symbol && symbol.name === "DataView" && lowerer.isStdlibSymbol(symbol)) {
     return lowerDataViewNew(lowerer, expr);
@@ -186,46 +195,6 @@ export function lowerBytesNew(
       const elems = argNode.elements.map((el) => lowerer.lowerExprExpecting(el, F64));
       const seed: IrExpr = { kind: "arrayLit", elems, type: arrayOf(F64), loc };
       return { kind: "bytesNew", source: seed, type, loc };
-    }
-    // The SYNTACTIC `new T(new SharedArrayBuffer(n))` form — fresh-buffer construction (the
-    // shared spelling is the Atomics.wait sleep idiom's). The buffer
-    // never exists as a value: n must be a byte-length LITERAL divisible
-    // by the element size (tsc would admit any number; a bad one is
-    // Node's RangeError — rejected at compile time instead of
-    // half-lowering), and the whole expression is a zero-filled typed
-    // array of n/elemSize elements. Erasing the buffer is exact: nothing
-    // else can ever reference it, so neither sharing (scriptc has no
-    // threads) nor aliasing is observable — SEMANTICS.md documents the
-    // stance. The RESIZABLE form (a maxByteLength options bag) fences by
-    // name: this erasure has no shared or growable buffer representation.
-    if (
-      ts.isNewExpression(argNode) &&
-      ts.isIdentifier(argNode.expression) &&
-      argNode.expression.text === "SharedArrayBuffer" &&
-      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(argNode.expression) ?? undefined)
-    ) {
-      const bufCtor = argNode.expression.text;
-      if ((argNode.arguments?.length ?? 0) > 1) {
-        lowerer.noLowering(
-          `new ${name} over a resizable ${bufCtor}`,
-          argNode,
-          "a maxByteLength options bag needs growable shared storage; the fixed-length " +
-            "SharedArrayBuffer here erases into the view: drop the options bag",
-        );
-      }
-      const elemSize = BYTES_ELEMENT_SIZE[elem];
-      const lenArg = argNode.arguments?.length === 1 ? argNode.arguments[0] : undefined;
-      const lenT = lenArg ? lowerer.typeOf(lenArg) : null;
-      const byteLen = lenT?.isNumberLiteralType() ? lenT.value : null;
-      if (byteLen === null || byteLen % elemSize !== 0 || byteLen < 0) {
-        lowerer.noLowering(
-          `new ${name} over this ${bufCtor}`,
-          argNode,
-          `the byte length must be a number literal divisible by ${elemSize} — new ${name}(new ${bufCtor}(${elemSize}))`,
-        );
-      }
-      const count: IrExpr = { kind: "numLit", value: byteLen / elemSize, type: F64, loc };
-      return { kind: "bytesNew", source: count, type, loc };
     }
     const src = lowerer.lowerExpr(argNode);
     if (src.type.kind === "union") {
@@ -1303,7 +1272,8 @@ function lowerBufferStaticValue(
       args.length >= 1 &&
       args.length <= 3 &&
       !args.some(ts.isSpreadElement) &&
-      ((symbol) => symbol != null && symbol.name === "ArrayBuffer")(
+      ((symbol) =>
+        symbol != null && (symbol.name === "ArrayBuffer" || symbol.name === "SharedArrayBuffer"))(
         lowerer.typeOf(args[0]!).getSymbol(),
       )
     ) {

@@ -134,7 +134,24 @@ export function validateModule(mod: IrModule): IrValidationError[] {
   const ffiByName = new Map<string, NonNullable<IrModule["ffiImports"]>[number]>();
   const ffiSymbols = new Set<string>();
   const moduleLoc: SrcLoc = { file: mod.sourceFile, start: 0, end: 0 };
+  if (mod.workers !== undefined && typeof mod.workers !== "boolean")
+    errors.push({ message: "worker execution mode must be a boolean", loc: moduleLoc });
+  if (mod.workers && (mod.lib !== undefined || mod.embedded !== undefined))
+    errors.push({
+      message: "worker execution requires a native static executable",
+      loc: moduleLoc,
+    });
   for (const entry of mod.ffiImports ?? []) {
+    if (
+      mod.workers &&
+      entry.params.some(
+        (parameter) => isFfiCallbackParam(parameter) && parameter.callback.invoke === "foreign",
+      )
+    )
+      errors.push({
+        message: "worker execution cannot install foreign-thread callbacks",
+        loc: moduleLoc,
+      });
     if (ffiByName.has(entry.name)) {
       errors.push({ message: `duplicate FFI binding "${entry.name}"`, loc: moduleLoc });
     }
@@ -968,6 +985,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       globalsById,
       classValidation,
       errors,
+      mod.workers === true,
     );
   }
   return errors;
@@ -984,6 +1002,7 @@ function validateFunction(
   globals: Map<string, IrGlobal>,
   classValidation: ClassValidation,
   errors: IrValidationError[],
+  workers: boolean,
 ): void {
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
@@ -3711,6 +3730,15 @@ function validateFunction(
   }
 
   function checkLibCall(e: IrExpr & { kind: "libCall" }): void {
+    if (
+      e.fn === "atomics.op" &&
+      (e.args[0]?.type.kind !== "bytes" ||
+        !["u8", "i8", "u16", "i16", "u32", "i32"].includes(e.args[0].type.elem))
+    ) {
+      errors.push({ message: "integer Atomics require an integer typed array", loc: e.loc });
+    }
+    if (e.fn === "worker.new" && !workers)
+      errors.push({ message: "Worker construction requires worker execution mode", loc: e.loc });
     const sig = LIB_FN_SIGS[e.fn];
     if (!sig) {
       err(`libCall of unknown library function "${e.fn as string}"`, e.loc);

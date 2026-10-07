@@ -21,6 +21,13 @@ export function emitLlvmLayouts(
 ): LlvmLayouts {
   const records = emitRecordShapes(host, mod);
   const classShapes = emitClassShapes(host, mod, classes);
-  const objects = emitClassObjDefs(host, classes, classObjects, functions, llType);
+  const objects = emitClassObjDefs(
+    host,
+    classes,
+    classObjects,
+    functions,
+    llType,
+    mod.workers === true || mod.lib?.threadInstances === true,
+  );
   return { records, classes: classShapes, classObjects: objects };
 }

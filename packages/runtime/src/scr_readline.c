@@ -48,12 +48,12 @@ typedef struct ScrRl {
   struct ScrRl *next;
 } ScrRl;
 
-static ScrRl *scr_rls = NULL;
-static double scr_rl_next_id = 1;
-static size_t scr_rl_open = 0;        /* un-closed, un-dead interfaces */
-static ScrClosure *scr_rl_data_cb = NULL; /* the shared consumer (borrowed
+static SCR_TL ScrRl *scr_rls = NULL;
+static SCR_TL double scr_rl_next_id = 1;
+static SCR_TL size_t scr_rl_open = 0;        /* un-closed, un-dead interfaces */
+static SCR_TL ScrClosure *scr_rl_data_cb = NULL; /* the shared consumer (borrowed
                                             * mirror; the registry owns) */
-static bool scr_rl_end_registered = false;
+static SCR_TL bool scr_rl_end_registered = false;
 
 static ScrRl *scr_rl_find(double id) {
   for (ScrRl *rl = scr_rls; rl; rl = rl->next) {
@@ -146,7 +146,7 @@ static void scr_rl_data_adapter(ScrClosure *cb, ScrBytes *chunk) {
       rl->buf = realloc(rl->buf, rl->cap);
       if (!rl->buf) scr_rl_oom();
     }
-    memcpy(rl->buf + rl->len, chunk->data, chunk->len);
+    scr_bytes_read(chunk, 0, rl->buf + rl->len, chunk->len);
     rl->len += chunk->len;
     scr_rl_drain(rl);
     if (scr_exc_pending()) return;
@@ -197,10 +197,10 @@ static void scr_rl_cleanup_atexit(void) {
 }
 
 double scr_rl_create(void) {
-  static bool cleanup_registered = false;
+  static SCR_TL bool cleanup_registered = false;
   if (!cleanup_registered) {
     cleanup_registered = true;
-    atexit(scr_rl_cleanup_atexit);
+    scr_atexit(scr_rl_cleanup_atexit);
   }
   ScrRl *rl = calloc(1, sizeof *rl);
   if (!rl) scr_rl_oom();

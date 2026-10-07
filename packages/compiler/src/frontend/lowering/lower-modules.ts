@@ -127,6 +127,7 @@ import {
 import { isMixinFnBinding, mixinResultBindingClassOf } from "./lower-mixins.js";
 import { cjsModuleRef, cjsModuleRegistryPrelude } from "./lower-node-module.js";
 import { forkTargetPaths } from "../fork-target.js";
+import { workerTargetPaths } from "../worker-target.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 
 /** One file's declarations, split for collection and init-body lowering. */
@@ -146,6 +147,25 @@ export function appendForkModules(
   program: ts.Program,
   order: ts.SourceFile[],
   targets: ts.SourceFile[],
+  onCycle: (cycle: string, reason: string) => void,
+): void {
+  appendEntryModules(program, order, targets, forkTargetPaths(program, order), onCycle);
+}
+
+export function appendWorkerModules(
+  program: ts.Program,
+  order: ts.SourceFile[],
+  targets: ts.SourceFile[],
+  onCycle: (cycle: string, reason: string) => void,
+): void {
+  appendEntryModules(program, order, targets, workerTargetPaths(program, order), onCycle);
+}
+
+function appendEntryModules(
+  program: ts.Program,
+  order: ts.SourceFile[],
+  targets: ts.SourceFile[],
+  paths: readonly string[],
   onCycle: (cycle: string, reason: string) => void,
 ): void {
   if (order.length === 0) return;
@@ -187,7 +207,7 @@ export function appendForkModules(
   };
 
   const knownTargets = new Set(targets);
-  for (const path of forkTargetPaths(program, order)) {
+  for (const path of paths) {
     const target = byPath.get(resolvePath(path));
     if (!target || target.isDeclarationFile || target.fileName.endsWith(".json")) continue;
     if (!knownTargets.has(target)) {
@@ -3145,7 +3165,7 @@ export function lowerFileInit(
 export function buildMain(lowerer: Lowerer): IrFunction {
   const loc: SrcLoc = { file: lowerer.entry.fileName, start: 0, end: 0 };
   const body: IrStmt[] = [...cjsModuleRegistryPrelude(lowerer, loc)];
-  const roots = [lowerer.entry, ...lowerer.forkTargets];
+  const roots = [lowerer.entry, ...lowerer.forkTargets, ...lowerer.workerTargets];
   const isAsync = roots.some((root) => lowerer.asyncInitFiles.has(root));
   const callRoot = (root: ts.SourceFile): IrStmt[] => {
     const init = lowerer.initNameOf.get(root);
@@ -3216,6 +3236,35 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       },
       then: callRoot(lowerer.entry),
       else_: workerBranch,
+      loc,
+    });
+  }
+  if (lowerer.workerTargets.length > 0) {
+    const mainBody = body.splice(0);
+    let workerBody: IrStmt[] | null = null;
+    for (let id = lowerer.workerTargets.length - 1; id >= 0; id--) {
+      workerBody = [
+        {
+          kind: "if",
+          cond: {
+            kind: "bin",
+            op: "===",
+            left: { kind: "libCall", fn: "worker.root", args: [], type: F64, loc },
+            right: { kind: "numLit", value: id, type: F64, loc },
+            type: BOOL,
+            loc,
+          },
+          then: callRoot(lowerer.workerTargets[id]!),
+          else_: workerBody,
+          loc,
+        },
+      ];
+    }
+    body.push({
+      kind: "if",
+      cond: { kind: "libCall", fn: "worker.isMainThread", args: [], type: BOOL, loc },
+      then: mainBody,
+      else_: [...cjsModuleRegistryPrelude(lowerer, loc), ...(workerBody ?? [])],
       loc,
     });
   }

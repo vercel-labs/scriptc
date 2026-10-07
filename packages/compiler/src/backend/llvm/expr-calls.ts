@@ -459,6 +459,11 @@ export function emitCallExpr(
           }
           case "bytes":
           case "mutable-bytes": {
+            if (host.mod.workers) {
+              host.declare(`declare void @scr_bytes_require_unshared(ptr)`);
+              B.line(`call void @scr_bytes_require_unshared(ptr ${arg.name})`);
+              host.emitPendingCheck();
+            }
             const lenPtr = B.tmp();
             const len = B.tmp();
             const dataPtr = B.tmp();

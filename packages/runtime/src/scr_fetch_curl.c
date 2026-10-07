@@ -366,7 +366,7 @@ static JSValue fx_host_start(JSContext *ctx, JSValueConst this_val, int argc,
   JSValue envproxyv = JS_GetPropertyStr(ctx, req, "useEnvProxy");
   bool use_env_proxy = JS_ToBool(ctx, envproxyv) > 0;
   JS_FreeValue(ctx, envproxyv);
-  const char *global_env_proxy = getenv("NODE_USE_ENV_PROXY");
+  const char *global_env_proxy = scr_getenv("NODE_USE_ENV_PROXY");
   use_env_proxy = use_env_proxy ||
                   (global_env_proxy != NULL &&
                    strcmp(global_env_proxy, "1") == 0);

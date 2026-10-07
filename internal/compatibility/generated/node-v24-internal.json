@@ -1467,9 +1467,9 @@
       "apiEntries": 66,
       "static": {
         "supported": 0,
-        "partial": 4,
+        "partial": 24,
         "refused": 0,
-        "not-implemented": 62,
+        "not-implemented": 42,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -125858,7 +125858,22 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/native-worker-clone-errors.ts",
+          "tests/corpus/native-worker-commonjs.cjs",
+          "tests/corpus/native-worker-delayed-messages.ts",
+          "tests/corpus/native-worker-environment.ts",
+          "tests/corpus/native-worker-error.ts",
+          "tests/corpus/native-worker-exit-listeners.ts",
+          "tests/corpus/native-worker-loop-cancellation.ts",
+          "tests/corpus/native-worker-message-graphs.ts",
+          "tests/corpus/native-worker-messages.ts",
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/native-worker-roots/main.ts",
+          "tests/corpus/native-worker-shared-views.ts",
+          "tests/corpus/native-worker-terminate-loop.ts",
+          "tests/corpus/native-worker-terminate-suspended.ts",
+          "tests/corpus/native-worker-terminate-wait.ts"
         ]
       },
       "dynamic": {
@@ -126188,8 +126203,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.MessagePort",
+        "tests": [
+          "tests/corpus/native-worker-commonjs.cjs",
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-references.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -126218,8 +126238,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.port.close",
+        "tests": [
+          "tests/corpus/native-worker-port-lifetime.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -126248,8 +126271,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.port.postMessage",
+        "tests": [
+          "tests/corpus/native-worker-message-graphs.ts",
+          "tests/corpus/native-worker-shared-views.ts",
+          "tests/corpus/native-worker-clone-errors.ts",
+          "tests/corpus/native-worker-delayed-messages.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -126332,8 +126361,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.port.hasRef",
+        "tests": [
+          "tests/corpus/native-worker-port-lifetime.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -126362,8 +126394,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.port.ref",
+        "tests": [
+          "tests/corpus/native-worker-port-lifetime.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -126392,8 +126427,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.port.start",
+        "tests": [
+          "tests/corpus/native-worker-port-lifetime.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -126422,8 +126460,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.port.unref",
+        "tests": [
+          "tests/corpus/native-worker-port-lifetime.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -126452,8 +126493,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.'close'",
+        "tests": [
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-messages.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -126479,8 +126524,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.'message'",
+        "tests": [
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-messages.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -126533,8 +126582,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.Worker",
+        "tests": [
+          "tests/corpus/native-worker-messages.ts",
+          "tests/corpus/native-worker-commonjs.cjs",
+          "tests/corpus/native-worker-environment.ts",
+          "tests/corpus/native-worker-roots/main.ts"
+        ]
       },
       "dynamic": {
         "status": "refused",
@@ -126641,8 +126696,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker.postMessage",
+        "tests": [
+          "tests/corpus/native-worker-message-graphs.ts",
+          "tests/corpus/native-worker-shared-views.ts",
+          "tests/corpus/native-worker-clone-errors.ts",
+          "tests/corpus/native-worker-delayed-messages.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -126668,8 +126729,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker.ref",
+        "tests": [
+          "tests/corpus/native-worker-references.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -126749,8 +126813,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker.terminate",
+        "tests": [
+          "tests/corpus/native-worker-terminate-loop.ts",
+          "tests/corpus/native-worker-terminate-wait.ts",
+          "tests/corpus/native-worker-terminate-suspended.ts",
+          "tests/corpus/native-worker-loop-cancellation.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -126776,8 +126846,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker.unref",
+        "tests": [
+          "tests/corpus/native-worker-references.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -126996,9 +127069,11 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "surface-manifest:node-builtin.worker_threads.threadId",
+        "evidence": "compiler-feature:worker_threads.threadId",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/native-worker-commonjs.cjs",
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-references.ts"
         ]
       },
       "dynamic": {
@@ -127055,8 +127130,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.'error'",
+        "tests": [
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/native-worker-error.ts",
+          "tests/corpus/native-worker-exit-listeners.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -127082,8 +127162,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.'exit'",
+        "tests": [
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/native-worker-error.ts",
+          "tests/corpus/native-worker-exit-listeners.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -127109,8 +127194,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.'message'",
+        "tests": [
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/native-worker-error.ts",
+          "tests/corpus/native-worker-exit-listeners.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -127163,8 +127253,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.'online'",
+        "tests": [
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/native-worker-error.ts",
+          "tests/corpus/native-worker-exit-listeners.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -127446,9 +127541,11 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "surface-manifest:node-builtin.worker_threads.isMainThread",
+        "evidence": "compiler-feature:worker_threads.isMainThread",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/native-worker-commonjs.cjs",
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-references.ts"
         ]
       },
       "dynamic": {
@@ -127478,8 +127575,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.parentPort",
+        "tests": [
+          "tests/corpus/native-worker-commonjs.cjs",
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-references.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",
@@ -127569,9 +127671,11 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "surface-manifest:node-builtin.worker_threads.threadId",
+        "evidence": "compiler-feature:worker_threads.threadId",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/native-worker-commonjs.cjs",
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-references.ts"
         ]
       },
       "dynamic": {
@@ -127628,8 +127732,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker_threads.workerData",
+        "tests": [
+          "tests/corpus/native-worker-commonjs.cjs",
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-references.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",

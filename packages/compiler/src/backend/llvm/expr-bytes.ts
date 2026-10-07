@@ -189,6 +189,12 @@ export function emitBytesGet(
   inBounds = false,
 ): LlValue {
   const B = host.B;
+  if (host.mod.workers) {
+    host.declare(`declare double @scr_bytes_get(ptr, double)`);
+    const result = B.tmp();
+    B.line(`${result} = call double @scr_bytes_get(ptr ${receiver}, double ${index.name})`);
+    return { name: result, type: F64 };
+  }
   const idx = host.emitBytesIndex(receiver, index, expr, inBounds);
   const data = host.emitBytesData(receiver);
   const p = B.tmp();
@@ -317,6 +323,11 @@ export function emitBytesSet(
   inBounds = false,
 ): void {
   const B = host.B;
+  if (host.mod.workers) {
+    host.declare(`declare void @scr_bytes_set(ptr, double, double)`);
+    B.line(`call void @scr_bytes_set(ptr ${receiver}, double ${index.name}, double ${value.name})`);
+    return;
+  }
   // Invalid integer-indexed writes are ignored after evaluating the RHS.
   const done = B.newLabel("bytes.store.done");
   const idx = emitBytesIndex(host, receiver, index, indexExpr, done, inBounds);

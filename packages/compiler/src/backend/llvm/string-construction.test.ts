@@ -17,7 +17,7 @@ const concat = (left: IrExpr, right: IrExpr): IrExpr => ({
 
 function module(value: IrExpr): IrModule {
   return {
-    irVersion: 13,
+    irVersion: 14,
     sourceFile: loc.file,
     entry: "main",
     functions: [

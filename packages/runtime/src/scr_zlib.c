@@ -23,6 +23,7 @@ static void scr_zlib_oom(void) {
 }
 
 ScrBytes *scr_zlib_deflate(const ScrBytes *data) {
+  SCR_BYTES_SNAPSHOT(data);
   uLong srcLen = (uLong)data->len;
   uLong cap = compressBound(srcLen);
   uint8_t *buf = malloc(cap ? cap : 1);
@@ -37,6 +38,7 @@ ScrBytes *scr_zlib_deflate(const ScrBytes *data) {
 }
 
 ScrBytes *scr_zlib_inflate(const ScrBytes *data) {
+  SCR_BYTES_SNAPSHOT(data);
   z_stream zs;
   memset(&zs, 0, sizeof zs);
   if (inflateInit(&zs) != Z_OK) scr_zlib_oom();
@@ -100,6 +102,7 @@ static int scr_zlib_window_bits(int mode, bool inflating) {
 }
 
 ScrBytes *scr_zlib_deflate_mode(const ScrBytes *data, double mode, double level) {
+  SCR_BYTES_SNAPSHOT(data);
   z_stream zs;
   memset(&zs, 0, sizeof zs);
   int lvl = (int)level;
@@ -126,6 +129,7 @@ ScrBytes *scr_zlib_deflate_mode(const ScrBytes *data, double mode, double level)
 }
 
 ScrBytes *scr_zlib_inflate_mode(const ScrBytes *data, double mode) {
+  SCR_BYTES_SNAPSHOT(data);
   z_stream zs;
   memset(&zs, 0, sizeof zs);
   if (inflateInit2(&zs, scr_zlib_window_bits((int)mode, true)) != Z_OK) scr_zlib_oom();
@@ -177,6 +181,7 @@ ScrBytes *scr_zlib_inflate_mode(const ScrBytes *data, double mode) {
 }
 
 double scr_zlib_crc32(const ScrBytes *data, double value) {
+  SCR_BYTES_SNAPSHOT(data);
   char recv[48], msg[160];
   scr_num_received(value, recv);
   if (!(isfinite(value) && trunc(value) == value)) {
@@ -321,6 +326,7 @@ static void scr_zlib_async_destroy(void *payload) {
 
 void scr_zlib_codec_async(const ScrBytes *data, double mode, bool compressing,
                           ScrClosure *cb, ScrZlibBytesFn fn) {
+  SCR_BYTES_SNAPSHOT(data);
   ScrZlibAsyncOp *op = calloc(1, sizeof *op);
   if (!op) scr_zlib_oom();
   op->data = malloc(data->len ? data->len : 1);

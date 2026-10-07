@@ -38,28 +38,28 @@ static ScrAlsCtx *scr_als_ctx_alloc(size_t len) {
   return c;
 }
 
-static double scr_als_counter = 0;
+static SCR_TL double scr_als_counter = 0;
 
 /* Main-slot teardown (atexit, LIFO after scr_init's audit registration —
  * the dc-registry precedent): a top-level enterWith leaves a context in
  * the main slot at exit; release it before the RC audit counts. */
 static void scr_als_teardown(void) {
   /* atexit runs on the main context — the active slot IS main's. */
-  scr_als_ctx_release(*scr_als_active);
-  *scr_als_active = NULL;
+  scr_als_ctx_release(*SCR_ALS_SLOT());
+  *SCR_ALS_SLOT() = NULL;
 }
 
 double scr_als_new(void) {
-  static bool teardown_registered = false;
+  static SCR_TL bool teardown_registered = false;
   if (!teardown_registered) {
     teardown_registered = true;
-    atexit(scr_als_teardown);
+    scr_atexit(scr_als_teardown);
   }
   return ++scr_als_counter;
 }
 
 ScrDyn *scr_als_get(double id) {
-  const ScrAlsCtx *c = *scr_als_active;
+  const ScrAlsCtx *c = *SCR_ALS_SLOT();
   if (c) {
     for (size_t i = 0; i < c->len; i++) {
       if (c->entries[i].id == id) return scr_dyn_retain(c->entries[i].value);
@@ -72,7 +72,7 @@ ScrDyn *scr_als_get(double id) {
  * retained in), installed as the active context; the PREVIOUS snapshot
  * returns (ownership moves out) for scr_als_restore. */
 ScrAlsCtx *scr_als_enter(double id, ScrDyn *value) {
-  ScrAlsCtx *prev = *scr_als_active;
+  ScrAlsCtx *prev = *SCR_ALS_SLOT();
   size_t n = prev ? prev->len : 0;
   bool have = false;
   for (size_t i = 0; i < n; i++) {
@@ -88,13 +88,13 @@ ScrAlsCtx *scr_als_enter(double id, ScrDyn *value) {
   }
   next->entries[w].id = id;
   next->entries[w].value = scr_dyn_retain(value);
-  *scr_als_active = next;
+  *SCR_ALS_SLOT() = next;
   return prev; /* ownership moves to the caller */
 }
 
 /* The exit() arm: the id REMOVED from the snapshot. */
 ScrAlsCtx *scr_als_enter_absent(double id) {
-  ScrAlsCtx *prev = *scr_als_active;
+  ScrAlsCtx *prev = *SCR_ALS_SLOT();
   size_t n = prev ? prev->len : 0;
   size_t keep = 0;
   for (size_t i = 0; i < n; i++) {
@@ -108,13 +108,13 @@ ScrAlsCtx *scr_als_enter_absent(double id) {
     next->entries[w].value = scr_dyn_retain(prev->entries[i].value);
     w++;
   }
-  *scr_als_active = next;
+  *SCR_ALS_SLOT() = next;
   return prev;
 }
 
 void scr_als_restore(ScrAlsCtx *prev) {
-  scr_als_ctx_release(*scr_als_active);
-  *scr_als_active = prev; /* ownership moves back in */
+  scr_als_ctx_release(*SCR_ALS_SLOT());
+  *SCR_ALS_SLOT() = prev; /* ownership moves back in */
 }
 
 void scr_als_enter_with(double id, ScrDyn *value) {
@@ -166,12 +166,12 @@ static void scr_rej_release(ScrRejListener *l) {
   if (--l->state->refs == 0) free(l->state);
 }
 
-static uint64_t scr_rej_id = 0;
+static SCR_TL uint64_t scr_rej_id = 0;
 
-static ScrRejListener *scr_urj_listeners = NULL;
-static size_t scr_nurj = 0, scr_urj_cap = 0;
-static ScrRejListener *scr_rjh_listeners = NULL;
-static size_t scr_nrjh = 0, scr_rjh_cap = 0;
+static SCR_TL ScrRejListener *scr_urj_listeners = NULL;
+static SCR_TL size_t scr_nurj = 0, scr_urj_cap = 0;
+static SCR_TL ScrRejListener *scr_rjh_listeners = NULL;
+static SCR_TL size_t scr_nrjh = 0, scr_rjh_cap = 0;
 
 static void scr_urj_teardown(void) {
   for (size_t i = 0; i < scr_nurj; i++) scr_rej_release(&scr_urj_listeners[i]);
@@ -239,10 +239,10 @@ static void scr_rjh_sync_hook(void) {
 
 void scr_process_on_unhandled_rejection(ScrDyn *fn, bool once) {
   if (!scr_rej_check_listener(fn)) return;
-  static bool teardown_armed = false;
+  static SCR_TL bool teardown_armed = false;
   if (!teardown_armed) {
     teardown_armed = true;
-    atexit(scr_urj_teardown);
+    scr_atexit(scr_urj_teardown);
   }
   scr_rej_push(&scr_urj_listeners, &scr_nurj, &scr_urj_cap, fn, once);
   scr_urj_sync_hook();
@@ -255,10 +255,10 @@ void scr_process_off_unhandled_rejection(ScrDyn *fn) {
 
 void scr_process_on_rejection_handled(ScrDyn *fn, bool once) {
   if (!scr_rej_check_listener(fn)) return;
-  static bool teardown_armed = false;
+  static SCR_TL bool teardown_armed = false;
   if (!teardown_armed) {
     teardown_armed = true;
-    atexit(scr_rjh_teardown);
+    scr_atexit(scr_rjh_teardown);
   }
   scr_rej_push(&scr_rjh_listeners, &scr_nrjh, &scr_rjh_cap, fn, once);
   scr_rjh_sync_hook();
@@ -307,8 +307,8 @@ static bool scr_rej_fire(ScrRejListener **list, size_t *n, ScrDyn **args, size_t
 
 /* Uncaught exception listeners share the checked-dynamic callback ABI.
  * Monitors run first but do not handle the exception by themselves. */
-static ScrRejListener *scr_uncaught_ls[2];
-static size_t scr_uncaught_n[2], scr_uncaught_cap[2];
+static SCR_TL ScrRejListener *scr_uncaught_ls[2];
+static SCR_TL size_t scr_uncaught_n[2], scr_uncaught_cap[2];
 static int scr_uncaught_dispatch(bool from_promise);
 
 static void scr_uncaught_sync_hook(void) {
@@ -327,8 +327,8 @@ static void scr_uncaught_teardown(void) {
 
 void scr_process_on_uncaught_exception(ScrDyn *fn, bool once, bool monitor) {
   if (!scr_rej_check_listener(fn)) return;
-  static bool armed = false;
-  if (!armed) { armed = true; atexit(scr_uncaught_teardown); }
+  static SCR_TL bool armed = false;
+  if (!armed) { armed = true; scr_atexit(scr_uncaught_teardown); }
   size_t k = monitor ? 1 : 0;
   scr_rej_push(&scr_uncaught_ls[k], &scr_uncaught_n[k], &scr_uncaught_cap[k], fn, once);
   scr_uncaught_sync_hook();
@@ -605,8 +605,8 @@ ScrDyn *scr_await_dyn_value_settled(ScrDyn *value) {
  * an ScrError (identity-cached, so a listener comparing two deliveries
  * of one warning sees one object); a string `detail` joins the dyn node
  * and the report's second line, exactly Node. */
-static ScrDyn **scr_warn_listeners = NULL;
-static size_t scr_nwarn = 0, scr_warn_cap = 0;
+static SCR_TL ScrDyn **scr_warn_listeners = NULL;
+static SCR_TL size_t scr_nwarn = 0, scr_warn_cap = 0;
 
 static void scr_warn_teardown(void) {
   for (size_t i = 0; i < scr_nwarn; i++) scr_dyn_release(scr_warn_listeners[i]);
@@ -629,7 +629,7 @@ void scr_process_on_warning(ScrDyn *fn) {
       abort();
     }
   }
-  if (scr_nwarn == 0) atexit(scr_warn_teardown);
+  if (scr_nwarn == 0) scr_atexit(scr_warn_teardown);
   scr_warn_listeners[scr_nwarn++] = scr_dyn_retain(fn);
 }
 
@@ -671,7 +671,7 @@ static void scr_warning_dispatch(ScrDyn *w) {
   if (ed && ed->kind == SCR_DYN_STR) fprintf(stderr, "\n%s", ed->v.str->data);
   fputc('\n', stderr);
   /* Node's one-time trace hint, after the first report. */
-  static bool hinted = false;
+  static SCR_TL bool hinted = false;
   if (!hinted) {
     hinted = true;
     fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
@@ -850,7 +850,7 @@ ScrDyn *scr_promise_reason_dyn(const ScrPromise *p) {
  * promise<dyn> directly and every other inner type through the adapting
  * constructor below. */
 
-extern bool (*scr_dyn_promise_identity_fn)(ScrPromise *, ScrPromise *);
+SCR_TL extern bool (*scr_dyn_promise_identity_fn)(ScrPromise *, ScrPromise *);
 
 ScrDyn *scr_dyn_new_promise(ScrPromise *p) {
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;

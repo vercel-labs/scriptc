@@ -2,9 +2,9 @@
  * JSON's null/zero spellings must not erase NaN, infinities or negative zero. */
 import type { IrModule } from "./ir.js";
 
-// Version 13 adds the NaN sentinel. Older readers interpret unknown tags
-// as negative infinity, so accepting a newer document would miscompile it.
-export const IR_VERSION = 13 as const;
+// Version 14 records worker execution, which requires thread-local program
+// state and matching runtime objects. Older readers must not erase that mode.
+export const IR_VERSION = 14 as const;
 
 /** IR artifacts are plain data. Scan each function once before deciding
  * whether its JSON encoding needs the complete-number-domain replacer. */

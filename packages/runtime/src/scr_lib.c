@@ -17,6 +17,11 @@
 #include "scr_runtime.h"
 
 #include <ctype.h>
+#ifdef SCR_WORKERS
+#include <stdatomic.h>
+static atomic_uint scr_process_mask;
+static void scr_process_mask_init(void);
+#endif
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -253,6 +258,10 @@ static bool scr_lib_same_executable_arg(const char *a, const char *b) {
  * Load the documented OS parser from System32 without adding an executable-
  * only shell dependency to the embedding runtime's link contract. */
 static void scr_lib_prepare_utf8_argv(void) {
+#ifdef SCR_WORKERS
+  /* Worker arguments were copied as UTF-8 before their native thread began. */
+  if (!scr_context_is_main()) return;
+#endif
   if (scr_lib_argv == NULL || scr_lib_argv_utf8 != NULL) return;
   HMODULE shell = LoadLibraryExW(L"shell32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (shell == NULL) scr_trap("could not load Windows command-line parser");
@@ -325,6 +334,9 @@ bool scr_lib_should_collapse_reexec_arg(ScrStr *cmd, ScrArr *args) {
  * the archive's objects free of any atexit reference — the K8 ambient
  * audit's bar). */
 void scr_lib_init(int argc, char **argv) {
+#ifdef SCR_WORKERS
+  if (scr_context_is_main()) scr_process_mask_init();
+#endif
   scr_lib_argc = argc;
   scr_lib_argv = argv;
   if (argc >= 2 && strncmp(argv[1], "--scriptc-fork=", 15) == 0) {
@@ -345,7 +357,7 @@ void scr_lib_init(int argc, char **argv) {
       scr_lib_argv = scr_lib_argv_owned;
     }
   }
-  atexit(scr_lib_cleanup);
+  scr_atexit(scr_lib_cleanup);
 }
 #endif /* !SCR_LIB */
 
@@ -564,7 +576,7 @@ ScrStr *scr_process_platform(void) {
     scr_platform_str = scr_str_new("unknown", 7);
 #endif
 #ifndef SCR_LIB
-    atexit(scr_process_platform_cleanup);
+    scr_atexit(scr_process_platform_cleanup);
 #endif
   }
   return scr_str_retain(scr_platform_str);
@@ -586,7 +598,7 @@ ScrStr *scr_process_arch(void) {
     scr_arch_str = scr_str_new("unknown", 7);
 #endif
 #ifndef SCR_LIB
-    atexit(scr_process_arch_cleanup);
+    scr_atexit(scr_process_arch_cleanup);
 #endif
   }
   return scr_str_retain(scr_arch_str);
@@ -602,7 +614,7 @@ ScrStr *scr_process_versions_node(void) {
     scr_versions_node_str =
         scr_str_new(SCR_NODE_COMPAT_VERSION, sizeof(SCR_NODE_COMPAT_VERSION) - 1);
 #ifndef SCR_LIB
-    atexit(scr_process_versions_node_cleanup);
+    scr_atexit(scr_process_versions_node_cleanup);
 #endif
   }
   return scr_str_retain(scr_versions_node_str);
@@ -621,7 +633,7 @@ ScrStr *scr_process_versions_openssl(void) {
     scr_versions_openssl_str =
         scr_str_new(SCR_OPENSSL_COMPAT_VERSION, sizeof(SCR_OPENSSL_COMPAT_VERSION) - 1);
 #ifndef SCR_LIB
-    atexit(scr_process_versions_openssl_cleanup);
+    scr_atexit(scr_process_versions_openssl_cleanup);
 #endif
   }
   return scr_str_retain(scr_versions_openssl_str);
@@ -684,13 +696,19 @@ ScrStr *scr_process_exec_path(void) {
 #endif
     scr_exec_path_str = scr_str_new(use, strlen(use));
 #ifndef SCR_LIB
-    atexit(scr_process_exec_path_cleanup);
+    scr_atexit(scr_process_exec_path_cleanup);
 #endif
   }
   return scr_str_retain(scr_exec_path_str);
 }
 
 ScrStr *scr_env_get(const ScrStr *name) {
+#ifdef SCR_WORKERS
+  if (!scr_context_is_main()) {
+    const char *value = scr_context_getenv(name->data);
+    return value ? scr_str_new(value, strlen(value)) : NULL;
+  }
+#endif
   /* ScrStr data is NUL-terminated (like the fs paths below). A fresh copy
    * per read: getenv's buffer is not ours to alias, and Node's process.env
    * reads snapshot the value too. Absent → NULL (the compiler's undefined
@@ -710,7 +728,7 @@ ScrStr *scr_env_get(const ScrStr *name) {
   free(buf);
   return s;
 #else
-  const char *v = getenv(name->data);
+  const char *v = scr_getenv(name->data);
   return v ? scr_str_new(v, strlen(v)) : NULL;
 #endif
 }
@@ -719,6 +737,9 @@ ScrStr *scr_env_get(const ScrStr *name) {
  * children (posix_spawn inherits environ) observe the write, like Node.
  * Both args borrowed (NUL-terminated ScrStr data); setenv copies. */
 void scr_env_set(const ScrStr *name, const ScrStr *value) {
+#ifdef SCR_WORKERS
+  if (scr_context_env_set(name->data, value->data)) return;
+#endif
 #ifdef _WIN32
   /* The WIN32 environment (see scr_env_get): an empty value stays a
    * present-but-empty variable, and children inherit the write. */
@@ -731,6 +752,9 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
 /* `delete process.env.NAME` — unsetenv(3): later reads answer absent and
  * spawned children lose the variable, like Node. Borrowed. */
 void scr_env_unset(const ScrStr *name) {
+#ifdef SCR_WORKERS
+  if (scr_context_env_set(name->data, NULL)) return;
+#endif
 #ifdef _WIN32
   SetEnvironmentVariableA(name->data, NULL);
 #else
@@ -886,6 +910,7 @@ void scr_fs_invalid_named_path(const ScrDyn *value, const ScrStr *path, const ch
   scr_jb_puts(&b, "' must be a string, Uint8Array, or URL without null bytes. Received ");
   if (value->kind == SCR_DYN_BYTES) {
     const ScrBytes *bytes = value->v.bytes;
+    SCR_SHARED_GUARD(bytes, NULL);
     if (value->buffer) {
       scr_jb_puts(&b, "<Buffer");
       for (size_t i = 0; i < bytes->len; i++) {
@@ -936,7 +961,7 @@ void scr_process_load_env_file(const ScrDyn *value) {
   if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) path = scr_str_new("./.env", 6);
   else if (value->kind == SCR_DYN_STR) path = scr_str_retain(value->v.str);
   else if (scr_dyn_native_url_is(value)) path = scr_url_to_path(value->v.handle.ptr);
-  else if (scr_dyn_bytes_is(value, SCR_BYTES_U8)) path = scr_str_new((const char *)value->v.bytes->data, value->v.bytes->len);
+  else if (scr_dyn_bytes_is(value, SCR_BYTES_U8)) path = scr_bytes_string(value->v.bytes, 0, value->v.bytes->len);
   else {
     scr_dyn_arg_type_fail("path", "of type string or an instance of Buffer or URL", value);
     return;
@@ -978,6 +1003,10 @@ void scr_process_load_env_file(const ScrDyn *value) {
  * (not producible by setenv) are skipped; the value is everything after
  * the FIRST '='. +1 array. */
 ScrArr *scr_env_pairs(void) {
+#ifdef SCR_WORKERS
+  ScrArr *local = scr_context_env_pairs();
+  if (local) return local;
+#endif
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
 #ifdef _WIN32
   /* The WIN32 environment block (see scr_env_get): NUL-separated
@@ -1297,7 +1326,7 @@ bool scr_proc_stream_write(double fd, const ScrStr *data) {
  * directory API. The env var covers every real session; abort matches
  * the POSIX arm's stance on the unreachable failure. */
 ScrStr *scr_os_homedir(void) {
-  const char *home = getenv("USERPROFILE");
+  const char *home = scr_getenv("USERPROFILE");
   if (home && home[0] != '\0') return scr_str_new(home, strlen(home));
   scr_trap("scriptc: os.homedir() failed\n");
 }
@@ -1371,11 +1400,11 @@ ScrStr *scr_os_tmpdir(void) {
  * physical-memory query. Keep the useful environment-backed answers and
  * spell the platform explicitly for the rest. */
 ScrStr *scr_os_homedir(void) {
-  const char *home = getenv("HOME");
+  const char *home = scr_getenv("HOME");
   return scr_str_new(home ? home : "", home ? strlen(home) : 0);
 }
 ScrStr *scr_os_user_name(void) {
-  const char *user = getenv("USER");
+  const char *user = scr_getenv("USER");
   return scr_str_new(user ? user : "", user ? strlen(user) : 0);
 }
 ScrStr *scr_os_user_shell(void) { return scr_str_new("", 0); }
@@ -1391,7 +1420,7 @@ ScrStr *scr_os_tmpdir(void) { return scr_str_new("/tmp", 4); }
 ScrStr *scr_os_homedir(void) {
   /* uv_os_homedir: $HOME when set (even empty is "set" only if non-NULL;
    * libuv requires non-empty), else the passwd entry. */
-  const char *home = getenv("HOME");
+  const char *home = scr_getenv("HOME");
   if (home && home[0] != '\0') return scr_str_new(home, strlen(home));
   struct passwd pw;
   struct passwd *result = NULL;
@@ -1468,9 +1497,9 @@ double scr_os_totalmem(void) {
 ScrStr *scr_os_tmpdir(void) {
   /* Node's env cascade, with ONE trailing slash trimmed (never down to
    * nothing: "/" stays "/"). */
-  const char *dir = getenv("TMPDIR");
-  if (!dir || dir[0] == '\0') dir = getenv("TMP");
-  if (!dir || dir[0] == '\0') dir = getenv("TEMP");
+  const char *dir = scr_getenv("TMPDIR");
+  if (!dir || dir[0] == '\0') dir = scr_getenv("TMP");
+  if (!dir || dir[0] == '\0') dir = scr_getenv("TEMP");
   if (!dir || dir[0] == '\0') dir = "/tmp";
   size_t len = strlen(dir);
   if (len > 1 && dir[len - 1] == '/') len--;
@@ -1743,8 +1772,8 @@ void scr_os_ifaddrs_free(ScrIfaddrs *s) {
 
 /* The events-unit hooks (scr_events.c fills them at install; NULL in
  * event-free binaries and in the standalone runtime C tests). */
-void (*scr_process_exit_hook)(double code) = NULL;
-void (*scr_stdin_destroy_hook)(void) = NULL;
+SCR_TL void (*scr_process_exit_hook)(double code) = NULL;
+SCR_TL void (*scr_stdin_destroy_hook)(void) = NULL;
 
 void scr_process_set_exit_code(double code) {
   if (!isfinite(code) || trunc(code) != code) {
@@ -1782,6 +1811,13 @@ void scr_process_exit(double code) {
    * non-NULL only when the events unit is linked (scr_events.c). */
   scr_process_in_exit = true;
   if (scr_process_exit_hook != NULL) scr_process_exit_hook(code);
+#ifdef SCR_WORKERS
+  if (!scr_context_is_main()) {
+    /* A nested exit or a failing exit listener already selected its code. */
+    if (!scr_context_stopping()) scr_context_stop((int)code);
+    return;
+  }
+#endif
   /* _Exit skips atexit handlers on purpose: no further code runs (matching
    * Node), and the RC audit is meaningless mid-program (live values are
    * expected). scr_init's flush-at-exit is also skipped — flush here. */
@@ -1796,7 +1832,7 @@ void scr_process_exit(double code) {
  * attribute monotonic stamp — the binary's own start, which is what
  * "the current Node.js process" means for a compiled program). */
 #ifdef _WIN32
-#if defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)
+#if (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS)
 /* The uptime anchor belongs to the host PROCESS, not to a library
  * instance. InitOnce keeps the lazy Windows spelling race-free when
  * several thread instances ask for the clock concurrently. */
@@ -1840,7 +1876,7 @@ __attribute__((constructor)) static void scr_uptime_anchor_init(void) {
 #endif
 
 double scr_process_uptime(void) {
-#if defined(_WIN32) && defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)
+#if defined(_WIN32) && ((defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS))
   scr_uptime_anchor_init();
 #elif defined(_WIN32)
   if (scr_uptime_t0_ms == 0) scr_uptime_anchor_init();
@@ -1852,7 +1888,7 @@ double scr_process_uptime(void) {
  * start (Node's timeOrigin anchor), fractional — the same monotonic
  * clock and anchor as uptime, in Node's performance.now units. */
 double scr_perf_now(void) {
-#if defined(_WIN32) && defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)
+#if defined(_WIN32) && ((defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS))
   scr_uptime_anchor_init();
 #elif defined(_WIN32)
   if (scr_uptime_t0_ms == 0) scr_uptime_anchor_init();
@@ -2092,9 +2128,34 @@ SCR_TL bool scr_process_in_exit = false;
 
 bool scr_process_exiting(void) { return scr_process_in_exit; }
 
+#ifdef SCR_WORKERS
+/* Initialize before workers start. Reading through the cached process value
+ * avoids temporarily clearing the OS mask while another thread creates a file. */
+static void scr_process_mask_init(void) {
+#ifdef _WIN32
+  int current, ignored;
+  _umask_s(0, &current);
+  _umask_s(current, &ignored);
+#else
+  unsigned current = umask(0);
+  umask((mode_t)current);
+#endif
+  atomic_store_explicit(&scr_process_mask, (unsigned)current, memory_order_relaxed);
+}
+#endif
+
 /* umask(2): mask < 0 reads without setting (set 0, restore — umask has no
  * read-only form); otherwise sets and answers the previous mask. */
 double scr_process_umask(double mask) {
+#ifdef SCR_WORKERS
+  if (mask < 0) return atomic_load_explicit(&scr_process_mask, memory_order_relaxed);
+  if (!scr_context_is_main()) {
+    static const char message[] = "Setting process.umask() is not supported in workers";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_WORKER_UNSUPPORTED_OPERATION");
+    return 0;
+  }
+  atomic_store_explicit(&scr_process_mask, (unsigned)mask, memory_order_relaxed);
+#endif
 #ifdef _WIN32
   /* Node on Windows accepts umask() calls; only the low bits matter. */
   int prev;
@@ -2124,6 +2185,13 @@ double scr_process_umask(double mask) {
 }
 
 void scr_process_chdir(ScrStr *dir) {
+#ifdef SCR_WORKERS
+  if (!scr_context_is_main()) {
+    static const char message[] = "process.chdir() is not supported in workers";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_WORKER_UNSUPPORTED_OPERATION");
+    return;
+  }
+#endif
 #ifdef _WIN32
   WCHAR *wide = scr_fs_win_wide(dir);
   BOOL changed = wide && SetCurrentDirectoryW(wide);
@@ -3141,6 +3209,7 @@ static double scr_fs_write_bytes(double fd, const void *data, size_t length,
  * Node/libuv. Positioned writes do not advance the descriptor. */
 double scr_fs_write_sync(double fd, ScrBytes *buf, double offset, double length,
                          double position) {
+  SCR_BYTES_SNAPSHOT(buf);
   size_t bytelen = buf->len; /* frontend admits u8 buffers only */
   char msg[160];
   char recv[48];
@@ -3271,9 +3340,18 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
+  uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
+  if (buf->shared && !bounce) scr_trap("scriptc: out of memory\n");
+  uint8_t *destination = bounce ? bounce : buf->data + off;
   ssize_t n = position == -1
-    ? read((int)fd, buf->data + off, want)
-    : scr_fs_pread((int)fd, buf->data + off, want, position);
+    ? read((int)fd, destination, want)
+    : scr_fs_pread((int)fd, destination, want, position);
+  int read_error = errno;
+  if (bounce) {
+    if (n > 0) scr_bytes_write(buf, off, bounce, (size_t)n);
+    free(bounce);
+  }
+  errno = read_error;
   if (n < 0) {
     int e = errno;
     char namebuf[16];
@@ -3319,7 +3397,7 @@ static double scr_fs_vector_sync(double fd, ScrArr *buffers, double position,
     size_t at = 0;
     for (size_t i = 0; i < count; i++) {
       ScrBytes *buf = scr_arr_get_ref(buffers, (double)i);
-      if (buf->len) memcpy(data + at, buf->data, buf->len);
+      scr_bytes_read(buf, 0, data + at, buf->len);
       at += buf->len;
       scr_bytes_release(buf);
     }
@@ -3336,7 +3414,7 @@ static double scr_fs_vector_sync(double fd, ScrArr *buffers, double position,
     for (size_t i = 0; i < count && remaining; i++) {
       ScrBytes *buf = scr_arr_get_ref(buffers, (double)i);
       size_t n = buf->len < remaining ? buf->len : remaining;
-      if (n) memcpy(buf->data, data + at, n);
+      scr_bytes_write(buf, 0, data + at, n);
       at += n;
       remaining -= n;
       scr_bytes_release(buf);
@@ -3911,43 +3989,6 @@ ScrBytes *scr_fs_read_fd_bytes(double fd) {
   return scr_bytes_take_data(out.bytes, out.len);
 }
 
-/* ── Atomics.wait: the synchronous-sleep idiom ───────────────────────
- * Atomics.wait(int32Array, idx, expected, timeoutMs). scriptc has no
- * threads: nothing can ever notify a waiter, so the spec's behavior for
- * every compilable program is exactly "compare, then sleep out the
- * timeout" — "not-equal" immediately when the element differs from
- * `expected`, "timed-out" after a real nanosleep otherwise ("ok" is
- * unreachable; the compiler requires the timeout argument, since an
- * infinite wait here would be a certain deadlock). The sleep resumes
- * across EINTR so signals don't shorten it. Timeout semantics follow the
- * spec: NaN/+Infinity would be infinite (compiler-fenced by requiring
- * the argument, but a runtime NaN clamps to 0 defensively), negatives
- * clamp to 0. */
-ScrStr *scr_atomics_wait(ScrBytes *arr, double idx, double expected, double timeout_ms) {
-  double have = scr_bytes_get(arr, idx); /* traps out-of-range like every access */
-  /* The comparison is on the stored int32 vs ToInt32(expected). */
-  double t = expected;
-  if (t != t || isinf(t)) t = 0;
-  else {
-    t = trunc(t);
-    t = fmod(t, 4294967296.0);
-    if (t < 0) t += 4294967296.0;
-    if (t >= 2147483648.0) t -= 4294967296.0;
-  }
-  if (have != t) return scr_str_new("not-equal", 9);
-  double ms = timeout_ms;
-  if (ms != ms || ms < 0) ms = 0;
-  if (ms > 0) {
-    struct timespec left = {
-        (time_t)(ms / 1000.0),
-        (long)((ms - (double)(time_t)(ms / 1000.0) * 1000.0) * 1e6),
-    };
-    struct timespec rem;
-    while (nanosleep(&left, &rem) != 0 && errno == EINTR) left = rem;
-  }
-  return scr_str_new("timed-out", 9);
-}
-
 /* ── the tty probes ──────────────────────────────────────────────────── */
 
 bool scr_process_is_tty(double fd) { return isatty((int)fd) != 0; }
@@ -4467,7 +4508,7 @@ static DWORD scr_fs_win_junction(const WCHAR *target, const WCHAR *destination) 
 
 #ifdef _WIN32
 /* libuv keeps this fallback for later calls once Windows rejects the flag. */
-static DWORD scr_fs_symlink_usermode_flag = 0x2; /* ALLOW_UNPRIVILEGED_CREATE */
+static SCR_TL DWORD scr_fs_symlink_usermode_flag = 0x2; /* ALLOW_UNPRIVILEGED_CREATE */
 #endif
 
 int scr_fs_symlink_infer(ScrStr *absolute) {
@@ -5738,6 +5779,7 @@ ScrCryptoHash *scr_crypto_hmac_new_str(ScrStr *alg, ScrStr *key) {
 }
 
 ScrCryptoHash *scr_crypto_hmac_new_bytes(ScrStr *alg, ScrBytes *key) {
+  SCR_BYTES_SNAPSHOT(key);
   ScrDigestAlg kind;
   if (!scr_digest_alg(alg->data, alg->len, &kind)) {
     scr_crypto_invalid_digest(alg);
@@ -5778,6 +5820,7 @@ ScrCryptoHash *scr_crypto_hash_update_str(ScrCryptoHash *hash, ScrStr *data) {
 }
 
 ScrCryptoHash *scr_crypto_hash_update_bytes(ScrCryptoHash *hash, ScrBytes *data) {
+  SCR_BYTES_SNAPSHOT(data);
   return scr_crypto_hash_update_raw(hash, data->data,
                                     data->len * scr_bytes_elem_size(data->elem));
 }
@@ -5849,10 +5892,12 @@ ScrStr *scr_crypto_hash_digest_str(ScrStr *alg, ScrStr *data, ScrStr *enc) {
 }
 
 ScrStr *scr_crypto_hash_digest_bytes(ScrStr *alg, ScrBytes *data, ScrStr *enc) {
+  SCR_BYTES_SNAPSHOT(data);
   return scr_hash_digest_raw(alg, data->data, data->len * scr_bytes_elem_size(data->elem), enc);
 }
 
 bool scr_crypto_timing_safe_equal(ScrBytes *left, ScrBytes *right) {
+  SCR_SHARED_GUARD(left, right);
   size_t left_len = left->len * scr_bytes_elem_size(left->elem);
   size_t right_len = right->len * scr_bytes_elem_size(right->elem);
   if (left_len != right_len) {
@@ -5897,7 +5942,13 @@ ScrBytes *scr_crypto_random_fill(ScrBytes *bytes, double offset, double size) {
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
     return NULL;
   }
-  arc4random_buf(bytes->data + (size_t)offset, (size_t)size);
+  if (bytes->shared) {
+    uint8_t *random = malloc(size ? (size_t)size : 1);
+    if (!random) scr_trap("scriptc: out of memory\n");
+    arc4random_buf(random, (size_t)size);
+    scr_bytes_write(bytes, (size_t)offset, random, (size_t)size);
+    free(random);
+  } else arc4random_buf(bytes->data + (size_t)offset, (size_t)size);
   return scr_bytes_retain(bytes);
 }
 
@@ -5991,6 +6042,8 @@ static ScrBytes *scr_crypto_pbkdf2_raw(const unsigned char *password, size_t pas
 
 ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
                             double iterations, double keylen, ScrStr *digest) {
+  SCR_BYTES_SNAPSHOT(password);
+  SCR_BYTES_SNAPSHOT(salt);
   if (!isfinite(iterations) || floor(iterations) != iterations ||
       iterations < 1 || iterations > 2147483647.0) {
     char value[64], msg[176];
@@ -6051,6 +6104,9 @@ static bool scr_crypto_integer(double value, const char *name, double max) {
 
 ScrBytes *scr_crypto_hkdf_bytes(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
                                 ScrBytes *info, double keylen) {
+  SCR_BYTES_SNAPSHOT(ikm);
+  SCR_BYTES_SNAPSHOT(salt);
+  SCR_BYTES_SNAPSHOT(info);
   if (!scr_crypto_integer(keylen, "length", 9007199254740991.0)) return NULL;
   size_t info_len = info->len * scr_bytes_elem_size(info->elem);
   if (info_len > 1024) {
@@ -6175,6 +6231,8 @@ static bool scr_scrypt_params(double n, double r, double p, double maxmem, size_
 
 ScrBytes *scr_crypto_scrypt_derive(ScrBytes *password, ScrBytes *salt, double keylen,
                                   double n, double r, double p, double maxmem) {
+  SCR_BYTES_SNAPSHOT(password);
+  SCR_BYTES_SNAPSHOT(salt);
   if (!scr_crypto_integer(keylen, "keylen", 2147483647.0) ||
       !scr_crypto_integer(n, "N", 4294967295.0) || !scr_crypto_integer(r, "r", 4294967295.0) ||
       !scr_crypto_integer(p, "p", 4294967295.0) || !scr_crypto_integer(maxmem, "maxmem", 9007199254740991.0)) return NULL;
@@ -6305,6 +6363,7 @@ ScrBytes *scr_crypto_scrypt(ScrBytes *password, ScrBytes *salt, double keylen, S
 static ScrStr *scr_x509_fingerprint_raw(const uint8_t *in, size_t n);
 
 ScrStr *scr_crypto_x509_fingerprint(ScrBytes *data) {
+  SCR_BYTES_SNAPSHOT(data);
   return scr_x509_fingerprint_raw(data->data, data->len * scr_bytes_elem_size(data->elem));
 }
 
@@ -6531,6 +6590,7 @@ static ScrStr *scr_x509_validity_raw(const uint8_t *in, size_t n, bool want_to) 
 }
 
 ScrStr *scr_crypto_x509_valid_from(ScrBytes *data) {
+  SCR_BYTES_SNAPSHOT(data);
   return scr_x509_validity_raw(data->data, data->len * scr_bytes_elem_size(data->elem), false);
 }
 
@@ -6539,6 +6599,7 @@ ScrStr *scr_crypto_x509_valid_from_str(ScrStr *pem) {
 }
 
 ScrStr *scr_crypto_x509_valid_to(ScrBytes *data) {
+  SCR_BYTES_SNAPSHOT(data);
   return scr_x509_validity_raw(data->data, data->len * scr_bytes_elem_size(data->elem), true);
 }
 

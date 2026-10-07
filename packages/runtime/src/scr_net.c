@@ -609,13 +609,13 @@ struct ScrNetSocket {
 };
 
 #ifdef SCR_RC_AUDIT
-static long scr_net_live = 0;
+static SCR_TL long scr_net_live = 0;
 long scr_net_live_count(void) { return scr_net_live; }
 #endif
 
-static ScrNetServer *scr_net_servers = NULL; /* registry: +1 each, tail-appended */
-static ScrNetSocket *scr_net_socks = NULL;
-static ScrPoller *scr_net_poller = NULL;
+static SCR_TL ScrNetServer *scr_net_servers = NULL; /* registry: +1 each, tail-appended */
+static SCR_TL ScrNetSocket *scr_net_socks = NULL;
+static SCR_TL ScrPoller *scr_net_poller = NULL;
 
 /* ── RC ──────────────────────────────────────────────────────────────── */
 
@@ -1649,7 +1649,7 @@ void scr_net_server_close_direct(ScrNetServer *s, ScrClosure *cb /*moves, nullab
     scr_net_ls_drop(&s->listening_cbs);
   }
   if (!s->closing) {
-    static size_t scr_net_close_seq = 0;
+    static SCR_TL size_t scr_net_close_seq = 0;
     s->close_seq = ++scr_net_close_seq;
   }
   s->closing = true; /* the sweep fires 'close' once nconns drains */
@@ -2222,6 +2222,7 @@ void scr_net_sock_write_str(ScrNetSocket *s, ScrStr *data /*borrowed*/) {
 }
 
 void scr_net_sock_write_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/) {
+  SCR_BYTES_SNAPSHOT(data);
   scr_net_sock_write_raw(s, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)));
 }
 
@@ -2430,6 +2431,7 @@ ScrBytes *scr_net_sock_read_bytes(ScrNetSocket *s, double n) {
  * buffer — every consumer (data listeners, an http parser, a TLS bio)
  * sees them before anything still in the kernel. */
 void scr_net_sock_unshift_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/) {
+  SCR_BYTES_SNAPSHOT(data);
   if (data->len == 0) return;
   size_t avail = s->rlen - s->rhead;
   if (s->rhead >= data->len) {
@@ -2784,9 +2786,9 @@ void scr_net_server_get_native_conn(ScrNetServer *s, ScrNetNativeConnFn *fn, voi
  * pass after the work that flagged them — Node's later-than-the-handler
  * emits). Registered once by scr_http install-time code. */
 enum { SCR_NET_PROTO_SLOTS = 4 };
-static bool (*scr_net_proto_pendings[SCR_NET_PROTO_SLOTS])(void);
-static void (*scr_net_proto_sweeps[SCR_NET_PROTO_SLOTS])(void);
-static size_t scr_net_proto_n = 0;
+static SCR_TL bool (*scr_net_proto_pendings[SCR_NET_PROTO_SLOTS])(void);
+static SCR_TL void (*scr_net_proto_sweeps[SCR_NET_PROTO_SLOTS])(void);
+static SCR_TL size_t scr_net_proto_n = 0;
 
 /* ADDITIVE registration (each protocol unit — scr_http.c, scr_http2.c —
  * claims a slot at its install; both can co-link in one binary). */
@@ -3180,10 +3182,10 @@ static void scr_net_cleanup_atexit(void) {
 }
 
 void scr_net_install(void) {
-  static bool installed = false;
+  static SCR_TL bool installed = false;
   if (installed) return;
   installed = true;
-  atexit(scr_net_cleanup_atexit);
+  scr_atexit(scr_net_cleanup_atexit);
   scr_loop_set_net(&scr_net_pending, &scr_net_dispatch, &scr_net_pollfd);
 }
 
@@ -3204,7 +3206,7 @@ static void scr_net_dynh_unsupported(const char *member, const char *why) {
 /* The TLS-member hooks (scr_tls.c registers them when linked): TLSSocket
  * property reads, event names, and method names layer over the plain
  * socket dispatch without this unit naming that one's symbols. */
-static const ScrNetDynhTlsHooks *scr_net_dynh_tls = NULL;
+static SCR_TL const ScrNetDynhTlsHooks *scr_net_dynh_tls = NULL;
 void scr_net_set_dynh_tls(const ScrNetDynhTlsHooks *hooks) { scr_net_dynh_tls = hooks; }
 
 static bool scr_net_dynh_name_is(const ScrDyn *name, const char *lit) {
@@ -3457,7 +3459,7 @@ static const ScrDynHandleOps scr_net_dynh_sock_ops = {
  * at its dyn install — this unit cannot name http entry points without
  * breaking the link gate. */
 
-static bool (*scr_net_dynh_http_on)(ScrNetServer *s, const char *event, const ScrDyn *cb,
+static SCR_TL bool (*scr_net_dynh_http_on)(ScrNetServer *s, const char *event, const ScrDyn *cb,
                                     bool once);
 void scr_net_set_dynh_http_on(bool (*fn)(ScrNetServer *, const char *, const ScrDyn *, bool)) {
   scr_net_dynh_http_on = fn;

@@ -361,6 +361,7 @@ void scr_assert_deep_result(bool equal, bool negated, ScrStr *msg, bool has_msg)
  * by construction (the frontend's same-static-type gate), but the elem
  * check stays: a defensive answer beats a miscompare. */
 static bool scr_assert_bytes_content_eq(const ScrBytes *a, const ScrBytes *b) {
+  SCR_SHARED_GUARD(a, b);
   if (a->elem != b->elem || a->len != b->len) return false;
   size_t nbytes = a->len * scr_bytes_elem_size(a->elem);
   return nbytes == 0 || memcmp(a->data, b->data, nbytes) == 0;
@@ -542,8 +543,7 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
       if (a->buffer != b->buffer) return false; /* the prototype gate */
       const ScrBytes *x = a->v.bytes, *y = b->v.bytes;
       if (x->elem != y->elem || x->len != y->len) return false;
-      size_t nbytes = x->len * scr_bytes_elem_size(x->elem);
-      return nbytes == 0 || memcmp(x->data, y->data, nbytes) == 0;
+      return scr_assert_bytes_content_eq(x, y);
     }
     case SCR_DYN_ARR: {
       if (a->v.arr.len != b->v.arr.len) return false;
@@ -712,7 +712,7 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
         ab_char(b, '\n');
         scr_assert_cf_pad(b, indent + 2);
         char tmp[40];
-        size_t n = scr_assert_inspect_f64((double)((const unsigned char *)bs->data)[i], tmp);
+        size_t n = scr_assert_inspect_f64(scr_bytes_get(bs, (double)i), tmp);
         ab_bytes(b, tmp, n);
         if (i + 1 < bs->len) ab_char(b, ',');
       }

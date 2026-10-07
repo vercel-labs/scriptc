@@ -21,7 +21,7 @@ afterEach(async () =>
   Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))),
 );
 
-async function fixture(target: NativeTargetSpec) {
+async function fixture(target: NativeTargetSpec, workers = false) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-target-"));
   dirs.push(root);
   const packagePath = join(root, "package.json");
@@ -52,7 +52,7 @@ async function fixture(target: NativeTargetSpec) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 6, marker: "scr_runtime_abi_v6" },
+    runtime_abi: { version: 7, marker: "scr_runtime_abi_v7" },
     compiler: { command: "fixture", identity: "fixture", target: target.llvmTriple },
     macros: { executable: [], excluded: ["SCR_LIB"], sanitizer: "external-toolchain-required" },
     flavors: {
@@ -62,7 +62,9 @@ async function fixture(target: NativeTargetSpec) {
           {
             source: "scr_runtime.c",
             predicate: true,
-            variants: [{ id: "default", when: {}, defines: [], ...artifact }],
+            variants: [
+              { id: "default", when: {}, defines: workers ? ["SCR_WORKERS"] : [], ...artifact },
+            ],
           },
         ],
       },
@@ -72,7 +74,9 @@ async function fixture(target: NativeTargetSpec) {
           {
             source: "scr_runtime.c",
             predicate: true,
-            variants: [{ id: "default", when: {}, defines: [], ...artifact }],
+            variants: [
+              { id: "default", when: {}, defines: workers ? ["SCR_WORKERS"] : [], ...artifact },
+            ],
           },
         ],
       },
@@ -140,4 +144,47 @@ test.each([
     architecture: target.architecture,
     object_format: target.objectFormat,
   });
+});
+
+test.each([
+  MACOS_X64_TARGET,
+  LINUX_X64_GNU_TARGET,
+  LINUX_ARM64_GNU_TARGET,
+  WINDOWS_X64_MSVC_TARGET,
+  LINUX_X64_MUSL_TARGET,
+  LINUX_ARM64_MUSL_TARGET,
+])("worker objects require matching thread-state variants for $name", async (target) => {
+  const ordinary = await fixture(target);
+  const worker = await fixture(target, true);
+  const request = {
+    target,
+    features: { ...features, workers: true },
+    optimization: "release" as const,
+  };
+  await expect(
+    loadRuntimePack({ ...request, resolver: () => ordinary.packagePath }),
+  ).rejects.toThrow("incompatible thread-state variant");
+  await expect(
+    loadRuntimePack({ ...request, resolver: () => worker.packagePath }),
+  ).resolves.toBeDefined();
+  await expect(
+    loadRuntimePack({ ...request, features, resolver: () => worker.packagePath }),
+  ).rejects.toThrow("incompatible thread-state variant");
+});
+
+test("worker runtime packs refuse dynamic and WASI execution", async () => {
+  for (const [target, dynamic] of [
+    [LINUX_X64_GNU_TARGET, true],
+    [WASM32_WASI_TARGET, false],
+  ] as const) {
+    const pack = await fixture(target, true);
+    await expect(
+      loadRuntimePack({
+        target,
+        features: { ...features, workers: true, dynamic },
+        optimization: "release",
+        resolver: () => pack.packagePath,
+      }),
+    ).rejects.toThrow("native static executable");
+  }
 });

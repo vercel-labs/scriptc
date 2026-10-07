@@ -116,6 +116,8 @@ const programs = [
   "constant-number-remainders.ts",
   "numeric-call-specialization.ts",
   "scalar-string-slices.ts",
+  "native-worker-roots/main.ts",
+  "native-worker-shared-views.ts",
 ];
 
 for (const backend of ["llvm"] as const) {

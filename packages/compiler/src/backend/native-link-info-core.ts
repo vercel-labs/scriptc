@@ -14,6 +14,7 @@ import type {
 import type { NativeTargetSpec } from "./targets.js";
 
 export interface NativeLinkFeatures {
+  workers?: boolean;
   dynamic: boolean;
   regex: boolean;
   copying: boolean;

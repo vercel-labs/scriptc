@@ -207,7 +207,8 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
           // A native callback may run arbitrary scriptc code. With retained
           // descriptors any manifest binding may pump a previously stored
           // callback, so every FFI call is conservatively a checkpoint.
-          if (callbackFfiImports.has(rec.import) || manifestHasRetainedCallback) f.throws = true;
+          if (mod.workers || callbackFfiImports.has(rec.import) || manifestHasRetainedCallback)
+            f.throws = true;
           break;
         case "bytesNew": {
           // The size form (`new Uint8Array(n)`) throws Node's "Invalid

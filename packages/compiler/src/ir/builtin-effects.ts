@@ -8,6 +8,10 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * seed on `dynCheck` and `awaitExpr` nodes, which throw on validation
  * failure / promise rejection). */
 export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "worker.new",
+  "worker.data",
+  "worker.parentPort",
+  "process.exit",
   "text.encodeInto",
   "buffer.isAscii",
   "buffer.isUtf8",
@@ -40,6 +44,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.byteLenDyn",
   "bytes.construct",
   "arrayBuffer.new",
+  "sharedArrayBuffer.new",
+  "atomics.op",
+  "atomics.wait",
+  "atomics.notify",
   "arrayBuffer.byteLengthGetter",
   "arrayBuffer.viewU8C",
   "arrayBuffer.viewI8",
@@ -442,6 +450,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.getOwnPropertyDescriptor",
   "dyn.arrayProtoCall",
   "process.chdir",
+  "process.umask",
   "process.loadEnvFile",
   "fs.realpathSync",
   "fs.realpathNativeSync",

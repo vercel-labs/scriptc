@@ -2268,7 +2268,9 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (!value) return false;
   if (value->kind == SCR_DYN_JSVAL) return scr_dyn_jsval_ops()->type_probe(value->v.jsval.cell, probe);
 #define PROBE(name) (probe->len == sizeof(name) - 1 && memcmp(probe->data, name, sizeof(name) - 1) == 0)
-  if (PROBE("isAnyArrayBuffer") || PROBE("isArrayBuffer")) return scr_array_buffer_is(value);
+  if (PROBE("isAnyArrayBuffer")) return scr_buffer_storage_is(value);
+  if (PROBE("isArrayBuffer")) return scr_array_buffer_is(value);
+  if (PROBE("isSharedArrayBuffer")) return scr_shared_array_buffer_is(value);
   if (PROBE("isArrayBufferView")) return value->kind == SCR_DYN_BYTES;
   if (PROBE("isDataView")) return value->kind == SCR_DYN_BYTES && value->v.bytes->is_data_view;
   if (PROBE("isTypedArray")) return value->kind == SCR_DYN_BYTES && !value->v.bytes->is_data_view;
@@ -2506,7 +2508,7 @@ void scr_dyn_chunk_enc(bool utf8) { scr_dyn_chunk_utf8 = utf8; }
  * a Buffer-flavored bytes box, or a string inside a setEncoding window. */
 ScrDyn *scr_dyn_new_chunk(const ScrBytes *b) {
   if (scr_dyn_chunk_utf8) {
-    ScrStr *s = scr_str_new((const char *)b->data, b->len);
+    ScrStr *s = scr_bytes_string(b, 0, b->len);
     ScrDyn *d = scr_dyn_new_str(s);
     scr_str_release(s);
     return d;
@@ -2684,7 +2686,7 @@ ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc) {
  * always-linked core never references gated units. A missing tag at use
  * is an internal error: emitted programs install a unit's ops whenever
  * they can box its handles. */
-static const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_COUNT];
+static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_COUNT];
 
 void scr_dyn_handle_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops) {
   scr_dynh_ops[tag] = ops;
@@ -2931,6 +2933,7 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
   d->v.handle.ptr = scr_dyn_handle_ops(tag)->retain(h);
   d->v.handle.tag = tag;
   d->v.handle.traced = tag == SCR_DYNH_WEAK_MAP || tag == SCR_DYNH_WEAK_SET ||
+      tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT ||
       ((tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) &&
        (((ScrMap *)h)->key_trace != NULL || ((ScrMap *)h)->val_trace != NULL));
   return d;
@@ -2940,8 +2943,8 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
  * allocator view; the freelist stays private, and the release arm's
  * scr_promise_release edge installs HERE — a promise-free link never
  * references the fiber machinery (the unit-test subset links). */
-void (*scr_dyn_promise_release_fn)(ScrPromise *p) = NULL;
-bool (*scr_dyn_promise_identity_fn)(ScrPromise *a, ScrPromise *b) = NULL;
+SCR_TL void (*scr_dyn_promise_release_fn)(ScrPromise *p) = NULL;
+SCR_TL bool (*scr_dyn_promise_identity_fn)(ScrPromise *a, ScrPromise *b) = NULL;
 
 ScrDyn *scr_dyn_alloc_promise(void (*release_fn)(ScrPromise *p)) {
   scr_dyn_promise_release_fn = release_fn;
@@ -3106,7 +3109,15 @@ typedef struct {
 static SCR_TL ScrDynThisEnt *scr_dyn_this_stack;
 static SCR_TL size_t scr_dyn_this_n, scr_dyn_this_cap;
 
+static void scr_dyn_this_cleanup(void) {
+  while (scr_dyn_this_n) scr_dyn_this_pop();
+  free(scr_dyn_this_stack);
+  scr_dyn_this_stack = NULL;
+  scr_dyn_this_cap = 0;
+}
+
 static ScrDynThisEnt *scr_dyn_this_grow(void) {
+  if (!scr_dyn_this_stack) scr_atexit(scr_dyn_this_cleanup);
   if (scr_dyn_this_n == scr_dyn_this_cap) {
     size_t cap = scr_dyn_this_cap ? scr_dyn_this_cap * 2 : 8;
     ScrDynThisEnt *s = realloc(scr_dyn_this_stack, cap * sizeof *s);
@@ -4315,7 +4326,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   case SCR_DYN_OBJ: tag = "[object Object]"; break;
   case SCR_DYN_HANDLE:
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
-         d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER ||
+         d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
         d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_REGEXP ||
         d->v.handle.tag == SCR_DYNH_DATE) {
@@ -4808,7 +4819,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       return out;
     }
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
-         d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP) {
+         d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP) {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "[object ");
@@ -8735,6 +8746,14 @@ bool scr_array_buffer_is(const ScrDyn *value) {
   return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_ARRAY_BUFFER;
 }
 
+bool scr_shared_array_buffer_is(const ScrDyn *value) {
+  return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER;
+}
+
+bool scr_buffer_storage_is(const ScrDyn *value) {
+  return scr_array_buffer_is(value) || scr_shared_array_buffer_is(value);
+}
+
 bool scr_array_buffer_is_view(const ScrDyn *value) {
   return value->kind == SCR_DYN_BYTES;
 }
@@ -8743,8 +8762,9 @@ static ScrDyn *scr_array_buffer_get(void *h, const char *key, size_t len) {
   if ((len == 10 && memcmp(key, "byteLength", len) == 0) ||
       (len == 13 && memcmp(key, "maxByteLength", len) == 0))
     return scr_dyn_new_num(scr_bytes_byte_len(h));
-  if ((len == 9 && memcmp(key, "resizable", len) == 0) ||
-      (len == 8 && memcmp(key, "detached", len) == 0)) return scr_dyn_new_bool(false);
+  if (len == 8 && !memcmp(key, "growable", len) && ((ScrBytes *)h)->shared) return scr_dyn_new_bool(false);
+  if (!((ScrBytes *)h)->shared && ((len == 9 && memcmp(key, "resizable", len) == 0) ||
+      (len == 8 && memcmp(key, "detached", len) == 0))) return scr_dyn_new_bool(false);
   return NULL;
 }
 
@@ -8763,6 +8783,7 @@ static ScrDyn *scr_array_buffer_invoke(void *h, ScrDyn *self, const char *method
     ScrBytes *view = scr_bytes_buffer_view(h, SCR_BYTES_U8, 0, false, 0);
     if (!view) return NULL;
     ScrBytes *copy = scr_bytes_slice(view, start, end);
+    if (((ScrBytes *)h)->shared) scr_bytes_make_shared(copy);
     scr_bytes_release(view);
     ScrDyn *result = scr_array_buffer_from_bytes(copy);
     scr_bytes_release(copy);
@@ -8778,8 +8799,13 @@ ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view) {
     "ArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
     &scr_array_buffer_invoke, &scr_array_buffer_get, &scr_array_buffer_set, NULL,
   };
-  scr_dyn_handle_install(SCR_DYNH_ARRAY_BUFFER, &ops);
-  return scr_dyn_new_handle(view->backing ? view->backing : view, SCR_DYNH_ARRAY_BUFFER);
+  static const ScrDynHandleOps shared_ops = {
+    "SharedArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
+    &scr_array_buffer_invoke, &scr_array_buffer_get, &scr_array_buffer_set, NULL,
+  };
+  ScrDynHandleTag tag = view->shared ? SCR_DYNH_SHARED_ARRAY_BUFFER : SCR_DYNH_ARRAY_BUFFER;
+  scr_dyn_handle_install(tag, view->shared ? &shared_ops : &ops);
+  return scr_dyn_new_handle(view->backing ? view->backing : view, tag);
 }
 
 static ScrDyn *scr_ffi_fail(const char *message) {
@@ -8810,7 +8836,8 @@ ScrDyn *scr_ffi_argument(ScrDyn *value, ScrStr *type) {
     void *address = NULL;
     bool converted = value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF;
     ScrBytes *bytes = value->kind == SCR_DYN_BYTES ? value->v.bytes :
-      scr_array_buffer_is(value) ? value->v.handle.ptr : NULL;
+      scr_buffer_storage_is(value) ? value->v.handle.ptr : NULL;
+    if (bytes && bytes->shared) return scr_ffi_fail("Shared byte storage cannot expose an unmanaged native pointer");
     if (bytes) { address = bytes->data; converted = true; }
     if (value->kind == SCR_DYN_STR) {
       if (memchr(value->v.str->data, 0, value->v.str->len)) {
@@ -9060,6 +9087,7 @@ static ScrDyn *scr_ffi_memory_call(ScrClosure *closure, ScrDyn *const *args, siz
       scr_dyn_arg_type_fail("source", "an ArrayBuffer or ArrayBufferView", value);
       return NULL;
     }
+    if (bytes->shared) return scr_ffi_fail("Shared byte storage cannot expose an unmanaged native pointer");
     ScrBigInt *pointer = scr_bigint_from_pointer(bytes->data);
     ScrDyn *result = scr_dyn_new_bigint(pointer);
     scr_bigint_release(pointer);
@@ -9247,7 +9275,7 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
     *ptr = key->v.fn.class_obj ? (void *)key->v.fn.class_obj : (void *)key->v.fn.clo;
     *kind = key->v.fn.class_obj ? 3 : 2; return 1;
   case SCR_DYN_HANDLE:
-    if (key->v.handle.tag != SCR_DYNH_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_WEAK_MAP &&
+    if (key->v.handle.tag != SCR_DYNH_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_SHARED_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_WEAK_MAP &&
         key->v.handle.tag != SCR_DYNH_WEAK_SET && key->v.handle.tag != SCR_DYNH_STDIO &&
         key->v.handle.tag != SCR_DYNH_FETCH_REQUEST && key->v.handle.tag != SCR_DYNH_FETCH_RESPONSE &&
         key->v.handle.tag != SCR_DYNH_MAP && key->v.handle.tag != SCR_DYNH_SET) return -1;
@@ -9478,6 +9506,16 @@ ScrDyn *scr_array_buffer_new(ScrDyn *length) {
   return result;
 }
 
+ScrDyn *scr_shared_array_buffer_new(ScrDyn *length) {
+  ScrDyn *buffer = scr_array_buffer_new(length);
+  if (!buffer) return NULL;
+  ScrBytes *storage = buffer->v.handle.ptr;
+  scr_bytes_make_shared(storage);
+  ScrDyn *result = scr_array_buffer_from_bytes(storage);
+  scr_dyn_release(buffer);
+  return result;
+}
+
 double scr_array_buffer_byte_length_getter(void) {
   ScrDyn *receiver = scr_dyn_this_get();
   if (!scr_array_buffer_is(receiver)) {
@@ -9504,7 +9542,7 @@ ScrDyn *scr_array_buffer_byte_length_descriptor(ScrDyn *getter) {
 
 ScrBytes *scr_array_buffer_view(ScrBytesElem elem, const ScrDyn *buffer,
     const ScrDyn *offset, const ScrDyn *length) {
-  if (!scr_array_buffer_is(buffer)) {
+  if (!scr_buffer_storage_is(buffer)) {
     // Non-buffer inputs use the length/iterable/array-like constructor.
     // Their extra arguments are evaluated by the caller, but not coerced.
     return scr_bytes_from_dyn(elem, buffer, false);
@@ -9539,7 +9577,7 @@ SCR_ARRAY_BUFFER_VIEW(f64, SCR_BYTES_F64)
 #undef SCR_ARRAY_BUFFER_VIEW
 
 ScrBytes *scr_array_buffer_view_dv(ScrDyn *buffer, ScrDyn *offset, ScrDyn *length) {
-  if (!scr_array_buffer_is(buffer)) {
+  if (!scr_buffer_storage_is(buffer)) {
     static const char msg[] = "First argument to DataView constructor must be an ArrayBuffer";
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
     return NULL;

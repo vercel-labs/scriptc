@@ -8,7 +8,7 @@ title: "Native Program Objects"
 
 The external object ABI is **experimental**. Its `scr_*` function and data surface may change before 1.0, so consumers must use the exact runtime-pack version reported by the same compiler installation. This is stricter than semver compatibility.
 
-The object intentionally leaves its selected runtime symbols undefined. It also holds a strong reference to `scr_runtime_abi_v6`, which the matching runtime defines. Linking an object against a runtime with another ABI marker fails at link time with the missing versioned symbol; it cannot become a latent runtime incompatibility.
+The object intentionally leaves its selected runtime symbols undefined. It also holds a strong reference to `scr_runtime_abi_v7`, which the matching runtime defines. Linking an object against a runtime with another ABI marker fails at link time with the missing versioned symbol; it cannot become a latent runtime incompatibility.
 
 ## Machine-readable link information
 

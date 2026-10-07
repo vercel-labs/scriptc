@@ -923,19 +923,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fs.writeFileModeSync": { argTypes: [STRING, STRING, F64], result: VOID },
   "fs.mkdirModeSync": { argTypes: [STRING, F64], result: VOID },
   "fs.mkdirRecursiveModeSync": { argTypes: [STRING, F64], result: VOID },
-  // Atomics.wait over an Int32Array — the synchronous-sleep idiom.
-  /** Atomics.wait(int32Array, idx, expected, timeoutMs) → "not-equal"
-   * when the element differs from `expected`, else a real nanosleep for
-   * the timeout and "timed-out" (scr_lib.c). scriptc has no threads —
-   * no other agent can ever notify, so for every compilable program this
-   * IS the spec's behavior, and "ok" is unreachable; the frontend
-   * REQUIRES the timeout argument (an infinite wait here is a certain
-   * deadlock, fenced). The SharedArrayBuffer the lib types demand exists
-   * only syntactically (new Int32Array(new SharedArrayBuffer(n)) lowers
-   * to a plain i32 typed array — sharing is unobservable without
-   * threads; SEMANTICS.md documents the stance). Never throws; +1 string
-   * result. */
   "atomics.wait": { argTypes: [bytesOf("i32"), F64, F64, F64], result: STRING },
+  "atomics.notify": { argTypes: [bytesOf("i32"), F64, F64], result: F64 },
+  "atomics.op": { argTypes: [null, F64, F64, F64, F64], result: F64 },
+  "worker.new": { argTypes: [F64, STRING, DYN], result: DYN },
+  "worker.isMainThread": { argTypes: [], result: BOOL },
+  "worker.threadId": { argTypes: [], result: F64 },
+  "worker.root": { argTypes: [], result: F64 },
+  "worker.data": { argTypes: [], result: DYN },
+  "worker.parentPort": { argTypes: [], result: DYN },
   /** child_process.spawnSync (scr_child.c): posix_spawn + waitpid + piped
    * utf8 capture — cmd borrowed, args one borrowed string[] (the frontend
    * completes an omitted list to an empty literal), result an owned (+1)
@@ -2611,6 +2607,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "dyn.dataViewIs": { argTypes: [DYN], result: BOOL },
   "dyn.construct": { argTypes: [DYN, DYN, STRING], result: DYN },
   "arrayBuffer.constructor": { argTypes: [], result: DYN },
+  "sharedArrayBuffer.new": { argTypes: [DYN], result: DYN },
+  "sharedArrayBuffer.is": { argTypes: [DYN], result: BOOL },
   "arrayBuffer.new": { argTypes: [DYN], result: DYN },
   "ffi.argument": { argTypes: [DYN, STRING], result: DYN },
   "ffi.memoryModule": { argTypes: [DYN], result: DYN },

@@ -141,9 +141,9 @@ static ssize_t scr_tls_w32_write(int fd, const void *buf, size_t len) {
 
 /* ── the unit RNG (one CTR_DRBG, lazily seeded) ──────────────────────── */
 
-static mbedtls_entropy_context scr_tls_entropy;
-static mbedtls_ctr_drbg_context scr_tls_drbg;
-static bool scr_tls_rng_ready = false;
+static SCR_TL mbedtls_entropy_context scr_tls_entropy;
+static SCR_TL mbedtls_ctr_drbg_context scr_tls_drbg;
+static SCR_TL bool scr_tls_rng_ready = false;
 
 /* Defined with the dyn-member hooks at the tail of this file; registered
  * from rng_init so every TLS entry point installs the TLSSocket member
@@ -206,7 +206,7 @@ struct ScrSecureCtx {
 };
 
 #ifdef SCR_RC_AUDIT
-static long scr_live_secure_ctx = 0;
+static SCR_TL long scr_live_secure_ctx = 0;
 long scr_secure_ctx_live_count(void) { return scr_live_secure_ctx; }
 #endif
 
@@ -345,16 +345,16 @@ typedef struct ScrTlsCli {
  * first (macOS ships it; Alpine links it), then Debian/Ubuntu's
  * ca-certificates.crt, Fedora/RHEL's ca-bundle.crt, and openSUSE's
  * ca-bundle.pem. */
-static mbedtls_x509_crt scr_tls_system_roots;
-static bool scr_tls_system_roots_loaded = false;
+static SCR_TL mbedtls_x509_crt scr_tls_system_roots;
+static SCR_TL bool scr_tls_system_roots_loaded = false;
 
 /* setDefaultCACertificates' replacement anchors (scr_tls_ca.c — always
  * compiled alongside this unit): parsed lazily per generation, so each
  * set re-parses once and every later dial reuses the chain. An EMPTY
  * replacement keeps an initialized, certificate-free chain — every
  * verification fails, Node's own consequence of trusting nothing. */
-static mbedtls_x509_crt scr_tls_override_roots;
-static uint64_t scr_tls_override_parsed_gen = 0;
+static SCR_TL mbedtls_x509_crt scr_tls_override_roots;
+static SCR_TL uint64_t scr_tls_override_parsed_gen = 0;
 
 #ifdef _WIN32
 static void scr_tls_add_windows_ca(void *ctx, const unsigned char *der, size_t len) {
@@ -633,7 +633,7 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
 /* The socket whose handshake this unit is driving — f_sni's route back
  * to the answered context (single-threaded runtime; set around
  * mbedtls_ssl_handshake). */
-static ScrTlsSock *scr_tls_current = NULL;
+static SCR_TL ScrTlsSock *scr_tls_current = NULL;
 
 /* Defined with the other transport ops below; the answer path needs the
  * table's identity to re-find its engine from the boxed socket. */
@@ -1105,7 +1105,7 @@ static ScrBytes *scr_tls_pem_dyn(const ScrDyn *v, const char *what, bool concat)
     memcpy(b->data, v->v.str->data, v->v.str->len);
     return b;
   }
-  if (scr_dyn_bytes_is(v, SCR_BYTES_U8)) return scr_dyn_bytes_unbox(v);
+  if (scr_dyn_bytes_is(v, SCR_BYTES_U8)) return v->v.bytes->shared ? scr_bytes_copy(v->v.bytes) : scr_dyn_bytes_unbox(v);
   if (v->kind == SCR_DYN_ARR) {
     if (v->v.arr.len == 0) {
       ScrJsonBuf b;
@@ -1138,9 +1138,9 @@ static ScrBytes *scr_tls_pem_dyn(const ScrDyn *v, const char *what, bool concat)
     size_t off = 0;
     for (size_t i = 0; i < v->v.arr.len; i++) {
       const ScrDyn *e = v->v.arr.items[i];
-      const char *p = e->kind == SCR_DYN_STR ? e->v.str->data : (const char *)e->v.bytes->data;
       size_t n = e->kind == SCR_DYN_STR ? e->v.str->len : e->v.bytes->len;
-      memcpy(b->data + off, p, n);
+      if (e->kind == SCR_DYN_STR) memcpy(b->data + off, e->v.str->data, n);
+      else scr_bytes_read(e->v.bytes, 0, b->data + off, n);
       off += n;
       b->data[off++] = '\n'; /* PEM blocks join on line boundaries */
     }

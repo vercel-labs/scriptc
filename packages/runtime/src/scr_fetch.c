@@ -1618,7 +1618,7 @@ static void sf_collector_append(SfCollector *c, const ScrBytes *bytes) {
     c->data = next;
     c->cap = cap;
   }
-  memcpy(c->data + c->len, bytes->data, bytes->len);
+  scr_bytes_read(bytes, 0, c->data + c->len, bytes->len);
   c->len = need;
 }
 
@@ -3536,8 +3536,8 @@ static char *sf_all_proxy;
 static char *sf_no_proxy;
 
 static char *sf_env_copy(const char *lower, const char *upper) {
-  const char *value = getenv(lower);
-  if (!value || value[0] == '\0') value = getenv(upper);
+  const char *value = scr_getenv(lower);
+  if (!value || value[0] == '\0') value = scr_getenv(upper);
   if (!value || value[0] == '\0') return NULL;
   size_t len = strlen(value);
   char *copy = malloc(len + 1);
@@ -3547,7 +3547,7 @@ static char *sf_env_copy(const char *lower, const char *upper) {
 }
 
 static void sf_proxy_snapshot(void) {
-  const char *optin = getenv("NODE_USE_ENV_PROXY");
+  const char *optin = scr_getenv("NODE_USE_ENV_PROXY");
   sf_proxy_enabled = optin && strcmp(optin, "1") == 0;
   if (!sf_proxy_enabled) return;
   sf_http_proxy = sf_env_copy("http_proxy", "HTTP_PROXY");
@@ -4597,6 +4597,7 @@ static void sf_on_data(ScrClosure *cb, ScrBytes *chunk) {
     return;
   }
 
+  SCR_BYTES_SNAPSHOT(chunk);
   sf_inflate_append(t, chunk->data, chunk->len);
   sf_inflate_process(t);
   sf_release(t);
@@ -5045,7 +5046,9 @@ ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
       !(body->kind == SCR_DYN_HANDLE &&
         body->v.handle.tag == SCR_DYNH_WEB_STREAM)) {
     if (body->kind == SCR_DYN_BYTES) {
-      body_bytes = scr_bytes_from_data(body->v.bytes->data, body->v.bytes->len * scr_bytes_elem_size(body->v.bytes->elem));
+      ScrBytes *raw = scr_bytes_raw_view(body->v.bytes);
+      body_bytes = scr_bytes_copy(raw);
+      scr_bytes_release(raw);
     } else {
       ScrStr *text =
           body->kind == SCR_DYN_STR
@@ -5397,7 +5400,7 @@ static ScrDyn *sf_data_response(ScrStr *url) {
   }
   bytes->len = n;
   if (base64) {
-    ScrStr *encoded = scr_str_new((const char *)bytes->data, bytes->len);
+    ScrStr *encoded = scr_bytes_string(bytes, 0, bytes->len);
     ScrStr *encoding = scr_str_new("base64", 6);
     ScrBytes *decoded = scr_bytes_from_str(encoded, encoding);
     scr_str_release(encoded); scr_str_release(encoding); scr_bytes_release(bytes); bytes = decoded;
@@ -5768,7 +5771,7 @@ static void sf_teardown(void) {
 }
 
 void scr_fetch_install(void) {
-  static bool installed;
+  static SCR_TL bool installed;
   if (installed) return;
   installed = true;
   scr_tls_ca_install();
@@ -5808,7 +5811,7 @@ static void sf_signal_teardown(void) {
   while (sf_reason_signals) sf_signal_drop_reason(sf_reason_signals);
 }
 static void sf_signal_install(void) {
-  static bool installed;
+  static SCR_TL bool installed;
   if (installed) return;
   installed = true;
   scr_dyn_handle_install(SCR_DYNH_ABORT_SIGNAL, &sf_signal_ops);
@@ -6001,9 +6004,9 @@ typedef struct FxTransfer {
   struct FxTransfer *next;
 } FxTransfer;
 
-static FxTransfer *fx_live = NULL; /* registry: +1 each */
-static size_t fx_nlive = 0;
-static int fx_next_id = 1;
+static SCR_TL FxTransfer *fx_live = NULL; /* registry: +1 each */
+static SCR_TL size_t fx_nlive = 0;
+static SCR_TL int fx_next_id = 1;
 
 static FxTransfer *fx_retain(FxTransfer *t) {
   t->rc++;
@@ -6305,15 +6308,15 @@ static bool fx_bad_port(int port) {
 
 /* ── env proxy (NODE_USE_ENV_PROXY=1, undici's EnvHttpProxyAgent) ────── */
 
-static bool fx_proxy_enabled;
-static char *fx_http_proxy;
-static char *fx_https_proxy;
-static char *fx_all_proxy;
-static char *fx_no_proxy;
+static SCR_TL bool fx_proxy_enabled;
+static SCR_TL char *fx_http_proxy;
+static SCR_TL char *fx_https_proxy;
+static SCR_TL char *fx_all_proxy;
+static SCR_TL char *fx_no_proxy;
 
 static char *fx_env_copy(const char *lower, const char *upper) {
-  const char *v = getenv(lower);
-  if (v == NULL || v[0] == '\0') v = getenv(upper);
+  const char *v = scr_getenv(lower);
+  if (v == NULL || v[0] == '\0') v = scr_getenv(upper);
   if (v == NULL || v[0] == '\0') return NULL;
   size_t len = strlen(v);
   char *copy = malloc(len + 1);
@@ -6323,7 +6326,7 @@ static char *fx_env_copy(const char *lower, const char *upper) {
 }
 
 static void fx_proxy_snapshot(void) {
-  const char *optin = getenv("NODE_USE_ENV_PROXY");
+  const char *optin = scr_getenv("NODE_USE_ENV_PROXY");
   fx_proxy_enabled = optin != NULL && strcmp(optin, "1") == 0;
   /* Snapshot even without Node's global opt-in: Vercel's dispatcher is a
    * request-local proxy activation over the same startup environment. */
@@ -7500,7 +7503,7 @@ static void fx_teardown(void) {
  * on real sockets the loop's own poller sleeps on, and armed island
  * timers cap that sleep through the loop's island-deadline hook. */
 void scr_fetch_install(void) {
-  static bool installed = false;
+  static SCR_TL bool installed = false;
   if (installed) return;
   installed = true;
   scr_tls_ca_install();

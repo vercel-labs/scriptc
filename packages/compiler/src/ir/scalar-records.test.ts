@@ -40,7 +40,7 @@ const read = (localId: string, field = "a"): IrExpr => ({
 
 function fixture(): IrModule {
   return {
-    irVersion: 13,
+    irVersion: 14,
     sourceFile: loc.file,
     entry: "main",
     records: [

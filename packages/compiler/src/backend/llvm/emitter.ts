@@ -678,7 +678,8 @@ export class LlEmitter {
     }
     const mt = computeMayThrow(mod);
     this.mayThrow = mt.fns;
-    this.indirectMayThrow = mt.indirect;
+    if (mod.workers) for (const fn of mod.functions) this.mayThrow.add(fn.name);
+    this.indirectMayThrow = mt.indirect || mod.workers === true;
     for (const cls of mod.classes ?? []) {
       for (const m of cls.methods ?? []) {
         if (this.mayThrow.has(`%${cls.name}.${m}`)) this.mayThrowMethods.add(m);
@@ -835,7 +836,9 @@ export class LlEmitter {
       if (adapter.global !== null)
         globals.push(`@${adapter.global} = internal thread_local global ptr null`);
       if (adapter.table !== null) {
-        globals.push(`@${adapter.table} = internal global %ScrFfiTable zeroinitializer`);
+        globals.push(
+          `@${adapter.table} = internal ${this.mod.workers ? "thread_local " : ""}global %ScrFfiTable zeroinitializer`,
+        );
       }
       const params = cb.params.flatMap((param, i): string[] => {
         if (isFfiContextParam(param)) return [`ptr %ctx`];
@@ -1382,7 +1385,8 @@ export class LlEmitter {
     // with neither keep the atexit path, so their listener timing is
     // unchanged.
     const hasRefGlobals = globals.some((g) => isRefCounted(g.type)) || fnValueProps.length > 0;
-    const inlineExitListeners = usesEvents && (hasRefGlobals || this.ffiHasRetainedCallback);
+    const inlineExitListeners =
+      usesEvents && (this.mod.workers || hasRefGlobals || this.ffiHasRetainedCallback);
     this.declare(`declare i32 @scr_exit_code_hint_get()`);
     if (inlineExitListeners) {
       this.declare(`declare void @scr_run_exit_listeners(double)`);
@@ -1589,12 +1593,14 @@ export class LlEmitter {
     // objects compiled with -DSCR_THREAD_INSTANCES. Immutable interned
     // data (string literals, unit arms, template arrays, vtables) stays
     // shared.
-    const tl = this.mod.lib?.threadInstances === true ? "thread_local " : "";
+    const tl =
+      this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : "";
     out.push(
       ``,
       `@scr_error_vts = external ${tl}global [${RUNTIME_ERROR_CLASSES.size} x %ScrVt]`,
       `declare void @scr_init()`,
       `declare void @scr_lib_init(i32, ptr)`,
+      ...(this.mod.workers ? [`declare void @scr_runtime_workers_v7()`] : []),
       ...(this.runtimeAbiMarker && this.mod.lib === undefined
         ? [`declare void @${RUNTIME_ABI_MARKER}()`]
         : []),
@@ -1792,7 +1798,7 @@ export class LlEmitter {
       // The runtime stream vtables' intervals (streamVtStampLines) — the
       // emitter story: instanceof and dynamic teardown dispatch through
       // them.
-      out.push(`@${iv.vt} = external global %ScrVt`);
+      out.push(`@${iv.vt} = external ${tl}global %ScrVt`);
       stamps.push(
         `  store ${this.sizeType} ${iv.pre}, ptr getelementptr inbounds (%ScrVt, ptr @${iv.vt}, i64 0, i32 0)`,
         `  store ${this.sizeType} ${iv.post}, ptr getelementptr inbounds (%ScrVt, ptr @${iv.vt}, i64 0, i32 1) ; ${iv.lib}`,
@@ -1832,9 +1838,10 @@ export class LlEmitter {
       return out;
     }
     out.push(
-      `define i32 @${this.wasi ? "__main_argc_argv" : "main"}(i32 %argc, ptr %argv) ${FN_ATTRS} {`,
+      `define i32 @${this.mod.workers ? "sc_context_entry" : this.wasi ? "__main_argc_argv" : "main"}(i32 %argc, ptr %argv) ${FN_ATTRS} {`,
       `entry:`,
       ...(this.runtimeAbiMarker ? [`  call void @${RUNTIME_ABI_MARKER}()`] : []),
+      ...(this.mod.workers ? [`  call void @scr_runtime_workers_v7()`] : []),
       `  call void @scr_init()`,
       ...stamps,
       // Event-surface programs (signal/exit listeners) fill the loop's
@@ -1973,6 +1980,26 @@ export class LlEmitter {
       ...(hasNoInlineRecordClone ? [`attributes #2 = { noinline sanitize_address }`] : []),
       ``,
     );
+    if (this.mod.workers) {
+      out.push(
+        `declare void @scr_context_cleanup()`,
+        `declare i32 @scr_worker_argc()`,
+        `declare ptr @scr_worker_argv()`,
+        `define i32 @sc_worker_entry(i32 %root) ${FN_ATTRS} {`,
+        `entry:`,
+        `  %argc = call i32 @scr_worker_argc()`,
+        `  %argv = call ptr @scr_worker_argv()`,
+        `  %result = call i32 @sc_context_entry(i32 %argc, ptr %argv)`,
+        `  ret i32 %result`,
+        `}`,
+        `define i32 @main(i32 %argc, ptr %argv) ${FN_ATTRS} {`,
+        `entry:`,
+        `  %result = call i32 @sc_context_entry(i32 %argc, ptr %argv)`,
+        `  call void @scr_context_cleanup()`,
+        `  ret i32 %result`,
+        `}`,
+      );
+    }
     out.push(...this.fieldAliasMetadata());
     if (this.debug !== null) out.push(this.debug.render());
     return out;
@@ -2400,7 +2427,7 @@ export class LlEmitter {
         ret === "void" ? `  ${call}` : `  %r = ${call}`,
         ret === "void" ? `  ret void` : `  ret ${ret} %r`,
         `}`,
-        `@${mangleFnClosure(name)} = internal global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${(fn.generator ? 1 : 0) + (fn.async ? 2 : 0) + (fn.ownsPrototype ? 4 : 0)} }`,
+        `@${mangleFnClosure(name)} = internal ${this.mod.workers === true || this.mod.lib?.threadInstances === true ? "thread_local " : ""}global %ScrClosure { ${this.sizeType} -1, ptr @${mangleWrapper(name)}, ${this.sizeType} 0, ptr null, i32 ${(fn.generator ? 1 : 0) + (fn.async ? 2 : 0) + (fn.ownsPrototype ? 4 : 0)} }`,
         ``,
       );
     }
@@ -2962,6 +2989,20 @@ export class LlEmitter {
    * using the result). Callers own the surrounding pending branch; a
    * `throw` unwinds unconditionally. */
   private emitUnwind(): void {
+    if (this.mod.workers && this.tryStack.length > 0) {
+      this.declare(`declare zeroext i1 @scr_context_stopping()`);
+      const stopped = this.B.tmp();
+      this.B.line(`${stopped} = call zeroext i1 @scr_context_stopping()`);
+      const stop = this.B.newLabel("context.stop");
+      const ordinary = this.B.newLabel("context.throw");
+      this.B.condBr(stopped, stop, ordinary);
+      this.B.startBlock(stop);
+      const handlers = this.tryStack;
+      this.tryStack = [];
+      this.emitUnwind();
+      this.tryStack = handlers;
+      this.B.startBlock(ordinary);
+    }
     const target = this.tryStack[this.tryStack.length - 1];
     const frameDepth = target?.frameDepth ?? 0;
     const scopeDepth = target?.scopeDepth ?? 0;
@@ -3021,6 +3062,37 @@ export class LlEmitter {
     B.startBlock(lu);
     this.emitUnwind();
     B.startBlock(lk);
+  }
+
+  private workerLoopBudget(): string | null {
+    if (!this.mod.workers) return null;
+    const slot = this.B.slot();
+    this.B.entryAllocas.push(`${slot} = alloca i32 ; worker cancellation budget`);
+    this.B.line(`store i32 0, ptr ${slot}`);
+    return slot;
+  }
+
+  private emitWorkerLoopCheck(slot: string | null): void {
+    if (slot === null) return;
+    const B = this.B;
+    const budget = B.tmp(),
+      due = B.tmp(),
+      remaining = B.tmp();
+    const poll = B.newLabel("worker.poll"),
+      next = B.newLabel("worker.next");
+    B.line(`${budget} = load i32, ptr ${slot}`);
+    B.line(`${remaining} = sub i32 ${budget}, 1`);
+    B.line(`store i32 ${remaining}, ptr ${slot}`);
+    B.line(`${due} = icmp eq i32 ${budget}, 0`);
+    B.condBr(due, poll, next);
+    B.startBlock(poll);
+    B.line(`store i32 63, ptr ${slot}`);
+    // Calls and throwing operations retain their own checks. Amortize the
+    // extra cancellation poll across bounded loop batches so scalar work
+    // does not cross the runtime ABI on every iteration.
+    this.emitPendingCheck();
+    B.br(next);
+    B.startBlock(next);
   }
 
   /** Moves an already-evaluated value into the runtime's exception cell —
@@ -3999,6 +4071,7 @@ export class LlEmitter {
       B.line(`call void @scr_stack_enter(ptr %source_frame, ptr ${this.cstr(frame)})`);
       B.returnEpilogue = `call void @scr_stack_leave(ptr %source_frame)`;
     }
+    if (this.mod.workers) this.emitPendingCheck();
     this.emitStmts(fn.body);
     // Implicit exit of a void function: release the function scope unless
     // the body already terminated its final block (return, or a throw
@@ -4612,11 +4685,13 @@ export class LlEmitter {
         break;
       }
       case "while": {
+        const workerBudget = this.workerLoopBudget();
         const lc = B.newLabel("loop.c");
         const lb = B.newLabel("loop.b");
         const le = B.newLabel("loop.e");
         B.br(lc);
         B.startBlock(lc);
+        this.emitWorkerLoopCheck(workerBudget);
         B.condBr(this.emitCondition(s.cond), lb, le);
         B.startBlock(lb);
         this.jumpTargets.push({
@@ -4635,12 +4710,14 @@ export class LlEmitter {
         break;
       }
       case "doWhile": {
+        const workerBudget = this.workerLoopBudget();
         // Body first (runs at least once); continue jumps to the CONDITION.
         const lb = B.newLabel("loop.b");
         const lc = B.newLabel("loop.c");
         const le = B.newLabel("loop.e");
         B.br(lb);
         B.startBlock(lb);
+        this.emitWorkerLoopCheck(workerBudget);
         this.jumpTargets.push({
           kind: "loop",
           brkLabel: le,
@@ -4802,8 +4879,10 @@ export class LlEmitter {
         };
         const lu = s.update || capturedLets.length > 0 ? B.newLabel("loop.u") : lc;
         freshenBindings();
+        const workerBudget = this.workerLoopBudget();
         B.br(lc);
         B.startBlock(lc);
+        this.emitWorkerLoopCheck(workerBudget);
         if (integerLoop && integerSlot) {
           const receiver = this.emitStableReceiver(integerLoop.limitReceiver, []);
           const lenPtr = B.tmp();
@@ -4903,8 +4982,10 @@ export class LlEmitter {
         const lb = B.newLabel("fof.b");
         const lu = B.newLabel("fof.u");
         const le = B.newLabel("fof.e");
+        const workerBudget = this.workerLoopBudget();
         B.br(lc);
         B.startBlock(lc);
+        this.emitWorkerLoopCheck(workerBudget);
         const inBounds = B.tmp();
         let cur: string;
         if (snapshot && cursor && scratch) {

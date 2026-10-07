@@ -100,19 +100,19 @@ struct ScrTestCtx {
   ScrTestHooks hooks[4]; /* suites and root only */
 };
 
-static ScrTestCtx *scr_test_root = NULL;
+static SCR_TL ScrTestCtx *scr_test_root = NULL;
 /* Where registrations attach: the suite body being collected or the test
  * currently running (its nested test()/t.test() calls are subtests). */
-static ScrTestCtx *scr_test_reg_parent = NULL;
-static bool scr_test_runner_spawned = false;
-static bool scr_test_run_done = false;
-static long scr_test_ct_tests = 0, scr_test_ct_suites = 0, scr_test_ct_pass = 0,
+static SCR_TL ScrTestCtx *scr_test_reg_parent = NULL;
+static SCR_TL bool scr_test_runner_spawned = false;
+static SCR_TL bool scr_test_run_done = false;
+static SCR_TL long scr_test_ct_tests = 0, scr_test_ct_suites = 0, scr_test_ct_pass = 0,
             scr_test_ct_fail = 0, scr_test_ct_skipped = 0, scr_test_ct_todo = 0;
-static double scr_test_t0 = 0;
-static bool scr_test_suite_hook_failed = false;
+static SCR_TL double scr_test_t0 = 0;
+static SCR_TL bool scr_test_suite_hook_failed = false;
 
 #ifdef SCR_RC_AUDIT
-static long scr_testctx_live = 0;
+static SCR_TL long scr_testctx_live = 0;
 long scr_testctx_live_count(void) { return scr_testctx_live; }
 #endif
 

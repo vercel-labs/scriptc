@@ -845,7 +845,7 @@ ScrStr *scr_path_win32_resolve(ScrArr *parts) {
        * the resolved drive. resolvedDevice is always a 2-byte drive here
        * (UNC devices are absolute and broke out of the loop). */
       char name[4] = {'=', dev.data[0], dev.data[1], 0};
-      const char *dcwd = getenv(name);
+      const char *dcwd = scr_getenv(name);
       if (dcwd && *dcwd) pb_append(&pathb, dcwd, strlen(dcwd));
       else scr_path_cwd(&pathb);
       if (!(pathb.len >= 2 && scr_path_w32_ieq(pathb.data, dev.data, 2)) &&

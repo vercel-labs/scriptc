@@ -26,7 +26,10 @@ export function withLibraryRuntimeFlavors(matrix) {
     },
   ].map((unit) => ({
     ...unit,
-    variants: unit.variants.filter((variant) => !variant.defines.includes("SCR_DYNAMIC")),
+    variants: unit.variants.filter(
+      (variant) =>
+        !variant.defines.includes("SCR_DYNAMIC") && !variant.defines.includes("SCR_WORKERS"),
+    ),
   }));
   const flavors = { ...matrix.flavors };
   for (const [flavor, spec] of Object.entries(matrix.flavors)) {

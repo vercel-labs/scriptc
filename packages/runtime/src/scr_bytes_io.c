@@ -105,6 +105,7 @@ ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc) {
 }
 
 static void scr_fs_write_bytes_common(ScrStr *path, const ScrBytes *data, const char *mode) {
+  SCR_BYTES_SNAPSHOT(data);
   FILE *f = fopen(path->data, mode);
   if (!f) {
     scr_fs_throw(errno, "open", path);
@@ -255,7 +256,7 @@ static double scr_fs_cb_open(const ScrStr *path, const ScrDyn *flag, double mode
 static ScrStr *scr_fs_cb_path(const ScrDyn *value, const char *name) {
   if (!scr_fs_path_chk(value, name)) return NULL;
   ScrStr *path = value->kind == SCR_DYN_STR ? scr_str_retain(value->v.str)
-    : scr_str_new((const char *)value->v.bytes->data, value->v.bytes->len);
+    : scr_bytes_string(value->v.bytes, 0, value->v.bytes->len);
   if (memchr(path->data, 0, path->len)) {
     scr_fs_invalid_named_path(value, path, name);
     scr_str_release(path);
@@ -973,11 +974,13 @@ ScrBytes *scr_crypto_random_bytes(double n) {
 /* ── process.stdout/stderr.write(buf) ──────────────────────────────────── */
 
 bool scr_process_stdout_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
+  SCR_BYTES_SNAPSHOT(b);
   (void)encoding;
   return scr_stdio_write(1, b->data, b->len * scr_bytes_elem_size(b->elem));
 }
 
 bool scr_process_stderr_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
+  SCR_BYTES_SNAPSHOT(b);
   (void)encoding;
   return scr_stdio_write(2, b->data, b->len * scr_bytes_elem_size(b->elem));
 }
@@ -1300,7 +1303,7 @@ static void scr_fs_exists_fire(ScrClosure *self) {
     ans = scr_fs_exists(p);
     scr_str_release(p);
   } else if (scr_dyn_bytes_is(path, SCR_BYTES_U8)) {
-    ScrStr *p = scr_str_new((const char *)path->v.bytes->data, path->v.bytes->len);
+    ScrStr *p = scr_bytes_string(path->v.bytes, 0, path->v.bytes->len);
     ans = scr_fs_exists(p);
     scr_str_release(p);
   }
@@ -1449,7 +1452,7 @@ void scr_fs_lchmod_chk(const ScrDyn *path, const ScrDyn *mode, const ScrDyn *cb,
 #ifdef __APPLE__
 static void scr_fs_lchmod_apply(const ScrDyn *path, const ScrDyn *mode) {
   ScrStr *p = path->kind == SCR_DYN_STR ? scr_str_retain(path->v.str)
-                                        : scr_str_new((const char *)path->v.bytes->data, path->v.bytes->len);
+                                        : scr_bytes_string(path->v.bytes, 0, path->v.bytes->len);
   double m = mode->kind == SCR_DYN_NUM ? mode->v.num : (double)strtol(mode->v.str->data, NULL, 8);
   if (lchmod(p->data, (mode_t)m) != 0) scr_fs_throw(errno, "lchmod", p);
   scr_str_release(p);

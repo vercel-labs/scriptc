@@ -37,6 +37,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "bytes.construct": "scr_bytes_construct",
   "bytes.instanceOf": "scr_bytes_instanceof",
   "arrayBuffer.constructor": "scr_array_buffer_constructor",
+  "sharedArrayBuffer.new": "scr_shared_array_buffer_new",
+  "sharedArrayBuffer.is": "scr_shared_array_buffer_is",
   "arrayBuffer.new": "scr_array_buffer_new",
   "ffi.argument": "scr_ffi_argument",
   "ffi.memoryModule": "scr_ffi_memory_module",
@@ -716,7 +718,15 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.chownSync": "scr_fs_chown",
   "fs.mkdirModeSync": "scr_fs_mkdir_mode",
   "fs.mkdirRecursiveModeSync": "scr_fs_mkdir_recursive_mode",
+  "atomics.op": "scr_atomics_op",
+  "atomics.notify": "scr_atomics_notify",
   "atomics.wait": "scr_atomics_wait",
+  "worker.new": "scr_worker_new",
+  "worker.isMainThread": "scr_context_is_main",
+  "worker.threadId": "scr_context_thread_number",
+  "worker.root": "scr_worker_root",
+  "worker.data": "scr_worker_data",
+  "worker.parentPort": "scr_worker_parent_port",
   "process.stdinDestroy": "scr_process_stdin_destroy",
   "process.stdinSetRawMode": "scr_process_stdin_set_raw_mode",
   // node:events EventEmitter (scr_events_emitter.c): receivers borrowed,
@@ -1060,6 +1070,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
 };
 
 export const USES_TIMERS_LIB_FNS = new Set<string>([
+  "worker.new",
+  "worker.parentPort",
   "process.stdio",
   "fetch.start",
   "fetch.input",

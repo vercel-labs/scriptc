@@ -60,6 +60,7 @@ function implementationIdentity(toolchain: NativeToolchain): string {
 function validFeatures(value: unknown): value is NativeLinkFeatures {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const features = value as Record<string, unknown>;
+  if (features["workers"] !== undefined && typeof features["workers"] !== "boolean") return false;
   return [
     "dynamic",
     "regex",

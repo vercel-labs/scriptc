@@ -16,7 +16,7 @@ import { boolLit, numLit, strLit, varRef } from "../../packages/compiler/src/ir/
 const loc = { file: "validator-input.ts", start: 12, end: 34 };
 const expression = (expr: IrExpr): IrStmt => ({ kind: "exprStmt", expr, loc });
 const base = (): IrModule => ({
-  irVersion: 13,
+  irVersion: 14,
   sourceFile: loc.file,
   entry: "main",
   functions: [{ name: "main", params: [], locals: [], returnType: VOID, body: [], loc }],

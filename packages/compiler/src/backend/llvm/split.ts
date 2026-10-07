@@ -202,12 +202,6 @@ export function splitLlvmProgram(
         if (/^@.+\s+=\s+external\s+/.test(line)) preamble.push(line);
         else return null;
       } else {
-        // LLVM textual external TLS declarations compile on Darwin, but GNU
-        // ELF clang emits the cross-shard reference as non-TLS and `ld -r`
-        // correctly refuses the mismatch. Thread-instanced libraries keep
-        // the canonical single-TU path until the producer can preserve TLS
-        // model metadata portably across object formats.
-        if (/\bthread_local(?:\([^)]*\))?\s+global\b/.test(line)) return null;
         globals.push(parsed);
         sawDefinition = true;
       }

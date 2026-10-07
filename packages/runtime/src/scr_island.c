@@ -587,7 +587,7 @@ static void isl_init(void) {
   isl_register_hostfn_class();
   /* LIFO: registered after scr_init's handlers, so teardown runs before
    * the cycle collection + RC audit — the audit sees the engine gone. */
-  atexit(isl_teardown_at_exit);
+  scr_atexit(isl_teardown_at_exit);
 }
 
 /* Nesting depth of host-function callbacks (scriptc closures invoked BY

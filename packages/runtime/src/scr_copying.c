@@ -124,6 +124,7 @@ ScrArr *scr_arr_with_undefined(ScrArr *a, double index) {
 }
 
 ScrBytes *scr_bytes_to_reversed(const ScrBytes *b) {
+  SCR_SHARED_GUARD(b, NULL);
   ScrBytes *out = scr_bytes_new(b->elem, (double)b->len);
   size_t width = scr_bytes_elem_size(b->elem);
   /* Copy the stored representation without numeric conversion. Views may

@@ -145,6 +145,66 @@ define void @pairs(ptr noalias %out, ptr %a, ptr %b) {
     expect(await readFile(output, "utf8")).toBe("existing\n");
   });
 
+  test("partitioned release objects link to the same program deterministically", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-helper-partitions-"));
+    dirs.push(dir);
+    const input = join(dir, "program.ll");
+    // Internal callees and state must stay reachable across partitions.
+    await writeFile(
+      input,
+      `@total = internal global i64 0
+${[0, 1, 2, 3, 4, 5]
+  .map(
+    (index) => `define internal void @add${index}(i64 %value) noinline {
+  %old = load i64, ptr @total
+  %scaled = mul i64 %value, ${index + 1}
+  %new = add i64 %old, %scaled
+  store i64 %new, ptr @total
+  ret void
+}`,
+  )
+  .join("\n")}
+define i32 @main() {
+${[0, 1, 2, 3, 4, 5].map((index) => `  call void @add${index}(i64 ${index + 2})`).join("\n")}
+  %total = load i64, ptr @total
+  %code = trunc i64 %total to i32
+  ret i32 %code
+}
+`,
+    );
+    const emit = async (outputs: string[]) => {
+      const args = helperArgs(input, outputs[0]!);
+      for (const output of outputs.slice(1)) args.push("--output", output);
+      expect((await run(helper, args)).exitCode).toBe(0);
+      return Promise.all(outputs.map((output) => readFile(output)));
+    };
+    const exitCode = async (objects: string[], name: string) => {
+      const executable = join(dir, name);
+      await execFileAsync("clang", [...objects, "-o", executable]);
+      return (await run(executable, [])).exitCode;
+    };
+    const partitions = ["a.o", "b.o", "c.o"].map((name) => join(dir, name));
+    const first = await emit(partitions);
+    const again = await emit(["d.o", "e.o", "f.o"].map((name) => join(dir, name)));
+    expect(again).toEqual(first);
+    await emit([join(dir, "whole.o")]);
+    expect(await exitCode(partitions, "partitioned")).toBe(
+      await exitCode([join(dir, "whole.o")], "whole"),
+    );
+    expect(await exitCode(partitions, "partitioned")).toBe(112);
+
+    const refused = await run(helper, [
+      ...helperArgs(input, join(dir, "x.s")).map((arg) => (arg === "obj" ? "asm" : arg)),
+      "--output",
+      join(dir, "y.s"),
+    ]);
+    expect(refused.exitCode).toBe(1);
+    expect(JSON.parse(refused.stderr.toString("utf8"))).toMatchObject({
+      ok: false,
+      code: "invalid_partitions",
+    });
+  });
+
   test("LLVM fatal diagnostics remain process-isolated JSON", async () => {
     const result = await execFileAsync(helper, ["version", "--format=json"], {
       encoding: "utf8",

@@ -2,12 +2,14 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace scriptc {
 
 struct EmitOptions {
   std::string Input;
-  std::string Output;
+  // One output per program partition; several require object output.
+  std::vector<std::string> Outputs;
   std::string FileType = "obj";
   std::string Target;
   std::string OptLevel = "2";

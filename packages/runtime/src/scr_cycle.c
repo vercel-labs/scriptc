@@ -68,7 +68,13 @@
  *                  unlinked INTO a dead cycle grows no counter at all (it
  *                  was tallied when it was allocated) and is invisible to a
  *                  nursery pass, so without it a program that churns its
- *                  long-lived structures would never collect anything.
+ *                  long-lived structures would never collect anything. But
+ *                  a mature object is also buffered whenever a temporary
+ *                  reference to it is dropped, so merely READING a live
+ *                  structure (walking a tree, say) refills the buffer with
+ *                  objects that are not garbage. A full pass that frees
+ *                  almost nothing therefore doubles this fraction, and a
+ *                  productive one restores it.
  *   scheduled age  a mature candidate has waited through a nursery's worth
  *                  of event-loop checkpoints. Candidate COUNT cannot bound
  *                  the garbage behind one root, and an idle heap does not
@@ -182,6 +188,11 @@ static size_t scr_cyc_pass(unsigned gen_limit);
 /* Live count as of the end of the last full pass. */
 static SCR_TL size_t scr_cyc_live_after_full = 0;
 
+/* Doublings of the mature-backlog threshold earned by consecutive full passes
+ * that found almost nothing to free (see scr_cyc_mature_threshold). */
+#define SCR_CYC_BACKLOG_MAX_SHIFT 8
+static SCR_TL unsigned scr_cyc_backlog_shift = 0;
+
 static size_t scr_cyc_nursery_threshold(void) {
   static SCR_TL size_t cached = 0;
   if (cached == 0) {
@@ -232,16 +243,41 @@ static bool scr_cyc_full_due(void) {
  * allocating would never collect anything. So the mature buffer's own size
  * is the second full-pass trigger, at a fraction of the live heap: that
  * bounds uncollected mature candidates proportionally and keeps the
- * amortized cost linear (one heap-sized walk per live/N candidates). */
+ * amortized cost linear (one heap-sized walk per live/N candidates).
+ *
+ * Re-buffered live objects cannot be told apart from new garbage until a
+ * pass walks them, and a program that keeps traversing one live structure
+ * buffers it again after every pass. Each full pass that frees almost none
+ * of its candidates doubles the threshold, so repeated unproductive walks
+ * thin out geometrically; once it exceeds the mature population this
+ * trigger rests, leaving heap growth, the scheduled age and exit to collect.
+ * That only delays garbage made from existing data: replacing it requires
+ * allocation, which grows the heap and trips the growth trigger. The first
+ * productive full pass restores the original fraction. */
 static size_t scr_cyc_mature_threshold(void) {
   size_t t = scr_cyc_live / SCR_CYC_FULL_GROWTH_DIV;
-  return t < SCR_CYC_NURSERY_CANDIDATES ? SCR_CYC_NURSERY_CANDIDATES : t;
+  if (t < SCR_CYC_NURSERY_CANDIDATES) t = SCR_CYC_NURSERY_CANDIDATES;
+  return t > (SIZE_MAX >> scr_cyc_backlog_shift) ? SIZE_MAX : t << scr_cyc_backlog_shift;
+}
+
+/* A scheduled full pass, adapting the backlog threshold to its yield. The
+ * explicit sweep (scr_collect_cycles) is not a scheduling decision and
+ * leaves the threshold alone. Productive means at least one object freed
+ * per FULL_GROWTH_DIV candidates; a pass with no candidates says nothing. */
+static void scr_cyc_full_pass(void) {
+  size_t freed = scr_cyc_pass(SCR_CYC_MATURE);
+  if (scr_cands.n == 0) return;
+  if (freed * SCR_CYC_FULL_GROWTH_DIV >= scr_cands.n)
+    scr_cyc_backlog_shift = 0;
+  else if (scr_cyc_backlog_shift < SCR_CYC_BACKLOG_MAX_SHIFT)
+    scr_cyc_backlog_shift++;
 }
 
 static void scr_cyc_collect_due(void) {
-  bool full = scr_cyc_full_due()
-              || scr_roots[SCR_CYC_MATURE].n >= scr_cyc_mature_threshold();
-  scr_cyc_pass(full ? SCR_CYC_MATURE : SCR_CYC_NURSERY);
+  if (scr_cyc_full_due() || scr_roots[SCR_CYC_MATURE].n >= scr_cyc_mature_threshold())
+    scr_cyc_full_pass();
+  else
+    scr_cyc_pass(SCR_CYC_NURSERY);
 }
 
 /* One scheduled pass, for callers that reach a natural collection point
@@ -258,7 +294,7 @@ void scr_cyc_collect_scheduled(void) {
     scr_cyc_scheduled_mature_age = 0;
   } else if (++scr_cyc_scheduled_mature_age
              >= scr_cyc_nursery_threshold()) {
-    scr_cyc_pass(SCR_CYC_MATURE);
+    scr_cyc_full_pass();
     return;
   }
   scr_cyc_collect_due();

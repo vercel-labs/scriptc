@@ -1,5 +1,13 @@
 import { compilationTiming } from "../timing.js";
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
   AnalyzeOptions,
@@ -24,7 +32,11 @@ import {
   stageNativeRuntimeSelection,
 } from "../backend/runtime-pack-native.js";
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
-import { NativeCodegenError } from "../backend/native-codegen-core.js";
+import {
+  NativeCodegenError,
+  nativePartitionPaths,
+  nativeProgramPartitions,
+} from "../backend/native-codegen-core.js";
 import { llvmRefusalDiag } from "../backend/target-diagnostics.js";
 import { nativeCodegenDiag } from "../diagnostics/diagnostic.js";
 import { loadFfiProfile, type FfiProfile } from "../ffi/ffi-manifest.js";
@@ -47,6 +59,11 @@ import { prepareNativeExecutable, prepareNativeLibrary } from "./prepare.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
 import { openNativeExecutableCache } from "./executable-cache.js";
 import { nativeFileIdentity } from "./file-identity.js";
+
+/** The first partition keeps the whole-object key used before partitioning. */
+function partitionCacheKey(key: string, index: number): string {
+  return index === 0 ? key : contentDigest(`${key}:${index}`);
+}
 
 function failure(error: unknown, entry: string, sources: Map<string, string>): CompileFailure {
   return {
@@ -96,8 +113,10 @@ export class NativeCompiler {
     source: string,
     optimization: "release" | "dev",
     outputKind: "obj" | "asm",
-  ): void {
+    partitions = 1,
+  ): string[] {
     const toolchain = this.toolchain;
+    const outputs = nativePartitionPaths(output, partitions);
     const helperOptions = {
       executable: toolchain.helperExecutable,
       packageRoot: toolchain.helperPackageRoot,
@@ -121,14 +140,17 @@ export class NativeCompiler {
             helper: identity,
             identity: readFileSync(join(toolchain.helperPackageRoot, "package.json"), "utf8"),
             version: toolchain.compilerVersion,
+            ...(partitions > 1 ? { partitions } : {}),
           }),
         );
-        const bytes = this.cache.read("object", key);
-        if (bytes !== null) {
+        const cached = outputs.map((_, index) =>
+          this.cache!.read("object", partitionCacheKey(key!, index)),
+        );
+        if (cached.every((bytes) => bytes !== null)) {
           verifyNativeHelper(helperOptions);
           if (nativeFileIdentity(toolchain.helperExecutable) === identity) {
-            writeFileSync(output, bytes);
-            return;
+            cached.forEach((bytes, index) => writeFileSync(outputs[index]!, bytes!));
+            return outputs;
           }
           key = null;
         }
@@ -147,15 +169,19 @@ export class NativeCompiler {
       sourcePath: source,
       optimization,
       outputKind,
+      partitions,
     });
     if (this.cache !== null && key !== null) {
       try {
         if (nativeFileIdentity(toolchain.helperExecutable) === identity)
-          this.cache.write("object", key, readFileSync(output));
+          outputs.forEach((path, index) =>
+            this.cache!.write("object", partitionCacheKey(key!, index), readFileSync(path)),
+          );
       } catch {
         /* An updated helper or unavailable cache only prevents reuse. */
       }
     }
+    return outputs;
   }
 
   private emitProgramObject(
@@ -165,7 +191,7 @@ export class NativeCompiler {
     optimization: "release" | "dev",
     stage: string,
     library: boolean,
-  ): void {
+  ): string[] {
     const llvm =
       optimization === "dev" && this.toolchain.target.platform !== "wasi"
         ? readFileSync(input, "utf8")
@@ -173,8 +199,10 @@ export class NativeCompiler {
     const split =
       llvm === null ? null : library ? splitLlvmLibraryProgram(llvm) : splitLlvmProgram(llvm);
     if (split === null) {
-      this.emitObject(input, output, source, optimization, "obj");
-      return;
+      const partitions = library
+        ? 1
+        : nativeProgramPartitions(this.toolchain.target, optimization, statSync(input).size);
+      return this.emitObject(input, output, source, optimization, "obj", partitions);
     }
     const objects: string[] = [];
     for (const [index, shard] of split.shards.entries()) {
@@ -186,6 +214,7 @@ export class NativeCompiler {
     }
     const merged = localizeNativeLibrary(this.toolchain, stage, objects, [], split.publicSymbols);
     renameSync(merged, output);
+    return [output];
   }
 
   compile(entry: string, options: CompileRequestOptions): CompileRequestResult {
@@ -270,6 +299,7 @@ export class NativeCompiler {
       const restored = executableCache?.restore(stagedOutput) ?? false;
       timing(restored ? "executable-cache-hit" : "executable-cache-miss");
       if (!restored) {
+        let programObjects = [object];
         if (options.sanitize) {
           runNativeTool(sanitizerDriver(toolchain), [
             ...sanitizerFlags(toolchain, optimization),
@@ -280,7 +310,14 @@ export class NativeCompiler {
           ]);
           requireNativeArtifact(object);
         } else if (outputKind === "exe")
-          this.emitProgramObject(llvmInput, object, entry, optimization, stage, false);
+          programObjects = this.emitProgramObject(
+            llvmInput,
+            object,
+            entry,
+            optimization,
+            stage,
+            false,
+          );
         else
           this.emitObject(
             llvmInput,
@@ -328,6 +365,7 @@ export class NativeCompiler {
         const plan = executableLinkInputs({
           target,
           programObject: object,
+          programPartitions: programObjects.slice(1),
           ffiLibraries: ffi?.libraries ?? [],
           ffiSystemLibraries: ffi?.systemLibraries ?? [],
           ffiFrameworks: ffi?.frameworks ?? [],

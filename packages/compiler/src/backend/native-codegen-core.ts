@@ -6,6 +6,33 @@ export const NATIVE_CODEGEN_LLVM_VERSION = "22.1.8";
 
 export type NativeCodegenOutputKind = "asm" | "obj";
 
+/** LLVM text per partition, and the most partitions one executable uses. */
+const PROGRAM_PARTITION_BYTES = 1024 * 1024;
+const MAX_PROGRAM_PARTITIONS = 8;
+
+/** Optimized executable objects this large keep whole-program simplification
+ * and inlining, then optimize and generate code in concurrent partitions. The
+ * count depends only on the module, so artifacts never vary with the host. */
+export function nativeProgramPartitions(
+  target: NativeTargetSpec,
+  optimization: "release" | "dev",
+  llvmBytes: number,
+): number {
+  if (optimization === "dev" || target.platform === "wasi") return 1;
+  const count = Math.floor(llvmBytes / PROGRAM_PARTITION_BYTES);
+  return Math.max(1, Math.min(MAX_PROGRAM_PARTITIONS, count));
+}
+
+/** Output paths for each partition; the first is the requested path. */
+export function nativePartitionPaths(path: string, count: number): string[] {
+  const dot = path.lastIndexOf(".");
+  const stem = dot > Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) ? dot : path.length;
+  const paths = [path];
+  for (let index = 1; index < count; index++)
+    paths.push(`${path.slice(0, stem)}.part${index}${path.slice(stem)}`);
+  return paths;
+}
+
 export class NativeCodegenError extends Error {
   constructor(
     readonly diagnosticCode: "SC3002" | "SC3003" | "SC3004",

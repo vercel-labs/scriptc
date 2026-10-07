@@ -59,6 +59,7 @@ import {
 } from "./backend/external-c.js";
 import { emitLlvmModuleSource, LlvmUnsupportedError } from "./backend/llvm/emitter.js";
 import { emitNativeArtifact, NativeCodegenError } from "./backend/native-codegen.js";
+import { nativePartitionPaths, nativeProgramPartitions } from "./backend/native-codegen-core.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import { nativeCodegenTarget, nativeCodegenTargetRefusal } from "./backend/targets.js";
 import { windowsSubsystemLinkerArgs, type WindowsSubsystem } from "./backend/targets.js";
@@ -371,6 +372,7 @@ async function compileExecutableNative(
   programSplit: ReturnType<typeof splitLlvmProgram> = null,
   programObjectDependencies: readonly NativeArtifactDependency[] = [],
   onArtifactReady?: NonNullable<Parameters<typeof compileExternalC>[0]["onArtifactReady"]>,
+  programPartitions: readonly string[] = [],
 ): Promise<void> {
   const programIsObject = /\.(?:o|obj)$/.test(llvmPath);
   const runtimePackTarget = programIsObject && !sanitize ? nativeCodegenTarget() : null;
@@ -378,6 +380,7 @@ async function compileExecutableNative(
     const plan = await createNativeLinkPlan({
       target: runtimePackTarget,
       programObject: llvmPath,
+      programPartitions,
       outPath,
       features,
       ffi,
@@ -462,17 +465,38 @@ async function compileExecutableNative(
   });
 }
 
+interface NativeProgramObject {
+  linkPath: string;
+  /** Further partition objects linked after linkPath. */
+  partitionPaths: string[];
+  artifactPath: string;
+  dependencies: NativeArtifactDependency[];
+}
+
 async function emitNativeProgramObject(
   entryPath: string,
   opts: CompileRequestOptions,
   llvm: string | readonly string[],
-): Promise<{ linkPath: string; artifactPath: string; dependencies: NativeArtifactDependency[] }> {
+): Promise<NativeProgramObject> {
   const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const artifactPath = join(opts.outDir, `${stem}.helper.o`);
   // compileExecutableNative recognizes object inputs by suffix. The random
   // private name isolates concurrent builds; retain .o so the driver links
   // it rather than attempting to compile it as source.
   const linkPath = `${privateSiblingPath(artifactPath, "native-program-object")}.o`;
+  // The validated program-object artifact is a single object by contract.
+  const target = nativeCodegenTarget();
+  const partitions =
+    opts.nativeProgramObject === true || target === null
+      ? 1
+      : nativeProgramPartitions(
+          target,
+          opts.optimization === "dev" ? "dev" : "release",
+          (typeof llvm === "string" ? [llvm] : llvm).reduce(
+            (bytes, part) => bytes + Buffer.byteLength(part),
+            0,
+          ),
+        );
   try {
     const artifact = await emitNativeArtifact({
       outputPath: linkPath,
@@ -481,12 +505,27 @@ async function emitNativeProgramObject(
       sourcePath: entryPath,
       optimization: opts.optimization === "dev" ? "0" : "2",
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
+      partitions,
     });
-    return { linkPath, artifactPath, dependencies: artifact.dependencies };
+    return {
+      linkPath,
+      partitionPaths: artifact.outputPaths.slice(1),
+      artifactPath,
+      dependencies: artifact.dependencies,
+    };
   } catch (error) {
-    await rm(linkPath, { force: true }).catch(() => undefined);
+    await removeNativeProgramObject(linkPath, nativePartitionPaths(linkPath, partitions));
     throw error;
   }
+}
+
+async function removeNativeProgramObject(
+  linkPath: string,
+  partitionPaths: readonly string[],
+): Promise<void> {
+  await Promise.all(
+    [linkPath, ...partitionPaths].map((path) => rm(path, { force: true }).catch(() => undefined)),
+  );
 }
 
 function usesPrecompiledRuntimePack(opts: CompileRequestOptions, backend: "llvm"): boolean {
@@ -933,11 +972,7 @@ async function compileTracked(
       };
     }
     let nativeInputPath = earlyHit.llvmPath;
-    let nativeProgramObject: {
-      linkPath: string;
-      artifactPath: string;
-      dependencies: NativeArtifactDependency[];
-    } | null = null;
+    let nativeProgramObject: NativeProgramObject | null = null;
     const useRuntimePack =
       opts.nativeProgramObject === true ||
       usesPrecompiledRuntimePack(opts, earlyHit.native.backend);
@@ -984,6 +1019,7 @@ async function compileTracked(
                 frontend: earlyHit.frontend,
               });
             },
+        nativeProgramObject?.partitionPaths,
       );
       if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
         await rename(nativeProgramObject.linkPath, nativeProgramObject.artifactPath);
@@ -1008,7 +1044,10 @@ async function compileTracked(
       throw err;
     } finally {
       if (nativeProgramObject !== null) {
-        await rm(nativeProgramObject.linkPath, { force: true }).catch(() => undefined);
+        await removeNativeProgramObject(
+          nativeProgramObject.linkPath,
+          nativeProgramObject.partitionPaths,
+        );
       }
     }
     await pruneBuildCache(cacheRoot);
@@ -1037,11 +1076,7 @@ async function compileTracked(
   }
   const executableCacheOptions = earlyCacheOptions;
   let publishedExecutable = false;
-  let nativeProgramObject: {
-    linkPath: string;
-    artifactPath: string;
-    dependencies: NativeArtifactDependency[];
-  } | null = null;
+  let nativeProgramObject: NativeProgramObject | null = null;
   try {
     const useRuntimePack =
       opts.nativeProgramObject === true || usesPrecompiledRuntimePack(opts, backend);
@@ -1086,6 +1121,7 @@ async function compileTracked(
             });
             publishedExecutable = true;
           },
+      nativeProgramObject?.partitionPaths,
     );
     timing("native-link");
     if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
@@ -1107,7 +1143,10 @@ async function compileTracked(
     throw err;
   } finally {
     if (nativeProgramObject !== null) {
-      await rm(nativeProgramObject.linkPath, { force: true }).catch(() => undefined);
+      await removeNativeProgramObject(
+        nativeProgramObject.linkPath,
+        nativeProgramObject.partitionPaths,
+      );
     }
   }
   if (!publishedExecutable) {

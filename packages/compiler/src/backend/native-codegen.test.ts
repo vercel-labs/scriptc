@@ -7,6 +7,7 @@ import {
   NativeCodegenError,
   validateNativeCodegenVersion,
 } from "./native-codegen.js";
+import { nativePartitionPaths, nativeProgramPartitions } from "./native-codegen-core.js";
 import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
 import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -53,9 +54,10 @@ if [ "$1" = version ]; then
 fi
 printf '%s\\n' "$*" >> '${log}'
 output=''
+outputs=''
 input=''
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = --output ]; then output="$2"; shift 2; continue; fi
+  if [ "$1" = --output ]; then output="$2"; outputs="$outputs $2"; shift 2; continue; fi
   if [ "$1" = --input ]; then input="$2"; shift 2; continue; fi
   shift
 done
@@ -67,7 +69,7 @@ ${
       ? ': > "$output"'
       : options.missingOutput === true
         ? ":"
-        : 'cp "$input" "$output"'
+        : 'for each in $outputs; do cp "$input" "$each"; done'
 }
 `,
   );
@@ -317,4 +319,50 @@ test("sanitized native artifacts fail before helper resolution", async () => {
       },
     }),
   ).rejects.toMatchObject({ diagnosticCode: "SC3002", detailCode: "sanitize_unsupported" });
+});
+
+test("program partitions depend only on optimized module size and target", () => {
+  const megabyte = 1024 * 1024;
+  expect(nativeProgramPartitions(LINUX_X64_GNU_TARGET, "release", megabyte - 1)).toBe(1);
+  expect(nativeProgramPartitions(LINUX_X64_GNU_TARGET, "release", 3.5 * megabyte)).toBe(3);
+  expect(nativeProgramPartitions(MACOS_ARM64_TARGET, "release", 100 * megabyte)).toBe(8);
+  expect(nativeProgramPartitions(MACOS_ARM64_TARGET, "dev", 100 * megabyte)).toBe(1);
+  expect(nativeProgramPartitions(WASM32_WASI_TARGET, "release", 100 * megabyte)).toBe(1);
+  expect(nativePartitionPaths("/build.d/program.o", 3)).toEqual([
+    "/build.d/program.o",
+    "/build.d/program.part1.o",
+    "/build.d/program.part2.o",
+  ]);
+  expect(nativePartitionPaths("C:\\build.d\\program", 2)).toEqual([
+    "C:\\build.d\\program",
+    "C:\\build.d\\program.part1",
+  ]);
+});
+
+test("partitioned objects are emitted, cached and restored together", async () => {
+  const pkg = await fakePackage();
+  const first = join(pkg.root, "first", "program.o");
+  const artifact = await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, first),
+    partitions: 3,
+  });
+  expect(artifact.outputPaths).toEqual(nativePartitionPaths(first, 3));
+  for (const path of artifact.outputPaths)
+    expect(await readFile(path, "utf8")).toBe("define i32 @answer() { ret i32 42 }\n");
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.split(" ").filter((arg) => arg === "--output")).toHaveLength(3);
+
+  const second = join(pkg.root, "second", "program.o");
+  const restored = await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, second),
+    partitions: 3,
+  });
+  expect(restored.outputPaths).toEqual(nativePartitionPaths(second, 3));
+  for (const path of restored.outputPaths) expect((await stat(path)).size).toBeGreaterThan(0);
+  expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
+
+  // A single object for the same module is a distinct artifact.
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "whole.o")));
+  expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(2);
 });

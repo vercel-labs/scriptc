@@ -30,6 +30,7 @@ import { compilerReleaseVersion } from "../library/sidecar.js";
 
 import {
   NativeCodegenError,
+  nativePartitionPaths,
   validateNativeCodegenVersion as validateHelperVersion,
   type NativeCodegenVersion,
   type NativeCodegenOutputKind,
@@ -60,6 +61,8 @@ interface ResolvedHelper {
 export interface NativeCodegenArtifact {
   /** Exact installed inputs observed before the helper identity and emission. */
   dependencies: NativeArtifactDependency[];
+  /** Every emitted file, starting with the requested output path. */
+  outputPaths: string[];
 }
 
 const resolvedHelperCache = new Map<string, Promise<ResolvedHelper>>();
@@ -78,6 +81,8 @@ export interface NativeCodegenOptions {
   resolvePackageJson?: (specifier: string) => string;
   /** Internal/test override; omitted production calls use the shared cache. */
   cacheRoot?: string | null;
+  /** Program partitions, written to nativePartitionPaths(outputPath). */
+  partitions?: number;
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
@@ -275,6 +280,7 @@ function cacheKey(
     .update(options.outputKind)
     .update("\0")
     .update(options.sourcePath)
+    .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
     .digest("hex");
 }
 
@@ -327,27 +333,28 @@ export async function emitNativeArtifact(
     options.cacheRoot === undefined ? buildCacheRoot() : options.cacheRoot,
   );
   const key = cacheKey(options, target, helper.identity);
-  const cached =
+  const outputs = nativePartitionPaths(options.outputPath, options.partitions ?? 1);
+  const suffix = options.outputKind === "obj" ? "o" : "s";
+  const cached = outputs.map((_, index) =>
     root === null
       ? null
       : join(
           root,
           "native-codegen-v1",
           key.slice(0, 2),
-          `${key}.${options.outputKind === "obj" ? "o" : "s"}`,
-        );
+          index === 0 ? `${key}.${suffix}` : `${key}.part${index}.${suffix}`,
+        ),
+  );
   await mkdir(dirname(options.outputPath), { recursive: true });
   const artifact = {
     dependencies: helper.dependencies,
+    outputPaths: outputs,
   } satisfies NativeCodegenArtifact;
-  if (
-    cached !== null &&
-    (await validCachedFile(cached)) &&
-    (await installVerifiedCache(cached, options.outputPath))
-  )
-    return artifact;
+  if (await installCachedPartitions(cached, outputs)) return artifact;
 
-  const stage = privateSiblingPath(options.outputPath, `native-${options.outputKind}`);
+  const stages = outputs.map((output) =>
+    privateSiblingPath(output, `native-${options.outputKind}`),
+  );
   const input = privateSiblingPath(options.outputPath, "native-input");
   try {
     await writeFile(input, options.llvm, { mode: 0o600 });
@@ -355,8 +362,7 @@ export async function emitNativeArtifact(
       "emit",
       "--input",
       input,
-      "--output",
-      stage,
+      ...stages.flatMap((stage) => ["--output", stage]),
       "--filetype",
       options.outputKind,
       "--target",
@@ -370,30 +376,46 @@ export async function emitNativeArtifact(
       "--source-path",
       options.sourcePath,
     ]);
-    const emitted = await stat(stage).catch(() => null);
-    if (emitted === null || !emitted.isFile() || emitted.size === 0) {
-      throw new NativeCodegenError(
-        "SC3004",
-        "LLVM native helper completed without producing a non-empty regular artifact",
-        "empty_output",
-      );
+    for (const stage of stages) {
+      const emitted = await stat(stage).catch(() => null);
+      if (emitted === null || !emitted.isFile() || emitted.size === 0) {
+        throw new NativeCodegenError(
+          "SC3004",
+          "LLVM native helper completed without producing a non-empty regular artifact",
+          "empty_output",
+        );
+      }
+      await chmod(stage, artifactMode());
     }
-    await chmod(stage, artifactMode());
     // Cache publication is an optimization boundary. The helper has already
     // produced a valid caller artifact, so a read-only/full cache must not
     // discard it or turn an otherwise successful build into an exception.
     if (
-      cached !== null &&
+      root !== null &&
       (await nativeArtifactDependenciesStillMatch(helper.dependencies).catch(() => false))
-    )
-      await publishCachedFile(stage, cached).catch(() => undefined);
-    await rename(stage, options.outputPath);
+    ) {
+      for (let index = 0; index < stages.length; index++)
+        await publishCachedFile(stages[index]!, cached[index]!).catch(() => undefined);
+    }
+    for (let index = 0; index < stages.length; index++)
+      await rename(stages[index]!, outputs[index]!);
     await pruneBuildCache(root);
     return artifact;
   } finally {
     await Promise.all([
-      rm(stage, { force: true }).catch(() => undefined),
+      ...stages.map((stage) => rm(stage, { force: true }).catch(() => undefined)),
       rm(input, { force: true }).catch(() => undefined),
     ]);
   }
+}
+
+/** Install a cached artifact only when every partition is present and valid. */
+async function installCachedPartitions(
+  cached: readonly (string | null)[],
+  outputs: readonly string[],
+): Promise<boolean> {
+  for (const path of cached) if (path === null || !(await validCachedFile(path))) return false;
+  for (let index = 0; index < outputs.length; index++)
+    if (!(await installVerifiedCache(cached[index]!, outputs[index]!))) return false;
+  return true;
 }

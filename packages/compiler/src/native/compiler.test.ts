@@ -97,9 +97,10 @@ test.each([
       },
     }),
   });
-  vi.mocked(emitNativeObject).mockImplementation((options) =>
-    writeFileSync(options.outputPath, "object"),
-  );
+  vi.mocked(emitNativeObject).mockImplementation((options) => {
+    writeFileSync(options.outputPath, "object");
+    return [options.outputPath];
+  });
   const cache = new NativeCache(join(directory, "cache"));
   const key = contentDigest("executable link");
   const open = () => new NativeExecutableCache(cache, key, "clang", false, [library]);
@@ -241,6 +242,7 @@ test.each([false, true])(
       expect(emitted).toContain("define i32 @main");
       if (fail) throw new Error("codegen failed");
       writeFileSync(options.outputPath, "new object");
+      return [options.outputPath];
     });
     const target = MACOS_ARM64_TARGET;
     const toolchain: NativeToolchain = {

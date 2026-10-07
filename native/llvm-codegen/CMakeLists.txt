@@ -176,7 +176,7 @@ if(SCRIPTC_STATIC_LINUX_BUILD)
     endif()
   endfunction()
 
-  set(SCRIPTC_LLVM_LINK_ROOTS ${SCRIPTC_LLVM_TARGET_LIBS} IRReader Passes)
+  set(SCRIPTC_LLVM_LINK_ROOTS ${SCRIPTC_LLVM_TARGET_LIBS} BitReader BitWriter IRReader Passes TransformUtils)
   foreach(component IN LISTS SCRIPTC_LLVM_LINK_ROOTS)
     if(TARGET "LLVM${component}")
       scriptc_collect_llvm_target("LLVM${component}")
@@ -196,6 +196,8 @@ if(SCRIPTC_STATIC_LINUX_BUILD)
 else()
   llvm_map_components_to_libnames(SCRIPTC_LLVM_LIBS
     ${SCRIPTC_LLVM_TARGET_LIBS}
+    BitReader
+    BitWriter
     CodeGen
     Core
     Coroutines
@@ -203,6 +205,7 @@ else()
     Passes
     Support
     Target
+    TransformUtils
   )
   list(REMOVE_DUPLICATES SCRIPTC_LLVM_LIBS)
 endif()

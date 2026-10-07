@@ -27,7 +27,7 @@ Runtime pack and linker -> executable
 
 1. **Frontend:** TypeScript parses and checks the program against `es2025`, scriptc's ambient declarations, and available project declarations. `tsconfig.json` controls checker strictness. The compiler uses the checked types and narrowing information to lower supported operations; unsupported operations produce diagnostics.
 2. **Typed IR:** A validated, serializable intermediate representation connects the frontend and backend. Types are concrete: generic functions are specialized, unions use tags, and closures have explicit captures. `--emit=ir` writes this representation as JSON.
-3. **LLVM backend:** `--emit=llvm` writes textual LLVM IR. The matching LLVM 22 helper generates assembly or objects on supported macOS, Linux, and Windows hosts, including output targeting WASI. Executable and library builds use this backend.
+3. **LLVM backend:** `--emit=llvm` writes textual LLVM IR. The matching LLVM 22 helper generates assembly or objects on supported macOS, Linux, and Windows hosts, including output targeting WASI. Executable and library builds use this backend. Large optimized native executables are inlined as a whole program, then finish optimization and code generation in parallel partitions; the partition count depends only on the program, so output is the same on every host.
 4. **Linking:** Runtime packs contain precompiled C objects and vendor archives. A hashed manifest selects artifacts for the program's features, optimization mode, and library state model. The target linker and SDK or sysroot produce the executable. Sanitizer builds use an instrumented C runtime.
 
 ## Inspect compiler output

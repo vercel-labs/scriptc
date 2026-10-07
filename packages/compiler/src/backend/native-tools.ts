@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
 import {
+  nativePartitionPaths,
   validateNativeCodegenVersion,
   type NativeCodegenOutputKind,
 } from "./native-codegen-core.js";
@@ -39,14 +40,16 @@ export function emitNativeObject(options: {
   sourcePath: string;
   optimization: "release" | "dev";
   outputKind?: NativeCodegenOutputKind;
-}): void {
+  /** Program partitions, written to nativePartitionPaths(outputPath). */
+  partitions?: number;
+}): string[] {
   verifyNativeHelper(options);
+  const outputs = nativePartitionPaths(options.outputPath, options.partitions ?? 1);
   runNativeTool(options.executable, [
     "emit",
     "--input",
     options.inputPath,
-    "--output",
-    options.outputPath,
+    ...outputs.flatMap((output) => ["--output", output]),
     "--filetype",
     options.outputKind ?? "obj",
     "--target",
@@ -60,7 +63,8 @@ export function emitNativeObject(options: {
     "--source-path",
     options.sourcePath,
   ]);
-  requireNativeArtifact(options.outputPath);
+  for (const output of outputs) requireNativeArtifact(output);
+  return outputs;
 }
 
 /** Verify installed identity even when a caller can reuse a cached object. */

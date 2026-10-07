@@ -165,6 +165,85 @@ static void check_dead_backlog_rearms_release_trigger(void) {
         "directly dead backlog delayed the next release-triggered pass");
 }
 
+static Node *make_leaf(void) {
+  Node *leaf = scr_cyc_alloc(sizeof(*leaf), node_trace, node_free);
+  leaf->rc = 1;
+  return leaf;
+}
+
+/* A temporary reference taken and dropped, as when a program reads it. */
+static void read_live(Node *node) {
+  node->rc++;
+  scr_cyc_mark_live(node);
+  release_live(node);
+}
+
+/* A promoted ring whose last outside owner has just been dropped. */
+static void make_dead_mature_ring(size_t count) {
+  Node *ring = make_ring(count);
+  ring->rc++;
+  release_live(ring);
+  scr_collect_cycles();
+  release_live(ring); /* only the ring edge remains */
+}
+
+/* Dead mature rings reclaimed by one scheduled full pass that frees more
+ * than it walks live, which restores the backlog trigger's base fraction. */
+static void collect_dead_mature_rings(void) {
+  enum { RING = 32, RINGS = 64 };
+  Node *rings[RINGS];
+  size_t before = freed;
+  for (size_t i = 0; i < RINGS; i++) {
+    rings[i] = make_ring(RING);
+    rings[i]->rc++;
+    release_live(rings[i]);
+  }
+  scr_collect_cycles();
+  for (size_t i = 0; i < RINGS; i++) release_live(rings[i]);
+  for (size_t i = 0; i < configured_nursery_threshold(); i++)
+    scr_cyc_collect_scheduled();
+  check(freed == before + RINGS * RING, "scheduled pass missed dead mature rings");
+}
+
+static void check_unproductive_backlog_backs_off(void) {
+  enum { LIVE = 8192, RING = 32 };
+  static Node *leaves[LIVE];
+  for (size_t i = 0; i < LIVE; i++) {
+    leaves[i] = make_leaf();
+    read_live(leaves[i]);
+  }
+  scr_collect_cycles(); /* promote; the explicit sweep never adapts the threshold */
+  collect_dead_mature_rings();
+
+  /* Reading a quarter of the live heap reaches the backlog trigger, whose
+   * pass finds the dead ring among live candidates but little else. */
+  size_t before = freed;
+  make_dead_mature_ring(RING);
+  for (size_t i = 0; i < 3000; i++) read_live(leaves[i]);
+  check(freed == before + RING, "backlog trigger missed a dead mature ring");
+
+  /* That unproductive pass doubled the threshold: the same reads wait. */
+  before = freed;
+  make_dead_mature_ring(RING);
+  for (size_t i = 0; i < 3500; i++) read_live(leaves[i]);
+  check(freed == before, "unproductive backlog pass did not back off");
+  for (size_t i = 3500; i < 5000; i++) read_live(leaves[i]);
+  check(freed == before + RING, "backed-off backlog trigger never collected");
+
+  /* A productive scheduled pass restores the original fraction. */
+  collect_dead_mature_rings();
+  before = freed;
+  make_dead_mature_ring(RING);
+  for (size_t i = 0; i < 3000; i++) read_live(leaves[i]);
+  check(freed == before + RING, "productive pass did not restore the backlog trigger");
+
+  for (size_t i = 0; i < LIVE; i++) {
+    leaves[i]->rc--;
+    scr_cyc_on_dead(leaves[i]);
+    node_free(leaves[i]);
+  }
+}
+
 static void check_deep_ring(void) {
   enum { DEPTH = 100000 };
   size_t before = freed;
@@ -313,6 +392,7 @@ static void check_deferred_white_restoration(void) {
 }
 
 int main(void) {
+  check_unproductive_backlog_backs_off();
   check_sparse_mature_backlog(1);
   check_sparse_mature_backlog(2);
   check_age_reset_when_last_mature_root_dies();

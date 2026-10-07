@@ -16,6 +16,8 @@ export interface ExecutableLinkInputs {
 export function executableLinkInputs(options: {
   target: NativeTargetSpec;
   programObject: string;
+  /** Further objects of the same partitioned program. */
+  programPartitions?: readonly string[];
   ffiLibraries: readonly string[];
   ffiSystemLibraries: readonly string[];
   ffiFrameworks: readonly string[];
@@ -31,6 +33,7 @@ export function executableLinkInputs(options: {
   return {
     inputs: [
       options.programObject,
+      ...(options.programPartitions ?? []),
       ...options.ffiLibraries,
       ...options.runtimeObjects,
       ...options.runtimeArchives,

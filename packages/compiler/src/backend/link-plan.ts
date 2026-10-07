@@ -32,6 +32,7 @@ export interface NativeLinkPlan {
 export async function createNativeLinkPlan(options: {
   target: NativeTargetSpec;
   programObject: string;
+  programPartitions?: readonly string[];
   outPath: string;
   features: NativeLinkFeatures;
   ffi: FfiProfile | null;
@@ -56,6 +57,9 @@ export async function createNativeLinkPlan(options: {
     ...executableLinkInputs({
       target: options.target,
       programObject: options.programObject,
+      ...(options.programPartitions === undefined
+        ? {}
+        : { programPartitions: options.programPartitions }),
       ffiLibraries: options.ffi?.libraries ?? [],
       ffiSystemLibraries: options.ffi?.systemLibraries ?? [],
       ffiFrameworks: options.ffi?.frameworks ?? [],

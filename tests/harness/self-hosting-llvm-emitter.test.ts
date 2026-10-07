@@ -112,6 +112,10 @@ const programs = [
   "local-union-storage.ts",
   "class-callback-storage.ts",
   "byte-record-windows.ts",
+  "constant-callback-dispatch.ts",
+  "constant-number-remainders.ts",
+  "numeric-call-specialization.ts",
+  "scalar-string-slices.ts",
 ];
 
 for (const backend of ["llvm"] as const) {

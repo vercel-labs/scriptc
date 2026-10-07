@@ -169,9 +169,9 @@ export function specializeNumericCalls(
         ...implementation,
         name,
         params: fn.params.map((param) =>
-          ids.has(param.localId) ? { ...param, type: F64 } : param,
+          ids.has(param.localId) ? { ...param!, type: F64 } : param,
         ),
-        locals: fn.locals.map((local) => (ids.has(local.id) ? { ...local, type: F64 } : local)),
+        locals: fn.locals.map((local) => (ids.has(local.id) ? { ...local!, type: F64 } : local)),
         body: specializeBody(fn, slots),
       };
       variants.set(fn.name, variant);

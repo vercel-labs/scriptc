@@ -262,6 +262,21 @@ export function emitterInputCases(): EmitterInputCase[] {
   ];
   add("closure capture boxes", closure);
 
+  const invocation = module();
+  invocation.functions.push(closure.functions[1]!);
+  invocation.functions[0]!.locals = closure.functions[0]!.locals;
+  invocation.functions[0]!.body = [
+    closure.functions[0]!.body[0]!,
+    effect({
+      kind: "callValue",
+      callee: { kind: "closure", fnName: "reader", captures: ["message"], type: closureType, loc },
+      args: [],
+      type: STRING,
+      loc,
+    }),
+  ];
+  add("synchronous callback environment", invocation);
+
   const unions = module();
   unions.unions = [{ id: "scalar", arms: [BOOL, F64, STRING, UNDEFINED_T] }];
   unions.functions[0]!.body = [

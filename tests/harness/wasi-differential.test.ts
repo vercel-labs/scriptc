@@ -130,6 +130,7 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "js-inferred-callback-exports/main.js",
     "js-array-constructor.js",
     "array-numeric-own-keys.ts",
+    "synchronous-callback-lifetimes.ts",
     "error-inherited-message.mjs",
     "js-class-shadowed-methods.js",
     "js-default-listener-arguments.cjs",

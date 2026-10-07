@@ -11233,6 +11233,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/synchronous-callback-lifetimes.ts": {
+   "order": [
+    "<repo>/tests/corpus/synchronous-callback-lifetimes.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/text-codec-values/main.ts": {
    "order": [
     "<repo>/tests/corpus/text-codec-values/shared.ts",

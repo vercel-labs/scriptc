@@ -182,7 +182,7 @@ const text = (obj: IrExpr): IrExpr => ({
   loc: receiverLoc,
 });
 
-function work(expr: IrExpr, parameter: IrType, boxed = false): string {
+function work(expr: IrExpr, parameter: IrType, boxed = false, tdz = false): string {
   const module: IrModule = {
     irVersion: 13,
     sourceFile: receiverLoc.file,
@@ -205,6 +205,7 @@ function work(expr: IrExpr, parameter: IrType, boxed = false): string {
             type: parameter,
             mutable: false,
             ...(boxed ? { boxed: true } : {}),
+            ...(tdz ? { tdz: true } : {}),
           },
         ],
         body: [{ kind: "return", value: expr, loc: receiverLoc }],
@@ -258,8 +259,9 @@ test("class brand probes borrow a local only across an inert literal key", () =>
   expect(borrowed).toContain("icmp eq i32");
   expect(borrowed).toContain("@scr_dyn_typed_ref_is_key");
   const boxed = work(probe, dyn, true);
-  expect(boxed).toContain("call ptr @scr_box_get_ref");
-  expect(boxed).toContain("call void @scr_dyn_release");
+  expect(boxed).not.toContain("call ptr @scr_box_get_ref");
+  expect(boxed).toContain("getelementptr inbounds %ScrBox");
+  expect(boxed).toContain("call void @scr_box_release");
   const computed = work(
     {
       ...probe,
@@ -278,11 +280,14 @@ test("class brand probes borrow a local only across an inert literal key", () =>
   expect(computed).toContain("call ptr @scr_dyn_retain_v(");
 });
 
-test("capture boxes keep their ordinary owned-read contract", () => {
+test("capture projections borrow their payload but retain escaping results and TDZ reads", () => {
   const llvm = work(text(child(narrow(ref(union)))), union, true);
-  expect(llvm).toContain("call ptr @scr_box_get_ref");
-  expect(llvm).toContain("call void @scr_union_release");
+  expect(llvm).not.toContain("call ptr @scr_box_get_ref");
+  expect(llvm).toContain("call void @scr_box_release");
   expect(llvm.match(/call ptr @scr_str_retain_v/g)).toHaveLength(1);
+  const checked = work(text(child(narrow(ref(union)))), union, true, true);
+  expect(checked).toContain("call ptr @scr_box_get_ref");
+  expect(checked).toContain("call void @scr_union_release");
 });
 
 test("native iterator steps borrow stable owners but snapshot captured state", () => {
@@ -334,8 +339,9 @@ test("checked field receivers borrow only the successful projection", () => {
   expect(llvm).toContain("@scr_exc_pending");
   expect(llvm).not.toContain("@scr_union_retain_v");
   expect(llvm).not.toMatch(/call ptr @sc_rretain_/);
-  // A captured union must still produce an owned receiver through its box.
-  expect(work(text(child(checked)), union, true)).toContain("@scr_box_get_ref");
+  const captured = work(text(child(checked)), union, true);
+  expect(captured).not.toContain("@scr_box_get_ref");
+  expect(captured).toContain("@scr_throw_node_coded");
 });
 
 function sharedFieldModule(prefixes: IrType[][], fieldType: IrType): IrModule {

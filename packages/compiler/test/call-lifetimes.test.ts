@@ -36,6 +36,105 @@ function body(llvm: string, symbol: string): string {
   return found![0];
 }
 
+test("invocation-only callbacks use bounded environments through synchronous relays", async () => {
+  const mod = await lower(`
+function invoke(fn: (value: number) => number, value: number): number { return fn(value); }
+function relay(fn: (value: number) => number, value: number): number { return invoke(fn, value); }
+function work(seed: number): number {
+  let total = seed;
+  const result = relay((value) => { total += value; return total; }, 3);
+  return result + total;
+}
+console.log(work(7));
+`);
+  const facts = analyzeCallLifetimes(new Map(mod.functions.map((item) => [item.name, item])));
+  expect(facts.parameters.get("invoke")).toEqual(new Set([0]));
+  expect(facts.parameters.get("relay")).toEqual(new Set([0]));
+  const llvm = emitLlvmModule(mod);
+  const work = body(llvm, "sc_f_work");
+  expect(work).toContain("alloca { %ScrClosure, [1 x ptr] }");
+  expect(work).toContain("alloca %ScrBox");
+  expect(work).not.toContain("@scr_box_new");
+  expect(work).not.toContain("@scr_closure_new");
+  expect(work).toContain("@sc_retain_box");
+  expect(work).toContain("@scr_box_release");
+  expect(body(llvm, "sc_bf_invoke")).not.toContain("@scr_closure_retain");
+});
+
+test("capture payloads keep scope owners and nested escaping captures keep heap boxes", async () => {
+  const mod = await lower(`
+function invoke(fn: () => string): string { return fn(); }
+function make(fn: () => (() => string)): () => string { return fn(); }
+function local(seed: string): string {
+  let value = seed;
+  return invoke(() => { value += "!"; return value; });
+}
+function nested(seed: string): () => string {
+  let value = seed;
+  return make(() => () => value);
+}
+console.log(local("a"), nested("b")());
+`);
+  const llvm = emitLlvmModule(mod);
+  const local = body(llvm, "sc_bf_local");
+  expect(local).toContain("alloca %ScrBox");
+  expect(local).not.toContain("@scr_box_new");
+  expect(local).toContain("@scr_str_release");
+  const nested = body(llvm, "sc_bf_nested");
+  expect(nested).toContain("@scr_box_new");
+  expect(nested).not.toContain("alloca %ScrBox");
+});
+
+test("escaping callbacks and dependency cycles with an escape retain heap environments", async () => {
+  const mod = await lower(`
+function keep(fn: () => number): () => number { return fn; }
+function left(fn: () => number, depth: number): () => number {
+  return depth > 0 ? right(fn, depth - 1) : keep(fn);
+}
+function right(fn: () => number, depth: number): () => number { return left(fn, depth); }
+function work(value: number): number { return left(() => value, 2)(); }
+console.log(work(9));
+`);
+  const facts = analyzeCallLifetimes(new Map(mod.functions.map((item) => [item.name, item])));
+  for (const name of ["keep", "left", "right"])
+    expect(facts.parameters.get(name)?.has(0)).not.toBe(true);
+  const work = body(emitLlvmModule(mod), "sc_f_work");
+  expect(work).toContain("@scr_closure_new");
+  expect(work).not.toContain("alloca { %ScrClosure");
+});
+
+test("callback environment storage has a per-function bound and a heap fallback", async () => {
+  const calls = Array.from({ length: 100 }, () => "total += invoke(() => captured);").join("\n");
+  const mod = await lower(`
+function invoke(fn: () => number): number { return fn(); }
+function work(seed: number): number { const captured = seed; let total = 0; ${calls} return total; }
+console.log(work(3));
+`);
+  const work = body(emitLlvmModule(mod), "sc_f_work");
+  const slots = work.match(/alloca \{ %ScrClosure, \[1 x ptr\] \}/g) ?? [];
+  expect(slots.length).toBeGreaterThan(0);
+  expect(slots.length * 48).toBeLessThanOrEqual(4096);
+  expect(work).toContain("alloca %ScrBox");
+  expect(work).toContain("@scr_closure_new");
+});
+
+test("capture bindings have an independent stack budget", async () => {
+  const calls = Array.from(
+    { length: 50 },
+    (_, i) => `const value${i} = seed; total += invoke(() => value${i});`,
+  ).join("\n");
+  const mod = await lower(`
+function invoke(fn: () => number): number { return fn(); }
+function work(seed: number): number { let total = 0; ${calls} return total; }
+console.log(work(3));
+`);
+  const work = body(emitLlvmModule(mod), "sc_f_work");
+  const slots = work.match(/alloca %ScrBox/g) ?? [];
+  expect(slots.length).toBeGreaterThan(0);
+  expect(slots.length * 48).toBeLessThanOrEqual(2048);
+  expect(work).toContain("@scr_box_new");
+});
+
 test("ordinary source helper parameters admit local array boxes after serialization", async () => {
   const mod = await lower(`
 class Item { value: number; constructor(value: number) { this.value = value; } }

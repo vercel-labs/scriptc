@@ -366,13 +366,17 @@ test("global string ownership cannot be inferred from an immutable-looking refer
   expect(body(module, "sc_f_inspect")).not.toContain("@scr_str_retain_v");
 });
 
-test("boxed string parameters retain their checked binding reads", () => {
+test("boxed string lengths borrow initialized payloads and keep checked TDZ reads", () => {
   const inspect = fn("inspect", ["value"], intrinsic(ref("value"), "length", [], F64));
   inspect.locals[0]!.boxed = true;
   const ir = body(mod(inspect), "sc_f_inspect");
-  expect(ir).toContain("@scr_box_");
-  expect(ir).toContain("@scr_str_release");
+  expect(ir).toContain("@scr_box_release");
+  expect(ir).not.toContain("@scr_box_get_ref");
   expect(ir).toContain("@scr_str_utf16_len");
+  inspect.locals[0]!.tdz = true;
+  const checked = body(mod(inspect), "sc_f_inspect");
+  expect(checked).toContain("@scr_box_get_ref");
+  expect(checked).toContain("@scr_str_release");
 });
 
 test("borrowed literals keep UTF-16 string comparison without temporary owners", () => {

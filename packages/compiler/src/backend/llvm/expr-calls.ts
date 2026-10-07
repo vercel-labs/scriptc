@@ -25,7 +25,7 @@ import { f64Lit, ffiNativeTypeLl, ffiNativeParamLl, ffiNativeReturnLl } from "./
 import { canStackUnion, emitStackUnion } from "./stack-unions.js";
 import { emitCallArrayRead } from "./local-array-reads.js";
 import { emitStackMapRead } from "./map-read-lifetimes.js";
-import { borrowableInputs } from "./borrowed-inputs.js";
+import { borrowableInputs, emitBorrowedInput } from "./borrowed-inputs.js";
 
 export function emitCallExpr(
   host: LlvmEmitterContext,
@@ -70,6 +70,8 @@ export function emitCallExpr(
           // Only projection-only parameters may see an unowned stack box,
           // including when one IR expression is shared by two positions.
           if (projected?.has(index)) {
+            const callback = host.stackCallbacks.emit(host, a);
+            if (callback) return callback;
             const read = host.callArrayReads.get(a);
             if (read) return emitCallArrayRead(host, read);
             const mapRead = host.mapReadLifetimes.arguments.get(a);
@@ -598,7 +600,7 @@ export function emitCallExpr(
       const ft = e.callee.type;
       if (e.args.length !== ft.params.length)
         throw new LlvmUnsupportedError("callValue:arity", e.loc);
-      const callee = host.emitExpr(e.callee);
+      const callee = host.stackCallbacks.emit(host, e.callee) ?? emitBorrowedInput(host, e.callee);
       const receiver = e.receiver === undefined ? null : host.emitExpr(e.receiver);
       const args = e.args.map((a) => host.emitExpr(a));
       for (const a of args) host.moveTemp(a);

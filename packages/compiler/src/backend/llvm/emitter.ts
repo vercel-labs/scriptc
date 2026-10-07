@@ -144,6 +144,8 @@ import { emitBorrowedFieldSequence } from "./borrowed-receivers.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { ReferenceEffects } from "./reference-effects.js";
 import { LlvmDebugInfo } from "./debug-info.js";
+import { StackCallbacks } from "./stack-callbacks.js";
+import { StackCaptures } from "./stack-captures.js";
 import {
   f64Lit,
   ffiNativeTypeLl,
@@ -462,6 +464,8 @@ export class LlEmitter {
   callArrayReads = new Map<IrExpr, LocalArrayRead>();
   mapReadLifetimes: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
   readonly callLifetimes: CallLifetimes;
+  readonly stackCallbacks: StackCallbacks;
+  private readonly stackCaptures: StackCaptures;
   private borrowedParameters = new Set<string>();
   private stableCallBindings: ReadonlySet<string> = new Set();
   /** Manifest-bound native imports, used by ffiCall emission. */
@@ -667,6 +671,8 @@ export class LlEmitter {
       (call) => this.optionalArrayReads.get(call) !== null,
     );
     this.callLifetimes = analyzeCallLifetimes(this.fnByName);
+    this.stackCallbacks = new StackCallbacks(this.fnByName);
+    this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
     for (const r of mod.records ?? []) this.recordsById.set(r.id, r);
     const traced = computeTraced(mod);
     this.tracedShapes = traced.shapes;
@@ -3762,6 +3768,8 @@ export class LlEmitter {
     // Preserve concrete source bindings for debugger inspection. Suspended
     // functions keep the established array lifetime across continuations.
     this.streamingSplitsEnabled = this.debug === null && !fn.async && !fn.generator;
+    this.stackCallbacks.reset(this.streamingSplitsEnabled);
+    this.stackCaptures.reset(fn, this.streamingSplitsEnabled);
     this.privateSplitLocals = this.streamingSplitsEnabled ? findPrivateSplitLocals(fn) : new Map();
     this.storedSplits.clear();
     this.splitSpans.clear();
@@ -4150,6 +4158,17 @@ export class LlEmitter {
           break;
         }
         if (b.kind === "boxed") {
+          const stack = this.stackCaptures.emit(this, s.localId, b.type);
+          if (stack) {
+            B.line(`store ptr ${stack.box}, ptr ${b.slot}`);
+            if (stack.owner) this.scopes[this.scopes.length - 1]!.push(stack.owner);
+            if (s.init) {
+              const value = this.emitExpr(s.init);
+              if (isRefCounted(value.type)) this.moveTemp(value);
+              this.boxSet(stack.box, b.type, value.name);
+            }
+            break;
+          }
           // Box FIRST, then evaluate the initializer: a named function
           // expression's closure captures this box during init evaluation.
           // A SCALAR TDZ box rides an ARR-kind box: the value lives in a
@@ -5544,8 +5563,17 @@ export class LlEmitter {
     if (e.kind === "varRef") {
       this.materializeSplitLocal(e.localId);
       const binding = this.binding(e.localId);
-      // Capture boxes can carry TDZ and caught-value conversion semantics.
-      if (binding.kind === "boxed") return this.emitExpr(e);
+      if (binding.kind === "boxed") {
+        // A projection consumes this pointer before any user code runs.
+        // Keep TDZ checks and caught-value conversion on the owned path.
+        if (!this.canBorrowReceiver(e)) return this.emitExpr(e);
+        const box = this.loadBox(binding.slot);
+        const payload = this.B.tmp();
+        const value = this.B.tmp();
+        this.B.line(`${payload} = getelementptr inbounds %ScrBox, ptr ${box}, i32 0, i32 5`);
+        this.B.line(`${value} = load ptr, ptr ${payload}`);
+        return { name: value, type: e.type };
+      }
       if (binding.kind === "global") this.checkGlobalTdz(e.localId);
       const value = this.B.tmp();
       this.B.line(`${value} = load ptr, ptr ${binding.slot}`);
@@ -5602,8 +5630,16 @@ export class LlEmitter {
 
   canBorrowReceiver(e: IrExpr): boolean {
     switch (e.kind) {
-      case "varRef":
-        return this.binding(e.localId).kind !== "boxed";
+      case "varRef": {
+        const binding = this.binding(e.localId);
+        return (
+          binding.kind !== "boxed" ||
+          (!binding.local!.tdz &&
+            binding.type.kind === e.type.kind &&
+            e.type.kind !== "caught" &&
+            isRefCounted(e.type))
+        );
+      }
       case "unionNarrow":
         return this.canBorrowReceiver(e.value);
       case "fieldGet":

@@ -35,7 +35,7 @@ export interface CallLifetimes {
    * binding may be stable too; source mutability alone is not a write. */
   bindings: Map<string, Set<string>>;
   /** Parameters consumed only by projections, borrowing string operations,
-   * or other proven parameters.
+   * callable invocation, or other proven parameters.
    * This is a lifetime fact, not a purity or nonthrowing guarantee. */
   parameters: Map<string, Set<number>>;
   /** Immutable locals with the same use restriction. Their initialization
@@ -56,12 +56,13 @@ function eligible(local: IrLocal, parameter = false): boolean {
     (local.type.kind === "union" ||
       local.type.kind === "object" ||
       local.type.kind === "record" ||
-      local.type.kind === "string")
+      local.type.kind === "string" ||
+      local.type.kind === "func")
   );
 }
 
 /** Read each function once. A whole-value use is unsafe unless it is an
- * explicitly supported projection, borrowing string operation, or direct-call
+ * explicitly supported projection, invocation, borrowing string operation, or direct-call
  * argument whose target parameter can be proved separately. Traversal of every other consumer
  * reaches the ordinary varRef rejection, including future IR nodes.
  *
@@ -105,6 +106,10 @@ function collectUses(fn: IrFunction): Uses {
       case "recordGet":
         if (node.obj.kind === "varRef") return true;
         break;
+      case "callValue":
+        if (node.callee.kind !== "varRef") expr(node.callee);
+        if (node.receiver) expr(node.receiver);
+        return node.args.every(expr);
       case "call":
         node.args.forEach((arg, index) => {
           if (arg.kind !== "varRef") {

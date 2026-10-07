@@ -1,3 +1,4 @@
+import { classMembershipIntervals } from "./classes.js";
 import { emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { preservesDynTest } from "./checked-value-lifetimes.js";
 import { typedRefConstructor } from "./shapes.js";
@@ -848,10 +849,20 @@ export function emitDynamicExpr(
         host.declare(
           `declare zeroext i1 @scr_caught_instanceof(ptr, ${host.sizeType}, ${host.sizeType})`,
         );
-        const t = B.tmp();
-        B.line(
-          `${t} = call zeroext i1 @scr_caught_instanceof(ptr ${c.name}, ${host.sizeType} ${target.pre}, ${host.sizeType} ${target.post})`,
-        );
+        let t: string | undefined;
+        for (const interval of classMembershipIntervals(host.classMeta, target.def.name)) {
+          const test = B.tmp();
+          B.line(
+            `${test} = call zeroext i1 @scr_caught_instanceof(ptr ${c.name}, ${host.sizeType} ${interval.pre}, ${host.sizeType} ${interval.post})`,
+          );
+          if (t === undefined) t = test;
+          else {
+            const combined = B.tmp();
+            B.line(`${combined} = or i1 ${t}, ${test}`);
+            t = combined;
+          }
+        }
+        if (t === undefined) throw new InternalCompilerError("empty class membership");
         if (e.negated !== true) return { name: t, type: e.type };
         const n = B.tmp();
         B.line(`${n} = xor i1 ${t}, true`);
@@ -888,9 +899,37 @@ export function emitDynamicExpr(
       host.declare(
         `declare ptr @scr_caught_check_obj(ptr, ${host.sizeType}, ${host.sizeType}, ptr)`,
       );
+      let pre = String(target.pre);
+      let post = String(target.post);
+      const intervals = classMembershipIntervals(host.classMeta, target.def.name);
+      if (intervals.length > 1) {
+        // Select a matching interval rather than its bounding range: a
+        // different specialization may live in the gaps between them.
+        host.declare(
+          `declare zeroext i1 @scr_caught_instanceof(ptr, ${host.sizeType}, ${host.sizeType})`,
+        );
+        pre = "-1";
+        post = "-1";
+        for (const interval of intervals) {
+          const matched = B.tmp();
+          const nextPre = B.tmp();
+          const nextPost = B.tmp();
+          B.line(
+            `${matched} = call zeroext i1 @scr_caught_instanceof(ptr ${c.name}, ${host.sizeType} ${interval.pre}, ${host.sizeType} ${interval.post})`,
+          );
+          B.line(
+            `${nextPre} = select i1 ${matched}, ${host.sizeType} ${interval.pre}, ${host.sizeType} ${pre}`,
+          );
+          B.line(
+            `${nextPost} = select i1 ${matched}, ${host.sizeType} ${interval.post}, ${host.sizeType} ${post}`,
+          );
+          pre = nextPre;
+          post = nextPost;
+        }
+      }
       const t = B.tmp();
       B.line(
-        `${t} = call ptr @scr_caught_check_obj(ptr ${c.name}, ${host.sizeType} ${target.pre}, ${host.sizeType} ${target.post}, ptr ${host.cstr(display)})`,
+        `${t} = call ptr @scr_caught_check_obj(ptr ${c.name}, ${host.sizeType} ${pre}, ${host.sizeType} ${post}, ptr ${host.cstr(display)})`,
       );
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck();

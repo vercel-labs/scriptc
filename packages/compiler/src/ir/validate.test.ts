@@ -838,6 +838,86 @@ test("virtual-call validation uses the nearest concrete ancestor instead of an o
   expect(validateModule(mod)).toEqual([]);
 });
 
+test("erased generic families admit compatible object views without supplying virtual slots", () => {
+  const concrete: IrType = { kind: "object", className: "Concrete" };
+  const family: IrType = { kind: "object", className: "Family" };
+  const mod = expressionModule(
+    {
+      kind: "upcast",
+      value: { kind: "varRef", localId: "value", type: concrete, loc },
+      type: family,
+      loc,
+    },
+    [],
+  );
+  mod.functions[0]!.params = [{ localId: "value", name: "value", type: concrete }];
+  mod.functions[0]!.locals = [{ id: "value", name: "value", type: concrete, mutable: false }];
+  mod.classes = [
+    { name: "Root", fields: [{ name: "value", type: F64 }], methods: [], loc },
+    { name: "Family", base: "Root", fields: [{ name: "value", type: F64 }], methods: [], loc },
+    { name: "Storage", base: "Root", fields: [{ name: "value", type: F64 }], methods: [], loc },
+    {
+      name: "Concrete",
+      base: "Storage",
+      genericOf: "Family",
+      fields: [{ name: "value", type: F64 }],
+      methods: [],
+      loc,
+    },
+  ];
+  expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
+  mod.classes[3]!.fields[0]!.type = STRING;
+  expect(validateModule(mod).map((error) => error.message)).toContain(
+    'class Concrete: generic family "Family" has an incompatible prefix',
+  );
+  mod.classes[3]!.fields[0]!.type = F64;
+  delete mod.classes[3]!.base;
+  expect(validateModule(mod).map((error) => error.message)).toContain(
+    'class Concrete: generic family "Family" has a different storage root',
+  );
+  mod.classes[3]!.base = "Storage";
+  mod.classes[1]!.genericOf = "Concrete";
+  expect(validateModule(mod).map((error) => error.message)).toContain(
+    'class Concrete: generic family "Family" must name an erased declaration',
+  );
+
+  const calls = virtualCallModule();
+  calls.classes = calls.classes!.filter((cls) => cls.name !== "Second");
+  const first = calls.classes!.find((cls) => cls.name === "First")!;
+  delete first.base;
+  first.genericOf = "Base";
+  expect(validateModule(calls).map((error) => error.message)).toContain(
+    "in caller0: virtualCall Base.run: no concrete override below the static class",
+  );
+});
+
+test("erased family membership cannot reinterpret a specialized constructor ABI", () => {
+  const mod = expressionModule(
+    {
+      kind: "upcast",
+      value: {
+        kind: "varRef",
+        localId: "ctor",
+        type: { kind: "classval", className: "Concrete" },
+        loc,
+      },
+      type: { kind: "classval", className: "Family" },
+      loc,
+    },
+    [],
+  );
+  const ctor = { kind: "classval", className: "Concrete" } as const;
+  mod.functions[0]!.params = [{ localId: "ctor", name: "ctor", type: ctor }];
+  mod.functions[0]!.locals = [{ id: "ctor", name: "ctor", type: ctor, mutable: false }];
+  mod.classes = [
+    { name: "Family", fields: [], methods: [], loc },
+    { name: "Concrete", genericOf: "Family", fields: [], methods: [], loc },
+  ];
+  expect(validateModule(mod).map((error) => error.message)).toContain(
+    'in main: upcast: "Concrete" does not extend "Family"',
+  );
+});
+
 test("library callbacks retain child, specialized, and generic result diagnostics", () => {
   const expr: IrExpr = {
     kind: "libCall",

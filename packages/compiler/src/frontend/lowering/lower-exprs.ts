@@ -20,6 +20,7 @@ import * as ts from "../ts7/adapter.js";
 import { dirname } from "node:path";
 import * as posix from "node:path/posix";
 import type { Lowerer } from "./lowerer.js";
+import { checkedClassAssertion } from "./class-assertions.js";
 import { captureContextArguments } from "./function-context.js";
 import { OBJECT_CALLABLE_VALUES } from "./surfaces.js";
 import { wasiGuestPath } from "../../wasi-paths.js";
@@ -3766,7 +3767,12 @@ function runtimeOptionalReceiverRead(
     // undefined arm; re-tag it to the checker-narrowed value union with a
     // checked trap for that arm, then let union property lowering inspect
     // the surviving record arms.
-    const helper = lowerer.narrowedRetagHelper(expr, local.type.unionId, narrowed.unionId, loc);
+    const helper = lowerer.narrowedRetagHelper(
+      narrowedNode,
+      local.type.unionId,
+      narrowed.unionId,
+      loc,
+    );
     if (!helper) {
       lowerer.unsupported(
         "SC1090",
@@ -8543,6 +8549,10 @@ export function lowerAsExpression(
       return lowerer.jsvalIn(inner, expr.expression);
     }
     const target = lowerer.mapTypeOf(targetTs0);
+    if (target?.kind === "object") {
+      const asserted = checkedClassAssertion(lowerer, inner, target, locOf(expr));
+      if (asserted) return asserted;
+    }
     // Unknown-only record views use the checked-dynamic representation.
     // A native record asserted to such a view still denotes the original
     // object. Box a live reference instead of erasing the assertion and
@@ -9114,14 +9124,24 @@ export function lowerCompoundValueToTarget(
     };
     return lowerer.coerceInto(expr, wrapped, target.type);
   }
-  if (compound === "+" && target.type.kind === "string") {
-    return {
-      kind: "strConcat",
-      left: read,
-      right: lowerer.ensureString(rhs, expr.right),
-      type: STRING,
-      loc,
-    };
+  if (
+    compound === "+" &&
+    (target.type.kind === "string" ||
+      (target.type.kind === "union" &&
+        lowerer.stripUndefinedArm(target.type).kind === "string" &&
+        rhs.type.kind === "string"))
+  ) {
+    return lowerer.coerceInto(
+      expr,
+      {
+        kind: "strConcat",
+        left: lowerer.ensureString(read, expr.left),
+        right: lowerer.ensureString(rhs, expr.right),
+        type: STRING,
+        loc,
+      },
+      target.type,
+    );
   }
   if (numericRead.type.kind === "f64" && numericRhs.type.kind === "f64") {
     return lowerer.coerceInto(
@@ -14692,7 +14712,8 @@ function lowerFieldCompoundValue(
       ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
       : lowerOptionalNumber(lowerer, rhs, loc);
   let value: IrExpr;
-  if (op === "+" && target.fieldType.kind === "string") {
+  const numericRead = lowerOptionalNumber(lowerer, read, loc, access);
+  if (op === "+" && read.type.kind === "string") {
     value = {
       kind: "strConcat",
       left: read,
@@ -14700,8 +14721,8 @@ function lowerFieldCompoundValue(
       type: STRING,
       loc,
     };
-  } else if (target.fieldType.kind === "f64" && numericRhs.type.kind === "f64") {
-    value = { kind: "bin", op, left: read, right: numericRhs, type: F64, loc };
+  } else if (numericRead.type.kind === "f64" && numericRhs.type.kind === "f64") {
+    value = { kind: "bin", op, left: numericRead, right: numericRhs, type: F64, loc };
   } else if (target.fieldType.kind === "dyn" && isJsSourceFile(access.getSourceFile())) {
     const numeric = ["-", "*", "/", "%", "**"].includes(op);
     const left = lowerer.coerceToExpected(read, DYN);
@@ -14720,7 +14741,9 @@ function lowerFieldCompoundValue(
     lowerer.unsupported("SC1043", access);
   }
   const result = save(value, "%compoundResult");
-  body.push(lowerer.fieldSetStmt(target, result, loc, access));
+  body.push(
+    lowerer.fieldSetStmt(target, lowerer.coerceInto(access, result, target.fieldType), loc, access),
+  );
   return { kind: "seqExpr", stmts: body, result, type: result.type, loc };
 }
 

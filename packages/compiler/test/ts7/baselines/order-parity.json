@@ -14414,6 +14414,55 @@
     "<repo>/tests/corpus/array-primitive-ordering.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/class-subclass-assertions.ts": {
+   "order": [
+    "<repo>/tests/corpus/class-subclass-assertions.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/deferred-field-updates.ts": {
+   "order": [
+    "<repo>/tests/corpus/deferred-field-updates.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/forward-generic-signatures.ts": {
+   "order": [
+    "<repo>/tests/corpus/forward-generic-signatures.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/generic-base-specializations.ts": {
+   "order": [
+    "<repo>/tests/corpus/generic-base-specializations.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/generic-namespace-factories/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/generic-namespace-factories/pair.ts",
+    "<repo>/tests/corpus/generic-namespace-factories/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/generic-nullable-collections.ts": {
+   "order": [
+    "<repo>/tests/corpus/generic-nullable-collections.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/non-null-class-iteration.ts": {
+   "order": [
+    "<repo>/tests/corpus/non-null-class-iteration.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/runtime-optional-string-flows.ts": {
+   "order": [
+    "<repo>/tests/corpus/runtime-optional-string-flows.ts"
+   ],
+   "diags": []
   }
  }
 }

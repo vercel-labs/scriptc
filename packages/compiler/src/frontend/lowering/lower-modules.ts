@@ -1098,6 +1098,7 @@ export function moduleArtifacts(
       }
       for (const field of info.def.fields) visitType(field.type);
       if (info.base) visitClass(info.base.def.name);
+      if (info.def.genericOf) visitClass(info.def.genericOf);
       if (lowerer.inHierarchy(info)) {
         let root = info;
         while (root.base) root = root.base;

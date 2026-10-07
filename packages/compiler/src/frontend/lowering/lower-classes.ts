@@ -36,13 +36,17 @@ import {
   typeEquals,
 } from "../../ir/ir.js";
 import {
-  MAX_GENERIC_INSTANCES,
   genericCallInstance,
   implicitAnyParamSymbolsOf,
   implicitCallInstance,
   implicitMonoFile,
   type GenericFnInfo,
 } from "./generic-functions.js";
+import {
+  extendInstantiationPath,
+  MAX_INSTANTIATION_RECURSION,
+  type InstantiationPath,
+} from "./instantiation-path.js";
 import { appendImplicitUndefinedReturn, hasExplicitJsDocReturn } from "./function-returns.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import { generatorMeta, type ParamShape } from "./call-signatures.js";
@@ -476,6 +480,8 @@ export interface ClassInfo {
    * (forwarding the completed ABI values; defaults apply in the base). */
   ctorParams: ParamShape[];
   base: ClassInfo | null;
+  /** Family heritage resolves its type arguments separately for each instance. */
+  genericBase?: ts.ExpressionWithTypeArguments;
   /** A module class may inherit a compiled ordinary JS constructor. Its
    * callable and prototype are captured when the class declaration runs. */
   callableBase?: { expression: ts.Expression; constructorId: string; prototypeId: string };
@@ -558,6 +564,7 @@ export interface ClassInfo {
    * counts statements toward coverage — re-instantiations re-visit the
    * same source lines). */
   genericInstance?: {
+    path: InstantiationPath;
     family: ClassInfo;
     bindings: Map<ts.Symbol, IrType>;
     typeArgsText: string;
@@ -1392,9 +1399,44 @@ export function guaranteedDecorationThrow(
 }
 
 export function collectClassShape(lowerer: Lowerer, decl: ts.ClassDeclaration): void {
+  if (
+    lowerer.classes.has(lowerer.classNamer(decl)) ||
+    lowerer.collectingClassDeclarations.has(decl)
+  )
+    return;
+  lowerer.collectingClassDeclarations.add(decl);
+  try {
+    collectClassShapeDeferring(lowerer, decl);
+  } finally {
+    lowerer.collectingClassDeclarations.delete(decl);
+  }
+}
+
+function collectClassShapeDeferring(lowerer: Lowerer, decl: ts.ClassDeclaration): void {
   const symbol = lowerer.collectDeferring(
     () => declSymbolOf(lowerer, decl),
-    () => lowerer.collectClassShapeInner(decl),
+    () => {
+      // A forward type reference can demand this class before collection
+      // reaches its earlier base declaration. Collect that dependency first;
+      // a later same-file base remains subject to the runtime order boundary.
+      const heritage = decl.heritageClauses?.find(
+        (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+      )?.types[0]?.expression;
+      const reference =
+        heritage && ts.isPropertyAccessExpression(heritage) ? heritage.name : heritage;
+      const baseSymbol =
+        reference && ts.isIdentifier(reference) ? lowerer.resolveValueSymbol(reference) : undefined;
+      const baseDeclaration = baseSymbol
+        ? lowerer.checker.declarationsOf(baseSymbol).find(ts.isClassDeclaration)
+        : undefined;
+      if (
+        baseDeclaration &&
+        (baseDeclaration.getSourceFile() !== decl.getSourceFile() ||
+          baseDeclaration.getStart() < decl.getStart())
+      )
+        lowerer.collectClassShape(baseDeclaration);
+      lowerer.collectClassShapeInner(decl);
+    },
   );
   // Typed receivers and module retention know the class only by its
   // qualified IR name — index the deferral under it too.
@@ -1555,6 +1597,7 @@ export function collectClassShapeInner(
   decl: ts.ClassLikeDeclaration,
   jsNameOverride?: string,
   inst?: {
+    path: InstantiationPath;
     family: ClassInfo;
     name: string;
     bindings: Map<ts.Symbol, IrType>;
@@ -1719,18 +1762,16 @@ export function collectClassShapeInner(
     }
     const className = inst ? inst.name : mixin ? mixin.name : lowerer.classNamer(decl); // program-wide qualified name
 
-    // Single inheritance: `extends` of a class declared in the program.
-    // tsc guarantees the base is declared before the derived class (its
-    // use-before-declaration error), and collection runs in module order,
-    // so the base's ClassInfo already exists here. An INSTANTIATION's
-    // base is its family (whose base is the declared one) — the heritage
-    // clause resolved when the family collected.
+    // Collection follows module order for runtime heritage. Ordinary
+    // instances use the family as their storage base; generic heritage
+    // resolves a concrete base under each instance's type bindings.
     const computedBase = lowerer.computedClassBases.get(lowerer.classNamer(decl));
     let base: ClassInfo | null = inst
       ? inst.family
       : mixin
         ? mixin.base
         : (computedBase?.classInfo ?? null);
+    let genericBase: ts.ExpressionWithTypeArguments | undefined;
     let callableBase: ClassInfo["callableBase"];
     let factoryBaseExpression: ts.Expression | undefined;
     const adoptCallableBase = (expression: ts.Expression): boolean => {
@@ -1759,37 +1800,16 @@ export function collectClassShapeInner(
       };
       return true;
     };
-    // A family whose `extends` clause mentions its OWN type parameters
-    // (`class D<T> extends Box<T>`) would need a different base per
-    // instantiation — no single family interval can sit above all of
-    // them. Named fence at the declaration.
-    if (familyMode && decl.heritageClauses !== undefined) {
-      const tpSyms = new Set<ts.Symbol>();
-      for (const tp of decl.typeParameters!) {
-        const s = lowerer.checker.getSymbolAtLocation(tp.name);
-        if (s) tpSyms.add(s);
-      }
-      for (const clause of decl.heritageClauses) {
-        if (clause.token !== ts.SyntaxKind.ExtendsKeyword) continue;
-        for (const t of clause.types) {
-          let mentions = false;
-          ts.walkPreorder(t, (n) => {
-            const s = ts.isIdentifier(n) ? lowerer.checker.getSymbolAtLocation(n) : undefined;
-            if (s && tpSyms.has(s)) {
-              mentions = true;
-              return "stop";
-            }
-            return undefined;
-          });
-          if (mentions) {
-            lowerer.unsupported(
-              "SC1090",
-              t,
-              "generic classes whose 'extends' clause mentions their own type parameters (each instantiation would need a different base)",
-            );
-          }
-        }
-      }
+    const ownGenericBase = inst?.family.genericBase;
+    if (inst && ownGenericBase) {
+      const mapped = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(ownGenericBase));
+      base = mapped?.kind === "object" ? (lowerer.classes.get(mapped.className) ?? null) : null;
+      if (!base || base.generic)
+        lowerer.unsupported(
+          "SC1090",
+          ownGenericBase,
+          "a generic base whose type arguments have no concrete layout",
+        );
     }
     for (const clause of inst || mixin || computedBase ? [] : (decl.heritageClauses ?? [])) {
       // `implements` is pure type-world: tsc checked the conformance and
@@ -1798,6 +1818,22 @@ export function collectClassShapeInner(
       // question, owned by the shape-coercion fences at those sites.)
       if (clause.token === ts.SyntaxKind.ImplementsKeyword) continue;
       const t = clause.types[0];
+      if (familyMode && t) {
+        const reference = ts.isPropertyAccessExpression(t.expression)
+          ? t.expression.name
+          : t.expression;
+        const symbol = ts.isIdentifier(reference)
+          ? lowerer.resolveValueSymbol(reference)
+          : undefined;
+        const familyBase = symbol ? lowerer.classBySymbol.get(symbol) : undefined;
+        if (familyBase?.generic) {
+          if (symbol && ts.isPropertyAccessExpression(t.expression))
+            fenceEarlyNsMemberRef(lowerer, t.expression, symbol);
+          base = familyBase;
+          genericBase = t;
+          continue;
+        }
+      }
       // `extends events.EventEmitter` — the namespace-member spelling of
       // the ambient emitter base resolves like the named import.
       if (t && ts.isPropertyAccessExpression(t.expression) && ts.isIdentifier(t.expression.name)) {
@@ -3785,6 +3821,7 @@ export function collectClassShapeInner(
       ctorParams,
       ...(paramProps.length > 0 ? { paramProps } : {}),
       base,
+      ...(genericBase ? { genericBase } : {}),
       ...(callableBase ? { callableBase } : {}),
       ...(factoryBaseExpression ? { factoryBaseExpression } : {}),
       subclasses: [],
@@ -3812,6 +3849,7 @@ export function collectClassShapeInner(
     }
     if (inst) {
       info.genericInstance = {
+        path: inst.path,
         family: inst.family,
         bindings: inst.bindings,
         typeArgsText: inst.typeArgsText,
@@ -3921,7 +3959,14 @@ export function genericClassInstanceType(
   ref: ts.Type,
   mapArgument?: (type: ts.Type) => IrType | null,
 ): IrType | null {
-  const gci = lowerer.genericClassByDecl.get(decl);
+  let gci = lowerer.genericClassByDecl.get(decl);
+  if (!gci && ts.isClassDeclaration(decl)) {
+    // A method signature can reference a generic class declared later in
+    // the same module. Resolve its family now rather than freezing the
+    // signature at the erased family layout for the rest of the build.
+    lowerer.collectClassShape(decl);
+    gci = lowerer.genericClassByDecl.get(decl);
+  }
   if (!gci) {
     // The family never collected (a deferred/poisoned declaration): the
     // pre-generics answer — the class's own name, unregistered, so dead
@@ -3975,11 +4020,16 @@ export function genericClassInstanceType(
     if (existing.info) lowerer.noteGenericClassInstanceDemand(existing.info);
     return existing.poisoned ? null : { kind: "object", className: existing.name };
   }
-  // The generic-fn cap, same rationale (polymorphic recursion through
-  // class fields would mint instances forever). mapType has no
-  // diagnostic channel — the family answer keeps the site compilable
-  // where the OBJECT itself is never touched; touched members fence.
-  if (gci.instances.size >= MAX_GENERIC_INSTANCES) return familyT;
+  // Recursive class fields and queued member bodies share the function
+  // demand budget. Independent uses do not limit the family size.
+  const path = extendInstantiationPath(lowerer.genericInstantiationPath, decl);
+  if (!path) {
+    lowerer.unsupported(
+      "SC1090",
+      decl,
+      `unbounded generic class instantiation ('${gci.baseName}' exceeded ${MAX_INSTANTIATION_RECURSION} recursive specializations on one demand path)`,
+    );
+  }
   const ordinal = gci.instances.size;
   const name = `${gci.family.def.name}%${ordinal}`;
   const entry: { name: string; info: ClassInfo | null; poisoned?: boolean } = { name, info: null };
@@ -3990,10 +4040,13 @@ export function genericClassInstanceType(
   const typeArgsText = `<${rendered.length > 80 ? rendered.slice(0, 77) + "..." : rendered}>`;
   const prevBindings = lowerer.typeParamBindings;
   const prevContext = lowerer.instantiationContext;
+  const previousPath = lowerer.genericInstantiationPath;
+  lowerer.genericInstantiationPath = path;
   lowerer.typeParamBindings = bindings;
   lowerer.instantiationContext = `instantiating class '${gci.baseName}' with ${typeArgsText}`;
   try {
     lowerer.collectClassShapeInner(decl, undefined, {
+      path,
       family: gci.family,
       name,
       bindings,
@@ -4009,6 +4062,7 @@ export function genericClassInstanceType(
   } finally {
     lowerer.typeParamBindings = prevBindings;
     lowerer.instantiationContext = prevContext;
+    lowerer.genericInstantiationPath = previousPath;
   }
   const info = lowerer.classes.get(name);
   if (!info) {
@@ -4057,6 +4111,8 @@ function withInstanceBindings<T>(lowerer: Lowerer, info: ClassInfo, fn: () => T)
   const prevBindings = lowerer.typeParamBindings;
   const prevContext = lowerer.instantiationContext;
   const prevSuppress = lowerer.suppressStats;
+  const previousPath = lowerer.genericInstantiationPath;
+  lowerer.genericInstantiationPath = gi.path;
   lowerer.typeParamBindings = gi.bindings;
   lowerer.instantiationContext = `instantiating class '${gi.family.generic?.baseName ?? info.def.jsName ?? ""}' with ${gi.typeArgsText}`;
   lowerer.suppressStats = prevSuppress || gi.ordinal > 0;
@@ -4066,6 +4122,7 @@ function withInstanceBindings<T>(lowerer: Lowerer, info: ClassInfo, fn: () => T)
     lowerer.typeParamBindings = prevBindings;
     lowerer.instantiationContext = prevContext;
     lowerer.suppressStats = prevSuppress;
+    lowerer.genericInstantiationPath = previousPath;
   }
 }
 
@@ -5336,6 +5393,18 @@ export function lowerStaticMethodCall(
       receiver?.type.kind === "classval" ? lowerer.classes.get(receiver.type.className) : undefined;
     if (info) return staticCallOn(lowerer, call, access, info, false);
   }
+  // Namespace exports are immutable bindings to the same declaration as
+  // named imports. Resolve them before asking for a constructor-value ABI:
+  // a generic family has statics but no single constructor signature.
+  if (ts.isPropertyAccessExpression(access.expression) && !access.expression.questionDotToken) {
+    const member = nsMemberIdentOf(lowerer, access.expression);
+    const symbol = member ? lowerer.resolveValueSymbol(member) : null;
+    const info = symbol ? lowerer.classBySymbol.get(symbol) : undefined;
+    if (info && info.classDecorators?.valueGlobalId === undefined) {
+      if (symbol) fenceEarlyNsMemberRef(lowerer, access.expression, symbol);
+      return staticCallOn(lowerer, call, access, info, false);
+    }
+  }
   // `module.exports.describe()` in a module whose whole export IS a
   // class expression: the receiver is exactly that class (the kept
   // export assignment pins it) — the direct-name rules apply.
@@ -5744,8 +5813,12 @@ export function findMethodOn(
 
 /** True when `sub` is a STRICT descendant of `sup` in the class graph. */
 export function isSubclassOf(lowerer: Lowerer, sub: string, sup: string): boolean {
-  for (let c = lowerer.classes.get(sub)?.base ?? null; c; c = c.base) {
-    if (c.def.name === sup) return true;
+  if (sub === sup) return false;
+  for (let c = lowerer.classes.get(sub); c; c = c.base ?? undefined) {
+    if (c.def.name === sup && c.def.name !== sub) return true;
+    for (let family = c.genericInstance?.family; family; family = family.base ?? undefined) {
+      if (family.def.name === sup) return true;
+    }
   }
   return false;
 }

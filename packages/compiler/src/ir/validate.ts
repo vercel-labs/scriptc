@@ -586,8 +586,18 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       });
     }
   }
-  // Generic-class instantiations: the named FAMILY exists and is a proper
-  // ancestor (the class object's interval is read off it — see IrClassDef).
+  // Family membership is nominal; an instance may have a separately
+  // specialized base. The family's inherited prefix must remain valid.
+  const physicalRoot = (cls: IrClassDef): IrClassDef | undefined => {
+    const seen = new Set<string>();
+    let current: IrClassDef | undefined = cls;
+    while (current?.base !== undefined) {
+      if (seen.has(current.name)) return undefined;
+      seen.add(current.name);
+      current = classesByName.get(current.base);
+    }
+    return current;
+  };
   for (const cls of mod.classes ?? []) {
     if (cls.genericOf === undefined) continue;
     const family = classesByName.get(cls.genericOf);
@@ -596,24 +606,25 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         message: `class ${cls.name}: undeclared generic family "${cls.genericOf}"`,
         loc: cls.loc,
       });
-      continue;
-    }
-    let ancestor = false;
-    const seen = new Set<string>();
-    for (
-      let c = cls.base !== undefined ? classesByName.get(cls.base) : undefined;
-      c && !seen.has(c.name);
-      c = c.base !== undefined ? classesByName.get(c.base) : undefined
-    ) {
-      seen.add(c.name);
-      if (c.name === cls.genericOf) {
-        ancestor = true;
-        break;
-      }
-    }
-    if (!ancestor) {
+    } else if (family === cls || family.genericOf !== undefined) {
       errors.push({
-        message: `class ${cls.name}: generic family "${cls.genericOf}" is not an ancestor`,
+        message: `class ${cls.name}: generic family "${cls.genericOf}" must name an erased declaration`,
+        loc: cls.loc,
+      });
+    } else if (physicalRoot(cls) !== physicalRoot(family)) {
+      errors.push({
+        message: `class ${cls.name}: generic family "${cls.genericOf}" has a different storage root`,
+        loc: cls.loc,
+      });
+    } else if (
+      family.fields.some(
+        (field, index) =>
+          cls.fields[index]?.name !== field.name ||
+          !typeEquals(cls.fields[index]!.type, field.type),
+      )
+    ) {
+      errors.push({
+        message: `class ${cls.name}: generic family "${cls.genericOf}" has an incompatible prefix`,
         loc: cls.loc,
       });
     }
@@ -1010,12 +1021,35 @@ function validateFunction(
     err("an asyncCycleCacheGlobal requires a module asyncCacheGlobal", fn.loc);
   }
 
-  // The class graph's two questions (upcast/downcast/instanceOf/virtualCall
-  // legality): strict-descendant tests over the base links, and hierarchy
-  // membership (a class that extends or is extended).
+  // Virtual slots and constructor ABIs follow physical inheritance only.
+  // Erased family identity does not supply their specialized layout or ABI.
+  const isPhysicalSubclass = (sub: string, sup: string): boolean => {
+    const seen = new Set<string>([sub]);
+    for (let c = classes.get(sub)?.base; c !== undefined; c = classes.get(c)?.base) {
+      if (seen.has(c)) return false;
+      seen.add(c);
+      if (c === sup) return true;
+    }
+    return false;
+  };
+  // Object casts may also recover an erased family. The module-level
+  // prefix check validates the fields exposed by that view.
   const isStrictSubclass = (sub: string, sup: string): boolean => {
-    for (let c = classes.get(sub); c?.base !== undefined; c = classes.get(c.base)) {
-      if (c.base === sup) return true;
+    const seen = new Set<string>();
+    for (let c = classes.get(sub); c; c = c.base === undefined ? undefined : classes.get(c.base)) {
+      if (seen.has(c.name)) return false;
+      seen.add(c.name);
+      if (c.name !== sub && c.name === sup) return true;
+      const families = new Set<string>();
+      for (
+        let family = c.genericOf === undefined ? undefined : classes.get(c.genericOf);
+        family;
+        family = family.base === undefined ? undefined : classes.get(family.base)
+      ) {
+        if (families.has(family.name)) return false;
+        families.add(family.name);
+        if (family.name === sup) return true;
+      }
     }
     return false;
   };
@@ -1044,7 +1078,7 @@ function validateFunction(
     if (declared) {
       // Preserve class-table order when choosing an abstract slot's ABI.
       for (const c of classValidation.implementations.get(method) ?? []) {
-        if (!isStrictSubclass(c.name, className)) continue;
+        if (!isPhysicalSubclass(c.name, className)) continue;
         hasOverride = true;
         implementation ??= functions.get(`%${c.name}.${method}`);
         if (implementation) break;
@@ -2770,7 +2804,7 @@ function validateFunction(
         checkExpr(e.value);
         if (e.kind === "upcast" && e.type.kind === "classval" && e.value.type.kind === "classval") {
           const [sub, sup] = [e.value.type.className, e.type.className];
-          if (!isStrictSubclass(sub, sup)) {
+          if (!isPhysicalSubclass(sub, sup)) {
             err(`upcast: "${sub}" does not extend "${sup}"`, e.loc);
             break;
           }

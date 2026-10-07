@@ -18,7 +18,7 @@ import {
   mangleLocal,
   mangleVtStruct,
 } from "../mangle.js";
-import { classEnvironmentIndex, classStructSym } from "./classes.js";
+import { classMembershipIntervals, classEnvironmentIndex, classStructSym } from "./classes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { f64Lit, ffiNativeTypeLl, ffiNativeParamLl, ffiNativeReturnLl } from "./common.js";
@@ -749,6 +749,13 @@ export function emitCallExpr(
       B.line(`${tpre} = load ${host.sizeType}, ptr ${tprep}`);
       B.line(`${tpostp} = getelementptr inbounds %ScrClassObj, ptr ${target.name}, i64 0, i32 2`);
       B.line(`${tpost} = load ${host.sizeType}, ptr ${tpostp}`);
+      if ([...host.classMeta.values()].some((meta) => meta.membership.length > 1)) {
+        const test = B.tmp();
+        B.line(
+          `${test} = call i1 @sc_class_membership(${host.sizeType} ${pre}, ${host.sizeType} ${tpre}, ${host.sizeType} ${tpost})`,
+        );
+        return { name: test, type: e.type };
+      }
       const ge = B.tmp();
       const le = B.tmp();
       const t = B.tmp();
@@ -782,13 +789,22 @@ export function emitCallExpr(
       const v = host.emitExpr(e.value);
       const target = host.classMetaOf(e.className);
       const pre = host.loadVtPre(v.name, e.value.type.className);
-      const ge = B.tmp();
-      const le = B.tmp();
-      const t = B.tmp();
-      B.line(`${ge} = icmp sge ${host.sizeType} ${pre}, ${target.pre}`);
-      B.line(`${le} = icmp sle ${host.sizeType} ${pre}, ${target.post}`);
-      B.line(`${t} = and i1 ${ge}, ${le} ; instanceof ${e.className}`);
-      return { name: t, type: e.type };
+      let result: string | undefined;
+      for (const interval of classMembershipIntervals(host.classMeta, target.def.name)) {
+        const ge = B.tmp(),
+          le = B.tmp(),
+          test = B.tmp();
+        B.line(`${ge} = icmp uge ${host.sizeType} ${pre}, ${interval.pre}`);
+        B.line(`${le} = icmp ule ${host.sizeType} ${pre}, ${interval.post}`);
+        B.line(`${test} = and i1 ${ge}, ${le} ; instanceof ${e.className}`);
+        if (result === undefined) result = test;
+        else {
+          const combined = B.tmp();
+          B.line(`${combined} = or i1 ${result}, ${test}`);
+          result = combined;
+        }
+      }
+      return { name: result!, type: e.type };
     }
     case "virtualCall": {
       // Dispatch through the receiver's vtable: the slot lives on the

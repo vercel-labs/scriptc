@@ -3467,6 +3467,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     try {
       const byKey = new Map<string, IrType>();
       const recordParts: { source: ts.Type; mapped: IrType & { kind: "record" } }[] = [];
+      const substitutedUnions: IrUnionDef[] = [];
       for (const part of ts.constituentTypes(widened)) {
         // TypeScript's client can retain impossible intersections in a
         // distributed union. They have no inhabitants and no runtime tag.
@@ -3505,6 +3506,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         }
         if (mapped.kind === "void") {
           byKey.set(typeKey(UNDEFINED_T), UNDEFINED_T);
+          continue;
+        }
+        // A generic parameter can substitute a complete union into one
+        // checker constituent: `(T | undefined)` with nullable T still
+        // has one flat storage contract. An unfinished recursive union
+        // cannot supply its arms yet, so retain that existing boundary.
+        if (mapped.kind === "union") {
+          const substituted = unions.get(mapped.unionId);
+          if (!substituted?.arms.length || substituted.arms.some((arm) => arm.kind === "union"))
+            return null;
+          substitutedUnions.push(substituted);
+          for (const arm of substituted.arms) byKey.set(typeKey(arm), arm);
           continue;
         }
         byKey.set(typeKey(mapped), mapped);
@@ -3564,7 +3577,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         return null;
       }
       arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
-      const discriminant = unionDiscriminant(recordParts, arms, ctx);
+      const discriminant =
+        unionDiscriminant(recordParts, arms, ctx) ??
+        (substitutedUnions.length === 1
+          ? remapUnionDiscriminant(substitutedUnions[0]!, arms)
+          : undefined);
       if (unions.recursivePending(widened)) {
         // The knot closed through this union. A frame that resolved
         // through context-sensitive hooks (generic type parameters, mixin

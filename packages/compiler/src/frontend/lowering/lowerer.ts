@@ -320,6 +320,7 @@ import {
   lowerGenericInstance,
 } from "./generic-functions.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
+import type { InstantiationPath } from "./instantiation-path.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import { completeArgs, wrappedUndefined, undefinedArgFor } from "./call-arguments.js";
 import { bodyReturnType, declaredReturnType } from "./function-returns.js";
@@ -1580,6 +1581,7 @@ export class Lowerer {
   /** Monomorphization worklist: instances queued by call sites, drained in
    * run() (processing an instance body can queue more). */
   readonly instantiationQueue: { info: GenericFnInfo; inst: GenericInstance }[] = [];
+  genericInstantiationPath: InstantiationPath | null = null;
   /** Historical emit rank of the retained declaration/init body currently
    * lowering, and the earliest such owner that demanded each generic
    * instance. Reachability can encounter a later caller first; the minimum
@@ -1888,6 +1890,17 @@ export class Lowerer {
     while (ts.isParenthesizedExpression(origin)) origin = origin.expression;
     let optionalOrigin =
       ts.isElementAccessExpression(origin) || ts.isPropertyAccessExpression(origin);
+    if (ts.isCallExpression(origin)) {
+      const name = ts.isPropertyAccessExpression(origin.expression)
+        ? origin.expression.name
+        : origin.expression;
+      const symbol = ts.isIdentifier(name) ? this.resolveValueSymbol(name) : undefined;
+      const signature = symbol ? this.fnSigsBySymbol.get(symbol) : undefined;
+      optionalOrigin =
+        this.runtimeOptionalFunctionReturns.has(origin) ||
+        (signature?.returnType.kind === "union" &&
+          this.armTag(signature.returnType.unionId, UNDEFINED_T) >= 0);
+    }
     if (ts.isIdentifier(origin)) {
       const local = this.resolveLocal(origin);
       const root = local ? this.runtimeOptionalRootOf(local) : null;
@@ -4674,7 +4687,7 @@ export class Lowerer {
     // generic classes, generic methods calling generic functions) — the
     // index loops run to the joint fixpoint. Same-key recursion re-uses
     // its own entry; polymorphic recursion is cut off by
-    // MAX_GENERIC_INSTANCES.
+    // the recursive instantiation demand path.
     {
       let ec = 0;
       let gc = 0;
@@ -5535,6 +5548,7 @@ export class Lowerer {
       this.diags.some(
         (p) =>
           p.code === d.code &&
+          p.loc.file === d.loc.file &&
           p.loc.start === d.loc.start &&
           p.loc.end === d.loc.end &&
           p.message === d.message,
@@ -8093,6 +8107,7 @@ export class Lowerer {
     decl: ts.ClassLikeDeclaration,
     jsNameOverride?: string,
     inst?: {
+      path: InstantiationPath;
       family: ClassInfo;
       name: string;
       bindings: Map<ts.Symbol, IrType>;
@@ -8226,6 +8241,8 @@ export class Lowerer {
    * instance table. Filled by collectClassShapeInner's family mode;
    * consulted by mapType's genericClassInstance hook. */
   readonly genericClassByDecl = new Map<ts.ClassLikeDeclaration, GenericClassInfo>();
+  /** Forward generic references may demand a family before its declaration turn. */
+  readonly collectingClassDeclarations = new Set<ts.ClassDeclaration>();
   /** Instantiations in demand order — the member-lowering worklist run()'s
    * monomorphization fixpoint drains (an instantiation's methods can
    * demand further instances of either kind). */

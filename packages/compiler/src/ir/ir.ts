@@ -1318,14 +1318,9 @@ export interface IrClassDef {
    * identical), and tsc guarantees each instantiable class in the
    * declaring subtree implements them. */
   abstractMethods?: string[];
-  /** GENERIC-CLASS INSTANTIATIONS only (`Box%0` for `Box<number>` — the
-   * generic-fn mangle): the FAMILY class's IR name — the synthetic,
-   * never-constructed ancestor registered under the generic class's own
-   * name that every instantiation extends. JS has ONE `Box` at runtime, so
-   * the instantiation's emitted CLASS OBJECT carries the family's preorder
-   * interval (instanceof through a class value answers for the whole
-   * family, exactly Node); everything else about the instantiation is an
-   * ordinary class. The validator checks the family is an ancestor. */
+  /** Generic family identity, separate from the concrete layout base.
+   * Type arguments specialize storage; JavaScript class identity remains
+   * shared by every specialization and its derived instances. */
   genericOf?: string;
   loc: SrcLoc;
 }

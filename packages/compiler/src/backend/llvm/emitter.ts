@@ -253,6 +253,8 @@ import {
 } from "./lib-dispatch.js";
 import {
   buildClassGraph,
+  classMembershipIntervals,
+  emitClassMembershipHelper,
   classEnvironmentIndex,
   classFieldIndex,
   classStructSym,
@@ -697,8 +699,11 @@ export class LlEmitter {
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
       classSubtypes: (name) => {
         const target = this.classMetaOf(name);
+        const intervals = classMembershipIntervals(this.classMeta, target.def.name);
         return [...this.classMeta.values()]
-          .filter((meta) => target.pre <= meta.pre && meta.pre <= target.post)
+          .filter((meta) =>
+            intervals.some((range) => range.pre <= meta.pre && meta.pre <= range.post),
+          )
           .map((meta) => meta.def.name);
       },
     };
@@ -1496,7 +1501,10 @@ export class LlEmitter {
     }
     // Helpers assemble BEFORE the declaration table flushes (they add
     // write/abort declarations).
-    const helpers = this.helperDefs();
+    const helpers = [
+      ...this.helperDefs(),
+      ...emitClassMembershipHelper(this.classMeta, this.sizeType),
+    ];
     if (this.constantNumericTables.size > 0)
       this.declare(`declare double @scr_arr_get_number(ptr, double)`);
 

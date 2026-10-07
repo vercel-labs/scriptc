@@ -36,12 +36,11 @@ import {
   promiseCarriesDyn,
 } from "./function-returns.js";
 import { bindingNeverReassigned, stripValueWrappers } from "./binding-analysis.js";
-
-/** Instantiation cap per generic function: same-key recursion (`len<T>`
- * calling itself) converges, but POLYMORPHIC recursion (`f<T>` calling
- * `f<T[]>`) would request new instances forever — the cap turns that into a
- * diagnostic instead of a hang. */
-export const MAX_GENERIC_INSTANCES = 100;
+import {
+  extendInstantiationPath,
+  MAX_INSTANTIATION_RECURSION,
+  type InstantiationPath,
+} from "./instantiation-path.js";
 
 /** A generic function-like declaration, collected instead of an FnSig —
  * top-level generic function declarations, class GENERIC METHODS (own type
@@ -98,6 +97,7 @@ export interface GenericFnInfo {
 }
 
 export interface GenericInstance {
+  path: InstantiationPath;
   name: string;
   /** 0 for the first instance of a base function — the only one whose
    * statements count toward coverage stats (re-instantiations re-visit the
@@ -345,12 +345,13 @@ function internGenericInstance(
   const key = `${params.map((s) => typeKey(s.type)).join(",")}=>${typeKey(returnType)}${opts?.extraKey ?? ""}`;
   let inst = info.instances.get(key);
   if (!inst) {
-    if (info.instances.size >= MAX_GENERIC_INSTANCES) {
+    const path = extendInstantiationPath(lowerer.genericInstantiationPath, info.decl);
+    if (!path) {
       lowerer.unsupported(
         "SC1090",
         blame,
         `unbounded generic instantiation ('${info.baseName}' exceeded ` +
-          `${MAX_GENERIC_INSTANCES} instances — polymorphic recursion?)`,
+          `${MAX_INSTANTIATION_RECURSION} recursive specializations on one demand path)`,
       );
     }
     const tsBindings = opts?.tsBindings ?? new Map<ts.Symbol, ts.Type>();
@@ -370,6 +371,7 @@ function internGenericInstance(
     // Deep polymorphic recursion renders unbounded types — keep messages sane.
     const typeArgsText = `<${rendered.length > 80 ? rendered.slice(0, 77) + "..." : rendered}>`;
     inst = {
+      path,
       name: `${info.qualifiedName}%${info.instances.size}`,
       ordinal: info.instances.size,
       params,
@@ -649,6 +651,7 @@ export function lowerGenericInstance(
   const decl = info.decl;
   const cls = info.member?.cls ?? null;
   const prevBindings = lowerer.typeParamBindings;
+  const previousPath = lowerer.genericInstantiationPath;
   const prevContext = lowerer.instantiationContext;
   const prevSuppress = lowerer.suppressStats;
   const prevClass = lowerer.currentClass;
@@ -712,6 +715,7 @@ export function lowerGenericInstance(
   }
   lowerer.fnStack.push(fnCtx);
   lowerer.localClassInstantiations.push({ owner: decl, name: inst.name });
+  lowerer.genericInstantiationPath = inst.path;
   try {
     // Static specializations bind lexical this only when the caller
     // proved its exact receiver. Other instances retain the fence;
@@ -806,6 +810,7 @@ export function lowerGenericInstance(
     return fn;
   } finally {
     lowerer.fnStack.pop();
+    lowerer.genericInstantiationPath = previousPath;
     lowerer.currentClass = prevClass;
     lowerer.typeParamBindings = prevBindings;
     lowerer.typeParamTsBindings = prevTsBindings;
@@ -987,7 +992,7 @@ function genericValueInstance(
  *      return from the lowered return statements; same-key recursion
  *      observes the checker-fallback type ("pinned") and the post-pass
  *      coerces every return to the settled type — per-return fences where
- *      a value cannot ride it. Bounded: MAX_GENERIC_INSTANCES per
+ *      a value cannot ride it. Recursive demands are bounded per
  *      function, the polymorphic-recursion cap.
  *
  * Bindings are SOUND by construction: the bound type is the argument's own
@@ -1580,12 +1585,13 @@ function internImplicitInstance(
     if (inst.implicitState === "lowering") inst.returnPinned = true;
     return inst;
   }
-  if (info.instances.size >= MAX_GENERIC_INSTANCES) {
+  const path = extendInstantiationPath(lowerer.genericInstantiationPath, info.decl);
+  if (!path) {
     lowerer.unsupported(
       "SC1090",
       blame,
       `unbounded implicit-any instantiation ('${info.baseName}' exceeded ` +
-        `${MAX_GENERIC_INSTANCES} instances — polymorphic recursion?)`,
+        `${MAX_INSTANTIATION_RECURSION} recursive specializations on one demand path)`,
     );
   }
   const rendered = shapes.map((s) => lowerer.fmt(s.type)).join(", ");
@@ -1598,6 +1604,7 @@ function internImplicitInstance(
   );
   const declared = dynamicBroadPromise ? null : implicitDeclaredReturn(lowerer, info);
   inst = {
+    path,
     name: `${info.qualifiedName}%${info.instances.size}`,
     ordinal: info.instances.size,
     params: shapes,

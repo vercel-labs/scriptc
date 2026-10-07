@@ -56,6 +56,7 @@ export class LlClassMeta {
   hierarchy = false;
   /** Root classes: the hierarchy's slots in DFS-declaration order. */
   slots: LlVtSlot[] = [];
+  membership: { pre: number; post: number }[] = [];
 
   constructor(readonly def: IrClassDef) {
     this.root = this;
@@ -135,7 +136,85 @@ export function buildClassGraph(
   for (const meta of metaMap.values()) {
     if (meta.base === null && meta.hierarchy) collectSlots(meta, meta);
   }
+  // Precompute nominal membership once. Each concrete layout contributes
+  // to its own ancestry and to the erased families along that ancestry.
+  for (const member of [...metaMap.values()].sort((a, b) => a.pre - b.pre)) {
+    const targets = new Set<LlClassMeta>();
+    for (let current: LlClassMeta | null = member; current; current = current.base) {
+      targets.add(current);
+      for (
+        let family: LlClassMeta | undefined = current.def.genericOf
+          ? metaMap.get(current.def.genericOf)
+          : undefined;
+        family;
+        family = family.base ?? undefined
+      )
+        targets.add(family);
+    }
+    for (const target of targets) {
+      const previous = target.membership[target.membership.length - 1];
+      if (previous && previous.post + 1 === member.pre) previous.post = member.pre;
+      else target.membership.push({ pre: member.pre, post: member.pre });
+    }
+  }
   return metaMap;
+}
+
+/** Family identity may span several concrete base subtrees. Keep those
+ * ranges separate from the physical layout graph used by virtual calls. */
+export function classMembershipIntervals(
+  classes: ReadonlyMap<string, LlClassMeta>,
+  targetName: string,
+): { pre: number; post: number }[] {
+  const target = classes.get(targetName);
+  if (!target) throw new InternalCompilerError(`undeclared class ${targetName}`);
+  return target.membership;
+}
+
+/** Runtime class-value tests normally use one interval. Only generic
+ * families with disjoint storage subtrees require this shared dispatch. */
+export function emitClassMembershipHelper(
+  classes: ReadonlyMap<string, LlClassMeta>,
+  sizeType: string,
+): string[] {
+  const families = [...classes.values()].filter(
+    (meta) => classMembershipIntervals(classes, meta.def.name).length > 1,
+  );
+  if (!families.length) return [];
+  const lines = [
+    `define internal i1 @sc_class_membership(${sizeType} %value, ${sizeType} %pre, ${sizeType} %post) alwaysinline {`,
+    `entry:`,
+    `  switch ${sizeType} %pre, label %ordinary [`,
+    ...families.map((family, index) => `    ${sizeType} ${family.pre}, label %family${index}`),
+    `  ]`,
+  ];
+  families.forEach((family, index) => {
+    lines.push(`family${index}:`);
+    const ranges = classMembershipIntervals(classes, family.def.name);
+    ranges.forEach((range, ordinal) => {
+      const prefix = `f${index}_${ordinal}`;
+      lines.push(
+        `  %${prefix}lo = icmp uge ${sizeType} %value, ${range.pre}`,
+        `  %${prefix}hi = icmp ule ${sizeType} %value, ${range.post}`,
+        `  %${prefix}match = and i1 %${prefix}lo, %${prefix}hi`,
+      );
+      if (ordinal)
+        lines.push(
+          `  %${prefix}any = or i1 %f${index}_${ordinal - 1}${ordinal === 1 ? "match" : "any"}, %${prefix}match`,
+        );
+    });
+    lines.push(`  ret i1 %f${index}_${ranges.length - 1}${ranges.length === 1 ? "match" : "any"}`);
+  });
+  lines.push(
+    `ordinary:`,
+    `  %lo = icmp uge ${sizeType} %value, %pre`,
+    `  %hi = icmp ule ${sizeType} %value, %post`,
+    `  %result = and i1 %lo, %hi`,
+    `  ret i1 %result`,
+    `}`,
+    ``,
+  );
+  return lines;
 }
 
 /** The root's slot list as seen by one class: the implementation the class

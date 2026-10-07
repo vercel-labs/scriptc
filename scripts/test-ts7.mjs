@@ -4,8 +4,27 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { allOrderEntries } from "./ts7-order-fixtures.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+const baseline = JSON.parse(
+  readFileSync(resolve(repoRoot, "packages/compiler/test/ts7/baselines/order-parity.json"), "utf8"),
+);
+const missingBaselines = allOrderEntries(repoRoot)
+  .map((path) => relative(repoRoot, path).replaceAll("\\", "/"))
+  .filter((path) => !Object.hasOwn(baseline.entries, `<repo>/${path}`));
+if (missingBaselines.length > 0) {
+  console.error(`Missing TypeScript preflight/order baselines:\n${missingBaselines.join("\n")}`);
+  console.error(
+    "Record the new fixtures with SCRIPTC_UPDATE_BASELINES=1 pnpm exec vitest run packages/compiler/test/ts7/order-parity.test.ts, review the diff, then run the affected parity batches before opening a PR.",
+  );
+  process.exit(1);
+}
+if (process.argv.includes("--baselines-only")) {
+  console.log("Every TypeScript preflight/order fixture has a recorded baseline.");
+  process.exit(0);
+}
 
 const ALLOWED_TYPESCRIPT5_IMPORTS = new Set([
   "packages/compiler/src/frontend/comptime-node.ts",

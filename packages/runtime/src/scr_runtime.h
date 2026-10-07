@@ -63,6 +63,7 @@ void scr_init(void);
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
 void scr_runtime_abi_v7(void);
+void scr_runtime_workers_v7(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
  * Every unrecoverable runtime trap — OOM, semantic range traps, internal-
@@ -304,6 +305,10 @@ struct ScrArr *scr_context_env_pairs(void);
 
 /* Also used by ordinary event-loop builds, where this always returns true. */
 bool scr_context_is_main(void);
+double scr_context_thread_number(void);
+double scr_worker_root(void);
+int scr_worker_argc(void);
+char **scr_worker_argv(void);
 
 #ifdef SCR_WORKERS
 #define scr_getenv(name) scr_context_getenv(name)
@@ -5914,6 +5919,9 @@ void scr_bytes_require_unshared(const ScrBytes *);
 #define SCR_BYTES_SNAPSHOT(name) ((void)0)
 #endif
 ScrDyn *scr_shared_array_buffer_new(ScrDyn *);
+ScrDyn *scr_worker_data(void);
+ScrDyn *scr_worker_parent_port(void);
+ScrDyn *scr_worker_new(double root, ScrStr *filename, ScrDyn *options);
 bool scr_shared_array_buffer_is(const ScrDyn *);
 bool scr_buffer_storage_is(const ScrDyn *);
 ScrBytes *scr_bytes_from_external(void *data, size_t length);

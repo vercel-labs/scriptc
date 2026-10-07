@@ -46,6 +46,7 @@ beforeAll(async () => {
     join(testDir, "../src/scr_json.c"),
     join(testDir, "../src/scr_bigint.c"),
     join(testDir, "../src/scr_bytes.c"),
+    join(testDir, "../src/scr_shared.c"),
     ...(process.platform === "linux" ? ["-lm"] : []),
   ]);
   scratch = await mkdtemp(join(tmpdir(), "scriptc-lib-"));

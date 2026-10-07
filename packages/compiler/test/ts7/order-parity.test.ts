@@ -38,7 +38,7 @@
  * sweep and the upgrade playbook's step 2. */
 
 import { execFile } from "node:child_process";
-import { globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -47,6 +47,7 @@ import { afterAll, describe, expect, test } from "vitest";
 import { checkPreflightTs7 } from "../../src/frontend/program-node.js";
 import { Ts7Host } from "../../src/frontend/ts7/program-adapter.js";
 import type { ScrDiagnostic } from "../../src/diagnostics/diagnostic.js";
+import { allOrderEntries, orderEntriesUnder } from "../../../../scripts/ts7-order-fixtures.mjs";
 
 const repoRoot = join(import.meta.dirname, "../../../..");
 const baselinePath = join(import.meta.dirname, "baselines/order-parity.json");
@@ -111,25 +112,13 @@ async function nativeAnswers(entries: string[]): Promise<BaselineEntry[]> {
 }
 
 function entriesUnder(dir: string): string[] {
-  const exts = ["ts", "js", "mjs", "cjs"];
-  return exts
-    .flatMap((ext) => [
-      ...globSync(join(repoRoot, dir, `*.${ext}`)),
-      ...globSync(join(repoRoot, dir, `*/main.${ext}`)),
-    ])
-    .sort();
+  return orderEntriesUnder(repoRoot, dir);
 }
 
 const FULL = process.env["SCRIPTC_TS7_ALL"] === "1" || UPDATE;
 
 function allEntries(): string[] {
-  return [
-    ...entriesUnder("tests/corpus"),
-    ...entriesUnder("tests/diagnostics"),
-    ...entriesUnder("tests/fixtures/npm/cases"),
-    ...globSync(join(repoRoot, "tests/fixtures/strictness/*/main.ts")).sort(),
-    ...globSync(join(repoRoot, "tests/fixtures/node-types/*.ts")).sort(),
-  ];
+  return allOrderEntries(repoRoot);
 }
 
 function pickEntries(): string[] {

@@ -46,6 +46,8 @@ SCRIPTC_TEST_WORKERS=4 SCRIPTC_SAN=1 pnpm test  # sanitized lane
 
 Corpus programs are differential tests against Node: every program runs under Node and as a compiled native binary, and stdout, stderr, and exit codes must match byte-for-byte. A new feature lands with corpus programs that pin its behavior both ways.
 
+Before opening a PR that adds or changes corpus, diagnostic, or frontend fixtures, run `pnpm test:ts7 --baselines-only`. This fast completeness check uses the same fixture discovery as the parity suite; it does not type-check or replace behavioral parity. Generate missing preflight/order baselines, review their diagnostics and module order, and run the affected `order-parity.test.ts` batches before pushing. Keep existing baseline entries unchanged unless the corresponding behavior intentionally changes. The full `pnpm test:ts7` command also checks completeness before starting its sweep.
+
 Test location follows scope:
 
 - Co-locate white-box unit tests with implementation files under

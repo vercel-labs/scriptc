@@ -4,9 +4,16 @@ if (isMainThread) {
   for (const mode of ["nested", "throw", "natural"]) {
     await new Promise<void>((resolve) => {
       const worker = new Worker(new URL(import.meta.url), {workerData: mode});
-      worker.on("message", (value: unknown) => console.log(mode, "message", value));
-      worker.on("error", (error: Error) => console.log(mode, "error", error.message));
-      worker.on("exit", (code: number) => { console.log(mode, "exit", code); resolve(); });
+      let message = -1;
+      let messages = 0;
+      let failure = "none";
+      // Message and error use independent channels; both must arrive before exit.
+      worker.on("message", (value: number) => { message = value; messages++; });
+      worker.on("error", (error: Error) => { failure = error.message; });
+      worker.on("exit", (code: number) => {
+        console.log(mode, "exit", code, "messages", messages, message, "error", failure);
+        resolve();
+      });
     });
   }
 } else {

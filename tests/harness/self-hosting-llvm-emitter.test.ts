@@ -14,19 +14,7 @@ import {
 } from "@scriptc/compiler";
 import { emitLlvmModule } from "../../packages/compiler/src/backend/llvm/emitter.js";
 import { type IrModule } from "../../packages/compiler/src/ir/ir.js";
-import {
-  moduleUsesAssert,
-  moduleUsesBigInt,
-  moduleUsesCopying,
-  moduleUsesDynInvoke,
-  moduleUsesEmitter,
-  moduleUsesInspect,
-  moduleUsesLegacyTextDecoder,
-  moduleUsesRegex,
-  moduleUsesStream,
-  moduleUsesSymbol,
-  moduleUsesZlib,
-} from "../../packages/compiler/src/ir/runtime-features.js";
+import { executableLinkFeatures } from "../../packages/compiler/src/backend/executable-features.js";
 import {
   llvmEmitterCases,
   llvmEmitterOptions,
@@ -49,22 +37,6 @@ function programStderr(stderr: Buffer): string {
         "",
       )
     : text;
-}
-
-function nativeFeatures(mod: IrModule) {
-  return {
-    regex: moduleUsesRegex(mod),
-    copying: moduleUsesCopying(mod),
-    inspect: moduleUsesInspect(mod),
-    dynInvoke: moduleUsesDynInvoke(mod),
-    symbol: moduleUsesSymbol(mod),
-    bigint: moduleUsesBigInt(mod),
-    zlib: moduleUsesZlib(mod),
-    assert: moduleUsesAssert(mod),
-    emitter: moduleUsesEmitter(mod),
-    stream: moduleUsesStream(mod),
-    textDecoderLegacy: moduleUsesLegacyTextDecoder(mod),
-  };
 }
 
 // Execute generated modules across expression dispatch, shared mutable
@@ -253,7 +225,7 @@ for (const backend of ["llvm"] as const) {
           outPath,
           sanitize,
           optimization: "dev",
-          ...nativeFeatures(mod),
+          ...executableLinkFeatures(mod, false),
         });
         const node = spawnSync(process.execPath, [sourcePath], runOptions);
         const native = spawnSync(outPath, [], runOptions);
@@ -278,7 +250,7 @@ for (const backend of ["llvm"] as const) {
         outPath: secondStage,
         sanitize,
         optimization: "dev",
-        ...nativeFeatures(ownIr),
+        ...executableLinkFeatures(ownIr, false),
       });
       const again = join(dir, "again.ll");
       const second = await execFileAsync(secondStage, [input, again, config], {

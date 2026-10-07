@@ -14517,6 +14517,126 @@
     "<repo>/tests/corpus/scalar-string-slices.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/atomics-integer-operations.ts": {
+   "order": [
+    "<repo>/tests/corpus/atomics-integer-operations.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-buffer-consumers.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-buffer-consumers.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-clone-errors.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-clone-errors.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-commonjs.cjs": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-commonjs.cjs"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-delayed-messages.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-delayed-messages.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-environment.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-environment.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-error.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-error.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-exit-listeners.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-exit-listeners.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-io.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-io.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-loop-cancellation.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-loop-cancellation.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-message-graphs.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-message-graphs.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-messages.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-messages.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-port-lifetime.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-port-lifetime.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-process-exit.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-process-exit.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-references.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-references.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-roots/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-roots/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-shared-views.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-shared-views.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-terminate-loop.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-terminate-loop.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-terminate-suspended.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-terminate-suspended.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-terminate-wait.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-terminate-wait.ts"
+   ],
+   "diags": []
   }
  }
 }

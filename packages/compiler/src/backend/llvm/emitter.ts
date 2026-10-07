@@ -1568,11 +1568,11 @@ export class LlEmitter {
       // scr_runtime.h's natural alignment: kind at 8, f64 at 16, b at 24,
       // payload at 32).
       `%ScrCaught = type { ${this.sizeType}, i32, double, i8, ptr, ptr, ptr, ptr }`,
-      // ScrBytes { rc, len, elem(i32+pad), data, backing }. Indexed
+      // ScrBytes { rc, len, elem(i32+pad), data, backing, brands, shared }. Indexed
       // typed-array access GEPs through this directly: the IR type already
       // fixes elem, so the hot path needs neither a runtime kind load nor
       // the generic scr_bytes_get/set call.
-      `%ScrBytes = type { ${this.sizeType}, ${this.sizeType}, i32, ptr, ptr, i8 }`,
+      `%ScrBytes = type { ${this.sizeType}, ${this.sizeType}, i32, ptr, ptr, i8, i8, i8, ptr }`,
       // The capture box { rc, kind, obj_retain, obj_release, obj_trace,
       // slot } — TDZ reads peek the payload slot (offset 40) directly.
       `%ScrBox = type { ${this.sizeType}, i32, ptr, ptr, ptr, i64 }`,

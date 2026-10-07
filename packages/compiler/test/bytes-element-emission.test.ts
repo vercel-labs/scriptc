@@ -271,7 +271,7 @@ test("LLVM emission performs typed-array element access directly on the valid pa
   const mod = fixture();
   expect(validateModule(mod)).toEqual([]);
   const ll = emitLlvmModule(mod);
-  expect(ll).toContain("%ScrBytes = type { i64, i64, i32, ptr, ptr, i8 }");
+  expect(ll).toContain("%ScrBytes = type { i64, i64, i32, ptr, ptr, i8, i8, i8, ptr }");
   expect(ll).toContain("getelementptr inbounds i8");
   expect(ll).toContain("getelementptr inbounds i32");
   expect(ll).toContain("getelementptr inbounds float");

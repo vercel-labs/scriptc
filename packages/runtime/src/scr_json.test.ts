@@ -41,6 +41,7 @@ test.each([false, true])(
           "scr_cycle.c",
           "scr_lib.c",
           "scr_bytes.c",
+          "scr_shared.c",
           "scr_bigint.c",
           "scr_url.c",
           "scr_url_params.c",

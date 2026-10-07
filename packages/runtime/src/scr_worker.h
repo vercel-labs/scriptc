@@ -36,11 +36,6 @@ bool scr_worker_post_parent(ScrMessage *message);
 void scr_worker_port_close(void);
 /* Current-thread access: inbox is borrowed, data is a retained local value. */
 ScrMailbox *scr_worker_inbox(void);
-ScrDyn *scr_worker_data(void);
-ScrDyn *scr_worker_parent_port(void);
-ScrDyn *scr_worker_new(double root, ScrStr *filename, ScrDyn *options);
-int scr_worker_argc(void);
-char **scr_worker_argv(void);
 void scr_loop_set_workers(bool (*pending)(void), bool (*ready)(void), void (*dispatch)(void),
                           int (*pollfd)(void), void (*wait)(double));
 

@@ -117,6 +117,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.reqSetEncoding",
   "fs.readFileSyncBuf",
   "fs.readFileSyncDyn",
+  "fs.readFileEncoded",
+  "fs.readFdEncoded",
   // tls/https runtime options records: the walks throw the catchable
   // runtime fence for out-of-bounds members and non-PEM values (the
   // divergence-66 stance).
@@ -407,6 +409,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "regex.new",
   "regex.resetLastIndex",
   "regex.newChecked",
+  "regex.replaceCallback",
   "dyn.keySet",
   "dyn.keySetComputed",
   "process.builtinId",

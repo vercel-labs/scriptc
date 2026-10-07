@@ -791,6 +791,119 @@ ScrStr *scr_regex_replace(ScrStr *s, ScrRegex *re, ScrStr *rep) {
   return scr_replace_impl(s, re, rep);
 }
 
+typedef struct {
+  ScrDyn *arguments;
+  int start, end;
+} ScrReplacementMatch;
+
+static ScrDyn *scr_regex_capture_value(const ScrRegexInput *input,
+                                       const uint8_t *start, const uint8_t *end) {
+  if (!start || !end) return scr_dyn_retain(scr_dyn_undefined());
+  ScrStr *span = scr_regex_span(input, scr_capture_index(input, start),
+                                scr_capture_index(input, end));
+  ScrDyn *value = scr_dyn_new_str(span);
+  scr_str_release(span);
+  return value;
+}
+
+/* Symbol.replace collects matches before invoking any replacement. A callback
+ * can execute the same regex, change lastIndex, or throw; none of those actions
+ * may affect which matches were collected. Capture values and groups therefore
+ * belong to each snapshot, not to the engine's reused capture buffer. */
+ScrStr *scr_regex_replace_callback(ScrStr *s, ScrRegex *re, ScrDyn *callback, bool all) {
+  uint8_t *bc = scr_regex_bc(re);
+  int flags = lre_get_flags(bc);
+  bool global = (flags & LRE_FLAG_GLOBAL) != 0;
+  if (all && !global) {
+    static const char message[] = "String.prototype.replaceAll called with a non-global RegExp argument";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  if (!scr_dyn_is_callable(callback)) {
+    ScrStr *template = scr_dyn_string_coerce_js(callback);
+    if (!template) return NULL;
+    ScrStr *result = scr_replace_impl(s, re, template);
+    scr_str_release(template);
+    return result;
+  }
+  bool sticky = (flags & LRE_FLAG_STICKY) != 0;
+  bool unicode = (flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
+  int capture_count = lre_get_capture_count(bc);
+  const char *groupnames = lre_get_groupnames(bc);
+  ScrRegexInput input;
+  scr_regex_input_init(&input, bc, s);
+  int len = input.len;
+  ScrReplacementMatch *matches = NULL;
+  size_t count = 0, capacity = 0;
+  ScrDyn *subject = scr_dyn_new_str(s);
+  if (global) re->last_index = 0;
+  int position = sticky ? scr_regex_start(re, len) : 0;
+  if (position < 0) position = len + 1;
+  if (sticky && !global) re->last_index = 0;
+  while (position <= len && scr_exec(&input, bc, position) == 1) {
+    uint8_t **capture = input.capture;
+    int start = scr_capture_index(&input, capture[0]);
+    int end = scr_capture_index(&input, capture[1]);
+    if (sticky && !global) re->last_index = end;
+    ScrDyn *arguments = scr_dyn_new_arr();
+    for (int group = 0; group < capture_count; group++)
+      scr_dyn_arr_push(arguments, scr_regex_capture_value(&input, capture[group * 2], capture[group * 2 + 1]));
+    scr_dyn_arr_push(arguments, scr_dyn_new_num((double)start));
+    scr_dyn_arr_push(arguments, scr_dyn_retain(subject));
+    if (groupnames) {
+      ScrDyn *groups = scr_dyn_new_obj_null_proto();
+      const char *name = groupnames;
+      for (int group = 1; group < capture_count; group++) {
+        size_t length = strlen(name);
+        if (length && (capture[group * 2] || !scr_dyn_obj_get(groups, name, length)))
+          scr_dyn_obj_set(groups, name, length,
+            scr_regex_capture_value(&input, capture[group * 2], capture[group * 2 + 1]));
+        name += length + LRE_GROUP_NAME_TRAILER_LEN;
+      }
+      scr_dyn_arr_push(arguments, groups);
+    }
+    if (count == capacity) {
+      size_t next = capacity ? capacity * 2 : 8;
+      if (next < capacity || next > SIZE_MAX / sizeof(*matches)) scr_regex_oom();
+      ScrReplacementMatch *grown = realloc(matches, next * sizeof(*matches));
+      if (!grown) scr_regex_oom();
+      matches = grown;
+      capacity = next;
+    }
+    matches[count++] = (ScrReplacementMatch){ arguments, start, end };
+    if (!global) break;
+    position = start == end ? scr_advance(&input, end, unicode) : end;
+  }
+  scr_dyn_release(subject);
+  ScrJsonBuf output;
+  scr_jb_init(&output);
+  int next = 0;
+  for (size_t i = 0; i < count; i++) {
+    ScrReplacementMatch *match = &matches[i];
+    ScrDyn *arguments = match->arguments;
+    scr_dyn_this_push_dyn(NULL);
+    ScrDyn *raw = scr_dyn_call(callback, arguments->v.arr.items, arguments->v.arr.len, "replacement");
+    scr_dyn_this_pop();
+    ScrStr *replacement = scr_exc_pending() ? NULL : scr_dyn_string_coerce_js(raw);
+    scr_dyn_release(raw);
+    if (!replacement) break;
+    scr_regex_put_span(&output, &input, next, match->start);
+    scr_jb_put_str(&output, replacement);
+    scr_str_release(replacement);
+    next = match->end;
+  }
+  for (size_t i = 0; i < count; i++) scr_dyn_release(matches[i].arguments);
+  free(matches);
+  if (scr_exc_pending()) {
+    free(output.data);
+    scr_regex_input_dispose(&input);
+    return NULL;
+  }
+  scr_regex_put_span(&output, &input, next, len);
+  scr_regex_input_dispose(&input);
+  return scr_jb_finish(&output);
+}
+
 
 /* The pinned Node ANSI matcher derives from ansi-regex, copyright (c)
  * Sindre Sorhus <sindresorhus@gmail.com>, used under the MIT license:

@@ -556,7 +556,8 @@ export function lowerFsWriteSyncCall(
 // The readFileSync(fd[, "utf8"]) forms — Node accepts a file
 // descriptor where it accepts a path (the stdin pattern:
 // readFileSync(0, "utf8")). Routed by the ARGUMENT's static type,
-// like fileURLToPath; the encoding keeps the utf8-literal fence.
+// like fileURLToPath. Encoding-bearing reads use the shared decoder above;
+// this fallback retains the existing Buffer and utf8 forms.
 export function lowerFsReadDescriptorCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -579,6 +580,60 @@ export function lowerFsReadDescriptorCall(
   }
   const enc = lowerer.lowerExprExpecting(expr.arguments[1]!, STRING);
   return { kind: "libCall", fn: "fs.readFdSync", args: [fd, enc], type: STRING, loc };
+}
+
+/** Encoding-bearing reads share Buffer's decoder and runtime alias checks.
+ * Keep the read and encoding evaluation in source order in one helper. */
+export function lowerFsEncodedRead(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  descriptor: boolean,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (expr.arguments.length !== 2 || expr.arguments.some(ts.isSpreadElement)) return null;
+  const options = expr.arguments[1]!;
+  const optionsType = lowerer.mapTypeOf(lowerer.typeOf(options));
+  if (optionsType?.kind !== "string" && optionsType?.kind !== "record") return null;
+  if (optionsType.kind === "record") {
+    const fields = lowerer.shapes.get(optionsType.shapeId)?.fields;
+    if (
+      !fields ||
+      fields.find((entry) => entry.name === "encoding")?.type.kind !== "string" ||
+      fields.some((entry) => entry.name !== "encoding")
+    )
+      return null;
+  }
+  const sourceType = descriptor ? F64 : STRING;
+  const source = lowerer.lowerExprExpecting(expr.arguments[0]!, sourceType);
+  const encoding: IrExpr =
+    optionsType.kind === "string"
+      ? lowerer.lowerExprExpecting(options, STRING)
+      : {
+          kind: "recordGet",
+          obj: lowerer.lowerExpr(options),
+          shapeId: optionsType.shapeId,
+          field: "encoding",
+          type: STRING,
+          loc,
+        };
+  // Empty encodings return a Buffer, and unknown string spellings may
+  // throw. Keep the runtime result when the selected overload admits both
+  // strings and Buffers rather than promising a string from its argument.
+  if (!descriptor && lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind !== "string")
+    return {
+      kind: "libCall",
+      fn: "fs.readFileSyncDyn",
+      args: [source, lowerer.coerceToExpected(encoding, DYN)],
+      type: DYN,
+      loc,
+    };
+  return {
+    kind: "libCall",
+    fn: descriptor ? "fs.readFdEncoded" : "fs.readFileEncoded",
+    args: [source, encoding],
+    type: STRING,
+    loc,
+  };
 }
 
 // mkdirSync(p, options): the lowered options form is a literal
@@ -885,9 +940,8 @@ export function lowerFsReadPathCall(
     if (expr.arguments.length === 1) {
       return { kind: "libCall", fn: "fs.readFileSyncBuf", args: [pathArg], type: BYTES_U8, loc };
     }
-    // A runtime encoding value: undefined/null read Buffers, utf8
-    // reads a string, real-but-unsupported encodings fence loudly,
-    // unknown names throw ERR_UNKNOWN_ENCODING — all at runtime. A
+    // Runtime nullish and empty encodings read Buffers, supported names
+    // read strings, and invalid names throw ERR_INVALID_ARG_VALUE. A
     // non-dyn encoding falls through to the literal-utf8 lowering
     // below (the discarded probe IR never emits).
     const encT = lowerer.typeOf(expr.arguments[1]!);

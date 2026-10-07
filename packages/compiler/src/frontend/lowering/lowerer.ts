@@ -69,6 +69,7 @@ import type { FrontendServices } from "../services.js";
 import { InternalCompilerError } from "../../errors.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
 import { ClassDynamicDispatch, trackClassFieldCreation } from "./class-dynamic-dispatch.js";
+import { ClassProtocols } from "./class-protocols.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
 import type { ClassSymbolKey } from "./symbol-fields.js";
@@ -2633,6 +2634,7 @@ export class Lowerer {
         return { kind: "object", className };
       },
       mixinIntersectionInstance: (widened) => mixinIntersectionInstanceType(this, widened),
+      classImplementedProtocol: (type) => this.classImplementedProtocol(type),
       isStdlibFile: this.isStdlibFile,
       isNpmFile: this.isNpmFile,
       isExternalTypeFile: (sf) =>
@@ -2663,6 +2665,13 @@ export class Lowerer {
 
   registerBuiltinErrorClasses(): void {
     return registerBuiltinErrorClasses(this);
+  }
+
+  private classProtocols: ClassProtocols | null = null;
+
+  classImplementedProtocol(type: ts.Type): boolean {
+    this.classProtocols ??= new ClassProtocols(this.checker, this.moduleOrder);
+    return this.classProtocols.usesCheckedIdentity(type);
   }
 
   /** The nominal identity of a checker module-namespace type. Program
@@ -9680,8 +9689,9 @@ export class Lowerer {
       | ts.MethodDeclaration
       | ts.GetAccessorDeclaration
       | ts.SetAccessorDeclaration,
+    checkedReceiver = false,
   ): IrExpr {
-    return lowerLambda(this, node);
+    return lowerLambda(this, node, checkedReceiver);
   }
 
   lowerArrayMethodCall(

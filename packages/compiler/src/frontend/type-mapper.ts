@@ -954,6 +954,9 @@ export interface TypeMapperCtx {
    * mixin context (the type alone cannot name a call site). */
   mixinClassInstance?: (decl: ts.ClassLikeDeclaration) => IrType | null;
   localClassInstance?: (decl: ts.ClassLikeDeclaration) => IrType | null;
+  /** Live class protocols retain identity and receiver dispatch rather than
+   * copying an instance into an unrelated record layout. */
+  classImplementedProtocol?: (type: ts.Type) => boolean;
   /** MIXIN instance INTERSECTIONS (`Tagged.C & Derived` — values built
    * through a mixin result): resolved by chain structure to the unique
    * pinned instantiation they describe; null when ambiguous or when no
@@ -4711,6 +4714,7 @@ function mapRecordTypeInner(
   const computed = widened.isIntersectionType() || isMappedShape(widened);
   {
     const props = checker.getPropertiesOfType(widened);
+    if (ctx.classImplementedProtocol?.(widened)) return DYN;
     // Symbol-keyed records use the checked object's descriptor table. A
     // checker-internal __@ name is not a string field in a native struct.
     if (props.some((property) => property.name.startsWith("__@"))) return DYN;

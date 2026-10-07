@@ -4144,6 +4144,7 @@ ScrStr *scr_dyn_string_coerce(const ScrDyn *d);
  * called, their throws propagating) — the WHATWG USVString conversions.
  * Borrows; +1 or NULL with the exception pending. */
 ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d);
+ScrStr *scr_regex_replace_callback(ScrStr *subject, ScrRegex *regex, ScrDyn *callback, bool all);
 bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out);
 /* Direct-return ABI wrapper for compiler libCalls: JS ToNumber, or NaN
  * with the exception pending when an object hook throws/refuses. */
@@ -6231,9 +6232,11 @@ bool scr_dataview_write_u64_raw(ScrBytes *b, double offset, bool le, uint64_t va
  * Failures THROW catchably (scr_fs_throw, Node-shaped messages). */
 ScrBytes *scr_fs_read_file_bytes(ScrStr *path); /* +1 */
 /* readFileSync's runtime-encoding form (scr_bytes_io.c's note): +1 dyn
- * value — a Buffer box for undefined/null, a string for utf8 — or NULL
+ * value — a Buffer box for nullish/empty encodings, a decoded string otherwise — or NULL
  * with the exception pending. */
 ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc);
+ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding);
+ScrStr *scr_fs_read_fd_encoded(double fd, ScrStr *encoding);
 ScrDyn *scr_fs_callback_value(ScrStr *member);
 ScrDyn *scr_fs_callback_call(ScrStr *member, const ScrDyn *args);
 ScrBytes *scr_fs_read_fd_bytes(double fd);      /* +1; the fd form (scr_lib.c) */

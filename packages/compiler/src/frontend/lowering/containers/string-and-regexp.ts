@@ -1,4 +1,4 @@
-import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import {
   BOOL,
@@ -879,6 +879,12 @@ export function lowerRegexMethodCall(
   ) {
     const arg0 = call.arguments[0];
     if (!arg0 || lowerer.mapTypeOf(lowerer.typeOf(arg0))?.kind !== "regex") return null;
+    if (call.arguments.length > 2 || call.arguments.some(ts.isSpreadElement))
+      lowerer.unsupported(
+        "SC1120",
+        call,
+        `the '${name}' regex form with surplus or spread arguments`,
+      );
     const receiver = lowerReceiver();
     // Split's omitted or undefined limit is 2^32-1. Complete it here so
     // the LLVM backend and runtime have one required (regex, limit)
@@ -889,11 +895,26 @@ export function lowerRegexMethodCall(
             lowerer.lowerExprExpecting(arg0, { kind: "regex" }),
             lowerSplitLimitArg(lowerer, call.arguments[1], loc),
           ]
-        : call.arguments.map((a, index) =>
-            index === 0 ? lowerer.lowerExprExpecting(a, { kind: "regex" }) : lowerer.lowerExpr(a),
-          );
+        : [
+            lowerer.lowerExprExpecting(arg0, { kind: "regex" }),
+            call.arguments[1] ? lowerer.lowerExpr(call.arguments[1]) : dynUndefinedExpr(loc),
+          ];
     if (name !== "split") {
       const replacement = args[1];
+      if (replacement?.type.kind === "func" || replacement?.type.kind === "dyn") {
+        return {
+          kind: "libCall",
+          fn: "regex.replaceCallback",
+          args: [
+            receiver,
+            args[0]!,
+            lowerer.coerceToExpected(replacement, DYN),
+            { kind: "boolLit", value: name === "replaceAll", type: BOOL, loc },
+          ],
+          type: STRING,
+          loc,
+        };
+      }
       const templateType = (type: IrType): boolean =>
         type.kind === "union"
           ? lowerer.unions.get(type.unionId)!.arms.every(templateType)
@@ -906,7 +927,7 @@ export function lowerRegexMethodCall(
         lowerer.unsupported(
           "SC1120",
           call.arguments[1] ?? call,
-          "function replacement values (replacements must be string templates)",
+          "replacement values that are not callable or convertible to a string",
         );
       }
       // Array iteration can carry an explicit undefined even when the

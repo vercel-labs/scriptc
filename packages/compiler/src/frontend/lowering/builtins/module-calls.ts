@@ -13,6 +13,7 @@ import {
   lowerFsReadSyncCall,
   lowerFsWriteSyncCall,
   lowerFsReadDescriptorCall,
+  lowerFsEncodedRead,
   lowerFsMkdirSyncCall,
   lowerFsPromisesMkdirCall,
   lowerFsRemoveCall,
@@ -151,6 +152,15 @@ export function lowerBuiltinModuleCall(
   }
   if (bi.module === "readline" && bi.member === "createInterface") {
     return lowerReadlineCreateCall(lowerer, expr, loc);
+  }
+  if (bi.module === "fs" && bi.member === "readFileSync" && expr.arguments.length === 2) {
+    const encoded = lowerFsEncodedRead(
+      lowerer,
+      expr,
+      lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[0]!))?.kind === "f64",
+      loc,
+    );
+    if (encoded) return encoded;
   }
   // The Buffer forms of fs: readFileSync(path)/readFile(path) with NO
   // encoding read raw bytes (Node returns a Buffer there), and

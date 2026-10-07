@@ -5225,13 +5225,10 @@ export function lowerVarDecl(
       settledType = init.type;
     }
   }
-  // `const r: Repo = new MemRepo()` over an all-generic-method
-  // interface: the binding keeps the initializer's CLASS representation
-  // (the record shape maps empty and the width copy would drop the
-  // class the generic-method calls monomorphize against) — see
-  // genericIfaceBindingKeepsClass.
+  // An exact class behind a generic interface keeps its native
+  // representation so generic calls can specialize against its body.
   if (
-    settledType.kind === "record" &&
+    (settledType.kind === "record" || settledType.kind === "dyn") &&
     init.type.kind === "object" &&
     genericIfaceBindingKeepsClass(lowerer, decl, settledType)
   ) {

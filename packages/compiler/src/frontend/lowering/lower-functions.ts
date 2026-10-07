@@ -142,6 +142,7 @@ export function lowerLambda(
     | ts.MethodDeclaration
     | ts.GetAccessorDeclaration
     | ts.SetAccessorDeclaration,
+  checkedReceiver = false,
 ): IrExpr {
   const prepared =
     ts.isArrowFunction(node) || ts.isFunctionExpression(node)
@@ -256,7 +257,7 @@ export function lowerLambda(
     // Checked JavaScript functions take their receiver from the call site.
     // Store it as this function's binding so escaping arrows capture it,
     // and a method nested inside another method never captures its owner.
-    if (isJsSourceFile(node.getSourceFile()) && !ts.isArrowFunction(node)) {
+    if ((checkedReceiver || isJsSourceFile(node.getSourceFile())) && !ts.isArrowFunction(node)) {
       const receiver = lowerer.declareThis(DYN);
       prologue.unshift({
         kind: "varDecl",

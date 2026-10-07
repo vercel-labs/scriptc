@@ -1682,6 +1682,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.readFileSyncBuf",
       "fs.readFileSyncBytes",
       "fs.readFileSyncDyn",
+      "fs.readFileEncoded",
+      "fs.readFdEncoded",
       "fs.readFdSync",
       "fs.readFdSyncBytes",
     ],

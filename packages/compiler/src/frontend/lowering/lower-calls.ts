@@ -3418,6 +3418,14 @@ function lowerDynReceiverMethodCall(
   // take the ordinary typed paths, but there is no static home for an
   // any-elemented array). Typed receivers keep their own lowerings.
   const recvTs = lowerer.typeOf(access.expression);
+  if (lowerer.classImplementedProtocol(recvTs)) {
+    const property = lowerer.checker.getPropertyOfType(recvTs, access.name.text);
+    if (
+      property &&
+      isGenericCallableMemberType(lowerer.checker.getTypeOfSymbol(property), lowerer.checker)
+    )
+      return lowerObjLitGenericMethodCall(lowerer, call, access);
+  }
   const recvSymbol = recvTs.getSymbol();
   if (
     recvSymbol &&
@@ -8836,6 +8844,7 @@ export function lowerObjectMethodCall(
   const probe =
     mappedReceiver?.kind !== "object" &&
     (lowerer.implicitParamTypes !== null ||
+      lowerer.classImplementedProtocol(lowerer.typeOf(access.expression)) ||
       ts.isNewExpression(access.expression) ||
       isJsSourceFile(call.getSourceFile()))
       ? ts.isNewExpression(access.expression)

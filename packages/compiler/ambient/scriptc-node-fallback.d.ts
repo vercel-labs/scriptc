@@ -1118,24 +1118,13 @@ interface ImportMeta {
  * directory, open 'x'"). `rmSync` removes FILES only (like Node without
  * `recursive`); empty directories go through `rmdirSync`. */
 declare module "node:fs" {
-  /* The lowered forms first. The string-encoding overload's result is
-   * CONDITIONAL so a runtime encoding value (an untyped JS parameter —
-   * test/common fixtures.js's readFixtureKey(name, enc)) infers `any`
-   * (the lowering dispatches at runtime: undefined/null read Buffers,
-   * utf8 a string, anything else throws) while a literal utf8 keeps the
-   * string result TypeScript callers chain on. The encoding-less
-   * overload is the Buffer read. */
-  export function readFileSync<T extends string>(
-    path: string,
-    encoding: T,
-  ): T extends "utf8" ? string : T extends "utf-8" ? string : any;
-  export function readFileSync(path: string): Buffer;
-  /* The file-descriptor forms — a read(2) loop to EOF from the current
-   * position; the stdin pattern is readFileSync(0, "utf8"). */
-  export function readFileSync(fd: number, encoding: "utf8" | "utf-8"): string;
-  export function readFileSync(fd: number): Buffer;
-  /* The options-object spelling of the utf8 form. */
-  export function readFileSync(path: string, options: { encoding: "utf8" | "utf-8" }): string;
+  export function readFileSync(path: string | number, encoding: BufferEncoding): string;
+  export function readFileSync(
+    path: string | number,
+    options: { encoding: BufferEncoding },
+  ): string;
+  export function readFileSync(path: string | number): Buffer;
+  export function readFileSync(path: string, options: unknown): string | Buffer;
   /* Error-first callbacks select string or Buffer data from their encoding.
    * Unknown options retain that union until the caller validates the value. */
   export function readFile(

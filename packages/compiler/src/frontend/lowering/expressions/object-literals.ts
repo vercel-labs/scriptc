@@ -354,9 +354,7 @@ export function lowerDynObjectLiteral(
       flushFields();
       hasAccessors = true;
       acc ??= { kind: "dynObjLit", fields: [], type: DYN, loc };
-      if (!isJsSourceFile(expr.getSourceFile()))
-        lowerer.rejectThisInObjectMethod(prop.body ?? prop);
-      const fn = lowerer.lowerLambda(prop);
+      const fn = lowerer.lowerLambda(prop, true);
       const descriptor: IrExpr = {
         kind: "dynObjLit",
         type: DYN,
@@ -404,9 +402,7 @@ export function lowerDynObjectLiteral(
     try {
       const lowerValue = (): IrExpr =>
         ts.isMethodDeclaration(prop)
-          ? isJsSourceFile(expr.getSourceFile())
-            ? lowerer.lowerLambda(prop)
-            : (lowerer.rejectThisInObjectMethod(prop.body ?? prop), lowerer.lowerLambda(prop))
+          ? lowerer.lowerLambda(prop, true)
           : !boxValue && ts.isObjectLiteralExpression(valueExpr)
             ? lowerer.lowerExprExpecting(valueExpr, DYN)
             : lowerer.lowerExpr(valueExpr as ts.Expression);

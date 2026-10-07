@@ -2279,6 +2279,7 @@ export function collectClassShapeInner(
           if (
             type.kind === "dyn" &&
             !isJsSourceFile(member.getSourceFile()) &&
+            !lowerer.classImplementedProtocol(lowerer.typeOf(member.name)) &&
             (member.type !== undefined ||
               (lowerer.typeOf(member.name).flags & ts.TypeFlags.Any) === 0)
           ) {
@@ -2555,7 +2556,9 @@ export function collectClassShapeInner(
           if (
             !type ||
             type.kind === "void" ||
-            (type.kind === "dyn" && !isJsSourceFile(member.getSourceFile()))
+            (type.kind === "dyn" &&
+              !isJsSourceFile(member.getSourceFile()) &&
+              !lowerer.classImplementedProtocol(inferred))
           )
             lowerer.badType(member, inferred);
           if (isJsSourceFile(member.getSourceFile())) {
@@ -2704,7 +2707,11 @@ export function collectClassShapeInner(
         // Bundled JS declares fields without annotations before assigning
         // them in the constructor. Use the same native checked-dynamic
         // storage as implicit constructor-assigned JS fields.
-        if (type.kind === "dyn" && !isJsSourceFile(member.getSourceFile())) {
+        if (
+          type.kind === "dyn" &&
+          !isJsSourceFile(member.getSourceFile()) &&
+          !lowerer.classImplementedProtocol(lowerer.typeOf(member.name))
+        ) {
           lowerer.unsupported("SC1090", member.name, "'unknown'-typed class fields");
         }
         const undefinedInitializer =
@@ -2839,7 +2846,7 @@ export function collectClassShapeInner(
           const type = shape.bodyType ?? shape.type;
           if (type.kind === "void") lowerer.badType(p.name, lowerer.typeOf(p.name));
           // The class-field dyn rule verbatim (KEEP NARROW).
-          if (type.kind === "dyn") {
+          if (type.kind === "dyn" && !lowerer.classImplementedProtocol(lowerer.typeOf(p))) {
             lowerer.unsupported("SC1090", p.name, "'unknown'-typed class fields");
           }
           // `override x` (and any same-named inherited member) would
@@ -6194,19 +6201,26 @@ export function genericIfaceBindingKeepsClass(
   decl: ts.VariableDeclaration,
   declaredType: IrType,
 ): boolean {
-  if (declaredType.kind !== "record") return false;
+  if (declaredType.kind !== "record" && declaredType.kind !== "dyn") return false;
   if (!ts.isIdentifier(decl.name) || decl.initializer === undefined || decl.type === undefined)
     return false;
   if ((ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) === 0) return false;
   let init: ts.Expression = decl.initializer;
   while (ts.isParenthesizedExpression(init)) init = init.expression;
   if (!ts.isNewExpression(init)) return false;
-  const shape = lowerer.shapes.get(declaredType.shapeId);
-  if (!shape || shape.fields.length > 0 || shape.indexValue !== undefined || shape.tuple === true)
-    return false;
   const annT = lowerer.typeOf(decl.name);
   const props = lowerer.checker.getPropertiesOfType(annT);
   if (props.length === 0) return false;
+  if (declaredType.kind === "dyn")
+    return (
+      lowerer.classImplementedProtocol(annT) &&
+      props.some((property) =>
+        isGenericCallableMemberType(lowerer.checker.getTypeOfSymbol(property), lowerer.checker),
+      )
+    );
+  const shape = lowerer.shapes.get(declaredType.shapeId);
+  if (!shape || shape.fields.length > 0 || shape.indexValue !== undefined || shape.tuple === true)
+    return false;
   return props.every((p) =>
     isGenericCallableMemberType(lowerer.checker.getTypeOfSymbol(p), lowerer.checker),
   );

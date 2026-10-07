@@ -364,6 +364,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * errors surface through 'error' listeners, not the iterator). */
   "stdin.nextChunk": { argTypes: [], result: { kind: "promise", inner: BYTES_U8 } },
   "fs.readFileSync": { argTypes: [STRING, STRING], result: STRING },
+  "fs.readFileEncoded": { argTypes: [STRING, STRING], result: STRING },
+  "fs.readFdEncoded": { argTypes: [F64, STRING], result: STRING },
   /** readFileSync(path) — the Buffer read (+1 bytes); throws catchably
    * like the utf8 form. */
   "fs.readFileSyncBuf": { argTypes: [STRING], result: BYTES_U8 },
@@ -2731,6 +2733,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "regex.new": { argTypes: [STRING, STRING], result: REGEX },
   "regex.resetLastIndex": { argTypes: [REGEX, F64], result: VOID },
   "regex.newChecked": { argTypes: [DYN, DYN], result: REGEX },
+  "regex.replaceCallback": { argTypes: [STRING, REGEX, DYN, BOOL], result: STRING },
   // node:events EventEmitter: receivers are emitter-hierarchy objects and
   // the chaining forms (on/off/removeAll/setMax) return the receiver's
   // own class — program-dependent object types, checked in the libCall

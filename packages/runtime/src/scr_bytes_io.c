@@ -35,12 +35,44 @@ static void scr_bytes_io_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }
 
+static bool scr_fs_read_encoding_valid(ScrStr *encoding) {
+  if (encoding->len == 0 || scr_bytes_is_encoding(encoding)) return true;
+  ScrDyn *value = scr_dyn_new_str(encoding);
+  scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
+  scr_dyn_release(value);
+  return false;
+}
+
+static ScrStr *scr_fs_decode_read(ScrBytes *bytes, ScrStr *encoding) {
+  if (!bytes) return NULL;
+  ScrStr *text;
+  if (encoding->len == 0) {
+    ScrStr *utf8 = scr_str_new("utf8", 4);
+    text = scr_bytes_to_str(bytes, utf8);
+    scr_str_release(utf8);
+  } else {
+    text = scr_bytes_to_str_checked(bytes, encoding);
+  }
+  scr_bytes_release(bytes);
+  return text;
+}
+
+ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding) {
+  if (!scr_fs_read_encoding_valid(encoding)) return NULL;
+  return scr_fs_decode_read(scr_fs_read_file_bytes(path), encoding);
+}
+
+ScrStr *scr_fs_read_fd_encoded(double fd, ScrStr *encoding) {
+  if (!scr_fs_read_encoding_valid(encoding)) return NULL;
+  return scr_fs_decode_read(scr_fs_read_fd_bytes(fd), encoding);
+}
+
 /* ── fs (the Buffer forms of scr_lib.c's utf8 pair) ────────────────────── */
 
 /* readFileSync's runtime-encoding form (a JS helper's untyped `enc`
  * parameter — test/common fixtures.js): undefined/null answer a Buffer,
- * utf8 answers a string, Node's other real encodings meet the loud
- * not-supported ladder, unknown names throw ERR_UNKNOWN_ENCODING, and an
+ * a supported encoding answers a string, invalid names throw
+ * ERR_INVALID_ARG_VALUE before reading, and an
  * options object dispatches on its `encoding` member (Node's form). +1
  * dyn value, or NULL with the exception pending. */
 ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc) {
@@ -48,7 +80,8 @@ ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc) {
     ScrDyn *ev = scr_dyn_obj_get((ScrDyn *)enc, "encoding", 8); /* borrowed */
     return scr_fs_read_file_sync_dyn(path, ev ? ev : scr_dyn_undefined());
   }
-  if (enc->kind == SCR_DYN_UNDEF || enc->kind == SCR_DYN_NULL) {
+  if (enc->kind == SCR_DYN_UNDEF || enc->kind == SCR_DYN_NULL ||
+      (enc->kind == SCR_DYN_STR && enc->v.str->len == 0)) {
     ScrBytes *b = scr_fs_read_file_bytes(path);
     if (!b) return NULL;
     ScrDyn *d = scr_dyn_new_buffer(b);
@@ -56,32 +89,11 @@ ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc) {
     return d;
   }
   if (enc->kind == SCR_DYN_STR) {
-    const ScrStr *e = enc->v.str;
-    if ((e->len == 4 && memcmp(e->data, "utf8", 4) == 0) ||
-        (e->len == 5 && memcmp(e->data, "utf-8", 5) == 0)) {
-      ScrStr *text = scr_fs_read_file(path);
-      if (!text) return NULL;
-      ScrDyn *d = scr_dyn_new_str(text);
-      scr_str_release(text);
-      return d;
-    }
-    static const char *const known[] = { "ascii", "latin1", "binary", "base64",
-      "base64url", "hex", "ucs2", "ucs-2", "utf16le", "utf-16le", NULL };
-    for (size_t i = 0; known[i]; i++) {
-      if (e->len == strlen(known[i]) && memcmp(e->data, known[i], e->len) == 0) {
-        char msg[128];
-        int n = snprintf(msg, sizeof msg,
-                         "readFileSync with encoding '%s' is not supported yet (only 'utf8' and Buffer reads here)",
-                         known[i]);
-        scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
-        return NULL;
-      }
-    }
-    char msg[128];
-    int n = snprintf(msg, sizeof msg, "Unknown encoding: %.*s",
-                     (int)(e->len < 64 ? e->len : 64), e->data);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_UNKNOWN_ENCODING");
-    return NULL;
+    ScrStr *text = scr_fs_read_file_encoded(path, enc->v.str);
+    if (!text) return NULL;
+    ScrDyn *value = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return value;
   }
   {
     /* Kind rendering stays local: scr_dyn_specific_type lives in the

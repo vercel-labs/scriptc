@@ -699,6 +699,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.dyn": "scr_insp_dyn",
   "insp.dynS": "scr_insp_dyn_s",
   "fs.readFileSyncDyn": "scr_fs_read_file_sync_dyn",
+  "fs.readFileEncoded": "scr_fs_read_file_encoded",
+  "fs.readFdEncoded": "scr_fs_read_fd_encoded",
   // Loose generic-shaped stragglers the burn-down surfaced alongside the
   // dyn head: the x509 PEM walks and stdin raw-mode throw catchably (the
   // may-throw seed set); the mode-carrying fs sync forms are the plain
@@ -1048,6 +1050,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "regex.new": "scr_regex_new",
   "regex.resetLastIndex": "scr_regex_reset_last_index",
   "regex.newChecked": "scr_regex_new_checked",
+  "regex.replaceCallback": "scr_regex_replace_callback",
   // queueMicrotask's checked-dynamic form (borrowed dyn; a non-function
   // throws synchronously), the minted setImmediate value, and the
   // timers/promises immediate — all mark the loop live.

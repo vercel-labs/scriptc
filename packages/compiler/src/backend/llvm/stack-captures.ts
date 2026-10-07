@@ -71,7 +71,15 @@ export class StackCaptures {
       else if (node.kind === "forOf") invalid.add(node.localId);
       else if (node.kind === "tryCatch" && node.catchLocalId !== null)
         invalid.add(node.catchLocalId);
-      else if (node.kind === "for") {
+      else if (node.kind === "switch") {
+        // Dispatch can skip a declaration on a later loop iteration. The
+        // shared switch scope resets binding slots, not stack payload slots.
+        for (const branch of node.cases) {
+          for (const child of branch.body) {
+            if (child.kind === "varDecl") invalid.add(child.localId);
+          }
+        }
+      } else if (node.kind === "for") {
         // Loop-head lets are freshened by a separate allocation path.
         const initializers =
           node.init?.kind === "block" ? node.init.body : node.init ? [node.init] : [];

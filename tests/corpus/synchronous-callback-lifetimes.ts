@@ -113,3 +113,17 @@ function capturedProjectionOrder(): void {
   }, 0));
 }
 capturedProjectionOrder();
+
+function invokeText(fn: () => string): string { return fn(); }
+function switchCaptures(): void {
+  for (const n of [0, 1]) {
+    switch (n) {
+      case 0:
+        const message = "case-" + String(n);
+        console.log(invokeText(() => message));
+      case 1:
+        console.log(n);
+    }
+  }
+}
+switchCaptures();

@@ -135,6 +135,28 @@ console.log(work(3));
   expect(work).toContain("@scr_box_new");
 });
 
+test("shared switch declarations keep resettable heap capture slots", async () => {
+  const mod = await lower(`
+function invoke(fn: () => string): string { return fn(); }
+function work(values: number[]): void {
+  for (const value of values) {
+    switch (value) {
+      case 0:
+        const message = "case-" + String(value);
+        console.log(invoke(() => message));
+      case 1:
+        console.log(value);
+    }
+  }
+}
+work([0, 1]);
+`);
+  const work = body(emitLlvmModule(mod), "sc_bf_work");
+  expect(work).toContain("@scr_box_new");
+  expect(work).not.toContain("alloca %ScrBox");
+  expect(work).toContain("alloca { %ScrClosure");
+});
+
 test("ordinary source helper parameters admit local array boxes after serialization", async () => {
   const mod = await lower(`
 class Item { value: number; constructor(value: number) { this.value = value; } }

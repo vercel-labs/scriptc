@@ -771,6 +771,16 @@ ScrStr *scr_str_slice(ScrStr *s, double start, double end);
 /* substring: clamp-and-swap (negatives clamp to 0, start > end swaps). */
 ScrStr *scr_str_substring(ScrStr *s, double start, double end);
 
+/* Scalar-only local slices retain their original owner without copying.
+ * Bounds and split-surrogate replacements are snapshotted at construction. */
+typedef struct ScrStringSlice {
+  size_t start, length;
+  uint32_t split;
+} ScrStringSlice;
+void scr_str_slice_range(ScrStr *s, double start, double end, bool substring,
+                         ScrStringSlice *out);
+double scr_str_slice_char_code_at(ScrStr *s, const ScrStringSlice *range, double index);
+
 /* repeat(count): count < 0 or Infinity is a JS RangeError; scriptc has no
  * exceptions, so it prints "scriptc: RangeError: Invalid count value" to
  * stderr and abort()s. Returns +1. */

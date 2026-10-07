@@ -14493,6 +14493,30 @@
     "<repo>/tests/corpus/regex-callback-values.js"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/constant-callback-dispatch.ts": {
+   "order": [
+    "<repo>/tests/corpus/constant-callback-dispatch.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/constant-number-remainders.ts": {
+   "order": [
+    "<repo>/tests/corpus/constant-number-remainders.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/numeric-call-specialization.ts": {
+   "order": [
+    "<repo>/tests/corpus/numeric-call-specialization.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/scalar-string-slices.ts": {
+   "order": [
+    "<repo>/tests/corpus/scalar-string-slices.ts"
+   ],
+   "diags": []
   }
  }
 }

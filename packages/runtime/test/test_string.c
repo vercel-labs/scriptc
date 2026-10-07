@@ -155,6 +155,27 @@ static void divergence_asserts(void) {
   check_f64("charCodeAt-surrogate", "2", s, scr_str_char_code_at(s, 2),
             "56832", 5); /* 0xDE00 */
 
+  /* Deferred scalar slices must match materialization, including the
+   * runtime's established replacement at split astral boundaries. */
+  for (size_t from = 0; from <= 5; from++) {
+    for (size_t to = 0; to <= 5; to++) {
+      for (unsigned substring = 0; substring < 2; substring++) {
+        ScrStringSlice range;
+        scr_str_slice_range(two, (double)from, (double)to, substring != 0, &range);
+        ScrStr *copy = substring ? scr_str_substring(two, (double)from, (double)to)
+                                 : scr_str_slice(two, (double)from, (double)to);
+        total++;
+        if ((double)range.length != scr_str_utf16_len(copy)) failed++;
+        for (size_t i = 0; i <= range.length; i++) {
+          double actual = scr_str_slice_char_code_at(two, &range, (double)i);
+          double expected = scr_str_char_code_at(copy, (double)i);
+          total++;
+          if (!(actual == expected || (isnan(actual) && isnan(expected)))) failed++;
+        }
+        scr_str_release(copy);
+      }
+    }
+  }
   scr_str_release(two);
   scr_str_release(s);
 }
@@ -441,6 +462,38 @@ static void short_string_asserts(void) {
 static void sidx_fail(const char *what) {
   failed++;
   fprintf(stderr, "SIDX: %s\n", what);
+}
+
+/* A live source must keep its index when sequential large slices use and
+ * vacate another slot. Slicing knows output length without decoding it. */
+static void sparse_slice_churn_asserts(void) {
+  enum { BYTES = 256 * 1024, QUERIES = 128 };
+  char *raw = malloc(BYTES);
+  if (!raw) { sidx_fail("slice churn allocation"); return; }
+  memset(raw, 'x', BYTES);
+  raw[100] = '\xc3'; raw[101] = '\xa9';
+  ScrStr *source = scr_str_new(raw, BYTES);
+  free(raw);
+  scr_sidx_test_reset_cache();
+  double length = scr_str_utf16_len(source);
+  scr_sidx_test_reset_steps();
+  for (size_t i = 0; i < QUERIES; i++) {
+    ScrStr *slice = scr_str_substring(source, (double)(200 + i), INFINITY);
+    if (scr_str_utf16_len(slice) != length - 200 - i)
+      sidx_fail("slice's known UTF-16 length was lost");
+    if (scr_str_char_code_at(source, 200 + i) != 'x')
+      sidx_fail("source changed during slice churn");
+    scr_str_release(slice);
+  }
+  if (scr_sidx_test_walk_steps() > QUERIES * 4200u)
+    sidx_fail("slice churn evicted the live source index");
+  ScrStr *whole = scr_str_slice(source, 0, INFINITY);
+  if (whole != source) sidx_fail("whole slice did not share its owner");
+  scr_str_release(source);
+  if (scr_str_utf16_len(whole) != length)
+    sidx_fail("whole slice lost ownership");
+  scr_str_release(whole);
+  if (scr_sidx_test_active()) sidx_fail("slice churn left stale cache entries");
 }
 
 static void index_activity_asserts(void) {
@@ -1030,6 +1083,7 @@ int main(int argc, char **argv) {
   sparse_all_ascii_end_asserts();
   sparse_append_threshold_asserts();
   index_activity_asserts();
+  sparse_slice_churn_asserts();
   local_navigation_asserts();
   positioned_suffix_eviction_asserts();
 #endif

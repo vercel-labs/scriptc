@@ -89,21 +89,25 @@ static SCR_TL ScrSidx scr_sidx_sparse_tab[SCR_SIDX_N];
 static SCR_TL ScrSidx scr_sidx_cursor_tab[SCR_SIDX_N];
 static SCR_TL unsigned scr_sidx_sparse_clock;
 static SCR_TL unsigned scr_sidx_cursor_clock;
+static SCR_TL unsigned scr_sidx_sparse_live;
 static SCR_TL bool scr_sidx_cleanup_registered;
 /* Counts both tiers, independent of the wrapping eviction clocks. A transfer
  * moves one active entry; only clearing or initializing changes the count. */
 static SCR_TL size_t scr_sidx_active;
 
-static void scr_sidx_clear(ScrSidx *e) {
-  if (e->s) scr_sidx_active--;
+static void scr_sidx_clear(ScrSidx *e, unsigned *live) {
+  if (e->s) {
+    scr_sidx_active--;
+    if (live) (*live)--;
+  }
   free(e->points);
   memset(e, 0, sizeof(*e));
 }
 
 static void scr_sidx_reset_all(void) {
   for (int i = 0; i < SCR_SIDX_N; i++) {
-    scr_sidx_clear(&scr_sidx_sparse_tab[i]);
-    scr_sidx_clear(&scr_sidx_cursor_tab[i]);
+    scr_sidx_clear(&scr_sidx_sparse_tab[i], &scr_sidx_sparse_live);
+    scr_sidx_clear(&scr_sidx_cursor_tab[i], NULL);
   }
   scr_sidx_sparse_clock = 0;
   scr_sidx_cursor_clock = 0;
@@ -154,9 +158,9 @@ static __attribute__((noinline)) void scr_sidx_purge_active(const ScrStr *s) {
    * most eight pointer comparisons and cannot grow with live strings. */
   for (int i = 0; i < SCR_SIDX_N; i++) {
     if (scr_sidx_sparse_tab[i].s == s)
-      scr_sidx_clear(&scr_sidx_sparse_tab[i]);
+      scr_sidx_clear(&scr_sidx_sparse_tab[i], &scr_sidx_sparse_live);
     if (scr_sidx_cursor_tab[i].s == s)
-      scr_sidx_clear(&scr_sidx_cursor_tab[i]);
+      scr_sidx_clear(&scr_sidx_cursor_tab[i], NULL);
   }
 }
 
@@ -164,11 +168,28 @@ static void scr_sidx_purge(const ScrStr *s) {
   if (scr_sidx_active) scr_sidx_purge_active(s);
 }
 
-static void scr_sidx_init(ScrSidx *e, const ScrStr *s) {
+static void scr_sidx_init(ScrSidx *e, const ScrStr *s, unsigned *live) {
   memset(e, 0, sizeof(*e));
   e->s = s;
   scr_sidx_active++;
+  if (live) (*live)++;
   e->u16len = SCR_U16_UNKNOWN;
+}
+
+/* Reuse sparse-tier holes left by short-lived receivers before evicting a live index.
+ * Round-robin eviction remains bounded when every slot is occupied. */
+static ScrSidx *scr_sidx_claim(ScrSidx *table, unsigned *clock, unsigned *live) {
+  /* A full tier needs no second slot scan after the failed lookup. */
+  for (size_t offset = 0; *live < SCR_SIDX_N && offset < SCR_SIDX_N; offset++) {
+    size_t index = (*clock + offset) % SCR_SIDX_N;
+    if (!table[index].s) {
+      *clock = (unsigned)(index + 1);
+      return &table[index];
+    }
+  }
+  ScrSidx *entry = &table[(*clock)++ % SCR_SIDX_N];
+  scr_sidx_clear(entry, live);
+  return entry;
 }
 
 /* Short strings retain the historical hot cursor without contending with the
@@ -191,17 +212,14 @@ static ScrSidx *scr_sidx(const ScrStr *s) {
     for (int i = 0; i < SCR_SIDX_N; i++) {
       ScrSidx *old = &scr_sidx_cursor_tab[i];
       if (old->s != s) continue;
-      ScrSidx *e = &scr_sidx_sparse_tab[
-          scr_sidx_sparse_clock++ % SCR_SIDX_N];
-      scr_sidx_clear(e);
+      ScrSidx *e = scr_sidx_claim(scr_sidx_sparse_tab, &scr_sidx_sparse_clock, &scr_sidx_sparse_live);
       *e = *old;
+      scr_sidx_sparse_live++;
       memset(old, 0, sizeof(*old)); /* ownership moved to the sparse tier */
       return e;
     }
-    ScrSidx *e =
-        &scr_sidx_sparse_tab[scr_sidx_sparse_clock++ % SCR_SIDX_N];
-    scr_sidx_clear(e);
-    scr_sidx_init(e, s);
+    ScrSidx *e = scr_sidx_claim(scr_sidx_sparse_tab, &scr_sidx_sparse_clock, &scr_sidx_sparse_live);
+    scr_sidx_init(e, s, &scr_sidx_sparse_live);
     return e;
   }
   ScrSidx *tab = scr_sidx_cursor_tab;
@@ -210,8 +228,8 @@ static ScrSidx *scr_sidx(const ScrStr *s) {
     if (tab[i].s == s) return &tab[i];
   }
   ScrSidx *e = &tab[(*clock)++ % SCR_SIDX_N];
-  scr_sidx_clear(e);
-  scr_sidx_init(e, s);
+  scr_sidx_clear(e, NULL);
+  scr_sidx_init(e, s, NULL);
   return e;
 }
 
@@ -1159,9 +1177,43 @@ ScrStr *scr_str_slice(ScrStr *s, double start, double end) {
   return scr_str_slice_units(s, e, from, to);
 }
 
+void scr_str_slice_range(ScrStr *s, double start, double end, bool substring,
+                         ScrStringSlice *out) {
+  ScrSidx *e = scr_sidx(s);
+  size_t length = scr_sidx_len(s, e);
+  double a = scr_to_integer_or_infinity(start), b = scr_to_integer_or_infinity(end);
+  size_t from, to;
+  if (substring) {
+    from = a <= 0 ? 0 : a >= (double)length ? length : (size_t)a;
+    to = b <= 0 ? 0 : b >= (double)length ? length : (size_t)b;
+    if (from > to) { size_t swap = from; from = to; to = swap; }
+  } else {
+    from = scr_slice_boundary(a, length);
+    to = scr_slice_boundary(b, length);
+  }
+  out->start = from;
+  out->length = to > from ? to - from : 0;
+  out->split = 0;
+  if (out->length) {
+    bool first, last;
+    (void)scr_u16_to_byte_c(s, e, from, &first);
+    (void)scr_u16_to_byte_c(s, e, to, &last);
+    out->split = (first ? 1u : 0u) | (last ? 2u : 0u);
+  }
+}
+
+double scr_str_slice_char_code_at(ScrStr *s, const ScrStringSlice *range, double index) {
+  double unit = scr_to_integer_or_infinity(index);
+  if (!(unit >= 0) || unit >= (double)range->length) return NAN;
+  if ((unit == 0 && (range->split & 1u)) ||
+      (unit == (double)(range->length - 1) && (range->split & 2u))) return 0xFFFD;
+  return scr_str_char_code_at(s, (double)range->start + unit);
+}
+
 static ScrStr *scr_str_slice_units(ScrStr *s, ScrSidx *e,
                                     size_t from, size_t to) {
   if (from >= to) return scr_str_empty();
+  if (from == 0 && to == e->u16len) return scr_str_retain(s);
 
   bool from_mid, to_mid;
   size_t from_b = scr_u16_to_byte_c(s, e, from, &from_mid);
@@ -1171,8 +1223,14 @@ static ScrStr *scr_str_slice_units(ScrStr *s, ScrSidx *e,
   size_t content_b = from_mid ? from_b + 4 : from_b;
   size_t content_len = to_b - content_b;
 
-  if (!from_mid && !to_mid)
-    return scr_str_from_span(s->data + from_b, content_len);
+  if (!from_mid && !to_mid) {
+    ScrStr *result = scr_str_from_span(s->data + from_b, content_len);
+    /* Unit boundaries already prove the exact output length. Preserve it
+     * instead of decoding a potentially megabyte-sized copy on .length.
+     * Index checkpoints remain lazy and owned by the result's cache slot. */
+    if (content_len >= SCR_SIDX_MIN_BYTES) scr_sidx(result)->u16len = to - from;
+    return result;
+  }
 
   /* Divergence: JS would emit the lone surrogate half; we emit U+FFFD. */
   size_t total = content_len + (from_mid ? SCR_REPLACEMENT_LEN : 0) +

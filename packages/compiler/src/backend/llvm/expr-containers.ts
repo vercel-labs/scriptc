@@ -23,6 +23,7 @@ import {
   borrowsMapMutationReceiver,
 } from "./map-read-lifetimes.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
+import { emitStringSliceRead } from "./string-slices.js";
 
 export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string {
   const key = typeKey(inner);
@@ -156,6 +157,8 @@ export function emitStrIntrinsic(
   // identity returns. Inputs keep either a proven owner or a frame temp.
   // Omitted optional args get the C-side defaults from docs/ir.md.
   const B = host.B;
+  const slice = emitStringSliceRead(host, e);
+  if (slice) return slice;
   const inputs = [e.receiver, ...e.args];
   const values = borrowsStringInputs(e.method)
     ? emitStringInputs(host, inputs)

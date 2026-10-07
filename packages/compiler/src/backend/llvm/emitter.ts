@@ -87,6 +87,7 @@ import {
   type StringSplit,
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
+import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { analyzeIntegerRanges, type IntegerRanges } from "../../ir/integer-ranges.js";
 import { findIntegerViews } from "./integer-views.js";
@@ -147,6 +148,12 @@ import { ReferenceEffects } from "./reference-effects.js";
 import { LlvmDebugInfo } from "./debug-info.js";
 import { StackCallbacks } from "./stack-callbacks.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
+import { findConstantCallbacks } from "./constant-callbacks.js";
+import {
+  findScalarStringSlices,
+  emitStringSliceSnapshot,
+  type StringSliceSnapshot,
+} from "./string-slices.js";
 import { StackCaptures } from "./stack-captures.js";
 import {
   f64Lit,
@@ -347,7 +354,9 @@ export interface LlvmTargetOptions {
 export function emitLlvmModule(mod: IrModule, options: LlvmTargetOptions = {}): string {
   // Keep source storage intact for debugger inspection in dev builds.
   return new LlEmitter(
-    options.debugSources === undefined ? scalarizeNumericRecords(mod) : mod,
+    options.debugSources === undefined
+      ? scalarizeNumericRecords(specializeNumericCalls(mod, mangleFunction))
+      : mod,
     options,
   ).emit();
 }
@@ -358,7 +367,9 @@ export function emitLlvmModuleSource(
   options: LlvmTargetOptions = {},
 ): string | readonly string[] {
   const parts = new LlEmitter(
-    options.debugSources === undefined ? scalarizeNumericRecords(mod) : mod,
+    options.debugSources === undefined
+      ? scalarizeNumericRecords(specializeNumericCalls(mod, mangleFunction))
+      : mod,
     options,
   ).emitParts();
   const length = parts.reduce((total, part) => total + part.length, Math.max(0, parts.length - 1));
@@ -373,6 +384,8 @@ function llStrBytes(text: string): string {
 export class LlEmitter {
   localArrayReads = new Map<string, LocalArrayRead>();
   private loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
+  private scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
+  readonly stringSlices = new Map<string, StringSliceSnapshot>();
   private localStackUnions = new Map<string, IrExpr & { kind: "unionWrap" }>();
   private localUnionStorageProofs = new Map<string, LocalUnionStorageProof>();
   private localUnionStorage = new Map<string, LocalUnionStorage>();
@@ -469,6 +482,8 @@ export class LlEmitter {
   callArrayReads = new Map<IrExpr, LocalArrayRead>();
   mapReadLifetimes: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
   readonly callLifetimes: CallLifetimes;
+  readonly constantCallbacks: Map<string, Map<string, string>>;
+  currentConstantCallbacks: ReadonlyMap<string, string> = new Map();
   readonly stackCallbacks: StackCallbacks;
   private readonly stackCaptures: StackCaptures;
   private borrowedParameters = new Set<string>();
@@ -676,6 +691,7 @@ export class LlEmitter {
       (call) => this.optionalArrayReads.get(call) !== null,
     );
     this.callLifetimes = analyzeCallLifetimes(this.fnByName);
+    this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
     this.stackCallbacks = new StackCallbacks(this.fnByName);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
     for (const r of mod.records ?? []) this.recordsById.set(r.id, r);
@@ -3776,6 +3792,8 @@ export class LlEmitter {
     this.unwindCleanups.clear();
     this.jumpTargets = [];
     this.currentLocals = new Map(fn.locals.map((l) => [l.id, l]));
+    this.currentConstantCallbacks =
+      this.debug === null ? (this.constantCallbacks.get(fn.name) ?? new Map()) : new Map();
     // Preserve concrete source bindings for debugger inspection. Suspended
     // functions keep the established array lifetime across continuations.
     this.streamingSplitsEnabled = this.debug === null && !fn.async && !fn.generator;
@@ -3784,6 +3802,7 @@ export class LlEmitter {
     this.privateSplitLocals = this.streamingSplitsEnabled ? findPrivateSplitLocals(fn) : new Map();
     this.storedSplits.clear();
     this.splitSpans.clear();
+    this.stringSlices.clear();
     const initializerBindings = this.initializerBindings.get(fn.name) ?? [];
     const numericFn = withInitializerBindings(fn, initializerBindings);
     this.numericLocals = new Map(numericFn.locals.map((l) => [l.id, l]));
@@ -3831,6 +3850,8 @@ export class LlEmitter {
       this.referenceEffects.functions,
       this.callLifetimes,
     );
+    this.scalarStringSlices =
+      this.debug === null ? findScalarStringSlices(fn, this.callLifetimes) : new Map();
     this.mapReadLifetimes = findMapReadLifetimes(fn, this.unionsById, this.callLifetimes);
     this.localStackUnions = findLocalStackUnions(fn, this.callLifetimes, this.unionsById);
     this.localUnionStorageProofs = findLocalUnionStorage(fn, this.callLifetimes, this.unionsById);
@@ -4129,6 +4150,13 @@ export class LlEmitter {
     switch (s.kind) {
       case "varDecl": {
         const b = this.binding(s.localId);
+        const slice = this.scalarStringSlices.get(s.localId);
+        if (slice) {
+          const snapshot = emitStringSliceSnapshot(this, slice);
+          this.stringSlices.set(s.localId, snapshot);
+          this.scopes[this.scopes.length - 1]!.push({ slot: snapshot.source, type: STRING });
+          break;
+        }
         const split = this.privateSplitLocals.get(s.localId);
         if (split) {
           const snapshot = storeSplitSnapshot(this, emitSplitSnapshot(this, split));

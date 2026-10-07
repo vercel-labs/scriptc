@@ -1,5 +1,6 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
+import { callbackIgnoresReceiver } from "./constant-callbacks.js";
 import { newValueMayThrow } from "../../ir/analysis.js";
 import {
   isFfiCallbackParam,
@@ -16,6 +17,7 @@ import {
   mangleFnClosure,
   mangleFunction,
   mangleLocal,
+  mangleWrapper,
   mangleVtStruct,
 } from "../mangle.js";
 import { classMembershipIntervals, classEnvironmentIndex, classStructSym } from "./classes.js";
@@ -604,26 +606,74 @@ export function emitCallExpr(
       const receiver = e.receiver === undefined ? null : host.emitExpr(e.receiver);
       const args = e.args.map((a) => host.emitExpr(a));
       for (const a of args) host.moveTemp(a);
-      const fnp = B.tmp();
-      const fn = B.tmp();
-      B.line(`${fnp} = getelementptr inbounds %ScrClosure, ptr ${callee.name}, i64 0, i32 1`);
-      B.line(`${fn} = load ptr, ptr ${fnp}`);
+      const knownName =
+        e.callee.kind === "closure"
+          ? e.callee.fnName
+          : e.callee.kind === "varRef"
+            ? host.currentConstantCallbacks.get(e.callee.localId)
+            : undefined;
+      const candidate = knownName ? host.fnByName.get(knownName) : undefined;
+      const known = candidate && !candidate.async && !candidate.generator ? candidate : undefined;
+      let direct: string | undefined;
+      if (known) {
+        if (known.captures === undefined) {
+          host.fnValues.add(known.name);
+          direct = `@${mangleWrapper(known.name)}`;
+        } else direct = `@${host.callTarget(known.name)}`;
+      }
       const argList = [
         `ptr ${callee.name}`,
         ...args.map((a, i) => `${host.llType(ft.params[i]!)} ${a.name}`),
       ].join(", ");
-      host.declare("declare void @scr_dyn_this_push_dyn(ptr)");
-      host.declare("declare void @scr_dyn_this_pop()");
-      B.line(`call void @scr_dyn_this_push_dyn(ptr ${receiver?.name ?? "null"})`);
+      const invoke = (target: string, needsReceiver: boolean): string => {
+        if (needsReceiver) {
+          host.declare("declare void @scr_dyn_this_push_dyn(ptr)");
+          host.declare("declare void @scr_dyn_this_pop()");
+          B.line(`call void @scr_dyn_this_push_dyn(ptr ${receiver?.name ?? "null"})`);
+        }
+        const result = e.type.kind === "void" ? "" : B.tmp();
+        B.line(`${result ? `${result} = ` : ""}call ${host.llType(e.type)} ${target}(${argList})`);
+        if (needsReceiver) B.line("call void @scr_dyn_this_pop()");
+        return result;
+      };
+      let t: string;
+      if (direct && e.callee.kind === "closure") {
+        t = invoke(direct, !callbackIgnoresReceiver(known!));
+      } else {
+        const fnp = B.tmp(),
+          fn = B.tmp();
+        B.line(`${fnp} = getelementptr inbounds %ScrClosure, ptr ${callee.name}, i64 0, i32 1`);
+        B.line(`${fn} = load ptr, ptr ${fnp}`);
+        if (!direct) t = invoke(fn, true);
+        else {
+          // A global initializer may not have run, or a callback may enter
+          // through a boundary the census cannot prove. Validate the actual
+          // snapshotted pointer before choosing the direct entry. The fallback
+          // keeps the ordinary receiver ABI and its initialization behavior.
+          const matches = B.tmp(),
+            fast = B.newLabel("callback.direct"),
+            fallback = B.newLabel("callback.indirect"),
+            done = B.newLabel("callback.done");
+          B.line(`${matches} = icmp eq ptr ${fn}, ${direct}`);
+          B.condBr(matches, fast, fallback);
+          B.startBlock(fast);
+          const specialized = invoke(direct, !callbackIgnoresReceiver(known!));
+          B.br(done);
+          B.startBlock(fallback);
+          const indirect = invoke(fn, true);
+          B.br(done);
+          B.startBlock(done);
+          t = e.type.kind === "void" ? "" : B.tmp();
+          if (t)
+            B.line(
+              `${t} = phi ${host.llType(e.type)} [ ${specialized}, %${fast} ], [ ${indirect}, %${fallback} ]`,
+            );
+        }
+      }
       if (e.type.kind === "void") {
-        B.line(`call void ${fn}(${argList})`);
-        B.line("call void @scr_dyn_this_pop()");
         if (host.indirectMayThrow) host.emitPendingCheck();
         return { name: "", type: e.type };
       }
-      const t = B.tmp();
-      B.line(`${t} = call ${host.llType(e.type)} ${fn}(${argList})`);
-      B.line("call void @scr_dyn_this_pop()");
       // The check runs AFTER the result temp joins the frame: an unwind
       // releases it (the dummy is NULL for refcounted returns).
       const out = host.own({ name: t, type: e.type });

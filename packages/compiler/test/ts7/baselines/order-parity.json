@@ -14396,6 +14396,12 @@
     "<repo>/tests/corpus/byte-record-windows.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/array-numeric-own-keys.ts": {
+   "order": [
+    "<repo>/tests/corpus/array-numeric-own-keys.ts"
+   ],
+   "diags": []
   }
  }
 }

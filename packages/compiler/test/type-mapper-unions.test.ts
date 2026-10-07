@@ -39,6 +39,13 @@ beforeAll(() => {
     export type NullableChoice = Choice | null | undefined;
     export type Plain = { value: number } | { text: string };
     export type OptionalPlain = Plain | undefined;
+    enum MixedEnum { Count = 1, Label = "label" }
+    export type EnumValue = MixedEnum;
+    export type EnumMember = MixedEnum.Count;
+    export type PrimitiveText = "value";
+    export type PrimitiveNumber = 1;
+    export type PrimitiveBoolean = true;
+    export type TemplateText<T extends string> = \`value:\${T}\`;
   `,
   );
   load = loadProgram(entry);
@@ -71,6 +78,21 @@ function mapped(name: string, ctx: TypeMapperCtx): IrType & { kind: "union" } {
   if (result?.kind !== "union") throw new Error(`${name} did not map to a union`);
   return result;
 }
+
+test("primitive mapping preserves template widening and mixed enum member domains", () => {
+  const ctx = context();
+  ctx.canMemoizeType = () => false;
+  for (const dynamic of [false, true]) {
+    ctx.dynamic = dynamic;
+    expect(mapType(aliases.get("PrimitiveText")!, ctx)).toEqual({ kind: "string" });
+    expect(mapType(aliases.get("PrimitiveNumber")!, ctx)).toEqual({ kind: "f64" });
+    expect(mapType(aliases.get("PrimitiveBoolean")!, ctx)).toEqual({ kind: "bool" });
+    expect(mapType(aliases.get("TemplateText")!, ctx)).toEqual({ kind: "string" });
+    const enumType = mapped("EnumValue", ctx);
+    expect(mapType(aliases.get("EnumMember")!, ctx)).toEqual(enumType);
+    expect(ctx.unions.get(enumType.unionId)!.arms).toEqual([{ kind: "f64" }, { kind: "string" }]);
+  }
+});
 
 describe("checker and synthesized optional union identity", () => {
   for (const order of ["required-first", "optional-first"]) {

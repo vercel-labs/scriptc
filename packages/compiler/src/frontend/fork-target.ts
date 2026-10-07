@@ -261,6 +261,7 @@ export function staticForkModulePath(program: ts.Program, expr: ts.Expression): 
 }
 
 export function forkCallModulePath(program: ts.Program, call: ts.CallExpression): string | null {
+  if (call.questionDotToken || call.arguments[0] === undefined) return null;
   const callee = strip(call.expression);
   const isFork =
     (ts.isIdentifier(callee) && isBuiltinMemberImport(program, callee, "child_process", "fork")) ||
@@ -269,7 +270,7 @@ export function forkCallModulePath(program: ts.Program, call: ts.CallExpression)
       callee.name.text === "fork" &&
       ts.isIdentifier(callee.expression) &&
       isBuiltinNamespaceImport(program, callee.expression, "child_process"));
-  if (call.questionDotToken || call.arguments[0] === undefined || !isFork) {
+  if (!isFork) {
     return null;
   }
   return staticForkModulePath(program, call.arguments[0]);
@@ -282,7 +283,26 @@ export function forkTargetPaths(program: ts.Program, files: readonly ts.SourceFi
   const seen = new Set<string>();
   for (const sourceFile of files) {
     if (sourceFile.isDeclarationFile || sourceFile.fileName.endsWith(".json")) continue;
-    for (const node of moduleSourceCandidates(program, sourceFile).calls) {
+    const calls = moduleSourceCandidates(program, sourceFile).calls;
+    const bindings: ts.Node[] = [];
+    for (const call of calls) {
+      if (call.questionDotToken || call.arguments[0] === undefined) continue;
+      const callee = strip(call.expression);
+      if (ts.isIdentifier(callee)) bindings.push(callee);
+      else if (
+        ts.isPropertyAccessExpression(callee) &&
+        !callee.questionDotToken &&
+        callee.name.text === "fork" &&
+        ts.isIdentifier(callee.expression)
+      ) {
+        bindings.push(callee.expression);
+      }
+    }
+    // Discovery needs binding provenance, not every symbol and type in an
+    // otherwise unreachable body. Keep aliases and ambient bindings under
+    // the checker's authority while avoiding its whole-file miss fallback.
+    program.getTypeChecker().prefetchSymbolNodesExact(bindings);
+    for (const node of calls) {
       const target = forkCallModulePath(program, node);
       if (target !== null && !seen.has(target)) {
         seen.add(target);

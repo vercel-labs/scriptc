@@ -7817,6 +7817,19 @@ function lowerObjectStaticCall(
     const recvNode = call.arguments[0]!;
     const keyNode = call.arguments[1]!;
     const probed = tryLowerExpression(lowerer, recvNode);
+    const arrayKey = probed?.type.kind === "array" ? lowerer.lowerExpr(keyNode) : null;
+    if (probed?.type.kind === "array" && arrayKey?.type.kind === "f64") {
+      // Numeric own keys use the array's slot/property presence directly.
+      // Unlike `in`, this never includes inherited properties. arrayHas
+      // evaluates and keeps the receiver alive before evaluating the key.
+      return {
+        kind: "arrayHas",
+        arr: probed,
+        index: arrayKey,
+        type: BOOL,
+        loc: locOf(call),
+      };
+    }
     const constructor =
       probed?.type.kind === "classval" ? lowerer.classes.get(probed.type.className) : undefined;
     // A CHECKED-DYNAMIC receiver (the JS file-scope object-literal
@@ -7831,7 +7844,7 @@ function lowerObjectStaticCall(
     ) {
       const loc = locOf(call);
       const receiver = lowerer.coerceToExpected(probed, DYN);
-      const rawKey = lowerer.lowerExpr(keyNode);
+      const rawKey = arrayKey ?? lowerer.lowerExpr(keyNode);
       if (
         rawKey.type.kind === "dyn" ||
         rawKey.type.kind === "symbol" ||

@@ -181,6 +181,7 @@ test("all public query and prefetch entry points reject a disposed facade before
       getTypeAtLocation: () => facade.getTypeAtLocation(name),
       getSymbolAtLocation: () => facade.getSymbolAtLocation(name),
       getTypeOfSymbol: () => facade.getTypeOfSymbol(symbol),
+      prefetchMemberTypes: () => facade.prefetchMemberTypes([symbol], 0),
       getAliasedSymbol: () => facade.getAliasedSymbol(symbol),
       getDeclaredTypeOfSymbol: () => facade.getDeclaredTypeOfSymbol(symbol),
       getContextualType: () => facade.getContextualType(name),
@@ -380,4 +381,48 @@ test("dependency edits invalidate positive and negative property answers", () =>
   } finally {
     h.close();
   }
+});
+
+test("member type batches are bounded, reuse warm entries, and isolate absent or panicking fields", () => {
+  const calls: number[][] = [];
+  const snapshot = new SemanticSnapshot(1, {
+    text: (method, payload) => {
+      if (method === "getAnyType") return JSON.stringify({ id: 1000, flags: TypeFlags.Any });
+      expect(method).toBe("getTypesOfSymbols");
+      const ids = (JSON.parse(payload) as { symbols: number[] }).symbols;
+      calls.push(ids);
+      if (ids.includes(7)) throw new Error("checker panic");
+      return JSON.stringify(ids.map((id) => (id === 11 ? null : { id, flags: TypeFlags.Number })));
+    },
+    binary: () => {
+      throw new Error("unexpected binary query");
+    },
+  });
+  const project = snapshot.addProject("members", () => undefined);
+  const facade = new CheckerFacade(new SemanticChecker(project));
+  const symbols = Array.from({ length: 40 }, (_, index) =>
+    snapshot.symbol({
+      id: index + 1,
+      project: "members",
+      name: `field${index}`,
+      flags: 4,
+      checkFlags: 0,
+    }),
+  );
+  facade.getTypeOfSymbol(symbols[0]!);
+  facade.prefetchMemberTypes(symbols, 0);
+  expect(calls[1]).toEqual(symbols.slice(1, 32).map((symbol) => symbol.id));
+  expect(calls.every((ids) => ids.length <= 32 && ids.every((id) => id <= 32))).toBe(true);
+  const before = calls.length;
+  facade.prefetchMemberTypes(symbols, 0);
+  for (const symbol of symbols.slice(0, 32)) {
+    expect(facade.getTypeOfSymbol(symbol).flags).toBe(
+      symbol.id === 7 || symbol.id === 11 ? TypeFlags.Any : TypeFlags.Number,
+    );
+  }
+  expect(calls).toHaveLength(before);
+  facade.prefetchMemberTypes(symbols, 32);
+  expect(calls.at(-1)).toEqual(symbols.slice(32).map((symbol) => symbol.id));
+  snapshot.dispose();
+  expect(() => facade.prefetchMemberTypes(symbols, 0)).toThrow("disposed");
 });

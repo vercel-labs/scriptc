@@ -22,10 +22,10 @@ import { SyntaxKind, NodeFlags } from "./enums.js";
 export class AstFile {
   readonly wire: AstWireFile;
   readonly root: AstNode;
-  // Wire ids are bounded dense indices. Direct slots preserve lazy object
-  // creation and avoid hashing and temporary optional boxes on every read.
-  private readonly nodes: (AstNode | undefined)[];
-  private readonly lists: (AstNode[] | undefined)[];
+  // Wire ids are bounded dense indices. Holes mark unresolved slots; present
+  // entries hold concrete nodes/lists without an optional payload wrapper.
+  private readonly nodes: AstNode[];
+  private readonly lists: AstNode[][];
   private readonly references = new Map<number, AstFileReference[]>();
   private readonly structuredNodes = new Map<number, AstNode[]>();
   private readonly strings = new Map<number, string[]>();
@@ -38,8 +38,8 @@ export class AstFile {
     private readonly materialized?: () => void,
   ) {
     this.wire = new AstWireFile(bytes);
-    this.nodes = new Array<AstNode | undefined>(this.wire.nodeCount);
-    this.lists = new Array<AstNode[] | undefined>(this.wire.nodeCount);
+    this.nodes = new Array<AstNode>(this.wire.nodeCount);
+    this.lists = new Array<AstNode[]>(this.wire.nodeCount);
     this.root = new AstNode(this, 1);
     this.nodes[1] = this.root;
   }
@@ -54,8 +54,7 @@ export class AstFile {
   }
 
   node(index: number): AstNode {
-    const existing = this.nodes[index];
-    if (existing !== undefined) return existing;
+    if (Object.hasOwn(this.nodes, index)) return this.nodes[index]!;
     if (index === 0 || this.wire.kind(index) === KIND_NODE_LIST)
       throw new AstDecodeError("expected a node index");
     const node = new AstNode(this, index);
@@ -65,8 +64,7 @@ export class AstFile {
   }
 
   list(index: number): AstNode[] {
-    const existing = this.lists[index];
-    if (existing !== undefined) return existing;
+    if (Object.hasOwn(this.lists, index)) return this.lists[index]!;
     const nodes: AstNode[] = [];
     for (const child of this.wire.list(index)) nodes.push(this.node(child));
     this.listMetadata?.(nodes, this.wire.pos(index) >>> 0, this.wire.end(index) >>> 0);

@@ -1074,6 +1074,16 @@ let contextResolutions = 0;
 
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
+  // These intrinsic domains cannot depend on generic bindings, declaration
+  // provenance, or recursive shape state. Enum literals retain the ordinary
+  // widening path, including mixed numeric/string enum representations.
+  const flags = type.flags;
+  if ((flags & ts.TypeFlags.EnumLike) === 0) {
+    if (flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) return F64;
+    if (flags & (ts.TypeFlags.String | ts.TypeFlags.StringLiteral | ts.TypeFlags.TemplateLiteral))
+      return STRING;
+    if (flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) return BOOL;
+  }
   const topLevel = mapTypeDepth === 0;
   const typeId = (type as { id?: number }).id;
   const memoizable = typeId !== undefined && (ctx.canMemoizeType?.() ?? true);
@@ -4720,7 +4730,9 @@ function mapRecordTypeInner(
       return DYN;
     }
     const fields: { name: string; type: IrType }[] = [];
-    for (const p of props) {
+    for (let propertyIndex = 0; propertyIndex < props.length; propertyIndex++) {
+      if (propertyIndex % 32 === 0) checker.prefetchMemberTypes(props, propertyIndex);
+      const p = props[propertyIndex]!;
       if (p.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) {
         // OBJECT-LITERAL get/set accessors (TS sources): the property has
         // no data slot — the shape carries reserved closure fields instead

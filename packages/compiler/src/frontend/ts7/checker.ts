@@ -541,6 +541,22 @@ export class CheckerFacade {
     return type ?? this.anyType();
   }
 
+  /** A structural member walk consumes adjacent symbol types together.
+   * Bound lookahead so an early refusal cannot query an entire wide shape.
+   * Use the same panic isolation and memo as an individual field query. */
+  prefetchMemberTypes(symbols: readonly Ts7Symbol[], start: number): void {
+    this.ensureActive();
+    const missing: Ts7Symbol[] = [];
+    const end = Math.min(symbols.length, start + 32);
+    for (let i = start; i < end; i++) {
+      const symbol = symbols[i]!;
+      if (!this.cache.typeOfSymbol.has(symbol)) missing.push(symbol);
+    }
+    if (missing.length === 0) return;
+    const types = withPanicFence(missing, (chunk) => this.raw.getTypeOfSymbol(chunk));
+    missing.forEach((symbol, i) => this.cache.typeOfSymbol.set(symbol, types[i]));
+  }
+
   getAliasedSymbol(symbol: Ts7Symbol): Ts7Symbol {
     this.ensureActive();
     let aliased = this.cache.aliasedSymbol.get(symbol);

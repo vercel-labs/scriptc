@@ -14824,6 +14824,12 @@
     "<repo>/tests/corpus/4044-adapted-callback-modules/main.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/3138-array-large-storage.ts": {
+   "order": [
+    "<repo>/tests/corpus/3138-array-large-storage.ts"
+   ],
+   "diags": []
   }
  }
 }

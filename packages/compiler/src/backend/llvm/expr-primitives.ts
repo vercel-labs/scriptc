@@ -779,6 +779,8 @@ export function emitRecordExpr(
     | "recordKeyGet"
     | "recordOvfKeys"
     | "recordOvfHas"
+    | "recordHas"
+    | "fieldAbsent"
   >,
 ): LlValue {
   const B = host.B;
@@ -794,7 +796,7 @@ export function emitRecordExpr(
     case "recordGet": {
       const obj = host.emitReadReceiver(e.obj);
       const { ptr, type } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
-      const v = host.loadField(ptr, type);
+      const v = host.loadRecordField(ptr, type);
       if (isRefCounted(e.type))
         return host.own({ name: host.retainValue(v, e.type), type: e.type });
       return { name: v, type: e.type };
@@ -863,6 +865,21 @@ export function emitRecordExpr(
     }
     case "recordKeyGet":
       return host.emitRecordKeyGet(e);
+    case "recordHas": {
+      // Own-property presence: only an undefined-armed union slot can
+      // lack its property, by holding the ABSENT state.
+      const obj = host.emitReadReceiver(e.obj);
+      const { ptr, type } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+      if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
+        return { name: "true", type: e.type };
+      const v = host.loadField(ptr, type);
+      const absent = host.fieldAbsentTest(v, type.unionId);
+      const t = B.tmp();
+      B.line(`${t} = xor i1 ${absent}, true`);
+      return { name: t, type: e.type };
+    }
+    case "fieldAbsent":
+      return { name: host.absentInstanceRef(e.unionId), type: e.type };
     case "recordOvfHas": {
       const obj = host.emitExpr(e.obj);
       const key = host.emitExpr(e.key);

@@ -2,8 +2,8 @@
 // is compile-time-known; the ORDER is the shape's declaration order, which
 // matches Node whenever objects are constructed in declaration order (the
 // literals here are — the divergence for reordered construction is
-// SEMANTICS.md 36). Fields holding the undefined arm (unset optionals) are
-// skipped at runtime, Node's missing-key behavior.
+// SEMANTICS.md 36). Omitted optional fields are skipped at runtime, Node's
+// missing-key behavior.
 interface Point {
   y: number;
   x: number;

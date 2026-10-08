@@ -1282,6 +1282,23 @@ function validateFunction(
 
   // Keep expression families in separate functions so native bootstrap builds
   // do not feed LLVM a single control-flow graph containing every IR check.
+  /** fieldAbsent nodes that sit directly in a field-slot write (a
+   * recordLit field, recordSet value, recordClone override, or a ternary
+   * arm in one of those positions) — the only places the absent state may
+   * appear. */
+  const fieldSlotValues = new Set<IrExpr>();
+  function checkSlotValue(e: IrExpr): void {
+    const mark = (v: IrExpr): void => {
+      if (v.kind === "fieldAbsent") fieldSlotValues.add(v);
+      else if (v.kind === "ternary") {
+        mark(v.then);
+        mark(v.else_);
+      }
+    };
+    mark(e);
+    checkExpr(e);
+  }
+
   function checkExpr(e: IrExpr): void {
     switch (e.kind) {
       case "numLit":
@@ -1354,6 +1371,8 @@ function validateFunction(
       case "recordKeyGet":
       case "recordOvfHas":
       case "recordOvfKeys":
+      case "recordHas":
+      case "fieldAbsent":
         return checkRecordExpr(e);
       case "dynFrom":
       case "dynFromJsval":
@@ -3041,7 +3060,9 @@ function validateFunction(
         | "recordGet"
         | "recordKeyGet"
         | "recordOvfHas"
-        | "recordOvfKeys";
+        | "recordOvfKeys"
+        | "recordHas"
+        | "fieldAbsent";
     },
   ): void {
     switch (e.kind) {
@@ -3058,7 +3079,8 @@ function validateFunction(
         const want = recordValidation.get(shape.id)!.initializationFields;
         const seen = new Set<string>();
         for (const f of e.fields) {
-          checkExpr(f.value);
+          if (f.drop || f.overflow) checkExpr(f.value);
+          else checkSlotValue(f.value);
           if (seen.has(f.name)) err(`recordLit initializes field "${f.name}" twice`, e.loc);
           seen.add(f.name);
           if (f.drop) {
@@ -3118,13 +3140,33 @@ function validateFunction(
         const want = recordValidation.get(shape.id)!.initializationFields;
         const seen = new Set<string>();
         for (const f of e.overrides) {
-          checkExpr(f.value);
+          checkSlotValue(f.value);
           if (seen.has(f.name)) err(`recordClone overrides field "${f.name}" twice`, e.loc);
           seen.add(f.name);
           const ft = want.get(f.name);
           if (!ft) err(`shape ${shape.id} has no field "${f.name}"`, e.loc);
           else expectType(f.value, ft, `recordClone field "${f.name}"`);
         }
+        break;
+      }
+      case "recordHas": {
+        checkExpr(e.obj);
+        const shape = records.get(e.shapeId);
+        if (!shape) err(`recordHas on undeclared shape "${e.shapeId}"`, e.loc);
+        else if (!recordValidation.get(e.shapeId)?.fields.has(e.field))
+          err(`shape ${e.shapeId} has no field "${e.field}"`, e.loc);
+        expectType(e.obj, { kind: "record", shapeId: e.shapeId }, "recordHas receiver");
+        if (e.type.kind !== "bool") err("recordHas must be bool", e.loc);
+        break;
+      }
+      case "fieldAbsent": {
+        const def = unions.get(e.unionId);
+        if (!def) err(`fieldAbsent of undeclared union "${e.unionId}"`, e.loc);
+        else if (!def.arms.some((arm) => arm.kind === "undefinedT"))
+          err(`fieldAbsent of ${e.unionId}: the union has no undefined arm`, e.loc);
+        if (e.type.kind !== "union" || e.type.unionId !== e.unionId)
+          err("fieldAbsent must have its union type", e.loc);
+        if (!fieldSlotValues.has(e)) err("fieldAbsent outside a record field write", e.loc);
         break;
       }
       case "recordGet": {
@@ -5925,7 +5967,7 @@ function validateFunction(
       }
       case "recordSet": {
         checkExpr(s.obj);
-        checkExpr(s.value);
+        checkSlotValue(s.value);
         const shape = records.get(s.shapeId);
         const field = recordValidation.get(s.shapeId)?.fields.get(s.field);
         if (!shape) err(`recordSet on undeclared shape "${s.shapeId}"`, s.loc);

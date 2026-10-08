@@ -1,5 +1,6 @@
 import { commentText, unsignedHex } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
+import type { BlockBuilder } from "./blocks.js";
 import type {
   IrBytesElem,
   IrFfiCallbackParamClass,
@@ -95,3 +96,28 @@ export const BYTES_ELEM_NUM: Record<IrBytesElem, number> = {
   i16: 7,
   u8c: 8,
 };
+
+/** The payload marker of an ABSENT record field slot (IR fieldAbsent): the
+ * union's undefined-arm tag with payload 1, where ordinary unit instances
+ * carry 0. Tests compare tag and payload, never the address, so separately
+ * compiled units agree. */
+export const ABSENT_FIELD_PAYLOAD = 1;
+
+/** Emits the i1 "this field-slot union value is ABSENT" test. */
+export function emitFieldAbsentTest(B: BlockBuilder, value: string, undefinedTag: number): string {
+  const tp = B.tmp();
+  const tag = B.tmp();
+  const isUndef = B.tmp();
+  const sp = B.tmp();
+  const payload = B.tmp();
+  const marked = B.tmp();
+  const absent = B.tmp();
+  B.line(`${tp} = getelementptr inbounds %ScrUnion, ptr ${value}, i64 0, i32 1`);
+  B.line(`${tag} = load i32, ptr ${tp}`);
+  B.line(`${isUndef} = icmp eq i32 ${tag}, ${undefinedTag}`);
+  B.line(`${sp} = getelementptr inbounds %ScrUnion, ptr ${value}, i64 0, i32 5`);
+  B.line(`${payload} = load i64, ptr ${sp}`);
+  B.line(`${marked} = icmp eq i64 ${payload}, ${ABSENT_FIELD_PAYLOAD}`);
+  B.line(`${absent} = and i1 ${isUndef}, ${marked}`);
+  return absent;
+}

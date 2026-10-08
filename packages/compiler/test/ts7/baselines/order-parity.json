@@ -14763,6 +14763,36 @@
     "<repo>/tests/corpus/union-reference-comparison.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/optional-flag-comparisons.ts": {
+   "order": [
+    "<repo>/tests/corpus/optional-flag-comparisons.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/record-field-presence.ts": {
+   "order": [
+    "<repo>/tests/corpus/record-field-presence.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/record-presence-copies.ts": {
+   "order": [
+    "<repo>/tests/corpus/record-presence-copies.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/record-presence-delete-json.ts": {
+   "order": [
+    "<repo>/tests/corpus/record-presence-delete-json.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/record-unchecked-read-presence.ts": {
+   "order": [
+    "<repo>/tests/corpus/record-unchecked-read-presence.ts"
+   ],
+   "diags": []
   }
  }
 }

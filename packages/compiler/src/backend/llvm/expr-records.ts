@@ -348,7 +348,7 @@ export function keyedRecordReadInto(
     B.condBr(hit, lh, ln);
     B.startBlock(lh);
     const { ptr, type } = host.recordFieldPtr(objName, shapeId, f.name);
-    B.line(`store ${ty} ${surface(type, host.loadField(ptr, type), false)}, ptr ${slot}`);
+    B.line(`store ${ty} ${surface(type, host.loadRecordField(ptr, type), false)}, ptr ${slot}`);
     B.br(join);
     B.startBlock(ln);
   }

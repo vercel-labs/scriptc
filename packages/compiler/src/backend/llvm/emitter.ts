@@ -19,7 +19,12 @@ import { InternalCompilerError } from "../../errors.js";
  * compressed source tables that the runtime inflates on demand.
  */
 import { deflateRawSync } from "node:zlib";
-import { endsWithJump, matchStringSelfConcat, streamTypedRefEligible } from "../../ir/analysis.js";
+import {
+  endsWithJump,
+  matchStringSelfConcat,
+  streamTypedRefEligible,
+  undefinedArmTag,
+} from "../../ir/analysis.js";
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
 import type {
   IrBytesElem,
@@ -156,6 +161,8 @@ import {
 } from "./string-slices.js";
 import { StackCaptures } from "./stack-captures.js";
 import {
+  ABSENT_FIELD_PAYLOAD,
+  emitFieldAbsentTest,
   f64Lit,
   ffiNativeTypeLl,
   ffiNativeParamLl,
@@ -442,6 +449,8 @@ export class LlEmitter {
    * immortal (rc == SIZE_MAX) static per (union, unit tag).
    * RC entry points and the collector skip immortals. */
   private readonly unitInstances = new Map<string, string>();
+  /** unionId → symbol of the union's immortal ABSENT field-slot instance. */
+  private readonly absentInstances = new Map<string, string>();
   private readonly immortalValues = new Set<string>();
   /** Regex literal templates: "<flags>/<pattern>" → { symbol, interned
    * source/flags literal refs } — one immortal ScrRegex template per distinct
@@ -713,6 +722,7 @@ export class LlEmitter {
       internLiteral: (text) => this.internLiteral(text),
       cstr: (text) => this.cstr(text),
       unitInstanceRef: (unionId, tag) => this.unitInstanceRef(unionId, tag),
+      absentInstanceRef: (unionId) => this.absentInstanceRef(unionId),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
@@ -1656,6 +1666,18 @@ export class LlEmitter {
       );
     }
     if (this.unitInstances.size > 0) out.push(``);
+    for (const [unionId, sym] of this.absentInstances) {
+      // One immortal ABSENT field-slot instance per undefined-armed union:
+      // the undefined arm's tag with payload 1 (ordinary unit instances
+      // carry 0). Every tag reader sees undefined; recordHas and the
+      // field reads compare tag and payload, never the address, so the
+      // per-object copies of separately compiled units agree.
+      const tag = undefinedArmTag({ kind: "union", unionId }, this.unionsById);
+      out.push(
+        `@${sym} = internal global %ScrUnion { ${this.sizeType} -1, i32 ${tag}, ptr null, ptr null, ptr null, i64 ${ABSENT_FIELD_PAYLOAD} } ; ${unionId} absent field`,
+      );
+    }
+    if (this.absentInstances.size > 0) out.push(``);
     for (const [key, re] of this.regexInstances) {
       // One immortal ScrRegex per (pattern, flags) literal, pointing at
       // the interned source/flags strings. The bc slot starts null (lazy
@@ -2856,6 +2878,48 @@ export class LlEmitter {
     const name = `@${sym}`;
     this.immortalValues.add(name);
     return name;
+  }
+
+  /** The immortal ABSENT state of an undefined-armed record field slot
+   * (IR fieldAbsent). */
+  absentInstanceRef(unionId: string): string {
+    if (undefinedArmTag({ kind: "union", unionId }, this.unionsById) < 0) {
+      throw new InternalCompilerError(
+        `llvm emitter bug: absent state of ${unionId} without undefined`,
+      );
+    }
+    let sym = this.absentInstances.get(unionId);
+    if (!sym) {
+      sym = `sc_absent_${this.absentInstances.size}`;
+      this.absentInstances.set(unionId, sym);
+    }
+    const name = `@${sym}`;
+    this.immortalValues.add(name);
+    return name;
+  }
+
+  /** i1: a union value loaded from a field slot is the ABSENT state — the
+   * undefined arm's tag with the absent payload marker. */
+  fieldAbsentTest(value: string, unionId: string): string {
+    return emitFieldAbsentTest(
+      this.B,
+      value,
+      undefinedArmTag({ kind: "union", unionId }, this.unionsById),
+    );
+  }
+
+  /** Loads a record field slot as a VALUE: an undefined-armed union slot
+   * holding the ABSENT state surfaces as the ordinary undefined arm, so
+   * absence never travels beyond its slot (a later `{ f: r.f }` is an
+   * explicit, present property). */
+  loadRecordField(ptr: string, t: IrType): string {
+    const v = this.loadField(ptr, t);
+    if (t.kind !== "union" || undefinedArmTag(t, this.unionsById) < 0) return v;
+    const absent = this.fieldAbsentTest(v, t.unionId);
+    const unit = this.unitInstanceRef(t.unionId, undefinedArmTag(t, this.unionsById));
+    const out = this.B.tmp();
+    this.B.line(`${out} = select i1 ${absent}, ptr ${unit}, ptr ${v}`);
+    return out;
   }
 
   declare(decl: string): void {
@@ -5628,6 +5692,8 @@ export class LlEmitter {
       | "recordKeyGet"
       | "recordOvfKeys"
       | "recordOvfHas"
+      | "recordHas"
+      | "fieldAbsent"
     >,
   ): LlValue {
     return emitRecordExpr(this, e);
@@ -5726,10 +5792,11 @@ export class LlEmitter {
     }
     if (e.kind === "recordGet" || e.kind === "fieldGet") {
       const receiver = this.emitReadReceiver(e.obj);
-      const { ptr, type } =
-        e.kind === "recordGet"
-          ? this.recordFieldPtr(receiver.name, e.shapeId, e.field)
-          : this.classFieldPtr(receiver.name, e.className, e.field);
+      if (e.kind === "recordGet") {
+        const { ptr, type } = this.recordFieldPtr(receiver.name, e.shapeId, e.field);
+        return { name: this.loadRecordField(ptr, type), type: e.type };
+      }
+      const { ptr, type } = this.classFieldPtr(receiver.name, e.className, e.field);
       return { name: this.loadField(ptr, type), type: e.type };
     }
     if (e.kind === "ternary" && this.canBorrowReceiver(e.then) && this.canBorrowReceiver(e.else_)) {

@@ -7,7 +7,7 @@
 // the mixed-defaults spread idiom (`{ ...defaults, ...overrides }` where a
 // default is null and the merged field types optional): a unit-armed field
 // with null as its ONE value arm pushes the null literal, guarded by the
-// undefined skip (an unset optional never made it into the object).
+// field's presence (an unset optional never made it into the object).
 interface MergedDefaults {
   rangeStart: number;
   parser: string;
@@ -33,7 +33,7 @@ for (const [k, v] of Object.entries(bothSet)) {
   console.log(`${k}=${String(v)}`);
 }
 
-// Neither present: the undefined guard skips both keys, exactly Node's
+// Neither present: the presence guard skips both keys, exactly Node's
 // missing-key answer for unset optionals.
 const noneSet: MergedDefaults = { rangeStart: 7, parser: "meriyah" };
 console.log(Object.keys(noneSet).join(","));

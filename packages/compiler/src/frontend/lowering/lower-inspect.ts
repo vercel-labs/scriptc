@@ -803,15 +803,42 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         const current = lowerer.shapes.get(t.shapeId) ?? shape;
         const order = current.declaredOrder ?? current.fields.map((f) => f.name);
         const byName = new Map(current.fields.map((f) => [f.name, f.type] as const));
-        body = [depthGate("[Object]"), ...begin()];
+        // Optional fields render only while present (an omitted or
+        // deleted property is not shown; an explicit undefined is). A
+        // value whose fields are all absent is Node's empty `{}`, which
+        // answers before the depth gate.
+        const presence = order
+          .filter((fname) => byName.has(fname))
+          .map((fname) => lowerer.recordFieldPresent(v(), t.shapeId, fname, loc));
+        body = [];
+        if (presence.length > 0 && presence.every((p) => p.kind === "recordHas")) {
+          const any = presence
+            .slice(1)
+            .reduce<IrExpr>(
+              (left, right) => ({ kind: "logical", op: "||", left, right, type: BOOL, loc }),
+              presence[0]!,
+            );
+          body.push({
+            kind: "if",
+            cond: { kind: "unary", op: "!", operand: any, type: BOOL, loc },
+            then: [ret(strLit("{}", loc))],
+            else_: null,
+            loc,
+          });
+        }
+        body.push(depthGate("[Object]"), ...begin());
         for (const fname of order) {
           const ft = byName.get(fname);
           if (!ft) continue;
+          const show = entry(
+            concatAll([strLit(`${inspectKey(fname)}: `, loc), child(ft, get(fname, ft))], loc),
+            boolLit(false, loc),
+          );
+          const present = lowerer.recordFieldPresent(v(), t.shapeId, fname, loc);
           body.push(
-            entry(
-              concatAll([strLit(`${inspectKey(fname)}: `, loc), child(ft, get(fname, ft))], loc),
-              boolLit(false, loc),
-            ),
+            present.kind === "recordHas"
+              ? { kind: "if", cond: present, then: [show], else_: null, loc }
+              : show,
           );
         }
         body.push(

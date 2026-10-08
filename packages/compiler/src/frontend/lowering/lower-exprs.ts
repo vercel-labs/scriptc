@@ -12380,11 +12380,10 @@ function lowerPrivateIn(
  * type-directed: a declared non-optional field is a compile-time `true`,
  * a missing field (no index signature) a compile-time `false` — both
  * folds limited to side-effect-free receivers, the lowerInstanceOf rule —
- * and an OPTIONAL field (undefined-armed union) is a runtime tag test on
- * the slot: present iff the arm is not undefined. That last case is the
- * representation's honest answer — a field explicitly assigned
- * `undefined` reads as absent (`"a" in {a: undefined}` is true in JS,
- * false here; SEMANTICS.md 55). Union receivers (the `in`-narrowing
+ * and an OPTIONAL field (undefined-armed union) is a runtime presence
+ * test on the slot: an omitted or deleted property is absent, while a
+ * property explicitly holding `undefined` is present, as in JS
+ * (`"a" in {a: undefined}` is true). Union receivers (the `in`-narrowing
  * idiom over multiple shapes), index-signature keys, class instances,
  * and dyn/unknown stay fenced. Keys are literal strings — a computed key
  * over a shape would need the runtime key table. */
@@ -12436,8 +12435,8 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
     // A RUNTIME string key over an INDEX-SIGNATURE record receiver (the
     // `names.filter((k) => k in config)` idiom): the interned key-
     // presence helper — declared fields answer statically per name
-    // (optional slots per value: the undefined arm reads absent, stance
-    // 55), then the overflow map's live keys. Other receivers keep the
+    // (optional slots by their runtime presence), then the overflow
+    // map's live keys. Other receivers keep the
     // fence: fixed shapes want the literal folds above, and there is no
     // runtime key table to ask.
     const rIn = lowerRuntimeKeyIn(lowerer, expr, loc);
@@ -12704,24 +12703,9 @@ function lowerInExpression(lowerer: Lowerer, expr: ts.BinaryExpression, loc: Src
   const field = shape.fields.find((f) => f.name === key);
   if (field) {
     if (field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0) {
-      // Optional slot: the key is present iff the arm is not undefined.
-      const read: IrExpr = {
-        kind: "recordGet",
-        obj: recv,
-        shapeId: recv.type.shapeId,
-        field: key,
-        type: field.type,
-        loc,
-      };
-      return {
-        kind: "unionIsTag",
-        unionId: field.type.unionId,
-        tag: lowerer.armTag(field.type.unionId, UNDEFINED_T),
-        negated: true,
-        value: read,
-        type: BOOL,
-        loc,
-      };
+      // Optional slot: the key is present unless the field is absent
+      // (omitted or deleted); an explicit undefined is present.
+      return lowerer.recordFieldPresent(recv, recv.type.shapeId, key, loc);
     }
     // A declared non-optional field always exists on every value of the
     // shape — statically true, but folding may only drop a
@@ -12822,27 +12806,9 @@ function lowerRuntimeKeyIn(
         type: BOOL,
         loc,
       };
-      const utag =
-        !accessor && f.type.kind === "union" ? lowerer.armTag(f.type.unionId, UNDEFINED_T) : -1;
-      const answer: IrExpr =
-        utag >= 0 && f.type.kind === "union"
-          ? {
-              kind: "unionIsTag",
-              unionId: f.type.unionId,
-              tag: utag,
-              negated: true,
-              value: {
-                kind: "recordGet",
-                obj: r,
-                shapeId: recvT.shapeId,
-                field: f.name,
-                type: f.type,
-                loc,
-              },
-              type: BOOL,
-              loc,
-            }
-          : { kind: "boolLit", value: true, type: BOOL, loc };
+      const answer: IrExpr = accessor
+        ? { kind: "boolLit", value: true, type: BOOL, loc }
+        : lowerer.recordFieldPresent(r, recvT.shapeId, f.name, loc);
       body.push({ kind: "if", cond: eq, then: [ret(answer)], else_: null, loc });
     }
     const ksT = arrayOf(STRING);

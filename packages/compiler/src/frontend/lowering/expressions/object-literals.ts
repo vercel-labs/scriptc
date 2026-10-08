@@ -1512,6 +1512,68 @@ export function lowerObjectLiteral(
     captured.add(ref);
     return ref;
   };
+  // A pending field value may carry the ABSENT state (an omitted
+  // conditional-spread arm, a spread source lacking the key). That state
+  // only lives in a field slot, so a snapshot splits the value into a
+  // captured ordinary value and a pure presence test over captured
+  // conditions, then rebuilds `present ? value : absent` (arms stay lazy:
+  // the captured value keeps the original ternary structure).
+  const canLackField = (t: IrType): boolean =>
+    t.kind === "union" && lowerer.armTag(t.unionId, UNDEFINED_T) >= 0;
+  const containsAbsent = (value: IrExpr): boolean =>
+    value.kind === "fieldAbsent" ||
+    (value.kind === "ternary" && (containsAbsent(value.then) || containsAbsent(value.else_)));
+  const captureField = (value: IrExpr): IrExpr => {
+    if (captured.has(value)) return value;
+    if (!containsAbsent(value)) return capture(value);
+    if (value.kind === "fieldAbsent") return value;
+    const split = (v: IrExpr): { value: IrExpr; present: IrExpr } => {
+      if (v.kind === "fieldAbsent") {
+        return {
+          value: lowerer.wrappedUndefined(v.type, v.loc)!,
+          present: { kind: "boolLit", value: false, type: BOOL, loc: v.loc },
+        };
+      }
+      if (v.kind === "ternary" && containsAbsent(v)) {
+        // Conditions snapshot here too. Nested conditions come from the
+        // spread desugar's own presence tests over captured sources, so
+        // evaluating them eagerly is unobservable.
+        const cond =
+          v.cond.kind === "varRef" || v.cond.kind === "boolLit" ? v.cond : capture(v.cond);
+        const t = split(v.then);
+        const e = split(v.else_);
+        return {
+          value: { ...v, cond, then: t.value, else_: e.value },
+          present: {
+            kind: "ternary",
+            cond,
+            then: t.present,
+            else_: e.present,
+            type: BOOL,
+            loc: v.loc,
+          },
+        };
+      }
+      return { value: v, present: { kind: "boolLit", value: true, type: BOOL, loc: v.loc } };
+    };
+    const parts = split(value);
+    const ref = capture(parts.value);
+    const out: IrExpr = {
+      kind: "ternary",
+      cond: parts.present,
+      then: ref,
+      else_: {
+        kind: "fieldAbsent",
+        unionId: (value.type as IrType & { kind: "union" }).unionId,
+        type: value.type,
+        loc: value.loc,
+      },
+      type: value.type,
+      loc: value.loc,
+    };
+    captured.add(out);
+    return out;
+  };
   // Field names introduced by conditional spreads: their ternary carries
   // the spread's whole evaluation (cond once, value lazily), so a LATER
   // contributor overriding one would silently drop that evaluation —
@@ -1532,7 +1594,7 @@ export function lowerObjectLiteral(
           fields.splice(i--, 1);
           continue;
         }
-        if (!captured.has(field.value)) field.value = capture(field.value);
+        field.value = captureField(field.value);
       }
     }
     if (ts.isSpreadAssignment(prop)) {
@@ -1557,7 +1619,7 @@ export function lowerObjectLiteral(
           }
           shapeMismatch(prop);
         }
-        const absent = lowerer.wrappedUndefined(fieldType, locOf(prop));
+        const absent = lowerer.absentFieldValue(fieldType, locOf(prop));
         if (!absent) {
           lowerer.unsupported(
             "SC1090",
@@ -1668,8 +1730,9 @@ export function lowerObjectLiteral(
             if (conditionalSpreadOf(later.expression)) continue;
             const lt = laterSpreadType(lowerer, later.expression);
             if (lt?.kind === "record") {
+              // A field the later source may lack defines nothing.
               for (const lf of lowerer.shapes.get(lt.shapeId)?.fields ?? [])
-                laterNames.add(lf.name);
+                if (!canLackField(lf.type)) laterNames.add(lf.name);
             }
             continue;
           }
@@ -1723,8 +1786,34 @@ export function lowerObjectLiteral(
             loc: locOf(prop),
           };
           let thenVal: IrExpr;
+          // A source field that can be absent copies only when present.
+          const fieldPresent = (): IrExpr => ({
+            kind: "logical",
+            op: "&&",
+            left: cond,
+            right: {
+              kind: "recordHas",
+              obj: {
+                kind: "unionNarrow",
+                unionId: srcType.unionId,
+                tag: recTag,
+                value: srcRef(),
+                type: recArm,
+                loc: locOf(prop),
+              },
+              shapeId: recArm.shapeId,
+              field: f.name,
+              type: BOOL,
+              loc: locOf(prop),
+            },
+            type: BOOL,
+            loc: locOf(prop),
+          });
+          const canBeAbsent =
+            f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0;
           if (typeEquals(f.type, targetType)) {
             thenVal = fRead();
+            if (canBeAbsent) cond = fieldPresent();
           } else if (
             f.type.kind === "union" &&
             lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0 &&
@@ -1818,10 +1907,11 @@ export function lowerObjectLiteral(
               throw new PoisonError();
             }
             thenVal = lowerer.applyWidthLift(lift, fRead(), targetType, locOf(prop));
+            if (canBeAbsent) cond = fieldPresent();
           }
           const at = fields.findIndex((x) => x.name === f.name && !x.drop);
           const elseVal =
-            at >= 0 ? fields[at]!.value : lowerer.wrappedUndefined(targetType, locOf(prop));
+            at >= 0 ? fields[at]!.value : lowerer.absentFieldValue(targetType, locOf(prop));
           if (!elseVal) {
             lowerer.unsupported(
               "SC1090",
@@ -1875,7 +1965,9 @@ export function lowerObjectLiteral(
           if (conditionalSpreadOf(later.expression)) continue;
           const lt = laterSpreadType(lowerer, later.expression);
           if (lt?.kind === "record") {
-            for (const lf of lowerer.shapes.get(lt.shapeId)?.fields ?? []) laterNames.add(lf.name);
+            // A field the later source may lack defines nothing.
+            for (const lf of lowerer.shapes.get(lt.shapeId)?.fields ?? [])
+              if (!canLackField(lf.type)) laterNames.add(lf.name);
           }
           continue;
         }
@@ -1977,6 +2069,35 @@ export function lowerObjectLiteral(
           );
         }
         const at = fields.findIndex((x) => x.name === f.name);
+        // A source field that can be absent copies only when present: an
+        // absent one keeps the earlier contributor's value, or leaves the
+        // target field absent.
+        const canBeAbsent =
+          f.type.kind === "union" && lowerer.armTag(f.type.unionId, UNDEFINED_T) >= 0;
+        if (canBeAbsent) {
+          const present: IrExpr =
+            obj.type.kind === "dyn"
+              ? {
+                  kind: "dynHasKey",
+                  key: f.name,
+                  value: obj,
+                  type: BOOL,
+                  loc: locOf(prop),
+                }
+              : lowerer.recordFieldPresent(obj, srcType.shapeId, f.name, locOf(prop));
+          const otherwise =
+            at >= 0 ? fields[at]!.value : lowerer.absentFieldValue(targetType, locOf(prop));
+          if (otherwise) {
+            value = {
+              kind: "ternary",
+              cond: present,
+              then: value,
+              else_: otherwise,
+              type: targetType,
+              loc: locOf(prop),
+            };
+          }
+        }
         if (at >= 0) fields[at] = { name: f.name, value };
         else fields.push({ name: f.name, value });
       }
@@ -2174,10 +2295,10 @@ export function lowerObjectLiteral(
     if (at >= 0) fields.splice(at, 1);
     fields.push({ name, value });
   }
-  // Optional fields may be omitted: the absent field holds an undefined
-  // union arm or, for an island handle slot, the engine's undefined cell.
-  // This matches writing `a: undefined` without exactOptionalPropertyTypes;
-  // tsc rejects omission of required fields before lowering.
+  // Optional fields may be omitted: the field holds its ABSENT state (it
+  // reads as undefined but is not an own property) or, for an island
+  // handle slot, the engine's undefined cell. tsc rejects omission of
+  // required fields before lowering.
   // A REQUIRED missing field keeps the shape-mismatch rejection (possible
   // through `as`: the cast smuggles a narrower literal past freshness).
   if (droppedNames.size > 0) {
@@ -2207,7 +2328,7 @@ export function lowerObjectLiteral(
           ? { kind: "jsOp", op: "undefLit", args: [], type: JSVAL, loc }
           : null;
       const absent =
-        lowerer.wrappedUndefined(f.type, loc) ??
+        lowerer.absentFieldValue(f.type, loc) ??
         (f.type.kind === "dyn" ? dynUndefinedExpr(loc) : null) ??
         absentHandle;
       if (!absent) shapeMismatch(expr); // only optional and 'unknown' fields may be omitted
@@ -2502,8 +2623,8 @@ function lowerDeclaredSpreadMerge(
     fenceAccessorSpreadSource(lowerer, prop, srcShape);
     srcs.push({ value, shapeId: value.type.shapeId, shape: srcShape });
   }
-  // Every target field must be optional: absent keys leave the undefined
-  // arm, exactly the unset-optional representation.
+  // Every target field must be optional: keys no source supplies stay
+  // absent.
   for (const f of shape.fields) {
     if (f.type.kind !== "union" || lowerer.armTag(f.type.unionId, UNDEFINED_T) < 0) {
       lowerer.unsupported(
@@ -2631,7 +2752,7 @@ function lowerDeclaredSpreadMerge(
         kind: "recordLit",
         fields: shape.fields.map((f) => ({
           name: f.name,
-          value: lowerer.wrappedUndefined(f.type, loc)!,
+          value: lowerer.absentFieldValue(f.type, loc)!,
         })),
         type,
         loc,
@@ -2690,27 +2811,13 @@ function lowerDeclaredSpreadMerge(
           value: lowerer.applyWidthLift(lift, raw, target.type, loc),
           loc,
         };
-        // Optional declared fields use the established unset convention.
+        // Optional declared fields copy only when present (an explicit
+        // undefined is a real property and overwrites an earlier value).
         // A dyn field, including a present undefined, is a real property;
         // its checked conversion runs and can overwrite an earlier value.
-        const absent =
-          field.type.kind === "union" ? lowerer.armTag(field.type.unionId, UNDEFINED_T) : -1;
-        if (absent >= 0 && field.type.kind === "union") {
-          body.push({
-            kind: "if",
-            cond: {
-              kind: "unionIsTag",
-              unionId: field.type.unionId,
-              tag: absent,
-              negated: true,
-              value: raw,
-              type: BOOL,
-              loc,
-            },
-            then: [write],
-            else_: null,
-            loc,
-          });
+        const present = lowerer.recordFieldPresent(receiver, source.shapeId, field.name, loc);
+        if (present.kind === "recordHas") {
+          body.push({ kind: "if", cond: present, then: [write], else_: null, loc });
         } else body.push(write);
       }
       const iv = source.shape ? source.shape.indexValue : DYN;

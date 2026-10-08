@@ -40,6 +40,10 @@ export function isSafeToDiscard(expr: IrExpr): boolean {
     case "unionIsTag":
     case "unionWrap":
       return isSafeToDiscard(expr.value);
+    case "recordHas":
+      return isSafeToDiscard(expr.obj);
+    case "fieldAbsent":
+      return true;
     // Fresh allocations are unobservable too — only their pieces can
     // carry effects (a spread re-reads its source: pure; element and
     // field initializers recurse).

@@ -4,7 +4,7 @@ import { buildArrayConversion } from "./builders.js";
 import type { WidthLift } from "../width-lift.js";
 import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrFunction, IrRecordShape, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
-import { BOOL, DYN, F64, STRING, UNDEFINED_T } from "../../../ir/ir.js";
+import { BOOL, DYN, F64, STRING } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
 import { findStaticOn, findGenericStaticOn } from "../lower-classes.js";
 import { lowerRecordOvfCaptureHelper } from "../containers/indexed-objects.js";
@@ -566,7 +566,7 @@ export function classStaticsProjection(
     const found = findStaticOn(lowerer, info, tf.name);
     if (!found) {
       if (tf.type.kind !== "union") return null;
-      const u = lowerer.wrappedUndefined(tf.type, loc);
+      const u = lowerer.absentFieldValue(tf.type, loc);
       if (!u) return null;
       fields.push({ name: tf.name, value: u });
       continue;
@@ -632,11 +632,11 @@ function buildRecordProjection(
                 throw new InternalCompilerError(
                   "lowerer bug: absent lift against a non-union field",
                 );
+              // The source has no such property: the projected field is
+              // absent too.
               const value: IrExpr = {
-                kind: "unionWrap",
+                kind: "fieldAbsent",
                 unionId: field.type.unionId,
-                tag: conversion.utag,
-                value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
                 type: field.type,
                 loc,
               };
@@ -660,9 +660,13 @@ function buildRecordProjection(
                     type: conversion.src,
                     loc,
                   };
+            const lifted = lowerer.applyWidthLift(conversion.lift, read, field.type, loc);
             return {
               name: field.name,
-              value: lowerer.applyWidthLift(conversion.lift, read, field.type, loc),
+              value:
+                source.kind === "record"
+                  ? lowerer.presenceKeepingCopy(receiver, source.shapeId, field.name, lifted, loc)
+                  : lifted,
             };
           }),
           type: result,

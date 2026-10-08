@@ -2756,7 +2756,8 @@ export type IrExpr =
       loc: SrcLoc;
     }
   /** Record field read `r.f` — mirrors `fieldGet`: refcounted fields come
-   * out retained (+1). */
+   * out retained (+1). A field in its ABSENT state (fieldAbsent) reads as
+   * the ordinary undefined arm. */
   | { kind: "recordGet"; obj: IrExpr; shapeId: string; field: string; type: IrType; loc: SrcLoc }
   /** Dynamic-keyed record read `r[k]` (string key, evaluated at runtime).
    * Declared fields are tried FIRST (an emitted string-switch — field
@@ -3049,6 +3050,25 @@ export type IrExpr =
    * value. Declared fields are handled separately by the lowering. Both
    * operands are borrowed, the key is string, the result is bool. */
   | { kind: "recordOvfHas"; obj: IrExpr; shapeId: string; key: IrExpr; type: IrType; loc: SrcLoc }
+  /** Own-property presence of a DECLARED record field (`"f" in r`,
+   * Object.keys/hasOwn and every other key surface). A field whose type
+   * has no undefined arm is always present; an undefined-armed union field
+   * is present unless its slot holds the field's ABSENT state (see
+   * fieldAbsent), so `{ f: undefined }` keeps `f` while an omitted or
+   * deleted optional field lacks it. The receiver is borrowed; the result
+   * is bool. */
+  | { kind: "recordHas"; obj: IrExpr; shapeId: string; field: string; type: IrType; loc: SrcLoc }
+  /** The ABSENT state of an undefined-armed record field slot: the value
+   * stored for an omitted optional property, a `delete`d property, or a
+   * checked-dynamic key that does not exist. It is the union's undefined
+   * arm in every respect (tag tests, narrowing, equality, JSON), but the
+   * slot remembers that no property exists, which recordHas observes.
+   * Record field reads surface the ordinary undefined arm, so the state
+   * never escapes its slot. Legal only where a field slot is written
+   * directly: a recordLit field value, a recordSet value, a recordClone
+   * override, or a ternary arm in one of those positions. `type` is the
+   * union named by `unionId`, which has an undefined arm. Immortal. */
+  | { kind: "fieldAbsent"; unionId: string; type: IrType; loc: SrcLoc }
   /** Union construction: wrap an arm value into a fresh tagged box (the
    * frontend inserts these wherever a `B` flows into an `A | B` slot).
    * `tag` is the arm's index in the union's canonical arm list; `value` has

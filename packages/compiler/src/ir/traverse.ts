@@ -302,6 +302,10 @@ export function everyExprChild(
       return expr(node.obj);
     case "recordOvfHas":
       return expr(node.obj) && expr(node.key);
+    case "recordHas":
+      return expr(node.obj);
+    case "fieldAbsent":
+      return true;
     case "unionWrap":
       return expr(node.value);
     case "unionFuncEq":
@@ -658,6 +662,10 @@ export function mapExprChildren(
       return { ...node, obj: expr(node.obj) };
     case "recordOvfHas":
       return { ...node, obj: expr(node.obj), key: expr(node.key) };
+    case "recordHas":
+      return { ...node, obj: expr(node.obj) };
+    case "fieldAbsent":
+      return node;
     case "unionWrap":
       return { ...node, value: expr(node.value) };
     case "unionFuncEq":

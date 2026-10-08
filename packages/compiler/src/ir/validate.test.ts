@@ -1443,6 +1443,91 @@ test.each(["receiver", "key", "result"] as const)(
   },
 );
 
+function fieldPresenceModule(absentInLiteral: boolean): IrModule {
+  const optional: IrType = { kind: "union", unionId: "maybeCount" };
+  const record: IrType = { kind: "record", shapeId: "item" };
+  const absent: IrExpr = { kind: "fieldAbsent", unionId: "maybeCount", type: optional, loc };
+  const literal: IrExpr = {
+    kind: "recordLit",
+    fields: [
+      {
+        name: "count",
+        value: absentInLiteral
+          ? {
+              kind: "ternary",
+              cond: { kind: "boolLit", value: true, type: BOOL, loc },
+              then: {
+                kind: "unionWrap",
+                unionId: "maybeCount",
+                tag: 0,
+                value: { kind: "numLit", value: 1, type: F64, loc },
+                type: optional,
+                loc,
+              },
+              else_: absent,
+              type: optional,
+              loc,
+            }
+          : {
+              kind: "unionWrap",
+              unionId: "maybeCount",
+              tag: 1,
+              value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+              type: optional,
+              loc,
+            },
+      },
+    ],
+    type: record,
+    loc,
+  };
+  const check: IrExpr = {
+    kind: "recordHas",
+    obj: literal,
+    shapeId: "item",
+    field: "count",
+    type: BOOL,
+    loc,
+  };
+  const mod = expressionModule(check, [{ id: "maybeCount", arms: [F64, UNDEFINED_T] }]);
+  mod.records = [{ id: "item", fields: [{ name: "count", type: optional }] }];
+  if (!absentInLiteral) mod.functions[0]!.body.push({ kind: "exprStmt", expr: absent, loc });
+  return mod;
+}
+
+test("field presence checks and absent field states validate and serialize", () => {
+  const mod = fieldPresenceModule(true);
+  expect(validateModule(mod)).toEqual([]);
+  expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+});
+
+test("the absent field state is confined to field writes", () => {
+  expect(
+    validateModule(fieldPresenceModule(false)).some((error) =>
+      error.message.includes("fieldAbsent outside a record field write"),
+    ),
+  ).toBe(true);
+});
+
+test("the absent field state requires an undefined arm", () => {
+  const mod = fieldPresenceModule(true);
+  mod.unions = [{ id: "maybeCount", arms: [F64, STRING] }];
+  expect(
+    validateModule(mod).some((error) => error.message.includes("the union has no undefined arm")),
+  ).toBe(true);
+});
+
+test("field presence checks name a declared field", () => {
+  const mod = fieldPresenceModule(true);
+  const statement = mod.functions[0]!.body[0]!;
+  if (statement.kind !== "exprStmt" || statement.expr.kind !== "recordHas")
+    throw new Error("fixture");
+  statement.expr.field = "missing";
+  expect(
+    validateModule(mod).some((error) => error.message.includes('has no field "missing"')),
+  ).toBe(true);
+});
+
 test("TDZ locals require a shared box", () => {
   const mod = tdzModule();
   delete mod.functions[0]!.locals[0]!.boxed;

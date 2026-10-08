@@ -601,12 +601,11 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         const st = shape.fields.find((f) => f.name === "scopeid")?.type;
         if (st?.kind !== "union")
           throw new InternalCompilerError("llvm emitter bug: networkInterfaces IPv4 scopeid type");
-        const undefTag = undefinedArmTag(st, host.unionsById);
-        const su = B.tmp();
+        // IPv4 entries have no scopeid property at all (immortal: no
+        // retain owed).
         B.line(
-          `${su} = call ptr @scr_union_retain_v(ptr ${host.unitInstanceRef(st.unionId, undefTag)})`,
+          `store ptr ${host.absentInstanceRef(st.unionId)}, ptr ${host.recordFieldPtr(r, t.shapeId, "scopeid").ptr}`,
         );
-        B.line(`store ptr ${su}, ptr ${host.recordFieldPtr(r, t.shapeId, "scopeid").ptr}`);
       }
       const rc = vAdapters(host.shapeHost, t);
       const rowU = B.tmp();

@@ -1,7 +1,7 @@
-// `delete r.f` on a declared OPTIONAL field: the slot takes the undefined
-// arm — and because absence IS the undefined arm, every observable answer
-// after the delete (reads, `in`, Object.keys, JSON.stringify) matches
-// Node's post-delete state exactly (the route-metadata patch idiom:
+// `delete r.f` on a declared OPTIONAL field: the property becomes absent,
+// so every observable answer after the delete (reads, `in`, Object.keys,
+// JSON.stringify) matches Node's post-delete state
+// (the route-metadata patch idiom:
 // `if (patch.url === null) delete route.url; else route.url = patch.url`).
 // Field names are alphabetical (divergence 16's corpus convention), and
 // post-call reads go through a helper so tsc's stale property narrowing

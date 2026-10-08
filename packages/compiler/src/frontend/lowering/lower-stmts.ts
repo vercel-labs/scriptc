@@ -3584,14 +3584,20 @@ function objectRestValue(
       kind: "recordLit",
       fields: rem.map((f) => ({
         name: f.name,
-        value: {
-          kind: "recordGet",
-          obj: srcRef(),
-          shapeId: srcType.shapeId,
-          field: f.name,
-          type: f.type,
+        value: lowerer.presenceKeepingCopy(
+          srcRef(),
+          srcType.shapeId,
+          f.name,
+          {
+            kind: "recordGet",
+            obj: srcRef(),
+            shapeId: srcType.shapeId,
+            field: f.name,
+            type: f.type,
+            loc,
+          },
           loc,
-        } as IrExpr,
+        ),
       })),
       type: {
         kind: "record",
@@ -3639,7 +3645,16 @@ function objectRestValue(
       type: srcField.type,
       loc,
     };
-    return { name: f.name, value: lowerer.coerceInto(el, read, f.type) };
+    return {
+      name: f.name,
+      value: lowerer.presenceKeepingCopy(
+        srcRef(),
+        srcType.shapeId,
+        srcField.name,
+        lowerer.coerceInto(el, read, f.type),
+        loc,
+      ),
+    };
   });
   return { kind: "recordLit", fields, type: restT, loc };
 }
@@ -5819,8 +5834,9 @@ function isStrictDelete(node: ts.DeleteExpression): boolean {
 
 /** Statement-position `delete`: process.env keys → process.envUnset
  * (unsetenv), pure `Record<string, T>` keys → recordKeyDelete (the
- * overflow Map delete), declared OPTIONAL fields → the undefined-arm
- * write (absence IS the undefined arm; divergence 60). Everything else
+ * overflow Map delete), declared OPTIONAL fields → the field's ABSENT
+ * state (the slot reads undefined and no longer counts as an own
+ * property). Everything else
  * fences with the honest reason — a required field is a struct slot no
  * runtime can remove. */
 function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrStmt {
@@ -5941,14 +5957,13 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     if (shape?.indexValue && shape.fields.length === 0 && !shape.tuple) {
       return { kind: "recordKeyDelete", obj, shapeId: obj.type.shapeId, key: lowerKey(), loc };
     }
-    // `delete r.f` of a declared OPTIONAL field (undefined-armed slot) is
-    // the undefined-arm write: a monomorphic shape cannot remove its
-    // slot, and absence IS the undefined arm (divergences 37/56), so the
-    // observable results — `in` answers false, Object.keys skips it,
-    // JSON.stringify drops it — match Node's post-delete answers exactly
-    // (divergence 60 documents the delete/`= undefined` collapse).
-    // Constant keys only (dot access or a literal bracket); required
-    // fields keep the honest fence below.
+    // `delete r.f` of a declared OPTIONAL field (undefined-armed slot)
+    // writes the field's ABSENT state: a monomorphic shape cannot remove
+    // its slot, but the slot remembers that no property exists, so `in`
+    // answers false, Object.keys skips it, and JSON.stringify drops it,
+    // while a later write makes it present again. Constant keys only
+    // (dot access or a literal bracket); required fields keep the honest
+    // fence below.
     const fieldName = ts.isPropertyAccessExpression(target)
       ? target.name.text
       : ts.isStringLiteral(target.argumentExpression)
@@ -5959,7 +5974,7 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
         ? shape?.fields.find((f) => f.name === fieldName)
         : undefined;
     if (field) {
-      const absent = lowerer.wrappedUndefined(field.type, loc);
+      const absent = lowerer.absentFieldValue(field.type, loc);
       if (absent) {
         return {
           kind: "recordSet",

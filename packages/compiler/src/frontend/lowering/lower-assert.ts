@@ -1760,6 +1760,15 @@ function deepEqHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       });
       body = [];
       for (const f of shape.fields) {
+        // Own keys must agree: an absent optional field never equals a
+        // present one, even one holding undefined.
+        const hasA = lowerer.recordFieldPresent(a(), t.shapeId, f.name, loc);
+        if (hasA.kind === "recordHas") {
+          const hasB = lowerer.recordFieldPresent(b(), t.shapeId, f.name, loc);
+          body.push(
+            bailIf({ kind: "ternary", cond: hasA, then: not(hasB), else_: hasB, type: BOOL, loc }),
+          );
+        }
         if (isUnitType(f.type)) continue; // a unit field is equal by type
         body.push(bailIf(not(deq(f.type, get(a(), f.name, f.type), get(b(), f.name, f.type)))));
       }

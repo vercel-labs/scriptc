@@ -1,7 +1,7 @@
 import { typedRefConstructor } from "./shapes.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
-import { streamTypedRefEligible } from "../../ir/analysis.js";
+import { streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
 import {
   type IrType,
   DYN_CLASS_PROPERTIES,
@@ -16,7 +16,7 @@ import {
 import { mangleFunction, mangleGlobal, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { classFieldIndex, classStructSym } from "./classes.js";
-import { llvmCommentText } from "./common.js";
+import { emitFieldAbsentTest, llvmCommentText } from "./common.js";
 import { FN_ATTRS, llFieldType, releaseSym, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context.js";
 
@@ -855,10 +855,24 @@ export function streamTypedRefMaterializeAdapter(
           B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
           fieldValue = boolValue;
         }
+        // An ABSENT optional field contributes no key.
+        const undefinedTag = undefinedArmTag(field.type, host.unionsById);
+        let skip: string | null = null;
+        if (undefinedTag >= 0) {
+          const absent = emitFieldAbsentTest(B, fieldValue, undefinedTag);
+          skip = B.newLabel("live.record.absent");
+          const set = B.newLabel("live.record.set");
+          B.condBr(absent, skip, set);
+          B.startBlock(set);
+        }
         const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
         B.line(
           `call void @scr_dyn_obj_set(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${boxed})`,
         );
+        if (skip !== null) {
+          B.br(skip);
+          B.startBlock(skip);
+        }
       }
       B.terminate(`ret ptr ${out}`);
     }

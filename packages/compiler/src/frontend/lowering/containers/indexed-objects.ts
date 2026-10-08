@@ -185,9 +185,9 @@ export function objectIterOverIndexShape(
     ];
     const fieldStmts = new Map<string, IrStmt>();
 
-    // Declared fields, in declaration order. Undefined-valued fields
-    // skip at runtime (the unset-optional convention); values surface
-    // into the element type or the site fences with the field named.
+    // Declared fields, in declaration order. Absent optional fields skip
+    // at runtime; values surface into the element type or the site
+    // fences with the field named.
     const order = shape.declaredOrder ?? shape.fields.map((f) => f.name);
     for (const name of order) {
       const f = shape.fields.find((x) => x.name === name)!;
@@ -200,6 +200,8 @@ export function objectIterOverIndexShape(
         loc,
       };
       const utag = f.type.kind === "union" ? lowerer.armTag(f.type.unionId, UNDEFINED_T) : -1;
+      // Set when the surfaced value narrows away the undefined arm.
+      let narrowedPush = false;
       // The pushed value per member; null when the field cannot surface.
       const surfaced = (): IrExpr | null => {
         if (!valueT) return null;
@@ -246,6 +248,7 @@ export function objectIterOverIndexShape(
                       type: other,
                       loc,
                     };
+                narrowedPush = true;
                 return {
                   kind: "unionWrap",
                   unionId: valueT.unionId,
@@ -260,6 +263,18 @@ export function objectIterOverIndexShape(
         }
         return null;
       };
+      const pushedOf = (element: IrExpr): IrExpr =>
+        member === "values"
+          ? element
+          : {
+              kind: "recordLit",
+              fields: [
+                { name: "0", value: { kind: "strLit", value: f.name, type: STRING, loc } },
+                { name: "1", value: element },
+              ],
+              type: tupleT!,
+              loc,
+            };
       let pushed: IrExpr;
       if (member === "keys") {
         pushed = { kind: "strLit", value: f.name, type: STRING, loc };
@@ -272,37 +287,40 @@ export function objectIterOverIndexShape(
             `Object.${member} over '${lowerer.fmt(argIr)}' (field '${f.name}' of type '${lowerer.fmt(f.type)}' cannot flow into the '${lowerer.fmt(valueT!)}' result element — read the fields directly)`,
           );
         }
-        pushed =
-          member === "values"
-            ? s
-            : {
-                kind: "recordLit",
-                fields: [
-                  { name: "0", value: { kind: "strLit", value: f.name, type: STRING, loc } },
-                  { name: "1", value: s },
-                ],
-                type: tupleT!,
-                loc,
-              };
+        pushed = pushedOf(s);
       }
-      const fieldStmt: IrStmt =
-        utag >= 0 && f.type.kind === "union"
-          ? {
-              kind: "if",
-              cond: {
-                kind: "unionIsTag",
-                unionId: f.type.unionId,
-                tag: utag,
-                negated: true,
-                value: raw,
-                type: BOOL,
-                loc,
-              },
-              then: [push(pushed)],
-              else_: null,
+      // Fields that can be absent contribute only when present; a present
+      // undefined behind a narrowed push surfaces the element's own
+      // undefined (the element union carries one whenever the checker
+      // typed the optional field into it).
+      let fieldStmt: IrStmt = push(pushed);
+      if (utag >= 0 && f.type.kind === "union") {
+        if (narrowedPush) {
+          const undefinedElement = valueT ? lowerer.wrappedUndefined(valueT, loc) : null;
+          fieldStmt = {
+            kind: "if",
+            cond: {
+              kind: "unionIsTag",
+              unionId: f.type.unionId,
+              tag: utag,
+              negated: true,
+              value: raw,
+              type: BOOL,
               loc,
-            }
-          : push(pushed);
+            },
+            then: [fieldStmt],
+            else_: undefinedElement ? [push(pushedOf(undefinedElement))] : null,
+            loc,
+          };
+        }
+        fieldStmt = {
+          kind: "if",
+          cond: lowerer.recordFieldPresent(rRef, argIr.shapeId, f.name, loc),
+          then: [fieldStmt],
+          else_: null,
+          loc,
+        };
+      }
       fieldStmts.set(f.name, fieldStmt);
       body.push(fieldStmt);
     }
@@ -844,24 +862,30 @@ export function lowerRecordOvfCaptureHelper(
           name: d.name,
           value:
             d.kind === "direct"
-              ? lowerer.applyWidthLift(
-                  d.lift,
-                  {
-                    kind: "recordGet",
-                    obj: sRef,
-                    shapeId: fromId,
-                    field: d.name,
-                    type: d.src,
+              ? lowerer.presenceKeepingCopy(
+                  sRef,
+                  fromId,
+                  d.name,
+                  lowerer.applyWidthLift(
+                    d.lift,
+                    {
+                      kind: "recordGet",
+                      obj: sRef,
+                      shapeId: fromId,
+                      field: d.name,
+                      type: d.src,
+                      loc,
+                    },
+                    to.fields.find((f) => f.name === d.name)!.type,
                     loc,
-                  },
-                  to.fields.find((f) => f.name === d.name)!.type,
+                  ),
                   loc,
                 )
               : ({
-                  kind: "unionWrap",
+                  // No source property of this name: the field starts
+                  // absent (an overflow write below can supply it).
+                  kind: "fieldAbsent",
                   unionId: d.unionId,
-                  tag: d.utag,
-                  value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
                   type: to.fields.find((f) => f.name === d.name)!.type,
                   loc,
                 } satisfies IrExpr),
@@ -901,15 +925,7 @@ export function lowerRecordOvfCaptureHelper(
       utag >= 0 && ff.type.kind === "union"
         ? {
             kind: "if",
-            cond: {
-              kind: "unionIsTag",
-              unionId: ff.type.unionId,
-              tag: utag,
-              negated: true,
-              value: raw,
-              type: BOOL,
-              loc,
-            },
+            cond: lowerer.recordFieldPresent(sRef, fromId, ff.name, loc),
             then: [write],
             else_: null,
             loc,
@@ -1124,15 +1140,7 @@ export function lowerObjectAssignIndexShape(
         utag >= 0 && ff.type.kind === "union"
           ? {
               kind: "if",
-              cond: {
-                kind: "unionIsTag",
-                unionId: ff.type.unionId,
-                tag: utag,
-                negated: true,
-                value: raw,
-                type: BOOL,
-                loc,
-              },
+              cond: lowerer.recordFieldPresent(sRef, plan.fromId, ff.name, loc),
               then: [write],
               else_: null,
               loc,
@@ -1488,15 +1496,7 @@ export function lowerIndexMergeHelper(
           utag >= 0 && ff.type.kind === "union"
             ? {
                 kind: "if",
-                cond: {
-                  kind: "unionIsTag",
-                  unionId: ff.type.unionId,
-                  tag: utag,
-                  negated: true,
-                  value: raw,
-                  type: BOOL,
-                  loc,
-                },
+                cond: lowerer.recordFieldPresent(sRef, plan.shapeId, ff.name, loc),
                 then: [write],
                 else_: null,
                 loc,
@@ -1544,15 +1544,7 @@ export function lowerIndexMergeHelper(
         utag >= 0 && ff.type.kind === "union"
           ? {
               kind: "if",
-              cond: {
-                kind: "unionIsTag",
-                unionId: ff.type.unionId,
-                tag: utag,
-                negated: true,
-                value: raw,
-                type: BOOL,
-                loc,
-              },
+              cond: lowerer.recordFieldPresent(sRef, plan.shapeId, ff.name, loc),
               then: [write],
               else_: null,
               loc,

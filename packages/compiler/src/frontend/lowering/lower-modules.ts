@@ -1006,6 +1006,7 @@ export function moduleArtifacts(
         case "recordKeyGet":
         case "recordOvfKeys":
         case "recordOvfHas":
+        case "recordHas":
           visitShape(node.shapeId);
           break;
         case "unionWrap":
@@ -1015,6 +1016,7 @@ export function moduleArtifacts(
         case "unionKeyGet":
         case "unionIsTag":
         case "unionEq":
+        case "fieldAbsent":
           visitUnion(node.unionId);
           break;
         case "yieldExpr":

@@ -1,5 +1,5 @@
 import { typedRefConstructor } from "./shapes.js";
-import { BYTES_ELEM_NUM, f64Lit } from "./common.js";
+import { BYTES_ELEM_NUM, emitFieldAbsentTest, f64Lit } from "./common.js";
 import { InternalCompilerError } from "../../errors.js";
 /* ScrDyn helpers for the LLVM backend: per-type match predicates
  * (dynMatchHelper), checked builders (dynCheckHelper), static→dyn
@@ -78,6 +78,8 @@ export const DYN_KIND = {
  * unit instances (undefined-armed dynCheck targets build them). */
 export interface DynHost extends WalkerHost {
   unitInstanceRef(unionId: string, tag: number): string;
+  /** The immortal ABSENT field-slot state of an undefined-armed union. */
+  absentInstanceRef(unionId: string): string;
   liveDynRefAdapter(t: IrType): { snapshot: string; commit: string };
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
   dynPromiseAdapter(t: IrType): string;
@@ -353,6 +355,76 @@ export class LlDyn {
       `${t} = call ptr @scr_dyn_obj_get(ptr ${d}, ptr ${this.host.cstr(key)}, ${this.S} ${len}) ; .${llvmCommentText(key)}`,
     );
     return t;
+  }
+
+  /** Branches past the caller's next emission when an undefined-armed
+   * field value is the ABSENT state. Returns the label the caller must branch
+   * to and start after its emission, or null when the type has no
+   * undefined arm. */
+  private skipIfAbsent(
+    B: BlockBuilder,
+    value: string,
+    t: IrType & { kind: "union" },
+  ): string | null {
+    const def = this.host.unionsById.get(t.unionId);
+    const utag = def ? def.arms.findIndex((arm) => arm.kind === "undefinedT") : -1;
+    if (utag < 0) return null;
+    const absent = emitFieldAbsentTest(B, value, utag);
+    const lSkip = B.newLabel("tdr.absent");
+    const lSet = B.newLabel("tdr.set");
+    B.condBr(absent, lSkip, lSet);
+    B.startBlock(lSet);
+    return lSkip;
+  }
+
+  /** A checked undefined-armed field value, or the field's ABSENT state
+   * when the value is undefined because the source object has no own
+   * property of that name (a missing JSON key stays missing; an explicit
+   * undefined stays present). Proxy sources answer through their reads, so
+   * they count as present. The checked value is a +1 union; replacing it
+   * with the immortal absent instance releases nothing (unit instances are
+   * immortal too). */
+  private presenceOf(
+    B: BlockBuilder,
+    d: string,
+    key: string,
+    t: IrType & { kind: "union" },
+    value: string,
+  ): string {
+    const def = this.host.unionsById.get(t.unionId);
+    const utag = def ? def.arms.findIndex((arm) => arm.kind === "undefinedT") : -1;
+    if (utag < 0) return value;
+    const tp = B.tmp();
+    const tag = B.tmp();
+    const isUndef = B.tmp();
+    B.line(`${tp} = getelementptr inbounds %ScrUnion, ptr ${value}, i64 0, i32 1`);
+    B.line(`${tag} = load i32, ptr ${tp}`);
+    B.line(`${isUndef} = icmp eq i32 ${tag}, ${utag}`);
+    const kind = this.kindOf(B, d);
+    const isObj = B.tmp();
+    B.line(`${isObj} = icmp eq i32 ${kind}, ${DYN_KIND.OBJ}`);
+    const probe = B.tmp();
+    B.line(`${probe} = and i1 ${isUndef}, ${isObj}`);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr`);
+    B.line(`store ptr ${value}, ptr ${slot}`);
+    const lProbe = B.newLabel("dcr.has");
+    const lJoin = B.newLabel("dcr.hasj");
+    B.condBr(probe, lProbe, lJoin);
+    B.startBlock(lProbe);
+    const own = this.objGetLit(B, d, key);
+    const missing = B.tmp();
+    const chosen = B.tmp();
+    B.line(`${missing} = icmp eq ptr ${own}, null`);
+    B.line(
+      `${chosen} = select i1 ${missing}, ptr ${this.host.absentInstanceRef(t.unionId)}, ptr ${value}`,
+    );
+    B.line(`store ptr ${chosen}, ptr ${slot}`);
+    B.br(lJoin);
+    B.startBlock(lJoin);
+    const out = B.tmp();
+    B.line(`${out} = load ptr, ptr ${slot}`);
+    return out;
   }
 
   /** Ordinary property lookup, including inherited data and accessors (+1). */
@@ -1343,6 +1415,10 @@ export class LlDyn {
           B.line(`call void @scr_dyn_release(ptr ${m})`);
           storeInto(f.name, f.type, value);
           this.pendingBail(B, "dcr", releaseR, "ptr null");
+          if (f.type.kind === "union") {
+            const stored = this.presenceOf(B, "%d", f.name, f.type, value);
+            if (stored !== value) storeInto(f.name, f.type, stored);
+          }
         }
         // Index-signature shapes CAPTURE undeclared keys into the
         // overflow map.
@@ -1952,11 +2028,17 @@ export class LlDyn {
         for (const f of dynFields) {
           const klen = Buffer.byteLength(f.name, "utf8");
           const fv = loadFieldOf(f.name, f.type);
+          // An ABSENT optional field contributes no key.
+          const lSkip = f.type.kind === "union" ? this.skipIfAbsent(B, fv, f.type) : null;
           const conv = B.tmp();
           B.line(`${conv} = call ptr @${this.toDynHelper(f.type)}(${this.valTy(f.type)} ${fv})`);
           B.line(
             `call void @scr_dyn_obj_set(ptr ${d}, ptr ${host.cstr(f.name)}, ${host.sizeType} ${klen}, ptr ${conv}) ; ${llvmCommentText(f.name)}`,
           );
+          if (lSkip !== null) {
+            B.br(lSkip);
+            B.startBlock(lSkip);
+          }
         }
         if (shape.indexValue) {
           const iv = shape.indexValue;

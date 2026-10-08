@@ -8046,6 +8046,49 @@ export class Lowerer {
     return wrappedUndefined(this, type, loc);
   }
 
+  /** The value an OMITTED or deleted property leaves in a record field
+   * slot of `type`: the ABSENT state for undefined-armed unions (the slot
+   * reads as undefined but the property does not exist), the dyn
+   * undefined for 'unknown' slots, and null when the slot cannot be
+   * missing. Only legal as a direct field-slot write (IR fieldAbsent). */
+  absentFieldValue(type: IrType, loc: SrcLoc): IrExpr | null {
+    if (type.kind === "union" && this.armTag(type.unionId, UNDEFINED_T) >= 0) {
+      return { kind: "fieldAbsent", unionId: type.unionId, type, loc };
+    }
+    return this.wrappedUndefined(type, loc);
+  }
+
+  /** A field copy that keeps absence: `value` (the converted read of
+   * `field` from record `obj`, which must be repeatable) when the source
+   * property exists, else the target slot's ABSENT state. Fields that are
+   * always present, and targets that cannot be absent, copy `value`
+   * as-is. Only legal as a direct field-slot write. */
+  presenceKeepingCopy(
+    obj: IrExpr,
+    shapeId: string,
+    field: string,
+    value: IrExpr,
+    loc: SrcLoc,
+  ): IrExpr {
+    const present = this.recordFieldPresent(obj, shapeId, field, loc);
+    if (present.kind !== "recordHas") return value;
+    const absent = this.absentFieldValue(value.type, loc);
+    if (absent?.kind !== "fieldAbsent") return value;
+    return { kind: "ternary", cond: present, then: value, else_: absent, type: value.type, loc };
+  }
+
+  /** Own-property presence of declared field `field` on record `obj`
+   * (borrowed — callers pass a repeatable receiver): a runtime test for
+   * undefined-armed union fields, which can be absent, and `true` for
+   * every other declared field. */
+  recordFieldPresent(obj: IrExpr, shapeId: string, field: string, loc: SrcLoc): IrExpr {
+    const f = this.shapes.get(shapeId)?.fields.find((x) => x.name === field);
+    if (f && f.type.kind === "union" && this.armTag(f.type.unionId, UNDEFINED_T) >= 0) {
+      return { kind: "recordHas", obj, shapeId, field, type: BOOL, loc };
+    }
+    return { kind: "boolLit", value: true, type: BOOL, loc };
+  }
+
   /** The entry value of a binding JS initializes to `undefined` (an
    * initializer-less declaration, a hoisted `var` before its statement):
    * undefined-armed unions hold the interned undefined arm, and 'any'

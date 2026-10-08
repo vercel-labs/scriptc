@@ -1,8 +1,8 @@
 // `in` with a RUNTIME string key over an INDEX-SIGNATURE record — the
 // service-config idiom (`names.filter((k) => k in config)`): the interned
 // %rec.haskey helper answers declared names statically per name (optional
-// slots per VALUE — the undefined arm reads absent, stance 55) and then
-// walks the overflow map's live keys.
+// slots by their runtime presence) and then walks the overflow map's live
+// keys.
 interface Seed {
   tokens?: Record<string, string>;
   [service: string]: unknown;

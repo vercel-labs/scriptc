@@ -14,7 +14,7 @@ import {
   typeEquals,
   typeKey,
 } from "../../ir/ir.js";
-import { BYTES_ELEM_NUM } from "./common.js";
+import { BYTES_ELEM_NUM, closureIdentityEqual } from "./common.js";
 import { DYN_KIND } from "./dyn.js";
 import { elemAccess, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -807,10 +807,12 @@ export function emitDynamicExpr(
           }
           default: {
             // Ref arms: pointer identity, exactly JS object equality.
+            // Function arms compare identity roots (adapters included).
             const a = host.unionPeek(l.name);
             const b = host.unionPeek(r.name);
             const t = B.tmp();
-            B.line(`${t} = icmp eq ptr ${a}, ${b} ; ${arm.kind}`);
+            if (arm.kind === "func") B.line(`${t} = ${closureIdentityEqual(host, a, b)}`);
+            else B.line(`${t} = icmp eq ptr ${a}, ${b} ; ${arm.kind}`);
             B.line(`store i1 ${t}, ptr ${slot}`);
             break;
           }
@@ -832,11 +834,23 @@ export function emitDynamicExpr(
       const tag = host.unionTag(u.name);
       const tagMatch = B.tmp();
       B.line(`${tagMatch} = icmp eq i32 ${tag}, ${e.tag}`);
+      // The payload is a closure only under the function tag; another
+      // arm's payload must never be read as one.
+      const slot = B.slot();
+      B.entryAllocas.push(`${slot} = alloca i1`);
+      B.line(`store i1 false, ptr ${slot}`);
+      const check = B.newLabel("ufe.c");
+      const join = B.newLabel("ufe.j");
+      B.condBr(tagMatch, check, join);
+      B.startBlock(check);
       const payload = host.unionPeek(u.name);
-      const ptrMatch = B.tmp();
-      B.line(`${ptrMatch} = icmp eq ptr ${payload}, ${f.name}`);
+      const identical = B.tmp();
+      B.line(`${identical} = ${closureIdentityEqual(host, payload, f.name)}`);
+      B.line(`store i1 ${identical}, ptr ${slot}`);
+      B.br(join);
+      B.startBlock(join);
       const result = B.tmp();
-      B.line(`${result} = and i1 ${tagMatch}, ${ptrMatch}`);
+      B.line(`${result} = load i1, ptr ${slot}`);
       if (!e.negated) return host.own({ name: result, type: e.type });
       const negated = B.tmp();
       B.line(`${negated} = xor i1 ${result}, true`);

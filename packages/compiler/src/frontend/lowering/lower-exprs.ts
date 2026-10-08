@@ -20,6 +20,7 @@ import { literalUnionArm } from "../union-discriminants.js";
  * ToBoolean/ToString coercion helpers, and field/element reads and writes
  * (FieldTarget). */
 import * as ts from "../ts7/adapter.js";
+import { constituentTypes } from "../ts7/checker.js";
 import { dirname } from "node:path";
 import * as posix from "node:path/posix";
 import type { Lowerer } from "./lowerer.js";
@@ -492,6 +493,13 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (ts.isNonNullExpression(expr)) {
     const inner = lowerer.lowerExpr(expr.expression);
     if (inner.type.kind === "union") {
+      // `!` performs no runtime check: a missing array element stays
+      // undefined where its destination can hold it.
+      if (
+        ts.isElementAccessExpression(expr.expression) &&
+        assertedElementKeepsUndefined(lowerer, expr)
+      )
+        return inner;
       const use = runtimeOptionalUseOf(expr);
       if (runtimeOptionalAssertionErases(lowerer, expr, inner, use)) return inner;
       const target = lowerer.mapTypeOf(lowerer.typeOf(expr));
@@ -4015,6 +4023,53 @@ function runtimeOptionalElementKey(expr: ts.Expression): string | null {
   return null;
 }
 
+/** Whether `xs[i]!` lands where an absent element's undefined is
+ * representable: array storage (a literal element, a push/unshift
+ * argument, an element assignment — arrays record the undefined state),
+ * an equality operand, or a slot whose contextual type admits undefined.
+ * TypeScript's `!` has no runtime effect, so such reads stay optional. */
+function assertedElementKeepsUndefined(lowerer: Lowerer, node: ts.NonNullExpression): boolean {
+  let outer: ts.Expression = node;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  if (ts.isArrayLiteralExpression(parent)) return true;
+  // An equality test observes the missing element itself.
+  if (
+    ts.isBinaryExpression(parent) &&
+    (parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+      parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+      parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+      parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken)
+  )
+    return true;
+  const isArray = (receiver: ts.Expression): boolean =>
+    lowerer.checker.isArrayType(lowerer.typeOf(receiver));
+  if (
+    ts.isCallExpression(parent) &&
+    parent.arguments.includes(outer) &&
+    ts.isPropertyAccessExpression(parent.expression) &&
+    (parent.expression.name.text === "push" || parent.expression.name.text === "unshift") &&
+    isArray(parent.expression.expression)
+  )
+    return true;
+  if (
+    ts.isBinaryExpression(parent) &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    parent.right === outer &&
+    ts.isElementAccessExpression(parent.left) &&
+    isArray(parent.left.expression)
+  )
+    return true;
+  const contextual = lowerer.checker.getContextualType(outer);
+  if (!contextual) return false;
+  const admits = (type: ts.Type): boolean =>
+    (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Undefined)) !== 0;
+  return (
+    admits(contextual) ||
+    ((contextual.flags & ts.TypeFlags.Union) !== 0 && constituentTypes(contextual).some(admits))
+  );
+}
+
 function runtimeOptionalAssertionErases(
   lowerer: Lowerer,
   expr: ts.Expression,
@@ -6910,10 +6965,14 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   // change the storage representation or the low-level getter itself.
   if (arr.type.kind === "array") {
     // A non-null assertion is the explicit proven-present form. Preserve
-    // the dense getter's established bounds trap here; turning `xs[i]!`
-    // into an optional union would change library ABI checks and the
-    // existing catchable RangeError contract for an out-of-bounds assert.
-    const provenPresent = ts.isNonNullExpression(expr.parent) && expr.parent.expression === expr;
+    // the dense getter's established bounds trap where the asserted value
+    // must be the element type (library ABI checks and the catchable
+    // RangeError contract for an out-of-bounds assert). Where undefined is
+    // representable, the assertion keeps JavaScript's unchecked read.
+    const provenPresent =
+      ts.isNonNullExpression(expr.parent) &&
+      expr.parent.expression === expr &&
+      !assertedElementKeepsUndefined(lowerer, expr.parent);
     if (provenPresent) {
       return lowerer.maybeNarrow(
         { kind: "arrayGet", arr, index, type: elemT, loc: locOf(expr) },

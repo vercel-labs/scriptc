@@ -2549,8 +2549,18 @@ export type IrExpr =
    * in the callee's captures[] order). The result is owned (+1); the closure
    * itself retains each captured box. A reference to a top-level declared
    * function lowers to a zero-capture closure — backends must intern that
-   * case so `f === f` is true (JS function identity). */
-  | { kind: "closure"; fnName: string; captures: string[]; type: IrType; loc: SrcLoc }
+   * case so `f === f` is true (JS function identity). `adapts` marks a
+   * signature adapter: captures[0] holds the function it forwards to, and
+   * the new closure takes that function's identity (JS sees one function,
+   * so `===`, SameValue and searches compare identity roots). */
+  | {
+      kind: "closure";
+      fnName: string;
+      captures: string[];
+      adapts?: true;
+      type: IrType;
+      loc: SrcLoc;
+    }
   /** Indirect call of a func-typed value. Args follow `call`'s convention
    * (callee owns its params, callers pass +1). The callee expression is an
    * ordinary owned temp, released at statement end. receiver supplies the

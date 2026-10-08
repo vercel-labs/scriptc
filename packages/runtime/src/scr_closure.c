@@ -192,10 +192,22 @@ ScrClosure *scr_closure_new(void *fn, size_t ncaps) {
   c->ncaps = ncaps;
   c->props = NULL; /* lazily allocated by Object.defineProperties */
   c->function_kind = 0;
+  c->identity_length = 0;
+  c->identity = NULL;
 #ifdef SCR_RC_AUDIT
   scr_live_closures++;
 #endif
   return c;
+}
+
+bool scr_closure_identity_equal(ScrClosure *a, ScrClosure *b) {
+  return scr_closure_identity(a) == scr_closure_identity(b);
+}
+
+void scr_closure_adopt_identity(ScrClosure *adapter, ScrClosure *original, uint32_t length) {
+  if (adapter == NULL || original == NULL || adapter == original) return;
+  adapter->identity = scr_closure_identity(original);
+  adapter->identity_length = original->identity != NULL ? original->identity_length : length;
 }
 
 static void scr_closure_destroy(void *object) {

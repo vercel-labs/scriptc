@@ -99,7 +99,7 @@ static uint64_t scr_map_hash_dyn(const ScrDyn *d) {
   case SCR_DYN_BIGINT: return scr_bigint_hash(d->v.bigint);
   case SCR_DYN_STR: return scr_map_hash_str(d->v.str);
   case SCR_DYN_SYMBOL: value = scr_map_slot_from_ptr(d->v.symbol.value); break;
-  case SCR_DYN_FUNC: value = scr_map_slot_from_ptr(d->v.fn.class_obj ? (void *)d->v.fn.class_obj : (void *)d->v.fn.clo); break;
+  case SCR_DYN_FUNC: value = scr_map_slot_from_ptr(d->v.fn.class_obj ? (void *)d->v.fn.class_obj : (void *)scr_closure_identity(d->v.fn.clo)); break;
   case SCR_DYN_BYTES: value = scr_map_slot_from_ptr(d->v.bytes); break;
   case SCR_DYN_HANDLE: value = scr_map_slot_from_ptr(d->v.handle.ptr); break;
   case SCR_DYN_PROMISE: value = scr_map_slot_from_ptr(d->v.promise); break;

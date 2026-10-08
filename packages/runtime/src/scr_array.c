@@ -1528,6 +1528,8 @@ static bool scr_arr_ref_eq(const ScrArr *a, uint64_t slot, void *v) {
   if (a->elem == SCR_ELEM_REF && a->elem_retain == scr_dyn_retain_v) {
     return scr_dyn_strict_eq((ScrDyn *)p, (ScrDyn *)v);
   }
+  if (a->elem == SCR_ELEM_REF && a->elem_retain == scr_closure_retain_v)
+    return scr_closure_identity_equal((ScrClosure *)p, (ScrClosure *)v);
   return p == v;
 }
 

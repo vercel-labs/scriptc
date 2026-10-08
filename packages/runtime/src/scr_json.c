@@ -1521,7 +1521,7 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     scr_dyn_release(view);
     return result;
   }
-  if (object->kind == SCR_DYN_FUNC && object->v.fn.clo->props) {
+  if (object->kind == SCR_DYN_FUNC && scr_closure_identity(object->v.fn.clo)->props) {
     ScrDyn *table = scr_dyn_fn_properties(object);
     ScrDyn *result = table->prototype ? scr_dyn_retain(table->prototype)
       : table->null_proto ? scr_dyn_new_null() : NULL;
@@ -1560,7 +1560,7 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     return scr_dyn_retain(object);
   }
   if (object->kind == SCR_DYN_FUNC) {
-    if (prototype->kind == SCR_DYN_FUNC && object->v.fn.clo == prototype->v.fn.clo) {
+    if (prototype->kind == SCR_DYN_FUNC && scr_closure_identity_equal(object->v.fn.clo, prototype->v.fn.clo)) {
       static const char message[] = "Cyclic __proto__ value";
       scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
       return NULL;
@@ -1826,8 +1826,8 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
     return result;
   }
   if (value->kind == SCR_DYN_FUNC) {
-    if (value->v.fn.clo->props) {
-      ScrDyn *table = (ScrDyn *)scr_box_get_ref(value->v.fn.clo->props);
+    if (scr_closure_identity(value->v.fn.clo)->props) {
+      ScrDyn *table = (ScrDyn *)scr_box_get_ref(scr_closure_identity(value->v.fn.clo)->props);
       ScrDyn *desc = table ? scr_dyn_own_descriptor(table, key) : NULL;
       scr_dyn_release(table);
       return desc;
@@ -2290,8 +2290,8 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (PROBE("isRegExp")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_REGEXP;
   if (PROBE("isPromise")) return value->kind == SCR_DYN_PROMISE;
   if (PROBE("isProxy")) return value->kind == SCR_DYN_PROXY;
-  if (PROBE("isAsyncFunction")) return value->kind == SCR_DYN_FUNC && (value->v.fn.clo->function_kind & 2) != 0;
-  if (PROBE("isGeneratorFunction")) return value->kind == SCR_DYN_FUNC && (value->v.fn.clo->function_kind & 1) != 0;
+  if (PROBE("isAsyncFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & 2) != 0;
+  if (PROBE("isGeneratorFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & 1) != 0;
   if (PROBE("isGeneratorObject")) return scr_dyn_generator(value);
   if (PROBE("isNativeError")) {
     ScrError *error = scr_errdyn_err_of(value);
@@ -2529,7 +2529,8 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
   d->v.fn.thunk = thunk;
   d->v.fn.sig = sig;
   d->v.fn.name = name;
-  d->v.fn.arity = arity;
+  /* A signature adapter reports the length of the function it adapts. */
+  d->v.fn.arity = clo->identity != NULL ? clo->identity_length : arity;
   d->v.fn.class_obj = NULL;
   return d;
 }
@@ -2668,7 +2669,7 @@ ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc) {
   scr_str_release(prefix);
   scr_str_release(suffix);
   ScrClosure *closure = scr_closure_new(NULL, 4);
-  closure->function_kind = target->v.fn.clo->function_kind & 3;
+  closure->function_kind = scr_closure_identity(target->v.fn.clo)->function_kind & 3;
   for (size_t i = 0; i < 3; i++) closure->caps[i] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
   closure->caps[3] = scr_box_new(SCR_BOX_STR);
   scr_box_set_ref(closure->caps[0], scr_dyn_retain(target));
@@ -3218,9 +3219,11 @@ static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key);
  * the configurable, non-writable builtin members once so redefinitions and
  * deletions retain the same behavior through every alias. Returns +1. */
 static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
-  if (!function->v.fn.clo->props && function->v.fn.class_obj && function->v.fn.class_obj->static_data)
-    function->v.fn.clo->props = scr_box_retain(function->v.fn.class_obj->static_data);
-  if (!function->v.fn.clo->props) {
+  /* A signature adapter shares the table of the function it adapts. */
+  ScrClosure *owner = scr_closure_identity(function->v.fn.clo);
+  if (!owner->props && function->v.fn.class_obj && function->v.fn.class_obj->static_data)
+    owner->props = scr_box_retain(function->v.fn.class_obj->static_data);
+  if (!owner->props) {
     ScrDyn *table = scr_dyn_new_obj();
     const char *name = function->v.fn.name ? function->v.fn.name : "";
     ScrStr *name_string = scr_str_new(name, strlen(name));
@@ -3233,9 +3236,9 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
     }
     ScrBox *box = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
     scr_box_set_ref(box, table);
-    function->v.fn.clo->props = box;
+    owner->props = box;
     if (function->v.fn.class_obj) function->v.fn.class_obj->static_data = scr_box_retain(box);
-    if (function->v.fn.clo->function_kind & 4) {
+    if (owner->function_kind & 4) {
       ScrDyn *prototype = scr_dyn_new_obj();
       scr_dyn_obj_set(prototype, "constructor", 11, scr_dyn_retain((ScrDyn *)function));
       prototype->v.obj.entries[0].enumerable = false;
@@ -3245,7 +3248,7 @@ static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function) {
       entry->configurable = false;
     }
   }
-  return (ScrDyn *)scr_box_get_ref(function->v.fn.clo->props);
+  return (ScrDyn *)scr_box_get_ref(owner->props);
 }
 
 ScrDyn *scr_dyn_class_inherit(ScrDyn *constructor, ScrDyn *base) {
@@ -3257,7 +3260,7 @@ ScrDyn *scr_dyn_class_inherit(ScrDyn *constructor, ScrDyn *base) {
   ScrDyn *table = scr_dyn_fn_properties(constructor);
   if (base->kind == SCR_DYN_FUNC) scr_dyn_release(scr_dyn_fn_properties(base));
   ScrClassObj *cls = constructor->v.fn.class_obj;
-  if (!cls->static_data) cls->static_data = scr_box_retain(constructor->v.fn.clo->props);
+  if (!cls->static_data) cls->static_data = scr_box_retain(scr_closure_identity(constructor->v.fn.clo)->props);
   ScrDyn *result = base->kind == SCR_DYN_UNDEF ? NULL : scr_dyn_set_prototype(table, base);
   scr_dyn_release(table);
   scr_dyn_release(result);
@@ -3266,7 +3269,7 @@ ScrDyn *scr_dyn_class_inherit(ScrDyn *constructor, ScrDyn *base) {
 
 ScrDyn *scr_dyn_class_base_prototype(ScrDyn *constructor) {
   if (constructor->kind != SCR_DYN_FUNC || constructor->v.fn.class_obj ||
-      constructor->v.fn.clo->function_kind != 4) {
+      scr_closure_identity(constructor->v.fn.clo)->function_kind != 4) {
     static const char message[] = "Class extends value is not a native ordinary constructor";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
@@ -3299,7 +3302,7 @@ bool scr_dyn_data_view_is(const ScrDyn *value) {
 /* Ordinary native function constructors retain their live prototype table.
  * A constructor may replace the fresh receiver with another object. */
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
-  if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj || callee->v.fn.clo->function_kind != 4)
+  if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj || scr_closure_identity(callee->v.fn.clo)->function_kind != 4)
     return scr_bytes_construct(callee, args, what);
   ScrDyn *prototype = scr_dyn_fn_get(callee, "prototype", 9);
   if (!prototype) return NULL;
@@ -4273,7 +4276,12 @@ bool scr_dyn_is_callable(const ScrDyn *value) {
 
 int scr_dyn_function_kind(const ScrDyn *value) {
   while (value->kind == SCR_DYN_PROXY) value = value->v.proxy.target;
-  return value->kind == SCR_DYN_FUNC ? value->v.fn.clo->function_kind : 0;
+  return value->kind == SCR_DYN_FUNC ? scr_closure_identity(value->v.fn.clo)->function_kind : 0;
+}
+
+void scr_dyn_adopt_identity(ScrClosure *adapter, const ScrDyn *value) {
+  if (value->kind == SCR_DYN_FUNC && value->v.fn.class_obj == NULL)
+    scr_closure_adopt_identity(adapter, value->v.fn.clo, value->v.fn.arity);
 }
 
 bool scr_dyn_is_object(const ScrDyn *d) {
@@ -6916,7 +6924,7 @@ bool scr_dyn_strict_eq(const ScrDyn *a, const ScrDyn *b) {
      * dyn boundary twice is still ONE JS function value, so identity
      * lives in the boxed closure, not the box. */
     if (a->v.fn.class_obj || b->v.fn.class_obj) return a->v.fn.class_obj == b->v.fn.class_obj;
-    return a == b || a->v.fn.clo == b->v.fn.clo;
+    return a == b || scr_closure_identity_equal(a->v.fn.clo, b->v.fn.clo);
   case SCR_DYN_BYTES:
     return a->v.bytes == b->v.bytes;
   case SCR_DYN_HANDLE:
@@ -7005,10 +7013,11 @@ static ScrDyn *scr_function_constructor(uint32_t kind) {
 /* Keyed read on a FUNC node (see scr_runtime.h): own props first, then
  * the function-instance built-ins name/length. +1 or NULL. */
 ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
-  if (d->v.fn.class_obj && d->v.fn.class_obj->static_data && !d->v.fn.clo->props)
-    d->v.fn.clo->props = scr_box_retain(d->v.fn.class_obj->static_data);
-  if (!d->v.fn.class_obj && key_len == 9 && !memcmp(key, "prototype", 9) && !d->v.fn.clo->props) {
-    if (d->v.fn.clo->function_kind & 1) {
+  ScrClosure *owner = scr_closure_identity(d->v.fn.clo);
+  if (d->v.fn.class_obj && d->v.fn.class_obj->static_data && !owner->props)
+    owner->props = scr_box_retain(d->v.fn.class_obj->static_data);
+  if (!d->v.fn.class_obj && key_len == 9 && !memcmp(key, "prototype", 9) && !owner->props) {
+    if (owner->function_kind & 1) {
       static const char message[] = "Native generator function prototypes have no lowering";
       scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
       return NULL;
@@ -7016,8 +7025,8 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
     ScrDyn *table = scr_dyn_fn_properties(d);
     scr_dyn_release(table);
   }
-  if (d->v.fn.clo->props) {
-    ScrDyn *table = (ScrDyn *)scr_box_get_ref(d->v.fn.clo->props); /* +1 */
+  if (owner->props) {
+    ScrDyn *table = (ScrDyn *)scr_box_get_ref(owner->props); /* +1 */
     ScrDyn *m = table ? scr_dyn_obj_get(table, key, key_len) : NULL;
     ScrDyn *r = m ? scr_dyn_obj_read_receiver(table, key, key_len, d) : NULL;
     bool custom_prototype = table && (table->prototype || table->null_proto);
@@ -7036,7 +7045,7 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
     if (key_len == 6 && memcmp(key, "length", 6) == 0) return scr_dyn_new_num(0);
   }
   if (!d->v.fn.class_obj && key_len == 11 && memcmp(key, "constructor", 11) == 0)
-    return scr_function_constructor(d->v.fn.clo->function_kind);
+    return scr_function_constructor(owner->function_kind);
   if (key_len == 4 && memcmp(key, "name", 4) == 0) {
     const char *n = d->v.fn.name ? d->v.fn.name : "";
     ScrStr *s = scr_str_new(n, strlen(n));
@@ -9276,7 +9285,7 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
   case SCR_DYN_BYTES:
     *ptr = key->v.bytes; *kind = 1; return 1;
   case SCR_DYN_FUNC:
-    *ptr = key->v.fn.class_obj ? (void *)key->v.fn.class_obj : (void *)key->v.fn.clo;
+    *ptr = key->v.fn.class_obj ? (void *)key->v.fn.class_obj : (void *)scr_closure_identity(key->v.fn.clo);
     *kind = key->v.fn.class_obj ? 3 : 2; return 1;
   case SCR_DYN_HANDLE:
     if (key->v.handle.tag != SCR_DYNH_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_SHARED_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_WEAK_MAP &&

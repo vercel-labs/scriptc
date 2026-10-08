@@ -95,7 +95,14 @@ export function buildFunctionAdapter(
       body: [
         {
           kind: "return",
-          value: { kind: "closure", fnName: implementation, captures: ["f.0"], type: target, loc },
+          value: {
+            kind: "closure",
+            fnName: implementation,
+            captures: ["f.0"],
+            adapts: true,
+            type: target,
+            loc,
+          },
           loc,
         },
       ],

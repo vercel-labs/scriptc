@@ -1706,6 +1706,16 @@ typedef struct ScrClosure {
    * collected. */
   ScrBox *props;
   uint32_t function_kind; /* low bits: 0 ordinary, 1 generator, 2 async, 3 async generator; bit 2: ordinary own prototype; bit 3: checked callable adapter in caps[0] */
+  /* The root's `length` as boxed values report it; meaningful only when
+   * identity is set (the root's own boxes carry their arity). */
+  uint32_t identity_length;
+  /* The JS function this closure stands for. NULL means the closure is
+   * its own identity. A signature adapter (the same function viewed
+   * through a different native ABI) points at the root of the function
+   * it adapts, so chains of adapters collapse to one root and `===`,
+   * SameValue, searches and own properties all observe one function.
+   * Borrowed: the adapter keeps its original alive through its captures. */
+  struct ScrClosure *identity;
   ScrBox *caps[];
 } ScrClosure;
 
@@ -1720,6 +1730,23 @@ static inline ScrClosure *scr_closure_retain(ScrClosure *c) {
 }
 
 void scr_closure_release(ScrClosure *c); /* releases the boxes; NULL-tolerant */
+
+/* The identity root of a function value (NULL-tolerant). */
+static inline ScrClosure *scr_closure_identity(ScrClosure *c) {
+  return c != NULL && c->identity != NULL ? c->identity : c;
+}
+
+/* JS function identity: two closures are the same function when their
+ * identity roots match. */
+bool scr_closure_identity_equal(ScrClosure *a, ScrClosure *b);
+
+/* Mark `adapter` as a signature view of `original` (both borrowed);
+ * `length` is the original's arity when it is a root. */
+void scr_closure_adopt_identity(ScrClosure *adapter, ScrClosure *original, uint32_t length);
+
+/* Mark `adapter` as a typed view of a dynamic function value (both
+ * borrowed). Other callables keep the adapter as its own identity. */
+void scr_dyn_adopt_identity(ScrClosure *adapter, const struct ScrDyn *value);
 
 /* ── outbound FFI retained callbacks (scr_ffi.c) ─────────────────────
  * One compiler-emitted table per retained callback descriptor. For

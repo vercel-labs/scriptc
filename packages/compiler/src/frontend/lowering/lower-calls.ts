@@ -7161,9 +7161,17 @@ function lowerObjectStaticCall(
         const plain = left.type.kind === "union" ? right : left;
         const arms = lowerer.unions.get(ut.unionId)?.arms ?? [];
         // The plain side wraps into the union exactly like === when the
-        // union holds its type; a plain PRIMITIVE the union has no arm
-        // for is the disjoint constant false (coercing it would strand).
-        if (bothUnion || arms.some((a) => typeEquals(a, plain.type))) {
+        // union holds its type, or when a plain class instance upcasts
+        // into exactly one class arm (the same pointer under a base tag);
+        // a plain PRIMITIVE the union has no arm for is the disjoint
+        // constant false (coercing it would strand).
+        const plainType = plain.type;
+        const upcastArm =
+          plainType.kind === "object" &&
+          arms.filter(
+            (a) => a.kind === "object" && lowerer.isSubclassOf(plainType.className, a.className),
+          ).length === 1;
+        if (bothUnion || upcastArm || arms.some((a) => typeEquals(a, plain.type))) {
           if (tagEqualityMayMissAlias(lowerer, ut))
             lowerer.noLowering(
               "Object.is over related class values beside structural union members",

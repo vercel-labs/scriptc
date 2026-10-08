@@ -14793,6 +14793,37 @@
     "<repo>/tests/corpus/record-unchecked-read-presence.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/4040-adapted-function-identity.ts": {
+   "order": [
+    "<repo>/tests/corpus/4040-adapted-function-identity.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4041-adapted-function-properties.ts": {
+   "order": [
+    "<repo>/tests/corpus/4041-adapted-function-properties.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4042-object-is-union-subclass.ts": {
+   "order": [
+    "<repo>/tests/corpus/4042-object-is-union-subclass.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4043-nonnull-missing-element.ts": {
+   "order": [
+    "<repo>/tests/corpus/4043-nonnull-missing-element.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4044-adapted-callback-modules/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4044-adapted-callback-modules/registry.ts",
+    "<repo>/tests/corpus/4044-adapted-callback-modules/main.ts"
+   ],
+   "diags": []
   }
  }
 }

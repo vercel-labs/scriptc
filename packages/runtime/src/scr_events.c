@@ -1155,7 +1155,7 @@ void scr_process_on_exit(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, doub
 
 void scr_process_off_exit(ScrClosure *cb /*borrowed*/) {
   for (size_t i = 0; i < scr_exit_n; i++) {
-    if (scr_exit_ls[i].cb == cb) {
+    if (scr_closure_identity_equal(scr_exit_ls[i].cb, cb)) {
       scr_closure_release(scr_exit_ls[i].cb);
       memmove(scr_exit_ls + i, scr_exit_ls + i + 1, (scr_exit_n - i - 1) * sizeof *scr_exit_ls);
       scr_exit_n--;

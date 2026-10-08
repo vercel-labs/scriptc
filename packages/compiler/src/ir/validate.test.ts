@@ -1792,3 +1792,51 @@ test("abstract virtual slots admit subclass returns without admitting unrelated 
     "in caller1: virtualCall Base.run result type mismatch",
   ]);
 });
+
+test("signature adapters capture the function whose identity they share", () => {
+  const source: IrType = { kind: "func", params: [F64], ret: VOID };
+  const target: IrType = { kind: "func", params: [F64, F64], ret: VOID };
+  const adapter: IrExpr & { kind: "closure" } = {
+    kind: "closure",
+    fnName: "view",
+    captures: ["f.0"],
+    adapts: true,
+    type: target,
+    loc,
+  };
+  const mod = expressionModule(adapter, []);
+  mod.functions[0]!.locals.push({
+    id: "f.0",
+    name: "f",
+    type: source,
+    mutable: false,
+    boxed: true,
+  });
+  mod.functions.push({
+    name: "view",
+    params: [
+      { localId: "a.0", name: "a", type: F64 },
+      { localId: "b.0", name: "b", type: F64 },
+    ],
+    captures: [{ localId: "f.0", name: "f", type: source }],
+    locals: [
+      { id: "f.0", name: "f", type: source, mutable: false, boxed: true },
+      { id: "a.0", name: "a", type: F64, mutable: false },
+      { id: "b.0", name: "b", type: F64, mutable: false },
+    ],
+    returnType: VOID,
+    body: [],
+    loc,
+  });
+  expect(validateModule(mod)).toEqual([]);
+  expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+  const numeric = structuredClone(mod);
+  for (const fn of numeric.functions)
+    for (const local of fn.locals) if (local.id === "f.0") local.type = F64;
+  numeric.functions[1]!.captures = [{ localId: "f.0", name: "f", type: F64 }];
+  expect(
+    validateModule(numeric).some((error) =>
+      error.message.includes("an adapter's first capture must be a function"),
+    ),
+  ).toBe(true);
+});

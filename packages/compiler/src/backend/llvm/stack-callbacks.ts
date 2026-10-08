@@ -19,7 +19,7 @@ export class StackCallbacks {
 
   emit(host: LlvmEmitterContext, value: IrExpr): LlValue | null {
     if (value.kind !== "closure" || value.captures.length > 32) return null;
-    const bytes = (5 + value.captures.length) * (host.sizeType === "i64" ? 8 : 4);
+    const bytes = (6 + value.captures.length) * (host.sizeType === "i64" ? 8 : 4);
     if (bytes > this.remaining || !this.eligible(value.fnName)) return null;
     this.remaining -= bytes;
     const B = host.B;

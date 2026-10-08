@@ -7,7 +7,7 @@ import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 
-import { BYTES_ELEM_NUM, f64Lit } from "./common.js";
+import { BYTES_ELEM_NUM, closureIdentityEqual, f64Lit } from "./common.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitStringParts, stringParts } from "./string-construction.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
@@ -187,6 +187,16 @@ export function emitOperatorExpr(
         B.line(
           `${equal} = call zeroext i1 @scr_promise_identity_equal(ptr ${l.name}, ptr ${r.name})`,
         );
+        if (e.op === "!==") B.line(`${t} = xor i1 ${equal}, true`);
+      } else if (
+        (e.op === "===" || e.op === "!==") &&
+        e.left.type.kind === "func" &&
+        e.right.type.kind === "func"
+      ) {
+        // A signature adapter stands for the function it adapts, so
+        // function identity compares the closures' identity roots.
+        const equal = e.op === "===" ? t : B.tmp();
+        B.line(`${equal} = ${closureIdentityEqual(host, l.name, r.name)}`);
         if (e.op === "!==") B.line(`${t} = xor i1 ${equal}, true`);
       } else if ((e.op === "===" || e.op === "!==") && host.llType(e.left.type) === "ptr") {
         // Reference identity (JS object equality) — closures, arrays,

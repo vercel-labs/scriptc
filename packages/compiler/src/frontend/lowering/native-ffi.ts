@@ -492,7 +492,9 @@ export function lowerFfiCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr 
     // Retained identity is the runtime closure pointer. A coercion adapter
     // would be freshly allocated at registration and release sites, so an
     // assignable-but-different function shape (notably `() => number` into
-    // `() => void`) cannot honestly participate in explicit release. The
+    // `() => void`) cannot honestly participate in explicit release. Script
+    // identity roots do not help here: native code receives and matches the
+    // registered context pointer itself, never the script function. The
     // adapter set comes from the mint sites themselves (Lowerer's
     // freshClosureAdapters), not name-prefix matching, so a new coercion
     // helper cannot silently slip past this guard.

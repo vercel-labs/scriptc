@@ -595,6 +595,22 @@ export function emitCallExpr(
           `${capp} = getelementptr inbounds ptr, ptr ${caps}, ${host.sizeType} ${i} ; caps[${i}]`,
         );
         B.line(`store ptr ${retained}, ptr ${capp}`);
+        if (i === 0 && e.adapts === true) {
+          // A signature adapter stands for the function it forwards to.
+          const slot = B.tmp();
+          const original = B.tmp();
+          B.line(`${slot} = getelementptr inbounds %ScrBox, ptr ${box}, i64 0, i32 5`);
+          B.line(`${original} = load ptr, ptr ${slot}`);
+          // Boxed adapters report the original's length (its static
+          // arity, as the original's own boxes do).
+          const source = target.captures?.[0]?.type;
+          const length =
+            source?.kind === "func"
+              ? source.params.length - (source.restAbi === "typed" ? 1 : 0)
+              : 0;
+          host.declare(`declare void @scr_closure_adopt_identity(ptr, ptr, i32)`);
+          B.line(`call void @scr_closure_adopt_identity(ptr ${c}, ptr ${original}, i32 ${length})`);
+        }
       });
       return out;
     }

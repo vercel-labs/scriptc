@@ -1764,6 +1764,10 @@ export class LlDyn {
         B.line(`store ptr ${box}, ptr ${capp}`);
         const rd = this.retainDyn(B, "%d");
         B.line(`call void @scr_box_set_ref(ptr ${box}, ptr ${rd})`);
+        // The shim is the same JS function under another signature: it
+        // takes the boxed closure's identity (kept alive through caps[0]).
+        host.declare(`declare void @scr_dyn_adopt_identity(ptr, ptr)`);
+        B.line(`call void @scr_dyn_adopt_identity(ptr ${a}, ptr %d)`);
         B.terminate(`ret ptr ${a}`);
         break;
       }

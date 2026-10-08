@@ -492,7 +492,7 @@ ScrEmitter *scr_emitter_off(ScrEmitter *em, ScrStr *name, ScrClosure *cb) {
   ScrEeBucket *b = em->reg ? scr_ee_bucket_find(em->reg, name->data, name->len) : NULL;
   if (b) {
     for (size_t i = b->n; i-- > 0;) {
-      if (scr_ee_entry_fn(b->ls[i]) == cb) {
+      if (scr_closure_identity_equal(scr_ee_entry_fn(b->ls[i]), cb)) {
         scr_ee_remove_at(em, b, i);
         break;
       }
@@ -758,7 +758,7 @@ double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *f
   if (!b) return 0;
   size_t count = 0;
   for (size_t i = 0; i < b->n; i++) {
-    if (scr_ee_entry_fn(b->ls[i]) == fn) count++;
+    if (scr_closure_identity_equal(scr_ee_entry_fn(b->ls[i]), fn)) count++;
   }
   return (double)count;
 }

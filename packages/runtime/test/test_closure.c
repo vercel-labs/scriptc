@@ -62,6 +62,24 @@ int main(void) {
   scr_box_release(fb);
   CHECK(scr_closure_live_count() == 0);
 
+  /* identity roots: an adapter of an adapter answers the original */
+  ScrClosure *root = scr_closure_new((void *)&dummy_fn, 0);
+  ScrClosure *view = scr_closure_new((void *)&dummy_fn, 0);
+  ScrClosure *view2 = scr_closure_new((void *)&dummy_fn, 0);
+  ScrClosure *other = scr_closure_new((void *)&dummy_fn, 0);
+  CHECK(scr_closure_identity(root) == root && scr_closure_identity(NULL) == NULL);
+  scr_closure_adopt_identity(view, root, 1);
+  scr_closure_adopt_identity(view2, view, 3);
+  CHECK(scr_closure_identity(view) == root && scr_closure_identity(view2) == root);
+  CHECK(view->identity_length == 1 && view2->identity_length == 1);
+  CHECK(scr_closure_identity_equal(view2, root) && scr_closure_identity_equal(view, view2));
+  CHECK(!scr_closure_identity_equal(view, other) && !scr_closure_identity_equal(root, other));
+  scr_closure_release(view2);
+  scr_closure_release(view);
+  scr_closure_release(other);
+  scr_closure_release(root);
+  CHECK(scr_closure_live_count() == 0);
+
   /* immortal closure: retain/release are no-ops */
   static struct { size_t rc; void *fn; size_t ncaps; } immortal = {SIZE_MAX, NULL, 0};
   immortal.fn = (void *)&dummy_fn;

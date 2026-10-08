@@ -7,6 +7,7 @@ import type {
   IrFfiReturnClass,
   IrFfiValueParamClass,
 } from "../../ir/ir.js";
+import type { LlvmEmitterContext } from "./expr-context.js";
 
 /** User-controlled text embedded after an LLVM `;` comment marker. Preserve
  * ordinary output byte-for-byte, but encode control and line-separator code
@@ -120,4 +121,16 @@ export function emitFieldAbsentTest(B: BlockBuilder, value: string, undefinedTag
   B.line(`${marked} = icmp eq i64 ${payload}, ${ABSENT_FIELD_PAYLOAD}`);
   B.line(`${absent} = and i1 ${isUndef}, ${marked}`);
   return absent;
+}
+
+/** The right-hand side of a JS function-identity comparison: two closures
+ * are one function when their identity roots match (a signature adapter
+ * stands for the function it adapts). Both operands must be closures. */
+export function closureIdentityEqual(
+  host: LlvmEmitterContext,
+  left: string,
+  right: string,
+): string {
+  host.declare(`declare zeroext i1 @scr_closure_identity_equal(ptr, ptr)`);
+  return `call zeroext i1 @scr_closure_identity_equal(ptr ${left}, ptr ${right})`;
 }

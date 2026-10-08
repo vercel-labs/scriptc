@@ -15,6 +15,7 @@ import type { Lowerer } from "./lowerer.js";
 import { findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { classPrototypeData } from "./class-prototypes.js";
+import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 
 /** Unmodified typed methods retain direct or virtual native dispatch.
@@ -145,7 +146,7 @@ export function classCallbackCall(
   lowerer: Lowerer,
   receiver: IrExpr,
   name: string,
-  args: IrExpr[],
+  argumentNodes: readonly ts.Expression[],
   fallback: IrExpr,
   loc: SrcLoc,
   calleeName = name,
@@ -155,12 +156,20 @@ export function classCallbackCall(
   const callback = lowerer.declareHiddenLocal("%callback", DYN);
   const value = varRef(bag.id, DYN, loc);
   const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+  const spreads: { arg: number; what: string }[] = [];
+  const args = argumentNodes.map((argument, index) => {
+    if (!ts.isSpreadElement(argument)) return lowerer.lowerExprExpecting(argument, DYN);
+    const spelling = argument.expression.getText();
+    spreads.push({ arg: index, what: spelling });
+    return checkedIterableSpread(lowerer, lowerer.lowerExpr(argument.expression), spelling, loc);
+  });
   const call: IrExpr = {
     kind: "dynCall",
     callee: varRef(callback.id, DYN, loc),
     receiver: lowerer.coerceToExpected(receiver, DYN),
     calleeName,
     args,
+    ...(spreads.length > 0 ? { spreads } : {}),
     type: DYN,
     loc,
   };

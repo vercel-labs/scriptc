@@ -49,6 +49,14 @@ import { accessorSlotProp, recordTextCodecClass } from "../ir/ir.js";
 // import path.
 export { typeKey };
 
+/** The checker omits the erased receiver parameter from callable arity. */
+function runtimeParameterCount(parameters: readonly ts.ParameterDeclaration[]): number {
+  const first = parameters[0];
+  return (
+    parameters.length - (first && ts.isIdentifier(first.name) && first.name.text === "this" ? 1 : 0)
+  );
+}
+
 /** Empty JS object inference describes no fixed layout. Keep these values
  * in checked storage across fields, parameters and function signatures. */
 export function jsOpenObjectType(
@@ -3200,12 +3208,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // has no declaration): the dotDotDot check below can't see it, and a
     // fixed-arity func mapping would LIE about the value's calling
     // convention. Detected by the param-count mismatch against the
-    // signature's own declaration; unmappable like spelled rest.
+    // signature's own declaration, excluding an erased `this` parameter.
     {
       const sigDecl = checker.signatureDeclaration(sig);
       const declParams =
         sigDecl !== undefined && ts.isFunctionLike(sigDecl) ? sigDecl.parameters : undefined;
-      if (declParams !== undefined && declParams.length !== sig.getParameters().length) {
+      if (
+        declParams !== undefined &&
+        runtimeParameterCount(declParams) !== sig.getParameters().length
+      ) {
         return null;
       }
       // tsgo never SYNTHESIZES that rest param into the inferred signature
@@ -5178,7 +5189,8 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     if (
       sigDecl !== undefined &&
       ts.isFunctionLike(sigDecl) &&
-      (sigDecl.parameters.length !== sig.getParameters().length || bodyReadsArguments(sigDecl))
+      (runtimeParameterCount(sigDecl.parameters) !== sig.getParameters().length ||
+        bodyReadsArguments(sigDecl))
     ) {
       return `the function shape is supported, but its signature is variadic ('arguments'-reading), and a compiled signature is fixed-arity`;
     }

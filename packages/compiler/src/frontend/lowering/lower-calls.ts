@@ -9157,7 +9157,7 @@ export function lowerObjectMethodCall(
       lowerer,
       value,
       method,
-      call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      call.arguments,
       fallback,
       loc,
       access.getText(),

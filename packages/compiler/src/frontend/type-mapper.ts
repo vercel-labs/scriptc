@@ -2735,6 +2735,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   // Native collection iterators use checked runtime iterator objects.
   if (isStdlibInterface("MapIterator") || isStdlibInterface("SetIterator")) return DYN;
+  // Array iterators (`list.values()` and friends) are generators over the
+  // live array: each step reads the current length and element.
+  if (isStdlibInterface("ArrayIterator")) {
+    const arg = checker.getTypeArguments(widened as ts.TypeReference)[0];
+    const yieldT = arg ? mapType(arg, ctx) : null;
+    if (!yieldT || yieldT.kind === "void" || isUnitType(yieldT)) return null;
+    if (!genResultRecord(yieldT, VOID, ctx.shapes, unions)) return null;
+    return { kind: "generator", yieldT, retT: VOID, nextT: UNDEFINED_T };
+  }
   // Generator<T, TReturn, TNext>, AsyncGenerator<T, TReturn, TNext> (and
   // the lib's IterableIterator<T, ...>, the older sync annotation spelling):
   // the generator kind. Channel normalization keeps the runtime honest:
@@ -2756,7 +2765,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     isStdlibInterface("Generator") ||
     isStdlibInterface("AsyncGenerator") ||
-    isStdlibInterface("IterableIterator")
+    isStdlibInterface("IterableIterator") ||
+    // An Iterator<T> annotation holds a single-pass iterator object: a
+    // generator, or a native iterator adapted into one.
+    isStdlibInterface("Iterator")
   ) {
     const args = checker.getTypeArguments(widened as ts.TypeReference);
     const channels = genChannels(args[0], args[1], args[2], ctx);

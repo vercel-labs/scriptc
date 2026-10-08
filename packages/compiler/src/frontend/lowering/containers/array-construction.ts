@@ -1,3 +1,4 @@
+import { generatorDrain } from "../iterator-adapters.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
@@ -986,6 +987,12 @@ export function lowerArrayFromCall(
     if (src.type.kind === "string" && args.length === 1) return strCharsCall(lowerer, src, loc);
     if (src.type.kind === "dyn" && args.length === 1) {
       return lowerCheckedArrayFrom(lowerer, src, loc);
+    }
+    // A generator (or an iterator adapted into one) drains in order.
+    if (src.type.kind === "generator" && args.length === 1) {
+      const arrT = lowerer.mapTypeOf(lowerer.typeOf(call));
+      const drained = arrT?.kind === "array" ? generatorDrain(lowerer, src, arrT.elem, loc) : null;
+      if (drained) return drained;
     }
     lowerer.noLowering(
       "Array.from with this argument shape",

@@ -1,0 +1,24 @@
+iterator-slot-fences.ts:14:9 - error SC1090: 'Countdown' values in an iterator-typed slot (Iterator and IterableIterator slots hold generators and built-in collection iterators) is not supported yet
+
+  13 | }
+  14 | firstOf(new Countdown());
+     |         ^~~~~~~~~~~~~~~
+  15 | 
+
+iterator-slot-fences.ts:16:16 - error SC2020: 'Iterable<number>' is part of the standard library types but has no scriptc lowering yet
+
+  15 | 
+  16 | function total(values: Iterable<number>): number {
+     |                ^~~~~~
+  17 |   let sum = 0;
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+iterator-slot-fences.ts:21:13 - error SC2004: uses of 'total' inherit the blocker on its declaration
+
+  20 | }
+  21 | console.log(total([1, 2]));
+     |             ^~~~~
+  22 | 
+
+  hint: the declaration of 'total' did not compile — fix the diagnostic reported there and these sites clear with it

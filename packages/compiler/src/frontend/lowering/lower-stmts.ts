@@ -4242,11 +4242,15 @@ export function bindPatternTarget(
     // through later locals, templates, operators, and narrowing instead
     // of being extracted with a checked arm read.
     let runtimeOptional = false;
+    // The optional-read pre-pass may already have widened the binding to
+    // that union; its reads still need the runtime-optional treatment.
     if (
       !dynStays &&
       value.type.kind === "union" &&
       lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0 &&
-      typeEquals(lowerer.stripUndefinedArm(value.type), type)
+      (typeEquals(lowerer.stripUndefinedArm(value.type), type) ||
+        (typeEquals(value.type, type) &&
+          typeEquals(lowerer.stripUndefinedArm(value.type), lowerer.irTypeOf(name))))
     ) {
       type = value.type;
       runtimeOptional = true;

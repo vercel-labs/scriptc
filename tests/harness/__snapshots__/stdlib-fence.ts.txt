@@ -116,27 +116,9 @@ stdlib-fence.ts:40:17 - error SC2020: 'Math.min' is part of the standard library
   39 | // corpus; the mixed spread/positional list is the form that stays fenced.)
   40 | const clamped = Math.min(1, ...[2, 3]);
      |                 ^~~~~~~~
-  41 | const entries = [1, 2].entries();
+  41 | const entries = [1, 2].entries(); // array iterators lower now
 
   hint: Math.min lowers with any number of plain arguments or ONE number[] spread — mixed spread/positional lists don't: spread a single array (Math.min(...xs))
-
-stdlib-fence.ts:41:7 - error SC2020: 'ArrayIterator<[number, number]>' is part of the standard library types but has no scriptc lowering yet
-
-  40 | const clamped = Math.min(1, ...[2, 3]);
-  41 | const entries = [1, 2].entries();
-     |       ^~~~~~~
-  42 | const arrAt = [1, 2].at(0);
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
-stdlib-fence.ts:41:17 - error SC2020: 'number[].entries' is part of the standard library types but has no scriptc lowering yet
-
-  40 | const clamped = Math.min(1, ...[2, 3]);
-  41 | const entries = [1, 2].entries();
-     |                 ^~~~~~~~~~~~~~
-  42 | const arrAt = [1, 2].at(0);
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
 stdlib-fence.ts:44:31 - error SC1090: '.split()' on a 'RegExp | string' separator (pass a string, or a regex literal) is not supported yet
 

@@ -5,6 +5,7 @@ import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
+import { iteratorSlotAdapter } from "./iterator-adapters.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { CoercionState } from "./coercions/state.js";
@@ -2220,6 +2221,10 @@ export class Lowerer {
    * node carrying the ?. token is marked handled so the receiver-typed
    * lowerings stop declining it (chainBlocked). */
   readonly chainRecvByNode = new Map<ts.Node, IrExpr>();
+  /** Lowered void calls whose checked type is `never` (they throw or exit).
+   * TypeScript lets such a call stand where any value is expected;
+   * coerceToExpected turns them into diverging sequences. */
+  readonly neverValued = new Set<IrExpr>();
   readonly chainNarrowedType = new Map<ts.Node, ts.Type>();
   readonly chainHandled = new Set<ts.Node>();
   /** for-of-over-matchAll bindings whose `.index` reads the companion-index
@@ -6432,6 +6437,15 @@ export class Lowerer {
       );
       throw new PoisonError();
     }
+    // Iterator-typed slots hold generators and built-in collection
+    // iterators; any other iterator object (a user class) stays fenced.
+    if (expected.kind === "generator" && actual.kind !== "generator") {
+      this.unsupported(
+        "SC1090",
+        node,
+        `'${this.fmt(actual)}' values in an iterator-typed slot (Iterator and IterableIterator slots hold generators and built-in collection iterators)`,
+      );
+    }
     // Everything else — a plain-kind mismatch like a string flowing into a
     // class-instance slot — is tsc-rejected in the lowering world and only
     // reaches here through preflight's project-world second chance (e.g. a
@@ -6523,6 +6537,14 @@ export class Lowerer {
    * else (including a DIFFERENT union) is left for requireExactShape, which
    * rejects union mismatches with SC2003. */
   coerceToExpected(expr: IrExpr, expected: IrType): IrExpr {
+    if (expr.type.kind === "void" && expected.kind !== "void" && this.neverValued.has(expr))
+      return this.divergentValue(expr, expected);
+    // Iterator-typed slots: native iterators and differently typed
+    // generators step through an adapter generator.
+    if (expected.kind === "generator" && !typeEquals(expr.type, expected)) {
+      const adapted = iteratorSlotAdapter(this, expr, expected);
+      if (adapted) return adapted;
+    }
     // Island boundary, both directions. IN: any static value flowing into
     // an any-typed slot marshals implicitly (tsc allows the assignment;
     // the marshal is where its semantics live). OUT: an 'any' value
@@ -8596,6 +8618,33 @@ export class Lowerer {
       this.checker.getSymbolAtLocation(nameNode),
       bindingSource(nameNode),
     );
+  }
+
+  /** A never-returning call in a value position of type `expected`: the
+   * call runs for its effects (it throws or exits), and the expression ends
+   * in an unreachable trap instead of producing a value. The result reads an
+   * uninitialized hidden local that control never reaches. */
+  divergentValue(call: IrExpr, expected: IrType): IrExpr {
+    const loc = call.loc;
+    const slot = this.declareHiddenLocal("%never", expected);
+    slot.mutable = true;
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "exprStmt", expr: call, loc },
+        { kind: "varDecl", localId: slot.id, init: null, loc },
+        {
+          kind: "runtimeFence",
+          code: "SC9002",
+          message: "unreachable: a 'never' call returned — please report this",
+          loc,
+        },
+      ],
+      result: varRef(slot.id, expected, loc),
+      diverges: true,
+      type: expected,
+      loc,
+    };
   }
 
   /** A function-scope local bound to NO ts.Symbol — the hidden ABI slot of a

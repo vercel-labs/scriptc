@@ -1638,6 +1638,12 @@ function validateFunction(
           allowed.add("throw");
           allowed.add("runtimeFence");
         }
+        if (e.diverges) {
+          const last = e.stmts[e.stmts.length - 1];
+          if (last?.kind !== "runtimeFence")
+            err("diverging seqExpr must end in a runtimeFence", e.loc);
+          allowed.add("runtimeFence");
+        }
         const flat = (ss: IrStmt[]): void => {
           for (const s of ss) {
             if (!allowed.has(s.kind)) {

@@ -1,3 +1,4 @@
+import { generatorDrain } from "./iterator-adapters.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
@@ -365,7 +366,10 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   }
   lowerExprDepth++;
   try {
-    return lowerExprInner(lowerer, expr);
+    const lowered = lowerExprInner(lowerer, expr);
+    if (lowered.type.kind === "void" && (lowerer.typeOf(expr).flags & ts.TypeFlags.Never) !== 0)
+      lowerer.neverValued.add(lowered);
+    return lowered;
   } finally {
     lowerExprDepth--;
   }
@@ -4350,6 +4354,37 @@ export function lowerNullishCoalesce(
   return result;
 }
 
+/** A plain value read that may be runtime-optional: an unchecked element
+ * read, or a binding, member or call that carries one. Lowering these
+ * without a destination type is the same as lowering them into one. */
+function isPlainValueRead(node: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  return (
+    ts.isElementAccessExpression(node) ||
+    ts.isIdentifier(node) ||
+    ts.isPropertyAccessExpression(node) ||
+    ts.isCallExpression(node)
+  );
+}
+
+/** A member access or call receiver needs the present value itself (JS
+ * throws a TypeError reading a member of undefined). */
+function isMemberReceiver(node: ts.Expression): boolean {
+  let child: ts.Node = node;
+  let parent = node.parent;
+  while (ts.isParenthesizedExpression(parent)) {
+    child = parent;
+    parent = parent.parent;
+  }
+  return (
+    ((ts.isPropertyAccessExpression(parent) ||
+      ts.isElementAccessExpression(parent) ||
+      ts.isCallExpression(parent)) &&
+      parent.expression === child) ||
+    (ts.isTaggedTemplateExpression(parent) && parent.tag === child)
+  );
+}
+
 function lowerNullishPair(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -4419,6 +4454,29 @@ function lowerNullishPair(
       type: DYN,
       loc,
     };
+  }
+  // A runtime-optional default (`name ?? names[0]`): the checker types an
+  // unchecked element read as the bare element type, but an out-of-range
+  // read is undefined at runtime. When the default shares the left's
+  // optional union, that union is the result, so the undefined state
+  // reaches the consumer (an optional return or parameter takes it as its
+  // undefined arm; a plain slot still extracts the element with its
+  // checked narrow).
+  if (
+    rest.length === 1 &&
+    typeEquals(type, rest[0]!) &&
+    isPlainValueRead(expr.right) &&
+    !isMemberReceiver(expr)
+  ) {
+    const raw = lowerer.lowerExpr(expr.right);
+    if (typeEquals(raw.type, left.type))
+      return { kind: "nullish", left, right: raw, type: left.type, loc };
+    // `names[0] ?? undefined`: an explicit unit default stays the left's arm.
+    if (isUnitType(raw.type) && lowerer.armTag(left.type.unionId, raw.type) >= 0) {
+      const right = lowerer.coerceInto(expr.right, raw, left.type);
+      return { kind: "nullish", left, right, type: left.type, loc };
+    }
+    return { kind: "nullish", left, right: lowerer.coerceInto(expr.right, raw, type), type, loc };
   }
   if (typeEquals(type, left.type) || (rest.length === 1 && typeEquals(type, rest[0]!))) {
     const right = lowerer.lowerExprExpecting(expr.right, type);
@@ -5929,6 +5987,12 @@ export function lowerArrayLiteral(
           type: arrayOf(F64),
           loc: locOf(el),
         };
+      }
+      // `[...it]` over a generator (or an iterator adapted into one):
+      // drain it once, in order, into a fresh element array.
+      if (src.type.kind === "generator") {
+        const drained = generatorDrain(lowerer, src, type.elem, locOf(el));
+        if (drained) src = drained;
       }
       // A native checked iterable can supply scalar elements even when
       // the checker inferred a typed array from its producer. Drain once

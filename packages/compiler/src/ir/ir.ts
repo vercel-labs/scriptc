@@ -3008,6 +3008,11 @@ export type IrExpr =
       stmts: IrStmt[];
       result: IrExpr;
       generatorDelegate?: true;
+      /** The statements end in a `runtimeFence` that control never reaches:
+       * the value of a call whose checked type is `never` (it throws or exits)
+       * flowing into a typed slot. `result` is a placeholder read of an
+       * uninitialized hidden local and is never evaluated. */
+      diverges?: true;
       type: IrType;
       loc: SrcLoc;
     }

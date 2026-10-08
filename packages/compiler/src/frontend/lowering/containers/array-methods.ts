@@ -1,3 +1,4 @@
+import { lowerArrayIteratorValue } from "../iterator-adapters.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
 import { arrayConcatHelper } from "./array-concat.js";
 import { boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -158,7 +159,15 @@ export function lowerArrayMethodCall(
 ): IrExpr | null {
   if (lowerer.chainBlocked(access, call)) return null;
   const name = access.name.text;
-  if (!ARRAY_METHODS.has(name) && name !== "sort" && name !== "shift" && name !== "splice")
+  const iteratorMethod =
+    (name === "values" || name === "keys" || name === "entries") && call.arguments.length === 0;
+  if (
+    !ARRAY_METHODS.has(name) &&
+    name !== "sort" &&
+    name !== "shift" &&
+    name !== "splice" &&
+    !iteratorMethod
+  )
     return null;
   let receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   const checkerReceiver = lowerer.checker.getTypeAtLocation(access.expression);
@@ -201,6 +210,16 @@ export function lowerArrayMethodCall(
   if (!probedUntyped && !lowerer.isStdlibMember(access)) return null;
   let elem = receiverIr.elem;
   const loc = locOf(call);
+  if (iteratorMethod) {
+    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+    const receiver = lowerer.lowerExpr(access.expression);
+    const value =
+      type && receiver.type.kind === "array"
+        ? lowerArrayIteratorValue(lowerer, receiver, name, type, loc)
+        : null;
+    if (value) return value;
+    lowerer.unsupported("SC1090", call, `'${name}()' iterators over this array element type`);
+  }
   // An island handle behind an array-typed .d.ts surface
   // (`parts().join("-")` — arrays never exit eagerly, so the value
   // stays jsval): the ENGINE's own Array.prototype method runs on the

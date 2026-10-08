@@ -38,7 +38,7 @@ const sinhMethod = Math.sinh; // fixed-arity Math function values now lower
 // (n-ary Math.min/max LOWER now — the variadic battery lives in the
 // corpus; the mixed spread/positional list is the form that stays fenced.)
 const clamped = Math.min(1, ...[2, 3]);
-const entries = [1, 2].entries();
+const entries = [1, 2].entries(); // array iterators lower now
 const arrAt = [1, 2].at(0);
 const norm = "abc".normalize();
 const limited = "a,b,c".split(Math.random() ? "," : /,/, 2); // union separators stay fenced; limits lower

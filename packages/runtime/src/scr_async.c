@@ -78,6 +78,12 @@ void scr_children_teardown(void) {}
 #define SCR_ASAN_FIBERS 1
 void __sanitizer_start_switch_fiber(void **fake_stack_save, const void *bottom, size_t size);
 void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_old, size_t *size_old);
+/* LeakSanitizer scans thread stacks, not the mapped fiber stacks, so a
+ * suspended fiber's locals would look unreferenced at exit. Each stack is
+ * a root region while it exists. Weak: platforms whose ASan runtime has
+ * no leak checker leave them NULL. */
+void __lsan_register_root_region(const void *p, size_t size) __attribute__((weak));
+void __lsan_unregister_root_region(const void *p, size_t size) __attribute__((weak));
 #endif
 #endif
 
@@ -132,6 +138,9 @@ static void *scr_fiber_stack_new(void) {
   void *stack = mmap(NULL, SCR_FIBER_STACK, PROT_READ | PROT_WRITE,
                     MAP_PRIVATE | MAP_ANON, -1, 0);
   if (stack == MAP_FAILED) scr_trap("scriptc: out of memory\n");
+#ifdef SCR_ASAN_FIBERS
+  if (__lsan_register_root_region) __lsan_register_root_region(stack, SCR_FIBER_STACK);
+#endif
   return stack;
 }
 
@@ -142,6 +151,9 @@ static void scr_fiber_stack_free(void *stack) {
     scr_fiber_spares[scr_fiber_nspares++] = stack;
     return;
   }
+#endif
+#ifdef SCR_ASAN_FIBERS
+  if (__lsan_unregister_root_region) __lsan_unregister_root_region(stack, SCR_FIBER_STACK);
 #endif
   (void)munmap(stack, SCR_FIBER_STACK);
 }
@@ -478,6 +490,24 @@ static void scr_fiber_track(ScrFiber *fiber) { (void)fiber; }
 #endif
 
 long scr_abandoned_fiber_count(void) { return scr_fibers_abandoned; }
+
+#ifdef SCR_ASAN_FIBERS
+/* Deliberately abandoned fibers stay referenced for the process lifetime,
+ * as their stacks do: the sanitizer lane's leak check then reports only
+ * memory nothing can reach, matching the RC audit's abandoned-fiber note. */
+static SCR_TL ScrFiber **scr_abandoned_fibers;
+static SCR_TL size_t scr_abandoned_len, scr_abandoned_cap;
+static void scr_fiber_keep_abandoned(ScrFiber *fiber) {
+  if (scr_abandoned_len == scr_abandoned_cap) {
+    size_t cap = scr_abandoned_cap ? scr_abandoned_cap * 2 : 8;
+    ScrFiber **grown = realloc(scr_abandoned_fibers, cap * sizeof *grown);
+    if (!grown) scr_oom();
+    scr_abandoned_fibers = grown;
+    scr_abandoned_cap = cap;
+  }
+  scr_abandoned_fibers[scr_abandoned_len++] = fiber;
+}
+#endif
 
 /* True while executing on an async fiber (vs the main stack). The island
  * sizes its engine stack budget per stack: fibers are small and fixed,
@@ -3713,6 +3743,9 @@ void scr_gen_release(ScrGen *g) {
        * loop-exhaustion story). The fiber's back-pointer clears so a
        * dangling resume can never reach the freed ScrGen. */
       g->fiber->gen = NULL;
+#ifdef SCR_ASAN_FIBERS
+      scr_fiber_keep_abandoned(g->fiber);
+#endif
     }
   }
   scr_obj_free_note();

@@ -1811,6 +1811,11 @@ export class Lowerer {
    * prepass. This includes explicit annotations: unchecked TS annotations do
    * not prove that an array property read produced a value. */
   readonly runtimeOptionalBindingTypes = new Map<ts.Symbol, IrType>();
+  /** Bindings that receive an unchecked indexed read (or a value derived
+   * from one) through an initializer or assignment. The checker narrows a
+   * declared optional binding to that read's bare type, so presence tests
+   * on these bindings consult the stored tag instead. */
+  readonly runtimeOptionalAssignedSymbols = new Set<ts.Symbol>();
   /** Concise callback/lambda returns promoted by the HOF callback prepass;
    * arrows have no declaration symbol to key in fnSigsBySymbol. */
   readonly runtimeOptionalFunctionReturns = new Map<ts.Node, IrType>();
@@ -2081,6 +2086,37 @@ export class Lowerer {
 
   runtimeOptionalFunctionReturnType(node: ts.Node, fallback: IrType): IrType {
     return this.runtimeOptionalFunctionReturns.get(node) ?? fallback;
+  }
+
+  /** True when `actual` is `declared` with some record fields (directly,
+   * or in an array's element records) widened to runtime-optional unions:
+   * fields filled from unchecked indexed reads the checker calls present.
+   * Inferred bindings and destructured parameters keep that layout instead
+   * of narrowing it away. */
+  isRuntimeOptionalRecordVariant(actual: IrType, declared: IrType): boolean {
+    if (actual.kind === "array" && declared.kind === "array")
+      return this.isRuntimeOptionalRecordVariant(actual.elem, declared.elem);
+    if (actual.kind !== "record" || declared.kind !== "record") return false;
+    if (actual.shapeId === declared.shapeId) return false;
+    const a = this.shapes.get(actual.shapeId);
+    const d = this.shapes.get(declared.shapeId);
+    if (!a || !d || a.fields.length !== d.fields.length || !!a.tuple !== !!d.tuple) return false;
+    if (a.indexValue || d.indexValue) return false;
+    let widened = false;
+    for (const field of d.fields) {
+      const source = a.fields.find((f) => f.name === field.name);
+      if (!source) return false;
+      if (typeEquals(source.type, field.type)) continue;
+      if (
+        this.isRuntimeOptionalField(actual.shapeId, field.name) &&
+        this.runtimeOptionalWidening(source.type, field.type) !== null
+      ) {
+        widened = true;
+        continue;
+      }
+      return false;
+    }
+    return widened;
   }
 
   /** Promote one field of a record storage shape to the value's runtime
@@ -3950,6 +3986,38 @@ export class Lowerer {
       optionalFields.set(symbol, set);
       return set.size !== before;
     };
+    // Runtime-optional record fields travel with the record value: a copy,
+    // a spread or a parameter receives the source's optional fields.
+    const fieldsOfValue = (node: ts.Expression): ReadonlySet<string> | undefined => {
+      const e = peel(node);
+      if (!ts.isIdentifier(e)) return undefined;
+      const symbol = symbolOf(e);
+      return symbol === null ? undefined : optionalFields.get(symbol);
+    };
+    const noteFieldsFrom = (symbol: ts.Symbol, source: ts.Expression): boolean => {
+      const fields = fieldsOfValue(source);
+      if (fields === undefined) return false;
+      let changed = false;
+      for (const field of fields) if (noteFieldSymbol(symbol, field)) changed = true;
+      return changed;
+    };
+    /** Optional fields an object literal takes from its spreads, minus
+     * the properties a later member writes explicitly. */
+    const spreadFieldsOf = (object: ts.ObjectLiteralExpression): Set<string> => {
+      const out = new Set<string>();
+      for (const prop of object.properties) {
+        if (ts.isSpreadAssignment(prop)) {
+          const fields = fieldsOfValue(prop.expression);
+          if (fields !== undefined) for (const field of fields) out.add(field);
+        } else if (
+          prop.name !== undefined &&
+          (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name))
+        ) {
+          out.delete(prop.name.text);
+        }
+      }
+      return out;
+    };
     const scanPattern = (name: ts.BindingName, init: ts.Expression): boolean => {
       if (!ts.isArrayBindingPattern(name)) return false;
       const sourceType = this.mapTypeOf(this.typeOf(init));
@@ -4312,6 +4380,22 @@ export class Lowerer {
               }
             }
             if (scanPattern(node.name, node.initializer)) changed = true;
+            if (ts.isIdentifier(node.name)) {
+              const symbol = symbolOf(node.name);
+              const init = peel(node.initializer);
+              if (symbol && noteFieldsFrom(symbol, init)) {
+                provenance?.note("record-copy", node.name, node.initializer);
+                changed = true;
+              }
+              if (symbol && ts.isObjectLiteralExpression(init)) {
+                for (const field of spreadFieldsOf(init)) {
+                  if (noteFieldSymbol(symbol, field)) {
+                    provenance?.note("record-spread", node.name, node.initializer);
+                    changed = true;
+                  }
+                }
+              }
+            }
             if (
               ts.isIdentifier(node.name) &&
               ts.isObjectLiteralExpression(peel(node.initializer))
@@ -4335,6 +4419,17 @@ export class Lowerer {
                 }
               }
             }
+          }
+        }
+        if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left)
+        ) {
+          const symbol = symbolOf(node.left);
+          if (symbol && noteFieldsFrom(symbol, node.right)) {
+            provenance?.note("record-copy", node.left, node.right);
+            changed = true;
           }
         }
         if (
@@ -4503,6 +4598,38 @@ export class Lowerer {
                 promoteHofCallback(arg, optionalCallbackParams)
               ) {
                 changed = true;
+              }
+            }
+            if (!ts.isSpreadElement(arg) && shape && i !== restAt && fieldsOfValue(arg)) {
+              const fields = fieldsOfValue(arg)!;
+              for (const target of familyBySymbol.get(symbol) ?? [symbol]) {
+                const parameterShape = signatureBySymbol.get(target)?.params[i];
+                const parameter = functionDeclBySymbol.get(target)?.parameters[i];
+                if (!parameterShape || parameterShape.type.kind !== "record") continue;
+                if (!parameter || !ts.isIdentifier(parameter.name)) continue;
+                const bound = symbolOf(parameter.name);
+                if (!bound) continue;
+                let promoted: IrType = parameterShape.type;
+                for (const field of fields) {
+                  const source =
+                    promoted.kind === "record"
+                      ? this.shapes.get(promoted.shapeId)?.fields.find((f) => f.name === field)
+                      : undefined;
+                  if (source) {
+                    promoted = this.runtimeOptionalRecordField(
+                      promoted,
+                      field,
+                      addUndefined(source.type),
+                    );
+                  }
+                  if (noteFieldSymbol(bound, field)) changed = true;
+                }
+                if (!typeEquals(promoted, parameterShape.type)) {
+                  parameterShape.type = promoted;
+                  this.runtimeOptionalBindingTypes.set(bound, promoted);
+                  provenance?.note("record-parameter", parameter, arg);
+                  changed = true;
+                }
               }
             }
             if (ts.isSpreadElement(arg) || !mayBeOptional(arg) || !shape) return;
@@ -4767,6 +4894,7 @@ export class Lowerer {
       });
     }
 
+    for (const symbol of optionalSymbols) this.runtimeOptionalAssignedSymbols.add(symbol);
     provenance?.flush();
   }
 
@@ -6484,6 +6612,30 @@ export class Lowerer {
         recordShapeMismatchDiag(this.fmt(expected), this.fmt(actual), locOf(node), detail),
       );
       throw new PoisonError();
+    }
+    // Instances of two unrelated classes: class identity is nominal here,
+    // so a structurally compatible instance never becomes the other class.
+    // An assertion (`x as Y`) names the mistake most directly.
+    if (
+      actual.kind === "object" &&
+      expected.kind === "object" &&
+      this.classes.has(actual.className) &&
+      this.classes.has(expected.className) &&
+      this.classes.get(actual.className)!.decl !== this.classes.get(expected.className)!.decl &&
+      !this.isSubclassOf(actual.className, expected.className) &&
+      !this.isSubclassOf(expected.className, actual.className)
+    ) {
+      let site: ts.Node = node;
+      while (ts.isParenthesizedExpression(site)) site = site.expression;
+      const assertion = ts.isAsExpression(site) || ts.isTypeAssertion(site);
+      this.unsupported(
+        "SC1090",
+        node,
+        `${assertion ? "asserting" : "using"} a '${this.fmt(actual)}' instance as the unrelated class '${this.fmt(expected)}' (neither class extends the other, and class identity is nominal in compiled code)`,
+        assertion
+          ? `narrow with \`instanceof ${this.fmt(expected)}\` where the value can really be one, or declare a shared base class and assert through it`
+          : `make one class extend the other, or construct a '${this.fmt(expected)}' from the value's fields`,
+      );
     }
     // Iterator-typed slots hold generators and built-in collection
     // iterators; any other iterator object (a user class) stays fenced.

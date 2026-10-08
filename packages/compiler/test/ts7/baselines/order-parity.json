@@ -14925,6 +14925,55 @@
     "<repo>/tests/corpus/4047-captured-parameter-rebinding.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/4080-optional-read-presence-tests.ts": {
+   "order": [
+    "<repo>/tests/corpus/4080-optional-read-presence-tests.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4081-hoisted-function-tdz.ts": {
+   "order": [
+    "<repo>/tests/corpus/4081-hoisted-function-tdz.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4082-hoisted-function-tdz-uncaught.ts": {
+   "order": [
+    "<repo>/tests/corpus/4082-hoisted-function-tdz-uncaught.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4083-dynamic-import-failure/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4083-dynamic-import-failure/errors.ts",
+    "<repo>/tests/corpus/4083-dynamic-import-failure/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4084-record-optional-field-copies.ts": {
+   "order": [
+    "<repo>/tests/corpus/4084-record-optional-field-copies.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/unrelated-class-assertion.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/unrelated-class-assertion.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4085-generator-loop-close.ts": {
+   "order": [
+    "<repo>/tests/corpus/4085-generator-loop-close.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4086-optional-capture-defaults.ts": {
+   "order": [
+    "<repo>/tests/corpus/4086-optional-capture-defaults.ts"
+   ],
+   "diags": []
   }
  }
 }

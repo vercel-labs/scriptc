@@ -1,0 +1,17 @@
+unrelated-class-assertion.ts:18:16 - error SC1090: asserting a 'Crate' instance as the unrelated class 'Pallet' (neither class extends the other, and class identity is nominal in compiled code) is not supported yet
+
+  17 | const crate = load();
+  18 | const pallet = crate as Pallet;
+     |                ^~~~~~~~~~~~~~~
+  19 | console.log(pallet.slots);
+
+  hint: narrow with `instanceof Pallet` where the value can really be one, or declare a shared base class and assert through it
+
+unrelated-class-assertion.ts:21:23 - error SC1090: using a 'Pallet' instance as the unrelated class 'Crate' (neither class extends the other, and class identity is nominal in compiled code) is not supported yet
+
+  20 | 
+  21 | const stored: Crate = new Pallet();
+     |                       ^~~~~~~~~~~~
+  22 | console.log(stored.weight);
+
+  hint: make one class extend the other, or construct a 'Crate' from the value's fields

@@ -2686,6 +2686,327 @@ function computeCycleEarlyBindings7(
   return out;
 }
 
+/** Top-level let/const bindings, in modules outside the exactly-initialized
+ * cycles, that code running before their declaration completes can read.
+ * Function declarations are callable from the module's start, so a call
+ * made by earlier top-level code (or by the declaration's own initializer)
+ * can observe the temporal dead zone. Reachability is syntactic: a stored
+ * callable (a function or class declaration, or a function, class or
+ * object-literal method stored by a variable initializer) becomes reachable
+ * once reachable code names its binding, and every other function-like in
+ * reachable code counts as reachable because it may be handed to a callee.
+ * A binding is reported only when one of its references in a deferred
+ * position is reachable before the declaration ran, so modules that call
+ * nothing early report nothing. Bindings of exactly-initialized cycles are
+ * covered by cycleEarlyBindings. */
+export function moduleEarlyBindings(
+  program: ts.Program,
+  order: readonly ts.SourceFile[],
+): CycleEarlyBinding[] {
+  const key = order.map((sf) => sf.fileName).join("\0");
+  const memo = moduleEarlyBindingsMemo7.get(program);
+  if (memo !== undefined && memo.key === key) return memo.bindings;
+  const exact = exactCycleMembers7.get(program) ?? new Set<ts.SourceFile>();
+  const out: CycleEarlyBinding[] = [];
+  for (const sf of order) {
+    if (sf.isDeclarationFile || exact.has(sf)) continue;
+    out.push(...moduleEarlyBindingsOf7(program, sf, order));
+  }
+  moduleEarlyBindingsMemo7.set(program, { key, bindings: out });
+  return out;
+}
+
+const moduleEarlyBindingsMemo7 = new WeakMap<
+  ts.Program,
+  { key: string; bindings: CycleEarlyBinding[] }
+>();
+
+function moduleEarlyBindingsOf7(
+  program: ts.Program,
+  sf: ts.SourceFile,
+  order: readonly ts.SourceFile[],
+): CycleEarlyBinding[] {
+  const ambient = (stmt: ts.Statement): boolean =>
+    (ts.getCombinedModifierFlags(stmt as unknown as ts.Declaration) & ts.ModifierFlags.Ambient) !==
+    0;
+  // Candidate bindings, by declaring statement.
+  interface Candidate {
+    name: ts.Identifier;
+    index: number;
+    start: number;
+  }
+  const candidates: Candidate[] = [];
+  const candidateNames = new Set<string>();
+  // Stored callables, by the name of the binding that stores them.
+  const stored = new Set<ts.Node>();
+  const storedBy = new Map<string, { name: ts.Identifier; units: ts.Node[] }[]>();
+  const store = (name: ts.Identifier, units: ts.Node[]): void => {
+    if (units.length === 0) return;
+    for (const u of units) stored.add(u);
+    const list = storedBy.get(name.text) ?? [];
+    list.push({ name, units });
+    storedBy.set(name.text, list);
+  };
+  const storedIn = (e: ts.Expression, units: ts.Node[]): void => {
+    while (
+      ts.isParenthesizedExpression(e) ||
+      ts.isAsExpression(e) ||
+      ts.isSatisfiesExpression(e) ||
+      ts.isNonNullExpression(e)
+    )
+      e = e.expression;
+    if (ts.isArrowFunction(e) || ts.isFunctionExpression(e) || ts.isClassExpression(e)) {
+      units.push(e);
+    } else if (ts.isObjectLiteralExpression(e)) {
+      for (const p of e.properties) {
+        if (
+          ts.isMethodDeclaration(p) ||
+          ts.isGetAccessorDeclaration(p) ||
+          ts.isSetAccessorDeclaration(p)
+        ) {
+          if (!ts.isComputedPropertyName(p.name)) units.push(p);
+        } else if (ts.isPropertyAssignment(p)) storedIn(p.initializer, units);
+      }
+    } else if (ts.isArrayLiteralExpression(e)) {
+      for (const el of e.elements) if (!ts.isSpreadElement(el)) storedIn(el, units);
+    }
+  };
+  sf.statements.forEach((stmt, index) => {
+    if (ambient(stmt)) return;
+    if (ts.isFunctionDeclaration(stmt) && stmt.name !== undefined && stmt.body !== undefined) {
+      store(stmt.name, [stmt]);
+    } else if (ts.isClassDeclaration(stmt) && stmt.name !== undefined) {
+      store(stmt.name, [stmt]);
+    } else if (ts.isVariableStatement(stmt)) {
+      const lexical = (stmt.declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
+      for (const d of stmt.declarationList.declarations) {
+        if (ts.isIdentifier(d.name) && d.initializer !== undefined) {
+          const units: ts.Node[] = [];
+          storedIn(d.initializer, units);
+          store(d.name, units);
+        }
+        if (!lexical) continue;
+        for (const name of boundNames7(d.name)) {
+          candidates.push({ name, index, start: stmt.getStart(sf) });
+          candidateNames.add(name.text);
+        }
+      }
+    }
+  });
+  if (candidates.length === 0) return [];
+  // Resolve every identifier that could name a candidate or a stored
+  // callable in one batch.
+  const idents: ts.Identifier[] = [];
+  ts.walkPreorder(sf, (node) => {
+    if (ts.isImportDeclaration(node)) return "skip";
+    if (ts.isIdentifier(node) && (candidateNames.has(node.text) || storedBy.has(node.text)))
+      idents.push(node);
+    return undefined;
+  });
+  const checker = program.getTypeChecker();
+  checker.prefetchSymbolNodesExact(idents);
+  const symbolOf = (id: ts.Identifier): ts.Symbol | undefined => {
+    const parent = id.parent;
+    let symbol = checker.getSymbolAtLocation(id);
+    if (parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === id) {
+      symbol = checker.getShorthandAssignmentValueSymbol(parent) ?? symbol;
+    }
+    if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) {
+      symbol = checker.getAliasedSymbol(symbol);
+    }
+    return symbol;
+  };
+  // A callback handed to a timer, a microtask queue, a promise reaction or
+  // a host (Node) API runs as a later job or event. Without top-level await
+  // the module's body completes before any job runs, so such a callback is
+  // never early. JavaScript builtins (array callbacks, the promise
+  // executor, replacers) and the host APIs that call back synchronously
+  // keep the conservative rule.
+  if (!hasTopLevelAwait7(sf)) {
+    const callbacks = (e: ts.Expression): void => {
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) stored.add(e);
+      else if (ts.isObjectLiteralExpression(e)) {
+        for (const p of e.properties) {
+          if (ts.isMethodDeclaration(p)) stored.add(p);
+          else if (ts.isPropertyAssignment(p)) callbacks(p.initializer);
+        }
+      }
+    };
+    ts.walkPreorder(sf, (node) => {
+      if (
+        (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
+        laterJobCallee7(checker, node.expression)
+      ) {
+        for (const arg of node.arguments ?? []) callbacks(arg);
+      }
+      return undefined;
+    });
+  }
+  const unitsBySymbol = new Map<ts.Symbol, ts.Node[]>();
+  for (const list of storedBy.values()) {
+    for (const { name, units } of list) {
+      const symbol = checker.getSymbolAtLocation(name);
+      if (symbol === undefined) continue;
+      unitsBySymbol.set(symbol, [...(unitsBySymbol.get(symbol) ?? []), ...units]);
+    }
+  }
+  const candidateSymbols = new Map<ts.Symbol, Candidate>();
+  for (const c of candidates) {
+    const symbol = checker.getSymbolAtLocation(c.name);
+    if (symbol !== undefined) candidateSymbols.set(symbol, c);
+  }
+  // Walk reachable code, collecting the candidate references it holds.
+  const reachedUnits = new Set<ts.Node>();
+  const reachedRefs = new Map<ts.Symbol, ts.Identifier>();
+  const work: ts.Node[] = [];
+  const visit = (root: ts.Node): void => {
+    ts.walkPreorder(root, (node) => {
+      if (node !== root && stored.has(node)) return "skip";
+      if (ts.isImportDeclaration(node)) return "skip";
+      if (!ts.isIdentifier(node)) return undefined;
+      if (!candidateNames.has(node.text) && !storedBy.has(node.text)) return undefined;
+      if (inTypePosition7(node)) return undefined;
+      const parent = node.parent;
+      if (parent !== undefined && ts.isExportSpecifier(parent)) return undefined;
+      if (parent !== undefined && declaredName7(parent) === node) return undefined;
+      const symbol = symbolOf(node);
+      if (symbol === undefined) return undefined;
+      const c = candidateSymbols.get(symbol);
+      if (c !== undefined && node !== c.name && !reachedRefs.has(symbol)) {
+        if (inDeferredPosition7(node) || node.getStart(sf) < c.start) reachedRefs.set(symbol, node);
+      }
+      for (const unit of unitsBySymbol.get(symbol) ?? []) {
+        if (reachedUnits.has(unit)) continue;
+        reachedUnits.add(unit);
+        work.push(unit);
+      }
+      return undefined;
+    });
+  };
+  const drain = (): void => {
+    while (work.length > 0) visit(work.pop()!);
+  };
+  /** The parts of a class declaration that run where it is declared. */
+  const classStatics = (c: ts.ClassDeclaration): ts.Node[] => {
+    const parts: ts.Node[] = [...(c.heritageClauses ?? [])];
+    for (const m of c.members) {
+      const memberName = (m as { name?: ts.PropertyName }).name;
+      if (memberName !== undefined && ts.isComputedPropertyName(memberName)) parts.push(memberName);
+      if (ts.isClassStaticBlockDeclaration(m)) parts.push(m);
+      else if (
+        ts.isPropertyDeclaration(m) &&
+        m.initializer !== undefined &&
+        (ts.getCombinedModifierFlags(m) & ts.ModifierFlags.Static) !== 0
+      )
+        parts.push(m.initializer);
+    }
+    return parts;
+  };
+  const out: CycleEarlyBinding[] = [];
+  const settled = new Set(order.filter((m) => m !== sf));
+  let next = 0;
+  const report = (declaration: ts.Node): void => {
+    while (
+      next < candidates.length &&
+      candidates[next]!.name.getStart(sf) >= declaration.getStart(sf) &&
+      candidates[next]!.name.getEnd() <= declaration.getEnd()
+    ) {
+      const c = candidates[next++]!;
+      const symbol = checker.getSymbolAtLocation(c.name);
+      const reference = symbol === undefined ? undefined : reachedRefs.get(symbol);
+      if (symbol === undefined || reference === undefined) continue;
+      out.push({ symbol, name: c.name, kind: "lexical", module: sf, reference, settled });
+    }
+  };
+  for (const stmt of sf.statements) {
+    if (ts.isClassDeclaration(stmt)) for (const part of classStatics(stmt)) visit(part);
+    else if (ts.isVariableStatement(stmt)) {
+      // Declarators run in order: a later declarator's initializer cannot
+      // observe an earlier binding before it was initialized.
+      for (const d of stmt.declarationList.declarations) {
+        visit(d);
+        drain();
+        report(d);
+      }
+    } else if (!ts.isFunctionDeclaration(stmt)) visit(stmt);
+    drain();
+  }
+  return out;
+}
+
+/** The name a declaration node binds, if any. */
+function declaredName7(node: ts.Node): ts.Node | undefined {
+  if (
+    ts.isVariableDeclaration(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isClassDeclaration(node) ||
+    ts.isClassExpression(node) ||
+    ts.isBindingElement(node) ||
+    ts.isParameter(node)
+  )
+    return node.name;
+  return undefined;
+}
+
+/** A declared builtin whose callback arguments run only as later jobs or
+ * events: the timers, queueMicrotask, promise reactions, and Node APIs
+ * other than the ones that call back before returning. */
+function laterJobCallee7(checker: ts.TypeChecker, callee: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  let name: ts.Identifier;
+  if (ts.isIdentifier(callee)) name = callee;
+  else if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) {
+    name = callee.name;
+  } else return false;
+  if (SYNC_CALLBACK_HOST_APIS7.has(name.text)) return false;
+  let root: ts.Expression = callee;
+  while (ts.isPropertyAccessExpression(root)) root = root.expression;
+  if (ts.isIdentifier(root) && root.text === "assert") return false;
+  let symbol = checker.getSymbolAtLocation(name);
+  if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) {
+    symbol = checker.getAliasedSymbol(symbol);
+  }
+  if (symbol === undefined) return false;
+  const decls = checker.declarationsOf(symbol);
+  if (decls.length === 0 || !decls.every((d) => d.getSourceFile().isDeclarationFile)) return false;
+  if (LATER_JOB_BUILTINS7.has(name.text)) return true;
+  // The JavaScript standard library's callbacks mostly run synchronously;
+  // package declarations describe user code.
+  return decls.every((d) => {
+    const file = d.getSourceFile().fileName;
+    return isNodeTypesPath(file) || file === fallbackDtsPath();
+  });
+}
+
+/** Standard-library functions whose callbacks run as later jobs. */
+const LATER_JOB_BUILTINS7 = new Set([
+  "setTimeout",
+  "setInterval",
+  "setImmediate",
+  "queueMicrotask",
+  "then",
+  "catch",
+  "finally",
+]);
+
+/** Host APIs that can invoke a callback argument before returning. */
+const SYNC_CALLBACK_HOST_APIS7 = new Set([
+  "apply",
+  "bind",
+  "call",
+  "doesNotReject",
+  "doesNotThrow",
+  "emit",
+  "enterWith",
+  "exit",
+  "rejects",
+  "run",
+  "runInAsyncScope",
+  "throws",
+]);
+
 /** True for a reference whose value the lowering can take from the
  * binding's checker type instead of its storage: a property key (element
  * access argument, computed name, `in` operand, through parentheses,

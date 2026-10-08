@@ -1840,3 +1840,43 @@ test("signature adapters capture the function whose identity they share", () => 
     ),
   ).toBe(true);
 });
+
+test("a caught-typed global records a module error only from a catch binding", () => {
+  const caught: IrType = { kind: "caught" };
+  const errorId = "%g.e.%loaded%error";
+  const module = (value: IrExpr): IrModule => ({
+    irVersion: 15,
+    sourceFile: loc.file,
+    entry: "main",
+    unions: [],
+    globals: [{ id: errorId, name: "%error", type: caught, mutable: true }],
+    functions: [
+      {
+        name: "main",
+        params: [],
+        locals: [{ id: "e.0", name: "e", type: caught, mutable: false }],
+        returnType: VOID,
+        body: [
+          {
+            kind: "tryCatch",
+            tryBody: [],
+            catchBody: [
+              { kind: "assign", localId: errorId, value, loc },
+              { kind: "rethrow", localId: errorId, loc },
+            ],
+            catchLocalId: "e.0",
+            finallyBody: null,
+            loc,
+          },
+        ],
+        loc,
+      },
+    ],
+  });
+  const binding: IrExpr = { kind: "varRef", localId: "e.0", type: caught, loc };
+  expect(validateModule(deserializeModule(serializeModule(module(binding))))).toEqual([]);
+  const other: IrExpr = { kind: "varRef", localId: errorId, type: caught, loc };
+  expect(validateModule(module(other)).map((d) => d.message)).toEqual([
+    'in main: assign to catch binding "%error" (frontend must reject)',
+  ]);
+});

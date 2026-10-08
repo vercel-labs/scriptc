@@ -105,7 +105,13 @@ export function lowerArrayCallback(
       const untyped = (checkerType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
       const raw = untyped ? null : lowerer.mapTypeOf(checkerType);
       const mapped = raw ? lowerer.runtimeOptionalBindingType(param.name, raw) : null;
-      if (untyped ? !bindUntyped : mapped === null || lowerer.coercibleValue(expected, mapped))
+      if (
+        untyped
+          ? !bindUntyped
+          : mapped === null ||
+            (lowerer.coercibleValue(expected, mapped) &&
+              !runtimeOptionalPairVariant(lowerer, expected, mapped))
+      )
         return;
       const symbol = lowerer.checker.getSymbolAtLocation(param.name);
       if (!symbol) return;
@@ -130,6 +136,30 @@ export function lowerArrayCallback(
     });
   }
   if (contextualTs !== null) lowerer.implicitParamTypes = contextualTs;
+  // A destructured parameter over records whose runtime-optional fields
+  // kept their undefined arm (an entries pair from such a record) binds
+  // that stored layout; its names then see the optional values.
+  const patterns: { node: ts.Node; previous: IrType | undefined }[] = [];
+  if (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)) {
+    argNode.parameters.forEach((param, i) => {
+      const expected = full[i];
+      if (
+        expected === undefined ||
+        ts.isIdentifier(param.name) ||
+        param.type ||
+        param.initializer ||
+        param.dotDotDotToken
+      )
+        return;
+      const mapped = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(param.name));
+      if (mapped === null || !runtimeOptionalPairVariant(lowerer, expected, mapped)) return;
+      patterns.push({
+        node: param.name,
+        previous: lowerer.runtimeOptionalPatternTypes.get(param.name),
+      });
+      lowerer.runtimeOptionalPatternTypes.set(param.name, expected);
+    });
+  }
   const previousReturn = lowerer.contextualFunctionReturns.get(argNode);
   if (expectedReturn && (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode))) {
     lowerer.contextualFunctionReturns.set(argNode, expectedReturn);
@@ -139,6 +169,10 @@ export function lowerArrayCallback(
     fnArg = lowerer.lowerExpr(argNode);
   } finally {
     for (const n of overridden) lowerer.chainNarrowedType.delete(n);
+    for (const { node, previous } of patterns) {
+      if (previous === undefined) lowerer.runtimeOptionalPatternTypes.delete(node);
+      else lowerer.runtimeOptionalPatternTypes.set(node, previous);
+    }
     for (const { symbol, previous } of contextual) {
       if (previous === undefined) lowerer.runtimeOptionalBindingTypes.delete(symbol);
       else lowerer.runtimeOptionalBindingTypes.set(symbol, previous);
@@ -206,4 +240,15 @@ export function callbackArrayElement(
   return result?.kind === "array" && lowerer.runtimeOptionalWidening(fnRet, result.elem)
     ? result.elem
     : fnRet;
+}
+
+/** True when the helper passes records (optionally behind an undefined
+ * arm) that keep runtime-optional fields the checker's parameter type
+ * spells as required. */
+function runtimeOptionalPairVariant(lowerer: Lowerer, expected: IrType, mapped: IrType): boolean {
+  const strip = (t: IrType): IrType =>
+    t.kind === "union" && lowerer.armTag(t.unionId, UNDEFINED_T) >= 0
+      ? lowerer.stripUndefinedArm(t)
+      : t;
+  return lowerer.isRuntimeOptionalRecordVariant(strip(expected), strip(mapped));
 }

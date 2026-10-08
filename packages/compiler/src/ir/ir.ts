@@ -324,7 +324,9 @@ export type IrType =
    * This kind exists only with the dynamic option. */
   | { kind: "jsval" }
   /** A catch binding or its closure capture (never parameters, returns,
-   * fields, arms, elements or globals).
+   * fields, arms or elements). The one global form is a module's recorded
+   * evaluation error, written only from that module's catch binding and
+   * read only by `rethrow`.
    * Runtime representation is a refcounted snapshot box (ScrCaught) holding
    * the taken exception: a kind tag plus the payload. Even NARROWER than
    * dyn: the only expressions a caught value may appear in are `caughtTest`

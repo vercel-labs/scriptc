@@ -6,7 +6,12 @@
  * temporal-dead-zone ReferenceError, with the same message. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
-import { cycleEarlyBindings, locOf } from "../program.js";
+import {
+  cycleEarlyBindings,
+  locOf,
+  moduleEarlyBindings,
+  type CycleEarlyBinding,
+} from "../program.js";
 import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import {
   BOOL,
@@ -72,24 +77,35 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
       );
       continue;
     }
-    if (lowerer.cycleInitFlags.has(global.id)) continue;
-    const flagId = `${global.id}%initialized`;
-    lowerer.globalsList.push({ id: flagId, name: "%initialized", type: BOOL, mutable: true });
-    global.initFlag = flagId;
-    const flag: CycleInitFlag = {
-      global,
-      flagId,
-      name: binding.name.text,
-      module: binding.module,
-      settled: binding.settled,
-    };
-    lowerer.cycleInitFlags.set(global.id, flag);
-    const stmt = declaringStatement(binding.name);
-    if (stmt !== null) {
-      const list = lowerer.cycleInitDeclarations.get(stmt) ?? [];
-      list.push(flag);
-      lowerer.cycleInitDeclarations.set(stmt, list);
-    }
+    registerInitFlag(lowerer, binding, global);
+  }
+  // A module's own function declarations are callable before its later
+  // bindings are declared. Only bindings that such early-running code can
+  // read get a flag; the others keep their unchecked storage.
+  for (const binding of moduleEarlyBindings(lowerer.program, lowerer.moduleOrder)) {
+    const global = lowerer.globalsBySymbol.get(binding.symbol);
+    if (global !== undefined) registerInitFlag(lowerer, binding, global);
+  }
+}
+
+function registerInitFlag(lowerer: Lowerer, binding: CycleEarlyBinding, global: IrGlobal): void {
+  if (lowerer.cycleInitFlags.has(global.id)) return;
+  const flagId = `${global.id}%initialized`;
+  lowerer.globalsList.push({ id: flagId, name: "%initialized", type: BOOL, mutable: true });
+  global.initFlag = flagId;
+  const flag: CycleInitFlag = {
+    global,
+    flagId,
+    name: binding.name.text,
+    module: binding.module,
+    settled: binding.settled,
+  };
+  lowerer.cycleInitFlags.set(global.id, flag);
+  const stmt = declaringStatement(binding.name);
+  if (stmt !== null) {
+    const list = lowerer.cycleInitDeclarations.get(stmt) ?? [];
+    list.push(flag);
+    lowerer.cycleInitDeclarations.set(stmt, list);
   }
 }
 

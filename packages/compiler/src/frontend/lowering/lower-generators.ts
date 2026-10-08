@@ -306,22 +306,28 @@ function generatorLoopBinding(
 
 /** `for (const x of gen)` — the desugared drive:
  *
- *   { const %gof = <iterable>; let %gdone = false;
- *     while (true) {
- *       const %gr = %gof.next();            // genResume
- *       if (%gr.done) { %gdone = true; break; }
- *       const x = <extract %gr.value>;
- *       <body>
+ *   { const %gof = <iterable>; let %gdone = true;
+ *     try {
+ *       while (true) {
+ *         %gdone = true;
+ *         const %gr = %gof.next();          // genResume
+ *         if (%gr.done) break;
+ *         %gdone = false;
+ *         const x = <extract %gr.value>;
+ *         <body>
+ *       }
+ *     } finally {
+ *       if (!%gdone) %gof.return();         // IteratorClose
  *     }
- *     if (!%gdone) %gof.return();           // IteratorClose
  *   }
  *
- * `break` exits the while and lands on the close check (probed: break
- * closes the generator — finallys run, the return value is discarded);
- * `continue` stays in the loop; exhaustion skips the close. A consumer
- * `return`/`throw` abandoning the loop does NOT close (numbered
- * divergence — the desugar cannot ride a finally, whose regions reject
- * the loop's own break). */
+ * The loop rides a finally region: every exit that leaves the generator
+ * unfinished (`break`, a labeled jump past the loop, `return`, a throw
+ * from the body or the binding, or the enclosing generator being closed
+ * or thrown into at a `yield` inside the body) closes it — its finallys
+ * run and the .return() result is discarded. `continue` stays in the
+ * loop; exhaustion and a throwing .next() skip the close (Node does not
+ * close an iterator whose own step failed). */
 export function lowerForOfGenerator(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,
@@ -388,7 +394,14 @@ export function lowerForOfGenerator(
         `for-of over a generator yielding '${lowerer.fmt(genT.yieldT)}' (no per-element extraction exists — drive it with .next() and narrow r.value)`,
       );
     }
+    const setDone = (value: boolean): IrStmt => ({
+      kind: "assign",
+      localId: done.id,
+      value: { kind: "boolLit", value, type: BOOL, loc },
+      loc,
+    });
     const head: IrStmt[] = [
+      setDone(true),
       {
         kind: "varDecl",
         localId: r.id,
@@ -405,18 +418,11 @@ export function lowerForOfGenerator(
           type: BOOL,
           loc,
         },
-        then: [
-          {
-            kind: "assign",
-            localId: done.id,
-            value: { kind: "boolLit", value: true, type: BOOL, loc },
-            loc,
-          },
-          { kind: "break", loc },
-        ],
+        then: [{ kind: "break", loc }],
         else_: null,
         loc,
       },
+      setDone(false),
       ...generatorLoopBinding(lowerer, stmt, extracted, genT.yieldT),
     ];
     const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement), labels);
@@ -427,35 +433,52 @@ export function lowerForOfGenerator(
         {
           kind: "varDecl",
           localId: done.id,
-          init: { kind: "boolLit", value: false, type: BOOL, loc },
+          init: { kind: "boolLit", value: true, type: BOOL, loc },
           loc,
         },
         {
-          kind: "while",
-          cond: { kind: "boolLit", value: true, type: BOOL, loc },
-          body: [...head, ...body],
-          ...(labels && { labels }),
-          loc,
-        },
-        // IteratorClose: an early exit (break) closes the generator —
-        // finallys run; the .return() result record is dropped.
-        {
-          kind: "if",
-          cond: {
-            kind: "unary",
-            op: "!",
-            operand: { kind: "varRef", localId: done.id, type: BOOL, loc },
-            type: BOOL,
-            loc,
-          },
-          then: [
+          kind: "tryCatch",
+          tryBody: [
             {
-              kind: "exprStmt",
-              expr: { kind: "genResume", mode: "return", gen: gRef(), arg: null, type: recT, loc },
+              kind: "while",
+              cond: { kind: "boolLit", value: true, type: BOOL, loc },
+              body: [...head, ...body],
+              ...(labels && { labels }),
               loc,
             },
           ],
-          else_: null,
+          catchBody: null,
+          catchLocalId: null,
+          // IteratorClose: every exit that leaves the generator unfinished
+          // closes it — finallys run; the .return() result is dropped.
+          finallyBody: [
+            {
+              kind: "if",
+              cond: {
+                kind: "unary",
+                op: "!",
+                operand: { kind: "varRef", localId: done.id, type: BOOL, loc },
+                type: BOOL,
+                loc,
+              },
+              then: [
+                {
+                  kind: "exprStmt",
+                  expr: {
+                    kind: "genResume",
+                    mode: "return",
+                    gen: gRef(),
+                    arg: null,
+                    type: recT,
+                    loc,
+                  },
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            },
+          ],
           loc,
         },
       ],

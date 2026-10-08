@@ -1984,13 +1984,25 @@ export function lowerObjectLiteral(
       }
       for (const f of srcShape.fields) {
         if (laterNames.has(f.name)) continue;
-        const targetType = fieldTypes.get(f.name);
+        let targetType = fieldTypes.get(f.name);
         // A source field with NO slot on the target shape: the copy
         // DROPS it — a spread of a wider record into a narrower literal
         // is width subtyping in spread clothing, divergence 36's stance
         // (Node's object would keep the key); the read is pure, so
         // skipping evaluates nothing.
         if (!targetType) continue;
+        // A runtime-optional source field (an unchecked indexed read the
+        // checker calls present) keeps its undefined arm in the copy, as a
+        // property initialized from that read would.
+        const promotedField = lowerer.isRuntimeOptionalField(srcType.shapeId, f.name)
+          ? lowerer.runtimeOptionalWidening(f.type, targetType)
+          : null;
+        if (promotedField) {
+          type = lowerer.runtimeOptionalRecordField(type, f.name, promotedField);
+          if (type.kind === "record") shape = lowerer.shapes.get(type.shapeId)!;
+          fieldTypes.set(f.name, promotedField);
+          targetType = promotedField;
+        }
         const lift = typeEquals(f.type, targetType)
           ? null
           : lowerer.widthLiftPlan(f.type, targetType);

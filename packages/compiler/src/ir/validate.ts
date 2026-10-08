@@ -5874,7 +5874,12 @@ function validateFunction(
           err(`assign to immutable local "${binding.name}"`, s.loc);
         }
         if (binding?.type.kind === "caught") {
-          err(`assign to catch binding "${binding.name}" (frontend must reject)`, s.loc);
+          // A caught-typed GLOBAL is a module's recorded evaluation error:
+          // its only write stores the module's own catch binding.
+          const caughtLocal = s.value.kind === "varRef" ? locals.get(s.value.localId) : undefined;
+          if (!globals.has(s.localId) || caughtLocal?.type.kind !== "caught") {
+            err(`assign to catch binding "${binding.name}" (frontend must reject)`, s.loc);
+          }
         }
         checkExpr(s.value);
         if (binding) expectType(s.value, binding.type, `assign "${binding.name}"`);
@@ -6105,7 +6110,7 @@ function validateFunction(
         break;
       case "rethrow": {
         // `throw e` of a catch binding: re-raises the saved snapshot.
-        const local = locals.get(s.localId);
+        const local = locals.get(s.localId) ?? globals.get(s.localId);
         if (!local) err(`rethrow of undeclared local "${s.localId}"`, s.loc);
         else if (local.type.kind !== "caught") {
           err(`rethrow of non-caught local "${s.localId}" (${local.type.kind})`, s.loc);

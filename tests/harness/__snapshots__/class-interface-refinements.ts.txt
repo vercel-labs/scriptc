@@ -84,9 +84,11 @@ class-interface-refinements.ts:32:14 - error SC2002: record shapes must match ex
 
   hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
 
-class-interface-refinements.ts:39:14 - error SC1090: 'Mimic' values where 'Box' is expected is not supported yet
+class-interface-refinements.ts:39:14 - error SC1090: asserting a 'Mimic' instance as the unrelated class 'Box' (neither class extends the other, and class identity is nominal in compiled code) is not supported yet
 
   38 | }
   39 | console.log((new Mimic() as BaseView).current);
      |              ^~~~~~~~~~~~~~~~~~~~~~~
   40 | 
+
+  hint: narrow with `instanceof Box` where the value can really be one, or declare a shared base class and assert through it

@@ -5302,13 +5302,9 @@ function inferredOptionalRecordType(
   declared: IrType,
   actual: IrType,
 ): IrType {
-  if (
-    decl.type ||
-    hasJsTypeAnnotation(decl) ||
-    declared.kind !== "record" ||
-    actual.kind !== "record"
-  )
-    return declared;
+  if (decl.type || hasJsTypeAnnotation(decl)) return declared;
+  if (lowerer.isRuntimeOptionalRecordVariant(actual, declared)) return actual;
+  if (declared.kind !== "record" || actual.kind !== "record") return declared;
   const target = lowerer.shapes.get(declared.shapeId);
   const source = lowerer.shapes.get(actual.shapeId);
   if (

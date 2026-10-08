@@ -8028,8 +8028,12 @@ function lowerObjectStaticCall(
     return lowerObjectIterOverIndexShape(lowerer, call, member, argIr, shape);
   }
   const loc = locOf(call);
-  const resultT = lowerer.irTypeOf(call);
-  if (resultT.kind !== "array") lowerer.badType(call, lowerer.typeOf(call)); // defensive
+  const checkedT = lowerer.irTypeOf(call);
+  if (checkedT.kind !== "array") lowerer.badType(call, lowerer.typeOf(call)); // defensive
+  const resultT =
+    member === "entries" && consumesEntryPairs(call)
+      ? runtimeOptionalEntriesType(lowerer, argIr, checkedT)
+      : checkedT;
   const receiver = objectEnumerationReceiver(lowerer, lowerer.lowerExpr(argNode), argIr, loc);
   if (member === "keys") {
     // The keys walk is shared with for-in (which iterates exactly the
@@ -8255,6 +8259,60 @@ function lowerObjectStaticCall(
     lowerer.liftedFns.push(fn);
   }
   return { kind: "call", callee: helper, args: [receiver], type: resultT, loc };
+}
+
+/** An entries array consumed pair by pair right where it is built: a
+ * for-of loop or an array callback method. These consumers bind each pair
+ * from the array's own layout, so the pair's value slot can keep a
+ * runtime-optional field's undefined arm. */
+function consumesEntryPairs(call: ts.CallExpression): boolean {
+  let node: ts.Node = call;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (ts.isForOfStatement(parent)) return parent.expression === node;
+  return (
+    ts.isPropertyAccessExpression(parent) &&
+    parent.expression === node &&
+    ENTRY_PAIR_CALLBACK_METHODS.has(parent.name.text) &&
+    ts.isCallExpression(parent.parent) &&
+    parent.parent.expression === parent
+  );
+}
+
+const ENTRY_PAIR_CALLBACK_METHODS = new Set([
+  "every",
+  "filter",
+  "find",
+  "findIndex",
+  "flatMap",
+  "forEach",
+  "map",
+  "some",
+]);
+
+/** The entries array of a record whose runtime-optional fields (unchecked
+ * indexed reads the checker calls present) can hold undefined: the pair's
+ * value slot gains the undefined arm, so such an entry is listed with its
+ * undefined value as Node lists it. Reads of the slot follow the
+ * runtime-optional field rules. */
+function runtimeOptionalEntriesType(
+  lowerer: Lowerer,
+  record: IrType & { kind: "record" },
+  resultT: IrType & { kind: "array" },
+): IrType & { kind: "array" } {
+  const shape = lowerer.shapes.get(record.shapeId);
+  if (resultT.elem.kind !== "record" || !shape) return resultT;
+  const pair = lowerer.shapes.get(resultT.elem.shapeId);
+  const slot = pair?.tuple ? pair.fields.find((f) => f.name === "1") : undefined;
+  if (!slot) return resultT;
+  const optional = shape.fields.find(
+    (f) =>
+      lowerer.isRuntimeOptionalField(record.shapeId, f.name) &&
+      lowerer.runtimeOptionalWidening(f.type, slot.type) !== null,
+  );
+  if (!optional) return resultT;
+  const widened = lowerer.runtimeOptionalWidening(optional.type, slot.type)!;
+  return { kind: "array", elem: lowerer.runtimeOptionalRecordField(resultT.elem, "1", widened) };
 }
 
 /** `r.f(args)` where `r` is a record and `f` a func-typed field: an

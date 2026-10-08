@@ -12,30 +12,9 @@ runtime-optional-capture-chain.ts:12:45 - error SC1090: a logical or conditional
      |                                             ^~~~~
   13 |   value = values.slice(1)[0];
 
-runtime-optional-capture-chain.ts:20:37 - error SC1090: a logical or conditional receiver containing a runtime-optional capture is not supported yet
+runtime-optional-capture-chain.ts:28:22 - error SC1090: a direct call through a comma-wrapped runtime-optional capture is not supported yet
 
-  19 |   if (!value) return;
-  20 |   const readOr = () => console.log((value || "fallback")?.length);
-     |                                     ^~~~~
-  21 |   const readNullish = () => console.log((value ?? "fallback")?.length);
-
-runtime-optional-capture-chain.ts:21:42 - error SC1090: a logical or conditional receiver containing a runtime-optional capture is not supported yet
-
-  20 |   const readOr = () => console.log((value || "fallback")?.length);
-  21 |   const readNullish = () => console.log((value ?? "fallback")?.length);
-     |                                          ^~~~~
-  22 |   value = values.slice(1)[0];
-
-runtime-optional-capture-chain.ts:30:35 - error SC1090: a logical or conditional receiver containing a runtime-optional capture is not supported yet
-
-  29 |   if (!value) return;
-  30 |   const read = () => console.log((value ? "yes" : "no")?.length);
-     |                                   ^~~~~
-  31 |   value = values.slice(1)[0];
-
-runtime-optional-capture-chain.ts:46:22 - error SC1090: a direct call through a comma-wrapped runtime-optional capture is not supported yet
-
-  45 |   if (!callback) return;
-  46 |   const call = () => (mark(), callback)();
+  27 |   if (!callback) return;
+  28 |   const call = () => (mark(), callback)();
      |                      ^~~~~~~~~~~~~~~~~~~~
-  47 |   callback = callbacks.slice(1)[0];
+  29 |   callback = callbacks.slice(1)[0];

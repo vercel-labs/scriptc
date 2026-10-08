@@ -976,7 +976,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // A known static result type fixes typeof's answer, but its producer
     // still evaluates: calls, getters, and checked reads can have effects
     // or throw. Only trivial operands may disappear.
-    let operand = lowerer.lowerExpr(expr.expression);
+    let operand =
+      runtimeOptionalStorageOperand(lowerer, expr.expression) ?? lowerer.lowerExpr(expr.expression);
     if (operand.type.kind === "jsval") {
       return { kind: "jsOp", op: "typeof", args: [operand], type: STRING, loc };
     }
@@ -4227,7 +4228,7 @@ function lowerLooseNullCompare(
   const leftIsNull = left.kind === ts.SyntaxKind.NullKeyword;
   if (!leftIsNull && right.kind !== ts.SyntaxKind.NullKeyword) return null;
   const otherNode = leftIsNull ? right : left;
-  const other = lowerer.lowerExpr(otherNode);
+  const other = lowerPresenceOperand(lowerer, otherNode);
   if (isUnitType(other.type)) {
     // `null == null`, `undefined == null`: units are mutually loose-equal.
     return { kind: "boolLit", value: !negated, type: BOOL, loc };
@@ -4345,7 +4346,7 @@ export function lowerNullishCoalesce(
     lowerer,
     first,
     first === expr ? loc : locOf(first),
-    lowerAbsenceProbe(lowerer, first.left) ?? lowerer.lowerExpr(first.left),
+    lowerPresenceOperand(lowerer, first.left),
   );
   for (let i = parents.length - 1; i >= 0; i--) {
     const parent = parents[i]!;
@@ -4628,7 +4629,7 @@ export function lowerCondition(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       };
     }
   }
-  return lowerer.ensureBool(lowerAbsenceProbe(lowerer, expr) ?? lowerer.lowerExpr(expr), expr);
+  return lowerer.ensureBool(lowerPresenceOperand(lowerer, expr), expr);
 }
 
 function lowerPromiseThenPresence(
@@ -7322,6 +7323,53 @@ function lowerRecordPropertyKey(lowerer: Lowerer, key: IrExpr, node: ts.Expressi
   return key;
 }
 
+/** The stored value of an identifier whose storage holds an undefined arm
+ * that the checker's type at this use has dropped. An assignment from an
+ * unchecked indexed read narrows the declared type even though the value
+ * can be absent at runtime, so presence tests (`=== undefined`, `== null`,
+ * truthiness, `??`, `typeof`) read the storage tag instead of trusting
+ * that narrowing. A guard-proven use answers the same way at runtime. */
+export function runtimeOptionalStorageOperand(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): IrExpr | null {
+  let expr = node;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isIdentifier(expr)) return null;
+  // Only storage that can actually receive an absent value without the
+  // checker seeing it qualifies; other declared-optional bindings keep the
+  // checker's assignment and guard narrowing.
+  const symbol = lowerer.resolveValueSymbol(expr);
+  const local = lowerer.resolveLocal(expr);
+  const global = local ? undefined : lowerer.globalOf(expr);
+  if (
+    !(symbol && lowerer.runtimeOptionalAssignedSymbols.has(symbol)) &&
+    !(symbol && lowerer.runtimeOptionalBindingTypes.has(symbol)) &&
+    !(local && lowerer.runtimeOptionalStorageLocals.has(lowerer.runtimeOptionalRootOf(local))) &&
+    !(global && lowerer.isRuntimeOptionalGlobal(global))
+  )
+    return null;
+  const optional = lowerer.runtimeOptionalIdentifierValue(expr);
+  if (optional === null) return null;
+  const checked = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (
+    checked === null ||
+    (checked.kind === "union" && lowerer.armTag(checked.unionId, UNDEFINED_T) >= 0)
+  )
+    return null;
+  return optional.value;
+}
+
+/** A presence-test operand: an absence-aware element or field read, an
+ * identifier's runtime-optional storage, or the ordinary lowering. */
+export function lowerPresenceOperand(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  return (
+    lowerAbsenceProbe(lowerer, node) ??
+    runtimeOptionalStorageOperand(lowerer, node) ??
+    lowerer.lowerExpr(node)
+  );
+}
+
 /** A keyed read used only to observe absence (`if (map[k])`, or the left
  * side of `||`/`??`). JavaScript answers undefined for missing record keys
  * and array indices even when noUncheckedIndexedAccess is disabled. Keep
@@ -8943,7 +8991,10 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
     }
     case ts.SyntaxKind.ExclamationToken: {
       // `!x` is ToBoolean-then-negate: f64/string operands go through toBool.
-      const operand = lowerer.ensureBool(lowerer.lowerExpr(expr.operand), expr.operand);
+      const operand = lowerer.ensureBool(
+        runtimeOptionalStorageOperand(lowerer, expr.operand) ?? lowerer.lowerExpr(expr.operand),
+        expr.operand,
+      );
       return { kind: "unary", op: "!", operand, type: BOOL, loc };
     }
     case ts.SyntaxKind.TildeToken: {
@@ -9781,12 +9832,24 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   const strictEquality =
     op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
     op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+  // An identifier whose storage is runtime-optional is compared by its
+  // stored value: the checker's narrowing to the present arm is not a
+  // runtime proof. Identifier reads are pure, so taking the stored value
+  // after both operands lowered keeps the evaluation order. A union on
+  // the other side keeps the narrowed read (union-to-union comparison
+  // has no lowering).
   let left = strictEquality
     ? (lowerAbsenceProbe(lowerer, expr.left) ?? lowerer.lowerExpr(expr.left))
     : lowerer.lowerExpr(expr.left);
   let right = strictEquality
     ? (lowerAbsenceProbe(lowerer, expr.right) ?? lowerer.lowerExpr(expr.right))
     : lowerer.lowerExpr(expr.right);
+  if (strictEquality) {
+    const storedLeft = runtimeOptionalStorageOperand(lowerer, expr.left);
+    const storedRight = runtimeOptionalStorageOperand(lowerer, expr.right);
+    if (storedLeft !== null && right.type.kind !== "union") left = storedLeft;
+    if (storedRight !== null && left.type.kind !== "union") right = storedRight;
+  }
   if (strictEquality && (left.type.kind === "caught" || right.type.kind === "caught")) {
     if (left.type.kind === "caught")
       left = { kind: "caughtToDyn", value: left, type: DYN, loc: left.loc };
@@ -10693,7 +10756,9 @@ function lowerLogicalChain(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr 
     result = lowerLogicalPair(
       lowerer,
       current,
-      lowerAbsenceProbe(lowerer, left) ?? lowerer.lowerExpr(left),
+      current.operatorToken.kind === ts.SyntaxKind.BarBarToken
+        ? lowerPresenceOperand(lowerer, left)
+        : (lowerAbsenceProbe(lowerer, left) ?? lowerer.lowerExpr(left)),
     );
     break;
   }
@@ -11384,9 +11449,11 @@ function lowerUnionTypeofTest(
   const negated = expr.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
   for (const [a, b] of operandPairs(expr)) {
     if (!ts.isTypeOfExpression(a)) continue;
-    if (lowerer.mapTypeOf(lowerer.typeOf(a.expression))?.kind !== "union") continue;
+    const stored = runtimeOptionalStorageOperand(lowerer, a.expression);
+    if (stored === null && lowerer.mapTypeOf(lowerer.typeOf(a.expression))?.kind !== "union")
+      continue;
     if (!ts.isStringLiteral(b)) continue; // bare-typeof + strEq handles pure operands
-    const value = lowerer.lowerExpr(a.expression);
+    const value = stored ?? lowerer.lowerExpr(a.expression);
     if (value.type.kind !== "union") continue; // defensive: an already-narrowed use
     const unionId = value.type.unionId;
     const def = lowerer.unions.get(unionId);

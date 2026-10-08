@@ -8,6 +8,7 @@ import {
   isNodeEsmFile,
   loadProgram,
   makeCycleAdmission,
+  moduleEarlyBindings,
   type CycleEdge,
 } from "./program-node.js";
 import * as ts from "./ts7/ast.js";
@@ -320,6 +321,41 @@ test.for([
   try {
     expect(checkPreflight(load)).toEqual([]);
     const found = cycleEarlyBindings(load.program, load.entry, load.moduleOrder, true);
+    expect(found.map((binding) => binding.name.text).sort()).toEqual([...early]);
+  } finally {
+    load.dispose();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test.for([
+  // A hoisted function called before the declaration reads it.
+  ["report(); let level = 1; function report() { console.log(level); }", ["level"]],
+  // The declaration's own initializer reaches the read.
+  ["const total = sum(); function sum(): number { return base + 1; } const base = 2;", ["base"]],
+  // An arrow handed to a callee may run before the declaration.
+  [
+    "[1].forEach(() => show()); const label = 'x'; function show() { console.log(label); }",
+    ["label"],
+  ],
+  // Calls after the declaration, stored callables and timer callbacks are not early.
+  ["let level = 1; report(); function report() { console.log(level); }", []],
+  [
+    "const fib = (n: number): number => (n < 2 ? n : fib(n - 1) + fib(n - 2)); console.log(fib(5));",
+    [],
+  ],
+  ["const item = { read() { return item.size; }, size: 2 }; console.log(item.read());", []],
+  ["setTimeout(() => console.log(late), 0); const late = 'later';", []],
+  ["let a = 1, b = () => a + 1, c = b(); console.log(c);", []],
+] as const)("module bindings read before initialization: %s", ([source, early]) => {
+  const directory = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-module-early-"),
+  );
+  writeFileSync(join(directory, "main.ts"), `${source}\nexport {};\n`);
+  const load = loadProgram(join(directory, "main.ts"));
+  try {
+    expect(checkPreflight(load)).toEqual([]);
+    const found = moduleEarlyBindings(load.program, load.moduleOrder);
     expect(found.map((binding) => binding.name.text).sort()).toEqual([...early]);
   } finally {
     load.dispose();

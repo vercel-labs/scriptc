@@ -41,6 +41,7 @@ import {
 } from "../../diagnostics/diagnostic.js";
 import {
   BOOL,
+  CAUGHT,
   DYN,
   F64,
   type IrClassDef,
@@ -3149,6 +3150,14 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
+    if (
+      moduleRef === null &&
+      guardId !== undefined &&
+      !isAsync &&
+      importRetryModules(lowerer).has(sf)
+    ) {
+      rememberEvaluationError(lowerer, guardId, body, loc0);
+    }
     const loc: SrcLoc = { file: sf.fileName, start: 0, end: 0 };
     return {
       name,
@@ -3166,6 +3175,89 @@ export function lowerFileInit(
   } finally {
     lowerer.fnStack.pop();
   }
+}
+
+/** Program modules whose evaluation can be requested again after it
+ * threw: the targets of literal import() sites and their static ES-module
+ * dependencies. Node records the evaluation error on the module, and every
+ * later import of it (or of a module depending on it) throws that same
+ * error again instead of resolving. */
+function importRetryModules(lowerer: Lowerer): ReadonlySet<ts.SourceFile> {
+  const memo = importRetryMemo.get(lowerer);
+  if (memo !== undefined) return memo;
+  const out = new Set<ts.SourceFile>();
+  const visit = (sf: ts.SourceFile): void => {
+    if (out.has(sf) || sf.fileName.endsWith(".cts") || isCjsJsFile(sf, lowerer.program)) return;
+    out.add(sf);
+    for (const { dep } of orderedImportsOf(lowerer.program, sf)) {
+      if (dep !== null && dep !== sf) visit(dep);
+    }
+  };
+  for (const sf of lowerer.moduleOrder) {
+    for (const dep of dynamicProgramImportsOf(lowerer.program, sf)) visit(dep);
+  }
+  importRetryMemo.set(lowerer, out);
+  return out;
+}
+
+const importRetryMemo = new WeakMap<Lowerer, Set<ts.SourceFile>>();
+
+/** Wraps a guarded module body so a thrown evaluation error is kept and
+ * thrown again by every later call of the initializer. The first two
+ * statements are the run-once guard and the flag store. */
+function rememberEvaluationError(
+  lowerer: Lowerer,
+  guardId: string,
+  body: IrStmt[],
+  loc: SrcLoc,
+): void {
+  const errorId = `${guardId}%error`;
+  const failedId = `${guardId}%failed`;
+  if (!lowerer.globalsList.some((g) => g.id === errorId)) {
+    lowerer.globalsList.push({ id: errorId, name: "%error", type: CAUGHT, mutable: true });
+    lowerer.globalsList.push({ id: failedId, name: "%failed", type: BOOL, mutable: true });
+  }
+  const guarded = body.splice(2);
+  const failed: IrExpr = { kind: "varRef", localId: failedId, type: BOOL, loc };
+  body[0] = {
+    kind: "if",
+    cond: { kind: "varRef", localId: guardId, type: BOOL, loc },
+    then: [
+      {
+        kind: "if",
+        cond: failed,
+        then: [{ kind: "rethrow", localId: errorId, loc }],
+        else_: null,
+        loc,
+      },
+      { kind: "return", value: null, loc },
+    ],
+    else_: null,
+    loc,
+  };
+  const caught = lowerer.declareHiddenLocal("%moduleError", CAUGHT);
+  body.push({
+    kind: "tryCatch",
+    tryBody: guarded,
+    catchBody: [
+      {
+        kind: "assign",
+        localId: errorId,
+        value: { kind: "varRef", localId: caught.id, type: CAUGHT, loc },
+        loc,
+      },
+      {
+        kind: "assign",
+        localId: failedId,
+        value: { kind: "boolLit", value: true, type: BOOL, loc },
+        loc,
+      },
+      { kind: "rethrow", localId: caught.id, loc },
+    ],
+    catchLocalId: caught.id,
+    finallyBody: null,
+    loc,
+  });
 }
 
 /** %main is just the entry's %init call: Node's whole module evaluation

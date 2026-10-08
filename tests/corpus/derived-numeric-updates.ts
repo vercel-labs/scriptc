@@ -48,3 +48,10 @@ class Deferred {
 Deferred.value = positions[99];
 console.log(Deferred.value++, ++Deferred.copy);
 if (Counter.value !== undefined) console.log(Counter.value + 1);
+
+class OptionalCounter {
+  static value: number | undefined = positions[0];
+}
+OptionalCounter.value = positions[99];
+console.log(OptionalCounter.value === undefined, Number.isNaN(OptionalCounter.value));
+console.log(OptionalCounter.value++, Number.isNaN(OptionalCounter.value));

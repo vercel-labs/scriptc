@@ -4571,7 +4571,8 @@ export class Lowerer {
     for (const [symbol, field] of staticFieldsBySymbol) {
       if (!optionalSymbols.has(symbol)) continue;
       const promoted = addUndefined(field.type);
-      if (typeEquals(promoted, field.type)) continue;
+      // An explicit optional annotation already has the right layout, but
+      // an indexed assignment still invalidates the checker's presence fact.
       field.type = promoted;
       field.runtimeOptional = true;
       const global = globalsById.get(field.globalId);

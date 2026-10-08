@@ -10,20 +10,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Each layer gets full validation when it becomes the lowest unmerged PR.
-  # Upper layers retain code-quality checks while GitHub rebases the stack.
+  # GitHub recommends stack.base.ref == base.ref for the lowest unmerged PR:
+  # https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/optimizing-ci-for-stacked-pull-requests
+  # Only trusted, same-repository upper layers defer full CI. Forks, ordinary
+  # PRs, pushes and incomplete metadata always retain full validation.
   validation_scope:
     name: Select CI scope
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
     outputs:
       full: ${{ steps.scope.outputs.full }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
       - id: scope
-        run: node scripts/ci-stack-scope.mjs
+        # Read GitHub's event directly; do not run scripts from a PR checkout.
+        run: |
+          node <<'NODE'
+          const { appendFileSync, readFileSync } = require('node:fs');
+          const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          const pr = event.pull_request;
+          const repository = event.repository?.full_name;
+          const sameRepository = typeof repository === 'string' && repository.length > 0 &&
+            pr?.head?.repo?.full_name === repository && pr?.base?.repo?.full_name === repository;
+          const trustedAuthor = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(pr?.author_association);
+          const stackBase = pr?.stack?.base?.ref;
+          const prBase = pr?.base?.ref;
+          // Position 1 can already be merged; compare the current base branches.
+          const upperLayer = process.env.GITHUB_EVENT_NAME === 'pull_request' &&
+            sameRepository && trustedAuthor && typeof stackBase === 'string' && stackBase.length > 0 &&
+            typeof prBase === 'string' && prBase.length > 0 && stackBase !== prBase;
+          const full = !upperLayer;
+          appendFileSync(process.env.GITHUB_OUTPUT, `full=${full}\n`);
+          console.log(full ? 'Run full CI' : 'Defer full CI until this PR becomes the lowest unmerged layer');
+          NODE
 
   code_quality:
     name: lint and format
@@ -714,14 +733,15 @@ jobs:
         with:
           runtime: ${{ matrix.runtime }}
 
-  # Retain the pre-matrix "test" check for branch protection and badges. It
-  # Full runs require every lane to pass. Upper stack layers pass only when
-  # code quality succeeds and every expensive job was intentionally skipped.
+  # Retain the pre-matrix "test" check for branch protection and badges.
+  # Require this check on the stack base. Upper layers must not pass before
+  # full validation, so untested groups cannot merge. Merge bottom-up.
   test:
     needs: [validation_scope, code_quality, native_macos, tests, native_linux, effects, bootstrap_seed, bootstrap, linux_host_clang, ts7_parity, llvm_artifacts_linux_x64, llvm_artifacts_macos_arm64, llvm_artifacts_macos_x64, windows_cli, llvm_artifacts_windows_x64, mobile_runtime_packs]
-    # A superseded run must release its concurrency slot immediately.
-    if: ${{ !cancelled() }}
+    # Run even after failed or cancelled lanes: skipped required jobs allow merging.
+    if: ${{ always() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: All lanes green
         run: |
@@ -745,20 +765,8 @@ jobs:
               test "${{ needs.mobile_runtime_packs.result }}" = success
               ;;
             false)
-              test "${{ needs.native_macos.result }}" = skipped
-              test "${{ needs.tests.result }}" = skipped
-              test "${{ needs.native_linux.result }}" = skipped
-              test "${{ needs.effects.result }}" = skipped
-              test "${{ needs.bootstrap_seed.result }}" = skipped
-              test "${{ needs.bootstrap.result }}" = skipped
-              test "${{ needs.linux_host_clang.result }}" = skipped
-              test "${{ needs.ts7_parity.result }}" = skipped
-              test "${{ needs.llvm_artifacts_linux_x64.result }}" = skipped
-              test "${{ needs.llvm_artifacts_macos_arm64.result }}" = skipped
-              test "${{ needs.llvm_artifacts_macos_x64.result }}" = skipped
-              test "${{ needs.windows_cli.result }}" = skipped
-              test "${{ needs.llvm_artifacts_windows_x64.result }}" = skipped
-              test "${{ needs.mobile_runtime_packs.result }}" = skipped
+              echo "::notice::Full CI is deferred until this PR becomes the lowest unmerged layer. Merge the stack from the bottom up."
+              exit 1
               ;;
             *)
               echo "Invalid CI scope"

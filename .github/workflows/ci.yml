@@ -10,6 +10,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Each layer gets full validation when it becomes the lowest unmerged PR.
+  # Upper layers retain code-quality checks while GitHub rebases the stack.
+  validation_scope:
+    name: Select CI scope
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - id: scope
+        run: node scripts/ci-stack-scope.mjs
+
   code_quality:
     name: lint and format
     runs-on: ubuntu-24.04
@@ -26,14 +41,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm format:check
-      - name: Lint boundaries and formatter fixture protection
-        run: pnpm test tests/harness/code-quality.test.ts
+      - name: Code quality and CI policy contracts
+        run: pnpm test tests/harness/code-quality.test.ts tests/harness/ci-stack-scope.test.ts
         env:
           SCRIPTC_TEST_WORKERS: "1"
       - name: Verify mixed-source generated AST getters
         run: pnpm generate:ts7-ast --check
 
   native_macos:
+    needs: validation_scope
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: build (macOS arm64 native packages)
     runs-on: macos-15
     steps:
@@ -62,7 +79,8 @@ jobs:
           retention-days: 1
 
   tests:
-    needs: native_macos
+    needs: [validation_scope, native_macos]
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: test (${{ matrix.flavor }}, ${{ matrix.shard }}/10)
     # arm64 macOS: same clang/libc the differential + number-formatting
     # oracles were verified against.
@@ -111,6 +129,8 @@ jobs:
         run: node scripts/ci-test.mjs
 
   native_linux:
+    needs: validation_scope
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: build (Linux x64 native packages)
     runs-on: ubuntu-24.04
     steps:
@@ -141,7 +161,8 @@ jobs:
           retention-days: 1
 
   effects:
-    needs: native_linux
+    needs: [validation_scope, native_linux]
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: test (Linux, ${{ matrix.flavor }}, Effect ${{ matrix.shard }}/16)
     runs-on: ubuntu-24.04
     strategy:
@@ -179,6 +200,8 @@ jobs:
   # Build each instrumented seed once. Downstream contracts retain the same
   # compiler and source artifacts without repeating seed construction.
   bootstrap_seed:
+    needs: validation_scope
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: build (Linux, ${{ matrix.flavor }}, bootstrap seed)
     runs-on: ubuntu-24.04
     strategy:
@@ -221,7 +244,8 @@ jobs:
           if-no-files-found: error
 
   bootstrap:
-    needs: bootstrap_seed
+    needs: [validation_scope, bootstrap_seed]
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: test (Linux, ${{ matrix.flavor }}, native bootstrap, ${{ matrix.phase }})
     # These contracts are portable. Standard Linux runners have enough memory
     # for LLVM optimization alongside the compiler that produces its input.
@@ -281,6 +305,8 @@ jobs:
   # Linux feature-test macro omissions at compile time and separate-libm
   # omissions/order errors at link time.
   linux_host_clang:
+    needs: validation_scope
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: test (linux host clang/glibc)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -308,6 +334,8 @@ jobs:
   # The TS7 parity sweep exercises the compiler frontend, so it can run
   # alongside the Linux LLVM/runtime package build instead of following it.
   ts7_parity:
+    needs: validation_scope
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: test (TypeScript 7 parity)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -326,6 +354,8 @@ jobs:
         run: pnpm test:ts7
 
   llvm_artifacts_linux_x64:
+    needs: validation_scope
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: test (Linux x64 LLVM artifacts, no clang)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -393,7 +423,8 @@ jobs:
         run: pnpm test packages/cli/test/wasi-runtime-pack.test.ts tests/harness/wasm-library.test.ts
 
   llvm_artifacts_macos_arm64:
-    needs: native_macos
+    needs: [validation_scope, native_macos]
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: test (macOS arm64 LLVM artifacts, no clang, ${{ matrix.shard }}/5)
     runs-on: macos-15
     # Shard 1 additionally runs package/install and link-parity contracts
@@ -479,6 +510,8 @@ jobs:
           test "$("$RUNNER_TEMP/installed-program")" = 'hello world'
 
   llvm_artifacts_macos_x64:
+    needs: validation_scope
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: test (macOS x64 LLVM artifacts, no clang)
     runs-on: macos-15-intel
     timeout-minutes: 20
@@ -515,7 +548,8 @@ jobs:
   # slash styles, and the default executable must use the .exe suffix.
   windows_cli:
     name: test (windows CLI smoke)
-    needs: llvm_artifacts_windows_x64
+    needs: [validation_scope, llvm_artifacts_windows_x64]
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 15
     env:
@@ -595,6 +629,8 @@ jobs:
           --testNamePattern "Windows CA roots honor"
 
   llvm_artifacts_windows_x64:
+    needs: validation_scope
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: test (Windows x64 MSVC LLVM artifacts)
     # The official LLVM 22 Windows archives are MSVC-built and the helper
     # selects CMake's VS 2022 generator. `windows-latest` can move to an
@@ -657,6 +693,8 @@ jobs:
           retention-days: 1
 
   mobile_runtime_packs:
+    needs: validation_scope
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
     name: test (${{ matrix.runtime }})
     strategy:
       fail-fast: false
@@ -677,24 +715,53 @@ jobs:
           runtime: ${{ matrix.runtime }}
 
   # Retain the pre-matrix "test" check for branch protection and badges. It
-  # passes only when every matrix shard and independent integration job does.
+  # Full runs require every lane to pass. Upper stack layers pass only when
+  # code quality succeeds and every expensive job was intentionally skipped.
   test:
-    needs: [code_quality, tests, effects, bootstrap, linux_host_clang, ts7_parity, llvm_artifacts_linux_x64, llvm_artifacts_macos_arm64, llvm_artifacts_macos_x64, windows_cli, llvm_artifacts_windows_x64, mobile_runtime_packs]
+    needs: [validation_scope, code_quality, native_macos, tests, native_linux, effects, bootstrap_seed, bootstrap, linux_host_clang, ts7_parity, llvm_artifacts_linux_x64, llvm_artifacts_macos_arm64, llvm_artifacts_macos_x64, windows_cli, llvm_artifacts_windows_x64, mobile_runtime_packs]
     # A superseded run must release its concurrency slot immediately.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: All lanes green
         run: |
+          test "${{ needs.validation_scope.result }}" = success
           test "${{ needs.code_quality.result }}" = success
-          test "${{ needs.tests.result }}" = success
-          test "${{ needs.effects.result }}" = success
-          test "${{ needs.bootstrap.result }}" = success
-          test "${{ needs.linux_host_clang.result }}" = success
-          test "${{ needs.ts7_parity.result }}" = success
-          test "${{ needs.llvm_artifacts_linux_x64.result }}" = success
-          test "${{ needs.llvm_artifacts_macos_arm64.result }}" = success
-          test "${{ needs.llvm_artifacts_macos_x64.result }}" = success
-          test "${{ needs.windows_cli.result }}" = success
-          test "${{ needs.llvm_artifacts_windows_x64.result }}" = success
-          test "${{ needs.mobile_runtime_packs.result }}" = success
+          case "${{ needs.validation_scope.outputs.full }}" in
+            true)
+              test "${{ needs.native_macos.result }}" = success
+              test "${{ needs.tests.result }}" = success
+              test "${{ needs.native_linux.result }}" = success
+              test "${{ needs.effects.result }}" = success
+              test "${{ needs.bootstrap_seed.result }}" = success
+              test "${{ needs.bootstrap.result }}" = success
+              test "${{ needs.linux_host_clang.result }}" = success
+              test "${{ needs.ts7_parity.result }}" = success
+              test "${{ needs.llvm_artifacts_linux_x64.result }}" = success
+              test "${{ needs.llvm_artifacts_macos_arm64.result }}" = success
+              test "${{ needs.llvm_artifacts_macos_x64.result }}" = success
+              test "${{ needs.windows_cli.result }}" = success
+              test "${{ needs.llvm_artifacts_windows_x64.result }}" = success
+              test "${{ needs.mobile_runtime_packs.result }}" = success
+              ;;
+            false)
+              test "${{ needs.native_macos.result }}" = skipped
+              test "${{ needs.tests.result }}" = skipped
+              test "${{ needs.native_linux.result }}" = skipped
+              test "${{ needs.effects.result }}" = skipped
+              test "${{ needs.bootstrap_seed.result }}" = skipped
+              test "${{ needs.bootstrap.result }}" = skipped
+              test "${{ needs.linux_host_clang.result }}" = skipped
+              test "${{ needs.ts7_parity.result }}" = skipped
+              test "${{ needs.llvm_artifacts_linux_x64.result }}" = skipped
+              test "${{ needs.llvm_artifacts_macos_arm64.result }}" = skipped
+              test "${{ needs.llvm_artifacts_macos_x64.result }}" = skipped
+              test "${{ needs.windows_cli.result }}" = skipped
+              test "${{ needs.llvm_artifacts_windows_x64.result }}" = skipped
+              test "${{ needs.mobile_runtime_packs.result }}" = skipped
+              ;;
+            *)
+              echo "Invalid CI scope"
+              exit 1
+              ;;
+          esac

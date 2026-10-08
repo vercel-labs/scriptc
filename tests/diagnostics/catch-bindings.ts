@@ -1,6 +1,6 @@
 // Catch bindings are deliberately NARROW: the binding is typed by what the
 // exception cell can actually hold, so the supported uses are the narrowing
-// tests (instanceof over hierarchy classes, typeof over selected types), reads
+// tests (instanceof over native classes, typeof over selected types), reads
 // under a proven narrow, rethrow, and the unknown-slot CONVERSION (an
 // un-narrowed use typed `unknown` converts to a dynamic value — corpus
 // 1554; `const copy = e` compiles now and is NOT in this fence corpus).
@@ -19,7 +19,7 @@ try {
   throw 3;
 } catch (e) {
   if (e instanceof Standalone) {
-    // standalone classes carry no vtable for the payload test
+    // Standalone classes are recognized without a vtable.
     console.log("no");
   }
 }

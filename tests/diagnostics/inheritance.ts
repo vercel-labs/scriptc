@@ -9,9 +9,9 @@ class Animal {
   }
 }
 
-// abstract classes compile; abstract PROPERTY declarations are erased at
-// runtime (no shared slot exists), so reads through abstract-typed
-// receivers keep a named fence
+// Abstract properties resolve through the concrete instance. Keep this
+// accepted method beside the rejected inheritance forms to ensure their
+// diagnostics do not reintroduce a refusal for abstract property reads.
 abstract class Base {
   abstract kind(): string;
   abstract limit: number;

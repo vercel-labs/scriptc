@@ -4,6 +4,8 @@ class Payload {
 abstract class Store {
   abstract name: string;
   abstract readonly payload: Payload;
+  describe(): string { return this.name; }
+  rename(value: string): void { this.name = value; }
 }
 class Fields extends Store {
   prefix = 7;
@@ -47,3 +49,6 @@ function read(value: Store): Payload {
 console.log(read(field) === field.payload, read(accessor) === accessor.data);
 console.log(Object.keys(field).join(","), Object.keys(accessor).join(","));
 console.log(Object.getOwnPropertyDescriptor(field, "name")?.enumerable);
+field.rename("updated field");
+accessor.rename("updated accessor");
+console.log(field.describe(), accessor.describe(), inherited.describe());

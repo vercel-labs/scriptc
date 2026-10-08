@@ -7485,8 +7485,8 @@ void *scr_caught_check_obj(const ScrCaught *c, size_t pre, size_t post,
  * string elements retained into it by the iter_key read. */
 static bool scr_set_to_arr_sparse(const ScrMap *s, ScrArr *out) {
   if (out->cap >= s->nlive) return false;
-  /* Large capacities deliberately use sparse array storage. Keep the
-   * ordinary append path when the allocator declined dense storage. */
+  /* scr_arr_new reserves dense storage for the live count; keep the
+   * ordinary append path in case an allocation ever declines it. */
   for (size_t i = 0; i < s->nentries; i++) {
     if (!s->entries[i].hash) continue;
     if (out->elem == SCR_ELEM_F64) scr_arr_push_f64(out, scr_map_iter_key_f64(s, (double)i));

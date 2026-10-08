@@ -247,8 +247,8 @@ static void shared_property_keys(void) {
 static void checked_leaf_cycles(void) {
   /* Object properties omit primitives from trial deletion, while arrays and
    * captured unknown values still trace them. Exercise shared leaves through
-   * both edge kinds, with and without an external owner, in either generation. */
-  for (int old = 0; old < 2; old++) {
+   * both edge kinds, with and without an external owner, in every generation. */
+  for (uint16_t gen = SCR_CYC_NURSERY; gen < SCR_CYC_NGENS; gen++) {
     for (int external = 0; external < 2; external++) {
 #ifdef SCR_RC_AUDIT
       long before_dyns = scr_dyn_live_count();
@@ -257,7 +257,7 @@ static void checked_leaf_cycles(void) {
       ScrStr *text = scr_str_new("survives either edge", 20);
       ScrDyn *leaf = scr_dyn_new_str(text);
       scr_str_release(text);
-      if (old) scr_cyc_hdr(leaf)->gen = SCR_CYC_MATURE;
+      scr_cyc_hdr(leaf)->gen = gen;
       ScrDyn *first = scr_dyn_new_obj(), *second = scr_dyn_new_obj();
       ScrDyn *array = scr_dyn_new_arr();
       ScrClosure *closure = scr_closure_new(NULL, 1);

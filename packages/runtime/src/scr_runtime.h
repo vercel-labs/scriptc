@@ -336,12 +336,13 @@ char **scr_worker_argv(void);
  * scan: restore externally-referenced subgraphs; gather: free the
  * dead cycle members, releasing only edges that LEAVE the white set).
  * It is GENERATIONAL: each header carries a generation, a pass names the
- * oldest one it will walk, and objects that survive a pass are promoted out
- * of the nursery so later nursery passes never re-walk them. That is what
- * keeps a pass proportional to recent allocation rather than to the whole
- * live heap — see the generation note in scr_cycle.c for the soundness
- * argument and the schedule. Collection points: program exit (before the RC
- * audit), event-loop quiescence, and the per-generation triggers.
+ * oldest one it will walk, and objects that survive a pass are promoted one
+ * generation (nursery, mature, old) so later restricted passes never re-walk
+ * them. That is what keeps a pass proportional to recent allocation rather
+ * than to the whole live heap — see the generation note in scr_cycle.c for
+ * the soundness argument and the schedule. Collection points: program
+ * exit (before the RC audit), event-loop quiescence, and the per-generation
+ * triggers.
  * SCR_CYCLE_THRESHOLD pins the nursery trigger to a fixed candidate count.
  * There is no concurrent or incremental collection.
  *
@@ -367,8 +368,9 @@ enum {
 };
 
 /* Generations. A candidate sits in the buffer named by its own `gen`, and a
- * pass walks only objects at or below the generation it collects. */
-enum { SCR_CYC_NURSERY = 0, SCR_CYC_MATURE = 1, SCR_CYC_NGENS = 2 };
+ * pass walks only objects at or below the generation it collects; a pass at
+ * SCR_CYC_OLD is a full pass. */
+enum { SCR_CYC_NURSERY = 0, SCR_CYC_MATURE = 1, SCR_CYC_OLD = 2, SCR_CYC_NGENS = 3 };
 
 typedef struct ScrCycHdr {
   ScrTraceFn trace;
@@ -380,7 +382,7 @@ typedef struct ScrCycHdr {
 #endif
   uint32_t color;    /* SCR_CYC_* */
   uint16_t buffered; /* 1 = sitting in its generation's candidate buffer */
-  uint16_t gen;      /* SCR_CYC_NURSERY..SCR_CYC_MATURE (the walk filter) */
+  uint16_t gen;      /* SCR_CYC_NURSERY..SCR_CYC_OLD (the walk filter) */
   size_t buf_index;  /* position there (O(1) removal when rc hits 0) */
 } ScrCycHdr;
 

@@ -244,6 +244,107 @@ static void check_unproductive_backlog_backs_off(void) {
   }
 }
 
+/* Survive two passes: nursery to mature, then mature to old. */
+static void age_to_old(Node *node) {
+  for (int i = 0; i < 2; i++) {
+    read_live(node);
+    scr_collect_cycles();
+  }
+  check(scr_cyc_hdr(node)->gen == SCR_CYC_OLD, "survivor did not reach the old generation");
+}
+
+/* Fresh live leaves, each released once so the release path keeps running
+ * its passes, until `target` objects have been freed or `limit` leaves have
+ * been made. Returns how many it made. */
+static size_t grow_until(Node **keep, size_t limit, size_t target) {
+  size_t n = 0;
+  while (freed < target && n < limit) {
+    keep[n] = make_leaf();
+    read_live(keep[n]);
+    n++;
+  }
+  return n;
+}
+
+static void drop_leaves(Node **keep, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    keep[i]->rc--;
+    scr_cyc_on_dead(keep[i]);
+    node_free(keep[i]);
+  }
+}
+
+/* A dead cycle that has aged into the old generation is reachable only by a
+ * full pass. While the heap grows with live data, full passes find nothing
+ * and back off, but the dead cycle must still be reclaimed before the heap
+ * has grown by half past its size after the last full pass. Runs first, so
+ * the live heap is below the growth floor and that bound is known. */
+static void check_old_garbage_reclaimed_while_growing(void) {
+  enum { RING = 64, FLOOR = 4096, LIMIT = 4 * FLOOR };
+  static Node *keep[LIMIT];
+  size_t before = freed;
+  Node *ring = make_ring(RING);
+  age_to_old(ring);
+  release_live(ring); /* last outside owner gone: a dead old cycle */
+  size_t grown = grow_until(keep, LIMIT, before + RING);
+  check(freed == before + RING, "dead old cycle was never reclaimed while the heap grew");
+  check(grown <= FLOOR + FLOOR / 2, "dead old cycle outlived the growth bound");
+  drop_leaves(keep, grown);
+  scr_collect_cycles();
+}
+
+/* Dead rings that survived at least one pass, each holding a traced edge
+ * into an old ring: whichever level reclaims them must pay those edges off,
+ * and must do so without an explicit sweep. */
+static void check_older_rings_into_old(void) {
+  enum { OLD_RING = 2048, RING = 8, RINGS = 1024, LIMIT = 4 * (OLD_RING + RING * RINGS) };
+  static Node *keep[LIMIT];
+  Node *old = make_ring(OLD_RING);
+  age_to_old(old);
+  size_t before = freed;
+  Node *rings[RINGS];
+  for (size_t i = 0; i < RINGS; i++) {
+    rings[i] = make_ring(RING);
+    rings[i]->other = old;
+    old->rc++;
+    read_live(rings[i]);
+  }
+  scr_cyc_collect_scheduled(); /* every ring survives at least one pass */
+  for (size_t i = 0; i < RINGS; i++) {
+    check(scr_cyc_hdr(rings[i])->gen != SCR_CYC_NURSERY, "ring was not promoted");
+    release_live(rings[i]);
+  }
+  size_t grown = grow_until(keep, LIMIT, before + RINGS * RING);
+  check(freed == before + RINGS * RING, "dead older rings were never reclaimed");
+  check(old->rc == 2, "edges into the old generation were not paid off");
+  drop_leaves(keep, grown);
+  release_live(old);
+  scr_collect_cycles();
+}
+
+/* A dead cycle spanning the mature and old generations is spared by mature
+ * passes; promotion and re-buffering must still hand it to a full pass. */
+static void check_cycle_spanning_mature_and_old(void) {
+  enum { LIMIT = 4 * 4096 };
+  static Node *keep[LIMIT];
+  Node *old = make_ring(4);
+  age_to_old(old);
+  Node *young = make_ring(4);
+  young->other = old;
+  old->rc++;
+  old->other = young;
+  young->rc++;
+  read_live(young);
+  scr_cyc_collect_scheduled(); /* young survives a pass and is promoted */
+  size_t before = freed;
+  release_live(old);
+  release_live(young); /* only the cycle's own edges remain */
+  size_t grown = grow_until(keep, LIMIT, before + 8);
+  check(freed == before + 8, "cycle spanning generations was never reclaimed");
+  drop_leaves(keep, grown);
+  scr_collect_cycles();
+}
+
 static void check_deep_ring(void) {
   enum { DEPTH = 100000 };
   size_t before = freed;
@@ -415,6 +516,9 @@ static void check_deferred_white_restoration(void) {
 }
 
 int main(void) {
+  check_old_garbage_reclaimed_while_growing();
+  check_older_rings_into_old();
+  check_cycle_spanning_mature_and_old();
   check_unproductive_backlog_backs_off();
   check_sparse_mature_backlog(1);
   check_sparse_mature_backlog(2);

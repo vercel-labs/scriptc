@@ -14901,6 +14901,12 @@
     "<repo>/tests/diagnostics/cycle-var-early/main.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/cycle-generations-long-lived.ts": {
+   "order": [
+    "<repo>/tests/corpus/cycle-generations-long-lived.ts"
+   ],
+   "diags": []
   }
  }
 }

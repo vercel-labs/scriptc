@@ -213,12 +213,14 @@ export function lowerArrayMethodCall(
   if (iteratorMethod) {
     const type = lowerer.mapTypeOf(lowerer.typeOf(call));
     const receiver = lowerer.lowerExpr(access.expression);
-    const value =
-      type && receiver.type.kind === "array"
-        ? lowerArrayIteratorValue(lowerer, receiver, name, type, loc)
-        : null;
-    if (value) return value;
-    lowerer.unsupported("SC1090", call, `'${name}()' iterators over this array element type`);
+    // Only a static array resolves to a generator here; other lowered
+    // receivers (island arrays, narrowed unions, checked dynamic values)
+    // continue to their dedicated handling below.
+    if (receiver.type.kind === "array") {
+      const value = type ? lowerArrayIteratorValue(lowerer, receiver, name, type, loc) : null;
+      if (value) return value;
+      lowerer.unsupported("SC1090", call, `'${name}()' iterators over this array element type`);
+    }
   }
   // An island handle behind an array-typed .d.ts surface
   // (`parts().join("-")` — arrays never exit eagerly, so the value

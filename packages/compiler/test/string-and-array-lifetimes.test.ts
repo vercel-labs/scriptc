@@ -247,15 +247,57 @@ console.log(work(["first"]));
   expect(work).not.toContain("@scr_union_release");
 });
 
-test("whole-union string comparisons keep their established owned representation", async () => {
+test("whole-union string comparisons only project their operands", async () => {
   const module = await lower(`
 function size(text: string): number { return text.length + (text === "" ? 1 : 0); }
 function work(words: string[], index: number): number { return size(words[index]); }
 console.log(work([""], 0));
 `);
   const facts = analyzeCallLifetimes(new Map(module.functions.map((fn) => [fn.name, fn])));
-  expect(facts.parameters.has("size")).toBe(false);
+  expect(facts.parameters.get("size")?.has(0)).toBe(true);
   const work = body(emitLlvmModule(module), "sc_bf_work");
-  expect(work).not.toContain("alloca %ScrUnion");
+  expect(work).toContain("alloca %ScrUnion");
+  expect(work).not.toContain("@scr_union_new");
   expect(work).toContain("@sc_bf_size");
+});
+
+test("class element comparisons, tests and optional chains read through stack tags", async () => {
+  const module = await lower(`
+class Part { weight = 1; }
+function same(parts: Part[], index: number, probe: Part): boolean { return parts[index] === probe; }
+function missing(parts: Part[], index: number): boolean { return parts[index] === undefined; }
+function weight(parts: Part[], index: number): number { return parts[index]?.weight ?? 0; }
+function count(parts: Part[], probe: Part): number {
+  let hits = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part === probe) hits++;
+  }
+  return hits;
+}
+const parts = [new Part()];
+console.log(same(parts, 0, parts[0]), missing(parts, 3), weight(parts, 2), count(parts, parts[0]));
+`);
+  const llvm = emitLlvmModule(module);
+  for (const name of ["same", "missing", "weight", "count"]) {
+    const work = body(llvm, `sc_bf_${name}`);
+    expect(work, name).toContain("alloca %ScrUnion");
+    expect(work, name).not.toContain("@scr_union_new");
+    expect(work, name).not.toMatch(/call ptr @sc_bf__x25_arr_idxOr/);
+  }
+});
+
+test("an element read stored beyond its comparison keeps a heap union", async () => {
+  const module = await lower(`
+class Part { weight = 1; }
+const kept: (Part | undefined)[] = [];
+function keep(parts: Part[], index: number, probe: Part): boolean {
+  const part = parts[index];
+  kept.push(part);
+  return part === probe;
+}
+console.log(keep([new Part()], 4, new Part()), kept.length);
+`);
+  const work = body(emitLlvmModule(module), "sc_bf_keep");
+  expect(work).toMatch(/@scr_union_new|@sc_bf__x25_arr_idxOr/);
 });

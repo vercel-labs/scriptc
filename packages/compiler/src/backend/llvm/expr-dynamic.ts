@@ -1,5 +1,5 @@
 import { classMembershipIntervals } from "./classes.js";
-import { emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
+import { borrowableInputs, emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { preservesDynTest } from "./checked-value-lifetimes.js";
 import { typedRefConstructor } from "./shapes.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
@@ -734,8 +734,9 @@ export function emitDynamicExpr(
       const direct = emitUnionEqWrappedScalar(host, e);
       if (direct) return direct;
       // Strict equality of the ARM values (tag compare + per-arm payload
-      // compare — the C per-union helper, inlined). Both boxes borrowed.
-      const inputs = emitBorrowedInputs(host, [e.left, e.right]);
+      // compare — the C per-union helper, inlined). Both boxes borrowed;
+      // a fresh operand box can live on the stack for the comparison.
+      const inputs = emitUnionEqInputs(host, e.left, e.right);
       const l = inputs[0]!,
         r = inputs[1]!;
       const def = host.unionsById.get(e.unionId);
@@ -1044,6 +1045,19 @@ export function emitDynamicExpr(
   }
 }
 
+/** Equality only reads both tags and payloads. Operands that would be fresh
+ * heap boxes use a private stack box whose payload snapshot is owned by the
+ * frame; other operands keep the ordinary borrowed-input rules. */
+function emitUnionEqInputs(host: LlvmEmitterContext, left: IrExpr, right: IrExpr): LlValue[] {
+  const inputs = [left, right];
+  const borrowed = borrowableInputs(host, inputs);
+  return inputs.map((value, index) =>
+    borrowed[index] || host.canStackReceiver(value)
+      ? host.emitReadReceiver(value)
+      : host.emitExpr(value),
+  );
+}
+
 /** `u === v` where one side wraps a unit, bool, or number arm value
  * (`o.flag === true`, `o.n === undefined`): compare the other union's tag
  * and payload directly instead of boxing the plain side. Operands keep
@@ -1074,12 +1088,14 @@ function emitUnionEqWrappedScalar(
   const arm = def.arms[wrap.tag]!;
   let union: LlValue;
   let plain: LlValue | null = null;
+  const unionInput = (value: IrExpr): LlValue =>
+    host.canStackReceiver(value) ? host.emitReadReceiver(value) : emitBorrowedInput(host, value);
   if (rightWrap) {
-    union = emitBorrowedInput(host, e.left);
+    union = unionInput(e.left);
     if (!isUnitType(arm)) plain = host.emitExpr(wrap.value);
   } else {
     if (!isUnitType(arm)) plain = host.emitExpr(wrap.value);
-    union = emitBorrowedInput(host, e.right);
+    union = unionInput(e.right);
   }
   const tag = host.unionTag(union.name);
   const tagMatch = B.tmp();

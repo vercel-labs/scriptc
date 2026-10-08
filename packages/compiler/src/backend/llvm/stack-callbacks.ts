@@ -1,6 +1,5 @@
 import type { IrExpr, IrFunction } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
-import { mangleLocal } from "../mangle.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 
 /** A synchronous, invocation-only consumer cannot retain the environment.
@@ -39,7 +38,7 @@ export class StackCallbacks {
       B.line(`store i32 4, ptr ${kind}`);
     }
     value.captures.forEach((localId, index) => {
-      const box = host.retainBox(host.loadBox(`%${mangleLocal(localId)}`));
+      const box = host.retainBox(host.captureBox(localId));
       const caps = B.tmp();
       const slot = B.tmp();
       B.line(`${caps} = getelementptr inbounds %ScrClosure, ptr ${closure}, i32 1`);

@@ -255,6 +255,19 @@ export function emitCallArrayRead(host: LlvmEmitterContext, read: LocalArrayRead
   return { name: value, type: read.type };
 }
 
+/** A tag or payload projection consumes the box before its frame ends. The
+ * payload owns one reference, so later operands may mutate the array without
+ * invalidating the snapshot; the box itself never reaches runtime code. */
+export function emitProjectedArrayRead(host: LlvmEmitterContext, read: LocalArrayRead): LlValue {
+  const slot = host.B.slot();
+  host.B.entryAllocas.push(`${slot} = alloca ptr`);
+  const owner = emitLocalArrayRead(host, { ...read, borrow: false }, slot);
+  if (owner) host.ownSlot(owner.slot, owner.type);
+  const value = host.B.tmp();
+  host.B.line(`${value} = load ptr, ptr ${slot}`);
+  return { name: value, type: read.type };
+}
+
 /** Share the checked dense lookup between optional stack boxes and strict
  * borrowed reads. Capacity, length, and presence guards precede every load;
  * sparse and noncanonical indices keep their runtime lookup semantics. */

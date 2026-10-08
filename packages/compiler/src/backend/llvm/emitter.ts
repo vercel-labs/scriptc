@@ -135,6 +135,7 @@ import {
 import { BlockBuilder } from "./blocks.js";
 import {
   emitLocalArrayRead,
+  emitProjectedArrayRead,
   emitBorrowedArrayRead,
   findLocalArrayReads,
   findCallArrayReads,
@@ -159,6 +160,7 @@ import {
   emitStringSliceSnapshot,
   type StringSliceSnapshot,
 } from "./string-slices.js";
+import { LazyCaptures } from "./lazy-captures.js";
 import { StackCaptures } from "./stack-captures.js";
 import {
   ABSENT_FIELD_PAYLOAD,
@@ -487,7 +489,7 @@ export class LlEmitter {
 
   readonly fnByName = new Map<string, IrFunction>();
   readonly referenceEffects: ReferenceEffects;
-  private readonly optionalArrayReads: OptionalArrayReads;
+  readonly optionalArrayReads: OptionalArrayReads;
   callArrayReads = new Map<IrExpr, LocalArrayRead>();
   mapReadLifetimes: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
   readonly callLifetimes: CallLifetimes;
@@ -495,6 +497,11 @@ export class LlEmitter {
   currentConstantCallbacks: ReadonlyMap<string, string> = new Map();
   readonly stackCallbacks: StackCallbacks;
   private readonly stackCaptures: StackCaptures;
+  private readonly lazyCaptures: LazyCaptures;
+  /** Unchanged captured parameters of the current function: each maps to
+   * the slot caching its box, NULL until the first closure needs it. */
+  private readonly lazyCaptureBoxes = new Map<string, string>();
+  private readonly lazyStackBoxes = new Map<string, string>();
   private borrowedParameters = new Set<string>();
   private stableCallBindings: ReadonlySet<string> = new Set();
   /** Manifest-bound native imports, used by ffiCall emission. */
@@ -704,6 +711,7 @@ export class LlEmitter {
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
     this.stackCallbacks = new StackCallbacks(this.fnByName);
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
+    this.lazyCaptures = new LazyCaptures(this.fnByName);
     for (const r of mod.records ?? []) this.recordsById.set(r.id, r);
     const traced = computeTraced(mod);
     this.tracedShapes = traced.shapes;
@@ -3688,6 +3696,33 @@ export class LlEmitter {
     }
   }
 
+  /** The box a new environment captures for `localId` (borrowed). An
+   * unchanged parameter gets one box on first capture, holding its own
+   * reference to the value; the function scope releases the cached box. */
+  captureBox(localId: string): string {
+    const cache = this.lazyCaptureBoxes.get(localId);
+    if (cache === undefined) return this.loadBox(`%${mangleLocal(localId)}`);
+    const B = this.B;
+    const type = this.currentLocals.get(localId)!.type;
+    const current = this.loadBox(cache);
+    const missing = B.tmp();
+    B.line(`${missing} = icmp eq ptr ${current}, null`);
+    const create = B.newLabel("lazy.box"),
+      join = B.newLabel("lazy.box.j");
+    B.condBr(missing, create, join);
+    B.startBlock(create);
+    const stack = this.lazyStackBoxes.get(localId);
+    const box = stack ?? B.tmp();
+    if (!stack) B.line(`${box} = ${boxNewCall(this.shapeHost, type)}`);
+    const value = B.tmp();
+    B.line(`${value} = load ${this.llType(type)}, ptr %${mangleLocal(localId)}`);
+    this.boxSet(box, type, isRefCounted(type) ? this.retainValue(value, type) : value);
+    B.line(`store ptr ${box}, ptr ${cache}`);
+    B.br(join);
+    B.startBlock(join);
+    return this.loadBox(cache);
+  }
+
   retainBox(box: string): string {
     this.needsRetainBox = true;
     const t = this.B.tmp();
@@ -3935,13 +3970,23 @@ export class LlEmitter {
     this.unwindCleanups.clear();
     this.jumpTargets = [];
     this.currentLocals = new Map(fn.locals.map((l) => [l.id, l]));
+    this.lazyCaptureBoxes.clear();
+    this.lazyStackBoxes.clear();
+    // An unchanged captured parameter keeps its value in a plain slot; the
+    // binding is boxed only for closures (captureBox).
+    const lazyParameters = this.lazyCaptures.parameters(fn);
+    for (const id of lazyParameters) {
+      const { boxed: _boxed, ...plain } = this.currentLocals.get(id)!;
+      this.currentLocals.set(id, plain);
+      this.lazyCaptureBoxes.set(id, "");
+    }
     this.currentConstantCallbacks =
       this.debug === null ? (this.constantCallbacks.get(fn.name) ?? new Map()) : new Map();
     // Preserve concrete source bindings for debugger inspection. Suspended
     // functions keep the established array lifetime across continuations.
     this.streamingSplitsEnabled = this.debug === null && !fn.async && !fn.generator;
     this.stackCallbacks.reset(this.streamingSplitsEnabled);
-    this.stackCaptures.reset(fn, this.streamingSplitsEnabled);
+    this.stackCaptures.reset(fn, this.streamingSplitsEnabled, lazyParameters);
     this.privateSplitLocals = this.streamingSplitsEnabled ? findPrivateSplitLocals(fn) : new Map();
     this.storedSplits.clear();
     this.splitSpans.clear();
@@ -4059,7 +4104,7 @@ export class LlEmitter {
       B.line(`${value} = load double, ptr @${mangleGlobal(global.id)}`);
       this.storeIntegerView(global.id, { name: value, type: global.type });
     }
-    for (const local of fn.locals) {
+    for (const local of this.currentLocals.values()) {
       // Boxed locals' slots hold their capture BOX (a ptr); captured
       // (env-borrowed) locals bind the incoming box below. A caught-typed
       // local is a catch binding: its slot holds the ScrCaught snapshot
@@ -4115,6 +4160,20 @@ export class LlEmitter {
     // params (callees own their params — callers passed +1). Boxed params
     // allocate the shared binding and move the raw value in.
     const fnScope: LlScopeEntry[] = [];
+    for (const id of this.lazyCaptureBoxes.keys()) {
+      const cache = B.slot();
+      B.entryAllocas.push(`${cache} = alloca ptr ; lazy box ${this.currentLocals.get(id)!.name}`);
+      B.line(`store ptr null, ptr ${cache}`);
+      fnScope.push({ slot: cache, type: this.currentLocals.get(id)!.type, boxed: true });
+      this.lazyCaptureBoxes.set(id, cache);
+      // Environments that finish during the call can share an immortal
+      // frame box. Its payload owner is released with the function scope.
+      const stack = this.stackCaptures.emit(this, id, this.currentLocals.get(id)!.type);
+      if (stack) {
+        this.lazyStackBoxes.set(id, stack.box);
+        if (stack.owner) fnScope.push(stack.owner);
+      }
+    }
     const borrowed = this.callLifetimes.borrowed.get(fn.name);
     for (const [index, p] of fn.params.entries()) {
       const local = this.currentLocals.get(p.localId)!;
@@ -5792,6 +5851,8 @@ export class LlEmitter {
       if (result.owner) this.ownSlot(result.owner.slot, result.owner.type);
       return result.value;
     }
+    const arrayRead = this.optionalArrayReads.get(e);
+    if (arrayRead) return emitProjectedArrayRead(this, arrayRead);
     if (canStackUnion(e, this.unionsById)) return emitStackUnion(this, e).value;
     if (e.kind === "unionNarrow") {
       const union = this.emitReadReceiver(e.value);
@@ -5834,6 +5895,13 @@ export class LlEmitter {
       return { name: value, type: e.type };
     }
     return this.emitExpr(e);
+  }
+
+  /** A union operand that emitReadReceiver materializes in a private stack
+   * box with an independently owned payload. Later operands cannot
+   * invalidate it, so a projection may use it regardless of their effects. */
+  canStackReceiver(e: IrExpr): boolean {
+    return this.optionalArrayReads.get(e) !== null || canStackUnion(e, this.unionsById);
   }
 
   canBorrowReceiver(e: IrExpr): boolean {

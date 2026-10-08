@@ -109,7 +109,13 @@ test("throwing-call count does not multiply identical scope cleanup", () => {
 test("cleanup snapshots keep locals declared after an earlier throw separate", () => {
   const module = moduleFor([
     call(),
-    { kind: "varDecl", localId: "later", init: literal("created"), loc },
+    // An owned initializer: a stable literal binding needs no cleanup.
+    {
+      kind: "varDecl",
+      localId: "later",
+      init: { kind: "strConcat", left: literal("cre"), right: literal("ated"), type: STRING, loc },
+      loc,
+    },
     call(),
   ]);
   const blocks = cleanupBlocks(module);
@@ -231,7 +237,26 @@ function work(expr: IrExpr, parameter: IrType, boxed = false, tdz = false): stri
             ...(tdz ? { tdz: true } : {}),
           },
         ],
-        body: [{ kind: "return", value: expr, loc: receiverLoc }],
+        body: [
+          { kind: "return", value: expr, loc: receiverLoc },
+          // An unreachable rebinding keeps a boxed parameter in its shared
+          // box; a captured parameter that is never rebound uses a plain slot.
+          ...(boxed
+            ? [
+                {
+                  kind: "assign" as const,
+                  localId: "value",
+                  value: {
+                    kind: "varRef" as const,
+                    localId: "value",
+                    type: parameter,
+                    loc: receiverLoc,
+                  },
+                  loc: receiverLoc,
+                },
+              ]
+            : []),
+        ],
         loc: receiverLoc,
       },
     ],

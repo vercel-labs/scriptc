@@ -315,3 +315,37 @@ console.log(alias(new Item()).value, snapshot(new Item()).value);
   expect(snapshot.match(/@sc_retain_Item/g)).toHaveLength(3);
   expect(snapshot).toContain("@sc_release_Item");
 });
+
+test("unchanged captured parameters are boxed when a closure first needs them", async () => {
+  const mod = await lower(`
+function invoke(fn: (value: number) => number, value: number): number { return fn(value); }
+function framed(seed: number, label: string): number {
+  return invoke((value) => value + seed + label.length, 3);
+}
+function deferred(options: { limit: number }, skip: boolean): () => number {
+  if (skip) return () => -1;
+  return () => options.limit;
+}
+function rebound(count: number): () => number {
+  const read = () => count;
+  count++;
+  return read;
+}
+console.log(framed(1, "ab"), deferred({ limit: 4 }, false)(), deferred({ limit: 4 }, true)(), rebound(5)());
+`);
+  const llvm = emitLlvmModule(mod);
+  // The entry block runs on every call; the lazy box is created later.
+  const entry = (text: string): string => {
+    const labels = [...text.matchAll(/^[\w.]+:$/gm)];
+    return labels.length > 1 ? text.slice(0, labels[1]!.index) : text;
+  };
+  const framed = body(llvm, "sc_f_framed");
+  expect(framed).toContain("alloca %ScrBox");
+  expect(framed).not.toContain("@scr_box_new");
+  expect(framed).not.toContain("@scr_closure_new");
+  const deferred = body(llvm, "sc_f_deferred");
+  expect(deferred).toContain("lazy.box");
+  expect(entry(deferred)).not.toContain("@scr_box_new");
+  expect(deferred).toContain("@scr_box_new");
+  expect(entry(body(llvm, "sc_f_rebound"))).toContain("@scr_box_new");
+});

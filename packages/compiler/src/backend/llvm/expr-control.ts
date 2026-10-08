@@ -279,7 +279,12 @@ export function emitControlExpr(
         throw new InternalCompilerError("llvm emitter bug: optChain union arms");
       const multiple = def.arms.length - unitTags.length > 1;
       const narrowed = multiple ? e.receiver.type : def.arms[narrowIdx]!;
-      const r = host.emitExpr(e.receiver);
+      // A single present arm is only tested and extracted (+1) before the
+      // body runs, so a fresh receiver box can stay on the stack.
+      const r =
+        !multiple && host.canStackReceiver(e.receiver)
+          ? host.emitReadReceiver(e.receiver)
+          : host.emitExpr(e.receiver);
       const bind = B.slot();
       B.entryAllocas.push(`${bind} = alloca ${host.llType(narrowed)}`);
       B.line(
@@ -481,6 +486,8 @@ export function emitControlExpr(
       const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
       if (unitTags.length === 0)
         throw new InternalCompilerError("llvm emitter bug: nullish union lacks unit arms");
+      const fused = emitNullishOptionalChain(host, e);
+      if (fused) return fused;
       const l = host.emitExpr(e.left);
       host.moveTemp(l);
       const ty = host.llType(e.type);
@@ -514,4 +521,63 @@ export function emitControlExpr(
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** `a?.b ?? d` narrowed to the chain body's present arm. The body wraps a
+ * value of the result type in a non-unit arm, so the default runs exactly
+ * when the receiver is nullish and the intermediate result box is never
+ * built. Receiver, body and default keep their evaluation order. */
+function emitNullishOptionalChain(host: LlvmEmitterContext, e: ExprOf<"nullish">): LlValue | null {
+  const chain = e.left;
+  if (
+    chain.kind !== "optChain" ||
+    chain.receiver.type.kind !== "union" ||
+    chain.type.kind !== "union" ||
+    chain.body.kind !== "unionWrap" ||
+    chain.body.unionId !== chain.type.unionId ||
+    !typeEquals(chain.body.value.type, e.type) ||
+    isUnitType(e.type) ||
+    e.type.kind === "void"
+  )
+    return null;
+  const resultArm = host.unionsById.get(chain.type.unionId)?.arms[chain.body.tag];
+  const receiverDef = host.unionsById.get(chain.receiver.type.unionId);
+  if (!resultArm || isUnitType(resultArm) || !typeEquals(resultArm, e.type) || !receiverDef)
+    return null;
+  const unitTags = receiverDef.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
+  const present = receiverDef.arms.flatMap((a, i) => (isUnitType(a) ? [] : [i]));
+  if (unitTags.length === 0 || present.length !== 1) return null;
+  const B = host.B;
+  const narrowed = receiverDef.arms[present[0]!]!;
+  const r = host.canStackReceiver(chain.receiver)
+    ? host.emitReadReceiver(chain.receiver)
+    : host.emitExpr(chain.receiver);
+  const bindTy = host.llType(narrowed);
+  const bind = B.slot();
+  B.entryAllocas.push(`${bind} = alloca ${bindTy}`);
+  B.line(
+    `store ${bindTy} ${bindTy === "ptr" ? "null" : bindTy === "double" ? f64Lit(0) : "false"}, ptr ${bind}`,
+  );
+  host.ownSlot(bind, narrowed);
+  const isUnit = host.tagInSet(r.name, unitTags);
+  const ty = host.llType(e.type);
+  const slot = B.slot();
+  B.entryAllocas.push(`${slot} = alloca ${ty}`);
+  const lu = B.newLabel("nulc.u"),
+    lb = B.newLabel("nulc.b"),
+    lj = B.newLabel("nulc.j");
+  B.condBr(isUnit, lu, lb);
+  B.startBlock(lu);
+  host.emitBranchInto(slot, e.right);
+  B.br(lj);
+  B.startBlock(lb);
+  B.line(`store ${bindTy} ${host.unionExtract(r.name, narrowed)}, ptr ${bind}`);
+  host.chainSlots.set(chain.id, { name: bind, type: narrowed, slot: true });
+  host.emitBranchInto(slot, chain.body.value);
+  host.chainSlots.delete(chain.id);
+  B.br(lj);
+  B.startBlock(lj);
+  const t = B.tmp();
+  B.line(`${t} = load ${ty}, ptr ${slot}`);
+  return host.own({ name: t, type: e.type });
 }

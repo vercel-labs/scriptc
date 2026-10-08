@@ -11670,7 +11670,7 @@
    "diags": [
     {
      "code": "SC1016",
-     "message": "circular imports (<repo>/tests/diagnostics/cjs-require-cycle/a.js \u2192 <repo>/tests/diagnostics/cjs-require-cycle/b.js \u2192 <repo>/tests/diagnostics/cjs-require-cycle/a.js; the cycle closes through a require() edge) are not supported yet",
+     "message": "circular imports (<repo>/tests/diagnostics/cjs-require-cycle/a.js → <repo>/tests/diagnostics/cjs-require-cycle/b.js → <repo>/tests/diagnostics/cjs-require-cycle/a.js; the cycle closes through a require() edge) are not supported yet",
      "loc": {
       "file": "<repo>/tests/diagnostics/cjs-require-cycle/a.js",
       "start": 0,
@@ -11707,7 +11707,7 @@
    "diags": [
     {
      "code": "SC1013",
-     "message": "require() below code that can reach its binding 'greet' (Node initializes the binding AT the require and throws ReferenceError on any earlier access, which is not modeled \u2014 move the require above the code that can run first) is not supported yet",
+     "message": "require() below code that can reach its binding 'greet' (Node initializes the binding AT the require and throws ReferenceError on any earlier access, which is not modeled — move the require above the code that can run first) is not supported yet",
      "loc": {
       "file": "<repo>/tests/diagnostics/cjs-require-tdz/main.js",
       "start": 336,
@@ -12356,7 +12356,7 @@
    "diags": [
     {
      "code": "SC1013",
-     "message": "calls through a source binding named 'require' (this spelling is reserved for CommonJS/createRequire module edges \u2014 rename the binding) is not supported yet",
+     "message": "calls through a source binding named 'require' (this spelling is reserved for CommonJS/createRequire module edges — rename the binding) is not supported yet",
      "loc": {
       "file": "<repo>/tests/diagnostics/local-require-binding-esm.js",
       "start": 80,
@@ -12476,7 +12476,7 @@
     },
     {
      "code": "SC1010",
-     "message": "the 'node:v8' module (it observes V8 engine internals \u2014 heap statistics and snapshots, GC and CPU profiles, serialize/deserialize \u2014 and a compiled binary embeds no V8 engine to observe) is not supported yet",
+     "message": "the 'node:v8' module (it observes V8 engine internals — heap statistics and snapshots, GC and CPU profiles, serialize/deserialize — and a compiled binary embeds no V8 engine to observe) is not supported yet",
      "loc": {
       "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
       "start": 347,
@@ -12520,7 +12520,7 @@
     },
     {
      "code": "SC1010",
-     "message": "the 'node:inspector' module (it drives the V8 inspector protocol \u2014 debugger, profiler, heap access \u2014 and a compiled binary embeds no V8 engine to inspect) is not supported yet",
+     "message": "the 'node:inspector' module (it drives the V8 inspector protocol — debugger, profiler, heap access — and a compiled binary embeds no V8 engine to inspect) is not supported yet",
      "loc": {
       "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
       "start": 512,
@@ -12647,7 +12647,7 @@
    "diags": [
     {
      "code": "SC1010",
-     "message": "the '#types' import (it resolves only to type declarations \u2014 there is no runtime implementation to compile) is not supported yet",
+     "message": "the '#types' import (it resolves only to type declarations — there is no runtime implementation to compile) is not supported yet",
      "loc": {
       "file": "<repo>/tests/diagnostics/pkg-import-fences/main.ts",
       "start": 449,
@@ -12658,7 +12658,7 @@
     },
     {
      "code": "SC1010",
-     "message": "the 'ambientonly' module (it exists only as an ambient 'declare module' type surface \u2014 there is no runtime module to import) is not supported yet",
+     "message": "the 'ambientonly' module (it exists only as an ambient 'declare module' type surface — there is no runtime module to import) is not supported yet",
      "loc": {
       "file": "<repo>/tests/diagnostics/pkg-import-fences/main.ts",
       "start": 383,
@@ -12669,7 +12669,7 @@
     },
     {
      "code": "SC1010",
-     "message": "the 'patternXmod' module (it exists only as an ambient 'declare module' type surface \u2014 there is no runtime module to import) is not supported yet",
+     "message": "the 'patternXmod' module (it exists only as an ambient 'declare module' type surface — there is no runtime module to import) is not supported yet",
      "loc": {
       "file": "<repo>/tests/diagnostics/pkg-import-fences/main.ts",
       "start": 416,
@@ -12813,7 +12813,7 @@
    "diags": [
     {
      "code": "SC1013",
-     "message": "require() in an ES module (Node throws ReferenceError \u2014 use import) is not supported yet",
+     "message": "require() in an ES module (Node throws ReferenceError — use import) is not supported yet",
      "loc": {
       "file": "<repo>/tests/diagnostics/top-level-await-implicit-module-nested-require.js",
       "start": 114,
@@ -13434,7 +13434,7 @@
    "diags": [
     {
      "code": "SC1010",
-     "message": "the 'v8' module (it observes V8 engine internals \u2014 heap statistics and snapshots, GC and CPU profiles, serialize/deserialize \u2014 and a compiled binary embeds no V8 engine to observe) is not supported yet",
+     "message": "the 'v8' module (it observes V8 engine internals — heap statistics and snapshots, GC and CPU profiles, serialize/deserialize — and a compiled binary embeds no V8 engine to observe) is not supported yet",
      "loc": {
       "file": "<repo>/tests/fixtures/node-types/import-fences.ts",
       "start": 422,
@@ -13867,7 +13867,7 @@
   },
   "<repo>/tests/corpus/node24-esm-metadata/main.mjs": {
    "order": [
-    "<repo>/tests/corpus/node24-esm-metadata/child with \u00fc.mjs",
+    "<repo>/tests/corpus/node24-esm-metadata/child with ü.mjs",
     "<repo>/tests/corpus/node24-esm-metadata/main.mjs"
    ],
    "diags": []
@@ -14863,7 +14863,7 @@
    "diags": [
     {
      "code": "SC1016",
-     "message": "circular imports (<repo>/tests/diagnostics/cycle-default-export/a.ts \u2192 <repo>/tests/diagnostics/cycle-default-export/b.ts \u2192 <repo>/tests/diagnostics/cycle-default-export/a.ts; the default export expression at <repo>/tests/diagnostics/cycle-default-export/a.ts:2 has no initialization state inside the cycle) are not supported yet",
+     "message": "circular imports (<repo>/tests/diagnostics/cycle-default-export/a.ts → <repo>/tests/diagnostics/cycle-default-export/b.ts → <repo>/tests/diagnostics/cycle-default-export/a.ts; the default export expression at <repo>/tests/diagnostics/cycle-default-export/a.ts:2 has no initialization state inside the cycle) are not supported yet",
      "loc": {
       "file": "<repo>/tests/diagnostics/cycle-default-export/a.ts",
       "start": 0,
@@ -14883,7 +14883,7 @@
    "diags": [
     {
      "code": "SC1016",
-     "message": "circular imports (<repo>/tests/diagnostics/cycle-namespace-import/a.ts \u2192 <repo>/tests/diagnostics/cycle-namespace-import/b.ts \u2192 <repo>/tests/diagnostics/cycle-namespace-import/a.ts; the namespace import 'helpers' at <repo>/tests/diagnostics/cycle-namespace-import/a.ts:1 names a module of the cycle) are not supported yet",
+     "message": "circular imports (<repo>/tests/diagnostics/cycle-namespace-import/a.ts → <repo>/tests/diagnostics/cycle-namespace-import/b.ts → <repo>/tests/diagnostics/cycle-namespace-import/a.ts; the namespace import 'helpers' at <repo>/tests/diagnostics/cycle-namespace-import/a.ts:1 names a module of the cycle) are not supported yet",
      "loc": {
       "file": "<repo>/tests/diagnostics/cycle-namespace-import/a.ts",
       "start": 0,
@@ -14905,6 +14905,24 @@
   "<repo>/tests/corpus/cycle-generations-long-lived.ts": {
    "order": [
     "<repo>/tests/corpus/cycle-generations-long-lived.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4045-optional-element-projections.ts": {
+   "order": [
+    "<repo>/tests/corpus/4045-optional-element-projections.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4046-captured-parameter-values.ts": {
+   "order": [
+    "<repo>/tests/corpus/4046-captured-parameter-values.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4047-captured-parameter-rebinding.ts": {
+   "order": [
+    "<repo>/tests/corpus/4047-captured-parameter-rebinding.ts"
    ],
    "diags": []
   }

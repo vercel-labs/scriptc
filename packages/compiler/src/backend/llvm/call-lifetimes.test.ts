@@ -430,3 +430,47 @@ test("unchanged let bindings can own call inputs but subsequent writes and captu
   });
   expect(analyze(fn).bindings.get(fn.name)?.size).toBe(0);
 });
+
+test("strict union equality projects both operands without escaping either box", () => {
+  const equal = (left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "unionEq",
+    unionId: "optional",
+    negated: false,
+    sameValue: false,
+    left,
+    right,
+    type: BOOL,
+    loc,
+  });
+  const fn = helper("same", ["value", "other"]);
+  fn.body = [ret(equal(ref("value"), ref("other")))];
+  expect(analyze(fn).parameters.get("same")).toEqual(new Set([0, 1]));
+  // A nested consumer inside an operand is still visited.
+  fn.body = [ret(equal(ref("value"), call("escape", [ref("other")])))];
+  expect(analyze(fn).parameters.get("same")).toEqual(new Set([0]));
+});
+
+test("environment bodies prove their own locals but never their parameters", () => {
+  const leaf = helper("leaf");
+  const fn = helper("lifted");
+  fn.captures = [{ localId: "box", name: "box", type: optional }];
+  fn.locals.push({ ...local("box"), boxed: true }, local("item"));
+  fn.body = [
+    {
+      kind: "varDecl",
+      localId: "item",
+      init: { kind: "unionWrap", value: num(), unionId: "optional", tag: 0, type: optional, loc },
+      loc,
+    },
+    ret(call("leaf", [ref("item")])),
+    ret(call("leaf", [ref("box")])),
+    ret(call("leaf", [ref("value")])),
+  ];
+  const facts = analyze(fn, leaf);
+  expect(facts.locals.get("lifted")).toEqual(new Set(["item"]));
+  expect(facts.bindings.get("lifted")).toEqual(new Set(["item"]));
+  expect(facts.parameters.has("lifted")).toBe(false);
+  expect(facts.borrowed.has("lifted")).toBe(false);
+  fn.async = true;
+  expect(analyze(fn, leaf).locals.has("lifted")).toBe(false);
+});

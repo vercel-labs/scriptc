@@ -25,7 +25,9 @@ export class StackCaptures {
     private readonly callbacks: StackCallbacks,
   ) {}
 
-  reset(fn: IrFunction, enabled: boolean): void {
+  /** `parameters` are unchanged captured parameters (LazyCaptures). Their
+   * scope is the whole call, so they need no single declaration. */
+  reset(fn: IrFunction, enabled: boolean, parameters: ReadonlySet<string> = new Set()): void {
     this.locals = new Set();
     this.remaining = enabled ? 2048 : 0;
     if (!enabled) return;
@@ -34,7 +36,7 @@ export class StackCaptures {
     );
     if (possible.size === 0) return;
     const invalid = new Set([
-      ...fn.params.map((param) => param.localId),
+      ...fn.params.map((param) => param.localId).filter((id) => !parameters.has(id)),
       ...(fn.captures ?? []).map((capture) => capture.localId),
       ...(fn.classCaptures ?? []).map((capture) => capture.localId),
     ]);
@@ -89,7 +91,8 @@ export class StackCaptures {
     };
     if (!fn.body.every(stmt)) return;
     for (const id of possible) {
-      if (!invalid.has(id) && declarations.get(id) === 1) this.locals.add(id);
+      if (!invalid.has(id) && (declarations.get(id) === 1 || parameters.has(id)))
+        this.locals.add(id);
     }
   }
 

@@ -16,7 +16,6 @@ import {
   mangleClassStruct,
   mangleFnClosure,
   mangleFunction,
-  mangleLocal,
   mangleWrapper,
   mangleVtStruct,
 } from "../mangle.js";
@@ -586,7 +585,7 @@ export function emitCallExpr(
         B.line(`store i32 ${functionKind}, ptr ${kindPtr}`);
       }
       e.captures.forEach((localId, i) => {
-        const box = host.loadBox(`%${mangleLocal(localId)}`);
+        const box = host.captureBox(localId);
         const retained = host.retainBox(box);
         const caps = B.tmp();
         const capp = B.tmp();
@@ -742,7 +741,7 @@ export function emitCallExpr(
           `${value} = call ptr @scr_classobj_new(ptr @${sym}, ${host.sizeType} ${e.captures.length})`,
         );
         e.captures.forEach((id, index) => {
-          const box = host.loadBox(`%${mangleLocal(id)}`);
+          const box = host.captureBox(id);
           const owned = host.retainBox(box);
           const caps = B.tmp();
           const slot = B.tmp();

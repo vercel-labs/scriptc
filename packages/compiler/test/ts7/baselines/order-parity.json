@@ -11677,7 +11677,7 @@
       "end": 0
      },
      "milestone": "later",
-     "hint": "cycles of ES modules with declaration-only top levels whose cycle-crossing bindings are only used inside function bodies compile as-is; move the named top-level read or call into a function body (or break the named edge) so nothing runs during the cycle's init window"
+     "hint": "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge"
     }
    ]
   },
@@ -11771,66 +11771,6 @@
    ],
    "diags": []
   },
-  "<repo>/tests/diagnostics/cycle-tdz-read/main.ts": {
-   "order": [
-    "<repo>/tests/diagnostics/cycle-tdz-read/b.ts",
-    "<repo>/tests/diagnostics/cycle-tdz-read/a.ts",
-    "<repo>/tests/diagnostics/cycle-tdz-read/main.ts"
-   ],
-   "diags": [
-    {
-     "code": "SC1016",
-     "message": "circular imports (<repo>/tests/diagnostics/cycle-tdz-read/a.ts \u2192 <repo>/tests/diagnostics/cycle-tdz-read/b.ts \u2192 <repo>/tests/diagnostics/cycle-tdz-read/a.ts; the cycle-crossing binding 'a' is read at <repo>/tests/diagnostics/cycle-tdz-read/b.ts:2, outside any function body \u2014 a read during the init window observes the partially-initialized module (Node's TDZ ReferenceError / stale var), which is not modeled) are not supported yet",
-     "loc": {
-      "file": "<repo>/tests/diagnostics/cycle-tdz-read/a.ts",
-      "start": 0,
-      "end": 0
-     },
-     "milestone": "later",
-     "hint": "cycles of ES modules with declaration-only top levels whose cycle-crossing bindings are only used inside function bodies compile as-is; move the named top-level read or call into a function body (or break the named edge) so nothing runs during the cycle's init window"
-    }
-   ]
-  },
-  "<repo>/tests/diagnostics/cycle-window-call/main.ts": {
-   "order": [
-    "<repo>/tests/diagnostics/cycle-window-call/b.ts",
-    "<repo>/tests/diagnostics/cycle-window-call/a.ts",
-    "<repo>/tests/diagnostics/cycle-window-call/main.ts"
-   ],
-   "diags": [
-    {
-     "code": "SC1016",
-     "message": "circular imports (<repo>/tests/diagnostics/cycle-window-call/a.ts \u2192 <repo>/tests/diagnostics/cycle-window-call/b.ts \u2192 <repo>/tests/diagnostics/cycle-window-call/a.ts; top-level code at <repo>/tests/diagnostics/cycle-window-call/a.ts:5 can run user code during the cycle's init window \u2014 only declaration-only module bodies are admitted) are not supported yet",
-     "loc": {
-      "file": "<repo>/tests/diagnostics/cycle-window-call/a.ts",
-      "start": 0,
-      "end": 0
-     },
-     "milestone": "later",
-     "hint": "cycles of ES modules with declaration-only top levels whose cycle-crossing bindings are only used inside function bodies compile as-is; move the named top-level read or call into a function body (or break the named edge) so nothing runs during the cycle's init window"
-    }
-   ]
-  },
-  "<repo>/tests/diagnostics/cycle/main.ts": {
-   "order": [
-    "<repo>/tests/diagnostics/cycle/b.ts",
-    "<repo>/tests/diagnostics/cycle/a.ts",
-    "<repo>/tests/diagnostics/cycle/main.ts"
-   ],
-   "diags": [
-    {
-     "code": "SC1016",
-     "message": "circular imports (<repo>/tests/diagnostics/cycle/a.ts \u2192 <repo>/tests/diagnostics/cycle/b.ts \u2192 <repo>/tests/diagnostics/cycle/a.ts; the cycle-crossing binding 'a' is read at <repo>/tests/diagnostics/cycle/b.ts:2, outside any function body \u2014 a read during the init window observes the partially-initialized module (Node's TDZ ReferenceError / stale var), which is not modeled) are not supported yet",
-     "loc": {
-      "file": "<repo>/tests/diagnostics/cycle/a.ts",
-      "start": 0,
-      "end": 0
-     },
-     "milestone": "later",
-     "hint": "cycles of ES modules with declaration-only top levels whose cycle-crossing bindings are only used inside function bodies compile as-is; move the named top-level read or call into a function body (or break the named edge) so nothing runs during the cycle's init window"
-    }
-   ]
-  },
   "<repo>/tests/diagnostics/dataview.ts": {
    "order": [
     "<repo>/tests/diagnostics/dataview.ts"
@@ -11897,12 +11837,6 @@
   "<repo>/tests/diagnostics/destructuring-fences.ts": {
    "order": [
     "<repo>/tests/diagnostics/destructuring-fences.ts"
-   ],
-   "diags": []
-  },
-  "<repo>/tests/diagnostics/dyn-import-cycle-tdz/main.ts": {
-   "order": [
-    "<repo>/tests/diagnostics/dyn-import-cycle-tdz/main.ts"
    ],
    "diags": []
   },
@@ -14846,6 +14780,125 @@
   "<repo>/tests/diagnostics/iterator-slot-fences.ts": {
    "order": [
     "<repo>/tests/diagnostics/iterator-slot-fences.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4060-cycle-shared-instance/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4060-cycle-shared-instance/report.ts",
+    "<repo>/tests/corpus/4060-cycle-shared-instance/inventory.ts",
+    "<repo>/tests/corpus/4060-cycle-shared-instance/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4061-cycle-evaluation-order/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4061-cycle-evaluation-order/south.ts",
+    "<repo>/tests/corpus/4061-cycle-evaluation-order/east.ts",
+    "<repo>/tests/corpus/4061-cycle-evaluation-order/north.ts",
+    "<repo>/tests/corpus/4061-cycle-evaluation-order/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4062-cycle-tdz-read/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4062-cycle-tdz-read/probe.ts",
+    "<repo>/tests/corpus/4062-cycle-tdz-read/limits.ts",
+    "<repo>/tests/corpus/4062-cycle-tdz-read/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4063-cycle-hoisted-calls/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4063-cycle-hoisted-calls/odd.ts",
+    "<repo>/tests/corpus/4063-cycle-hoisted-calls/even.ts",
+    "<repo>/tests/corpus/4063-cycle-hoisted-calls/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4064-cycle-classes-after-init/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4064-cycle-classes-after-init/item.ts",
+    "<repo>/tests/corpus/4064-cycle-classes-after-init/shelf.ts",
+    "<repo>/tests/corpus/4064-cycle-classes-after-init/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4065-cycle-init-throws/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4065-cycle-init-throws/rules.ts",
+    "<repo>/tests/corpus/4065-cycle-init-throws/ledger.ts",
+    "<repo>/tests/corpus/4065-cycle-init-throws/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4066-cycle-top-level-tdz/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4066-cycle-top-level-tdz/margin.ts",
+    "<repo>/tests/corpus/4066-cycle-top-level-tdz/frame.ts",
+    "<repo>/tests/corpus/4066-cycle-top-level-tdz/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4067-dynamic-import-cycle-tdz/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4067-dynamic-import-cycle-tdz/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/cycle-class-early/main.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/cycle-class-early/dogs.ts",
+    "<repo>/tests/diagnostics/cycle-class-early/pets.ts",
+    "<repo>/tests/diagnostics/cycle-class-early/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/cycle-default-export/main.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/cycle-default-export/b.ts",
+    "<repo>/tests/diagnostics/cycle-default-export/a.ts",
+    "<repo>/tests/diagnostics/cycle-default-export/main.ts"
+   ],
+   "diags": [
+    {
+     "code": "SC1016",
+     "message": "circular imports (<repo>/tests/diagnostics/cycle-default-export/a.ts \u2192 <repo>/tests/diagnostics/cycle-default-export/b.ts \u2192 <repo>/tests/diagnostics/cycle-default-export/a.ts; the default export expression at <repo>/tests/diagnostics/cycle-default-export/a.ts:2 has no initialization state inside the cycle) are not supported yet",
+     "loc": {
+      "file": "<repo>/tests/diagnostics/cycle-default-export/a.ts",
+      "start": 0,
+      "end": 0
+     },
+     "milestone": "later",
+     "hint": "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge"
+    }
+   ]
+  },
+  "<repo>/tests/diagnostics/cycle-namespace-import/main.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/cycle-namespace-import/b.ts",
+    "<repo>/tests/diagnostics/cycle-namespace-import/a.ts",
+    "<repo>/tests/diagnostics/cycle-namespace-import/main.ts"
+   ],
+   "diags": [
+    {
+     "code": "SC1016",
+     "message": "circular imports (<repo>/tests/diagnostics/cycle-namespace-import/a.ts \u2192 <repo>/tests/diagnostics/cycle-namespace-import/b.ts \u2192 <repo>/tests/diagnostics/cycle-namespace-import/a.ts; the namespace import 'helpers' at <repo>/tests/diagnostics/cycle-namespace-import/a.ts:1 names a module of the cycle) are not supported yet",
+     "loc": {
+      "file": "<repo>/tests/diagnostics/cycle-namespace-import/a.ts",
+      "start": 0,
+      "end": 0
+     },
+     "milestone": "later",
+     "hint": "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge"
+    }
+   ]
+  },
+  "<repo>/tests/diagnostics/cycle-var-early/main.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/cycle-var-early/b.ts",
+    "<repo>/tests/diagnostics/cycle-var-early/a.ts",
+    "<repo>/tests/diagnostics/cycle-var-early/main.ts"
    ],
    "diags": []
   }

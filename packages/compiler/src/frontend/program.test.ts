@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import {
   checkPreflight,
+  cycleEarlyBindings,
   isNodeEsmFile,
   loadProgram,
   makeCycleAdmission,
@@ -198,9 +199,17 @@ test.for([
   ["export { first, alias }; export function read() { return 1; }", null],
   ["type Value = typeof alias; export function read(first: number = 1) { return first; }", null],
   ["class Box { value = alias; } export function read(value = first) { return value; }", null],
-  ["const value = alias; export function read() { return value; }", "alias"],
-  ["class Box { static value = first; } export function read() { return 1; }", "first"],
-  ["class Box { [alias] = 1; } export function read() { return 1; }", "alias"],
+  // Top-level reads during the cycle are admitted by the exact
+  // initialization rule (the lowering checks them); shapes without an
+  // initialization state keep the fence.
+  ["const value = alias; export function read() { return value; }", null],
+  ["class Box { static value = first; } export function read() { return 1; }", null],
+  ["class Box { [alias] = 1; } export function read() { return 1; }", null],
+  [
+    'import * as whole from "./main.ts"; const value = whole.first; export function read() { return value; }',
+    "the namespace import 'whole'",
+  ],
+  ["export default first + 1; export function read() { return 1; }", "default export expression"],
 ])("cycle binding indexes preserve initialization safety: %s", ([body, refused]) => {
   const directory = mkdtempSync(
     join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-cycle-bindings-"),
@@ -219,8 +228,8 @@ test.for([
     const cycles = checkPreflight(load).filter((diagnostic) => diagnostic.code === "SC1016");
     if (refused === null) expect(cycles).toEqual([]);
     else {
-      expect(cycles).toHaveLength(1);
-      expect(cycles[0]!.message).toContain(`binding '${refused}' is read`);
+      expect(cycles.length).toBeGreaterThan(0);
+      for (const cycle of cycles) expect(cycle.message).toContain(refused);
     }
   } finally {
     load.dispose();
@@ -264,6 +273,54 @@ test("repeated cycle edges reuse a file's binding index", () => {
     } finally {
       walk.mockRestore();
     }
+  } finally {
+    load.dispose();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test.for([
+  [
+    // A shared instance built by a user constructor: the reads of it in
+    // the partner's function can run early; the class cannot.
+    {
+      "main.ts": 'import { shared } from "./a.ts"; console.log(shared.n);',
+      "a.ts":
+        'import { f } from "./b.ts"; export class C { n = 1; } export const shared = new C(); console.log(f());',
+      "b.ts": 'import { shared } from "./a.ts"; export function f(): number { return shared.n; }',
+    },
+    ["shared"],
+  ],
+  [
+    // The partner's top level reads the importer's const before it ran.
+    {
+      "main.ts": 'import { a } from "./a.ts"; console.log(a);',
+      "a.ts": 'import { b } from "./b.ts"; export const a: number = b + 1;',
+      "b.ts": 'import { a } from "./a.ts"; export const b: number = a + 1;',
+    },
+    ["a"],
+  ],
+  [
+    // Declarations complete before any user code runs: nothing to check.
+    {
+      "main.ts": 'import { start } from "./a.ts"; console.log(start());',
+      "a.ts":
+        'import { hop } from "./b.ts"; export const limit = 3; export function start(): number { return hop(limit); } console.log(start());',
+      "b.ts":
+        'import { limit } from "./a.ts"; export function hop(n: number): number { return n + limit; }',
+    },
+    [],
+  ],
+] as const)("cycle bindings read before initialization: %j", ([files, early]) => {
+  const directory = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-cycle-early-"),
+  );
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(directory, name), text);
+  const load = loadProgram(join(directory, "main.ts"));
+  try {
+    expect(checkPreflight(load)).toEqual([]);
+    const found = cycleEarlyBindings(load.program, load.entry, load.moduleOrder, true);
+    expect(found.map((binding) => binding.name.text).sort()).toEqual([...early]);
   } finally {
     load.dispose();
     rmSync(directory, { recursive: true, force: true });

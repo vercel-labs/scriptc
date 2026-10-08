@@ -1,3 +1,8 @@
+import {
+  checkCycleBindingAccesses,
+  refuseUncheckedCycleReads,
+  type CycleInitFlag,
+} from "./cycle-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
@@ -2468,6 +2473,10 @@ export class Lowerer {
    * function called above the declaration statement reads that, never a
    * NULL slot. Filled by collectGlobals. */
   readonly varGlobalEntryInits = new Map<ts.SourceFile, IrGlobal[]>();
+  /** Import-cycle bindings with an initialization flag, by global id, and
+   * the top-level statements declaring them (cycle-initialization.ts). */
+  readonly cycleInitFlags = new Map<string, CycleInitFlag>();
+  readonly cycleInitDeclarations = new Map<ts.Statement, CycleInitFlag[]>();
 
   get ctx(): FnCtx {
     const top = this.fnStack[this.fnStack.length - 1];
@@ -4957,6 +4966,7 @@ export class Lowerer {
     // the emitted program references, flushing deferred class diagnostics
     // that a reached type makes relevant.
     const artifacts = this.moduleArtifacts(functions);
+    refuseUncheckedCycleReads(this, artifacts.classes ?? []);
     // Types still naming a class that never REGISTERED after retention's
     // flush (JS graphs whose class fences deferred to runtime — the
     // sentence-walker's path params, printer tables whose func-typed
@@ -4985,6 +4995,7 @@ export class Lowerer {
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
+    if (module) checkCycleBindingAccesses(this, module);
     return {
       module,
       diagnostics: this.diags,

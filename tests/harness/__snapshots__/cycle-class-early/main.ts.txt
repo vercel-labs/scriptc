@@ -1,0 +1,8 @@
+cycle-class-early/dogs.ts:2:26 - error SC1016: circular imports (the class 'Pet' declared in cycle-class-early/pets.ts can be accessed before its declaration runs) are not supported yet
+
+  1 | import { Pet } from "./pets.ts";
+  2 | export class Dog extends Pet {}
+    |                          ^~~
+  3 | export function makeDog(name: string): Pet {
+
+  hint: ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge

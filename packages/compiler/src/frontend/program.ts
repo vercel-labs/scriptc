@@ -1812,10 +1812,11 @@ function nsBindingUsesAreBareStatements7(
  * Node runs legal ESM cycles all over the ecosystem: the revisited module
  * is a cache hit, and the only hazard is a READ of a binding before its
  * declaration executed (TDZ ReferenceError for let/const/class, a stale
- * `undefined` for var) — runtime evaluation-order semantics the static
- * story does not model, so cycles where such a read is REACHABLE keep the
- * SC1016 fence. A cycle is admitted when partial initialization is
- * provably unobservable — the DECLARATION-ONLY INIT WINDOW rule:
+ * `undefined` for var). Cycles where such a read is REACHABLE are admitted
+ * by the exact initialization rule (exactCycleRefusal7 below), which
+ * models the TDZ with initialization checks. A cycle needs no checks when
+ * partial initialization is provably unobservable — the DECLARATION-ONLY
+ * INIT WINDOW rule:
  *
  *  1. Every module of the cycle cluster (the strongly-connected component
  *     — any member may be mid-initialization while another's top level
@@ -1906,6 +1907,18 @@ function inTypePosition7(node: ts.Node): boolean {
  * callback-invoking builtin, a getter, an iterator, or an implicit
  * coercion of a user object) disqualifies the module's cycles. */
 function nonInertTopLevel7(program: ts.Program, sf: ts.SourceFile): ts.Node | null {
+  const nonInert = topLevelInertness7(program);
+  for (const stmt of sf.statements) {
+    const offence = nonInert(stmt);
+    if (offence !== null) return offence;
+  }
+  return null;
+}
+
+/** The per-statement form of nonInertTopLevel7: answers, for one
+ * top-level statement, the first construct that could execute user code
+ * while the statement runs, or null when the statement is inert. */
+function topLevelInertness7(program: ts.Program): (stmt: ts.Statement) => ts.Node | null {
   const checker = program.getTypeChecker();
   const PRIM =
     ts.TypeFlags.StringLike |
@@ -2070,7 +2083,7 @@ function nonInertTopLevel7(program: ts.Program, sf: ts.SourceFile): ts.Node | nu
     }
     return false;
   };
-  for (const stmt of sf.statements) {
+  return (stmt: ts.Statement): ts.Node | null => {
     if (
       ts.isImportDeclaration(stmt) ||
       ts.isExportDeclaration(stmt) ||
@@ -2083,36 +2096,25 @@ function nonInertTopLevel7(program: ts.Program, sf: ts.SourceFile): ts.Node | nu
         ts.ModifierFlags.Ambient) !==
         0
     ) {
-      continue;
+      return null;
     }
     if (ts.isEnumDeclaration(stmt)) {
-      const bad = stmt.members.find((m) => m.initializer !== undefined && !inert(m.initializer));
-      if (bad !== undefined) return bad;
-      continue;
+      return stmt.members.find((m) => m.initializer !== undefined && !inert(m.initializer)) ?? null;
     }
-    if (ts.isClassDeclaration(stmt)) {
-      const bad = inertClass(stmt);
-      if (bad !== null) return bad;
-      continue;
-    }
+    if (ts.isClassDeclaration(stmt)) return inertClass(stmt);
     if (ts.isVariableStatement(stmt)) {
       for (const d of stmt.declarationList.declarations) {
         if (!ts.isIdentifier(d.name)) return d.name; // patterns can invoke getters/iterators
         if (d.initializer !== undefined && !inert(d.initializer)) return d.initializer;
       }
-      continue;
+      return null;
     }
-    if (ts.isExpressionStatement(stmt)) {
-      if (!inert(stmt.expression)) return stmt;
-      continue;
-    }
+    if (ts.isExpressionStatement(stmt)) return inert(stmt.expression) ? null : stmt;
     if (ts.isExportAssignment(stmt) && !stmt.isExportEquals) {
-      if (!inert(stmt.expression)) return stmt;
-      continue;
+      return inert(stmt.expression) ? null : stmt;
     }
     return stmt;
-  }
-  return null;
+  };
 }
 
 /** The head of a property/element-access chain. */
@@ -2182,13 +2184,16 @@ function backEdgeUseOffence7(
  * e.dep already mid-initialization in a depth-first walk), answers null
  * to ADMIT the cycle — the guarded %init calls reproduce Node's cache-hit
  * order and nothing can observe the partial initialization — or the
- * human-readable reason it keeps the SC1016 fence. Two admission chances:
+ * human-readable reason it keeps the SC1016 fence. Three admission chances:
  *  - the CHEAP PER-EDGE rule: the closing statement binds nothing (a
  *    side-effect import) or binds only namespace objects whose every use
  *    is a bare expression statement — no read crosses the edge at all;
  *  - the DECLARATION-ONLY INIT WINDOW rule (the admission block above):
  *    every cluster member is an ES module with an inert top level, and
- *    the closing edge's bindings are used only in deferred positions.
+ *    the closing edge's bindings are used only in deferred positions;
+ *  - the EXACT INITIALIZATION rule (exactCycleRefusal7): partial
+ *    initialization is observable, but every observation is modeled —
+ *    the lowering checks each binding cycleEarlyBindings reports.
  * Tarjan SCCs (lazy, rooted at each queried importer) and cluster
  * verdicts are memoized across calls, so `edgesOf` must answer the same
  * edges for the same file every time. */
@@ -2238,10 +2243,11 @@ export function makeCycleAdmission(
     const nsf = node.getSourceFile();
     return `${nsf.fileName}:${ts.getLineAndCharacterOfPosition(nsf, node.getStart(nsf)).line + 1}`;
   };
-  // Cluster verdict memo (keyed by the component array identity): the
-  // reason the cluster's cycles stay fenced, or null when its every
-  // member passes the inert-top-level bar.
-  const sccVerdict = new Map<ts.SourceFile[], string | null>();
+  // Cluster verdict memo (keyed by the component array identity): true
+  // when every member is an ES module passing the inert-top-level bar.
+  const sccVerdict = new Map<ts.SourceFile[], boolean>();
+  // The exact-initialization verdict, same keying (exactCycleRefusal7).
+  const exactVerdict = new Map<ts.SourceFile[], string | null>();
   // A module can close many cycle edges, each importing many bindings.
   // Index its identifiers once for this admission pass. ASTs are immutable;
   // the pass owns the index so it cannot retain a disposed program.
@@ -2283,29 +2289,455 @@ export function makeCycleAdmission(
       return "the cycle's module cluster could not be analyzed";
     }
     if (!sccVerdict.has(comp)) {
-      let reason: string | null = null;
-      for (const m of comp) {
-        if (isCjsJsFile7(m, program)) {
-          reason = `${m.fileName} is a CommonJS module — admission covers ES-module cycles only`;
-          break;
+      sccVerdict.set(
+        comp,
+        comp.every((m) => !isCjsJsFile7(m, program) && nonInertTopLevel7(program, m) === null),
+      );
+    }
+    if (
+      sccVerdict.get(comp) === true &&
+      backEdgeUseOffence7(program, e.stmt, usesOf(importer)) === null
+    ) {
+      return null;
+    }
+    // The EXACT INITIALIZATION rule: the cycle runs in Node's evaluation
+    // order and every binding that can be observed before its declaration
+    // runs carries an initialization check (cycleEarlyBindings).
+    if (!exactVerdict.has(comp)) {
+      const reason = exactCycleRefusal7(program, comp, lineOf);
+      exactVerdict.set(comp, reason);
+      if (reason === null) {
+        let members = exactCycleMembers7.get(program);
+        if (members === undefined) {
+          members = new Set();
+          exactCycleMembers7.set(program, members);
         }
-        const off = nonInertTopLevel7(program, m);
-        if (off !== null) {
-          reason = `top-level code at ${lineOf(off)} can run user code during the cycle's init window — only declaration-only module bodies are admitted`;
-          break;
+        for (const m of comp) members.add(m);
+      }
+    }
+    return exactVerdict.get(comp) ?? null;
+  };
+}
+
+/* ── exact cyclic initialization ─────────────────────────────────────────
+ * Cycles that fail the declaration-only rule still evaluate exactly like
+ * Node when their shape is representable: the guarded %init calls already
+ * run every module body in ES evaluation order (depth-first postorder,
+ * a module mid-evaluation answered from the cache), function declarations
+ * are callable from the start, and live bindings are shared globals. What
+ * remains is the temporal dead zone: a let/const binding read before its
+ * declaration ran throws ReferenceError. cycleEarlyBindings finds every
+ * such binding whose read CAN run early; the lowering gives each one an
+ * initialization flag and checks it at every read or write that can run
+ * before the declaration. The shapes below have no such representation
+ * and keep the SC1016 fence. */
+
+/** Program → the modules of every cycle the exact rule admitted. */
+const exactCycleMembers7 = new WeakMap<ts.Program, Set<ts.SourceFile>>();
+
+/** The modules of `program` whose import cycles were admitted by the
+ * exact initialization rule (not the declaration-only rule). */
+export function exactCycleMembers(program: ts.Program): ReadonlySet<ts.SourceFile> {
+  return exactCycleMembers7.get(program) ?? new Set();
+}
+
+/** True when the module's top level (outside every function-like body)
+ * contains `await` or `for await`. */
+function hasTopLevelAwait7(sf: ts.SourceFile): boolean {
+  let found = false;
+  ts.walkPreorder(sf, (node) => {
+    if (found) return "stop";
+    if (node !== sf && ts.isFunctionLike(node)) return "skip";
+    if (
+      ts.isAwaitExpression(node) ||
+      (ts.isForOfStatement(node) && node.awaitModifier !== undefined)
+    ) {
+      found = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  return found;
+}
+
+/** The reason a strongly-connected module cluster cannot be initialized
+ * exactly, or null when it can. */
+function exactCycleRefusal7(
+  program: ts.Program,
+  comp: readonly ts.SourceFile[],
+  lineOf: (node: ts.Node) => string,
+): string | null {
+  const members = new Set(comp);
+  const targetOf = (stmt: ts.ImportDeclaration | ts.ExportDeclaration): ts.SourceFile | null => {
+    const spec = stmt.moduleSpecifier;
+    if (spec === undefined || !ts.isStringLiteral(spec)) return null;
+    const sf = stmt.getSourceFile();
+    return resolveImport7(program, sf, spec.text) ?? npmStaticDepSf7(program, sf, spec.text);
+  };
+  for (const m of comp) {
+    if (isCjsJsFile7(m, program) || /\.c[jt]s$/.test(m.fileName)) {
+      return `${m.fileName} is a CommonJS module — cyclic initialization covers ES modules only`;
+    }
+    if (hasTopLevelAwait7(m)) {
+      return `${m.fileName} uses top-level await inside the cycle`;
+    }
+    for (const stmt of m.statements) {
+      if (ts.isExportAssignment(stmt) && !stmt.isExportEquals) {
+        return `the default export expression at ${lineOf(stmt)} has no initialization state inside the cycle`;
+      }
+      if (
+        ts.isExportDeclaration(stmt) &&
+        !stmt.isTypeOnly &&
+        (stmt.exportClause === undefined || ts.isNamespaceExport(stmt.exportClause))
+      ) {
+        const dep = targetOf(stmt);
+        if (dep !== null && members.has(dep)) {
+          return `the namespace re-export at ${lineOf(stmt)} names a module of the cycle`;
         }
       }
-      sccVerdict.set(comp, reason);
+      if (
+        ts.isImportDeclaration(stmt) &&
+        stmt.importClause !== undefined &&
+        !stmt.importClause.isTypeOnly &&
+        stmt.importClause.namedBindings !== undefined &&
+        ts.isNamespaceImport(stmt.importClause.namedBindings)
+      ) {
+        const dep = targetOf(stmt);
+        const nsName = stmt.importClause.namedBindings.name;
+        if (
+          dep !== null &&
+          members.has(dep) &&
+          !nsBindingUsesAreBareStatements7(program, m, nsName)
+        ) {
+          return `the namespace import '${nsName.text}' at ${lineOf(stmt)} names a module of the cycle`;
+        }
+      }
+      if (ts.isClassDeclaration(stmt) && stmt.name === undefined) {
+        return `the anonymous default class at ${lineOf(stmt)} has no initialization state inside the cycle`;
+      }
+      const ambient =
+        (ts.getCombinedModifierFlags(stmt as unknown as ts.Declaration) &
+          ts.ModifierFlags.Ambient) !==
+        0;
+      if (ambient) continue;
+      if (
+        ts.isEnumDeclaration(stmt) &&
+        (ts.getCombinedModifierFlags(stmt) & ts.ModifierFlags.Const) === 0
+      ) {
+        return `the enum '${stmt.name.text}' at ${lineOf(stmt)} has no initialization state inside the cycle`;
+      }
+      if (ts.isModuleDeclaration(stmt) && !typeOnlyNamespace7(stmt)) {
+        return `the namespace at ${lineOf(stmt)} has no initialization state inside the cycle`;
+      }
     }
-    const clusterReason = sccVerdict.get(comp);
-    if (clusterReason === undefined) throw new Error("missing module-cycle verdict");
-    if (clusterReason !== null) return clusterReason;
-    const use = backEdgeUseOffence7(program, e.stmt, usesOf(importer));
-    if (use !== null) {
-      return `the cycle-crossing binding '${use.name}' is read at ${lineOf(use.node)}, outside any function body — a read during the init window observes the partially-initialized module (Node's TDZ ReferenceError / stale var), which is not modeled`;
+  }
+  return null;
+}
+
+/** A module-scope binding of an exactly-initialized cycle that some read
+ * or write can reach before its declaration ran. */
+export interface CycleEarlyBinding {
+  symbol: ts.Symbol;
+  /** The declaration's name. */
+  name: ts.Identifier;
+  kind: "lexical" | "var" | "class";
+  module: ts.SourceFile;
+  /** One reference that can run before the declaration. */
+  reference: ts.Identifier;
+  /** A reference in a position the lowering may resolve at compile time
+   * from the binding's type (a property key, a `typeof` operand). */
+  folded?: ts.Identifier;
+  /** Modules whose TOP-LEVEL code runs only after the declaration ran:
+   * modules outside the cycle and cycle members evaluated later. */
+  settled: ReadonlySet<ts.SourceFile>;
+}
+
+/** Every binding of the program's exactly-initialized cycles that can be
+ * observed before its declaration executes. `order` is the compiled module
+ * order; `singleRoot` is false when more than one module graph root runs
+ * (fork or worker entries), so a cycle can be entered at different
+ * members. With one root and a purely ES-module graph the evaluation order
+ * is static and the analysis is precise up to "user code may run": a
+ * binding needs its check when its declaration completes after some
+ * top-level code that can call user functions and a deferred position
+ * (function body, parameter default, instance field) references it, or
+ * when the top level of a cycle member evaluated before it reads it.
+ * Otherwise every deferred reference and every top-level reference from
+ * another member counts. */
+export function cycleEarlyBindings(
+  program: ts.Program,
+  entry: ts.SourceFile,
+  order: readonly ts.SourceFile[],
+  singleRoot: boolean,
+): CycleEarlyBinding[] {
+  const exact = exactCycleMembers7.get(program);
+  if (exact === undefined || exact.size === 0) return [];
+  // Every lowering pass of one compile asks with the same inputs.
+  const key = `${entry.fileName}\0${order.map((sf) => sf.fileName).join("\0")}\0${singleRoot}`;
+  const memo = earlyBindingsMemo7.get(program);
+  if (memo !== undefined && memo.key === key) return memo.bindings;
+  const bindings = computeCycleEarlyBindings7(program, entry, order, singleRoot, exact);
+  earlyBindingsMemo7.set(program, { key, bindings });
+  return bindings;
+}
+
+const earlyBindingsMemo7 = new WeakMap<
+  ts.Program,
+  { key: string; bindings: CycleEarlyBinding[] }
+>();
+
+function computeCycleEarlyBindings7(
+  program: ts.Program,
+  entry: ts.SourceFile,
+  order: readonly ts.SourceFile[],
+  singleRoot: boolean,
+  exact: ReadonlySet<ts.SourceFile>,
+): CycleEarlyBinding[] {
+  const inOrder = new Set(order);
+  const members = [...exact].filter((m) => inOrder.has(m));
+  if (members.length === 0) return [];
+  const memberSet = new Set(members);
+  const depsOf = (sf: ts.SourceFile): ts.SourceFile[] =>
+    orderedImportsOf(program, sf).flatMap(({ dep }) =>
+      dep !== null && dep !== sf && inOrder.has(dep) ? [dep] : [],
+    );
+  // Strongly-connected components among the exactly-initialized members.
+  const comps: ts.SourceFile[][] = [];
+  {
+    const index = new Map<ts.SourceFile, number>();
+    const low = new Map<ts.SourceFile, number>();
+    const onStack = new Set<ts.SourceFile>();
+    const stack: ts.SourceFile[] = [];
+    let next = 0;
+    const connect = (v: ts.SourceFile): void => {
+      index.set(v, next);
+      low.set(v, next);
+      next++;
+      stack.push(v);
+      onStack.add(v);
+      for (const w of depsOf(v)) {
+        if (!memberSet.has(w)) continue;
+        if (!index.has(w)) {
+          connect(w);
+          low.set(v, Math.min(low.get(v)!, low.get(w)!));
+        } else if (onStack.has(w)) {
+          low.set(v, Math.min(low.get(v)!, index.get(w)!));
+        }
+      }
+      if (low.get(v) === index.get(v)) {
+        const comp: ts.SourceFile[] = [];
+        for (;;) {
+          const w = stack.pop()!;
+          onStack.delete(w);
+          comp.push(w);
+          if (w === v) break;
+        }
+        if (comp.length > 1) comps.push(comp);
+      }
+    };
+    for (const m of members) if (!index.has(m)) connect(m);
+  }
+  if (comps.length === 0) return [];
+  // The static evaluation order: Node's depth-first postorder from the
+  // entry over ES import edges. Known only for one root and a graph with
+  // no CommonJS module (a require() evaluates its target mid-body).
+  const position = new Map<ts.SourceFile, number>();
+  if (
+    singleRoot &&
+    !order.some((sf) => isCjsJsFile7(sf, program) || /\.c[jt]s$/.test(sf.fileName))
+  ) {
+    const seen = new Set<ts.SourceFile>();
+    const visit = (sf: ts.SourceFile): void => {
+      seen.add(sf);
+      for (const dep of depsOf(sf)) if (!seen.has(dep)) visit(dep);
+      position.set(sf, position.size);
+    };
+    visit(entry);
+  }
+  const checker = program.getTypeChecker();
+  const nonInert = topLevelInertness7(program);
+  const out: CycleEarlyBinding[] = [];
+  for (const comp of comps) {
+    const known = comp.every((m) => position.has(m));
+    const evaluation = known
+      ? comp.slice().sort((a, b) => position.get(a)! - position.get(b)!)
+      : comp.slice();
+    interface Candidate {
+      symbol: ts.Symbol;
+      name: ts.Identifier;
+      kind: CycleEarlyBinding["kind"];
+      module: ts.SourceFile;
+      /** User code can run between the cycle's start and the end of the
+       * declaration (always true when the order is unknown). */
+      exposed: boolean;
+      rank: number;
+      start: number;
+      end: number;
+      reference: ts.Identifier | null;
+      folded: ts.Identifier | null;
     }
-    return null;
-  };
+    const candidates = new Map<ts.Symbol, Candidate>();
+    const names = new Set<string>();
+    let dirty = !known;
+    evaluation.forEach((m, rank) => {
+      for (const stmt of m.statements) {
+        const offence = nonInert(stmt);
+        const exposed = dirty || offence !== null;
+        const declared: { name: ts.Identifier; kind: CycleEarlyBinding["kind"] }[] = [];
+        if (
+          ts.isVariableStatement(stmt) &&
+          (ts.getCombinedModifierFlags(stmt as unknown as ts.Declaration) &
+            ts.ModifierFlags.Ambient) ===
+            0
+        ) {
+          const lexical =
+            (stmt.declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
+          for (const d of stmt.declarationList.declarations) {
+            for (const name of boundNames7(d.name)) {
+              declared.push({ name, kind: lexical ? "lexical" : "var" });
+            }
+          }
+        } else if (ts.isClassDeclaration(stmt) && stmt.name !== undefined) {
+          declared.push({ name: stmt.name, kind: "class" });
+        }
+        for (const { name, kind } of declared) {
+          const symbol = checker.getSymbolAtLocation(name);
+          if (symbol === undefined) continue;
+          candidates.set(symbol, {
+            symbol,
+            name,
+            kind,
+            module: m,
+            exposed,
+            rank,
+            start: stmt.getStart(m),
+            end: stmt.getEnd(),
+            reference: null,
+            folded: null,
+          });
+          names.add(name.text);
+        }
+        if (offence !== null) dirty = true;
+      }
+    });
+    if (candidates.size === 0) continue;
+    const rankOf = new Map(evaluation.map((m, i) => [m, i] as const));
+    // References: every identifier spelled like a candidate, resolved
+    // through import aliases to the declaration's symbol.
+    for (const sf of order) {
+      const refs: ts.Identifier[] = [];
+      ts.walkPreorder(sf, (node) => {
+        if (ts.isImportDeclaration(node)) return "skip";
+        if (ts.isIdentifier(node) && names.has(node.text)) refs.push(node);
+        return undefined;
+      });
+      if (refs.length === 0) continue;
+      checker.prefetchSymbolNodesExact(refs);
+      for (const ref of refs) {
+        const parent = ref.parent;
+        if (parent !== undefined && ts.isExportSpecifier(parent)) continue;
+        if (inTypePosition7(ref)) continue;
+        let symbol = checker.getSymbolAtLocation(ref);
+        if (
+          parent !== undefined &&
+          ts.isShorthandPropertyAssignment(parent) &&
+          parent.name === ref
+        ) {
+          symbol = checker.getShorthandAssignmentValueSymbol(parent) ?? symbol;
+        }
+        if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) {
+          symbol = checker.getAliasedSymbol(symbol);
+        }
+        const c = symbol === undefined ? undefined : candidates.get(symbol);
+        if (c === undefined || ref === c.name) continue;
+        if (c.folded === null && foldablePosition7(ref)) c.folded = ref;
+        if (c.reference !== null) continue;
+        // A class body names its own inner binding, initialized throughout.
+        if (
+          c.kind === "class" &&
+          sf === c.module &&
+          ref.getStart(sf) >= c.start &&
+          ref.getEnd() <= c.end
+        )
+          continue;
+        let early: boolean;
+        if (inDeferredPosition7(ref)) early = c.exposed;
+        else if (sf === c.module) early = ref.getStart(sf) < c.start;
+        else if (!memberSet.has(sf) || !rankOf.has(sf)) early = false;
+        else early = !known || rankOf.get(sf)! < c.rank;
+        if (early) c.reference = ref;
+      }
+    }
+    for (const c of candidates.values()) {
+      if (c.reference === null) continue;
+      const settled = new Set<ts.SourceFile>(order.filter((sf) => !rankOf.has(sf)));
+      if (known) for (const m of evaluation.slice(c.rank + 1)) settled.add(m);
+      out.push({
+        symbol: c.symbol,
+        name: c.name,
+        kind: c.kind,
+        module: c.module,
+        reference: c.reference,
+        ...(c.folded !== null ? { folded: c.folded } : {}),
+        settled,
+      });
+    }
+  }
+  return out;
+}
+
+/** True for a reference whose value the lowering can take from the
+ * binding's checker type instead of its storage: a property key (element
+ * access argument, computed name, `in` operand, through parentheses,
+ * casts and template spans) or a `typeof` operand. */
+function foldablePosition7(ref: ts.Identifier): boolean {
+  let child: ts.Node = ref;
+  for (let p: ts.Node | undefined = ref.parent; p !== undefined; p = p.parent) {
+    if (
+      ts.isParenthesizedExpression(p) ||
+      ts.isAsExpression(p) ||
+      ts.isSatisfiesExpression(p) ||
+      ts.isNonNullExpression(p) ||
+      ts.isTemplateSpan(p) ||
+      ts.isTemplateExpression(p)
+    ) {
+      child = p;
+      continue;
+    }
+    if (ts.isTypeOfExpression(p)) return true;
+    if (ts.isElementAccessExpression(p)) return p.argumentExpression === child;
+    if (ts.isComputedPropertyName(p)) return true;
+    if (ts.isBinaryExpression(p))
+      return p.operatorToken.kind === ts.SyntaxKind.InKeyword && p.left === child;
+    return false;
+  }
+  return false;
+}
+
+/** The identifiers a binding name (identifier or destructuring pattern)
+ * declares. */
+function boundNames7(name: ts.BindingName): ts.Identifier[] {
+  if (ts.isIdentifier(name)) return [name];
+  const out: ts.Identifier[] = [];
+  for (const el of name.elements) {
+    if (ts.isOmittedExpression(el) || el.name === undefined) continue;
+    out.push(...boundNames7(el.name));
+  }
+  return out;
+}
+
+/** A namespace declaration whose body holds only types (interfaces, type
+ * aliases, nested type-only namespaces) — no runtime object exists. */
+function typeOnlyNamespace7(decl: ts.ModuleDeclaration): boolean {
+  let body = decl.body;
+  while (body !== undefined && ts.isModuleDeclaration(body)) body = body.body;
+  if (body === undefined || !ts.isModuleBlock(body)) return true;
+  return body.statements.every(
+    (s) =>
+      ts.isInterfaceDeclaration(s) ||
+      ts.isTypeAliasDeclaration(s) ||
+      (ts.isModuleDeclaration(s) && typeOnlyNamespace7(s)),
+  );
 }
 
 /** Resolves an import specifier from `from` to a source file of the
@@ -2774,10 +3206,9 @@ function preflight7(load: LoadResult): {
   // benign-cycle admission block above). Node evaluates such cycles
   // benignly (the revisited module is a cache hit, and no binding read
   // can hit TDZ or a stale slot), so the guarded %init calls reproduce
-  // its order exactly. Cycles that fail both keep the SC1016 fence,
-  // because a read through them mid-cycle observes TDZ (let/const) or
-  // undefined (var) in Node — runtime evaluation-order semantics the
-  // static story does not model.
+  // its order exactly. Cycles that fail both are judged by the exact
+  // initialization rule: admitted when every early read is modeled by an
+  // initialization check, fenced with SC1016 otherwise.
   const edges = new Map<ts.SourceFile, CycleEdge[]>();
   // Import edges Node's RESOLUTION refuses before any module evaluates —
   // recorded in source order per file (interleaved with the resolved deps
@@ -3334,9 +3765,10 @@ function preflight7(load: LoadResult): {
   // Node's evaluation order: depth-first postorder from the entry, each
   // module once, back-edges answered from the cache (a module already
   // evaluating is skipped) — which the guarded %init calls reproduce
-  // exactly. Cycles are admitted only where Node's partially-initialized
-  // semantics are UNOBSERVABLE (JS's partial-initialization is otherwise a
-  // silent-misbehavior trap, so SC1016 stays for the rest):
+  // exactly. Cycles are admitted where Node's partially-initialized
+  // semantics are UNOBSERVABLE or exactly modeled (JS's partial
+  // initialization is otherwise a silent-misbehavior trap, so SC1016
+  // stays for the rest):
   //  - a DIRECT SELF-IMPORT (the package self-name reference resolving to
   //    the importing module itself — Node's self-reference rule): the
   //    imported bindings alias the module's OWN top-level bindings with
@@ -3348,7 +3780,11 @@ function preflight7(load: LoadResult): {
   //    benign-cycle admission block: every module of the cycle's
   //    strongly-connected component has an inert top level and the
   //    closing edge's bindings are used only in deferred positions, so no
-  //    read can execute before every member initialized).
+  //    read can execute before every member initialized);
+  //  - the EXACT INITIALIZATION rule: an ES-module cluster whose early
+  //    reads are all let/const bindings with module storage — the
+  //    lowering checks each one (cycleEarlyBindings) and throws Node's
+  //    ReferenceError on a read before the declaration ran.
   const cycleAdmissionReason = makeCycleAdmission(program, (sf) => edges.get(sf) ?? []);
   const order: ts.SourceFile[] = [];
   const state = new Map<ts.SourceFile, "visiting" | "done">();
@@ -3362,9 +3798,9 @@ function preflight7(load: LoadResult): {
       if (s === "done") continue;
       if (s === "visiting") {
         // A back-edge: Node answers it from the cache (the module is
-        // already evaluating) — benign exactly when nothing can observe
-        // the partial initialization through this edge's bindings, by the
-        // cheap per-edge rule or the declaration-only init window rule.
+        // already evaluating) — admitted by the cheap per-edge rule, the
+        // declaration-only init window rule, or the exact initialization
+        // rule.
         const reason = cycleAdmissionReason(sf, e);
         if (reason !== null) {
           const cycleStart = stack.indexOf(e.dep.fileName);

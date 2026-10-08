@@ -197,17 +197,19 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
     hint: "export declarations directly: export function f() {}",
   },
   SC1015: { feature: "dynamic import()", milestone: "M4" },
-  // Benign cycles are ADMITTED (Node runs them as cache hits): cycles of
-  // ES modules whose top levels are declaration-only and whose
-  // cycle-crossing bindings are used only inside function bodies (mutual
-  // recursion, cross-module class references), plus closing edges that
-  // bind nothing readable. SC1016 remains for exactly the cycles where
-  // Node's partial initialization is observable — the message names the
-  // offending binding or top-level statement.
+  // ES-module cycles are ADMITTED and evaluate in Node's order: module
+  // bodies run depth-first, function declarations are callable from the
+  // start, and let/const bindings that can be read before their
+  // declaration carry an initialization check (Node's TDZ ReferenceError).
+  // SC1016 remains for the shapes without an exact representation —
+  // CommonJS members, top-level await, default-export expressions,
+  // namespace imports or re-exports of cycle members, and var or class
+  // bindings reachable before their declaration ran. The message names
+  // the offending construct.
   SC1016: {
     feature: "circular imports",
     milestone: "later",
-    hint: "cycles of ES modules with declaration-only top levels whose cycle-crossing bindings are only used inside function bodies compile as-is; move the named top-level read or call into a function body (or break the named edge) so nothing runs during the cycle's init window",
+    hint: "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge",
   },
   // Class DECLARATIONS shipped; SC1020's remaining use is class expressions.
   SC1020: { feature: "class expressions", milestone: "later" },

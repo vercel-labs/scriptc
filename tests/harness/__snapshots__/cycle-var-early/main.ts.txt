@@ -1,0 +1,8 @@
+cycle-var-early/b.ts:3:10 - error SC1016: circular imports (the var binding 'level' declared in cycle-var-early/a.ts can be accessed before its declaration runs, where Node reads undefined) are not supported yet
+
+  2 | export function read(): number {
+  3 |   return level;
+    |          ^~~~~
+  4 | }
+
+  hint: ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge

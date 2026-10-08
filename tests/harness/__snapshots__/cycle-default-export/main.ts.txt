@@ -1,0 +1,7 @@
+cycle-default-export/a.ts:1:1 - error SC1016: circular imports (cycle-default-export/a.ts → cycle-default-export/b.ts → cycle-default-export/a.ts; the default export expression at cycle-default-export/a.ts:2 has no initialization state inside the cycle) are not supported yet
+
+  1 | import { scale } from "./b.ts";
+    | ^
+  2 | export default scale(4);
+
+  hint: ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge

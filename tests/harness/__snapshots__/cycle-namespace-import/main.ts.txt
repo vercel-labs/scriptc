@@ -1,0 +1,7 @@
+cycle-namespace-import/a.ts:1:1 - error SC1016: circular imports (cycle-namespace-import/a.ts → cycle-namespace-import/b.ts → cycle-namespace-import/a.ts; the namespace import 'helpers' at cycle-namespace-import/a.ts:1 names a module of the cycle) are not supported yet
+
+  1 | import * as helpers from "./b.ts";
+    | ^
+  2 | export const base = 2;
+
+  hint: ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge

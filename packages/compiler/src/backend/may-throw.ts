@@ -142,6 +142,8 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
           // Module dependency evaluation has await's rejection behavior,
           // while deliberately avoiding await's extra settled-promise turn.
           if (rec.name === "module.await") f.throws = true;
+          // A cycle binding read before its declaration ran (TDZ).
+          if (rec.name === "module.tdzCheck") f.throws = true;
           break;
         case "yieldExpr":
           // A consumer .throw() surfaces at the yield (and .return()'s

@@ -3735,6 +3735,13 @@ export class LlEmitter {
     this.throwIfUninitialized(empty, name);
   }
 
+  /** Throws the TDZ ReferenceError for `name` unless the i1 `flag` is set. */
+  checkInitializedFlag(flag: string, name: string): void {
+    const empty = this.B.tmp();
+    this.B.line(`${empty} = xor i1 ${flag}, true`);
+    this.throwIfUninitialized(empty, name);
+  }
+
   private throwIfUninitialized(empty: string, name: string): void {
     const B = this.B;
     const lt = B.newLabel("tdz.t");

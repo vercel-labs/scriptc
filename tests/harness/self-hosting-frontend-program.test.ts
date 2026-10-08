@@ -68,7 +68,8 @@ function inputs(directory: string): FrontendProgramRequest {
   });
   add("unsafe-cycle", {
     "main.ts": 'import { first } from "./first.js"; console.log(first);',
-    "first.ts": 'import { second } from "./second.js"; export const first: number = second + 1;',
+    "first.ts":
+      'import * as peer from "./second.js"; export const first: number = peer.second + 1;',
     "second.ts": 'import { first } from "./first.js"; export const second: number = first + 1;',
   });
   add(

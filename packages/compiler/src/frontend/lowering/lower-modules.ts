@@ -33,6 +33,7 @@ import {
   resolveNpmImport,
 } from "../program.js";
 import type { CycleEdge } from "../program.js";
+import { markCycleEarlyBindings, withCycleInitFlags } from "./cycle-initialization.js";
 import {
   invalidJsonModuleDiag,
   npmEmbedFailedDiag,
@@ -507,6 +508,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     }
     lowerer.collecting = wasCollecting;
   }
+  markCycleEarlyBindings(lowerer);
 }
 
 /** The npm-import chokepoint, run once per pass during collection (so
@@ -3088,8 +3090,16 @@ export function lowerFileInit(
         body.push(...lowerer.lowerStaticFieldInits(statics[at]!.info));
         at++;
       }
-      const deferred = lowerer.deferredModuleInitializers?.defer(lowerer, stmt);
-      const stmtIr = deferred ? [deferred] : lowerer.lowerStmts([stmt]);
+      // A cycle binding's declaration stays at its position: its
+      // initialization flag must be set where the declaration runs.
+      const deferred = lowerer.cycleInitDeclarations.has(stmt)
+        ? null
+        : lowerer.deferredModuleInitializers?.defer(lowerer, stmt);
+      const stmtIr = withCycleInitFlags(
+        lowerer,
+        stmt,
+        deferred ? [deferred] : lowerer.lowerStmts([stmt]),
+      );
       // Class EXPRESSIONS inside this statement queued their static
       // inits while it lowered: they land immediately before it — JS's
       // order for the supported whole-initializer positions.

@@ -1,7 +1,0 @@
-cycle-window-call/a.ts:1:1 - error SC1016: circular imports (cycle-window-call/a.ts → cycle-window-call/b.ts → cycle-window-call/a.ts; top-level code at cycle-window-call/a.ts:5 can run user code during the cycle's init window — only declaration-only module bodies are admitted) are not supported yet
-
-  1 | import { bee } from "./b.ts";
-    | ^
-  2 | export function aye(n: number): number {
-
-  hint: cycles of ES modules with declaration-only top levels whose cycle-crossing bindings are only used inside function bodies compile as-is; move the named top-level read or call into a function body (or break the named edge) so nothing runs during the cycle's init window

@@ -11,6 +11,16 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
   const B = host.B;
   switch (e.kind) {
     case "intrinsic": {
+      if (e.name === "module.tdzCheck") {
+        // An import-cycle binding's initialization flag: false is the
+        // temporal dead zone (Node's catchable ReferenceError).
+        const flag = host.emitExpr(e.args[0]!);
+        const name = e.args[1]!;
+        if (name.kind !== "strLit")
+          throw new InternalCompilerError("llvm emitter bug: module.tdzCheck name");
+        host.checkInitializedFlag(flag.name, name.value);
+        return { name: "", type: e.type };
+      }
       if (e.name === "module.await") {
         // Internal ESM dependency wait: pending promises park the module
         // fiber, while settled ones continue synchronously.

@@ -1,3 +1,5 @@
+import { identityPreservingWidening } from "../coercions/identity.js";
+import { InternalCompilerError } from "../../../errors.js";
 import {
   dynUndefinedExpr,
   nodeThrowExpr,
@@ -109,13 +111,16 @@ export function lowerArraySpreadItems(
   for (const node of nodes) {
     if (ts.isSpreadElement(node)) {
       let source = lowerer.lowerExpr(node.expression);
-      if (source.type.kind === "set" && typeEquals(source.type.elem, elem)) {
+      if (
+        source.type.kind === "set" &&
+        identityPreservingWidening(lowerer, source.type.elem, elem)
+      ) {
         source = {
           kind: "setIntrinsic",
           method: "toArray",
           receiver: source,
           args: [],
-          type: arrType,
+          type: arrayOf(source.type.elem),
           loc,
         };
       }
@@ -123,7 +128,18 @@ export function lowerArraySpreadItems(
         source = lowerer.widthCoerce(source, arrType) ?? source;
       }
       if (!typeEquals(source.type, arrType)) {
-        lowerer.noLowering(`Array insertion spread from '${lowerer.fmt(source.type)}'`, node);
+        if (
+          source.type.kind !== "array" ||
+          !identityPreservingWidening(lowerer, source.type.elem, elem)
+        ) {
+          lowerer.noLowering(`Array insertion spread from '${lowerer.fmt(source.type)}'`, node);
+        }
+        body.push({
+          kind: "exprStmt",
+          expr: appendWidenedArrayValues(lowerer, outRef, source, elem, loc),
+          loc,
+        });
+        continue;
       }
       body.push({
         kind: "exprStmt",
@@ -147,6 +163,91 @@ export function lowerArraySpreadItems(
     }
   }
   return { kind: "seqExpr", stmts: body, result: outRef, type: arrType, loc };
+}
+
+/** Collect an already-lowered single spread without lowering its source twice. */
+export function widenArraySpread(
+  lowerer: Lowerer,
+  source: IrExpr,
+  elem: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const type = arrayOf(elem);
+  const out = lowerer.declareHiddenLocal("%arrayItems", type);
+  const result = varRef(out.id, type, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: out.id, init: { kind: "arrayLit", elems: [], type, loc }, loc },
+      { kind: "exprStmt", expr: appendWidenedArrayValues(lowerer, result, source, elem, loc), loc },
+    ],
+    result,
+    type,
+    loc,
+  };
+}
+
+/** Spreading observes holes as undefined and snapshots values before later
+ * arguments can mutate the source. Only the copied elements are widened. */
+function appendWidenedArrayValues(
+  lowerer: Lowerer,
+  target: IrExpr,
+  source: IrExpr,
+  elem: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  if (source.type.kind !== "array")
+    throw new InternalCompilerError("array spread source is not an array");
+  const sourceType = source.type;
+  const key = `insertValues:${typeKey(sourceType.elem)}:${typeKey(elem)}`;
+  let name = lowerer.arrHofHelpers.get(key);
+  if (!name) {
+    name = `%arr.insertValues.${lowerer.arrHofHelpers.size}`;
+    lowerer.arrHofHelpers.set(key, name);
+    const outType = arrayOf(elem);
+    const valueType = arrayValueType(lowerer, source.type.elem);
+    const out = varRef("out.0", outType, loc);
+    const input = varRef("source.0", source.type, loc);
+    const value = varRef("value.0", valueType, loc);
+    const length = (array: IrExpr): IrExpr => ({
+      kind: "arrIntrinsic",
+      method: "length",
+      receiver: array,
+      args: [],
+      type: F64,
+      loc,
+    });
+    lowerer.liftedFns.push({
+      name,
+      params: [
+        { localId: "out.0", name: "out", type: outType },
+        { localId: "source.0", name: "source", type: source.type },
+      ],
+      locals: [
+        { id: "out.0", name: "out", type: outType, mutable: false },
+        { id: "source.0", name: "source", type: source.type, mutable: false },
+        { id: "value.0", name: "value", type: valueType, mutable: false },
+        { id: "n.0", name: "count", type: F64, mutable: false },
+        { id: "i.0", name: "index", type: F64, mutable: true },
+      ],
+      returnType: F64,
+      body: [
+        { kind: "varDecl", localId: "n.0", init: length(input), loc },
+        countedFor(loc, varRef("n.0", F64, loc), (index) => [
+          {
+            kind: "varDecl",
+            localId: "value.0",
+            init: arrayValueRead(lowerer, input, index, sourceType.elem, loc),
+            loc,
+          },
+          arrayValueStore(lowerer, out, length(out), value, elem, loc),
+        ]),
+        { kind: "return", value: length(out), loc },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [target, source], type: F64, loc };
 }
 
 /** The Array constructor's element and count forms, shared by calls and new. */

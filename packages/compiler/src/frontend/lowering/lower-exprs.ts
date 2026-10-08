@@ -1,3 +1,4 @@
+import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import {
@@ -3804,6 +3805,12 @@ function runtimeOptionalReceiverRead(
       type: narrowed,
       loc,
     };
+  }
+  if (narrowed.kind === "object") {
+    const view = checkedClassAssertion(lowerer, varRef(local.id, local.type, loc), narrowed, loc);
+    // Preserve the member-specific missing-value error on the two-arm
+    // path below; mixed storage also needs to validate its concrete class.
+    if (view && (lowerer.unions.get(local.type.unionId)?.arms.length ?? 0) > 2) return view;
   }
   const undefTag = lowerer.armTag(local.type.unionId, UNDEFINED_T);
   const def = lowerer.unions.get(local.type.unionId);
@@ -10283,6 +10290,17 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       const unitTest = lowerer.lowerUnitComparison(left, right, negated, loc);
       if (unitTest) return unitTest;
       if (left.type.kind === "union" || right.type.kind === "union") {
+        const compared = lowerUnionEquality(lowerer, left, right, negated, false, loc);
+        if (compared) return compared;
+        const aliasRefusal = (type: IrType): void => {
+          if (tagEqualityMayMissAlias(lowerer, type))
+            lowerer.unsupported(
+              "SC1090",
+              expr,
+              `comparisons of related class values beside structural union members (${NARROW_FIRST})`,
+            );
+        };
+
         // JS strict equality of the ARM values, per union tag (a
         // per-union helper): equal tags compare payloads (f64 ==, string
         // bytes, bool ==, ref-arm POINTER identity), different tags are
@@ -10322,6 +10340,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           };
         }
         if ((sameUnion || !bothUnion) && lowerer.eqComparableUnion(ut.unionId)) {
+          aliasRefusal(ut);
           return {
             kind: "unionEq",
             unionId: ut.unionId,
@@ -10354,6 +10373,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
                 kind: "union",
                 unionId: lowerer.unions.intern(arms),
               };
+              aliasRefusal(common);
               return {
                 kind: "unionEq",
                 unionId: common.unionId,

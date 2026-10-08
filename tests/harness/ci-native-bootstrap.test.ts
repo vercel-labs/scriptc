@@ -15,13 +15,23 @@ function latch() {
   return { promise, release };
 }
 
+const recordingChecks = (completed: string[]) =>
+  Object.fromEntries(
+    ["commands", "rebuild", "rebuild-frontend", "rebuild-emit"].map((phase) => [
+      phase,
+      async () => {
+        completed.push(phase);
+      },
+    ]),
+  );
+
 test("CI partitions both bootstrap lanes without dropping or duplicating phase contracts", async () => {
   const workflow = load(
     readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
   ) as {
     jobs: {
       bootstrap: {
-        strategy: { matrix: { flavor: string[]; phase: string[] } };
+        strategy: { matrix: { include: { flavor: string; phase: string }[] } };
         env: Record<string, string>;
       };
       test: { needs: string[]; steps: { run: string }[] };
@@ -30,26 +40,22 @@ test("CI partitions both bootstrap lanes without dropping or duplicating phase c
   const bootstrap = workflow.jobs.bootstrap;
   expect(bootstrap.env.SCRIPTC_BOOTSTRAP_PHASE).toBe("${{ matrix.phase }}");
   expect(bootstrap.env.SCRIPTC_SAN).toBe("${{ matrix.flavor == 'san' && '1' || '' }}");
-  expect(bootstrap.strategy.matrix.flavor.toSorted()).toEqual(["plain", "san"]);
-  for (const flavor of bootstrap.strategy.matrix.flavor) {
+  const jobs = bootstrap.strategy.matrix.include;
+  expect([...new Set(jobs.map((job) => job.flavor))].toSorted()).toEqual(["plain", "san"]);
+  for (const flavor of ["plain", "san"]) {
+    const sanitize = flavor === "san";
     const completed: string[] = [];
     let packageOwners = 0;
-    for (const phase of bootstrap.strategy.matrix.phase) {
-      const plan = nativeBootstrapPlan({ phase, sanitize: flavor === "san" });
+    for (const { phase } of jobs.filter((job) => job.flavor === flavor)) {
+      const plan = nativeBootstrapPlan({ phase, sanitize });
       // Each CI job must own one expensive phase on its own runner.
       expect(plan.phases).toHaveLength(1);
       if (plan.packageChecks) packageOwners++;
-      await runNativeBootstrapChecks(plan, {
-        commands: async () => {
-          completed.push("commands");
-        },
-        rebuild: async () => {
-          completed.push("rebuild");
-        },
-      });
+      await runNativeBootstrapChecks(plan, recordingChecks(completed));
     }
-    expect(completed.toSorted()).toEqual(["commands", "rebuild"]);
-    expect(packageOwners).toBe(flavor === "plain" ? 1 : 0);
+    // Together the jobs run exactly the phases of a direct invocation.
+    expect(completed.toSorted()).toEqual(nativeBootstrapPlan({ sanitize }).phases.toSorted());
+    expect(packageOwners).toBe(sanitize ? 0 : 1);
   }
   expect(workflow.jobs.test.needs).toContain("bootstrap");
   expect(
@@ -59,25 +65,49 @@ test("CI partitions both bootstrap lanes without dropping or duplicating phase c
   ).toBe(true);
 });
 
-test("direct bootstrap invocations retain both phases and the plain package checks", async () => {
+test("the sanitizer lane splits its self-rebuild at the IR boundary", () => {
+  expect(nativeBootstrapPlan({ sanitize: true }).phases).toEqual([
+    "commands",
+    "rebuild-frontend",
+    "rebuild-emit",
+  ]);
+  expect(nativeBootstrapPlan({ phase: "rebuild", sanitize: true }).phases).toEqual([
+    "rebuild-frontend",
+    "rebuild-emit",
+  ]);
+  expect(nativeBootstrapPlan({ phase: "rebuild" }).phases).toEqual(["rebuild"]);
+  for (const phase of ["rebuild-frontend", "rebuild-emit"]) {
+    expect(nativeBootstrapPlan({ phase, sanitize: true }).phases).toEqual([phase]);
+    expect(() => nativeBootstrapPlan({ phase })).toThrow("is a sanitizer bootstrap phase");
+  }
+});
+
+test("direct bootstrap invocations retain every phase and the plain package checks", async () => {
   for (const sanitize of [false, true]) {
     const plan = nativeBootstrapPlan({ sanitize });
-    const commands = latch();
-    const rebuild = latch();
+    // Every phase must start before any finishes: they run concurrently.
+    const started = plan.phases.map(() => latch());
+    const all = Promise.all(started.map((item) => item.promise));
     const completed: string[] = [];
-    await runNativeBootstrapChecks(plan, {
-      commands: async () => {
-        commands.release();
-        await rebuild.promise;
-        completed.push("commands");
-      },
-      rebuild: async () => {
-        rebuild.release();
-        await commands.promise;
-        completed.push("rebuild");
-      },
-    });
-    expect(completed.toSorted()).toEqual(["commands", "rebuild"]);
+    await runNativeBootstrapChecks(
+      plan,
+      Object.fromEntries(
+        plan.phases.map((phase, index) => [
+          phase,
+          async () => {
+            started[index]!.release();
+            await all;
+            completed.push(phase);
+          },
+        ]),
+      ),
+    );
+    expect(completed.toSorted()).toEqual(
+      (sanitize
+        ? ["commands", "rebuild-frontend", "rebuild-emit"]
+        : ["commands", "rebuild"]
+      ).toSorted(),
+    );
     expect(plan.packageChecks).toBe(!sanitize);
   }
 });
@@ -105,7 +135,7 @@ test("bootstrap phase failures drain their siblings and preserve both errors", a
 test("invalid bootstrap phase selection fails before any contracts can be skipped", () => {
   for (const phase of ["", "command", "seed", "commands,rebuild", " all "]) {
     expect(() => nativeBootstrapPlan({ phase })).toThrow(
-      "SCRIPTC_BOOTSTRAP_PHASE must be all, commands, or rebuild",
+      "SCRIPTC_BOOTSTRAP_PHASE must be all, commands, rebuild, rebuild-frontend, or rebuild-emit",
     );
   }
 });

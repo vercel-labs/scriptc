@@ -1,5 +1,5 @@
-// Refining a stored arm within a multi-value union is not yet representable.
-// Report a named fence instead of confusing the refined type with a stored tag.
+// Structural refinements still need a named fence for multi-value storage.
+// The class refinement below is accepted through a checked identity-preserving view.
 type Item = { rect?: { width: number } };
 
 function hasRect(item: Item | string): item is Item & { rect: { width: number } } {

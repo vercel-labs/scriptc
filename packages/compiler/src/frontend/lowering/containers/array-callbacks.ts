@@ -1,5 +1,6 @@
 import { boolLit, countedFor, numLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
+import { canAssertClassValue, checkedClassAssertion } from "../class-assertions.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import {
@@ -177,7 +178,12 @@ function filterResultElem(
       );
     }
   }
-  if (valueT.kind !== "union" || lowerer.armTag(valueT.unionId, outElem) < 0) {
+  const classRefinement =
+    !booleanFilter && outElem.kind === "object" && canAssertClassValue(lowerer, valueT, outElem);
+  if (
+    !classRefinement &&
+    (valueT.kind !== "union" || lowerer.armTag(valueT.unionId, outElem) < 0)
+  ) {
     const multiArm = outElem.kind === "union";
     lowerer.unsupported(
       "SC1090",
@@ -187,7 +193,7 @@ function filterResultElem(
         `(${multiArm ? "only a SINGLE arm re-tags" : "only a single runtime arm re-tags"} — ${annotateEscape})`,
     );
   }
-  if (booleanFilter) {
+  if (booleanFilter && valueT.kind === "union") {
     const arms = lowerer.unions.get(valueT.unionId)?.arms ?? [];
     if (arms.some((arm) => !typeEquals(arm, outElem) && !isUnitType(arm))) {
       lowerer.unsupported(
@@ -570,18 +576,24 @@ function buildArrayHofFn(
       { id: "v.0", name: "v", type: valueT, mutable: false },
     );
     returnType = outT;
+    const classView =
+      !typeEquals(outElem, elem) && outElem.kind === "object"
+        ? checkedClassAssertion(lowerer, varRef("v.0", valueT, loc), outElem, loc)
+        : null;
     const retained = typeEquals(outElem, elem)
       ? varRef("v.0", valueT, loc)
-      : valueT.kind === "union"
-        ? {
-            kind: "unionNarrow" as const,
-            unionId: valueT.unionId,
-            tag: lowerer.armTag(valueT.unionId, outElem),
-            value: varRef("v.0", valueT, loc),
-            type: outElem,
-            loc,
-          }
-        : varRef("v.0", valueT, loc);
+      : classView !== null
+        ? classView
+        : valueT.kind === "union"
+          ? {
+              kind: "unionNarrow" as const,
+              unionId: valueT.unionId,
+              tag: lowerer.armTag(valueT.unionId, outElem),
+              value: varRef("v.0", valueT, loc),
+              type: outElem,
+              loc,
+            }
+          : varRef("v.0", valueT, loc);
     body = [
       {
         kind: "varDecl",
@@ -752,7 +764,11 @@ export function lowerArrayFindLikeCall(
       );
     }
     retag = lowerer.narrowedRetagHelper(call, valueT.unionId, resultT.unionId, loc);
-    if (retag === null)
+    const present = lowerer.stripUndefinedArm(resultT);
+    if (
+      retag === null &&
+      !(present.kind === "object" && canAssertClassValue(lowerer, valueT, present))
+    )
       lowerer.unsupported(
         "SC1090",
         call,
@@ -801,9 +817,16 @@ function findHelper(
 
   const valueT = arrayValueType(lowerer, elem);
   const v = varRef("v.0", valueT, loc);
+  const present = lowerer.stripUndefinedArm(resultT);
+  // A successful inferred class predicate may select a descendant of a
+  // stored base arm. Keep the value read before the callback mutated the array.
+  const classView =
+    retag === null && !lowerer.coercibleValue(valueT, resultT) && present.kind === "object"
+      ? checkedClassAssertion(lowerer, v, present, loc)
+      : null;
   const found: IrExpr =
     retag === null
-      ? lowerer.coerceToExpected(v, resultT)
+      ? lowerer.coerceToExpected(classView ?? v, resultT)
       : { kind: "call", callee: retag, args: [v], type: resultT, loc };
   const miss: IrExpr = {
     kind: "unionWrap",

@@ -4,11 +4,25 @@ import { dirname, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
+const PHASES = ["all", "commands", "rebuild", "rebuild-frontend", "rebuild-emit"];
+
+/** The sanitized self-rebuild runs as two halves split at the IR boundary:
+ * rebuild-frontend lowers the compiler and compares its IR with the seed's;
+ * rebuild-emit emits, links and probes the next generation from the seed's
+ * IR. "rebuild" and "all" select both halves in the sanitizer lane. The plain
+ * lane keeps its single chained rebuild and fixed-point check. */
 export function nativeBootstrapPlan({ phase = "all", sanitize = false } = {}) {
-  if (!["all", "commands", "rebuild"].includes(phase)) {
-    throw new Error("SCRIPTC_BOOTSTRAP_PHASE must be all, commands, or rebuild");
+  if (!PHASES.includes(phase)) {
+    throw new Error(
+      "SCRIPTC_BOOTSTRAP_PHASE must be all, commands, rebuild, rebuild-frontend, or rebuild-emit",
+    );
   }
-  const phases = phase === "all" ? ["commands", "rebuild"] : [phase];
+  if (!sanitize && phase.startsWith("rebuild-")) {
+    throw new Error(`${phase} is a sanitizer bootstrap phase; the plain lane uses rebuild`);
+  }
+  const rebuild = sanitize ? ["rebuild-frontend", "rebuild-emit"] : ["rebuild"];
+  const phases =
+    phase === "all" ? ["commands", ...rebuild] : phase === "rebuild" ? rebuild : [phase];
   return { phases, packageChecks: !sanitize && phases.includes("commands") };
 }
 

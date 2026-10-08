@@ -10,6 +10,26 @@ import {
 } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 
+/** Whether any stored payload can supply a checked view of this class. */
+export function canAssertClassValue(
+  lowerer: Lowerer,
+  source: IrType,
+  target: IrType & { kind: "object" },
+): boolean {
+  if (source.kind === "union")
+    return (
+      lowerer.unions
+        .get(source.unionId)
+        ?.arms.some((arm) => canAssertClassValue(lowerer, arm, target)) ?? false
+    );
+  return (
+    source.kind === "object" &&
+    (typeEquals(source, target) ||
+      lowerer.isSubclassOf(source.className, target.className) ||
+      lowerer.isSubclassOf(target.className, source.className))
+  );
+}
+
 /** Assertions cannot prove a subclass layout. Check the stored class before
  * exposing descendant fields, preserving identity and one operand evaluation. */
 export function checkedClassAssertion(
@@ -20,10 +40,7 @@ export function checkedClassAssertion(
 ): IrExpr | null {
   const source = value;
   const compatible = (type: IrType): type is IrType & { kind: "object" } =>
-    type.kind === "object" &&
-    (typeEquals(type, target) ||
-      lowerer.isSubclassOf(type.className, target.className) ||
-      lowerer.isSubclassOf(target.className, type.className));
+    type.kind === "object" && canAssertClassValue(lowerer, type, target);
   const failure = (): IrExpr =>
     nodeThrowExpr(1, "", `Value is not an instance of '${lowerer.fmt(target)}'`, target, loc);
   const convert = (input: IrExpr): IrExpr => {

@@ -4,10 +4,3 @@ runtime-optional-refined-union.ts:11:36 - error SC1090: a direct read from a run
   11 |     if (hasRect(item)) console.log(item.rect.width);
      |                                    ^~~~
   12 |   }
-
-runtime-optional-refined-union.ts:29:36 - error SC1090: a direct read from a runtime-optional capture with multiple value arms are not supported yet
-
-  28 |   for (const animal of animals) {
-  29 |     if (isDog(animal)) console.log(animal.bark());
-     |                                    ^~~~~~
-  30 |   }

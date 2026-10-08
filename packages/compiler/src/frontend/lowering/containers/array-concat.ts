@@ -1,3 +1,4 @@
+import { identityPreservingWidening } from "../coercions/identity.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
 import {
   BOOL,
@@ -69,7 +70,7 @@ export function arrayConcatHelper(
           loc,
         },
       ];
-    if (!identityPreservingWidening(lowerer, sourceElem, elem)) {
+    if (!identityPreservingWidening(lowerer, sourceElem, elem, true)) {
       lowerer.unsupported(
         "SC1090",
         site,
@@ -154,23 +155,4 @@ export function arrayConcatHelper(
   lowerer.arrHofHelpers.set(key, name);
   lowerer.liftedFns.push({ name, params, returnType: arrT, locals, body, loc });
   return name;
-}
-
-function identityPreservingWidening(lowerer: Lowerer, source: IrType, target: IrType): boolean {
-  if (typeEquals(source, target)) return true;
-  if (source.kind === "object" && target.kind === "object")
-    return lowerer.isSubclassOf(source.className, target.className);
-  if (source.kind === "union")
-    return (
-      lowerer.unions
-        .get(source.unionId)
-        ?.arms.every((arm) => identityPreservingWidening(lowerer, arm, target)) ?? false
-    );
-  if (target.kind === "union")
-    return (
-      lowerer.unions
-        .get(target.unionId)
-        ?.arms.some((arm) => identityPreservingWidening(lowerer, source, arm)) ?? false
-    );
-  return false;
 }

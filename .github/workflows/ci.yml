@@ -229,8 +229,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        flavor: [plain, san]
-        phase: [commands, rebuild]
+        # The sanitized self-rebuild is split at the IR boundary: one job
+        # lowers the compiler and compares its IR with the seed's; the other
+        # emits, links and probes the next generation from the seed's IR.
+        include:
+          - { flavor: plain, phase: commands }
+          - { flavor: plain, phase: rebuild }
+          - { flavor: san, phase: commands }
+          - { flavor: san, phase: rebuild-frontend }
+          - { flavor: san, phase: rebuild-emit }
     env:
       SCRIPTC_TEST_WORKERS: "1"
       SCRIPTC_SAN: ${{ matrix.flavor == 'san' && '1' || '' }}

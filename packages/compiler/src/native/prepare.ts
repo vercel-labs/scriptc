@@ -1,4 +1,5 @@
 import type { CompilationTiming } from "../timing.js";
+import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
   CompileFailure,
@@ -22,7 +23,8 @@ import {
 import { provenanceSources } from "../frontend/provenance-registry.js";
 import { prepareLibrary } from "../library/prepare.js";
 import type { LibraryProfile } from "../library/library-profile.js";
-import { serializeModule } from "../ir/serialize.js";
+import type { IrModule } from "../ir/ir.js";
+import { deserializeModule, serializeModule } from "../ir/serialize.js";
 import { contentDigest, type NativeCache } from "./cache.js";
 import type { NativeToolchain } from "./toolchain.js";
 import { nativeFileIdentity } from "./file-identity.js";
@@ -124,6 +126,26 @@ function validCachedInput(value: unknown): value is FrontendCacheEntry {
   );
 }
 
+/** Bootstrap-only input for the split sanitized self-rebuild: emit an
+ * executable from a serialized IR artifact of the same entry instead of
+ * running the frontend. A separate run compares that artifact with the IR the
+ * native frontend lowers itself. Debug metadata needs source text, so only
+ * stripped executables are accepted. */
+const BOOTSTRAP_IR_INPUT = "SCRIPTC_BOOTSTRAP_IR_INPUT";
+
+function preparedFromIr(
+  path: string,
+  entry: string,
+  options: CompileRequestOptions,
+): { ok: true; mod: IrModule; sourceTexts: Map<string, string> } {
+  if ((options.outputKind ?? "exe") !== "exe" || options.strip !== true)
+    throw new Error(`${BOOTSTRAP_IR_INPUT} requires a stripped executable build`);
+  const mod = deserializeModule(readFileSync(path, "utf8"));
+  if (resolve(mod.sourceFile) !== resolve(entry))
+    throw new Error(`${BOOTSTRAP_IR_INPUT} was lowered from a different entry`);
+  return { ok: true, mod, sourceTexts: new Map() };
+}
+
 /** Keep the checker and typed IR out of the native optimizer's live heap. */
 export function prepareNativeExecutable(
   entry: string,
@@ -150,8 +172,9 @@ export function prepareNativeExecutable(
     }
   }
   const exclusions = { outputPaths, outputDirectories: [...directories] };
+  const irInput = process.env[BOOTSTRAP_IR_INPUT] ?? "";
   let key: string | null = null;
-  if (cache !== null && provenanceSources() === null) {
+  if (cache !== null && irInput === "" && provenanceSources() === null) {
     try {
       key = contentDigest(
         JSON.stringify({
@@ -182,10 +205,14 @@ export function prepareNativeExecutable(
   }
   timing("frontend-cache-miss");
   const tracker = new FrontendInputTracker();
-  const prepared = tracker.runSynchronous(() =>
-    prepareExecutableModule(entry, options, ffi, toolchain.target.platform, frontend, timing),
-  );
+  const prepared =
+    irInput !== ""
+      ? preparedFromIr(irInput, entry, options)
+      : tracker.runSynchronous(() =>
+          prepareExecutableModule(entry, options, ffi, toolchain.target.platform, frontend, timing),
+        );
   if (!prepared.ok) return prepared;
+  if (irInput !== "") timing("ir-input");
   const ir = outputKind === "ir" || options.emitIr ? serializeModule(prepared.mod, true) : null;
   timing("ir-serialize");
   const llvm =

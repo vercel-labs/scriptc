@@ -7,7 +7,7 @@ component-fences.ts:9:7 - error SC2009: values of type 'Map<string, () => void>'
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-component-fences.ts:9:19 - error SC1090: Map values of type '() => void' (Map values must be number, string, boolean, records, class instances, arrays, promises, Maps, Sets, or unions of those — not functions, 'unknown', or 'any') is not supported yet
+component-fences.ts:9:19 - error SC1090: Map values of type '() => void' (Map values must be number, string, boolean, records, class instances, typed arrays, arrays, promises, Maps, Sets, or supported unions and checked values) is not supported yet
 
    8 | // Map values have no slot for functions.
    9 | const listeners = new Map<string, () => void>();

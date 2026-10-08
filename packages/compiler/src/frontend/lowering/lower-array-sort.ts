@@ -13,6 +13,7 @@ import {
   funcOf,
 } from "../../ir/ir.js";
 import { numLit } from "../../ir/build.js";
+import { transformStmtList } from "../../ir/traverse.js";
 
 type SortLocal = IrExpr & { kind: "varRef" };
 type Greater = (left: IrExpr, right: IrExpr) => IrExpr;
@@ -110,6 +111,28 @@ class SortIr {
       ? { kind: "bytesNew", source: length, type, loc: this.loc }
       : { kind: "arrayLit", elems: [], type, loc: this.loc };
   }
+}
+
+/** The builders reuse local references, constants and comparator operands at
+ * several sites. Give every site its own node: per-node emitter analyses then
+ * see the same tree as a serialized IR artifact, and facts proved at one site
+ * cannot be merged with another. */
+function distinctNodes(body: IrStmt[]): IrStmt[] {
+  return transformStmtList(body, {
+    expr: (node) => {
+      switch (node.kind) {
+        case "varRef":
+          return { ...node };
+        case "numLit":
+          return { ...node };
+        case "boolLit":
+          return { ...node };
+        default:
+          return node;
+      }
+    },
+    stmt: (node) => (node.kind === "break" ? { ...node } : node),
+  });
 }
 
 /** Stable natural merge sort over an owned snapshot. Strict descending runs
@@ -380,7 +403,7 @@ export function buildArraySortFn(
     ],
     returnType: arrT,
     locals: b.locals,
-    body,
+    body: distinctNodes(body),
     loc,
   };
 }
@@ -456,7 +479,7 @@ export function buildBytesSortFn(
     ],
     returnType: BYTES_U8,
     locals: b.locals,
-    body,
+    body: distinctNodes(body),
     loc,
   };
 }

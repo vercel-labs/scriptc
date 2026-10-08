@@ -1,3 +1,4 @@
+import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
@@ -7196,6 +7197,9 @@ function lowerObjectStaticCall(
       };
     }
     if (left.type.kind === "union" || right.type.kind === "union") {
+      const compared = lowerUnionEquality(lowerer, left, right, false, true, loc);
+      if (compared) return compared;
+
       const ut =
         left.type.kind === "union" ? left.type : (right.type as IrType & { kind: "union" });
       const bothUnion = left.type.kind === "union" && right.type.kind === "union";
@@ -7207,6 +7211,12 @@ function lowerObjectStaticCall(
         // union holds its type; a plain PRIMITIVE the union has no arm
         // for is the disjoint constant false (coercing it would strand).
         if (bothUnion || arms.some((a) => typeEquals(a, plain.type))) {
+          if (tagEqualityMayMissAlias(lowerer, ut))
+            lowerer.noLowering(
+              "Object.is over related class values beside structural union members",
+              call,
+              NARROW_FIRST,
+            );
           const sameValue = arms.some((a) => a.kind === "f64");
           return {
             kind: "unionEq",

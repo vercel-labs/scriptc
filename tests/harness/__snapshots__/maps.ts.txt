@@ -7,7 +7,7 @@ maps.ts:8:7 - error SC2009: values of type 'Map<string, () => void>' cannot be c
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-maps.ts:8:18 - error SC1090: Map values of type '() => void' (Map values must be number, string, boolean, records, class instances, arrays, promises, Maps, Sets, or unions of those — not functions, 'unknown', or 'any') is not supported yet
+maps.ts:8:18 - error SC1090: Map values of type '() => void' (Map values must be number, string, boolean, records, class instances, typed arrays, arrays, promises, Maps, Sets, or supported unions and checked values) is not supported yet
 
   7 | // Values exclude functions (no closure story in the uniform value slot yet).
   8 | const handlers = new Map<string, () => void>();

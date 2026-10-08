@@ -14745,6 +14745,24 @@
     "<repo>/tests/corpus/derived-numeric-updates.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/captured-class-refinement.ts": {
+   "order": [
+    "<repo>/tests/corpus/captured-class-refinement.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/class-collection-insertion.ts": {
+   "order": [
+    "<repo>/tests/corpus/class-collection-insertion.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/union-reference-comparison.ts": {
+   "order": [
+    "<repo>/tests/corpus/union-reference-comparison.ts"
+   ],
+   "diags": []
   }
  }
 }

@@ -1,3 +1,5 @@
+import { identityPreservingWidening } from "./coercions/identity.js";
+import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
@@ -2039,7 +2041,14 @@ export class Lowerer {
    * whose checker type is the corresponding bare arm. */
   runtimeOptionalWidening(actual: IrType, expected: IrType): IrType | null {
     if (actual.kind !== "union" || this.armTag(actual.unionId, UNDEFINED_T) < 0) return null;
-    return typeEquals(this.stripUndefinedArm(actual), expected) ? actual : null;
+    const present = this.stripUndefinedArm(actual);
+    if (typeEquals(present, expected)) return actual;
+    // Only a bare expected arm gains runtime-optional storage. A slot that
+    // already admits undefined keeps its own checked representation.
+    if (expected.kind === "union" && this.armTag(expected.unionId, UNDEFINED_T) >= 0) return null;
+    return identityPreservingWidening(this, present, expected)
+      ? this.runtimeOptionalType(expected)
+      : null;
   }
 
   runtimeOptionalType(t: IrType): IrType {
@@ -2111,6 +2120,8 @@ export class Lowerer {
   /** True while re-lowering a base function's 2nd+ instance: the same source
    * statements were already counted for the first instance. */
   suppressStats = false;
+  /** Comparisons interned by operand representations and equality semantics. */
+  readonly equalityHelpers = new Map<string, string>();
   /** Synthetic array-HOF loop functions (map/filter/forEach desugar),
    * interned per method + element/callback-result type: key → fn name. */
   readonly arrHofHelpers = new Map<string, string>();
@@ -6839,6 +6850,34 @@ export class Lowerer {
       this.isSubclassOf(expr.type.className, expected.className)
     ) {
       return { kind: "upcast", value: expr, type: expected, loc: expr.loc };
+    }
+    // Optional subclass storage still has the same object payload. Extract
+    // it with a checked tag test, then widen the class view without copying.
+    if (expected.kind === "object" && expr.type.kind === "union") {
+      const arms = this.unions.get(expr.type.unionId)?.arms;
+      const present = arms?.filter((arm) => !isUnitType(arm)) ?? [];
+      if (
+        present.length === 1 &&
+        present[0]!.kind === "object" &&
+        present[0]!.className !== expected.className &&
+        this.isSubclassOf(present[0]!.className, expected.className)
+      ) {
+        // One class arm: the ordinary checked narrow reports a missing value
+        // exactly like same-class storage before the prefix view widens it.
+        return {
+          kind: "upcast",
+          value: this.coerceToExpected(expr, present[0]!),
+          type: expected,
+          loc: expr.loc,
+        };
+      }
+      if (
+        present.length > 1 &&
+        present.every((arm) => identityPreservingWidening(this, arm, expected))
+      ) {
+        const view = checkedClassAssertion(this, expr, expected, expr.loc);
+        if (view) return view;
+      }
     }
     // CLASS-VALUE widening (classval:D into a classval:C slot): the same
     // pointer with only the static type changing — legal exactly when D

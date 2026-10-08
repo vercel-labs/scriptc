@@ -44,7 +44,7 @@ test("CI restores each seed only into its matching instrumented bootstrap lane",
       string,
       {
         needs?: string;
-        strategy: { matrix: { flavor: string[] } };
+        strategy: { matrix: { flavor?: string[]; include?: { flavor: string }[] } };
         env: Record<string, string>;
         steps: {
           uses?: string;
@@ -69,7 +69,9 @@ test("CI restores each seed only into its matching instrumented bootstrap lane",
   )) {
     expect(step.if).toBe("matrix.phase == 'commands'");
   }
-  expect(seed.strategy.matrix.flavor).toEqual(checks.strategy.matrix.flavor);
+  // Each bootstrap job restores the seed of a flavor the seed job builds.
+  const checkFlavors = new Set(checks.strategy.matrix.include?.map((job) => job.flavor));
+  expect([...checkFlavors].toSorted()).toEqual(seed.strategy.matrix.flavor);
   expect(seed.env.SCRIPTC_SAN).toBe(checks.env.SCRIPTC_SAN);
   const prepare = seed.steps.find((step) => step.run === "node scripts/bootstrap-seed.mjs")!;
   const execute = checks.steps.find((step) => step.run === "node scripts/ci-native-bootstrap.mjs")!;

@@ -163,15 +163,6 @@ stdlib-fence.ts:52:1 - error SC2020: '.forEach with 2 arguments' is part of the 
 
   hint: the thisArg parameter has no lowering — use an arrow function
 
-stdlib-fence.ts:75:10 - error SC2020: 'Object.is over these union operands' is part of the standard library types but has no scriptc lowering yet
-
-  74 | function pick(a: string | number, b: number | boolean): boolean {
-  75 |   return Object.is(a, b); // partially-overlapping unions: narrow first
-     |          ^~~~~~~~~~~~~~~
-  76 | }
-
-  hint: union-typed comparisons need one comparable shape (narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms)
-
 stdlib-fence.ts:82:23 - error SC2009: values of type 'Date | undefined' cannot be compiled: the union shape is supported, but 'Date' arms have no home in a compiled union yet (no runtime narrowing test exists against sibling arms)
 
   81 | // scalar/ref mismatch.
@@ -202,4 +193,20 @@ stdlib-fence.ts:93:23 - error SC1090: .throw() with a Date value (the exception 
   92 | }
   93 | dateGenerator().throw(new Date(0));
      |                       ^~~~~~~~~~~
-  94 | // End of the diagnostic fixture.
+  94 | // Related classes may store one object under different union tags. A
+
+stdlib-fence.ts:104:10 - error SC1090: comparisons of related class values beside structural union members (narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) are not supported yet
+
+  103 | function relatedStrict(a: FenceValue, b: FenceValue): boolean {
+  104 |   return a === b;
+      |          ^~~~~~~
+  105 | }
+
+stdlib-fence.ts:107:10 - error SC2020: 'Object.is over related class values beside structural union members' is part of the standard library types but has no scriptc lowering yet
+
+  106 | function relatedSameValue(a: FenceValue, b: FenceSub): boolean {
+  107 |   return Object.is(a, b);
+      |          ^~~~~~~~~~~~~~~
+  108 | }
+
+  hint: narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms

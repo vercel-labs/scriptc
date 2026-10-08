@@ -16,23 +16,12 @@ index-signature-values.ts:9:13 - error SC2004: uses of 'bySymbol' inherit the bl
 
   hint: the declaration of 'bySymbol' did not compile — fix the diagnostic reported there and these sites clear with it
 
-index-signature-values.ts:12:7 - error SC2006: values of type 'Record<string, Uint8Array<ArrayBufferLike>>' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Promises, or 'unknown')
-
-  11 | // A value type with no representation in the overflow store.
-  12 | const buffers: Record<string, Uint8Array> = {};
-     |       ^~~~~~~
-  13 | console.log(buffers);
-
-  hint: string- and number-keyed index signatures over the supported value types compile directly; symbol keys and dual signatures with unequal value types have no lowering
-
-index-signature-values.ts:13:13 - error SC2004: uses of 'buffers' inherit the blocker on its declaration
+index-signature-values.ts:13:13 - error SC1090: console.log of '{ [key: string]: Uint8Array }' values (typed arrays inside composites have no inspect lowering yet (Buffer's <Buffer ..> form vs Uint8Array's is not recorded in the static type here)) are not supported yet
 
   12 | const buffers: Record<string, Uint8Array> = {};
   13 | console.log(buffers);
      |             ^~~~~~~
   14 | 
-
-  hint: the declaration of 'buffers' did not compile — fix the diagnostic reported there and these sites clear with it
 
 index-signature-values.ts:18:7 - error SC2006: values of type '{ [k: string]: string | number; [n: number]: number; }' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Promises, or 'unknown')
 

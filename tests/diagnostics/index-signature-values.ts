@@ -8,7 +8,7 @@
 const bySymbol: { [s: symbol]: number } = {};
 console.log(bySymbol);
 
-// A value type with no representation in the overflow store.
+// Storage is supported, but composite typed-array inspection is not.
 const buffers: Record<string, Uint8Array> = {};
 console.log(buffers);
 

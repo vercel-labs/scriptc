@@ -72,7 +72,7 @@ const resolved = Promise.resolve(1);
 // unions needing narrowing.
 const dynIs = Object.is(JSON.parse("1") as unknown, 1);
 function pick(a: string | number, b: number | boolean): boolean {
-  return Object.is(a, b); // partially-overlapping unions: narrow first
+  return Object.is(a, b); // partially-overlapping primitive unions are supported
 }
 const picked = pick(1, 2);
 
@@ -91,4 +91,21 @@ function* dateGenerator(): Generator<number, void, unknown> {
   yield 1;
 }
 dateGenerator().throw(new Date(0));
+// Related classes may store one object under different union tags. A
+// structural arm beside them leaves no identity-preserving comparison.
+class FenceBase {
+  id = 1;
+}
+class FenceSub extends FenceBase {
+  extra = 2;
+}
+type FenceValue = FenceBase | FenceSub | { label: string };
+function relatedStrict(a: FenceValue, b: FenceValue): boolean {
+  return a === b;
+}
+function relatedSameValue(a: FenceValue, b: FenceSub): boolean {
+  return Object.is(a, b);
+}
+relatedStrict(new FenceSub(), { label: "x" });
+relatedSameValue(new FenceSub(), new FenceSub());
 // End of the diagnostic fixture.

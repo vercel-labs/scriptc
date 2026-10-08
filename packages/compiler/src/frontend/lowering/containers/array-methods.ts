@@ -1,3 +1,4 @@
+import { identityPreservingWidening } from "../coercions/identity.js";
 import { arrayConcatHelper } from "./array-concat.js";
 import { boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -45,7 +46,11 @@ import {
   lowerArrayFlatMapCall,
   lowerArrayReduceCall,
 } from "./array-callbacks.js";
-import { lowerArraySpreadItems, lowerArrayValueItems } from "./array-construction.js";
+import {
+  lowerArraySpreadItems,
+  lowerArrayValueItems,
+  widenArraySpread,
+} from "./array-construction.js";
 import { arrayLengthDeclaration } from "./array-iteration.js";
 import {
   lowerArrayCallback,
@@ -581,15 +586,30 @@ export function lowerArrayMethodCall(
         : null;
     if ((name === "push" || name === "unshift") && spreadArg && ts.isSpreadElement(spreadArg)) {
       let src = lowerer.lowerExpr(spreadArg.expression);
-      // `a.push(...someSet)` / `a.unshift(...someSet)`: a same-element Set drains first
+      // `a.push(...someSet)` / `a.unshift(...someSet)`: a compatible Set drains first
       // (setIntrinsic toArray — insertion order), then appends.
-      if (src.type.kind === "set" && typeEquals(src.type.elem, elem)) {
+      if (src.type.kind === "set" && identityPreservingWidening(lowerer, src.type.elem, elem)) {
         src = {
           kind: "setIntrinsic",
           method: "toArray",
           receiver: src,
           args: [],
           type: arrayOf(src.type.elem),
+          loc,
+        };
+      }
+      if (
+        src.type.kind === "array" &&
+        !typeEquals(src.type, receiverIr) &&
+        identityPreservingWidening(lowerer, src.type.elem, elem)
+      ) {
+        const items = widenArraySpread(lowerer, src, elem, loc);
+        return {
+          kind: "arrIntrinsic",
+          method: name === "push" ? "pushSpread" : "unshiftSpread",
+          receiver,
+          args: [items],
+          type: F64,
           loc,
         };
       }

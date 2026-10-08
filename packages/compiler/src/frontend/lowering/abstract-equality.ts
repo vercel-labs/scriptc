@@ -1,3 +1,4 @@
+import { unionComparison } from "./union-comparison.js";
 import { InternalCompilerError } from "../../errors.js";
 import {
   BOOL,
@@ -237,67 +238,15 @@ function pairExpr(
   nanEqualsNan: boolean,
   loc: SrcLoc,
 ): IrExpr {
-  if (left.type.kind === "union") {
-    const unionId = left.type.unionId;
-    const def = lowerer.unions.get(unionId);
-    if (!def || def.arms.length === 0)
-      throw new InternalCompilerError(`abstract equality over unknown union ${unionId}`);
-    const branch = (tag: number): IrExpr => {
-      const arm = def.arms[tag];
-      if (!arm)
-        throw new InternalCompilerError(`abstract equality union ${unionId} lacks tag ${tag}`);
-      return pairExpr(
-        lowerer,
-        { kind: "unionNarrow", unionId, tag, value: left, type: arm, loc },
-        right,
-        nanEqualsNan,
-        loc,
-      );
-    };
-    let out = branch(def.arms.length - 1);
-    for (let tag = def.arms.length - 2; tag >= 0; tag--) {
-      out = {
-        kind: "ternary",
-        cond: { kind: "unionIsTag", unionId, tag, negated: false, value: left, type: BOOL, loc },
-        then: branch(tag),
-        else_: out,
-        type: BOOL,
-        loc,
-      };
-    }
-    return out;
-  }
-  if (right.type.kind === "union") {
-    const unionId = right.type.unionId;
-    const def = lowerer.unions.get(unionId);
-    if (!def || def.arms.length === 0)
-      throw new InternalCompilerError(`abstract equality over unknown union ${unionId}`);
-    const branch = (tag: number): IrExpr => {
-      const arm = def.arms[tag];
-      if (!arm)
-        throw new InternalCompilerError(`abstract equality union ${unionId} lacks tag ${tag}`);
-      return pairExpr(
-        lowerer,
-        left,
-        { kind: "unionNarrow", unionId, tag, value: right, type: arm, loc },
-        nanEqualsNan,
-        loc,
-      );
-    };
-    let out = branch(def.arms.length - 1);
-    for (let tag = def.arms.length - 2; tag >= 0; tag--) {
-      out = {
-        kind: "ternary",
-        cond: { kind: "unionIsTag", unionId, tag, negated: false, value: right, type: BOOL, loc },
-        then: branch(tag),
-        else_: out,
-        type: BOOL,
-        loc,
-      };
-    }
-    return out;
-  }
-  return primitivePair(lowerer, left, right, nanEqualsNan, loc);
+  const result = unionComparison(
+    lowerer,
+    left,
+    right,
+    (a, b) => primitivePair(lowerer, a, b, nanEqualsNan, loc),
+    loc,
+  );
+  if (!result) throw new InternalCompilerError("abstract equality over an unknown union");
+  return result;
 }
 
 export function abstractEqualitySupported(lowerer: Lowerer, left: IrType, right: IrType): boolean {

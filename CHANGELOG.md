@@ -6,6 +6,28 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.2.6
+
+### Features
+
+- **Native worker threads run statically compiled entry points in parallel.** Supported `node:worker_threads` workflows include worker data, structured messages, lifecycle events, and cooperative termination, with isolated module state and heaps.
+- **Shared buffers and integer Atomics enable worker coordination.** Supported shared views preserve backing storage across messages and provide atomic integer operations plus Int32 wait/notify.
+- **More generic class and interface patterns compile natively.** Concrete generic inheritance, forward references, nullable substitutions, checked class assertions, and live interface receivers preserve type and object identity.
+- **Native library calls cover more text workflows.** Synchronous file reads accept supported runtime encodings, and regular-expression replacement supports callbacks.
+
+### Performance
+
+- **Text, collections, and byte processing avoid repeated work.** Structured output, streamed split loops, keyed storage, primitive array sorting, scalar string access, and proved numeric operations reduce intermediate allocation and conversions.
+- **Reference handling does less ownership work.** Stable loop references and synchronous callbacks borrow safe inputs, while cycle collection adapts to mature graphs.
+- **Compilation reuses source and type information and parallelizes large native builds.** Source discovery, checker metadata, semantic queries, and AST traversal avoid repeated work.
+
+### Fixes
+
+- **Deep reference chains clean up with bounded stack use.** Native teardown preserves ownership across generated objects and runtime containers.
+- **Generic limits and diagnostics better match the failing source.** Independent concrete instantiations no longer share a global specialization cap; recursive demand remains bounded, and diagnostics retain source-file identity.
+
+<!-- release:end -->
+
 ## 0.2.5
 
 ### Features
@@ -22,8 +44,6 @@ All notable changes to scriptc will be documented in this file.
 ### Internal improvements
 
 - **Compiler code has clearer responsibilities and consistent source tooling.** Builtin, conversion, function, container, and native build code is organized into focused modules, with shared contracts and oxlint/oxfmt checks for normal JavaScript and TypeScript sources.
-
-<!-- release:end -->
 
 ## 0.2.4
 

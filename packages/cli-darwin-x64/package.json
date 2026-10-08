@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/cli-darwin-x64",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Native scriptc compiler for darwin-x64",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",

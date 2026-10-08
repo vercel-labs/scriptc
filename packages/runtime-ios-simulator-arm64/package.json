@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/runtime-ios-simulator-arm64",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Precompiled scriptc library runtime pack for iOS simulator arm64",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",

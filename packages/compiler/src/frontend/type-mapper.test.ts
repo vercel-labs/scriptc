@@ -73,12 +73,30 @@ describe("nullable collection union builders", () => {
     },
   );
 
-  test("collection generators retain the data-sibling refusal", () => {
+  test.each([
+    [mapOf(STRING, F64), STRING],
+    [setOf(STRING), F64],
+  ])("collection generator results retain each data arm", (yieldT, retT) => {
+    const shapes = new ShapeRegistry();
+    const unions = new UnionRegistry();
+    const result = genResultRecord(yieldT, retT, shapes, unions);
+    const value =
+      result && shapes.get(result.shapeId)?.fields.find((field) => field.name === "value")?.type;
+    expect(value?.kind).toBe("union");
+    if (value?.kind !== "union") throw new Error("missing value union");
+    expect(unions.get(value.unionId)?.arms).toEqual(
+      expect.arrayContaining([yieldT, retT, UNDEFINED_T]),
+    );
+  });
+
+  test("promise generators retain the data-sibling refusal", () => {
     expect(
-      genResultRecord(mapOf(STRING, F64), STRING, new ShapeRegistry(), new UnionRegistry()),
-    ).toBeNull();
-    expect(
-      genResultRecord(setOf(STRING), F64, new ShapeRegistry(), new UnionRegistry()),
+      genResultRecord(
+        { kind: "promise", inner: STRING },
+        F64,
+        new ShapeRegistry(),
+        new UnionRegistry(),
+      ),
     ).toBeNull();
   });
 });

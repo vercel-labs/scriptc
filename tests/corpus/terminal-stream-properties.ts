@@ -16,3 +16,10 @@ console.log(output().columns ?? 80, reads);
 try { out.getWindowSize(); } catch (error) { console.log(error instanceof TypeError); }
 
 console.log(isatty(-1), isatty(0.5), isatty(NaN), isatty(Infinity), isatty(2147483648));
+
+function selectOutput(fail: boolean): WriteStream {
+  if (fail) throw new Error('unavailable');
+  return process.stdout;
+}
+try { selectOutput(true).write('unreachable'); } catch (error) { console.log(error instanceof Error); }
+console.log(selectOutput(false) === process.stdout);

@@ -38,3 +38,40 @@ function plainReceiver(this: unknown): boolean { return this === undefined; }
 function nestedReceiver(this: unknown): boolean { return plainReceiver(); }
 const nestedCalls: (() => boolean)[] = [nestedReceiver];
 console.log(nestedCalls[0]());
+
+interface Callable { notify(): void; }
+function replaceNamed(value: Callable): void {
+  value.notify = (): void => { counter.count += 10; };
+}
+replaceNamed(counter);
+counter.notify();
+console.log(counter.count);
+function replaceLiteral(value: Callable): void {
+  value["notify"] = (): void => { counter.count += 20; };
+}
+replaceLiteral(counter);
+counter.notify();
+console.log(counter.count);
+function replaceComputed(value: Callable, key: keyof Callable): void {
+  value[key] = (): void => { counter.count += 30; };
+}
+replaceComputed(counter, "notify");
+counter.notify();
+console.log(counter.count);
+function replaceReflected(value: Callable): void {
+  Object.defineProperty(value, "notify", { value: (): void => { counter.count += 40; } });
+}
+replaceReflected(counter);
+counter.notify();
+console.log(counter.count);
+
+class CallbackOwner {
+  value = 7;
+  callback = (): number => this.value;
+}
+const owner = new CallbackOwner();
+function replaceField(value: CallbackOwner): void {
+  value.callback = function (this: CallbackOwner): number { return this.value + 5; };
+}
+replaceField(owner);
+console.log(owner.callback());

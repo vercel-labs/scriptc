@@ -102,6 +102,7 @@ export function isNativeBuiltinValueInitializer(
       lowerer.stdlibGlobalMember(expr, "globalThis") === "console" ||
       lowerer.stdlibGlobalMember(expr, "process") === "getBuiltinModule" ||
       lowerer.stdlibGlobalMember(expr, "process") === "hrtime" ||
+      ["stdin", "stdout", "stderr"].includes(lowerer.stdlibGlobalMember(expr, "process") ?? "") ||
       (expr.name.text === "bigint" &&
         ts.isPropertyAccessExpression(expr.expression) &&
         lowerer.stdlibGlobalMember(expr.expression, "process") === "hrtime") ||

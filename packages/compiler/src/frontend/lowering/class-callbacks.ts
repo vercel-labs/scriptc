@@ -10,15 +10,15 @@ import {
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { locOf } from "../program.js";
+import { isJsSourceFile, locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import { findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 
-/** Only observed mutable method slots need instance/prototype lookup.
- * Unmodified methods retain direct or virtual native dispatch. */
+/** Unmodified typed methods retain direct or virtual native dispatch.
+ * JavaScript notification methods keep their checked property fallback. */
 export function isClassCallback(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
   if (!isClassOwnEnumerableFieldName(name) || name.startsWith("get:") || name.startsWith("set:"))
     return false;
@@ -31,7 +31,15 @@ export function isClassCallback(lowerer: Lowerer, info: ClassInfo, name: string)
   )
     return false;
   const found = findMethodOn(lowerer, info, name);
-  return !!found && !found.sig.abstract && lowerer.prototypeMethodAccesses.has(name);
+  return (
+    !!found &&
+    !found.sig.abstract &&
+    (lowerer.prototypeMethodAccesses.has(name) ||
+      (info.decl !== null &&
+        isJsSourceFile(info.decl.getSourceFile()) &&
+        found.sig.params.length === 0 &&
+        found.sig.ret.kind === "void"))
+  );
 }
 
 function callbackBag(

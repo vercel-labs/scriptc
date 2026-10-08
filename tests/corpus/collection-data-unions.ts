@@ -33,3 +33,13 @@ function label(value: Map<string, number> | { text: string }): string {
   return value instanceof Map ? String(value.get('first')) : value.text;
 }
 console.log(label(map), label({ text: 'record' }));
+
+function* collectionSteps(): Generator<Map<string, number>, string, unknown> {
+  yield map;
+  return 'done';
+}
+const steps = collectionSteps();
+const first = steps.next();
+console.log(first.done, first.value instanceof Map, first.value === map);
+const last = steps.next();
+console.log(last.done, last.value);

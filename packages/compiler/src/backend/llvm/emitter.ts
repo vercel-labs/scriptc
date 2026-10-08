@@ -3014,13 +3014,13 @@ export class LlEmitter {
     } else if (this.currentWasiCoro !== null) {
       terminator = `br label %${this.currentWasiCoro.finalLabel}`;
     } else {
-      const t = this.currentReturnType;
+      const t = this.llType(this.currentReturnType);
       terminator =
-        t.kind === "void"
+        t === "void"
           ? "ret void"
-          : t.kind === "f64" || t.kind === "date"
+          : t === "double"
             ? `ret double ${f64Lit(0)}`
-            : t.kind === "bool"
+            : t === "i1"
               ? "ret i1 false"
               : "ret ptr null";
     }

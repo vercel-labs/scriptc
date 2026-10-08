@@ -40,6 +40,8 @@ console.log(counter${i}.callback(${i}));
 const values: Record<string, number> = {};
 function key(): string { return "notify"; }
 values[key()] = 1;
+function update(values: Record<string, number>, name: string): void { values[name] = 2; }
+update(values, key());
 console.log(values[key()]);
 `,
   );
@@ -48,6 +50,25 @@ console.log(values[key()]);
   expect(json).not.toContain('"kind":"dynCall"');
   expect(json).not.toContain('"kind":"dynFrom"');
   expect(json).toContain('"kind":"callValue"');
+});
+
+test("own-key rebuilding and absent-key insertion preserve inherited methods", async () => {
+  const module = await lower(`
+class Counter { value = 0; notify(): void { this.value++; } }
+const counter = new Counter();
+function rebuild(value: Record<string, unknown>): void {
+  const entries = Object.entries(value);
+  for (const key of Object.keys(value)) delete value[key];
+  for (const [key, entry] of entries) if (!(key in value)) value[key] = entry;
+}
+const metadata: Record<string, unknown> = { label: "ready" };
+rebuild(metadata);
+counter.notify();
+console.log(metadata.label, counter.value);
+`);
+  const initializers = module.functions.filter((fn) => fn.name.startsWith("%init."));
+  expect(JSON.stringify(initializers)).toContain('"callee":"%Counter.notify"');
+  expect(JSON.stringify(initializers)).not.toContain('"kind":"dynCall"');
 });
 
 test("observable method replacement keeps class property dispatch", async () => {

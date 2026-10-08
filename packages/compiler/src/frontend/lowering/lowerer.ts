@@ -3632,6 +3632,7 @@ export class Lowerer {
     const optionalSymbols = new Set<ts.Symbol>();
     const optionalReturns = new Set<ts.Symbol>();
     const arithmeticReturns = new Map<ts.Symbol, IrType>();
+    const primitiveBindings = new Map<ts.Symbol, IrType>();
     const optionalParams = new Map<ts.Symbol, Set<number>>();
     const optionalFields = new Map<ts.Symbol, Set<string>>();
     const dynamicObjectEntryRows = new Set<ts.Symbol>();
@@ -3858,7 +3859,7 @@ export class Lowerer {
       const e = peel(node);
       if (ts.isIdentifier(e)) {
         const symbol = symbolOf(e);
-        return symbol ? (this.runtimeOptionalBindingTypes.get(symbol) ?? null) : null;
+        return symbol ? (primitiveBindings.get(symbol) ?? null) : null;
       }
       if (ts.isCallExpression(e)) {
         const symbol = callableSymbolOf(e.expression);
@@ -4205,8 +4206,9 @@ export class Lowerer {
             const result = optionalPrimitiveResultType(node.initializer);
             const symbol = ts.isIdentifier(node.name) ? symbolOf(node.name) : null;
             if (result?.kind === "union" && symbol) {
-              const before = this.runtimeOptionalBindingTypes.get(symbol);
+              const before = primitiveBindings.get(symbol);
               if (!before || !typeEquals(before, result)) {
+                primitiveBindings.set(symbol, result);
                 this.runtimeOptionalBindingTypes.set(symbol, result);
                 changed = true;
               }

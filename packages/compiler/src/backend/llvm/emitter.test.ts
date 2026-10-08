@@ -1,7 +1,9 @@
 import { expect, test } from "vitest";
 import {
   BOOL,
+  DATE_T,
   F64,
+  PROCSTREAM_T,
   STRING,
   VOID,
   type IrExpr,
@@ -145,6 +147,27 @@ test("shared exceptional exits preserve the function's scalar return ABI", () =>
   const blocks = cleanupBlocks(moduleFor([call(), call()], { numberReturn: true }));
   expect(blocks).toHaveLength(1);
   expect(blocks[0]).toContain("ret double 0x0000000000000000");
+});
+
+test("exceptional exits use each scalar kind's LLVM return type", () => {
+  for (const type of [F64, DATE_T, BOOL, PROCSTREAM_T]) {
+    for (const ownedLocals of [false, true]) {
+      const module = moduleFor([call(), call(), { kind: "throw", value: literal("failed"), loc }]);
+      const work = module.functions[1]!;
+      work.returnType = type;
+      if (!ownedLocals) {
+        work.params = [];
+        work.locals = [];
+      }
+      const llvm = emitLlvmModule(module);
+      const body = /^define internal [^\n]*@sc_f_work\([^]*?^}/m.exec(llvm)?.[0];
+      expect(body).toBeDefined();
+      expect(body).toContain(
+        type.kind === "bool" ? "ret i1 false" : "ret double 0x0000000000000000",
+      );
+      expect(body).not.toContain("ret ptr null");
+    }
+  }
 });
 
 const receiverLoc = { file: "read-receiver.ts", start: 0, end: 0 };

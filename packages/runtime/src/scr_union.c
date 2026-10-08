@@ -51,7 +51,27 @@ ScrUnion *scr_union_new_f64(uint32_t tag, double v) {
   return u;
 }
 
+/* Boolean arms carry no payload references, and unions are immutable, so
+ * the common low tags share immortal headerless instances, like the
+ * compiler's static unit-arm constants: retain/release skip SIZE_MAX and
+ * the collector never visits immortals. Maybe-undefined reads of boolean[]
+ * elements (sieves, visited sets) otherwise allocate and free one box per
+ * read. Higher tags keep a fresh box. */
+#define SCR_UNION_BOOL_TAGS 16
+#define SCR_UNION_BOOL_PAIR(t)                                  \
+  {{SIZE_MAX, (t), NULL, NULL, NULL, 0},                        \
+   {SIZE_MAX, (t), NULL, NULL, NULL, 1}}
+static ScrUnion scr_union_bools[SCR_UNION_BOOL_TAGS][2] = {
+    SCR_UNION_BOOL_PAIR(0),  SCR_UNION_BOOL_PAIR(1),  SCR_UNION_BOOL_PAIR(2),
+    SCR_UNION_BOOL_PAIR(3),  SCR_UNION_BOOL_PAIR(4),  SCR_UNION_BOOL_PAIR(5),
+    SCR_UNION_BOOL_PAIR(6),  SCR_UNION_BOOL_PAIR(7),  SCR_UNION_BOOL_PAIR(8),
+    SCR_UNION_BOOL_PAIR(9),  SCR_UNION_BOOL_PAIR(10), SCR_UNION_BOOL_PAIR(11),
+    SCR_UNION_BOOL_PAIR(12), SCR_UNION_BOOL_PAIR(13), SCR_UNION_BOOL_PAIR(14),
+    SCR_UNION_BOOL_PAIR(15),
+};
+
 ScrUnion *scr_union_new_bool(uint32_t tag, bool v) {
+  if (tag < SCR_UNION_BOOL_TAGS) return &scr_union_bools[tag][v ? 1 : 0];
   ScrUnion *u = scr_union_alloc(tag);
   u->slot = v ? 1 : 0;
   return u;

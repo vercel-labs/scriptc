@@ -2515,8 +2515,8 @@ export function collectClassShapeInner(
         // declaration is an ordinary OWN field (tsc guarantees every
         // instantiable subclass declares it and, under
         // strictPropertyInitialization, initializes it). Reads through
-        // ABSTRACT-typed receivers have no slot to read and keep a
-        // per-site fence.
+        // ABSTRACT-typed receivers resolve the concrete instance's
+        // property through checked class dispatch.
         if (modifiers?.some((m) => m.kind === ts.SyntaxKind.AbstractKeyword)) continue;
         if (modifiers?.some((m) => m.kind === ts.SyntaxKind.AccessorKeyword)) {
           // `accessor x = 1` desugars (in JS) to a private slot plus a
@@ -8599,7 +8599,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           expr,
           `Map values of type '${lowerer.checker.typeToString(targs[1])}' ` +
             `(Map values must be number, string, boolean, records, class instances, ` +
-            `arrays, promises, Maps, Sets, or unions of those — not functions, 'unknown', or 'any')`,
+            `typed arrays, arrays, promises, Maps, Sets, or supported unions and checked values)`,
         );
       }
       lowerer.badType(expr, tsType);

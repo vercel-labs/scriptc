@@ -20,7 +20,7 @@ export class CaughtValueDispatch {
         stmt: (stmt) => {
           if (stmt.kind === "throw" && stmt.value.type.kind === "object") {
             const info = lowerer.classes.get(stmt.value.type.className);
-            if (info && lowerer.inHierarchy(info)) this.thrownClasses.add(info.def.name);
+            if (info) this.thrownClasses.add(info.def.name);
           }
           return true;
         },

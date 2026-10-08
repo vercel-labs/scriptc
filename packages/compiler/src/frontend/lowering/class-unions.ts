@@ -1,5 +1,6 @@
 import { BOOL, type IrExpr, type IrStmt, type IrType } from "../../ir/ir.js";
 import { nodeThrowExpr, varRef } from "../../ir/build.js";
+import { checkedClassAssertion } from "./class-assertions.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** A base-class slot stays one pointer after a guard selects several
@@ -80,4 +81,76 @@ export function narrowClassUnion(
     });
   }
   return { kind: "call", callee: helper, args: [value], type: target, loc };
+}
+
+/** Recover a class refinement from optional storage without treating the
+ * checker's non-optional array element type as proof of presence. Only a
+ * stricter class view qualifies; the stored tag and class are validated. */
+export function narrowStoredClassValue(
+  lowerer: Lowerer,
+  value: IrExpr,
+  target: IrType,
+): IrExpr | null {
+  if (value.type.kind !== "union") return null;
+  const arms = lowerer.unions.get(value.type.unionId)?.arms;
+  if (!arms) return null;
+  if (target.kind === "object") {
+    if (
+      !arms.some(
+        (arm) =>
+          arm.kind === "object" &&
+          arm.className !== target.className &&
+          lowerer.isSubclassOf(target.className, arm.className),
+      )
+    )
+      return null;
+    return checkedClassAssertion(lowerer, value, target, value.loc);
+  }
+  if (target.kind !== "union") return null;
+  const present = lowerer.stripUndefinedArm(value.type);
+  if (present.kind !== "object") return null;
+  const targetArms = lowerer.unions.get(target.unionId)?.arms;
+  if (
+    !targetArms?.length ||
+    !targetArms.every(
+      (arm) => arm.kind === "object" && lowerer.isSubclassOf(arm.className, present.className),
+    )
+  )
+    return null;
+  const extract = lowerer.narrowedArmHelper(value.type.unionId, present, value.loc);
+  if (!extract) return null;
+  return narrowClassUnion(
+    lowerer,
+    {
+      kind: "call",
+      callee: extract,
+      args: [value],
+      type: present,
+      loc: value.loc,
+    },
+    target,
+  );
+}
+
+/** An erased generic instanceof test identifies a family, not a concrete
+ * field layout. Recover a demanded instantiation only after checking its
+ * runtime membership; incompatible specializations cannot share payloads. */
+export function narrowGenericClassValue(
+  lowerer: Lowerer,
+  value: IrExpr,
+  expected: IrType,
+): IrExpr | null {
+  if (value.type.kind !== "object") return null;
+  const family = lowerer.classes.get(value.type.className);
+  if (!family?.generic || !lowerer.inHierarchy(family)) return null;
+  const arms = expected.kind === "union" ? lowerer.unions.get(expected.unionId)?.arms : [expected];
+  const candidates = arms?.filter(
+    (arm) =>
+      arm.kind === "object" &&
+      lowerer.classes.get(arm.className)?.genericInstance?.family === family,
+  );
+  const target = candidates?.length === 1 ? candidates[0] : undefined;
+  return target?.kind === "object"
+    ? checkedClassAssertion(lowerer, value, target, value.loc)
+    : null;
 }

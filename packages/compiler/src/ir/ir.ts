@@ -702,6 +702,7 @@ export function isSupportedSetElem(t: IrType, unionArms?: IrType[]): boolean {
  * cycle analysis and docs/memory.md). Shared frontend/validator. */
 export function isSupportedMapValue(t: IrType): boolean {
   switch (t.kind) {
+    case "bytes":
     case "dyn":
     case "f64":
     case "bigint":
@@ -3073,9 +3074,9 @@ export type IrExpr =
    * borrowed). The primitive tests ("string"/"number"/"boolean") compare
    * the snapshot's kind tag. "object" also checks reference payloads,
    * excluding callable and primitive references;
-   * "instanceof" requires `className` (a hierarchy class) and tests an OBJ
-   * payload's vtable preorder against its interval (false for every other
-   * payload kind). `negated` flips the result (the `!==` spelling). */
+   * "instanceof" requires `className`: hierarchy payloads use the vtable
+   * interval, while standalone classes use their exact retain adapter.
+   * Other payloads answer false. `negated` flips the result (the `!==` spelling). */
   | {
       kind: "caughtTest";
       value: IrExpr;
@@ -3090,7 +3091,7 @@ export type IrExpr =
    * tsc's control-flow narrowing has already proven the matching test
    * (`e instanceof C` / `typeof e === "string"`), so the read is
    * kind-UNCHECKED at runtime. `type` is f64, bool, string, or a
-   * hierarchy-class object; refcounted results come out retained (+1). */
+   * class object; refcounted results come out retained (+1). */
   | { kind: "caughtNarrow"; value: IrExpr; type: IrType; loc: SrcLoc }
   /** CHECKED extraction of a catch binding's payload as a hierarchy-class
    * instance — the caught analog of dynCheck, emitted for `e as C` casts

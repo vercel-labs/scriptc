@@ -846,6 +846,38 @@ export function emitDynamicExpr(
       const c = host.emitReadReceiver(e.value);
       if (e.test === "instanceof") {
         const target = host.classMetaOf(e.className!);
+        if (!target.hierarchy) {
+          // Standalone class payloads have no vtable word. Their retain
+          // adapter identifies the exact native layout in the snapshot.
+          const adapterSlot = B.tmp();
+          const adapter = B.tmp();
+          B.line(`${adapterSlot} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 5`);
+          B.line(`${adapter} = load ptr, ptr ${adapterSlot}`);
+          let result: string | undefined;
+          const intervals = classMembershipIntervals(host.classMeta, target.def.name);
+          for (const candidate of host.classMeta.values()) {
+            if (
+              candidate.hierarchy ||
+              !intervals.some((range) => range.pre <= candidate.pre && candidate.pre <= range.post)
+            )
+              continue;
+            const rc = vAdapters(host.shapeHost, { kind: "object", className: candidate.def.name });
+            const matches = B.tmp();
+            B.line(`${matches} = icmp eq ptr ${adapter}, ${rc.retain}`);
+            if (result === undefined) result = matches;
+            else {
+              const joined = B.tmp();
+              B.line(`${joined} = or i1 ${result}, ${matches}`);
+              result = joined;
+            }
+          }
+          if (result === undefined)
+            throw new InternalCompilerError("empty standalone class membership");
+          if (e.negated !== true) return { name: result, type: e.type };
+          const negated = B.tmp();
+          B.line(`${negated} = xor i1 ${result}, true`);
+          return { name: negated, type: e.type };
+        }
         host.declare(
           `declare zeroext i1 @scr_caught_instanceof(ptr, ${host.sizeType}, ${host.sizeType})`,
         );

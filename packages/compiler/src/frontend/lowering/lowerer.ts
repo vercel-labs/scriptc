@@ -1,3 +1,4 @@
+import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
@@ -7311,6 +7312,19 @@ export class Lowerer {
             loc: expr.loc,
           }
         : this.coerceToExpected(expr, expected);
+    // Keep storage intact when ordinary widening already accepts it. Only
+    // a destination needing a more specific class layout uses the site's
+    // refinement and checked extraction.
+    if (
+      !typeEquals(e.type, expected) &&
+      (expected.kind === "object" || expected.kind === "union")
+    ) {
+      const site = e.type.kind === "union" ? this.mapTypeOf(this.typeOf(node)) : null;
+      const narrowed =
+        (site && narrowStoredClassValue(this, e, site)) ??
+        narrowGenericClassValue(this, e, expected);
+      if (narrowed) e = this.coerceToExpected(narrowed, expected);
+    }
     // Existing JavaScript arrays retain mutations and identity across checked
     // slots. Fresh literals have no prior identity and use checked storage
     // directly, so later writes can change their inferred element type.

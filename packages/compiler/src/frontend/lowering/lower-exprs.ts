@@ -23,7 +23,7 @@ import { dirname } from "node:path";
 import * as posix from "node:path/posix";
 import type { Lowerer } from "./lowerer.js";
 import { checkedClassAssertion } from "./class-assertions.js";
-import { narrowClassUnion } from "./class-unions.js";
+import { narrowClassUnion, narrowStoredClassValue } from "./class-unions.js";
 import { lowerUnionFieldWrite } from "./expressions/union-field-write.js";
 import { captureContextArguments } from "./function-context.js";
 import { OBJECT_CALLABLE_VALUES } from "./surfaces.js";
@@ -282,8 +282,8 @@ const LOWER_EXPR_MAX_DEPTH = 200;
 let lowerExprDepth = 0;
 
 /** True when a property access names an ABSTRACT property declaration
- * (`abstract p: number` — a PropertyDeclaration, not an accessor): the
- * named-fence test for reads/writes through abstract-typed receivers. */
+ * (`abstract p: number` — a PropertyDeclaration, not an accessor).
+ * These uses need concrete property dispatch because the base has no slot. */
 export function abstractPropertyDeclOf(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -3768,6 +3768,8 @@ function runtimeOptionalReceiverRead(
     );
   }
   if (narrowed.kind === "union") {
+    const classView = narrowStoredClassValue(lowerer, varRef(local.id, local.type, loc), narrowed);
+    if (classView) return classView;
     // The checker may keep the receiver at the storage union unchanged
     // (`string | undefined` on a JS `.match()` call). There is no
     // sub-union to re-tag: preserve the value for the downstream
@@ -8355,6 +8357,28 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
         );
       }
     }
+    if (
+      narrowed?.kind === "union" &&
+      !typeEquals(narrowed, e.type) &&
+      lowerer.unions
+        .get(narrowed.unionId)
+        ?.arms.every(
+          (arm) =>
+            isUnitType(arm) ||
+            arm.kind === "string" ||
+            arm.kind === "f64" ||
+            arm.kind === "bool" ||
+            arm.kind === "bigint",
+        )
+    ) {
+      const helper = lowerer.narrowedRetagHelper(node, e.type.unionId, narrowed.unionId, e.loc);
+      if (helper)
+        return ensureString(
+          lowerer,
+          { kind: "call", callee: helper, args: [e], type: narrowed, loc: e.loc },
+          node,
+        );
+    }
     lowerer.unsupported(
       "SC1090",
       node,
@@ -11542,17 +11566,33 @@ export function caughtRead(
   }
   if (narrowed?.kind === "object") {
     const info = lowerer.classes.get(narrowed.className);
-    if (info && lowerer.inHierarchy(info)) {
-      return { kind: "caughtNarrow", value: ref, type: narrowed, loc };
+    if (info) {
+      const value: IrExpr = { kind: "caughtNarrow", value: ref, type: narrowed, loc };
+      if (lowerer.inHierarchy(info)) return value;
+      return {
+        kind: "ternary",
+        cond: {
+          kind: "caughtTest",
+          value: ref,
+          test: "instanceof",
+          className: info.def.name,
+          type: BOOL,
+          loc,
+        },
+        then: value,
+        else_: lowerer.coerceInto(
+          node,
+          { kind: "caughtToDyn", value: ref, type: DYN, loc },
+          narrowed,
+        ),
+        type: narrowed,
+        loc,
+      };
     }
   }
-  // An UN-narrowed use — the occurrence still types `unknown` — converts
-  // to a dyn value (`options.onError?.(error)` — the caught snapshot
-  // flowing into an unknown slot): the typed→unknown deep-copy stance
-  // extended to exception payloads. Error payloads keep their
-  // observability (instanceof Error / .message / String() — the checked-dynamic tree's
-  // error encoding); other object payloads are type-erased at runtime and
-  // convert to the "[object Object]" approximation — SEMANTICS.md 67.
+  // Unnarrowed reads cross into unknown. The caught-value dispatch pass
+  // retains known native class payloads through live identity capsules;
+  // other payload kinds use the runtime's ordinary conversion.
   if (narrowed?.kind === "dyn") {
     return { kind: "caughtToDyn", value: ref, type: DYN, loc };
   }
@@ -11957,12 +11997,27 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   const caughtLocal = lowerer.caughtLocalOf(expr.left);
   if (caughtLocal) {
     if (!lowerer.inHierarchy(target)) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        `'instanceof' on a catch binding against the standalone class '${target.def.name}' ` +
-          `(only classes in extends hierarchies carry the vtable the payload test needs)`,
-      );
+      const value = varRef(caughtLocal.id, CAUGHT, loc);
+      return {
+        kind: "ternary",
+        cond: {
+          kind: "caughtTest",
+          value,
+          test: "instanceof",
+          className: target.def.name,
+          type: BOOL,
+          loc,
+        },
+        then: { kind: "boolLit", value: true, type: BOOL, loc },
+        else_: classInstanceOf(
+          lowerer,
+          { kind: "caughtToDyn", value, type: DYN, loc },
+          target,
+          loc,
+        ),
+        type: BOOL,
+        loc,
+      };
     }
     return {
       kind: "caughtTest",
@@ -14004,7 +14059,20 @@ export function fieldTarget(
         ? stored
         : narrowed;
   if (receiverIr?.kind === "object") {
-    return classFieldTarget(lowerer, access.expression, receiverIr, access.name.text);
+    const target = classFieldTarget(lowerer, access.expression, receiverIr, access.name.text);
+    if (target) return target;
+    // Abstract properties declare no base storage. Resolve the concrete
+    // instance's live field or accessor through the existing class bridge;
+    // inventing a shared field offset would misread subclass layouts.
+    if (abstractPropertyDeclOf(lowerer, access)) {
+      return {
+        container: "dynamic",
+        obj: lowerer.coerceInto(access.expression, lowerer.lowerExpr(access.expression), DYN),
+        field: access.name.text,
+        fieldType: lowerer.irTypeOf(access),
+      };
+    }
+    return null;
   }
   if (receiverIr?.kind === "union" && hasClassPayload(lowerer, receiverIr)) {
     return representedClassFieldTarget(
@@ -14252,13 +14320,17 @@ export function fieldGetExpr(
   blame: ts.Node,
 ): IrExpr {
   if (target.container === "dynamic")
-    return {
-      kind: "dynKeyGet",
-      value: target.obj,
-      key: { kind: "strLit", value: target.field, type: STRING, loc },
-      type: DYN,
-      loc,
-    };
+    return lowerer.coerceInto(
+      blame,
+      {
+        kind: "dynKeyGet",
+        value: target.obj,
+        key: { kind: "strLit", value: target.field, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      target.fieldType,
+    );
   if (
     target.container === "class" &&
     (target.field === "message" || target.field === "name") &&

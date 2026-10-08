@@ -1,3 +1,4 @@
+import { verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
 import { execFile, spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -55,9 +56,13 @@ function absoluteCommand(command: string): string {
 test(
   `the production CLI passes ${phase} bootstrap contracts with Node unavailable`,
   async () => {
-    const directory = mkdtempSync(
-      join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-native-bootstrap-"),
-    );
+    const sharedSeed = process.env["SCRIPTC_BOOTSTRAP_SEED_DIRECTORY"];
+    const directory =
+      sharedSeed ??
+      mkdtempSync(
+        join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-native-bootstrap-"),
+      );
+    if (sharedSeed) verifyBootstrapSeed(sharedSeed, process.env["GITHUB_SHA"], sanitize);
     const executable = (name: string) =>
       join(directory, name + (process.platform === "win32" ? ".exe" : ""));
     const options = {
@@ -67,30 +72,31 @@ test(
     };
     try {
       const distribution = join(directory, "distribution");
-      await bootstrapStep("build production CLI seed", () =>
-        exec(
-          process.execPath,
-          [
-            "--max-old-space-size=8192",
-            "--import",
-            "tsx",
-            join(root, "scripts/build-native-cli.mts"),
-            distribution,
-          ],
-          {
-            // The plain lane retains release optimization. Instrumenting a dev
-            // seed avoids optimizing the huge compiler module before ASan can
-            // exercise its complete traversal, serialization and LLVM emission.
-            ...options,
-            env: {
-              ...process.env,
-              SCRIPTC_SAN: sanitize ? "1" : "",
-              SCRIPTC_NATIVE_EMIT_IR: "1",
-              SCRIPTC_NATIVE_OPTIMIZATION: sanitize ? "dev" : "release",
+      if (!sharedSeed)
+        await bootstrapStep("build production CLI seed", () =>
+          exec(
+            process.execPath,
+            [
+              "--max-old-space-size=8192",
+              "--import",
+              "tsx",
+              join(root, "scripts/build-native-cli.mts"),
+              distribution,
+            ],
+            {
+              // The plain lane retains release optimization. Instrumenting a dev
+              // seed avoids optimizing the huge compiler module before ASan can
+              // exercise its complete traversal, serialization and LLVM emission.
+              ...options,
+              env: {
+                ...process.env,
+                SCRIPTC_SAN: sanitize ? "1" : "",
+                SCRIPTC_NATIVE_EMIT_IR: "1",
+                SCRIPTC_NATIVE_OPTIMIZATION: sanitize ? "dev" : "release",
+              },
             },
-          },
-        ),
-      );
+          ),
+        );
       // CI reuses this already-built seed for npm and older-libc installation
       // smoke tests, avoiding another full compiler build on the critical path.
       const packageDirectory = process.env["SCRIPTC_BOOTSTRAP_PACKAGE_DIR"];

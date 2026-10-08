@@ -8802,6 +8802,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/abstract-property-dispatch.ts": {
+   "order": [
+    "<repo>/tests/corpus/abstract-property-dispatch.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/arguments-arrow-capture.mjs": {
    "order": [
     "<repo>/tests/corpus/arguments-arrow-capture.mjs"
@@ -8837,6 +8843,12 @@
   "<repo>/tests/corpus/array-checked-constructor.js": {
    "order": [
     "<repo>/tests/corpus/array-checked-constructor.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/array-concat-widening.ts": {
+   "order": [
+    "<repo>/tests/corpus/array-concat-widening.ts"
    ],
    "diags": []
   },
@@ -8965,6 +8977,12 @@
   "<repo>/tests/corpus/catch-capture.ts": {
    "order": [
     "<repo>/tests/corpus/catch-capture.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/caught-standalone-class.ts": {
+   "order": [
+    "<repo>/tests/corpus/caught-standalone-class.ts"
    ],
    "diags": []
   },
@@ -9658,6 +9676,12 @@
    "order": [
     "<repo>/tests/corpus/generic-class-js-functions/functions.js",
     "<repo>/tests/corpus/generic-class-js-functions/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/generic-class-recovery.ts": {
+   "order": [
+    "<repo>/tests/corpus/generic-class-recovery.ts"
    ],
    "diags": []
   },
@@ -10439,6 +10463,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/map-typed-array-values.ts": {
+   "order": [
+    "<repo>/tests/corpus/map-typed-array-values.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/math-function-values.js": {
    "order": [
     "<repo>/tests/corpus/math-function-values.js"
@@ -10863,6 +10893,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/optional-class-flows.ts": {
+   "order": [
+    "<repo>/tests/corpus/optional-class-flows.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/optional-native-callables.js": {
    "order": [
     "<repo>/tests/corpus/optional-native-callables.js"
@@ -10896,6 +10932,12 @@
   "<repo>/tests/corpus/primitive-and-function-descriptors.js": {
    "order": [
     "<repo>/tests/corpus/primitive-and-function-descriptors.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/primitive-union-string.ts": {
+   "order": [
+    "<repo>/tests/corpus/primitive-union-string.ts"
    ],
    "diags": []
   },

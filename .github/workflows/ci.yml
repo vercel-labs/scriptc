@@ -176,23 +176,18 @@ jobs:
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - run: pnpm test tests/harness/effect.test.ts tests/harness/effect4.test.ts
 
-  # Give command probes and full compiler rebuilds independent runners so
-  # their compiler, checker, and linker processes do not compete for memory.
-  # Each job builds its own seed; local invocations still cover both phases.
-  bootstrap:
-    name: test (Linux, ${{ matrix.flavor }}, native bootstrap, ${{ matrix.phase }})
-    # These contracts are portable. Standard Linux runners have enough memory
-    # for LLVM optimization alongside the compiler that produces its input.
+  # Build each instrumented seed once. Downstream contracts retain the same
+  # compiler and source artifacts without repeating seed construction.
+  bootstrap_seed:
+    name: build (Linux, ${{ matrix.flavor }}, bootstrap seed)
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         flavor: [plain, san]
-        phase: [commands, rebuild]
     env:
-      SCRIPTC_TEST_WORKERS: "1"
       SCRIPTC_SAN: ${{ matrix.flavor == 'san' && '1' || '' }}
-      SCRIPTC_BOOTSTRAP_PHASE: ${{ matrix.phase }}
+      SCRIPTC_BOOTSTRAP_SEED_DIRECTORY: ${{ runner.temp }}/native-bootstrap
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -209,11 +204,66 @@ jobs:
         with:
           target: linux-x64-gnu
       - uses: ./.github/actions/native-packages
+        with:
+          target: wasm32-wasi
+          helper: "false"
+      - run: pnpm build
+      - name: Prepare bootstrap seed
+        run: node scripts/bootstrap-seed.mjs
+      - name: Archive seed and compiler artifacts
+        run: tar -C "$RUNNER_TEMP" -cf "$RUNNER_TEMP/bootstrap-seed.tar" native-bootstrap
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-seed-${{ matrix.flavor }}-${{ github.sha }}
+          path: ${{ runner.temp }}/bootstrap-seed.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  bootstrap:
+    needs: bootstrap_seed
+    name: test (Linux, ${{ matrix.flavor }}, native bootstrap, ${{ matrix.phase }})
+    # These contracts are portable. Standard Linux runners have enough memory
+    # for LLVM optimization alongside the compiler that produces its input.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [plain, san]
+        phase: [commands, rebuild]
+    env:
+      SCRIPTC_TEST_WORKERS: "1"
+      SCRIPTC_SAN: ${{ matrix.flavor == 'san' && '1' || '' }}
+      SCRIPTC_BOOTSTRAP_PHASE: ${{ matrix.phase }}
+      SCRIPTC_BOOTSTRAP_SEED_DIRECTORY: ${{ runner.temp }}/native-bootstrap
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      # Rebuilds use the relocated seed's packaged helper and runtimes.
+      - uses: ./.github/actions/native-packages
+        if: matrix.phase == 'commands'
+        with:
+          target: linux-x64-gnu
+      - uses: ./.github/actions/native-packages
         if: matrix.phase == 'commands'
         with:
           target: wasm32-wasi
           helper: "false"
       - run: pnpm build
+      - uses: actions/download-artifact@v4
+        with:
+          name: bootstrap-seed-${{ matrix.flavor }}-${{ github.sha }}
+          path: ${{ runner.temp }}
+      - name: Restore bootstrap seed
+        run: tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/bootstrap-seed.tar"
       - name: Native bootstrap and package installation checks
         run: node scripts/ci-native-bootstrap.mjs
         env:

@@ -410,9 +410,9 @@
       "apiEntries": 461,
       "static": {
         "supported": 0,
-        "partial": 3,
+        "partial": 8,
         "refused": 0,
-        "not-implemented": 458,
+        "not-implemented": 453,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1130,9 +1130,9 @@
       "apiEntries": 18,
       "static": {
         "supported": 0,
-        "partial": 3,
+        "partial": 7,
         "refused": 0,
-        "not-implemented": 15,
+        "not-implemented": 11,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -22256,9 +22256,9 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -22279,9 +22279,9 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -22302,9 +22302,9 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -22371,9 +22371,9 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -22417,9 +22417,9 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -80894,9 +80894,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -81062,9 +81062,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -81174,9 +81174,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       },
       "dynamic": {
         "status": "not-implemented",
@@ -81258,9 +81258,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       },
       "dynamic": {
         "status": "partial",

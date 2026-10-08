@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 
-void scr_runtime_workers_v7(void) {}
+void scr_runtime_workers_v8(void) {}
 
 typedef struct ScrContextExit {
   void (*fn)(void);

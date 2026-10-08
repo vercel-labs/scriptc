@@ -3395,9 +3395,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fs.accessSync": { argTypes: [STRING, F64], result: VOID },
   "fs.readFdSync": { argTypes: [F64, STRING], result: STRING },
   "fs.readFdSyncBytes": { argTypes: [F64], result: BYTES_U8 },
-  /** isatty(3) over an fd literal (0/1/2 — process.stdin/stdout/stderr
-   * .isTTY reads). A real boolean: false where Node's non-TTY streams
-   * expose undefined (documented divergence). Never throws. */
+  /** Validated isatty(3) probe. Stream property lowering maps false to
+   * undefined; tty.isatty exposes the boolean result directly. */
   "process.isTTY": { argTypes: [F64], result: BOOL },
   // Like process.envGet: the result is the module's interned
   // `number | undefined` union — checked by arms in the libCall case.

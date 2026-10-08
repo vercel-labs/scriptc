@@ -36,7 +36,7 @@ function fixture(): IrModule {
     ],
   };
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: fn.name,
     functions: [fn],

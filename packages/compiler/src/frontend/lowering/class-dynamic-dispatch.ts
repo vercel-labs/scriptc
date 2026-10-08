@@ -59,6 +59,7 @@ import { isJsSourceFile } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { SYMBOL_T } from "../../ir/ir.js";
 import { isClassCallback } from "./class-callbacks.js";
+import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
 import { emitterRooted } from "./lower-event-emitter.js";
@@ -499,6 +500,7 @@ export class ClassDynamicDispatch {
   constructor(private readonly asyncFree = false) {}
 
   private readonly generatorDispatch = new GeneratorDynamicDispatch();
+  private readonly caughtDispatch = new CaughtValueDispatch();
   private readonly constructionDispatch = new ClassConstructionDispatch();
   private readonly boxed = new Set<string>();
   private readonly boxedConstructors = new Set<string>();
@@ -557,7 +559,8 @@ export class ClassDynamicDispatch {
       )
         fn.body.shift();
     }
-    let changed = refreshErrorMethodDispatch(lowerer, functions);
+    let changed = this.caughtDispatch.process(lowerer, functions);
+    changed = refreshErrorMethodDispatch(lowerer, functions) || changed;
     changed = refreshClassMethodValueSelections(lowerer) || changed;
     changed = refreshErrorPropertyDispatch(lowerer, functions) || changed;
     changed = this.generatorDispatch.process(lowerer, functions, this.generated) || changed;

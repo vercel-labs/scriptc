@@ -16,6 +16,7 @@ import {
   arrayValueStore,
   arrayValueType,
   unionArrayValueRead,
+  lowerSafeIndexRead,
 } from "./array-values.js";
 import {
   lowerForAwaitGenerator,
@@ -96,7 +97,6 @@ import {
   lowerForOfSearchParams,
   lowerForOfSet,
 } from "./containers/for-of.js";
-import { lowerSafeIndexRead } from "./containers/array-methods.js";
 import { objectIterOverIndexShape } from "./containers/indexed-objects.js";
 import { strCharsCall } from "./containers/array-construction.js";
 import {
@@ -4691,10 +4691,13 @@ export function lowerVarDecl(
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
     if (
-      g.type.kind === "string" &&
       arithmetic?.length === 2 &&
-      arithmetic.some((a) => a.kind === "f64") &&
-      arithmetic.some((a) => a.kind === "string")
+      arithmetic.every((a) => a.kind === "f64" || a.kind === "string" || a.kind === "bool") &&
+      (lowerer.runtimeOptionalArithmeticTypes.has(decl.initializer) ||
+        lowerer.runtimeOptionalBindingType(decl.name)?.kind === "union" ||
+        (g.type.kind === "string" &&
+          arithmetic.some((a) => a.kind === "f64") &&
+          arithmetic.some((a) => a.kind === "string")))
     ) {
       g.type = raw.type;
       lowerer.runtimeOptionalArithmeticGlobals.add(g);
@@ -5107,9 +5110,13 @@ export function lowerVarDecl(
     );
   };
   const runtimeStringArithmetic =
-    settledType.kind === "string" &&
-    ((arithmeticType && typeEquals(arithmeticType, init.type)) ||
-      isStringArithmeticUnion(init.type));
+    (arithmeticType !== undefined && typeEquals(arithmeticType, init.type)) ||
+    (settledType.kind === "string" && isStringArithmeticUnion(init.type)) ||
+    (init.type.kind === "union" &&
+      typeEquals(lowerer.runtimeOptionalBindingType(decl.name, settledType), init.type) &&
+      lowerer.unions
+        .get(init.type.unionId)
+        ?.arms.every((a) => a.kind === "f64" || a.kind === "string" || a.kind === "bool") === true);
   if (runtimeStringArithmetic) {
     settledType = init.type;
   }
@@ -5255,7 +5262,7 @@ export function lowerVarDecl(
   // subtyping (`const p: {a: number} = wider;`) is rejected, not coerced.
   init = lowerer.coerceInto(decl.initializer, init, settledType);
   const local = lowerer.declareLocal(decl.name, decl.name.text, settledType, isLet);
-  if (runtimeStringArithmetic && isStringArithmeticUnion(init.type)) {
+  if (runtimeStringArithmetic && init.type.kind === "union") {
     lowerer.runtimeOptionalArithmeticLocals.add(lowerer.runtimeOptionalRootOf(local));
   }
   if (runtimeOptional) {

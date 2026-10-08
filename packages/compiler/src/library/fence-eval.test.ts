@@ -15,7 +15,7 @@ function program(member: string): IrModule {
     loc,
   };
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "probe",
     functions: [

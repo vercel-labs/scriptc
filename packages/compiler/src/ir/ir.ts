@@ -771,15 +771,12 @@ export function funcOf(params: IrType[], ret: IrType): IrType {
   return { kind: "func", params, ret };
 }
 
-/** Maps, sets and promises may share a union with null/undefined only.
- * Unit tag tests can narrow nullable containers without losing identity;
- * arbitrary data siblings require a separate runtime narrowing operation.
- * Share this rule across checker mapping, synthesized unions and validation. */
+/** Maps and sets use tagged union storage and retain their native identity.
+ * Promises still require nullable-only unions until their data-arm narrowing
+ * and await boundary have a matching contract. */
 export function unionContainerArmsOk(arms: IrType[]): boolean {
   return arms.every(
-    (a, i) =>
-      (a.kind !== "map" && a.kind !== "set" && a.kind !== "promise") ||
-      arms.every((b, j) => j === i || isUnitType(b)),
+    (a, i) => a.kind !== "promise" || arms.every((b, j) => j === i || isUnitType(b)),
   );
 }
 
@@ -903,7 +900,7 @@ export function isRefCounted(t: IrType): boolean {
 
 export interface IrModule {
   /** Bumped on any breaking IR change; serialize.ts refuses mismatches. */
-  irVersion: 14;
+  irVersion: 15;
   sourceFile: string;
   functions: IrFunction[];
   /** Class shapes. Constructors and methods are ordinary module functions

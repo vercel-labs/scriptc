@@ -686,9 +686,9 @@ typedef struct {
 
 static SCR_TL ScrStdio scr_stdio_streams[3] = {{.fd = 0}, {.fd = 1}, {.fd = 2}};
 enum { STDIO_WRITE, STDIO_ON, STDIO_ONCE, STDIO_OFF, STDIO_PAUSE, STDIO_RESUME,
-       STDIO_IS_PAUSED, STDIO_READ, STDIO_RAW, STDIO_DESTROY, STDIO_METHOD_COUNT };
+       STDIO_IS_PAUSED, STDIO_READ, STDIO_RAW, STDIO_DESTROY, STDIO_WINDOW_SIZE, STDIO_METHOD_COUNT };
 static const char *const scr_stdio_names[] = {
-  "write", "on", "once", "removeListener", "pause", "resume", "isPaused", "read", "setRawMode", "destroy"
+  "write", "on", "once", "removeListener", "pause", "resume", "isPaused", "read", "setRawMode", "destroy", "getWindowSize"
 };
 static SCR_TL ScrDyn *scr_stdio_methods[STDIO_METHOD_COUNT];
 static SCR_TL bool scr_stdio_initialized;
@@ -852,7 +852,13 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
   ScrStdio *stream = self->v.handle.ptr;
   ScrDyn *arg = argc ? args[0] : scr_dyn_undefined();
   ScrDyn *result = NULL;
-  if (method == STDIO_WRITE && stream->fd != 0) {
+  if (method == STDIO_WINDOW_SIZE && stream->fd != 0) {
+    result = scr_dyn_new_arr();
+    ScrDyn *columns = scr_dyn_new_num(scr_process_columns(stream->fd));
+    ScrDyn *rows = scr_dyn_new_num(scr_process_rows(stream->fd));
+    scr_dyn_arr_push(result, columns);
+    scr_dyn_arr_push(result, rows);
+  } else if (method == STDIO_WRITE && stream->fd != 0) {
     ScrDyn *encoding = argc > 1 ? args[1] : scr_dyn_undefined();
     ScrDyn *callback = argc > 2 ? args[2] : scr_dyn_undefined();
     if (encoding->kind == SCR_DYN_FUNC) { callback = encoding; encoding = scr_dyn_undefined(); }
@@ -974,6 +980,7 @@ static ScrDyn *scr_stdio_get(void *ptr, const char *key, size_t length) {
   if (length == 11 && memcmp(key, "addListener", 11) == 0) return scr_dyn_retain(scr_stdio_methods[STDIO_ON]);
   for (int i = 0; i < STDIO_METHOD_COUNT; i++) {
     if (strlen(scr_stdio_names[i]) != length || memcmp(key, scr_stdio_names[i], length) != 0) continue;
+    if (i == STDIO_WINDOW_SIZE) return stream->fd != 0 && scr_process_is_tty(stream->fd) ? scr_dyn_retain(scr_stdio_methods[i]) : NULL;
     if (i == STDIO_WRITE) return stream->fd == 0 ? NULL : scr_dyn_retain(stream->write ? stream->write : scr_stdio_methods[i]);
     if (i == STDIO_RAW && !scr_process_is_tty(stream->fd)) return NULL;
     if (i >= STDIO_PAUSE && stream->fd != 0) return scr_stdio_refusal(scr_stdio_names[i]);

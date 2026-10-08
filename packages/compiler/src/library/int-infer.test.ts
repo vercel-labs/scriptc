@@ -97,7 +97,7 @@ const sink = (name: string): IrFunction => ({
 /** A module holding the case function plus the two declared sinks. */
 function caseModule(params: string[], locals: string[], body: IrStmt[]): IrModule {
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: "corpus.ts",
     functions: [
       sink("send"),
@@ -196,7 +196,7 @@ const RECORD_CFG: IntSlotConfig = {
 
 function recordCase(body: IrStmt[], names = ["m"], extraFns: IrFunction[] = []): IrModule {
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: "fields.ts",
     functions: [
       ...extraFns,
@@ -237,7 +237,7 @@ const classCountRead = (): IrExpr => ({
 
 function onlyOrdinaryClass(body: IrStmt[]): IntVerdict {
   const mod: IrModule = {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: "class-fields.ts",
     functions: [
       sink("send"),
@@ -581,7 +581,7 @@ describe("the domain's edges beyond the corpus", () => {
       loc,
     };
     const mod: IrModule = {
-      irVersion: 14,
+      irVersion: 15,
       sourceFile: "optional.ts",
       functions: [
         {

@@ -283,7 +283,7 @@ test.each([mapOf(STRING, F64), setOf(STRING), { kind: "promise", inner: F64 } as
   },
 );
 
-test.each([mapOf(STRING, F64), setOf(STRING), { kind: "promise", inner: F64 } as IrType])(
+test.each([{ kind: "promise", inner: F64 } as IrType])(
   "%j payloads still refuse unrelated data siblings",
   (type) => {
     const mod = expressionModule({ kind: "numLit", value: 0, type: F64, loc }, [
@@ -295,13 +295,12 @@ test.each([mapOf(STRING, F64), setOf(STRING), { kind: "promise", inner: F64 } as
   },
 );
 
-test("two differently typed Map payloads cannot silently share one tag test", () => {
+test("differently typed collection payloads preserve separate union tags", () => {
   const mod = expressionModule({ kind: "numLit", value: 0, type: F64, loc }, [
     { id: "maps", arms: [mapOf(STRING, F64), mapOf(STRING, STRING), UNDEFINED_T] },
   ]);
-  expect(
-    validateModule(mod).filter((error) => error.message.includes("beside non-unit arms")),
-  ).toHaveLength(2);
+  expect(validateModule(mod)).toEqual([]);
+  expect(deserializeModule(serializeModule(mod))).toEqual(mod);
 });
 
 function numericReadModule(overrides: Partial<IrExpr & { kind: "arrIntrinsic" }> = {}): IrModule {
@@ -315,7 +314,7 @@ function numericReadModule(overrides: Partial<IrExpr & { kind: "arrIntrinsic" }>
     ...overrides,
   };
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -399,7 +398,7 @@ test.each(["sortPrimitive", "toSortedPrimitive"] as const)(
 
 function expressionModule(expr: IrExpr, unions: IrUnionDef[]): IrModule {
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     unions,
@@ -1286,7 +1285,7 @@ test.each([
 function tdzModule(mutable = true): IrModule {
   const value: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -1454,7 +1453,7 @@ test("TDZ locals require a shared box", () => {
 
 function discriminatedModule(): IrModule {
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     functions: [{ name: "main", params: [], locals: [], returnType: VOID, body: [], loc }],

@@ -1,3 +1,4 @@
+import { isOptionalProcessStreamProperty } from "./builtins/process.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import {
   dynUndefinedExpr,
@@ -105,12 +106,13 @@ import {
 import { PoisonError, dynFallbackType, jsFuncNameOf, neverTaintedJsType, own } from "./lowerer.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import {
-  lowerNpmStaticSafeIndexRead,
+  arrayValueRead,
+  arrayValueStore,
+  arrayValueType,
   lowerSafeIndexRead,
   tryLowerNumericIndexRead,
-} from "./containers/array-methods.js";
+} from "./array-values.js";
 import { strCharsCall } from "./containers/array-construction.js";
-import { arrayValueRead, arrayValueStore, arrayValueType } from "./array-values.js";
 import { lowerOptionalStringIndex } from "./string-index.js";
 import { tryLowerIndexedComparison } from "./indexed-comparison.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
@@ -3583,6 +3585,9 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     return expr;
   }
   if (expr.type.kind !== "union") return expr;
+  if (ts.isPropertyAccessExpression(node) && isOptionalProcessStreamProperty(lowerer, node))
+    return expr;
+
   // Represented fields and index values can include undefined even when
   // checker inference or lib.d.ts declares strings (RegExp captures).
   // Only a declaration that represents the optional arm can provide a
@@ -4316,7 +4321,26 @@ function lowerNullishPair(
   // arm that has no first-class union representation.
   const fresh = rest.length === 1 ? lowerer.emptyCollectionFor(expr.right, rest[0]!) : null;
   if (fresh) return { kind: "nullish", left, right: fresh, type: fresh.type, loc };
-  const type = lowerer.irTypeOf(expr);
+  let type = lowerer.irTypeOf(expr);
+  // A runtime-optional read can reach the default even when declarations
+  // call the left side present. Preserve a differently typed primitive
+  // fallback rather than checking it against that incomplete result type.
+  const rightType = lowerer.mapTypeOf(lowerer.typeOf(expr.right));
+  const primitive = (t: IrType): boolean =>
+    t.kind === "f64" || t.kind === "string" || t.kind === "bool";
+  if (
+    rightType &&
+    primitive(type) &&
+    primitive(rightType) &&
+    !typeEquals(type, rightType) &&
+    rest.every(primitive)
+  ) {
+    const arms = [...rest];
+    if (!arms.some((arm) => typeEquals(arm, rightType))) arms.push(rightType);
+    arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    type = { kind: "union", unionId: lowerer.unions.intern(arms) };
+    lowerer.runtimeOptionalArithmeticTypes.set(expr, type);
+  }
   if (type.kind === "dyn" && lowerer.dynConvertible(left.type)) {
     return {
       kind: "nullish",
@@ -6397,7 +6421,12 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     // exit primitives eagerly): the engine element read, exiting at the
     // declared number type.
     if (recv.type.kind === "jsval") return islandElementRead(lowerer, expr, recv);
-    const index = lowerer.lowerExpr(expr.argumentExpression);
+    const index = lowerOptionalNumber(
+      lowerer,
+      lowerer.lowerExpr(expr.argumentExpression),
+      locOf(expr.argumentExpression),
+      expr.argumentExpression,
+    );
     if (isJsSourceFile(expr.getSourceFile()) && recv.type.kind === "bytes") {
       return {
         kind: "dynKeyGet",
@@ -6698,38 +6727,23 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       }
     }
     if (receiverIr?.kind === "string") {
-      // `s[i]` with a number index reads a UTF-16 code unit — charAt's
-      // exact job (the UTF-16-exact runtime). Without
-      // noUncheckedIndexedAccess the checker types the read `string`,
-      // and charAt's "" is the only string-typed answer for an
-      // out-of-range or fractional index where JS reads `undefined` —
-      // SEMANTICS.md documents the divergence; in-range integer reads
-      // (the loop pattern) are JS-exact. Optional results instead retain
-      // undefined for missing string properties.
+      // An indexed string property is absent for non-integer and missing
+      // indexes. charAt has different coercion and out-of-range semantics.
       const recv = lowerer.lowerExpr(expr.expression);
-      const index = lowerer.lowerExpr(expr.argumentExpression);
-      const resultType = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      const index = lowerOptionalNumber(
+        lowerer,
+        lowerer.lowerExpr(expr.argumentExpression),
+        locOf(expr.argumentExpression),
+        expr.argumentExpression,
+      );
       if (index.type.kind === "f64" && recv.type.kind === "string") {
-        if (resultType?.kind === "string") {
-          return {
-            kind: "strIntrinsic",
-            method: "charAt",
-            receiver: recv,
-            args: [index],
-            type: STRING,
-            loc: locOf(expr),
-          };
-        }
-        if (resultType?.kind === "union") {
-          const arms = lowerer.unions.get(resultType.unionId)?.arms;
-          if (
-            arms?.length === 2 &&
-            lowerer.armTag(resultType.unionId, STRING) >= 0 &&
-            lowerer.armTag(resultType.unionId, UNDEFINED_T) >= 0
-          ) {
-            return lowerOptionalStringIndex(lowerer, recv, index, resultType, locOf(expr));
-          }
-        }
+        return lowerOptionalStringIndex(
+          lowerer,
+          recv,
+          index,
+          lowerer.withUndefinedArm(STRING),
+          locOf(expr),
+        );
       }
       lowerer.unsupported(
         "SC1090",
@@ -6902,7 +6916,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     arr.method === "slice" &&
     npmStaticPackageOfPath(expr.getSourceFile().fileName) !== null
   ) {
-    const safe = lowerNpmStaticSafeIndexRead(lowerer, arr, index, locOf(expr));
+    const safe = lowerSafeIndexRead(lowerer, arr, index, locOf(expr));
     if (safe) return safe;
   }
   // A union-element read narrows like an identifier when the checker has
@@ -8525,13 +8539,9 @@ export function lowerAsExpression(
         };
       }
     }
-    // Narrowed reads (`err instanceof Error` proven) still pass below;
-    // other targets keep the narrowness fence with the checked-cast fix.
-    // In a JS FILE the AsExpression is tsgo's spelling of a JSDoc cast
-    // (`/** @type {T} */ (e)` — JS has no `as`); 5.9.3 parsed that as a
-    // plain parenthesized read, which lowered caught→dyn and met the
-    // target through the ordinary checked-cast coercion — so the dyn
-    // bridge stays open here exactly for that shape.
+    // Structural assertions use the ordinary checked dynamic bridge. It
+    // retains primitive values and native class identity before validating
+    // the requested shape; an assertion does not bypass runtime checks.
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
     const bridged =
       narrowed &&
@@ -8539,7 +8549,7 @@ export function lowerAsExpression(
         narrowed.kind === "bool" ||
         narrowed.kind === "string" ||
         narrowed.kind === "object" ||
-        (narrowed.kind === "dyn" && isJsSourceFile(expr.getSourceFile())));
+        narrowed.kind === "dyn");
     if (!bridged) lowerer.unsupported("SC1063", expr);
   }
   const inner = lowerer.lowerExpr(expr.expression);
@@ -10074,7 +10084,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       }
       const optionalStringPlus = lowerOptionalStringPlus();
       if (optionalStringPlus) return optionalStringPlus;
-      if (isJsSourceFile(expr.getSourceFile())) {
+      {
         const primitive = (type: IrType): boolean =>
           type.kind === "f64" ||
           type.kind === "string" ||
@@ -11542,6 +11552,37 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   ) {
     const collection = lowerer.isStdlibGlobal(expr.right, "Map") ? "map" : "set";
     const value = lowerer.lowerExpr(expr.left);
+    if (value.type.kind === "union") {
+      const union = lowerer.unions.get(value.type.unionId);
+      if (union) {
+        const local = lowerer.declareHiddenLocal("%collectionTest", value.type);
+        const reference = varRef(local.id, value.type, loc);
+        let result: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+        union.arms.forEach((arm, tag) => {
+          if (arm.kind !== collection) return;
+          const test: IrExpr = {
+            kind: "unionIsTag",
+            unionId: union.id,
+            value: reference,
+            tag,
+            negated: false,
+            type: BOOL,
+            loc,
+          };
+          result =
+            result.kind === "boolLit"
+              ? test
+              : { kind: "logical", op: "||", left: result, right: test, type: BOOL, loc };
+        });
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+          result,
+          type: BOOL,
+          loc,
+        };
+      }
+    }
     if (value.type.kind === "dyn")
       return {
         kind: "libCall",

@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
+import { collectClassMethodMutations } from "./class-method-mutations.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Class lowering: shape collection over the single-inheritance graph
  * (fields, methods, accessors, overrides), constructor/member lowering with
@@ -758,6 +759,10 @@ export function registerBuiltinErrorClasses(lowerer: Lowerer): void {
           { name: "%nameEnumerable", type: BOOL },
           { name: "%stackFrames", type: STRING },
           { name: "%stack", type: STRING },
+          { name: "%systemErrno", type: F64 },
+          { name: "%systemCall", type: STRING },
+          { name: "%systemPath", type: STRING },
+          { name: "%systemDest", type: STRING },
         ],
         loc,
       },
@@ -5984,36 +5989,7 @@ export function collectInheritedJsFieldWrites(
  * hierarchy identifies the original declarations through aliases as well. */
 export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.SourceFile[]): void {
   const families: [ts.MethodDeclaration, ts.MethodDeclaration][] = [];
-  // Record named prototype accesses before collecting method signatures.
-  // Those slots need a callable ABI even when JavaScript would otherwise
-  // specialize each call independently.
-  for (const file of files)
-    ts.walkPreorder(file, (node) => {
-      if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) return;
-      const name = ts.isPropertyAccessExpression(node)
-        ? node.name.text
-        : ts.isStringLiteralLike(node.argumentExpression)
-          ? node.argumentExpression.text
-          : null;
-      if (name === null) return;
-      const prototype =
-        ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "prototype";
-      const assigned =
-        ts.isBinaryExpression(node.parent) &&
-        node.parent.left === node &&
-        node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
-      const symbol = !assigned
-        ? undefined
-        : ts.isPropertyAccessExpression(node)
-          ? lowerer.checker.getSymbolAtLocation(node.name)
-          : lowerer.checker.getPropertyOfType(lowerer.typeOf(node.expression), name);
-      if (
-        prototype ||
-        (symbol && lowerer.checker.declarationsOf(symbol).some(ts.isMethodDeclaration))
-      ) {
-        lowerer.prototypeMethodAccesses.set(name, node);
-      }
-    });
+  collectClassMethodMutations(lowerer, files);
   const visit = (node: ts.Node): void => {
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
       const accessors = node.members.filter(

@@ -22,7 +22,6 @@ import {
   arrayOf,
   canBoxFuncIntoDyn,
   funcOf,
-  typeKey,
 } from "../../../ir/ir.js";
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
 import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
@@ -30,9 +29,9 @@ import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-conte
 
 /** Method calls on first-class process-stream receivers (procStream —
  * a WritableStream-typed value like prefixStream's `output` param):
- * write(data) with one string, dispatched at runtime onto the exact
- * stdout/stderr write paths (the fd IS the value). Everything else
- * @types/node declares on WritableStream fences member-qualified.
+ * write(data) with one string and terminal geometry, dispatched onto
+ * the original stdout/stderr descriptor. Other declared stream members
+ * retain member-qualified diagnostics.
  * Null for non-procStream receivers. */
 export function lowerProcStreamMethodCall(
   lowerer: Lowerer,
@@ -58,6 +57,22 @@ export function lowerProcStreamMethodCall(
       };
     }
   }
+  if (name === "getWindowSize" && call.arguments.length === 0) {
+    const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(access.expression), DYN);
+    return lowerer.coerceInto(
+      call,
+      {
+        kind: "dynInvoke",
+        recv: receiver,
+        method: name,
+        calleeName: call.expression.getText(),
+        args: [],
+        type: DYN,
+        loc,
+      },
+      lowerer.irTypeOf(call),
+    );
+  }
   if (name === "write" && call.arguments.length === 1) {
     const receiver = lowerer.lowerExpr(access.expression);
     const data = lowerer.lowerExpr(call.arguments[0]!);
@@ -73,25 +88,33 @@ export function lowerProcStreamMethodCall(
   lowerer.noLowering(
     `WritableStream.${name}`,
     call,
-    "write(data) with one string is the supported stream-value member",
+    "write(data) with one string and getWindowSize() are the supported stream-value methods",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }
 
-/** `process.stdin/stdout/stderr.isTTY` → isatty(3) on the stream's fd
- * (a REAL boolean: Node's non-TTY streams expose `undefined` here — the
- * documented divergence; truthiness tests, the actual usage, agree), and
- * `process.stdout/stderr.columns/rows` → ioctl(TIOCGWINSZ) on the fd, with
- * Node's non-TTY answer intact: the read is `number | undefined` and a
- * non-TTY (or ioctl-refusing) stream yields the undefined arm. The
- * receiver match sees through parens and as-casts to the SYMBOL —
- * `(process.stderr as typeof process.stderr & { columns?: number })
- * .columns` is the wild widening pattern (@types/node declares a plain
- * `number`, so honest code casts the undefined possibility back in), and
- * the cast changes the expression's TYPE, never the value. columns sites
- * whose checker type does NOT admit undefined are fenced with that exact
- * fix instead of lowering to a lie. Null for anything else, so the
- * property chain keeps trying. */
+/** Standard streams expose optional terminal properties: pipes have no
+ * isTTY, columns, or rows. The declarations do not prove their presence. */
+export function isOptionalProcessStreamProperty(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): boolean {
+  if (!["isTTY", "columns", "rows"].includes(expr.name.text)) return false;
+  let recv = expr.expression;
+  while (ts.isParenthesizedExpression(recv) || ts.isAsExpression(recv) || ts.isTypeAssertion(recv))
+    recv = recv.expression;
+  if (ts.isPropertyAccessExpression(recv)) {
+    const stream = lowerer.stdlibGlobalMember(recv, "process");
+    if (
+      stream === "stdout" ||
+      stream === "stderr" ||
+      (stream === "stdin" && expr.name.text === "isTTY")
+    )
+      return true;
+  }
+  return lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "procStream";
+}
+
 export function lowerProcessStreamProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -137,6 +160,25 @@ export function lowerProcessStreamProperty(
       left = left.expression;
     if (ts.isPropertyAccessExpression(left)) recv = left;
   }
+  if (
+    lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "procStream" &&
+    !(
+      ts.isPropertyAccessExpression(recv) &&
+      ["stdout", "stderr"].includes(lowerer.stdlibGlobalMember(recv, "process") ?? "")
+    )
+  ) {
+    const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN);
+    return lowerer.coerceToExpected(
+      {
+        kind: "dynKeyGet",
+        value: receiver,
+        key: strLit(member, locOf(expr)),
+        type: DYN,
+        loc: locOf(expr),
+      },
+      lowerer.withUndefinedArm(member === "isTTY" ? BOOL : F64),
+    );
+  }
   if (!ts.isPropertyAccessExpression(recv)) return null;
   const stream = lowerer.stdlibGlobalMember(recv, "process");
   if (stream !== "stdin" && stream !== "stdout" && stream !== "stderr") return null;
@@ -148,22 +190,21 @@ export function lowerProcessStreamProperty(
     loc,
   };
   if (member === "isTTY") {
-    return { kind: "libCall", fn: "process.isTTY", args: [fd], type: BOOL, loc };
+    const type = lowerer.withUndefinedArm(BOOL);
+    return {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "process.isTTY", args: [fd], type: BOOL, loc },
+      then: lowerer.coerceToExpected(boolLit(true, loc), type),
+      else_: lowerer.coerceToExpected(
+        { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type,
+      ),
+      type,
+      loc,
+    };
   }
-  if (stream === "stdin") return null; // no geometry on a ReadStream — generic fences apply
-  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (stream === "stdin") return null;
   const want = lowerer.withUndefinedArm(F64);
-  // JS files skip the annotation fence: there is no annotation to fix —
-  // the read IS Node's `number | undefined` and lowers to exactly that
-  // (commander's `isTTY ? columns : undefined` help-width probes).
-  if ((!declared || typeKey(declared) !== typeKey(want)) && !isJsSourceFile(expr.getSourceFile())) {
-    lowerer.noLowering(
-      `process.${stream}.${member} as a plain number`,
-      expr,
-      `on a non-TTY stream Node's .${member} is undefined — type the read to admit it: ` +
-        `(process.${stream} as typeof process.${stream} & { ${member}?: number }).${member}`,
-    );
-  }
   return {
     kind: "libCall",
     fn: member === "rows" ? "process.rows" : "process.columns",

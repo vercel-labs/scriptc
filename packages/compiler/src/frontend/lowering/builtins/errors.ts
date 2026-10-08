@@ -51,19 +51,42 @@ export function lowerErrorCodeProperty(
       };
     }
   }
-  if (expr.name.text !== "code" && expr.name.text !== "cause" && expr.name.text !== "stack")
+  const systemField = ["errno", "syscall", "path", "dest"].includes(expr.name.text);
+  if (
+    !systemField &&
+    expr.name.text !== "code" &&
+    expr.name.text !== "cause" &&
+    expr.name.text !== "stack"
+  )
     return null;
   // Error-rooted classes only — builtin or user subclass (both embed the
   // code and cause slots in their layout prefix).
   let info = lowerer.classes.get(recvT.className) ?? null;
   while (info && info.base) info = info.base;
   if (!info || info.def.name !== "%Error") return null;
-  if (!lowerer.isStdlibMember(expr)) return null;
+  if (
+    !lowerer.isStdlibMember(expr) &&
+    !(recvT.className === "%Error" && lowerer.typeOf(expr.expression).isIntersectionType())
+  )
+    return null;
   const rawReceiver = lowerer.lowerExpr(expr.expression);
   const receiver =
     rawReceiver.type.kind === "dyn"
       ? lowerer.coerceInto(expr.expression, rawReceiver, recvT)
       : rawReceiver;
+  if (systemField) {
+    const loc = locOf(expr);
+    return lowerer.coerceToExpected(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(receiver, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      lowerer.withUndefinedArm(expr.name.text === "errno" ? F64 : STRING),
+    );
+  }
   return {
     kind: "libCall",
     fn:

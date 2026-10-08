@@ -15,6 +15,7 @@
  *   scr_fs_exists never throws, like Node's existsSync.
  */
 #include "scr_runtime.h"
+#include "scr_system_errors.h"
 
 #include <ctype.h>
 #ifdef SCR_WORKERS
@@ -2316,6 +2317,25 @@ static const char *scr_fs_err_path(const ScrStr *path, char buf[PATH_MAX]) {
 #endif
 
 /* Exported (scr_runtime.h): scr_bytes.c's fs Buffer forms share it. */
+/* Keep metadata on the error itself until it crosses a checked-value
+ * boundary. Failed operations do not populate the process identity cache. */
+static void scr_fs_throw_details(int e, const char *name, const char *message, size_t length,
+                                 const char *op, const ScrStr *path, const ScrStr *dest) {
+  double number = e > 0 ? -e : e;
+#define SCR_FS_ERRNO_VALUE(code, text) if (strcmp(name, #code) == 0) number = SCR_NODE_UV__##code;
+  SCR_NODE_UV_ERRNO_MAP(SCR_FS_ERRNO_VALUE)
+#undef SCR_FS_ERRNO_VALUE
+  ScrStr *text = scr_str_new(message, length);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_code(error, name);
+  error->system_errno = number;
+  error->system_call = scr_str_new(op, strlen(op));
+  error->system_path = path ? scr_str_retain((ScrStr *)path) : NULL;
+  error->system_dest = dest ? scr_str_retain((ScrStr *)dest) : NULL;
+  scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 void scr_fs_throw(int e, const char *op, const ScrStr *path) {
 #ifdef _WIN32
   /* The CRT lands ERROR_ACCESS_DENIED in errno as EACCES; libuv's
@@ -2338,12 +2358,7 @@ void scr_fs_throw(int e, const char *op, const ScrStr *path) {
   int len = path
     ? snprintf(msg, cap, "%s: %s, %s '%s'", name, text, op, shown)
     : snprintf(msg, cap, "%s: %s, %s", name, text, op);
-  /* A real Error instance (name "Error", message = Node's text) — what a
-   * typed catch's `e instanceof Error` + `e.message` observes in Node —
-   * with `code` stamped to the errno name (the exotic-errno fallback
-   * stamps its "E<num>" spelling; Node would carry the uv name there).
-   * errno/syscall/path stay unrepresented (SEMANTICS.md divergence 13). */
-  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, name);
+  scr_fs_throw_details(e, name, msg, (size_t)len, op, path, NULL);
   free(msg);
 }
 
@@ -3198,7 +3213,7 @@ static double scr_fs_write_bytes(double fd, const void *data, size_t length,
     const char *text = scr_errno_text(e);
     char msg[160];
     int len = snprintf(msg, sizeof msg, "%s: %s, write", name, text);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, name);
+    scr_fs_throw_details(e, name, msg, (size_t)len, "write", NULL, NULL);
     return 0;
   }
   return (double)n;
@@ -3359,7 +3374,7 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
     const char *text = scr_errno_text(e);
     char msg[160];
     int len = snprintf(msg, sizeof msg, "%s: %s, read", name, text);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, name);
+    scr_fs_throw_details(e, name, msg, (size_t)len, "read", NULL, NULL);
     return 0;
   }
   return (double)n;
@@ -3440,7 +3455,7 @@ void scr_fs_close(double fd) {
     const char *text = scr_errno_text(e);
     char msg[160];
     int len = snprintf(msg, sizeof msg, "%s: %s, close", name, text);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, name);
+    scr_fs_throw_details(e, name, msg, (size_t)len, "close", NULL, NULL);
   }
 }
 
@@ -3459,7 +3474,7 @@ static void scr_fs_throw2(int e, const char *op, const ScrStr *src, const ScrStr
     scr_trap("scriptc: out of memory\n");
   }
   int len = snprintf(msg, cap, "%s: %s, %s '%s' -> '%s'", name, text, op, shown_src, shown_dest);
-  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, name);
+  scr_fs_throw_details(e, name, msg, (size_t)len, op, src, dest);
   free(msg);
 }
 
@@ -3972,7 +3987,7 @@ static void scr_fs_throw_nopath(int e, const char *op) {
   const char *text = scr_errno_text(e);
   char msg[256];
   int len = snprintf(msg, sizeof msg, "%s: %s, %s", name, text, op);
-  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, name);
+  scr_fs_throw_details(e, name, msg, (size_t)len, op, NULL, NULL);
 }
 
 ScrStr *scr_fs_read_fd(double fd) {
@@ -3991,7 +4006,10 @@ ScrBytes *scr_fs_read_fd_bytes(double fd) {
 
 /* ── the tty probes ──────────────────────────────────────────────────── */
 
-bool scr_process_is_tty(double fd) { return isatty((int)fd) != 0; }
+bool scr_process_is_tty(double fd) {
+  if (!isfinite(fd) || fd < 0 || fd > INT_MAX || trunc(fd) != fd) return false;
+  return isatty((int)fd) != 0;
+}
 
 /* Terminal geometry for process.stdout/stderr.columns/rows: ioctl(TIOCGWINSZ) on
  * the stream's fd, exactly Node's tty.WriteStream source of truth. A

@@ -804,9 +804,8 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     }
     u.arms.forEach((arm, i) => {
       // The unit kinds (undefinedT/nullT) are valid arms — union membership
-      // is the ONLY place they may appear. Containers are valid beside
-      // unit arms: tag tests distinguish absence while the reference
-      // payload preserves identity. The shared rule refuses data siblings.
+      // is the ONLY place they may appear. Container payloads preserve
+      // identity; promise data siblings retain their separate fence.
       if (
         arm.kind === "void" ||
         arm.kind === "union" ||
@@ -817,10 +816,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       ) {
         errors.push({ message: `union ${u.id}: arm ${i} is ${arm.kind}`, loc: noLoc });
       }
-      if (
-        (arm.kind === "map" || arm.kind === "set" || arm.kind === "promise") &&
-        !unionContainerArmsOk(u.arms)
-      ) {
+      if (arm.kind === "promise" && !unionContainerArmsOk(u.arms)) {
         errors.push({
           message: `union ${u.id}: ${arm.kind} arm ${i} beside non-unit arms`,
           loc: noLoc,
@@ -1117,14 +1113,15 @@ function validateFunction(
   if (isUnitType(fn.returnType)) {
     err(`return type is bare unit type ${fn.returnType.kind}`, fn.loc);
   }
-  // Exception snapshots may be captured, but are never public parameters
-  // or return values. Their payload crosses those boundaries explicitly.
+  // Exception snapshots may be captured or passed to internal conversion
+  // helpers. They are not source-level types and never return as values.
   if (fn.returnType.kind === "caught") err("return type is caught", fn.loc);
   for (const p of fn.params) {
+    if (p.type.kind === "caught" && fn.name !== "%caught.dynamicValue")
+      err(`param "${p.name}" is caught-typed`, fn.loc);
     if (!locals.has(p.localId)) {
       err(`param "${p.name}" has no local entry "${p.localId}"`, fn.loc);
     }
-    if (p.type.kind === "caught") err(`param "${p.name}" is caught-typed`, fn.loc);
   }
   for (const c of [...(fn.captures ?? []), ...(fn.classCaptures ?? [])]) {
     const local = locals.get(c.localId);

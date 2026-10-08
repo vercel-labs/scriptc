@@ -68,7 +68,7 @@ Without `-o`, artifacts are written to `.scriptc/` next to the input. Different 
 
 ### External linking
 
-Program objects define `main` and leave selected `scr_*` runtime functions undefined. A strong reference to `scr_runtime_abi_v7` checks runtime compatibility at link time.
+Program objects define `main` and leave selected `scr_*` runtime functions undefined. A strong reference to `scr_runtime_abi_v8` checks runtime compatibility at link time.
 
 `--print=native-link-info` emits the program object and a JSON recipe containing the runtime pack and link order for external builds. This object ABI is experimental and requires an exact runtime version. See [Native Program Objects](/docs/native-objects) for examples.
 

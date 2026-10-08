@@ -1,3 +1,4 @@
+import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
  * own owners; this module selects the applicable call path. */
@@ -1422,6 +1423,25 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       if (sig && !(jsSpreadArgs && spreadNeedsRuntimeArity(lowerer, sig.params, expr.arguments))) {
         lowerer.noteEdge(sig.name);
         const args = lowerer.completeArgs(expr.arguments, sig.params, loc, expr);
+        const symbol = lowerer.resolveValueSymbol(expr.expression);
+        const declaration = symbol ? lowerer.checker.valueDeclarationOf(symbol) : undefined;
+        // A bare call supplies undefined as this, even inside a callback
+        // currently carrying a receiver. The value-call ABI saves and
+        // restores that ambient receiver around the function invocation.
+        if (
+          declaration &&
+          ts.isFunctionDeclaration(declaration) &&
+          declaration.parameters.some(isThisParameter)
+        ) {
+          const callee = lowerer.lowerExpr(expr.expression);
+          return reconcileOverloadReturn(lowerer, expr, {
+            kind: "callValue",
+            callee,
+            args,
+            type: sig.returnType,
+            loc,
+          });
+        }
         return reconcileOverloadReturn(lowerer, expr, {
           kind: "call",
           callee: sig.name,
@@ -1871,6 +1891,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   ) {
     const access = expr.expression;
     const value = tryLowerExpression(lowerer, access.expression);
+    if (value?.type.kind === "array" && !isJsSourceFile(expr.getSourceFile())) {
+      const callback = lowerArrayCallbackCall(lowerer, expr, access, value);
+      if (callback) return callback;
+    }
+
     if (
       value?.type.kind === "dyn" ||
       value?.type.kind === "generator" ||
@@ -8991,7 +9016,9 @@ export function lowerObjectMethodCall(
       const receiverLocal = lowerer.declareHiddenLocal("%callReceiver", target.obj.type);
       const init: IrStmt = { kind: "varDecl", localId: receiverLocal.id, init: target.obj, loc };
       target.obj = { kind: "varRef", localId: receiverLocal.id, type: receiverLocal.type, loc };
-      const receiver = lowerer.coerceToExpected(target.obj, DYN);
+      const receiver: { receiver?: IrExpr } = {};
+      if (!lowerer.receiverFreeCallbackFields.has(access.name.text))
+        receiver.receiver = lowerer.coerceToExpected(target.obj, DYN);
       const finish = (result: IrExpr): IrExpr => ({
         kind: "seqExpr",
         stmts: [init],
@@ -9021,12 +9048,12 @@ export function lowerObjectMethodCall(
         ) {
           const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
           const spread = lowerSpreadArgsCall(lowerer, call, boxed, loc);
-          if (spread?.kind === "dynCall") return finish({ ...spread, receiver });
+          if (spread?.kind === "dynCall") return finish({ ...spread, ...receiver });
           const args = call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
           return finish({
             kind: "dynCall",
             callee: boxed,
-            receiver,
+            ...receiver,
             calleeName: access.getText(),
             args,
             type: DYN,
@@ -9034,7 +9061,7 @@ export function lowerObjectMethodCall(
           });
         }
         const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
-        return finish({ kind: "callValue", callee, receiver, args, type: callee.type.ret, loc });
+        return finish({ kind: "callValue", callee, ...receiver, args, type: callee.type.ret, loc });
       }
       if (callee?.type.kind === "dyn") {
         if (call.arguments.some((a) => ts.isSpreadElement(a))) {
@@ -9044,7 +9071,7 @@ export function lowerObjectMethodCall(
         return finish({
           kind: "dynCall",
           callee,
-          receiver,
+          ...receiver,
           calleeName: access.getText(),
           args,
           type: DYN,

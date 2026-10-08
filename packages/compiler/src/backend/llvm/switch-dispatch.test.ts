@@ -8,7 +8,7 @@ const string = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING
 
 function emit(type: IrType, tests: (IrExpr | null)[], pointerBits: 32 | 64 = 64): string {
   const mod: IrModule = {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     functions: [

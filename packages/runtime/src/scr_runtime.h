@@ -62,8 +62,8 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v7(void);
-void scr_runtime_workers_v7(void);
+void scr_runtime_abi_v8(void);
+void scr_runtime_workers_v8(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
  * Every unrecoverable runtime trap — OOM, semantic range traps, internal-
@@ -617,6 +617,10 @@ typedef struct ScrError {
   bool name_enumerable;
   ScrStr *stack_frames; /* captured native source frames */
   ScrStr *stack; /* lazily formatted, cached stack */
+  double system_errno; /* present exactly when system_call is non-NULL */
+  ScrStr *system_call;
+  ScrStr *system_path;
+  ScrStr *system_dest;
 } ScrError;
 
 enum {
@@ -654,6 +658,10 @@ typedef struct ScrDomException {
   bool name_enumerable;
   ScrStr *stack_frames;
   ScrStr *stack;
+  double system_errno;
+  ScrStr *system_call;
+  ScrStr *system_path;
+  ScrStr *system_dest;
   double dom_code; /* the WebIDL legacy code (0 when the name is off-table) */
   bool has_cause;  /* the options form carried a `cause` member */
   struct ScrDyn *cause; /* owned; NULL when has_cause is false */

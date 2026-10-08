@@ -611,3 +611,21 @@ test("dot-parent: bare '.' and '..' imports build and run (the TS project dialec
   const { stdout } = await execFileAsync(result.binaryPath);
   expect(stdout).toBe("parent-banner:lib-index!\n");
 });
+
+test("node-types: terminal properties and filesystem error metadata match Node", async () => {
+  const outDir = outDirFor("terminal-error-fields");
+  const entry = join(nodeTypesDir, "terminal-error-fields.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "terminal-error-fields"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});

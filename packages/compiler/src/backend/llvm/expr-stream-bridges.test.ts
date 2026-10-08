@@ -20,7 +20,7 @@ function sharedGraph(roots: number): IrModule {
     unionId: `input${index}`,
   }));
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     records: [

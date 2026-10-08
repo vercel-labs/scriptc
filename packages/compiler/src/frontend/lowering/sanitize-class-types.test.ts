@@ -21,7 +21,7 @@ test("fenced instance slots are erased throughout signatures, storage and nested
   };
   const ref = (type: IrType): IrExpr => ({ kind: "varRef", localId: "x", type, loc });
   const module: IrModule = {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     globals: [{ id: "g", name: "g", type: composite, mutable: false }],
@@ -110,7 +110,7 @@ test("modules without optional tables and registered class types retain their st
   const loc = { file: "registered.ts", start: 0, end: 1 };
   const type: IrType = { kind: "object", className: "Registered" };
   const module: IrModule = {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     functions: [

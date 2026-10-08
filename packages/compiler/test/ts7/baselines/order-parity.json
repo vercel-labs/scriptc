@@ -14637,6 +14637,48 @@
     "<repo>/tests/corpus/native-worker-terminate-wait.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/caught-class-identity.ts": {
+   "order": [
+    "<repo>/tests/corpus/caught-class-identity.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/caught-system-error-fields.ts": {
+   "order": [
+    "<repo>/tests/corpus/caught-system-error-fields.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/collection-data-unions.ts": {
+   "order": [
+    "<repo>/tests/corpus/collection-data-unions.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-callback-dispatch.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-callback-dispatch.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/terminal-stream-properties.ts": {
+   "order": [
+    "<repo>/tests/corpus/terminal-stream-properties.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/typed-index-arguments.ts": {
+   "order": [
+    "<repo>/tests/corpus/typed-index-arguments.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/fixtures/node-types/terminal-error-fields.ts": {
+   "order": [
+    "<repo>/tests/fixtures/node-types/terminal-error-fields.ts"
+   ],
+   "diags": []
   }
  }
 }

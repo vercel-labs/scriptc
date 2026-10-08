@@ -1,3 +1,5 @@
+import { isOptionalProcessStreamProperty } from "./builtins/process.js";
+import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
@@ -2249,6 +2251,8 @@ export class Lowerer {
   /** Named method slots observed before class collection need a callable
    * ABI and shared prototype descriptors instead of call-site specialization. */
   readonly prototypeMethodAccesses = new Map<string, ts.Node>();
+  /** Field names whose complete source census stores only lexical arrows. */
+  readonly receiverFreeCallbackFields = new Set<string>();
   /** Inferred JS methods participating in an override chain keep a vtable
    * ABI instead of call-site specialization. Filled before class collection. */
   readonly virtualJsMethods = new Set<ts.MethodDeclaration>();
@@ -3758,10 +3762,11 @@ export class Lowerer {
       }
       return false;
     };
-    const isArrayRead = (node: ts.Expression): boolean => {
+    const isIndexedRead = (node: ts.Expression): boolean => {
       const e = peel(node);
       if (!ts.isElementAccessExpression(e)) return false;
-      return this.mapTypeOf(this.typeOf(e.expression))?.kind === "array";
+      const kind = this.mapTypeOf(this.typeOf(e.expression))?.kind;
+      return kind === "array" || kind === "string";
     };
     const isDynamicObjectEntryRead = (node: ts.Expression): boolean => {
       const read = peel(node);
@@ -3796,7 +3801,8 @@ export class Lowerer {
       // function/global ABI to `T | undefined`.
       if (explicitlyNonNull(node)) return false;
       const e = peel(node);
-      if (isArrayRead(e)) return true;
+      if (isIndexedRead(e)) return true;
+      if (ts.isPropertyAccessExpression(e) && isOptionalProcessStreamProperty(this, e)) return true;
       if (ts.isCallExpression(e) && this.runtimeOptionalReduceTypes.has(e)) return true;
       if (
         ts.isCallExpression(e) &&
@@ -3848,28 +3854,43 @@ export class Lowerer {
       }
       return false;
     };
-    const optionalStringArithmeticType = (node: ts.Expression): IrType | null => {
+    const optionalPrimitiveResultType = (node: ts.Expression): IrType | null => {
       const e = peel(node);
-      if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.PlusToken)
+      if (ts.isIdentifier(e)) {
+        const symbol = symbolOf(e);
+        return symbol ? (this.runtimeOptionalBindingTypes.get(symbol) ?? null) : null;
+      }
+      if (ts.isCallExpression(e)) {
+        const symbol = callableSymbolOf(e.expression);
+        return symbol ? (arithmeticReturns.get(symbol) ?? null) : null;
+      }
+      if (!ts.isBinaryExpression(e)) return null;
+      if (e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken && mayBeOptional(e.left)) {
+        const left = this.mapTypeOf(this.typeOf(e.left));
+        const right = this.mapTypeOf(this.typeOf(e.right));
+        const primitive = (t: IrType | null): t is IrType =>
+          t?.kind === "f64" || t?.kind === "string" || t?.kind === "bool";
+        if (primitive(left) && primitive(right) && !typeEquals(left, right)) {
+          const arms = [left, right].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+          return { kind: "union", unionId: this.unions.intern(arms) };
+        }
         return null;
-      const stringArrayRead = (part: ts.Expression): boolean => {
+      }
+      if (e.operatorToken.kind !== ts.SyntaxKind.PlusToken) return null;
+      const stringRead = (part: ts.Expression): boolean => {
         const p = peel(part);
         if (!ts.isElementAccessExpression(p)) return false;
         const t = this.mapTypeOf(this.typeOf(part));
         if (t?.kind !== "string") return false;
         const recv = this.mapTypeOf(this.typeOf(p.expression));
-        return recv?.kind === "array" && recv.elem.kind === "string";
+        return recv?.kind === "string" || (recv?.kind === "array" && recv.elem.kind === "string");
       };
       const primitive = (part: ts.Expression): boolean => {
         const t = this.mapTypeOf(this.typeOf(part));
         return t?.kind === "f64" || t?.kind === "string";
       };
-      if (!stringArrayRead(e.left) && !stringArrayRead(e.right)) return null;
-      if (
-        !(primitive(e.left) || stringArrayRead(e.left)) ||
-        !(primitive(e.right) || stringArrayRead(e.right))
-      )
-        return null;
+      if (!stringRead(e.left) && !stringRead(e.right)) return null;
+      if (!primitive(e.left) || !primitive(e.right)) return null;
       return { kind: "union", unionId: this.unions.intern([F64, STRING]) };
     };
     const noteField = (decl: ts.VariableDeclaration, name: string): boolean => {
@@ -4181,6 +4202,15 @@ export class Lowerer {
       const scan = (node: ts.Node): void => {
         if (ts.isVariableDeclaration(node)) {
           if (node.initializer) {
+            const result = optionalPrimitiveResultType(node.initializer);
+            const symbol = ts.isIdentifier(node.name) ? symbolOf(node.name) : null;
+            if (result?.kind === "union" && symbol) {
+              const before = this.runtimeOptionalBindingTypes.get(symbol);
+              if (!before || !typeEquals(before, result)) {
+                this.runtimeOptionalBindingTypes.set(symbol, result);
+                changed = true;
+              }
+            }
             if (ts.isIdentifier(node.name) && isDynamicObjectEntryRead(node.initializer)) {
               const symbol = symbolOf(node.name);
               if (symbol && !dynamicObjectEntryRows.has(symbol)) {
@@ -4472,7 +4502,7 @@ export class Lowerer {
           optionalReturns.add(symbol);
           changed = true;
         }
-        const arithmetic = optionalStringArithmeticType(expression);
+        const arithmetic = optionalPrimitiveResultType(expression);
         if (arithmetic && !arithmeticReturns.has(symbol)) {
           arithmeticReturns.set(symbol, arithmetic);
           changed = true;
@@ -4887,7 +4917,7 @@ export class Lowerer {
       this.diags.length > 0
         ? null
         : {
-            irVersion: 14,
+            irVersion: 15,
             sourceFile: this.entry.fileName,
             functions,
             classes: artifacts.classes,
@@ -5974,6 +6004,8 @@ export class Lowerer {
       const arm = sym !== undefined ? this.aliasNarrowTypes.get(sym) : undefined;
       if (arm !== undefined) return arm;
     }
+    const collection = concreteCollectionNarrow(this, node, t);
+    if (collection) return collection;
     // IMPLICIT-ANY instance bodies: an identifier reference to a BOUND
     // param answers the call site's concrete type wherever the checker
     // still says `any` (there is no `T` for mapType to substitute — the

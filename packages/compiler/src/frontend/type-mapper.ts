@@ -1550,6 +1550,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // runtime-bearing class, callable, indexed, and non-literal data shapes
   // remain intersections with no representation.
   if (widened.isIntersectionType()) {
+    const errorMetadata = mapErrorMetadataIntersection(widened, ctx);
+    if (errorMetadata) return errorMetadata;
     const brandedPrimitive = mapBrandedPrimitiveIntersection(widened, ctx);
     if (brandedPrimitive) return brandedPrimitive;
   }
@@ -2000,7 +2002,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // (fs/exec throw sites stamp `code`), so the type maps to the %Error
   // root — `err as NodeJS.ErrnoException` from an Error-typed value is a
   // no-op cast, error-typed listener params accept it, and the `.code`
-  // read has its own lowering (errno/syscall/path stay per-member fences).
+  // reads have dedicated lowerings that preserve absent metadata.
   if (isStdlibInterface("ErrnoException")) return { kind: "object", className: "%Error" };
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
@@ -2445,7 +2447,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           (d) =>
             (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
             ctx.isStdlibFile(d.getSourceFile()) &&
-            isDeclaredInAmbientModule(d, "tty"),
+            (isDeclaredInAmbientModule(d, "tty") ||
+              (isDeclaredInAmbientModule(d, "process") &&
+                isDeclaredInAmbientNamespace(d, "NodeJS"))),
         )) ||
     (psym?.name === "WritableStream" &&
       checker
@@ -2568,8 +2572,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // NodeJS.ErrnoException: @types/node's `interface ErrnoException extends
   // Error` (dns/fs callback error types). It IS an Error at runtime — map
   // it to the runtime %Error hierarchy like the lib Error interfaces
-  // above; the optional errno/code/path/syscall extras fence per member
-  // (the .stack stance). Provenance-checked like the rest.
+  // above; optional metadata uses the same checked property view.
+  // Provenance-checked like the rest.
   if (
     psym?.name === "ErrnoException" &&
     checker
@@ -4162,7 +4166,7 @@ export function unitOnlyUnion(unions: UnionRegistry): IrType {
  * answers undefined). ONE shape per channel pair — `g.next()`'s lowering,
  * `.return()`, `.throw()`, the for-of desugar, and mapType's
  * IteratorResult alias mapping all intern through here, so reads agree.
- * Null when the combined union would be illegal (a container arm beside
+ * Null when the combined union would be illegal (a promise arm beside
  * data arms, a regex/Date arm — kinds with no narrowing test here): such
  * generators stay unmapped. */
 export function genResultRecord(
@@ -4191,7 +4195,7 @@ export function genResultRecord(
     if (!add(yieldT) || !add(retT)) return null;
     byKey.set(typeKey(UNDEFINED_T), UNDEFINED_T);
     const arms = [...byKey.values()];
-    // Containers keep the shared nullable-only rule. Generator function
+    // Promises keep the shared nullable-only rule. Generator function
     // payloads retain their existing unit-only boundary too.
     if (
       !unionContainerArmsOk(arms) ||
@@ -4327,6 +4331,62 @@ function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): Ir
   if (fields.length === 1) return null; // no properties — it is just F
   fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return { kind: "record", shapeId: shapes.intern(fields, false, undefined, declaredOrder) };
+}
+
+/** Optional standard error metadata refines an existing Error identity;
+ * it does not allocate a structural copy or extend its native layout. */
+function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const parts = ts.constituentTypes(type);
+  // Do not map unrelated intersections speculatively: mapping recursive
+  // structural types can intern their representation before it is complete.
+  const hasError = parts.some((part) => {
+    const symbol = part.getSymbol();
+    return (
+      symbol !== undefined &&
+      [
+        "Error",
+        "EvalError",
+        "RangeError",
+        "ReferenceError",
+        "SyntaxError",
+        "TypeError",
+        "URIError",
+        "AggregateError",
+      ].includes(symbol.name) &&
+      ctx.checker.declarationsOf(symbol).some((decl) => ctx.isStdlibFile(decl.getSourceFile()))
+    );
+  });
+  if (!hasError) return null;
+  let error: IrType | null = null;
+  for (const part of parts) {
+    const mapped = mapType(part, ctx);
+    if (mapped?.kind === "object" && RUNTIME_ERROR_CLASSES.has(mapped.className)) {
+      if (error && !typeEquals(error, mapped)) return null;
+      error = mapped;
+      continue;
+    }
+    if (
+      ctx.checker.getCallSignatures(part).length ||
+      ctx.checker.getConstructSignatures(part).length ||
+      ctx.checker.getIndexInfosOfType(part).length
+    )
+      return null;
+    for (const property of ctx.checker.getPropertiesOfType(part)) {
+      const expected =
+        property.name === "errno"
+          ? "f64"
+          : ["code", "syscall", "path", "dest"].includes(property.name)
+            ? "string"
+            : null;
+      if (!expected || !(property.flags & ts.SymbolFlags.Optional)) return null;
+      const field = mapType(ctx.checker.getTypeOfSymbol(property), ctx);
+      const arms =
+        field?.kind === "union" ? ctx.unions.get(field.unionId)?.arms : field ? [field] : [];
+      if (!arms?.length || !arms.every((arm) => arm.kind === expected || arm.kind === "undefinedT"))
+        return null;
+    }
+  }
+  return error;
 }
 
 /** A conventional primitive brand has one runtime-carrying primitive part
@@ -4971,10 +5031,7 @@ function armHasUnionHome(arm: IrType, siblingCount: number): boolean {
     case "generator":
     case "dyn":
       return false;
-    // Containers map only beside unit siblings; data siblings have no
-    // supported runtime narrowing test against them.
-    case "map":
-    case "set":
+    // Promise data siblings still lack a supported narrowing contract.
     case "promise":
       return siblingCount === 0;
     default:

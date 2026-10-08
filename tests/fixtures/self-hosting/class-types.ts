@@ -8,7 +8,7 @@ const kept: IrType = { kind: "object", className: "Registered" };
 const expr: IrExpr = { kind: "varRef", localId: "x", type: missing, loc };
 const nested: IrType = { kind: "func", params: [{ kind: "array", elem: missing }],
   ret: { kind: "generator", yieldT: missing, retT: kept, nextT: missing } };
-const module: IrModule = { irVersion: 14, sourceFile: loc.file, entry: "main",
+const module: IrModule = { irVersion: 15, sourceFile: loc.file, entry: "main",
   functions: [{ name: "main", params: [{ localId: "x", name: "x", type: missing }],
     returnType: nested, locals: [], loc, body: [{ kind: "exprStmt", expr, loc }] }],
   records: [{ id: "r", fields: [{ name: "callback", type: nested }], indexValue: missing }],

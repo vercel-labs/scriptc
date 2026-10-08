@@ -1976,6 +1976,12 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.tty.isatty",
+      "kind": "node-builtin",
+      "name": "tty.isatty",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.url",
       "kind": "node-builtin",
       "name": "url",

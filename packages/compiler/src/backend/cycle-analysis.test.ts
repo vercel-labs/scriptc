@@ -19,7 +19,7 @@ import { computeTraced as llvmTraced } from "./llvm/shapes.js";
 const loc = { file: "cycles.ts", start: 0, end: 1 };
 function module(): IrModule {
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     functions: [{ name: "main", locals: [], params: [], returnType: VOID, body: [], loc }],

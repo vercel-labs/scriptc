@@ -92,7 +92,17 @@ export function lowerMapMethodCall(
     // result union. `undefined` sorts LAST among all possible arm
     // typeKeys, so when V is itself a union its arms keep their tags in
     // the result union — the backend leans on that (docs/ir.md).
-    const type = receiverIr.value.kind === "dyn" ? DYN : lowerer.irTypeOf(call);
+    // instanceof on a readonly view can erase the checker's value type
+    // to any. Recover that case from native storage; otherwise preserve
+    // the contextual return mapping for recursive and generic values.
+    const erased = (lowerer.typeOf(call).flags & ts.TypeFlags.Any) !== 0;
+    const type =
+      receiverIr.value.kind === "dyn"
+        ? DYN
+        : erased
+          ? (lowerer.withUndefinedArmOf(receiverIr.value) ??
+            lowerer.withUndefinedArm(receiverIr.value))
+          : lowerer.irTypeOf(call);
     if (type.kind !== "union" && type.kind !== "dyn") lowerer.badType(call, lowerer.typeOf(call));
     return { kind: "mapIntrinsic", method: "get", receiver, args: [k], type, loc };
   }

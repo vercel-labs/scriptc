@@ -261,7 +261,7 @@ test("semantic library cache restores and rebases IR after a comment-only edit",
   const sourceBefore = await readFile(f.source, "utf8");
   const returnStart = sourceBefore.indexOf("return");
   const semanticMod = {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: f.source,
     functions: [
       {
@@ -324,7 +324,7 @@ test("semantic library cache refuses token and directive edits", async () => {
   const f = await fixture();
   const sourceBefore = await readFile(f.source, "utf8");
   const semanticMod = {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: f.source,
     functions: [
       {
@@ -372,7 +372,7 @@ test("semantic LLVM cache accepts comment edits that shift source lines", async 
   const f = await fixture();
   const sourceBefore = await readFile(f.source, "utf8");
   const semanticMod = {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: f.source,
     functions: [
       {
@@ -447,7 +447,7 @@ test("semantic LLVM cache accepts line separator normalization", async () => {
       frontend: tracker.snapshot(),
       semantic: {
         mod: {
-          irVersion: 14,
+          irVersion: 15,
           sourceFile: f.source,
           functions: [],
           entry: "__main",
@@ -468,7 +468,7 @@ test("semantic LLVM cache rebases comment edits in multi-source graphs", async (
   const importedSource = "export function helper(): number { return 1; }\n";
   await writeFile(imported, importedSource);
   const semanticMod = {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: f.source,
     functions: [
       {

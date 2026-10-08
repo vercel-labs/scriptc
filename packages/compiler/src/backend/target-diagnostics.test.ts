@@ -35,7 +35,7 @@ const fetch: IrExpr = {
 };
 function module(direct: IrExpr[] = []): IrModule {
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "%main",
     records: [],

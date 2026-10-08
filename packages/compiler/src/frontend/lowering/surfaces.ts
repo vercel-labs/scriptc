@@ -1514,6 +1514,9 @@ export const BUILTIN_MODULE_FNS: Record<
     isUtf8: { fn: "buffer.isUtf8", params: [DYN], result: BOOL },
     transcode: { fn: "buffer.transcode", params: [DYN, DYN, DYN], result: BYTES_U8 },
   },
+  tty: {
+    isatty: { fn: "process.isTTY", params: [F64], result: BOOL },
+  },
   process: {
     loadEnvFile: { fn: "process.loadEnvFile", params: [DYN], result: VOID },
   },

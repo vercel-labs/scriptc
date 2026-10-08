@@ -459,9 +459,9 @@
       "apiEntries": 461,
       "static": {
         "supported": 0,
-        "partial": 3,
+        "partial": 8,
         "refused": 0,
-        "not-implemented": 458,
+        "not-implemented": 453,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -1251,9 +1251,9 @@
       "apiEntries": 18,
       "static": {
         "supported": 0,
-        "partial": 3,
+        "partial": 7,
         "refused": 0,
-        "not-implemented": 15,
+        "not-implemented": 11,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -37699,8 +37699,11 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/error-stack-frames.ts",
-          "tests/corpus/error-stack-limit.ts"
+          "tests/corpus/error-stack-limit.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
+          "tests/harness/project-config.test.ts"
         ]
       },
       "dynamic": {
@@ -38037,8 +38040,13 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.code",
+        "tests": [
+          "tests/corpus/caught-system-error-fields.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
+          "tests/harness/project-config.test.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -38059,8 +38067,13 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.dest",
+        "tests": [
+          "tests/corpus/caught-system-error-fields.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
+          "tests/harness/project-config.test.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -38081,8 +38094,13 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.errno",
+        "tests": [
+          "tests/corpus/caught-system-error-fields.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
+          "tests/harness/project-config.test.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -38147,8 +38165,13 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.path",
+        "tests": [
+          "tests/corpus/caught-system-error-fields.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
+          "tests/harness/project-config.test.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -38191,8 +38214,13 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.syscall",
+        "tests": [
+          "tests/corpus/caught-system-error-fields.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
+          "tests/harness/project-config.test.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -107797,6 +107825,8 @@
         "tests": [
           "tests/corpus/1448-stream-columns.ts",
           "tests/corpus/2992-stream-rows.ts",
+          "tests/corpus/terminal-stream-properties.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
           "tests/harness/terminal-geometry.test.ts"
         ]
       },
@@ -107911,8 +107941,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "partial",
+        "evidence": "compiler-dedicated:readStream.isTTY",
+        "tests": [
+          "tests/corpus/1448-stream-columns.ts",
+          "tests/corpus/2992-stream-rows.ts",
+          "tests/corpus/terminal-stream-properties.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
+          "tests/harness/terminal-geometry.test.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -108076,8 +108113,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "partial",
+        "evidence": "compiler-dedicated:writeStream.getWindowSize",
+        "tests": [
+          "tests/corpus/1448-stream-columns.ts",
+          "tests/corpus/2992-stream-rows.ts",
+          "tests/corpus/terminal-stream-properties.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
+          "tests/harness/terminal-geometry.test.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -108162,6 +108206,8 @@
         "tests": [
           "tests/corpus/1448-stream-columns.ts",
           "tests/corpus/2992-stream-rows.ts",
+          "tests/corpus/terminal-stream-properties.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
           "tests/harness/terminal-geometry.test.ts"
         ]
       },
@@ -108189,8 +108235,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "partial",
+        "evidence": "compiler-dedicated:writeStream.isTTY",
+        "tests": [
+          "tests/corpus/1448-stream-columns.ts",
+          "tests/corpus/2992-stream-rows.ts",
+          "tests/corpus/terminal-stream-properties.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
+          "tests/harness/terminal-geometry.test.ts"
+        ]
       },
       "dynamic": {
         "status": "not-implemented",
@@ -108221,6 +108274,8 @@
         "tests": [
           "tests/corpus/1448-stream-columns.ts",
           "tests/corpus/2992-stream-rows.ts",
+          "tests/corpus/terminal-stream-properties.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
           "tests/harness/terminal-geometry.test.ts"
         ]
       },
@@ -108275,8 +108330,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "partial",
+        "evidence": "compiler-dedicated:tty.isatty",
+        "tests": [
+          "tests/corpus/1448-stream-columns.ts",
+          "tests/corpus/2992-stream-rows.ts",
+          "tests/corpus/terminal-stream-properties.ts",
+          "tests/fixtures/node-types/terminal-error-fields.ts",
+          "tests/harness/terminal-geometry.test.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",

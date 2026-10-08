@@ -66,7 +66,7 @@ function fixture(value: IrType = record, key: IrType = F64): IrModule {
     ],
   };
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     records: [{ id: "cell", fields: [{ name: "x", type: F64 }] }],

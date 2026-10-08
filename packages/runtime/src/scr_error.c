@@ -49,6 +49,9 @@ static void scr_error_gcfree(void *obj) {
   scr_str_release(e->code); /* NULL-safe: absent on most errors */
   scr_str_release(e->stack_frames);
   scr_str_release(e->stack);
+  scr_str_release(e->system_call);
+  scr_str_release(e->system_path);
+  scr_str_release(e->system_dest);
   if (e->error_cause && scr_error_cause_drop) scr_error_cause_drop(obj);
   scr_obj_free_note();
   scr_cyc_free(e);
@@ -80,6 +83,9 @@ static void scr_error_destroy(void *obj) {
   scr_str_release(e->code);
   scr_str_release(e->stack_frames);
   scr_str_release(e->stack);
+  scr_str_release(e->system_call);
+  scr_str_release(e->system_path);
+  scr_str_release(e->system_dest);
   if (e->error_cause && scr_error_cause_drop) scr_error_cause_drop(obj);
   scr_obj_free_note();
   if (scr_error_traced) scr_cyc_free(e);

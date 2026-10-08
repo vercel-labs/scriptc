@@ -17,8 +17,8 @@ import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 
-/** Observed method slots and zero-argument notifications can be replaced
- * through instance properties or their shared prototype chain. */
+/** Only observed mutable method slots need instance/prototype lookup.
+ * Unmodified methods retain direct or virtual native dispatch. */
 export function isClassCallback(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
   if (!isClassOwnEnumerableFieldName(name) || name.startsWith("get:") || name.startsWith("set:"))
     return false;
@@ -31,12 +31,7 @@ export function isClassCallback(lowerer: Lowerer, info: ClassInfo, name: string)
   )
     return false;
   const found = findMethodOn(lowerer, info, name);
-  return (
-    !!found &&
-    !found.sig.abstract &&
-    (lowerer.prototypeMethodAccesses.has(name) ||
-      (found.sig.params.length === 0 && found.sig.ret.kind === "void"))
-  );
+  return !!found && !found.sig.abstract && lowerer.prototypeMethodAccesses.has(name);
 }
 
 function callbackBag(

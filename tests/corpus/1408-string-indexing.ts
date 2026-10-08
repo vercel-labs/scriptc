@@ -1,8 +1,4 @@
-// String indexing `s[i]` reads a UTF-16 code unit — charAt's exact job,
-// which is how it lowers. In-bounds integer indices (the loop pattern) are
-// JS-exact, astral pairs split into lone surrogates included; the
-// out-of-range "" - vs - undefined difference is a documented divergence
-// and stays out of the corpus. Node is the oracle.
+// Indexed string reads preserve missing values while in-range reads match charAt.
 
 const s = "héllo \u{1f600}!";
 console.log("len", s.length);

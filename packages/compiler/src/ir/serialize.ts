@@ -2,9 +2,9 @@
  * JSON's null/zero spellings must not erase NaN, infinities or negative zero. */
 import type { IrModule } from "./ir.js";
 
-// Version 14 records worker execution, which requires thread-local program
-// state and matching runtime objects. Older readers must not erase that mode.
-export const IR_VERSION = 14 as const;
+// Version 15 expands the native Error prefix with filesystem metadata.
+// Older modules embed incompatible subclass offsets and must be rejected.
+export const IR_VERSION = 15 as const;
 
 /** IR artifacts are plain data. Scan each function once before deciding
  * whether its JSON encoding needs the complete-number-domain replacer. */

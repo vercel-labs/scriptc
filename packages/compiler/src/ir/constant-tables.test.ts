@@ -20,7 +20,7 @@ const expr = (value: IrExpr): IrStmt => ({ kind: "exprStmt", expr: value, loc })
 
 function fixture(): IrModule {
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     globals: [{ id, name: "table", type, mutable: false }],

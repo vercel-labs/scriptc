@@ -25,7 +25,30 @@ import {
   appendImplicitUndefinedReturn,
   blockBodyOf,
 } from "./function-returns.js";
-import { generatorMeta, type ParamShape } from "./call-signatures.js";
+import { generatorMeta, isThisParameter, type ParamShape } from "./call-signatures.js";
+
+/** Save the call-site receiver before defaults or body effects. Escaping
+ * arrows capture this binding instead of reading a later call's receiver. */
+function declareCallReceiver(
+  lowerer: Lowerer,
+  node: ts.FunctionLikeDeclaration,
+  generator: boolean,
+): IrStmt {
+  const receiver = lowerer.declareThis(DYN);
+  const loc = locOf(node);
+  return {
+    kind: "varDecl",
+    localId: receiver.id,
+    init: {
+      kind: "libCall",
+      fn: generator ? "dyn.generatorThis" : "dyn.this",
+      args: [],
+      type: DYN,
+      loc,
+    },
+    loc,
+  };
+}
 
 /** True when the identifier resolves (through import aliases) to a
  * top-level function declaration of ANY program file (not merely a
@@ -253,25 +276,15 @@ export function lowerLambda(
   const diagsBefore = lowerer.diags.length;
   lowerer.fnStack.push(fnCtx);
   try {
+    const receiver =
+      (checkedReceiver ||
+        isJsSourceFile(node.getSourceFile()) ||
+        node.parameters.some(isThisParameter)) &&
+      !ts.isArrowFunction(node)
+        ? declareCallReceiver(lowerer, node, isGenerator)
+        : null;
     const { params, prologue } = lowerer.declareParams(node.parameters, shapes);
-    // Checked JavaScript functions take their receiver from the call site.
-    // Store it as this function's binding so escaping arrows capture it,
-    // and a method nested inside another method never captures its owner.
-    if ((checkedReceiver || isJsSourceFile(node.getSourceFile())) && !ts.isArrowFunction(node)) {
-      const receiver = lowerer.declareThis(DYN);
-      prologue.unshift({
-        kind: "varDecl",
-        localId: receiver.id,
-        init: {
-          kind: "libCall",
-          fn: isGenerator ? "dyn.generatorThis" : "dyn.this",
-          args: [],
-          type: DYN,
-          loc,
-        },
-        loc,
-      });
-    }
+    if (receiver) prologue.unshift(receiver);
     declareFunctionArguments(
       lowerer,
       node,
@@ -447,7 +460,12 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
   const diagsBefore = lowerer.diags.length;
   lowerer.fnStack.push(ctx);
   try {
+    const receiver =
+      decl.parameters.some(isThisParameter) || isJsSourceFile(decl.getSourceFile())
+        ? declareCallReceiver(lowerer, decl, sig.generator !== undefined)
+        : null;
     const { params, prologue } = lowerer.declareParams(decl.parameters, sig.params);
+    if (receiver) prologue.unshift(receiver);
     declareFunctionArguments(
       lowerer,
       decl,

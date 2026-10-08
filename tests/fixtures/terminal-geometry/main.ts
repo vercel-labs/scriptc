@@ -1,10 +1,13 @@
+import type { WriteStream } from 'node:tty';
+const out = process.stdout;
+function size(stream: WriteStream): [number, number] { return stream.getWindowSize(); }
 function geometry(): number[] {
-  return [
-    (process.stdout as typeof process.stdout & { columns?: number }).columns ?? -1,
-    (process.stdout as typeof process.stdout & { rows?: number }).rows ?? -1,
-    (process.stderr as typeof process.stderr & { columns?: number }).columns ?? -1,
-    (process.stderr as typeof process.stderr & { rows?: number }).rows ?? -1,
-  ];
+  const output = out.getWindowSize();
+  const errors = size(process.stderr);
+  if (!out.isTTY || !process.stderr.isTTY || process.stdin.isTTY !== undefined) throw new Error(`tty flags: ${out.isTTY},${process.stderr.isTTY},${process.stdin.isTTY}`);
+  if (output[0] !== out.columns || output[1] !== process.stdout.rows) throw new Error('stdout geometry');
+  if (errors[0] !== process.stderr.columns || errors[1] !== process.stderr.rows) throw new Error('stderr geometry');
+  return [output[0], output[1], errors[0], errors[1]];
 }
 console.log(JSON.stringify(geometry()));
 let ticks = 0;

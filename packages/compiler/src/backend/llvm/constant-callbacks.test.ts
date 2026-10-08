@@ -66,7 +66,7 @@ function fixture(): IrModule {
     loc,
   };
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "main",
     functions: [predicate, consumer, entry],

@@ -86,7 +86,7 @@ function fixture(): IrModule {
     .find((fn) => fn.name === "negative")!
     .body.splice(1, 0, { kind: "varDecl", localId: "other", init: str("other"), loc });
   return {
-    irVersion: 14,
+    irVersion: 15,
     sourceFile: loc.file,
     entry: "__main",
     globals: [{ id: "%g.e.acc", name: "globalAccumulator", type: STRING, mutable: true }],

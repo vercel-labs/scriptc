@@ -1600,7 +1600,7 @@ export class LlEmitter {
       `@scr_error_vts = external ${tl}global [${RUNTIME_ERROR_CLASSES.size} x %ScrVt]`,
       `declare void @scr_init()`,
       `declare void @scr_lib_init(i32, ptr)`,
-      ...(this.mod.workers ? [`declare void @scr_runtime_workers_v7()`] : []),
+      ...(this.mod.workers ? [`declare void @scr_runtime_workers_v8()`] : []),
       ...(this.runtimeAbiMarker && this.mod.lib === undefined
         ? [`declare void @${RUNTIME_ABI_MARKER}()`]
         : []),
@@ -1841,7 +1841,7 @@ export class LlEmitter {
       `define i32 @${this.mod.workers ? "sc_context_entry" : this.wasi ? "__main_argc_argv" : "main"}(i32 %argc, ptr %argv) ${FN_ATTRS} {`,
       `entry:`,
       ...(this.runtimeAbiMarker ? [`  call void @${RUNTIME_ABI_MARKER}()`] : []),
-      ...(this.mod.workers ? [`  call void @scr_runtime_workers_v7()`] : []),
+      ...(this.mod.workers ? [`  call void @scr_runtime_workers_v8()`] : []),
       `  call void @scr_init()`,
       ...stamps,
       // Event-surface programs (signal/exit listeners) fill the loop's

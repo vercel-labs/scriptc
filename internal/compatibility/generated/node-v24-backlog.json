@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 42,
-        "verify-gap": 2427,
-        "audit-partial": 737,
+        "verify-gap": 2418,
+        "audit-partial": 746,
         "classify": 2,
         "implement": 80
       },
@@ -18651,12 +18651,16 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:errors",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:errors.code",
+          "tests": [
+            "tests/corpus/caught-system-error-fields.ts",
+            "tests/fixtures/node-types/terminal-error-fields.ts",
+            "tests/harness/project-config.test.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -18679,12 +18683,16 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:errors",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:errors.dest",
+          "tests": [
+            "tests/corpus/caught-system-error-fields.ts",
+            "tests/fixtures/node-types/terminal-error-fields.ts",
+            "tests/harness/project-config.test.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -18707,12 +18715,16 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:errors",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:errors.errno",
+          "tests": [
+            "tests/corpus/caught-system-error-fields.ts",
+            "tests/fixtures/node-types/terminal-error-fields.ts",
+            "tests/harness/project-config.test.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -18791,12 +18803,16 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:errors",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:errors.path",
+          "tests": [
+            "tests/corpus/caught-system-error-fields.ts",
+            "tests/fixtures/node-types/terminal-error-fields.ts",
+            "tests/harness/project-config.test.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -18847,12 +18863,16 @@
       "priority": "normal",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:errors",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-feature:errors.syscall",
+          "tests": [
+            "tests/corpus/caught-system-error-fields.ts",
+            "tests/fixtures/node-types/terminal-error-fields.ts",
+            "tests/harness/project-config.test.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -90173,12 +90193,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:tty",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:readStream.isTTY",
+          "tests": [
+            "tests/corpus/1448-stream-columns.ts",
+            "tests/corpus/2992-stream-rows.ts",
+            "tests/corpus/terminal-stream-properties.ts",
+            "tests/fixtures/node-types/terminal-error-fields.ts",
+            "tests/harness/terminal-geometry.test.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -90373,12 +90399,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:tty",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:writeStream.getWindowSize",
+          "tests": [
+            "tests/corpus/1448-stream-columns.ts",
+            "tests/corpus/2992-stream-rows.ts",
+            "tests/corpus/terminal-stream-properties.ts",
+            "tests/fixtures/node-types/terminal-error-fields.ts",
+            "tests/harness/terminal-geometry.test.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -90480,6 +90512,8 @@
           "tests": [
             "tests/corpus/1448-stream-columns.ts",
             "tests/corpus/2992-stream-rows.ts",
+            "tests/corpus/terminal-stream-properties.ts",
+            "tests/fixtures/node-types/terminal-error-fields.ts",
             "tests/harness/terminal-geometry.test.ts"
           ]
         },
@@ -90509,12 +90543,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:tty",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:writeStream.isTTY",
+          "tests": [
+            "tests/corpus/1448-stream-columns.ts",
+            "tests/corpus/2992-stream-rows.ts",
+            "tests/corpus/terminal-stream-properties.ts",
+            "tests/fixtures/node-types/terminal-error-fields.ts",
+            "tests/harness/terminal-geometry.test.ts"
+          ]
         },
         "dynamic": {
           "status": "not-implemented",
@@ -90550,6 +90590,8 @@
           "tests": [
             "tests/corpus/1448-stream-columns.ts",
             "tests/corpus/2992-stream-rows.ts",
+            "tests/corpus/terminal-stream-properties.ts",
+            "tests/fixtures/node-types/terminal-error-fields.ts",
             "tests/harness/terminal-geometry.test.ts"
           ]
         },
@@ -90612,12 +90654,18 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:tty",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "compiler-dedicated:tty.isatty",
+          "tests": [
+            "tests/corpus/1448-stream-columns.ts",
+            "tests/corpus/2992-stream-rows.ts",
+            "tests/corpus/terminal-stream-properties.ts",
+            "tests/fixtures/node-types/terminal-error-fields.ts",
+            "tests/harness/terminal-geometry.test.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",

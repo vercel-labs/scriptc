@@ -187,7 +187,6 @@ jobs:
         flavor: [plain, san]
     env:
       SCRIPTC_SAN: ${{ matrix.flavor == 'san' && '1' || '' }}
-      SCRIPTC_BOOTSTRAP_SEED_DIRECTORY: ${{ runner.temp }}/native-bootstrap
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -210,6 +209,8 @@ jobs:
       - run: pnpm build
       - name: Prepare bootstrap seed
         run: node scripts/bootstrap-seed.mjs
+        env:
+          SCRIPTC_BOOTSTRAP_SEED_DIRECTORY: ${{ runner.temp }}/native-bootstrap
       - name: Archive seed and compiler artifacts
         run: tar -C "$RUNNER_TEMP" -cf "$RUNNER_TEMP/bootstrap-seed.tar" native-bootstrap
       - uses: actions/upload-artifact@v4
@@ -234,7 +235,6 @@ jobs:
       SCRIPTC_TEST_WORKERS: "1"
       SCRIPTC_SAN: ${{ matrix.flavor == 'san' && '1' || '' }}
       SCRIPTC_BOOTSTRAP_PHASE: ${{ matrix.phase }}
-      SCRIPTC_BOOTSTRAP_SEED_DIRECTORY: ${{ runner.temp }}/native-bootstrap
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -267,6 +267,7 @@ jobs:
       - name: Native bootstrap and package installation checks
         run: node scripts/ci-native-bootstrap.mjs
         env:
+          SCRIPTC_BOOTSTRAP_SEED_DIRECTORY: ${{ runner.temp }}/native-bootstrap
           SCRIPTC_BOOTSTRAP_PACKAGE_DIR: ${{ runner.temp }}/native-cli-package
 
   # A real host-clang/glibc build, not the zig cross-target lane: catches

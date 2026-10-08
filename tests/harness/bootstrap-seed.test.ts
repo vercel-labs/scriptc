@@ -46,7 +46,13 @@ test("CI restores each seed only into its matching instrumented bootstrap lane",
         needs?: string;
         strategy: { matrix: { flavor: string[] } };
         env: Record<string, string>;
-        steps: { uses?: string; if?: string; with?: Record<string, unknown>; run?: string }[];
+        steps: {
+          uses?: string;
+          if?: string;
+          with?: Record<string, unknown>;
+          env?: Record<string, string>;
+          run?: string;
+        }[];
       }
     >;
   };
@@ -65,9 +71,16 @@ test("CI restores each seed only into its matching instrumented bootstrap lane",
   }
   expect(seed.strategy.matrix.flavor).toEqual(checks.strategy.matrix.flavor);
   expect(seed.env.SCRIPTC_SAN).toBe(checks.env.SCRIPTC_SAN);
-  expect(seed.env.SCRIPTC_BOOTSTRAP_SEED_DIRECTORY).toBe(
-    checks.env.SCRIPTC_BOOTSTRAP_SEED_DIRECTORY,
+  const prepare = seed.steps.find((step) => step.run === "node scripts/bootstrap-seed.mjs")!;
+  const execute = checks.steps.find((step) => step.run === "node scripts/ci-native-bootstrap.mjs")!;
+  expect(prepare.env?.SCRIPTC_BOOTSTRAP_SEED_DIRECTORY).toBe("${{ runner.temp }}/native-bootstrap");
+  expect(execute.env?.SCRIPTC_BOOTSTRAP_SEED_DIRECTORY).toBe(
+    prepare.env?.SCRIPTC_BOOTSTRAP_SEED_DIRECTORY,
   );
+  // Runner paths are available in step contexts, not job-level env.
+  for (const job of [seed, checks]) {
+    expect(Object.values(job.env).some((value) => value.includes("runner."))).toBe(false);
+  }
   const upload = seed.steps.find((step) => step.uses === "actions/upload-artifact@v4")!;
   const download = checks.steps.find((step) => step.uses === "actions/download-artifact@v4")!;
   expect(upload.with?.name).toBe("bootstrap-seed-${{ matrix.flavor }}-${{ github.sha }}");

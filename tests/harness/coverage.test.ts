@@ -92,8 +92,8 @@ test("runtime-optional refined unions report blockers without crashing", () => {
       { dynamic },
     );
     expect(coverage.preflightFailed).toBe(false);
-    expect(coverage.diagnostics.map((d) => d.code)).toEqual(["SC1090", "SC1090"]);
-    expect(coverage.stats.statementsFailed).toBe(2);
+    expect(coverage.diagnostics.map((d) => d.code)).toEqual(["SC1090"]);
+    expect(coverage.stats.statementsFailed).toBe(1);
   }
 });
 

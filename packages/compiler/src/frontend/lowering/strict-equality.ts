@@ -115,6 +115,17 @@ export function lowerUnionEquality(
   // Ordinary same-layout unions keep the compact tag comparison.
   if (typeEquals(left.type, right.type) && !tagEqualityMayMissAlias(lowerer, left.type))
     return null;
+  // So does a plain operand that is already one of a comparable union's arms.
+  const union = left.type.kind === "union" ? left.type : right.type;
+  const plain = left.type.kind === "union" ? right.type : left.type;
+  if (
+    union.kind === "union" &&
+    plain.kind !== "union" &&
+    !tagEqualityMayMissAlias(lowerer, union) &&
+    lowerer.eqComparableUnion(union.unionId) &&
+    lowerer.unions.get(union.unionId)?.arms.some((arm) => typeEquals(arm, plain))
+  )
+    return null;
   const key = `${lowerer.unions.revision}:${typeKey(left.type)}:${typeKey(right.type)}:${sameValue}`;
   let name = lowerer.equalityHelpers.get(key);
   if (!name) {

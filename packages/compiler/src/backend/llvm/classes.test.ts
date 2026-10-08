@@ -107,3 +107,37 @@ test.each(["i32", "i64"])(
     expect(emitClassMembershipHelper(buildClassGraph(ordinary, new Map()), size)).toEqual([]);
   },
 );
+
+test("unconstructed narrowing layouts may omit abstract slots while live classes require implementations", () => {
+  const mod: IrModule = {
+    irVersion: 15,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [{ name: "main", params: [], returnType: VOID, locals: [], body: [], loc }],
+    classes: [
+      { name: "Base", fields: [], methods: ["run"], abstractMethods: ["run"], abstract: true, loc },
+      { name: "Dormant", base: "Base", fields: [], methods: [], loc },
+    ],
+  };
+  const active = { kind: "object" as const, className: "Active" };
+  mod.classes!.push({ name: "Active", base: "Base", fields: [], methods: ["run"], loc });
+  mod.functions.push({
+    name: "%Active.run",
+    params: [{ localId: "self", name: "self", type: active }],
+    returnType: VOID,
+    locals: [{ id: "self", name: "self", type: active, mutable: false }],
+    body: [],
+    loc,
+  });
+  expect(emitLlvmModule(mod)).toMatch(/ptr null[^\n]*; class Dormant/);
+  const self = { kind: "object" as const, className: "Dormant" };
+  mod.functions.push({
+    name: "%Dormant.constructor",
+    params: [{ localId: "self", name: "self", type: self }],
+    returnType: VOID,
+    locals: [{ id: "self", name: "self", type: self, mutable: false }],
+    body: [],
+    loc,
+  });
+  expect(() => emitLlvmModule(mod)).toThrow("no implementation of run for Dormant");
+});

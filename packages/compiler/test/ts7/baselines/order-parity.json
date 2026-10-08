@@ -14679,6 +14679,24 @@
     "<repo>/tests/fixtures/node-types/terminal-error-fields.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/class-narrowed-views.ts": {
+   "order": [
+    "<repo>/tests/corpus/class-narrowed-views.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/class-covariant-returns.ts": {
+   "order": [
+    "<repo>/tests/corpus/class-covariant-returns.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/derived-numeric-updates.ts": {
+   "order": [
+    "<repo>/tests/corpus/derived-numeric-updates.ts"
+   ],
+   "diags": []
   }
  }
 }

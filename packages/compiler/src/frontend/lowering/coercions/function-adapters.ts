@@ -76,6 +76,8 @@ export function funcReturnWidthAdapter(
  * promises to accept the destination signature. */
 export function coercibleValue(lowerer: Lowerer, src: IrType, dst: IrType): boolean {
   if (typeEquals(src, dst)) return true;
+  if (src.kind === "object" && dst.kind === "object")
+    return lowerer.isSubclassOf(src.className, dst.className);
   // The island boundary joins the mechanical set: values that MARSHAL
   // in (units, the checked-dynamic deep copy, JSON-safe data, liftable
   // composites, marshalable closures — coerceToExpected's jsval-IN

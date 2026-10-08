@@ -58,6 +58,8 @@ export class LlClassMeta {
   /** Root classes: the hierarchy's slots in DFS-declaration order. */
   slots: LlVtSlot[] = [];
   membership: { pre: number; post: number }[] = [];
+  /** Type-only references retain layouts without retaining construction. */
+  constructorRetained = false;
 
   constructor(readonly def: IrClassDef) {
     this.root = this;
@@ -76,7 +78,9 @@ export function buildClassGraph(
 ): Map<string, LlClassMeta> {
   const metaMap = new Map<string, LlClassMeta>();
   for (const cls of mod.classes ?? []) {
-    metaMap.set(cls.name, new LlClassMeta(cls));
+    const meta = new LlClassMeta(cls);
+    meta.constructorRetained = fnByName.has(`%${cls.name}.constructor`);
+    metaMap.set(cls.name, meta);
   }
   for (const meta of metaMap.values()) {
     if (meta.def.base === undefined) continue;
@@ -231,7 +235,7 @@ function vtEntriesFor(meta: LlClassMeta): { slot: LlVtSlot; impl: LlClassMeta | 
         return { slot, impl: c };
       }
     }
-    if (meta.def.abstract === true) return { slot, impl: null };
+    if (meta.def.abstract === true || !meta.constructorRetained) return { slot, impl: null };
     throw new InternalCompilerError(
       `llvm emitter bug: no implementation of ${slot.method} for ${meta.def.name}`,
     );

@@ -3659,6 +3659,15 @@ export class Lowerer {
       );
     };
     const functionDeclBySymbol = new Map<ts.Symbol, ts.FunctionLikeDeclaration>();
+    const staticFieldsBySymbol = new Map<ts.Symbol, ClassInfo["staticFields"][number]>();
+    for (const info of this.classes.values()) {
+      for (const field of info.staticFields) {
+        const declaration = field.initializer.parent;
+        if (!ts.isPropertyDeclaration(declaration)) continue;
+        const symbol = symbolOf(declaration.name);
+        if (symbol) staticFieldsBySymbol.set(symbol, field);
+      }
+    }
     type RuntimeSig = {
       params: ParamShape[];
       returnType: IrType;
@@ -3827,6 +3836,10 @@ export class Lowerer {
       if (ts.isIdentifier(e)) {
         const symbol = symbolOf(e);
         return symbol !== null && optionalSymbols.has(symbol);
+      }
+      if (ts.isPropertyAccessExpression(e)) {
+        const symbol = symbolOf(e.name);
+        if (symbol && optionalSymbols.has(symbol)) return true;
       }
       if (ts.isCallExpression(e) && ts.isIdentifier(e.expression)) {
         const symbol = callableSymbolOf(e.expression);
@@ -4300,12 +4313,15 @@ export class Lowerer {
               optionalSymbols.add(symbol);
               changed = true;
             }
-          } else if (
-            ts.isPropertyAccessExpression(node.left) &&
-            ts.isIdentifier(node.left.expression)
-          ) {
-            const symbol = symbolOf(node.left.expression);
-            if (symbol && noteFieldSymbol(symbol, node.left.name.text)) changed = true;
+          } else if (ts.isPropertyAccessExpression(node.left)) {
+            const field = symbolOf(node.left.name);
+            if (field && staticFieldsBySymbol.has(field) && !optionalSymbols.has(field)) {
+              optionalSymbols.add(field);
+              changed = true;
+            } else if (ts.isIdentifier(node.left.expression)) {
+              const symbol = symbolOf(node.left.expression);
+              if (symbol && noteFieldSymbol(symbol, node.left.name.text)) changed = true;
+            }
           }
         }
         if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
@@ -4515,6 +4531,12 @@ export class Lowerer {
     let changed = true;
     while (changed) {
       changed = false;
+      for (const [symbol, field] of staticFieldsBySymbol) {
+        if (!optionalSymbols.has(symbol) && mayBeOptional(field.initializer)) {
+          optionalSymbols.add(symbol);
+          changed = true;
+        }
+      }
       for (const sf of sourceFiles) if (scanFile(sf)) changed = true;
       for (const [symbol, decl] of functionDeclBySymbol)
         if (scanReturns(symbol, decl)) changed = true;
@@ -4543,6 +4565,19 @@ export class Lowerer {
             changed = true;
           }
         }
+      }
+    }
+    const globalsById = new Map(this.globalsList.map((global) => [global.id, global]));
+    for (const [symbol, field] of staticFieldsBySymbol) {
+      if (!optionalSymbols.has(symbol)) continue;
+      const promoted = addUndefined(field.type);
+      if (typeEquals(promoted, field.type)) continue;
+      field.type = promoted;
+      field.runtimeOptional = true;
+      const global = globalsById.get(field.globalId);
+      if (global) {
+        global.type = promoted;
+        this.runtimeOptionalGlobals.add(global);
       }
     }
     for (const [symbol, sig] of signatureBySymbol) {
@@ -6449,6 +6484,24 @@ export class Lowerer {
     return literalUnionArm(def, values, (id) => this.shapes.get(id), cached.owners);
   }
 
+  /** Widen only the result view; identical parameter ABIs preserve closure identity. */
+  coerceCovariantFunction(expr: IrExpr, expected: IrType): IrExpr | null {
+    if (
+      expr.type.kind === "func" &&
+      expected.kind === "func" &&
+      expr.type.rest === expected.rest &&
+      expr.type.restAbi === expected.restAbi &&
+      expr.type.argumentsAll === expected.argumentsAll &&
+      expr.type.params.length === expected.params.length &&
+      expr.type.params.every((type, i) => typeEquals(type, expected.params[i]!)) &&
+      expr.type.ret.kind === "object" &&
+      expected.ret.kind === "object" &&
+      this.isSubclassOf(expr.type.ret.className, expected.ret.className)
+    )
+      return { kind: "upcast", value: expr, type: expected, loc: expr.loc };
+    return null;
+  }
+
   /** Implicit union construction. Wherever a value flows into a typed slot
    * (initializer, assignment, call argument, return, field write, record
    * literal field, ternary arm) whose expected type is a union and the
@@ -6758,6 +6811,8 @@ export class Lowerer {
         return { kind: "call", callee: adapter, args: [expr], type: expected, loc: expr.loc };
       }
     }
+    const covariant = this.coerceCovariantFunction(expr, expected);
+    if (covariant) return covariant;
     // The GENERAL function-value adapter (funcCoerceAdapter): a function
     // whose signature differs from the slot's only by coercible pieces —
     // fewer parameters (JS ignores extras: `load(function () {})` into an

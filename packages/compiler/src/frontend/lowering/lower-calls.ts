@@ -4865,14 +4865,14 @@ function reconcileOverloadReturn(
 ): IrExpr {
   const rsig = lowerer.checker.getResolvedSignature(expr);
   const rdecl = rsig ? lowerer.checker.signatureDeclaration(rsig) : undefined;
-  // Fluent JS overrides share the base's return ABI, but their result
-  // still has the receiver's subclass layout at the call site.
+  // Nominal covariant overrides share the base's return ABI, but retain
+  // their declared subclass result at the call site. Unannotated fluent
+  // JS overrides use the same bridge for their proven receiver result.
   if (
     call.type.kind === "object" &&
     rdecl &&
     ts.isMethodDeclaration(rdecl) &&
-    isJsSourceFile(rdecl.getSourceFile()) &&
-    returnsOnlyThis(rdecl)
+    (!isJsSourceFile(rdecl.getSourceFile()) || returnsOnlyThis(rdecl))
   ) {
     call = lowerer.maybeNarrow(call, expr);
   }

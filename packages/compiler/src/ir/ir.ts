@@ -2673,7 +2673,9 @@ export type IrExpr =
    * pointer, type-only — legal exactly when D strictly descends from C
    * AND the two constructors' completed ABIs are equal (param-wise
    * typeEquals; validator-enforced), the invariant `newValue` completion
-   * rests on. */
+   * rests on. Function values may also widen a nominal class return with
+   * identical parameter/rest types: the closure identity and pointer-return
+   * ABI remain unchanged. */
   | { kind: "upcast"; value: IrExpr; type: IrType; loc: SrcLoc }
   /** Implicit widening of a promise value into a VOID-promise slot (an
    * inferred Promise<never>/Promise<void> return whose body built a

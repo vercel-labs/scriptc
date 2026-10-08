@@ -1615,3 +1615,95 @@ test("typed-array brand tests serialize their element kind and reject misplaced 
     "in main: dynTest bytesElem requires a valid bytes test",
   );
 });
+
+test("function result views preserve the parameter ABI and reject reversed covariance", () => {
+  const source: IrType = {
+    kind: "func",
+    params: [F64],
+    ret: { kind: "object", className: "Child" },
+  };
+  const target: IrType = {
+    kind: "func",
+    params: [F64],
+    ret: { kind: "object", className: "Base" },
+  };
+  const mod = expressionModule(
+    {
+      kind: "upcast",
+      value: { kind: "varRef", localId: "callback", type: source, loc },
+      type: target,
+      loc,
+    },
+    [],
+  );
+  mod.classes = [
+    { name: "Base", fields: [], loc },
+    { name: "Child", base: "Base", fields: [], loc },
+    { name: "Other", fields: [], loc },
+  ];
+  mod.functions[0]!.params = [{ localId: "callback", name: "callback", type: source }];
+  mod.functions[0]!.locals = [{ id: "callback", name: "callback", type: source, mutable: false }];
+  expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
+  for (const variant of [
+    "parameter",
+    "arity",
+    "rest",
+    "rest-abi",
+    "arguments",
+    "return",
+    "unrelated",
+    "reverse",
+  ] as const) {
+    const bad = structuredClone(mod);
+    const stmt = bad.functions[0]!.body[0]!;
+    if (stmt.kind !== "exprStmt" || stmt.expr.kind !== "upcast" || stmt.expr.type.kind !== "func")
+      throw new Error("fixture");
+    const type = stmt.expr.type;
+    if (variant === "parameter") type.params[0] = STRING;
+    if (variant === "arity") type.params.push(F64);
+    if (variant === "rest") type.rest = true;
+    if (variant === "rest-abi") type.restAbi = "jsval";
+    if (variant === "arguments") type.argumentsAll = true;
+    if (variant === "return") type.ret = F64;
+    if (variant === "unrelated") type.ret = { kind: "object", className: "Other" };
+    if (variant === "reverse") {
+      if (stmt.expr.value.type.kind !== "func") throw new Error("fixture");
+      stmt.expr.value.type.ret = { kind: "object", className: "Base" };
+      type.ret = { kind: "object", className: "Child" };
+    }
+    expect(
+      validateModule(bad).map((error) => error.message),
+      variant,
+    ).toContain(
+      "in main: function upcast requires identical parameters and a covariant class return",
+    );
+  }
+});
+
+test("abstract virtual slots admit subclass returns without admitting unrelated return layouts", () => {
+  const mod = virtualCallModule();
+  const base: IrType = { kind: "object", className: "Base" };
+  const child: IrType = { kind: "object", className: "First" };
+  for (const fn of mod.functions.filter((fn) => fn.name.startsWith("%"))) {
+    fn.params.push({ localId: "result", name: "result", type: child });
+    fn.locals.push({ id: "result", name: "result", type: child, mutable: false });
+    fn.returnType = child;
+    fn.body = [
+      { kind: "return", value: { kind: "varRef", localId: "result", type: child, loc }, loc },
+    ];
+  }
+  for (const fn of mod.functions.filter((fn) => fn.name.startsWith("caller"))) {
+    fn.params.push({ localId: "result", name: "result", type: child });
+    fn.locals.push({ id: "result", name: "result", type: child, mutable: false });
+    const stmt = fn.body[0]!;
+    if (stmt.kind !== "exprStmt" || stmt.expr.kind !== "virtualCall") throw new Error("fixture");
+    stmt.expr.type = base;
+    stmt.expr.args.push({ kind: "varRef", localId: "result", type: child, loc });
+  }
+  expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
+  mod.classes!.find((cls) => cls.name === "First")!.base = "Unrelated";
+  expect(validateModule(mod).map((error) => error.message)).toEqual([
+    "in caller0: virtualCall Base.run result type mismatch",
+    "in caller1: virtualCall Base.run result type mismatch",
+  ]);
+});

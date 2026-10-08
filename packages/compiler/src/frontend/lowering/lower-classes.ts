@@ -510,6 +510,8 @@ export interface ClassInfo {
   staticFields: {
     name: string;
     type: IrType;
+    /** Indexed sources can be absent despite the declared static type. */
+    runtimeOptional?: true;
     initializer: ts.Expression;
     globalId: string;
     readonly: boolean;
@@ -2918,20 +2920,20 @@ export function collectClassShapeInner(
               `overriding the inherited generic method '${mName}' with a non-generic method (generic methods dispatch statically and would never reach this override)`,
             );
           }
-          // Abstract re-declarations keep the overridden ABI exactly,
-          // like any override (a concrete implementation below must
-          // agree with BOTH, which exactness makes one constraint).
           const overridden = lowerer.findMethodOn(base, mName);
           if (
             overridden &&
             (overridden.sig.params.length !== shapes.length ||
               !overridden.sig.params.every((p, i) => typeEquals(p.type, shapes[i]!.type)) ||
-              !typeEquals(overridden.sig.ret, ret))
+              !typeEquals(
+                overridden.sig.ret,
+                overrideReturnAbi(lowerer, ret, overridden.sig.ret, className, base),
+              ))
           ) {
             lowerer.unsupported(
               "SC1090",
               member.name,
-              "overriding a method with a different signature (parameter and return types must match the base declaration exactly)",
+              "overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass)",
             );
           }
           methods.set(mName, { params: shapes, ret, abstract: true });
@@ -3065,11 +3067,12 @@ export function collectClassShapeInner(
           const refined = symbolSlotReturnType(lowerer, member, symbolFields, fields);
           if (refined) ft.ret = refined;
         }
-        // Overrides keep the EXACT overridden ABI signature. tsc's method
+        // Overrides keep the inherited ABI signature. tsc's method
         // bivariance would let a narrowed parameter type through, and a
         // vtable-dispatched call could then hand the override a base
         // instance it reads out-of-bounds fields from — exactness keeps
-        // every slot sound (covariant returns can come later). Comparing
+        // every parameter slot sound. Nominal covariant returns share the
+        // base pointer ABI while retaining their declared result type. Comparing
         // ABI types only (not modes) is deliberate: call sites complete
         // against the STATIC receiver's shape, so `m(x?: number)` and
         // `m(x: number | undefined)` interchange soundly in overrides.
@@ -3147,7 +3150,10 @@ export function collectClassShapeInner(
           member.asteriskToken === undefined &&
           (overridden.sig.params.length !== shapes.length ||
             !overridden.sig.params.every((p, i) => typeEquals(p.type, shapes[i]!.type)) ||
-            !typeEquals(overridden.sig.ret, ft.ret))
+            !typeEquals(
+              overridden.sig.ret,
+              overrideReturnAbi(lowerer, ft.ret, overridden.sig.ret, className, base),
+            ))
         ) {
           const fencedJsOverride =
             isJsSourceFile(member.getSourceFile()) &&
@@ -3184,7 +3190,7 @@ export function collectClassShapeInner(
                 locOf(member.name),
                 returnOnly
                   ? `overriding method '${mName}' with a different return type (the native return type must match the base declaration exactly)`
-                  : `overriding method '${mName}' with a different signature (the native parameter and return types must match the base declaration exactly)`,
+                  : `overriding method '${mName}' with a different signature (the native parameter types must match the base declaration exactly; returns may narrow to a subclass)`,
               ),
             );
             shapes.splice(0, shapes.length, ...overridden.sig.params);
@@ -3193,7 +3199,7 @@ export function collectClassShapeInner(
             lowerer.unsupported(
               "SC1090",
               member.name,
-              "overriding a method with a different signature (parameter and return types must match the base declaration exactly)",
+              "overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass)",
             );
           }
         }
@@ -4836,10 +4842,13 @@ export function lowerStaticFieldRead(
     );
   }
   if (found?.field !== undefined) {
-    return lowerer.maybeNarrow(
-      { kind: "varRef", localId: found.field.globalId, type: found.field.type, loc },
-      expr,
-    );
+    const value: IrExpr = {
+      kind: "varRef",
+      localId: found.field.globalId,
+      type: found.field.type,
+      loc,
+    };
+    return found.field.runtimeOptional ? value : lowerer.maybeNarrow(value, expr);
   }
   if (found) {
     return staticMethodValue(lowerer, found.declarer, expr.name.text, found.method, expr, loc);
@@ -5778,10 +5787,13 @@ export function lowerClassValueProperty(
     );
   }
   if (found.field !== undefined) {
-    return lowerer.maybeNarrow(
-      { kind: "varRef", localId: found.field.globalId, type: found.field.type, loc },
-      expr,
-    );
+    const value: IrExpr = {
+      kind: "varRef",
+      localId: found.field.globalId,
+      type: found.field.type,
+      loc,
+    };
+    return found.field.runtimeOptional ? value : lowerer.maybeNarrow(value, expr);
   }
   return staticMethodValue(lowerer, found.declarer, member, found.method, expr, loc);
 }
@@ -5801,6 +5813,28 @@ function abstractMemberSignature(
     shapes: lowerer.paramShapes(member.parameters),
     ret: lowerer.declaredReturnType(member, member.name),
   };
+}
+
+/** A nominal return subtype uses the same owned pointer as the inherited
+ * return slot. The current class is still being collected, so consult its
+ * already collected base chain before the complete class graph is available. */
+function overrideReturnAbi(
+  lowerer: Lowerer,
+  declared: IrType,
+  inherited: IrType,
+  className: string,
+  base: ClassInfo | null,
+): IrType {
+  if (declared.kind !== "object" || inherited.kind !== "object") return declared;
+  if (
+    lowerer.isSubclassOf(declared.className, inherited.className) ||
+    (declared.className === className &&
+      base !== null &&
+      (base.def.name === inherited.className ||
+        lowerer.isSubclassOf(base.def.name, inherited.className)))
+  )
+    return inherited;
+  return declared;
 }
 
 /** The nearest declaration of `name` at or above `info` — the method a

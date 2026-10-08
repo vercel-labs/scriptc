@@ -26,7 +26,7 @@ inheritance.ts:49:3 - error SC1090: redeclaring inherited fields at a different 
      |   ^~~~
   50 | }
 
-inheritance.ts:55:3 - error SC1090: overriding a method with a different signature (parameter and return types must match the base declaration exactly) is not supported yet
+inheritance.ts:55:3 - error SC1090: overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass) is not supported yet
 
   54 | class Bivariant extends Animal {
   55 |   feed(other: Bivariant): string {

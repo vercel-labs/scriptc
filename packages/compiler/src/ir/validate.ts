@@ -2818,6 +2818,25 @@ function validateFunction(
         // exactly when D strictly descends from C AND the two completed
         // constructor ABIs agree (what newValue completion rests on).
         checkExpr(e.value);
+        if (e.kind === "upcast" && e.type.kind === "func" && e.value.type.kind === "func") {
+          const source = e.value.type;
+          const target = e.type;
+          if (
+            source.rest !== target.rest ||
+            source.restAbi !== target.restAbi ||
+            source.argumentsAll !== target.argumentsAll ||
+            source.params.length !== target.params.length ||
+            !source.params.every((param, i) => typeEquals(param, target.params[i]!)) ||
+            source.ret.kind !== "object" ||
+            target.ret.kind !== "object" ||
+            !isStrictSubclass(source.ret.className, target.ret.className)
+          )
+            err(
+              "function upcast requires identical parameters and a covariant class return",
+              e.loc,
+            );
+          break;
+        }
         if (e.kind === "upcast" && e.type.kind === "classval" && e.value.type.kind === "classval") {
           const [sub, sup] = [e.value.type.className, e.type.className];
           if (!isPhysicalSubclass(sub, sup)) {
@@ -2994,7 +3013,15 @@ function validateFunction(
           const p = impl.params[i + 1];
           if (p) expectType(a, p.type, `virtualCall ${e.className}.${e.method} arg ${i}`);
         });
-        if (!typeEquals(e.type, callSiteReturnType(impl))) {
+        const returned = callSiteReturnType(impl);
+        if (
+          !typeEquals(e.type, returned) &&
+          !(
+            e.type.kind === "object" &&
+            returned.kind === "object" &&
+            isStrictSubclass(returned.className, e.type.className)
+          )
+        ) {
           err(`virtualCall ${e.className}.${e.method} result type mismatch`, e.loc);
         }
         break;

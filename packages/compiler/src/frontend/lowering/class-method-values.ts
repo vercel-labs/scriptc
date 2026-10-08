@@ -12,7 +12,7 @@ import {
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { varRef } from "../../ir/build.js";
+import { nodeThrowExpr, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { newFnCtx, type Lowerer } from "./lowerer.js";
@@ -62,7 +62,18 @@ export function lowerClassMethodValue(
       type: DYN,
       loc,
     };
-  let value = methodValue(lowerer, expr, info);
+  const declared = findMethodOn(lowerer, info, method);
+  // Abstract declarations have no prototype function. Concrete descendants
+  // provide the extracted value through the same reachability-driven selector.
+  let value = declared?.sig.abstract
+    ? nodeThrowExpr(
+        1,
+        "",
+        `Missing implementation of method '${method}'`,
+        funcTypeFromParamShapes(declared.sig.params, declared.sig.ret),
+        loc,
+      )
+    : methodValue(lowerer, expr, info);
   if (!value) return null;
   const callback = isClassCallback(lowerer, info, method);
   const local = callback ? lowerer.declareHiddenLocal("%callbackReceiver", receiver.type) : null;
@@ -123,11 +134,18 @@ export function refreshClassMethodValueSelections(lowerer: Lowerer): boolean {
         selection.values.has(candidate.def.name) ||
         !lowerer.classCanBeConstructed(candidate) ||
         !lowerer.isSubclassOf(candidate.def.name, selection.info.def.name) ||
-        !candidate.methods.has(selection.method)
+        !candidate.methods.has(selection.method) ||
+        candidate.methods.get(selection.method)?.abstract
       )
         continue;
       let value = methodValue(lowerer, selection.expression, candidate);
       if (value && selection.checked) value = lowerer.coerceToExpected(value, DYN);
+      if (value && !typeEquals(value.type, selection.fallback.type)) {
+        const widened = lowerer.coerceCovariantFunction(value, selection.fallback.type);
+        // Only a representation-preserving view can keep extraction's
+        // identity contract across differently typed base/derived views.
+        if (widened) value = widened;
+      }
       if (!value || !typeEquals(value.type, selection.fallback.type))
         lowerer.unsupported(
           "SC1090",
@@ -140,10 +158,15 @@ export function refreshClassMethodValueSelections(lowerer: Lowerer): boolean {
     if (!added) continue;
     const loc = selection.fn.loc;
     const receiver = varRef("this.0", selection.fn.params[0]!.type, loc);
-    const values = [...selection.values].sort(([a], [b]) =>
-      lowerer.isSubclassOf(a, b) ? -1 : lowerer.isSubclassOf(b, a) ? 1 : 0,
-    );
-    selection.fn.body = values.map(([className, value]): IrStmt => ({
+    const names = [...selection.values.keys()];
+    const values = [...selection.values]
+      .map(([className, value]) => ({
+        className,
+        value,
+        ancestors: names.filter((name) => lowerer.isSubclassOf(className, name)).length,
+      }))
+      .sort((a, b) => b.ancestors - a.ancestors);
+    selection.fn.body = values.map(({ className, value }): IrStmt => ({
       kind: "if",
       cond: { kind: "instanceOf", value: receiver, className, type: BOOL, loc },
       then: [{ kind: "return", value, loc }],

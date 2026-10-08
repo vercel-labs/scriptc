@@ -23,6 +23,8 @@ import { dirname } from "node:path";
 import * as posix from "node:path/posix";
 import type { Lowerer } from "./lowerer.js";
 import { checkedClassAssertion } from "./class-assertions.js";
+import { narrowClassUnion } from "./class-unions.js";
+import { lowerUnionFieldWrite } from "./expressions/union-field-write.js";
 import { captureContextArguments } from "./function-context.js";
 import { OBJECT_CALLABLE_VALUES } from "./surfaces.js";
 import { wasiGuestPath } from "../../wasi-paths.js";
@@ -3575,6 +3577,10 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
   // same trust-the-checker contract as the union bridge below.
   if (expr.type.kind === "object") {
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
+    if (narrowed?.kind === "union") {
+      const union = narrowClassUnion(lowerer, expr, narrowed);
+      if (union) return union;
+    }
     if (
       narrowed?.kind === "object" &&
       narrowed.className !== expr.type.className &&
@@ -7201,6 +7207,9 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
     expr = expr.expression;
   }
   if (ts.isPropertyAccessExpression(expr)) {
+    // Namespace members are bindings, not fields of a runtime namespace
+    // object. Their ordinary read already preserves optional storage.
+    if (!expr.questionDotToken && nsMemberIdentOf(lowerer, expr)) return null;
     const target = lowerer.fieldTarget(expr);
     if (
       target?.container === "class" &&
@@ -8833,10 +8842,12 @@ export function lowerIncDec(
     }
     fenceNodeModuleMutation(lowerer, access, "assignment");
     if (ts.isPropertyAccessExpression(access)) {
-      const target = staticFieldWriteTarget(lowerer, access);
+      const target =
+        staticFieldWriteTarget(lowerer, access) ??
+        expandoWritableTarget(lowerer, access) ??
+        nsWritableTarget(lowerer, access);
       if (target) {
-        if (target.type.kind !== "f64") lowerer.unsupported("SC1043", expr);
-        return { kind: "incDec", op, prefix, localId: target.id, type: F64, loc };
+        return lowerIncDecTarget(lowerer, expr, target, prefix);
       }
     }
     const stmts: IrStmt[] = [];
@@ -8993,10 +9004,24 @@ export function lowerIncDec(
       `increment/decrement of '${expr.operand.text}' (not a writable local or module global)`,
     );
   }
+  return lowerIncDecTarget(lowerer, expr, target, prefix);
+}
+
+/** Numeric updates read the represented slot once and write the computed
+ * value back in that same representation. In particular, an unchecked
+ * indexed initializer can leave undefined in an otherwise numeric binding. */
+export function lowerIncDecTarget(
+  lowerer: Lowerer,
+  expr: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression,
+  target: { id: string; type: IrType },
+  prefix: boolean,
+): IrExpr {
+  const loc = locOf(expr);
+  const op = expr.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-";
   if (target.type.kind === "dyn") {
     const old = lowerer.declareHiddenLocal("%numericOld", DYN);
     const next = lowerer.declareHiddenLocal("%numericNext", DYN);
-    const read = lowerer.lowerExpr(expr.operand);
+    const read = varRef(target.id, target.type, loc);
     return {
       kind: "seqExpr",
       stmts: [
@@ -9027,6 +9052,47 @@ export function lowerIncDec(
       type: DYN,
       loc,
     };
+  }
+  if (target.type.kind === "union") {
+    const read = lowerOptionalNumber(
+      lowerer,
+      varRef(target.id, target.type, loc),
+      loc,
+      expr.operand,
+    );
+    if (read.type.kind === "f64") {
+      const old = lowerer.declareHiddenLocal("%numericOld", F64);
+      const next = lowerer.declareHiddenLocal("%numericNext", F64);
+      const result = varRef(prefix ? next.id : old.id, F64, loc);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: old.id, init: read, loc },
+          {
+            kind: "varDecl",
+            localId: next.id,
+            init: {
+              kind: "bin",
+              op,
+              left: varRef(old.id, F64, loc),
+              right: numLit(1, loc),
+              type: F64,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "assign",
+            localId: target.id,
+            value: lowerer.coerceInto(expr.operand, varRef(next.id, F64, loc), target.type),
+            loc,
+          },
+        ],
+        result,
+        type: F64,
+        loc,
+      };
+    }
   }
   if (target.type.kind !== "f64") lowerer.unsupported("SC1043", expr);
   return { kind: "incDec", op, prefix, localId: target.id, type: F64, loc };
@@ -9444,6 +9510,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       if (ts.isPropertyAccessExpression(expr.left) && !expr.left.questionDotToken) {
         const recv = tryLowerExpression(lowerer, expr.left.expression);
         if (recv && recv.type.kind === "dyn") return lowerDynMemberAssignment(lowerer, expr, recv);
+        const unionWrite = lowerUnionFieldWrite(lowerer, expr.left, expr.right);
+        if (unionWrite) return unionWrite;
         const field = lowerer.fieldTarget(expr.left);
         if (field) {
           const recvTmp = lowerer.declareHiddenLocal("%setReceiver", field.obj.type);
@@ -13492,7 +13560,11 @@ export function lowerUnionProperty(
     return null;
   }
   if (value.type.kind !== "union") {
-    throw new InternalCompilerError("lowerer bug: union-typed receiver lowered to a non-union");
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      "shared property access without a represented union receiver",
+    );
   }
   const def = lowerer.unions.get(value.type.unionId);
   if (!def) throw new InternalCompilerError(`lowerer bug: unknown union ${value.type.unionId}`);
@@ -13918,10 +13990,19 @@ export function fieldTarget(
   const stored = ts.isIdentifier(access.expression)
     ? (lowerer.peekLocal(access.expression)?.type ?? lowerer.globalOf(access.expression)?.type)
     : undefined;
+  const narrowed = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  // Structural record views retain their storage layout, while a nominal
+  // subclass guard proves a more specific layout of the same object.
   const receiverIr =
-    stored?.kind === "record" || stored?.kind === "object"
+    stored?.kind === "record"
       ? stored
-      : lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+      : stored?.kind === "object" &&
+          !(
+            narrowed?.kind === "object" &&
+            lowerer.isSubclassOf(narrowed.className, stored.className)
+          )
+        ? stored
+        : narrowed;
   if (receiverIr?.kind === "object") {
     return classFieldTarget(lowerer, access.expression, receiverIr, access.name.text);
   }

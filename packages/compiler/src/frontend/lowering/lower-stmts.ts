@@ -124,7 +124,7 @@ import { classStaticDataFor } from "./class-static-data.js";
 import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
-import { genericIfaceBindingKeepsClass, staticFieldWriteTarget } from "./lower-classes.js";
+import { genericIfaceBindingKeepsClass } from "./lower-classes.js";
 import { lowerStreamUnderscoreAssign, streamClassAliasDecl } from "./lower-stream.js";
 import {
   lowerHttpResPropertyAssignment,
@@ -153,6 +153,7 @@ import {
   lowerCompoundValueToTarget,
   lowerElementCompound,
   lowerIncDec,
+  lowerIncDecTarget,
   lowerGroupsProjection,
   matchResultNamedGroupsOf,
   runtimeOptionalGuardIds,
@@ -6871,7 +6872,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
           };
         }
         const unionWrite = lowerUnionFieldWrite(lowerer, expr.left, expr.right);
-        if (unionWrite) return unionWrite;
+        if (unionWrite) return { kind: "exprStmt", expr: unionWrite, loc: locOf(expr) };
         const target = lowerer.fieldTarget(expr.left);
         if (target) {
           const value = lowerer.lowerExprExpecting(expr.right, target.fieldType);
@@ -7092,31 +7093,7 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       };
     }
     // Statement position only: pre/post distinction is unobservable, so
-    // both desugar to `x = x ± 1`.
-    if (
-      ts.isPropertyAccessExpression(expr.operand) ||
-      (ts.isElementAccessExpression(expr.operand) && symbolFieldInfo(lowerer, expr.operand))
-    ) {
-      // `N.x++` — the namespace-qualified spelling of a module-global
-      // increment (the member's global IS the variable); expando
-      // function members (`foo.count++`) are module globals too.
-      if (ts.isPropertyAccessExpression(expr.operand) && !expr.operand.questionDotToken) {
-        const staticTarget = staticFieldWriteTarget(lowerer, expr.operand);
-        if (staticTarget) return lowerIncDecToTarget(lowerer, expr, staticTarget);
-        const exT = expandoWritableTarget(lowerer, expr.operand);
-        if (exT) return lowerIncDecToTarget(lowerer, expr, exT);
-        const nsT = nsWritableTarget(lowerer, expr.operand);
-        if (nsT) return lowerIncDecToTarget(lowerer, expr, nsT);
-      }
-      // `obj.f++` desugars through the compound-field path (`obj.f += 1`);
-      // `this[kLimit]++` is the same desugar over the symbol-keyed slot.
-      return lowerer.lowerFieldCompound(
-        expr.operand as ts.PropertyAccessExpression | ts.ElementAccessExpression,
-        expr.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-",
-        null,
-        locOf(expr),
-      );
-    }
+    // numeric bindings retain the simple `x = x ± 1` loop form.
     if (!ts.isIdentifier(expr.operand)) {
       lowerer.unsupported("SC1090", expr.operand, "increment/decrement of non-variables");
     }
@@ -7204,22 +7181,17 @@ function lowerIncDecToTarget(
   const loc = locOf(expr);
   const op = expr.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-";
   const readTarget: IrExpr = { kind: "varRef", localId: target.id, type: target.type, loc };
-  // JS any-origin targets: check the read to number, convert the
-  // result back into the dyn slot (the compound-assign stance).
-  const dynTarget = target.type.kind === "dyn" && isJsSourceFile(expr.getSourceFile());
-  if (target.type.kind !== "f64" && !dynTarget) {
-    lowerer.unsupported("SC1090", expr.operand, "increment/decrement of non-number targets");
-  }
+  if (target.type.kind !== "f64")
+    return { kind: "exprStmt", expr: lowerIncDecTarget(lowerer, expr, target, false), loc };
   const computed: IrExpr = {
     kind: "bin",
     op,
-    left: dynTarget ? { kind: "dynCheck", value: readTarget, type: F64, loc } : readTarget,
+    left: readTarget,
     right: { kind: "numLit", value: 1, type: F64, loc },
     type: F64,
     loc,
   };
-  const value: IrExpr = dynTarget ? { kind: "dynFrom", value: computed, type: DYN, loc } : computed;
-  return { kind: "assign", localId: target.id, value, loc };
+  return { kind: "assign", localId: target.id, value: computed, loc };
 }
 
 /** The shared tail of `x op= e` over a resolved variable/global target —

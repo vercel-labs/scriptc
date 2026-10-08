@@ -46,3 +46,31 @@ test("refuses updates to readonly static fields", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("covariant returns do not allow narrower method parameter storage", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-override-parameter-"));
+  try {
+    const entry = join(dir, "main.ts");
+    writeFileSync(
+      entry,
+      `
+class Item { value = 1; }
+class DetailedItem extends Item { extra = 2; }
+class Base { copy(value: Item): Item { return value; } }
+class Child extends Base {
+  copy(value: DetailedItem): DetailedItem { console.log(value.extra); return value; }
+}
+const receiver: Base = new Child();
+console.log(receiver.copy(new Item()).value);
+`,
+    );
+    const { coverage } = analyze(entry);
+    expect(
+      coverage.diagnostics.some(
+        (d) => d.code === "SC1090" && d.message.includes("different signature"),
+      ),
+    ).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -22,6 +22,9 @@ import {
 } from "./local-array-reads.js";
 import { analyzeCallLifetimes } from "./call-lifetimes.js";
 
+/** A pending-exception check: the inline active-cell test or a runtime call. */
+const PENDING_CHECK = /@scr_exc_(?:active|pending)\b/;
+
 const loc = { file: "local-array.ts", start: 0, end: 0 };
 const element: IrType = { kind: "record", shapeId: "cell" };
 const optional: IrType = { kind: "union", unionId: "optional" };
@@ -714,7 +717,7 @@ test("throwing later arguments borrow preserved payloads and release mutable sna
   const ir = workBody(module);
   const later = ir.indexOf("@sc_f_failure");
   expect(later).toBeGreaterThan(0);
-  expect(ir.slice(later)).toContain("@scr_exc_pending");
+  expect(ir.slice(later)).toMatch(PENDING_CHECK);
   expect(ir.slice(later)).not.toContain("@sc_rrelease_");
   failure.params.push({ localId: "items", name: "items", type: array });
   failure.locals.push({ id: "items", name: "items", type: array, mutable: false });
@@ -729,7 +732,7 @@ test("throwing later arguments borrow preserved payloads and release mutable sna
   const owned = workBody(module);
   const mutation = owned.indexOf("@sc_bf_failure");
   expect(mutation).toBeGreaterThan(0);
-  expect(owned.slice(mutation)).toContain("@scr_exc_pending");
+  expect(owned.slice(mutation)).toMatch(PENDING_CHECK);
   expect(owned.slice(mutation)).toContain("@sc_rrelease_");
 });
 

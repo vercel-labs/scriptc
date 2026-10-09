@@ -129,6 +129,8 @@ void scr_runtime_abi_v8(void) {}
 
 void scr_init(void) {
 #ifdef SCR_WORKERS
+  /* Generated inline exception polls read the active cell directly. */
+  scr_exc_swap_cell(NULL);
   if (scr_context_is_main()) {
 #endif
 #ifdef _WIN32

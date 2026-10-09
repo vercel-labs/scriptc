@@ -14,6 +14,9 @@ import {
 } from "../../ir/ir.js";
 import { emitLlvmModule, emitLlvmModuleSource, LlEmitter } from "./emitter.js";
 
+/** A pending-exception check: the inline active-cell test or a runtime call. */
+const PENDING_CHECK = /@scr_exc_(?:active|pending)\b/;
+
 const loc = { file: "exception-cleanup.ts", start: 0, end: 0 };
 const call = (): IrStmt => ({
   kind: "exprStmt",
@@ -408,7 +411,7 @@ test("checked field receivers borrow only the successful projection", () => {
   };
   const llvm = work(text(child(checked)), union);
   expect(llvm).toContain("@scr_throw_node_coded");
-  expect(llvm).toContain("@scr_exc_pending");
+  expect(llvm).toMatch(PENDING_CHECK);
   expect(llvm).not.toContain("@scr_union_retain_v");
   expect(llvm).not.toMatch(/call ptr @sc_rretain_/);
   const captured = work(text(child(checked)), union, true);

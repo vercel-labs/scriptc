@@ -7,6 +7,9 @@ import { analyzeCallLifetimes } from "../src/backend/llvm/call-lifetimes.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
 import { type IrModule } from "../src/ir/ir.js";
 
+/** A pending-exception check: the inline active-cell test or a runtime call. */
+const PENDING_CHECK = /@scr_exc_(?:active|pending)\b/;
+
 async function lower(source: string): Promise<IrModule> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-input-lifetimes-"));
   try {
@@ -200,7 +203,7 @@ try { console.log(work([new Item()])); } catch {}
   const work = body(emitLlvmModule(module), "sc_bf_work");
   const failure = work.indexOf("@sc_f_fail");
   expect(failure).toBeGreaterThan(0);
-  expect(work.slice(failure)).toContain("@scr_exc_pending");
+  expect(work.slice(failure)).toMatch(PENDING_CHECK);
   expect(work.slice(failure)).toContain("@sc_release_Item");
   expect(work).not.toContain("@scr_union_release");
 });

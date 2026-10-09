@@ -237,6 +237,19 @@ function loadAsFile(base: string): string | null {
   return null;
 }
 
+/** The source file a worker entry path runs. Node's worker loader takes the
+ * path as given, without directory or extension probing, but a JavaScript
+ * spelling of a TypeScript source answers that source exactly as a relative
+ * static import does (`./task.js` → task.ts). Declaration files never run.
+ * Null when no candidate exists. */
+export function resolveWorkerEntrySource(path: string): string | null {
+  for (const candidate of substitutionCandidates(path)) {
+    if (/\.d\.(?:[mc]?ts|json\.ts)$/.test(candidate)) continue;
+    if (isFile(candidate)) return candidate;
+  }
+  return isFile(path) ? path : null;
+}
+
 /** Loads `base` as a DIRECTORY: package.json types/typings then main (each
  * like a relative file), then the index files. */
 function loadAsDirectory(base: string): string | null {

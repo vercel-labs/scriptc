@@ -1,7 +1,7 @@
 import * as ts from "../../ts7/adapter.js";
 import { locOf } from "../../program.js";
 import { resolve } from "node:path";
-import { isWorkerConstructor, workerModulePath } from "../../worker-target.js";
+import { isWorkerConstructor, workerModulePath, workerSourcePath } from "../../worker-target.js";
 import { tsgoPath } from "../../dts-paths.js";
 import {
   BOOL,
@@ -46,7 +46,9 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
   const filename = args[0]!;
   const path = workerModulePath(lowerer.program, filename);
   const root =
-    path === null ? undefined : lowerer.workerTargetIdByPath.get(tsgoPath(resolve(path)));
+    path === null
+      ? undefined
+      : lowerer.workerTargetIdByPath.get(tsgoPath(resolve(workerSourcePath(path))));
   if (root === undefined) {
     lowerer.noLowering(
       "this Worker entry point",

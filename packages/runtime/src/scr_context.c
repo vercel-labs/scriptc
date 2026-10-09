@@ -13,7 +13,14 @@ typedef struct ScrContextExit {
 
 static SCR_TL ScrContextExit *scr_context_exits;
 static SCR_TL uint64_t scr_context_id;
-static SCR_TL const atomic_bool *scr_context_cancel;
+/* The context's stop signal, which generated exception polls test inline
+ * beside the active exception cell's kind: a worker points it at the flag
+ * its owner sets to terminate it, and a stopping context points it at a
+ * constant raised flag so every later poll takes the slow path and
+ * reinstalls the termination sentinel. It is never NULL. */
+static const atomic_bool scr_context_quiet = false;
+static const atomic_bool scr_context_raised = true;
+SCR_TL const atomic_bool *scr_context_signal = &scr_context_quiet;
 static SCR_TL bool scr_context_stopped;
 SCR_TL void (*scr_context_report_error)(void);
 
@@ -111,19 +118,22 @@ bool scr_context_is_main(void) { return scr_context_id == 0; }
 uint64_t scr_context_thread_id(void) { return scr_context_id; }
 double scr_context_thread_number(void) { return (double)scr_context_id; }
 
-void scr_context_stop_flag(const void *flag) { scr_context_cancel = flag; }
+void scr_context_stop_flag(const void *flag) {
+  if (!scr_context_stopped) scr_context_signal = flag ? flag : &scr_context_quiet;
+}
 bool scr_context_stopping(void) { return scr_context_stopped; }
 
 void scr_context_stop(int code) {
   scr_context_stopped = true;
+  scr_context_signal = &scr_context_raised;
   scr_exit_code_note(code);
   scr_exc_clear();
   scr_exc_current_cell()->kind = SCR_EXC_TERMINATE;
 }
 
 bool scr_context_checkpoint(void) {
-  if (!scr_context_stopped && scr_context_cancel &&
-      atomic_load_explicit(scr_context_cancel, memory_order_relaxed)) scr_context_stop(1);
+  if (!scr_context_stopped && atomic_load_explicit(scr_context_signal, memory_order_relaxed))
+    scr_context_stop(1);
   if (!scr_context_stopped) return false;
   /* Each fiber has its own exception cell. Reinstall the sentinel after a
    * context switch or a runtime continuation consumes its pending payload. */

@@ -1083,6 +1083,46 @@ let mapTypeDepth = 0;
  * stay fenced instead of interning a per-context-wrong shape). */
 let contextResolutions = 0;
 
+/** worker_threads' Worker and MessagePort: owned runtime handles that keep
+ * their live object representation (DYN) wherever they are stored. */
+function isWorkerHandleSymbol(
+  symbol: ts.Symbol | undefined,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  return (
+    (symbol?.name === "Worker" || symbol?.name === "MessagePort") &&
+    ctx.checker
+      .declarationsOf(symbol)
+      .some(
+        (d) =>
+          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
+          ctx.isStdlibFile(d.getSourceFile()) &&
+          isDeclaredInAmbientModule(d, "worker_threads"),
+      )
+  );
+}
+
+/** True for a type built only from worker handles, null/undefined, and
+ * arrays of those: values that keep the live DYN representation. */
+export function isWorkerHandleType(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  const members = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  let handle = false;
+  for (const member of members) {
+    if (member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) continue;
+    if (ctx.checker.isArrayType(member)) {
+      const element = ctx.checker.getTypeArguments(member as ts.TypeReference)[0];
+      if (element === undefined || !isWorkerHandleType(element, ctx)) return false;
+    } else if (!isWorkerHandleSymbol(member.getSymbol(), ctx)) {
+      return false;
+    }
+    handle = true;
+  }
+  return handle;
+}
+
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
   // These intrinsic domains cannot depend on generic bindings, declaration
@@ -2274,18 +2314,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       )
   )
     return DYN;
-  if (
-    (psym?.name === "Worker" || psym?.name === "MessagePort") &&
-    checker
-      .declarationsOf(psym)
-      .some(
-        (d) =>
-          (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
-          ctx.isStdlibFile(d.getSourceFile()) &&
-          isDeclaredInAmbientModule(d, "worker_threads"),
-      )
-  )
-    return DYN;
+  if (isWorkerHandleSymbol(psym, ctx)) return DYN;
   // fs/promises.FileHandle: an owned descriptor object. Module provenance
   // distinguishes it from user interfaces with the same name; both the
   // fallback and @types/node declare it in "fs/promises".

@@ -37,23 +37,28 @@ _Noreturn void scr_trap_fmt(const char *fmt, ...) {
 #endif /* !SCR_LIB */
 
 static SCR_TL ScrExcCell scr_main_exc; /* fiber zero (the main stack) */
+/* The active cell is exported so executables can test its kind inline at
+ * every exception poll and call scr_exc_pending only on the slow path; the
+ * kind is the cell's first field. */
 #if (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS)
 /* A thread-local pointer cannot be initialized with &scr_main_exc — the
  * address of a thread-local is not a constant expression — so NULL stands
  * for the main cell and every read resolves it. Worker executables also
- * switch this pointer as fibers enter and leave their own exception cells. */
-static SCR_TL ScrExcCell *scr_cur;
-#define SCR_EXC_CUR() (scr_cur ? scr_cur : &scr_main_exc)
+ * switch this pointer as fibers enter and leave their own exception cells,
+ * and scr_init points it at the context's main cell before program code
+ * runs, so generated inline polls never read NULL. */
+SCR_TL ScrExcCell *scr_exc_active;
+#define SCR_EXC_CUR() (scr_exc_active ? scr_exc_active : &scr_main_exc)
 #else
-static ScrExcCell *scr_cur = &scr_main_exc;
-#define SCR_EXC_CUR() (scr_cur)
+ScrExcCell *scr_exc_active = &scr_main_exc;
+#define SCR_EXC_CUR() (scr_exc_active)
 #endif
 
 /* Fiber switching (scr_async.c) points the exception machinery at the
  * incoming fiber's cell; returns the previous cell. */
 ScrExcCell *scr_exc_swap_cell(ScrExcCell *cell) {
   ScrExcCell *prev = SCR_EXC_CUR();
-  scr_cur = cell ? cell : &scr_main_exc;
+  scr_exc_active = cell ? cell : &scr_main_exc;
   return prev;
 }
 

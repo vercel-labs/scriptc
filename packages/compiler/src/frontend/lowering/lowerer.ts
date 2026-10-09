@@ -208,6 +208,7 @@ import {
   formatIrType,
   ISLAND_AMBIENT_TYPES,
   isUnitOnlyTsType,
+  isWorkerHandleType,
   jsOpenObjectType,
   mapType,
   ShapeRegistry,
@@ -2790,6 +2791,13 @@ export class Lowerer {
   classImplementedProtocol(type: ts.Type): boolean {
     this.classProtocols ??= new ClassProtocols(this.checker, this.moduleOrder);
     return this.classProtocols.usesCheckedIdentity(type);
+  }
+
+  /** Declared class fields may store a DYN value only when its static type
+   * names checked protocol identity or an owned runtime handle (a Worker
+   * or MessagePort); `unknown` and `any` fields stay refused. */
+  classFieldStoresDyn(type: ts.Type): boolean {
+    return this.classImplementedProtocol(type) || isWorkerHandleType(type, this.typeCtx);
   }
 
   /** The nominal identity of a checker module-namespace type. Program

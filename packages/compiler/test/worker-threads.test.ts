@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, expect, test, vi } from "vitest";
 import { compile, compileLibrary } from "../src/index.js";
 
@@ -181,5 +183,74 @@ settle().then((value) => console.log(value));
     expect(llvm).not.toContain("@scr_weak_dispose_hook");
     // Worker fibers own context termination; no fiberless async frames.
     expect(llvm).not.toContain("@scr_async_inline_enter");
+  }
+});
+
+test("JavaScript worker entry spellings run their TypeScript sources", async () => {
+  const request = await fixture(`import { Worker } from "node:worker_threads";
+function run(worker: Worker): Promise<void> {
+  return new Promise<void>((resolve) => {
+    worker.on("message", (text: string) => console.log(text));
+    worker.on("exit", () => resolve());
+  });
+}
+await run(new Worker(new URL("./task.js", import.meta.url)));
+await run(new Worker(new URL("./module-task.mjs", import.meta.url)));
+`);
+  for (const [file, text] of [
+    ["task.ts", "script task"],
+    ["module-task.mts", "module task"],
+  ])
+    await writeFile(
+      join(request.outDir, file),
+      `import { parentPort } from "node:worker_threads";\nparentPort!.postMessage("${text}");\n`,
+    );
+  const outPath = join(request.outDir, "program");
+  const result = await compile(request.entry, { outDir: request.outDir, outPath });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  const { stdout } = await promisify(execFile)(outPath, [], { encoding: "utf8" });
+  expect(stdout).toBe("script task\nmodule task\n");
+});
+
+test("worker entries without a source file stay refused", async () => {
+  const request = await fixture(
+    'import { Worker } from "node:worker_threads"; new Worker(new URL("./missing.js", import.meta.url));',
+  );
+  const result = await compile(request.entry, request);
+  expect(result.ok).toBe(false);
+  if (!result.ok)
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ message: expect.stringContaining("missing.js") }),
+      ]),
+    );
+});
+
+test("worker programs poll inline and skip termination polls in bounded functions", async () => {
+  const request = await fixture(
+    worker +
+      `
+function mix(a: number, b: number): number { return (a * 31 + b) % 1000003; }
+function spin(n: number): number { return n < 2 ? mix(n, 1) : spin(n - 1) + spin(n - 2); }
+console.log(mix(1, 2), spin(5));
+`,
+  );
+  const result = await compile(request.entry, request);
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  if (result.ok) {
+    const llvm = await readFile(request.outPath, "utf8");
+    const body = (name: string): string => {
+      const start = llvm.search(new RegExp(`^define [^\\n]*@${name}\\(`, "m"));
+      expect(start).toBeGreaterThanOrEqual(0);
+      return llvm.slice(start, llvm.indexOf("\n}\n", start));
+    };
+    // A bounded helper neither polls on entry nor makes its callers poll.
+    expect(body("sc_f_mix")).not.toContain("@scr_exc_active");
+    // Recursion polls on entry: the stop signal folds into the inline test,
+    // and only the slow path calls into the runtime.
+    expect(body("sc_f_spin")).toContain("load ptr, ptr @scr_exc_active");
+    expect(body("sc_f_spin")).toContain("load ptr, ptr @scr_context_signal");
+    expect(body("sc_f_spin")).toMatch(/load atomic i8, ptr %t\d+ monotonic/);
+    expect(llvm).toContain("@scr_exc_active = external thread_local global ptr");
   }
 });

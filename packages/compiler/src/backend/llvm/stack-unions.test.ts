@@ -17,6 +17,9 @@ import { validateModule } from "../../ir/validate.js";
 import { emitLlvmModule } from "./emitter.js";
 import { canStackUnion } from "./stack-unions.js";
 
+/** A pending-exception check: the inline active-cell test or a runtime call. */
+const PENDING_CHECK = /@scr_exc_(?:active|pending)\b/;
+
 const loc = { file: "stack-unions.ts", start: 0, end: 0 };
 const record: IrType = { kind: "record", shapeId: "cell" };
 const optional: IrType = { kind: "union", unionId: "optional" };
@@ -353,7 +356,7 @@ test("checked payload errors retain caller cleanup and owned adapter cleanup", (
   mod.functions[0]!.body.push(effect(call("read", [wrap(fresh())], record)));
   const ir = emit(mod),
     main = body(ir, "sc_f_main");
-  expect(main).toContain("@scr_exc_pending");
+  expect(main).toMatch(PENDING_CHECK);
   expect(main).toMatch(/exc\.u\d+:\n\s+call void @sc_rrelease_/);
   expect(main).toContain("@sc_rrelease_");
   expect(body(ir, "sc_bf_read")).not.toContain("@scr_union_release");

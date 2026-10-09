@@ -552,6 +552,9 @@ export class LlEmitter {
    * checks are emitted only after calls that can actually raise. */
   readonly mayThrow: Set<string>;
   readonly indirectMayThrow: boolean;
+  /** Worker programs: the functions that poll for termination on entry
+   * (workerTerminationPolls); null outside worker programs. */
+  private readonly workerEntryPolls: ReadonlySet<string> | null;
   /** Method names with at least one may-throw implementation — the
    * virtualCall pending check's key. */
   readonly mayThrowMethods = new Set<string>();
@@ -726,7 +729,7 @@ export class LlEmitter {
     }
     const mt = computeMayThrow(mod);
     this.mayThrow = mt.fns;
-    if (mod.workers) for (const fn of mod.functions) this.mayThrow.add(fn.name);
+    this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.indirectMayThrow = mt.indirect || mod.workers === true;
     for (const cls of mod.classes ?? []) {
       for (const m of cls.methods ?? []) {
@@ -3468,12 +3471,59 @@ export class LlEmitter {
   emitPendingCheck(): void {
     const B = this.B;
     if (B.isTerminated()) return;
-    this.declare(`declare zeroext i1 @scr_exc_pending()`);
-    const p = B.tmp();
-    B.line(`${p} = call zeroext i1 @scr_exc_pending()`);
+    if (this.mod.lib !== undefined) {
+      this.declare(`declare zeroext i1 @scr_exc_pending()`);
+      const p = B.tmp();
+      B.line(`${p} = call zeroext i1 @scr_exc_pending()`);
+      const lu = B.newLabel("exc.u");
+      const lk = B.newLabel("exc.k");
+      B.condBr(p, lu, lk);
+      B.startBlock(lu);
+      this.emitUnwind();
+      B.startBlock(lk);
+      return;
+    }
+    // Executables test the active exception cell's kind inline (its first
+    // field). Worker programs fold their context's stop signal into the
+    // same test, so cancellation and an already stopping context take the
+    // out-of-line scr_exc_pending path, which observes the request and
+    // reinstalls the termination sentinel.
+    const tl = this.mod.workers === true ? "thread_local " : "";
+    this.declare(`@scr_exc_active = external ${tl}global ptr`);
+    this.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
+    const cell = B.tmp();
+    const kind = B.tmp();
+    B.line(`${cell} = load ptr, ptr @scr_exc_active`);
+    B.line(`${kind} = load i32, ptr ${cell}`);
+    let word = kind;
+    if (this.mod.workers === true) {
+      this.declare(`@scr_context_signal = external thread_local global ptr`);
+      const signalPtr = B.tmp();
+      const signal = B.tmp();
+      const wide = B.tmp();
+      word = B.tmp();
+      B.line(`${signalPtr} = load ptr, ptr @scr_context_signal`);
+      B.line(`${signal} = load atomic i8, ptr ${signalPtr} monotonic, align 1`);
+      B.line(`${wide} = zext i8 ${signal} to i32`);
+      B.line(`${word} = or i32 ${kind}, ${wide}`);
+    }
+    const hit = B.tmp();
+    const cold = B.tmp();
+    B.line(`${hit} = icmp ne i32 ${word}, 0`);
+    B.line(`${cold} = call i1 @llvm.expect.i1(i1 ${hit}, i1 false)`);
     const lu = B.newLabel("exc.u");
     const lk = B.newLabel("exc.k");
-    B.condBr(p, lu, lk);
+    if (this.mod.workers === true) {
+      this.declare(`declare zeroext i1 @scr_exc_pending()`);
+      const slow = B.newLabel("exc.s");
+      B.condBr(cold, slow, lk);
+      B.startBlock(slow);
+      const p = B.tmp();
+      B.line(`${p} = call zeroext i1 @scr_exc_pending()`);
+      B.condBr(p, lu, lk);
+    } else {
+      B.condBr(cold, lu, lk);
+    }
     B.startBlock(lu);
     this.emitUnwind();
     B.startBlock(lk);
@@ -4575,7 +4625,7 @@ export class LlEmitter {
       B.line(`call void @scr_stack_enter(ptr %source_frame, ptr ${this.cstr(frame)})`);
       B.returnEpilogue = `call void @scr_stack_leave(ptr %source_frame)`;
     }
-    if (this.mod.workers) this.emitPendingCheck();
+    if (this.workerEntryPolls?.has(fn.name)) this.emitPendingCheck();
     this.emitStmts(fn.body);
     // Implicit exit of a void function: release the function scope unless
     // the body already terminated its final block (return, or a throw

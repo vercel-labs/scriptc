@@ -6,6 +6,30 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.2.7
+
+### Features
+
+- **Supported import cycles initialize in module evaluation order.** Compiled modules preserve shared instances, hoisted function calls, and temporal-dead-zone checks across cyclic imports.
+- **Typed returns carry more native values.** Optional values, never-returning calls, and native collection iterators retain their supported behavior across typed function boundaries.
+- **Native terminal and filesystem metadata expands.** Standard terminal stream properties and filesystem error fields are available in supported static workflows.
+- **An opt-in speed mode trades executable size and build time for runtime performance.** `--optimization=speed` enables runtime inlining, inline reference counting, and x86-64 runtime alignment while preserving the default release mode.
+
+### Performance
+
+- **Native allocation and cycle collection do less work.** A small-object allocator serves strings, arrays, and records; safe allocations and releases are emitted inline, and cycle scans back off for long-lived graphs while keeping static executables small.
+- **Arrays, collections, and callbacks avoid repeated work.** Large dense arrays avoid the former sparse-storage cliff, direct element access and callback calls reduce boxing, and string-keyed Maps reuse cached hashes. Optional element reads and captured parameters avoid temporary wrappers where safe.
+- **JSON, numbers, and regular expressions use more direct native paths.** Supported typed JSON parses directly into records, common number conversions use specialized paths, and regular expressions reuse compiled patterns and subject decoding with a native matcher for supported ASCII subjects.
+- **Async execution and native I/O reduce overhead.** Supported await-free async functions avoid fibers, fiber switches save only required registers, HTTP responses coalesce headers and bodies, and console and process streams write directly to descriptors.
+
+### Fixes
+
+- **Class, record, and callback values preserve more JavaScript behavior.** Class references retain identity through unions and collections, adapted callbacks remain the same function, and record field presence stays distinct from an explicit undefined value. Data-property writes no longer incorrectly mark unrelated class methods as replaced.
+- **Console line buffers account for concatenated string parts.** Long template literals and string concatenations reserve sufficient space before output.
+- **Native program objects use runtime ABI v8.** External object consumers must link the matching v0.2.7 runtime pack; the versioned marker rejects incompatible runtime objects at link time.
+
+<!-- release:end -->
+
 ## 0.2.6
 
 ### Features
@@ -25,8 +49,6 @@ All notable changes to scriptc will be documented in this file.
 
 - **Deep reference chains clean up with bounded stack use.** Native teardown preserves ownership across generated objects and runtime containers.
 - **Generic limits and diagnostics better match the failing source.** Independent concrete instantiations no longer share a global specialization cap; recursive demand remains bounded, and diagnostics retain source-file identity.
-
-<!-- release:end -->
 
 ## 0.2.5
 

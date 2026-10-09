@@ -2747,6 +2747,7 @@ function moduleEarlyBindingsOf7(
     list.push({ name, units });
     storedBy.set(name.text, list);
   };
+  const checker = program.getTypeChecker();
   const storedIn = (e: ts.Expression, units: ts.Node[]): void => {
     while (
       ts.isParenthesizedExpression(e) ||
@@ -2764,11 +2765,26 @@ function moduleEarlyBindingsOf7(
           ts.isGetAccessorDeclaration(p) ||
           ts.isSetAccessorDeclaration(p)
         ) {
-          if (!ts.isComputedPropertyName(p.name)) units.push(p);
+          // A computed key evaluates where the literal does; a plain
+          // member-chain key (`[Equal.symbol]`) runs no user code.
+          if (!ts.isComputedPropertyName(p.name) || memberChainKey7(p.name.expression))
+            units.push(p);
         } else if (ts.isPropertyAssignment(p)) storedIn(p.initializer, units);
       }
     } else if (ts.isArrayLiteralExpression(e)) {
       for (const el of e.elements) if (!ts.isSpreadElement(el)) storedIn(el, units);
+    } else if (ts.isCallExpression(e)) {
+      // `const f = wrap(callback)` where wrap only returns closures over
+      // the callback: it runs when the stored result is called.
+      e.arguments.forEach((arg, index) => {
+        let fn: ts.Expression = arg;
+        while (ts.isParenthesizedExpression(fn)) fn = fn.expression;
+        if (
+          (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) &&
+          returnsOnlyClosuresOver7(checker, e.expression, index)
+        )
+          units.push(fn);
+      });
     }
   };
   sf.statements.forEach((stmt, index) => {
@@ -2803,7 +2819,6 @@ function moduleEarlyBindingsOf7(
       idents.push(node);
     return undefined;
   });
-  const checker = program.getTypeChecker();
   checker.prefetchSymbolNodesExact(idents);
   const symbolOf = (id: ts.Identifier): ts.Symbol | undefined => {
     const parent = id.parent;
@@ -2933,6 +2948,77 @@ function moduleEarlyBindingsOf7(
     drain();
   }
   return out;
+}
+
+/** True when the program function `callee` names reads its parameter
+ * `index` only inside function expressions it returns directly, and never
+ * through `arguments` in its own body: calling it cannot run that argument
+ * before the returned closure is called. */
+function returnsOnlyClosuresOver7(
+  checker: ts.TypeChecker,
+  callee: ts.Expression,
+  index: number,
+): boolean {
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  const name = ts.isIdentifier(callee)
+    ? callee
+    : ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)
+      ? callee.name
+      : undefined;
+  if (name === undefined) return false;
+  let symbol = checker.getSymbolAtLocation(name);
+  if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) {
+    symbol = checker.getAliasedSymbol(symbol);
+  }
+  const decls = symbol === undefined ? [] : checker.declarationsOf(symbol);
+  if (decls.length !== 1) return false;
+  const decl = decls[0]!;
+  if (decl.getSourceFile().isDeclarationFile) return false;
+  let fn: ts.Node | undefined;
+  if (ts.isFunctionDeclaration(decl)) fn = decl;
+  else if (ts.isVariableDeclaration(decl) && decl.initializer !== undefined) {
+    let init: ts.Expression = decl.initializer;
+    while (ts.isParenthesizedExpression(init)) init = init.expression;
+    if (ts.isFunctionExpression(init) || ts.isArrowFunction(init)) fn = init;
+  }
+  if (fn === undefined) return false;
+  const like = fn as ts.FunctionLikeDeclaration;
+  const body = like.body;
+  const param = like.parameters[index];
+  if (body === undefined || !ts.isBlock(body) || param === undefined) return false;
+  if (!ts.isIdentifier(param.name) || param.dotDotDotToken !== undefined) return false;
+  if (like.parameters.slice(0, index).some((p) => p.dotDotDotToken !== undefined)) return false;
+  const paramName = param.name.text;
+  let deferred = true;
+  ts.walkPreorder(body, (node) => {
+    if (!deferred) return "stop";
+    if (ts.isFunctionLike(node) || ts.isClassExpression(node) || ts.isClassDeclaration(node)) {
+      let child: ts.Node = node;
+      while (ts.isParenthesizedExpression(child.parent)) child = child.parent;
+      const returned = ts.isReturnStatement(child.parent) && child.parent.expression === child;
+      // A returned closure may use the parameter; any other nested
+      // function could escape and run before the result is called.
+      if (returned) return "skip";
+      let uses = false;
+      ts.walkPreorder(node, (inner) => {
+        if (ts.isIdentifier(inner) && inner.text === paramName) uses = true;
+        return uses ? "stop" : undefined;
+      });
+      if (uses) deferred = false;
+      return "skip";
+    }
+    if (ts.isIdentifier(node) && (node.text === paramName || node.text === "arguments")) {
+      if (node !== param.name) deferred = false;
+    }
+    return undefined;
+  });
+  return deferred;
+}
+
+/** An identifier or a chain of plain property reads. */
+function memberChainKey7(e: ts.Expression): boolean {
+  while (ts.isPropertyAccessExpression(e)) e = e.expression;
+  return ts.isIdentifier(e);
 }
 
 /** The name a declaration node binds, if any. */

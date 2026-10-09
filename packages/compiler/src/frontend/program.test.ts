@@ -347,6 +347,21 @@ test.for([
   ["const item = { read() { return item.size; }, size: 2 }; console.log(item.read());", []],
   ["setTimeout(() => console.log(late), 0); const late = 'later';", []],
   ["let a = 1, b = () => a + 1, c = b(); console.log(c);", []],
+  // A wrapper that only returns closures over its callback defers it.
+  [
+    "function lazy(run: () => number) { return function () { return run(); }; } const read = lazy(() => total); const total = 3; console.log(read());",
+    [],
+  ],
+  // A wrapper that calls its callback runs it before the declaration.
+  [
+    "function now(run: () => number) { return run(); } const read = now(() => total); const total = 3; console.log(read);",
+    ["total"],
+  ],
+  // Object methods under member-chain computed keys are stored, not run.
+  [
+    "const shelf = { [Symbol.iterator]() { return [size][Symbol.iterator](); } }; const size = 2; console.log([...shelf]);",
+    [],
+  ],
 ] as const)("module bindings read before initialization: %s", ([source, early]) => {
   const directory = mkdtempSync(
     join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-module-early-"),

@@ -15175,6 +15175,18 @@
     "<repo>/tests/diagnostics/unrelated-class-assertion.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/4080-string-index-bounds.ts": {
+   "order": [
+    "<repo>/tests/corpus/4080-string-index-bounds.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4081-string-index-unproven.ts": {
+   "order": [
+    "<repo>/tests/corpus/4081-string-index-unproven.ts"
+   ],
+   "diags": []
   }
  }
 }

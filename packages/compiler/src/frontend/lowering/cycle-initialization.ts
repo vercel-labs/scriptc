@@ -36,6 +36,10 @@ export interface CycleInitFlag {
   /** The declaring module. */
   module: ts.SourceFile;
   settled: ReadonlySet<ts.SourceFile>;
+  /** True for a binding of an import cycle. A binding flagged only for its
+   * own module's early calls is checked opportunistically: whatever cannot
+   * be checked keeps the unchecked behavior instead of refusing. */
+  cycle: boolean;
 }
 
 /** Registers the initialization flags after global collection. Bindings
@@ -77,18 +81,25 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
       );
       continue;
     }
-    registerInitFlag(lowerer, binding, global);
+    registerInitFlag(lowerer, binding, global, true);
   }
   // A module's own function declarations are callable before its later
   // bindings are declared. Only bindings that such early-running code can
   // read get a flag; the others keep their unchecked storage.
   for (const binding of moduleEarlyBindings(lowerer.program, lowerer.moduleOrder)) {
     const global = lowerer.globalsBySymbol.get(binding.symbol);
-    if (global !== undefined) registerInitFlag(lowerer, binding, global);
+    if (global !== undefined && binding.folded === undefined) {
+      registerInitFlag(lowerer, binding, global, false);
+    }
   }
 }
 
-function registerInitFlag(lowerer: Lowerer, binding: CycleEarlyBinding, global: IrGlobal): void {
+function registerInitFlag(
+  lowerer: Lowerer,
+  binding: CycleEarlyBinding,
+  global: IrGlobal,
+  cycle: boolean,
+): void {
   if (lowerer.cycleInitFlags.has(global.id)) return;
   const flagId = `${global.id}%initialized`;
   lowerer.globalsList.push({ id: flagId, name: "%initialized", type: BOOL, mutable: true });
@@ -99,6 +110,7 @@ function registerInitFlag(lowerer: Lowerer, binding: CycleEarlyBinding, global: 
     name: binding.name.text,
     module: binding.module,
     settled: binding.settled,
+    cycle,
   };
   lowerer.cycleInitFlags.set(global.id, flag);
   const stmt = declaringStatement(binding.name);
@@ -171,7 +183,10 @@ export function withCycleInitFlags(
             return true;
           },
         });
-        if (nested && !lowerer.remainder) {
+        if (nested && !flag.cycle) {
+          // Unmarkable store of a same-module binding: keep it unchecked.
+          lowerer.cycleInitFlags.delete(id);
+        } else if (nested && !lowerer.remainder) {
           lowerer.pushDiag(
             unsupportedDiag(
               "SC1016",
@@ -308,17 +323,25 @@ function rewriteFunction(
 
 /** Class layouts that read module storage directly (an evaluated heritage
  * value, a symbol-keyed field) bypass the checks: refuse when that storage
- * is a flagged binding. */
+ * is a flagged import-cycle binding, and leave a same-module binding
+ * unchecked. */
 export function refuseUncheckedCycleReads(
   lowerer: Lowerer,
   classes: readonly { baseValueGlobal?: string; symbolFields?: { globalId: string }[] }[],
 ): void {
-  if (lowerer.cycleInitFlags.size === 0 || lowerer.remainder) return;
+  if (lowerer.cycleInitFlags.size === 0) return;
   for (const cls of classes) {
     const ids = [cls.baseValueGlobal, ...(cls.symbolFields ?? []).map((f) => f.globalId)];
     for (const id of ids) {
       const flag = id === undefined ? undefined : lowerer.cycleInitFlags.get(id);
       if (flag === undefined) continue;
+      if (!flag.cycle) {
+        // A same-module binding whose storage a class layout reads keeps
+        // the unchecked behavior: no check, and no refusal.
+        lowerer.cycleInitFlags.delete(id!);
+        continue;
+      }
+      if (lowerer.remainder) continue;
       const loc = flag.global.source?.loc ?? { file: lowerer.entry.fileName, start: 0, end: 0 };
       lowerer.pushDiag(
         unsupportedDiag(

@@ -67,6 +67,7 @@ import {
 } from "./lower-builtin-values.js";
 import { everyExprChild, everyStmtChild, transformStmtList } from "../../ir/traverse.js";
 import { RuntimeOptionalProvenance } from "./runtime-optional-provenance.js";
+import { StringIndexBounds } from "./string-index-bounds.js";
 import { RuntimeOptionalLocals } from "./runtime-optional-locals.js";
 import { sanitizeUnregisteredClassTypes } from "./sanitize-class-types.js";
 import { UnregisteredClassTypes } from "./unregistered-class-types.js";
@@ -1570,6 +1571,18 @@ export class Lowerer {
   /** Per-symbol result of the never-reassigned file scan
    * (bindingNeverReassigned — object-literal generic-method receivers). */
   readonly neverReassignedCache = new Map<ts.Symbol, boolean>();
+  private stringIndexBoundsCache: StringIndexBounds | null = null;
+  /** Proofs that a string element read names an existing code unit. The
+   * indexed-read analysis and expression lowering share one instance, so a
+   * read's representation and its callers' signatures always agree. */
+  get stringIndexBounds(): StringIndexBounds {
+    this.stringIndexBoundsCache ??= new StringIndexBounds(
+      (node) => this.checker.getSymbolAtLocation(node) ?? null,
+      (symbol) => this.checker.valueDeclarationOf(symbol),
+      (node) => (this.typeOf(node).flags & ts.TypeFlags.StringLike) !== 0,
+    );
+    return this.stringIndexBoundsCache;
+  }
   /** Syntactic writes indexed once per JS scope. Symbol and RHS type
    * checks remain contextual to each binding probe. */
   readonly jsBindingWritesByOwner = new Map<ts.Node, Map<string, ts.BinaryExpression[]>>();
@@ -3842,7 +3855,8 @@ export class Lowerer {
       const e = peel(node);
       if (!ts.isElementAccessExpression(e)) return false;
       const kind = this.mapTypeOf(this.typeOf(e.expression))?.kind;
-      return kind === "array" || kind === "string";
+      if (kind === "string") return !this.stringIndexBounds.inBounds(e);
+      return kind === "array";
     };
     const isDynamicObjectEntryRead = (node: ts.Expression): boolean => {
       const read = peel(node);
@@ -3963,7 +3977,8 @@ export class Lowerer {
         const t = this.mapTypeOf(this.typeOf(part));
         if (t?.kind !== "string") return false;
         const recv = this.mapTypeOf(this.typeOf(p.expression));
-        return recv?.kind === "string" || (recv?.kind === "array" && recv.elem.kind === "string");
+        if (recv?.kind === "string") return !this.stringIndexBounds.inBounds(p);
+        return recv?.kind === "array" && recv.elem.kind === "string";
       };
       const primitive = (part: ts.Expression): boolean => {
         const t = this.mapTypeOf(this.typeOf(part));

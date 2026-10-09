@@ -6869,6 +6869,17 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         expr.argumentExpression,
       );
       if (index.type.kind === "f64" && recv.type.kind === "string") {
+        // A proven in-bounds integer index always names a code unit, where
+        // charAt and the property read agree.
+        if (lowerer.stringIndexBounds.inBounds(expr))
+          return {
+            kind: "strIntrinsic",
+            method: "charAt",
+            receiver: recv,
+            args: [index],
+            type: STRING,
+            loc: locOf(expr),
+          };
         return lowerOptionalStringIndex(
           lowerer,
           recv,

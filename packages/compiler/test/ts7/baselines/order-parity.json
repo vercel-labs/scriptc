@@ -15287,6 +15287,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/4524-array-callback-supertype-params.ts": {
+   "order": [
+    "<repo>/tests/corpus/4524-array-callback-supertype-params.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/native-worker-bounded-errors.ts": {
    "order": [
     "<repo>/tests/corpus/native-worker-bounded-errors.ts"

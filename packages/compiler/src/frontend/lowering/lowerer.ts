@@ -4484,6 +4484,33 @@ export class Lowerer {
       }
       return changed;
     };
+    // A present-element helper passes the stored element itself, so the
+    // callback must accept that exact value through a mechanical adapter.
+    // A parameter spelled as a structural supertype (`(r: { pos: number })`
+    // over a wider record) only converts through the optional element
+    // ABI's union retag; keep that site on the optional visit. Unannotated
+    // inline parameters take the element's contextual type, and generic
+    // parameters specialize later, so neither restricts the site.
+    const callbackTakesPresentElement = (
+      callback: ts.Expression,
+      elem: IrType,
+      index: number,
+    ): boolean => {
+      const fn = peel(callback);
+      let param: IrType | null;
+      if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
+        const parameter = fn.parameters[index];
+        if (!parameter?.type || parameter.dotDotDotToken) return true;
+        const checkerType = this.typeOf(parameter.name);
+        if ((checkerType.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
+        param = this.mapTypeOf(checkerType);
+      } else {
+        const value = this.mapTypeOf(this.typeOf(fn));
+        if (value?.kind !== "func" || value.rest === true) return true;
+        param = value.params[index] ?? null;
+      }
+      return param === null || this.coercibleValue(elem, param);
+    };
     const callbackReturnsOptional = (
       callback: ts.Expression,
       seen = new Set<ts.Symbol>(),
@@ -5002,15 +5029,17 @@ export class Lowerer {
               const method = node.expression.name.text;
               // Callbacks skip holes (except the find family), so an array
               // that never holds undefined only passes present elements.
+              const reduce = method === "reduce" || method === "reduceRight";
               const elementsPresent =
-                receiver?.kind === "array" && elementStates.elementsPresent(receiverNode, method);
+                receiver?.kind === "array" &&
+                elementStates.elementsPresent(receiverNode, method) &&
+                callbackTakesPresentElement(callback, receiver.elem, reduce ? 1 : 0);
               // A callback returning a runtime-absent value still needs its
               // widened return, whatever its elements.
               if (promoteHofCallback(callback, elementsPresent ? [] : callbackIndices))
                 changed = true;
               // Element-typed callback helpers cover every method but
               // reduce, whose accumulator keeps the split visit.
-              const reduce = method === "reduce" || method === "reduceRight";
               presentSites.set(node, elementsPresent && !reduce);
               if (elementsPresent && reduce && retypeInlineCallback(callback, callbackIndices))
                 changed = true;

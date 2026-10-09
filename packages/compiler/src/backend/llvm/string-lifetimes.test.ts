@@ -324,7 +324,9 @@ test.each(methodCases)(
       const ir = body(mod(f), "sc_bf_method", bits);
       expect(ir).toContain(`@scr_str_${target}(`);
       expect(ir).not.toContain("@scr_str_retain_v");
-      if (method !== "normalize") expect(ir).not.toContain("@scr_str_release");
+      // Throwing methods release their owned result on the unwind path.
+      if (method !== "normalize" && method !== "repeat")
+        expect(ir).not.toContain("@scr_str_release");
       expect(ir).toContain(
         result.kind === "f64" ? "ret double" : result.kind === "bool" ? "ret i1" : "ret ptr",
       );

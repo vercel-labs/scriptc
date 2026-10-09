@@ -454,6 +454,31 @@ bool scr_exc_handle_uncaught(bool from_promise) {
   return result > 0;
 }
 
+static bool scr_uncaught_print_dyn_primitive(const ScrDyn *d) {
+  switch (d->kind) {
+  case SCR_DYN_STR:
+    fwrite(d->v.str->data, 1, d->v.str->len, stderr);
+    return true;
+  case SCR_DYN_NUM: {
+    char buf[32];
+    size_t len = scr_f64_to_str(d->v.num, buf);
+    fwrite(buf, 1, len, stderr);
+    return true;
+  }
+  case SCR_DYN_BOOL:
+    fputs(d->v.b ? "true" : "false", stderr);
+    return true;
+  case SCR_DYN_NULL:
+    fputs("null", stderr);
+    return true;
+  case SCR_DYN_UNDEF:
+    fputs("undefined", stderr);
+    return true;
+  default:
+    return false;
+  }
+}
+
 void scr_exc_print_uncaught(void) {
 #ifdef SCR_WORKERS
   if (scr_context_stopping()) { scr_exc_clear(); return; }
@@ -496,6 +521,12 @@ void scr_exc_print_uncaught(void) {
     /* fall through: non-Error hierarchy objects render like other refs */
   case SCR_EXC_REF:
   case SCR_EXC_PRIMITIVE_REF:
+    /* A checked-dynamic value (`throw v` with v: unknown) prints its
+     * primitive the way Node's uncaught report does — a string's own
+     * text, numbers/booleans/null/undefined by their names. */
+    if (scr_exc_release_fn == scr_dyn_release_v && scr_exc_payload != NULL &&
+        scr_uncaught_print_dyn_primitive((const ScrDyn *)scr_exc_payload))
+      break;
     fputs("[object]", stderr);
     break;
   case SCR_EXC_NONE: /* main only calls this when pending */

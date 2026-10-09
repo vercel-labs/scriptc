@@ -121,18 +121,12 @@ test("string methods match Node on committed oracle cases", async () => {
   expect(mismatches.length).toBeLessThanOrEqual(LINUX_PARSEINT_ULP.size);
 });
 
-// repeat(count) with count < 0 or Infinity is a RangeError in JS; scriptc
-// has no exceptions, so the runtime must print the error and abort().
-test.each(["--crash-repeat", "--crash-repeat-inf"])(
-  "repeat RangeError aborts (%s)",
-  async (mode) => {
-    const err = await execFileAsync(bin, [mode]).then(
-      () => {
-        throw new Error("expected scr_str_repeat to abort");
-      },
-      (e: Error & { signal?: string; stderr?: string }) => e,
-    );
-    expect(err.signal).toBe("SIGABRT");
-    expect(err.stderr).toContain("scriptc: RangeError: Invalid count value");
-  },
-);
+// repeat(count) with count < 0 or Infinity is Node's catchable RangeError
+// ("Invalid count value: -1"); the runtime leaves it pending.
+test.each([
+  ["--crash-repeat", "-1"],
+  ["--crash-repeat-inf", "Infinity"],
+])("repeat throws a catchable RangeError (%s)", async (mode, shown) => {
+  const { stderr } = await execFileAsync(bin, [mode]);
+  expect(stderr).toContain(`Uncaught RangeError: Invalid count value: ${shown}`);
+});

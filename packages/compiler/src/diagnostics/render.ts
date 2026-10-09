@@ -14,6 +14,7 @@ interface SourceLookup {
 }
 
 const RED = "\x1b[31m";
+const YELLOW = "\x1b[33m";
 const CYAN = "\x1b[36m";
 const DIM = "\x1b[2m";
 const BOLD = "\x1b[1m";
@@ -58,13 +59,16 @@ export function renderDiagnostic(
     frame.push(
       c(DIM, `  ${" ".repeat(gutterWidth)} | `) +
         " ".repeat(colNum - 1) +
-        c(RED, "^" + "~".repeat(spanOnLine - 1)),
+        c(/^SC6\d{3}$/.test(diag.code) ? YELLOW : RED, "^" + "~".repeat(spanOnLine - 1)),
     );
     emitLine(lineNum + 1);
   }
 
+  // The divergence band (SC6xxx) is the one warning severity: the program
+  // compiles, and the site can behave differently from Node.
+  const warning = /^SC6\d{3}$/.test(diag.code);
   out.push(
-    `${c(BOLD, `${diag.loc.file}:${lineNum}:${colNum}`)} - ${c(RED, "error")} ${c(BOLD, diag.code)}: ${diag.message}`,
+    `${c(BOLD, `${diag.loc.file}:${lineNum}:${colNum}`)} - ${warning ? c(YELLOW, "warning") : c(RED, "error")} ${c(BOLD, diag.code)}: ${diag.message}`,
   );
   if (frame.length) {
     out.push("", ...frame);
@@ -96,4 +100,18 @@ export function renderDiagnostics(
       return renderDiagnostic(d, text === undefined ? undefined : { text }, opts);
     })
     .join("\n\n");
+}
+
+/** Divergence warnings after a successful build: the rendered sites plus a
+ * one-line count, on stderr. */
+export function renderWarnings(
+  diags: readonly ScrDiagnostic[],
+  sourceTextByFile: Map<string, string>,
+  opts: RenderOptions = {},
+): string {
+  const n = diags.length;
+  return (
+    renderDiagnostics([...diags], sourceTextByFile, opts) +
+    `\n\n${n} warning${n === 1 ? "" : "s"}: the program compiled, but ${n === 1 ? "this site" : "these sites"} can behave differently from Node.`
+  );
 }

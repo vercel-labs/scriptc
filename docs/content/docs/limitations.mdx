@@ -98,7 +98,7 @@ Native error-first filesystem callbacks can be stored and passed to platform ada
 
 `node:worker_threads` supports native threads in static executables. Worker entry points must resolve at build time: use a source-relative `new URL("./worker.ts", import.meta.url)`, the current module URL, an absolute path, or CommonJS `__filename`. Each worker initializes its own module state, event loop, environment snapshot, and reference-counted heap. Nested workers inherit their parent's environment snapshot. Supported constructor options are `workerData` and `argv`; runtime paths, `eval`, loaders, custom stdio, shared environments, resource limits, and transfer lists are unsupported. Worker argument strings containing null bytes are also unsupported.
 
-Workers support `online`, `message`, `error`, and `exit` events, `postMessage`, `terminate`, `ref`, and `unref`. The parent port supports message listeners, `postMessage`, `close`, `start`, `ref`, `unref`, and `hasRef`. Messages clone primitives, plain object graphs, arrays, errors, ArrayBuffers, typed arrays, and DataViews, preserving cycles and aliases. Functions, proxies, other native handles, and nonempty transfer lists are refused. SharedArrayBuffers share their backing storage while retaining separate wrappers in each thread.
+Workers support `online`, `message`, `error`, and `exit` events, `postMessage`, `terminate`, `ref`, and `unref`. The parent port supports message listeners, `postMessage`, `close`, `start`, `ref`, `unref`, and `hasRef`. Messages clone primitives, plain object graphs, arrays, errors, ArrayBuffers, typed arrays, and DataViews, preserving cycles and aliases. Program class instances arrive as plain objects with their own data properties, without their prototype, methods, accessors, or private fields, as in Node. Functions, proxies, other native handles, and nonempty transfer lists are refused. SharedArrayBuffers share their backing storage while retaining separate wrappers in each thread.
 
 SharedArrayBuffer storage is fixed-length. Atomics supports integer `load`, `store`, `exchange`, `compareExchange`, `add`, `sub`, `and`, `or`, and `xor` over 8-, 16-, and 32-bit integer arrays. `wait` and `notify` use Int32Array views; BigInt atomics, `waitAsync`, and growable buffers are unsupported. `terminate` unwinds at runtime checkpoints, including loops and parked atomic waits, without running JavaScript catch or finally blocks. Blocking native calls finish before the next checkpoint.
 
@@ -144,25 +144,29 @@ Compiled code has runtime behavior that can differ from Node.js. Account for the
 
 ### Array bounds and runtime errors
 
-Statically typed numeric reads from typed arrays abort the process for invalid indexes. Node.js returns `undefined` for these reads. Invalid numeric indexed writes are ignored, while the assignment expression retains its original value.
+Statically typed numeric reads from typed arrays throw a catchable `RangeError` for invalid indexes, because a typed numeric read cannot produce `undefined`. Node.js returns `undefined` for these reads. Invalid numeric indexed writes are ignored, while the assignment expression retains its original value.
 
 Ordinary arrays track holes separately from present `undefined` values. Missing reads and empty `pop()`/`shift()` return `undefined`, indexed writes can grow the array, and length growth creates holes.
 
-Runtime traps cannot be caught. User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, and regex errors, can be caught; hard traps such as invalid typed-array reads terminate the process.
+Runtime traps cannot be caught. User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, regex, invalid typed-array read, and `String.prototype.repeat` count errors, can be caught; hard traps such as out-of-range reads of statically typed ordinary arrays terminate the process.
+
+Deep recursion that exhausts the native stack terminates the process with a signal instead of throwing Node's catchable `RangeError: Maximum call stack size exceeded`.
 
 ### Runtime type checks
 
 Casts from dynamic data validate the value. For example, `JSON.parse(s) as Config` throws a catchable error if the data does not match `Config`, identifying the offending path, such as `expected number at $.port, got string`. A TypeScript assertion alone does not perform this validation when run under Node.js.
 
+Casts between program classes are checked too: casting an instance to a class it does not extend throws a `TypeError`, where Node.js reads the members structurally. `SC6004` reports calls that pass such an instance to a function that casts it.
+
 A Promise converted from `unknown` to a typed result validates its fulfilled value. A mismatch rejects with a `TypeError`. Rejection reasons and reference equality are preserved across conversions.
 
 ### Record identity and property order
 
-A record converted to a strict field-subset shape is copied. Mutations through the narrower reference do not affect the original. Empty record layouts are also snapshots because they have no property storage.
+A record converted to a strict field-subset shape is copied. Mutations through the narrower reference do not affect the original, and the copy is not `===` to it. Empty record layouts are also snapshots because they have no property storage. `scriptc coverage` and `scriptc build` report `SC6001` where a copied value is then written or compared.
 
 Typed records with declared fields, indexed records, and arrays retain identity and mutations through native checked storage. Class instances retain identity at their exact type or a base class. Dense array literals created directly in checked storage preserve identity, and supported native handles pass by reference.
 
-`Object.keys`, `Object.values`, `Object.entries`, and `JSON.stringify` use a record's declaration order rather than per-object insertion order. Their order matches Node.js when objects are built in declaration order.
+`Object.keys`, `Object.values`, `Object.entries`, and `JSON.stringify` use a record's declaration order rather than per-object insertion order. Their order matches Node.js when objects are built in declaration order. `SC6002` reports object literals whose order differs where the program observes it.
 
 ### Buffer construction
 
@@ -178,13 +182,15 @@ Callback values use checked storage. Typed records and arrays retain identity an
 
 ### Strings and sorting
 
-Strings are stored as UTF-8. Length and string methods use UTF-16 semantics, but relational comparisons such as `<` and `>` use code-point order. Operations that split a surrogate pair produce U+FFFD. `localeCompare` compares code units without ICU collation.
+Strings are stored as UTF-8. Length and string methods use UTF-16 semantics, but relational comparisons such as `<` and `>` use code-point order. Operations that split a surrogate pair produce U+FFFD.
+
+One-argument `localeCompare` follows Node's default root-locale collation for Latin-script text (ASCII, Latin-1 Supplement, Latin Extended-A, and combining diacritical marks): letters order before case and accents, so `"a".localeCompare("B")` is `-1`. Strings containing other characters compare by code point, which can differ from Node's ICU collation; `SC6003` reports such string literals. The locales and options arguments are unsupported.
 
 `sort` and `toSorted` use stable natural merge sort. Default ordering supports string, number, and boolean arrays, comparing their string forms in UTF-16 order; for example, `[2, 10, 1].sort()` produces `[1, 10, 2]`. `sort` preserves holes at the end, while `toSorted` produces a fresh array with holes filled by `undefined`. With an explicit comparator, consistent comparators produce the same sorted results as Node, but callback order and count can differ.
 
 ### Dates and timezones
 
-String constructors and `Date.parse` accept ECMAScript date-only forms, date-times with an explicit `Z` or numeric offset, and GMT certificate-validity strings from the supported X509 APIs. Other V8-specific forms and offset-less local date-times produce an Invalid Date or `NaN`.
+String constructors and `Date.parse` accept ECMAScript date-only forms, date-times with an explicit `Z` or numeric offset, and GMT certificate-validity strings from the supported X509 APIs. Other V8-specific forms and offset-less local date-times produce an Invalid Date or `NaN`; `SC6005` reports string literals in those forms.
 
 Local calendar getters use the operating system's timezone database. Historical results can differ from Node.js when timezone data differs. For valid extreme years outside a platform calendar API's range, scriptc uses a calendar-equivalent year in the 400-year Gregorian cycle to obtain the timezone rule.
 
@@ -208,9 +214,11 @@ JavaScript can store `process.stdin`, `stdout`, and `stderr`, replace output `wr
 
 ### Process arguments and errors
 
-`process.argv[0]` is `"scriptc"`, `process.argv[1]` is the binary's path, and program arguments begin at index 2.
+`process.argv[0]` is `"scriptc"`, `process.argv[1]` is the binary's path, and program arguments begin at index 2. `process.version` and `process.versions.node` report the Node.js release the runtime is verified against.
 
-Uncaught exceptions print `Uncaught <value>` to stderr instead of Node.js's stack-trace block. Exit codes and output written before the exception are preserved. Runtime errors expose `message` and Node's `code`, but not `errno`, `syscall`, or `path`.
+Uncaught exceptions print `Uncaught <value>` to stderr instead of Node.js's source excerpt and stack-trace block; thrown strings and numbers print their value. Exit codes and output written before the exception are preserved. Runtime errors expose `message` and Node's `code`, but not `errno`, `syscall`, or `path`.
+
+Errors carry no stack frames. `console.log` and `util.inspect` print an Error in Node's stackless form, `[TypeError: message]`, where Node prints `TypeError: message` followed by stack frames; the two agree when `Error.stackTraceLimit` is `0`.
 
 ## Embedded JavaScript engine
 

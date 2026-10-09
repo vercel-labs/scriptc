@@ -1,0 +1,32 @@
+scriptc coverage tests/coverage-fixtures/divergences.ts
+
+  statements analyzed   18
+  compile statically    18  (100%)
+
+  fully static — this program has no dynamic remainder.
+
+  differs from Node   8 sites (compiles; the native program can behave differently)
+      ×1  SC6001  passing a 'Tagged' where 'Labeled' is expected copies the object (a narrower record shape compiles as a field copy): the write to 'target.label' updates only the copy, while under Node it updates the…
+          at tests/coverage-fixtures/divergences.ts:16:9
+          hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
+      ×1  SC6001  storing a 'Tagged' in a 'Labeled' binding copies the object (a narrower record shape compiles as a field copy): 'view === tagged' compares the copy, which is never the original object, while under No…
+          at tests/coverage-fixtures/divergences.ts:20:23
+          hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
+      ×1  SC6002  this object's keys enumerate as 'x, y' natively (the declaration order of 'Point') but as 'y, x' under Node (insertion order), and the program observes the order (JSON.stringify, Object.keys, for-in …
+          at tests/coverage-fixtures/divergences.ts:29:22
+          hint: write the properties in the declaration order of 'Point' (or reorder the declaration to match how objects are built)
+      ×1  SC6003  localeCompare over 'яблоко' compares characters outside the built-in collation (Latin letters, digits, punctuation and symbols) by code point natively, while Node applies ICU's full collation
+          at tests/coverage-fixtures/divergences.ts:33:70
+          hint: results agree with Node for Latin-script text; for other scripts compare explicitly (for example by code point with < and >) so both runtimes agree
+      ×1  SC6004  this 'Circle' reaches a cast to the unrelated class 'Square' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally
+          at tests/coverage-fixtures/divergences.ts:48:20
+          hint: narrow with 'instanceof Square' before casting, or cast to a base class or interface both classes share
+      ×1  SC6005  the date string 'Jan 2, 2024' parses to an invalid date (NaN) natively, while Node accepts it (the native parser takes ISO 8601 date-times with an explicit offset, such as '2024-01-02T03:04:05Z', and…
+          at tests/coverage-fixtures/divergences.ts:51:24
+          hint: write the date in ISO 8601 with an explicit offset ('Z' or '+HH:MM'), or build it from numbers with Date.UTC
+      ×1  SC6005  the date string '2024/01/02' parses to an invalid date (NaN) natively, while Node accepts it (the native parser takes ISO 8601 date-times with an explicit offset, such as '2024-01-02T03:04:05Z', and …
+          at tests/coverage-fixtures/divergences.ts:51:49
+          hint: write the date in ISO 8601 with an explicit offset ('Z' or '+HH:MM'), or build it from numbers with Date.UTC
+      ×1  SC6005  the date string 'March 4, 2024' parses to an invalid date (NaN) natively, while Node accepts it (the native parser takes ISO 8601 date-times with an explicit offset, such as '2024-01-02T03:04:05Z', a…
+          at tests/coverage-fixtures/divergences.ts:52:41
+          hint: write the date in ISO 8601 with an explicit offset ('Z' or '+HH:MM'), or build it from numbers with Date.UTC

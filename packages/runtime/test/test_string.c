@@ -11,8 +11,9 @@
  * identical replacement behavior.
  *
  * Special mode: --crash-repeat / --crash-repeat-inf call
- * scr_str_repeat with an invalid count and must abort() after printing
- * "scriptc: RangeError: Invalid count value" (checked by string.test.ts).
+ * scr_str_repeat with an invalid count, which must leave Node's catchable
+ * RangeError pending ("Invalid count value: -1"); the mode prints it the
+ * way an uncaught throw does (checked by string.test.ts).
  *
  * Exit 0 = all pass; prints each mismatch (capped) and exits 1 otherwise.
  */
@@ -879,9 +880,15 @@ int main(int argc, char **argv) {
     double count = strcmp(argv[1], "--crash-repeat-inf") == 0
                        ? (double)INFINITY
                        : -1.0;
-    scr_str_repeat(s, count); /* must print RangeError and abort() */
-    fputs("UNREACHABLE: scr_str_repeat returned\n", stderr);
-    return 3;
+    ScrStr *r = scr_str_repeat(s, count); /* must leave a RangeError pending */
+    scr_str_release(r);
+    scr_str_release(s);
+    if (!scr_exc_pending()) {
+      fputs("UNREACHABLE: scr_str_repeat returned without an exception\n", stderr);
+      return 3;
+    }
+    scr_exc_print_uncaught();
+    return 0;
   }
 
   FILE *in = stdin;

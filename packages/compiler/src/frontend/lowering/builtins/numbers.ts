@@ -4,6 +4,20 @@ import { lowerCheckedPredicateValue } from "../lower-builtin-values.js";
 import { locOf } from "../../program.js";
 import { BOOL, F64, type IrExpr, type IrLibFn, JSVAL } from "../../../ir/ir.js";
 import { lowerBuiltinValuePreservingUndefined, lowerOptionalNumberPredicate } from "./arguments.js";
+import { tryLowerExpression } from "../expressions/try-lower-expression.js";
+import { lowerStaticNumberGlobal } from "../lower-calls.js";
+import { isUnitType, type IrType } from "../../../ir/ir.js";
+
+/** A string, or a union of a string with undefined/null (the optional
+ * forms the static parsers accept). */
+function isStringLike(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "string") return true;
+  if (type.kind !== "union") return false;
+  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+  return (
+    arms.some((a) => a.kind === "string") && arms.every((a) => a.kind === "string" || isUnitType(a))
+  );
+}
 
 /** The lowered Number statics, by member name. The predicate quartet has
  * static C implementations (JS-exact: the ES2015 statics never coerce, so
@@ -96,7 +110,25 @@ export function lowerNumberStaticCall(
         member === "parseInt" ? "pass an explicit radix: Number.parseInt(s, 10)" : undefined,
       );
     }
-    lowerer.requireDynamicApi(`'Number.${member}'`, call);
+    // Number.parseFloat/Number.parseInt ARE the global parsers: over a
+    // string argument they lower to the same static parse (parseInt with
+    // its explicit radix); only the coercing argument shapes need the
+    // engine.
+    const probed = tryLowerExpression(lowerer, call.arguments[0]!);
+    if (probed !== null && isStringLike(lowerer, probed.type)) {
+      const parsed = lowerStaticNumberGlobal(lowerer, member, call, call.arguments, loc);
+      if (parsed !== null) return parsed;
+    }
+    const argText = lowerer.dynamic
+      ? ""
+      : probed !== null
+        ? lowerer.fmt(probed.type)
+        : lowerer.checker.typeToString(lowerer.checker.getTypeAtLocation(call.arguments[0]!));
+    lowerer.requireDynamicApi(
+      `'Number.${member}' with a '${argText}' argument (only a string argument compiles statically)`,
+      call,
+      "convert the argument explicitly first (for example String(x), or narrow the union), or build with --dynamic to run the coercing call in the embedded engine (adds ~620KB to the binary)",
+    );
     const callee: IrExpr = {
       kind: "jsOp",
       op: "globalGet",

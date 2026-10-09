@@ -15292,6 +15292,48 @@
     "<repo>/tests/corpus/native-worker-terminate-recursion.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/error-values-inspect.ts": {
+   "order": [
+    "<repo>/tests/corpus/error-values-inspect.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/locale-compare-root-order.ts": {
+   "order": [
+    "<repo>/tests/corpus/locale-compare-root-order.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/next-tick-commonjs-entry.cjs": {
+   "order": [
+    "<repo>/tests/corpus/next-tick-commonjs-entry.cjs"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/number-parse-statics.ts": {
+   "order": [
+    "<repo>/tests/corpus/number-parse-statics.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/process-version-pin.ts": {
+   "order": [
+    "<repo>/tests/corpus/process-version-pin.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/repeat-and-typed-read-errors.ts": {
+   "order": [
+    "<repo>/tests/corpus/repeat-and-typed-read-errors.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/worker-class-instance-clone.ts": {
+   "order": [
+    "<repo>/tests/corpus/worker-class-instance-clone.ts"
+   ],
+   "diags": []
   }
  }
 }

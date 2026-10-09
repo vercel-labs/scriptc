@@ -1498,6 +1498,7 @@ export class LlEmitter {
     if (entryMayThrow || runsLoop) this.declare(`declare zeroext i1 @scr_exc_pending()`);
     if (runsLoop) {
       this.declare(`declare zeroext i1 @scr_loop_run(ptr)`);
+      if (this.mod.commonJsEntry === true) this.declare(`declare void @scr_loop_commonjs_entry()`);
       this.declare(`declare zeroext i1 @scr_report_unhandled_rejections()`);
       this.declare(`declare void @scr_discard_unhandled_rejections()`);
     }
@@ -2000,6 +2001,7 @@ export class LlEmitter {
       // both exit 1, like Node — the C main's loop block exactly.
       ...(runsLoop
         ? [
+            ...(this.mod.commonJsEntry === true ? [`  call void @scr_loop_commonjs_entry()`] : []),
             `  %loop_rejection = call zeroext i1 @scr_loop_run(ptr ${asyncEntry ? "%top" : "null"})`,
             `  %lexc = call zeroext i1 @scr_exc_pending()`,
             `  br i1 %lexc, label %luncaught, label %lok`,

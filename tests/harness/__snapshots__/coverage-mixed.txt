@@ -4,4 +4,6 @@ scriptc coverage tests/coverage-fixtures/mixed.ts
   compile statically    12  (92%)
 
   blockers:
-      ×1  object destructuring of non-record values (the source is array-typed)  SC1031
+      ×1  SC1031  object destructuring of non-record values (the source is array-typed)
+          at tests/coverage-fixtures/mixed.ts:13:7
+          hint: this construct is valid TypeScript outside the compiled subset — rewrite it with a supported equivalent (https://scriptc.dev/limitations)

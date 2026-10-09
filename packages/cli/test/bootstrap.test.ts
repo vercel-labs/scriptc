@@ -214,3 +214,39 @@ test.skipIf(!runtimePackHost)(
   },
   120_000,
 );
+
+test("bootstrap replays an unchanged coverage verdict without loading the compiler graph", async () => {
+  const work = await mkdtemp(join(tmpdir(), "scriptc-bootstrap-coverage-"));
+  const preload = join(work, "preload.mjs");
+  const entry = join(work, "main.ts");
+  const env = { ...process.env, SCRIPTC_CACHE_DIR: join(work, "cache") };
+  try {
+    await writeFile(
+      preload,
+      [
+        "import { registerHooks } from 'node:module';",
+        "registerHooks({ load(url, context, nextLoad) {",
+        "  if (url.includes('/packages/compiler/dist/index.js')) throw new Error('compiler graph loaded');",
+        "  return nextLoad(url, context);",
+        "}});",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(entry, "const [[a]] = [[1]] as number[][];\nconsole.log(a);\n");
+    const first = await execFileAsync(process.execPath, [bootstrap, "coverage", entry], { env });
+    expect(first.stdout).toContain("statements analyzed");
+    const replayed = await execFileAsync(
+      process.execPath,
+      ["--import", preload, bootstrap, "coverage", entry],
+      { env },
+    );
+    expect(replayed.stdout).toBe(first.stdout);
+    // A changed source must load the compiler again.
+    await writeFile(entry, "console.log(1);\n");
+    await expect(
+      execFileAsync(process.execPath, ["--import", preload, bootstrap, "coverage", entry], { env }),
+    ).rejects.toThrow("compiler graph loaded");
+  } finally {
+    await rm(work, { recursive: true, force: true }).catch(() => undefined);
+  }
+});

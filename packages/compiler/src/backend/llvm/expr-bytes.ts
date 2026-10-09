@@ -108,9 +108,7 @@ export function emitBytesIndex(
     B.startBlock(invalid);
     if (skipInvalid) B.br(skipInvalid);
     else {
-      host.declare(`declare double @scr_bytes_get(ptr, double)`);
-      B.line(`call double @scr_bytes_get(ptr ${receiver}, double ${index})`);
-      B.terminate("unreachable");
+      emitInvalidBytesRead(host, receiver, index);
     }
     B.startBlock(valid);
     if (host.sizeType === "i64") return wideIndex;
@@ -144,13 +142,20 @@ export function emitBytesIndex(
   B.startBlock(invalid);
   if (skipInvalid) B.br(skipInvalid);
   else {
-    host.declare(`declare double @scr_bytes_get(ptr, double)`);
-    B.line(`call double @scr_bytes_get(ptr ${receiver}, double ${index})`);
-    B.terminate("unreachable");
+    emitInvalidBytesRead(host, receiver, index);
   }
 
   B.startBlock(valid);
   return idx;
+}
+
+/** An invalid typed-array read: the runtime throws Node's catchable
+ * RangeError, and this path unwinds to the handler (it never continues). */
+function emitInvalidBytesRead(host: LlvmEmitterContext, receiver: string, index: string): void {
+  host.declare(`declare double @scr_bytes_get(ptr, double)`);
+  host.B.line(`call double @scr_bytes_get(ptr ${receiver}, double ${index})`);
+  host.emitPendingCheck();
+  host.B.terminate("unreachable");
 }
 
 export function emitBytesData(host: LlvmEmitterContext, receiver: string): string {
@@ -193,6 +198,7 @@ export function emitBytesGet(
     host.declare(`declare double @scr_bytes_get(ptr, double)`);
     const result = B.tmp();
     B.line(`${result} = call double @scr_bytes_get(ptr ${receiver}, double ${index.name})`);
+    host.emitPendingCheck();
     return { name: result, type: F64 };
   }
   const idx = host.emitBytesIndex(receiver, index, expr, inBounds);

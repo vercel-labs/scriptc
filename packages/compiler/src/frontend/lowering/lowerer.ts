@@ -4,6 +4,7 @@ import {
   type CycleInitFlag,
 } from "./cycle-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
+import { scanDivergences } from "./divergences.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
@@ -680,6 +681,40 @@ export function stmtUsesIsland(stmts: IrStmt | IrStmt[]): boolean {
   return !everyStmtChild(stmts, expr, nested);
 }
 
+/** Statements a never-lowered body would have contributed to the coverage
+ * totals: every element of a statement list (blocks, case clauses), plus
+ * the single-statement bodies of control flow, nested functions included —
+ * the same accounting lowerStmts applies to bodies that do lower. */
+export function countBodyStatements(root: ts.Node): number {
+  let n = 0;
+  const visit = (node: ts.Node): void => {
+    if (ts.isBlock(node) || ts.isCaseClause(node) || ts.isDefaultClause(node)) {
+      n += node.statements.length;
+    } else if (
+      (ts.isIfStatement(node) ||
+        ts.isForStatement(node) ||
+        ts.isForInStatement(node) ||
+        ts.isForOfStatement(node) ||
+        ts.isWhileStatement(node) ||
+        ts.isDoStatement(node) ||
+        ts.isLabeledStatement(node)) &&
+      node.parent !== undefined
+    ) {
+      const bodies = ts.isIfStatement(node)
+        ? [node.thenStatement, node.elseStatement]
+        : ts.isLabeledStatement(node)
+          ? [node.statement]
+          : [node.statement];
+      for (const body of bodies) {
+        if (body !== undefined && !ts.isBlock(body) && !ts.isIfStatement(body)) n++;
+      }
+    }
+  };
+  // Iterative: absurdly deep nesting must not overflow the stack here.
+  ts.walkPreorder(root, visit);
+  return n;
+}
+
 export interface LowerResult {
   /** Present iff diagnostics is empty. */
   module: IrModule | null;
@@ -696,7 +731,10 @@ export interface LowerResult {
   provenanceElided?: ScrDiagnostic[];
   /** Coverage only (LowerOptions.coverage): the unreached remainder,
    * lowered in a throwaway pass — blockers in it can never fail a build. */
-  unreached?: { diagnostics: ScrDiagnostic[]; stats: LowerStats };
+  unreached?: { diagnostics: ScrDiagnostic[]; stats: LowerStats; runtimeFences?: ScrDiagnostic[] };
+  /** Compile-time-detectable behavior differences from Node (SC6xxx
+   * divergence warnings) in the program's own modules. Never failures. */
+  divergences?: ScrDiagnostic[];
   /** --dynamic only: every Node builtin the embedded npm graph imports,
    * shimmed or not — the coverage report's island honesty. */
   npmBuiltins?: NpmBuiltinUse[];
@@ -988,6 +1026,11 @@ export function lowerToIr(
     resultLowerer = emit;
     timing("historical-order-relower");
   }
+  // Divergence warnings over the program's own modules: computed once,
+  // after lowering, from the same checker (never part of a failure).
+  const divergences = scanDivergences(resultLowerer, moduleOrder);
+  timing("divergence-scan", { found: divergences.length });
+  if (divergences.length > 0) result = { ...result, divergences };
   if (options.coverage !== true) return result;
   const remainder = new Lowerer(program, entry, moduleOrder, dynamic, {
     frontendServices: options.frontendServices,
@@ -1004,7 +1047,17 @@ export function lowerToIr(
     externalTypeSpecifiersByFile,
   });
   const rem = remainder.run();
-  return { ...result, unreached: { diagnostics: rem.diagnostics, stats: rem.stats } };
+  // Unreached JS statements whose fences deferred to runtime count as
+  // failed statements in the remainder's stats, so their diagnostics must
+  // travel with them: a failed statement is never left unexplained.
+  return {
+    ...result,
+    unreached: {
+      diagnostics: rem.diagnostics,
+      stats: rem.stats,
+      ...(rem.runtimeFences.length > 0 ? { runtimeFences: rem.runtimeFences } : {}),
+    },
+  };
 }
 
 /** The island-handle type a `import(...)` initializer gives a binding
@@ -5084,12 +5137,12 @@ export class Lowerer {
         if (sig && !this.wantBody(sig.name)) continue;
         const fn = this.lowerFunction(decl);
         if (fn) functions.push(fn);
-        else if (this.countsSkips()) this.stats.functionsSkipped++;
+        else if (this.countsSkips()) this.countSkippedBody(decl);
       }
       for (const decl of fp.classDecls) {
         const info = this.classes.get(this.classNamer(decl));
         if (info) functions.push(...this.lowerClassMembers(info));
-        else if (this.countsSkips()) this.stats.functionsSkipped++;
+        else if (this.countsSkips()) this.countSkippedBody(decl);
       }
     }
 
@@ -5302,6 +5355,7 @@ export class Lowerer {
             ...(this.npmEmbedded ? { embedded: this.npmEmbedded } : {}),
             entry: ENTRY_NAME,
             ...(this.usesWorkers ? { workers: true } : {}),
+            ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
@@ -5358,6 +5412,25 @@ export class Lowerer {
       }
       default:
         return false;
+    }
+  }
+
+  /** A declaration whose signature blocked never lowers its body, so its
+   * statements would otherwise vanish from the coverage totals and the
+   * percentage would overstate how much of the program compiles. Count
+   * every statement the body holds as attempted and failed, in addition to
+   * the skipped-function tally. */
+  private countSkippedBody(decl: ts.Node): void {
+    this.stats.functionsSkipped++;
+    if (this.suppressStats) return;
+    const n = countBodyStatements(decl);
+    if (n === 0) return;
+    this.stats.statementsTotal += n;
+    this.stats.statementsFailed += n;
+    const file = decl.getSourceFile().fileName;
+    for (let i = 0; i < n; i++) {
+      this.bumpFileStat(file, "total");
+      this.bumpFileStat(file, "failed");
     }
   }
 
@@ -11324,8 +11397,8 @@ export class Lowerer {
 
   /* ── the island-backed ambient surface (ISLAND_SURFACE) ───────────── */
 
-  requireDynamicApi(feature: string, node: ts.Node): void {
-    return requireDynamicApi(this, feature, node);
+  requireDynamicApi(feature: string, node: ts.Node, hint?: string): void {
+    return requireDynamicApi(this, feature, node, hint);
   }
 
   lowerMathProperty(expr: ts.PropertyAccessExpression): IrExpr | null {

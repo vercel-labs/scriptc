@@ -27,6 +27,11 @@ import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
 import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
 
+/** The pinned Node release the runtime reports as process.versions.node
+ * (packages/runtime/src/scr_lib.c SCR_NODE_COMPAT_VERSION, kept equal to
+ * internal/compatibility/node-v24.json by a package test). */
+export const NODE_COMPAT_VERSION = "24.15.0";
+
 /** Method calls on first-class process-stream receivers (procStream —
  * a WritableStream-typed value like prefixStream's `output` param):
  * write(data) with one string and terminal geometry, dispatched onto
@@ -321,6 +326,12 @@ export function lowerProcessProperty(
   const loc = locOf(expr);
   if (member === "versions") {
     return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
+  }
+  if (member === "version") {
+    // Node's own version string for the compatibility target, the same
+    // release process.versions.node names (the runtime's
+    // SCR_NODE_COMPAT_VERSION) with Node's leading "v".
+    return strLit(`v${NODE_COMPAT_VERSION}`, loc);
   }
   if (member === "hrtime") {
     return { kind: "libCall", fn: "process.hrtimeValue", args: [], type: DYN, loc };

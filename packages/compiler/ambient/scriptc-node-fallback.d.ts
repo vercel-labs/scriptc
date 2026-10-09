@@ -181,6 +181,8 @@ declare var process: {
   /* Stable native dictionary. node and openssl name compatibility targets;
    * components absent from the runtime have no entries. */
   readonly versions: NodeJS.ProcessVersions;
+  /* "v" plus versions.node: the compatibility target's release. */
+  readonly version: string;
   /* The build-configuration snapshot Node exposes from its gyp config.
    * A scriptc binary has no V8 and no gyp, so `variables` answers the
    * honest capability record (v8_enable_i18n_support: 0 — no ICU; asan

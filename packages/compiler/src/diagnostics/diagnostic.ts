@@ -52,6 +52,15 @@
  *            (SC5002), and a TypeScript signature that does not match its
  *            declared native ABI classes (SC5003), and native toolchain
  *            failures while applying a valid profile (SC5004)
+ *   SC6xxx  divergences: the program compiles, but the native binary can
+ *            behave differently from Node at this site — WARNINGS, never
+ *            build failures (coverage --fail-on=divergences opts in):
+ *            width copies written or compared through (SC6001), object key
+ *            order that differs from insertion order where the program
+ *            observes it (SC6002), localeCompare over text the built-in
+ *            collation does not cover (SC6003), a call feeding an instance
+ *            to a cast to an unrelated class (SC6004), and Date strings the native parser does not
+ *            accept (SC6005)
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
@@ -73,6 +82,12 @@ export interface ScrDiagnostic {
    * recognizably the profile's. Only library-mode refusals carry one —
    * the text always arrives prefixed `from the '<profile name>' profile:`. */
   note?: string;
+  /** SC0001 only: the TypeScript error comes from scriptc's own type world
+   * (its fixed library set, the bundled Node fallback types, or globals it
+   * does not declare) rather than from the project's own configuration —
+   * the error may not reproduce under the project's tsc. Machine-readable
+   * output reports these under the "environment" category. */
+  typeWorld?: boolean;
 }
 
 /** SC3002–SC3004 — native-helper target, installation, and execution
@@ -90,6 +105,102 @@ export function nativeCodegenDiag(
     ...(code === "SC3003"
       ? { hint: "reinstall scriptc with optional dependencies enabled for this host" }
       : {}),
+  };
+}
+
+/* ── SC6xxx: divergences from Node (warnings) ─────────────────────────── */
+
+/** SC6001 — a value passed to (or declared as) a narrower record type is
+ * copied field by field, and the program then writes through or compares
+ * the copy: under Node it is the same object, so the write would be
+ * visible to the original and `===` would be true. */
+export function widthCopyDivergenceDiag(
+  sourceType: string,
+  targetType: string,
+  use: "write" | "compare",
+  useText: string,
+  site: "call" | "declaration",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const how =
+    site === "call"
+      ? `passing a '${sourceType}' where '${targetType}' is expected`
+      : `storing a '${sourceType}' in a '${targetType}' binding`;
+  const effect =
+    use === "write"
+      ? `the write to '${useText}' updates only the copy, while under Node it updates the original object`
+      : `'${useText}' compares the copy, which is never the original object, while under Node it is the same object`;
+  return {
+    code: "SC6001",
+    message: `${how} copies the object (a narrower record shape compiles as a field copy): ${effect}`,
+    loc,
+    hint: `declare the parameter or binding with the value's full type ('${sourceType}'), or make the shape a class — class instances keep their identity when passed as a base class`,
+  };
+}
+
+/** SC6002 — an object literal whose written key order differs from the
+ * order its declared type compiles to, for a type the program observes
+ * (JSON.stringify, Object.keys/values/entries, for-in, console output). */
+export function keyOrderDivergenceDiag(
+  typeText: string,
+  nodeOrder: string,
+  nativeOrder: string,
+  detail: "reordered" | "added-later",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6002",
+    message:
+      detail === "reordered"
+        ? `this object's keys enumerate as '${nativeOrder}' natively (the declaration order of '${typeText}') but as '${nodeOrder}' under Node (insertion order), and the program observes the order (JSON.stringify, Object.keys, for-in or console output)`
+        : `a property this object leaves out is assigned later: under Node its keys then enumerate as '${nodeOrder}' (insertion order), natively as '${nativeOrder}' (the declaration order of '${typeText}'), and the program observes the order`,
+    loc,
+    hint:
+      detail === "reordered"
+        ? `write the properties in the declaration order of '${typeText}' (or reorder the declaration to match how objects are built)`
+        : `initialize the property in the literal (for example with undefined), or declare it after the properties the literal sets`,
+  };
+}
+
+/** SC6003 — one-argument localeCompare over text outside the root-locale
+ * collation table the runtime carries: those characters compare by code
+ * point natively, where Node applies full ICU collation. */
+export function localeCompareDivergenceDiag(text: string, loc: SrcLoc): ScrDiagnostic {
+  const shown = text.length > 24 ? `${text.slice(0, 21)}...` : text;
+  return {
+    code: "SC6003",
+    message: `localeCompare over '${shown}' compares characters outside the built-in collation (Latin letters, digits, punctuation and symbols) by code point natively, while Node applies ICU's full collation`,
+    loc,
+    hint: "results agree with Node for Latin-script text; for other scripts compare explicitly (for example by code point with < and >) so both runtimes agree",
+  };
+}
+
+/** SC6004 — a call passes an instance of one class where the callee casts
+ * that parameter to an unrelated class: Node reads the members
+ * structurally, while scriptc checks class casts at runtime and throws a
+ * TypeError when the cast executes. */
+export function unrelatedClassCastDivergenceDiag(
+  source: string,
+  target: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6004",
+    message: `this '${source}' reaches a cast to the unrelated class '${target}' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally`,
+    loc,
+    hint: `narrow with 'instanceof ${target}' before casting, or cast to a base class or interface both classes share`,
+  };
+}
+
+/** SC6005 — a Date string literal outside the grammar the native parser
+ * accepts (ISO 8601 with an explicit offset, date-only forms, and the
+ * certificate-time shape): Node parses many more forms. */
+export function dateLiteralDivergenceDiag(text: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6005",
+    message: `the date string '${text}' parses to an invalid date (NaN) natively, while Node accepts it (the native parser takes ISO 8601 date-times with an explicit offset, such as '2024-01-02T03:04:05Z', and date-only forms)`,
+    loc,
+    hint: "write the date in ISO 8601 with an explicit offset ('Z' or '+HH:MM'), or build it from numbers with Date.UTC",
   };
 }
 
@@ -778,13 +889,15 @@ export function requiresDynamicDiag(feature: string, loc: SrcLoc): ScrDiagnostic
  * name the construct: the call RUNS under --dynamic (the engine executes
  * it with JS-exact semantics); without the flag each use site reports the
  * choice instead of ICEing or failing at link time. */
-export function requiresDynamicApiDiag(feature: string, loc: SrcLoc): ScrDiagnostic {
+export function requiresDynamicApiDiag(feature: string, loc: SrcLoc, hint?: string): ScrDiagnostic {
   return {
     code: "SC2012",
     message: `${feature} runs in the embedded dynamic engine, which this build does not include`,
     loc,
     milestone: "M4",
-    hint: "build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it",
+    hint:
+      hint ??
+      "build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it",
   };
 }
 
@@ -798,7 +911,7 @@ export function requiresDynamicImportDiag(pkg: string, loc: SrcLoc): ScrDiagnost
     message: `importing '${pkg}' requires the embedded dynamic engine, which this build does not include — the package's implementation runs there`,
     loc,
     milestone: "M4",
-    hint: "build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary); static builds never include it",
+    hint: "build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine",
   };
 }
 
@@ -811,7 +924,7 @@ export function requiresDynamicPackageDiag(pkg: string, loc: SrcLoc): ScrDiagnos
     message: `values from the '${pkg}' package run in the embedded dynamic engine, which this build does not include`,
     loc,
     milestone: "M4",
-    hint: "build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary); static builds never include it",
+    hint: "build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine",
   };
 }
 

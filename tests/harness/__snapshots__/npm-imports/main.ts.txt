@@ -5,7 +5,7 @@ npm-imports/main.ts:5:1 - error SC2013: importing 'mathkit' requires the embedde
     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   6 | import { convert } from "@acme/units";
 
-  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary); static builds never include it
+  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
 
 npm-imports/main.ts:6:1 - error SC2013: importing '@acme/units' requires the embedded dynamic engine, which this build does not include — the package's implementation runs there
 
@@ -14,7 +14,7 @@ npm-imports/main.ts:6:1 - error SC2013: importing '@acme/units' requires the emb
     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   7 | import type { Vector } from "mathkit";
 
-  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary); static builds never include it
+  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
 
 npm-imports/main.ts:9:7 - error SC2013: values from the 'mathkit' package run in the embedded dynamic engine, which this build does not include
 
@@ -23,7 +23,7 @@ npm-imports/main.ts:9:7 - error SC2013: values from the 'mathkit' package run in
      |       ^~~~~
   10 | console.log(point.x);
 
-  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary); static builds never include it
+  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
 
 npm-imports/main.ts:10:13 - error SC2013: values from the 'mathkit' package run in the embedded dynamic engine, which this build does not include
 
@@ -32,7 +32,7 @@ npm-imports/main.ts:10:13 - error SC2013: values from the 'mathkit' package run 
      |             ^~~~~~~
   11 | 
 
-  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary); static builds never include it
+  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
 
 npm-imports/main.ts:12:7 - error SC2013: values from the 'mathkit' package run in the embedded dynamic engine, which this build does not include
 
@@ -41,7 +41,7 @@ npm-imports/main.ts:12:7 - error SC2013: values from the 'mathkit' package run i
      |       ^~~~
   13 | console.log(calc.value());
 
-  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary); static builds never include it
+  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
 
 npm-imports/main.ts:12:14 - error SC2013: values from the 'mathkit' package run in the embedded dynamic engine, which this build does not include
 
@@ -50,7 +50,7 @@ npm-imports/main.ts:12:14 - error SC2013: values from the 'mathkit' package run 
      |              ^~~~~~~~~~~
   13 | console.log(calc.value());
 
-  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary); static builds never include it
+  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
 
 npm-imports/main.ts:13:13 - error SC2013: values from the 'mathkit' package run in the embedded dynamic engine, which this build does not include
 
@@ -59,7 +59,7 @@ npm-imports/main.ts:13:13 - error SC2013: values from the 'mathkit' package run 
      |             ^~~~~~~~~~
   14 | console.log(convert(3, "km"));
 
-  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary); static builds never include it
+  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
 
 npm-imports/main.ts:14:13 - error SC2013: values from the '@acme/units' package run in the embedded dynamic engine, which this build does not include
 
@@ -68,7 +68,7 @@ npm-imports/main.ts:14:13 - error SC2013: values from the '@acme/units' package 
      |             ^~~~~~~
   15 | console.log(origin.x);
 
-  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary); static builds never include it
+  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
 
 npm-imports/main.ts:15:13 - error SC2013: values from the 'mathkit' package run in the embedded dynamic engine, which this build does not include
 
@@ -77,4 +77,4 @@ npm-imports/main.ts:15:13 - error SC2013: values from the 'mathkit' package run 
      |             ^~~~~~~~
   16 | 
 
-  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary); static builds never include it
+  hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine

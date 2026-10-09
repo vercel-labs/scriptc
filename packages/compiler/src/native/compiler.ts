@@ -39,9 +39,10 @@ import {
   nativeProgramPartitions,
 } from "../backend/native-codegen-core.js";
 import { llvmRefusalDiag } from "../backend/target-diagnostics.js";
-import { nativeCodegenDiag } from "../diagnostics/diagnostic.js";
+import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import { loadFfiProfile, type FfiProfile } from "../ffi/ffi-manifest.js";
 import { analyzeWithFrontend } from "../frontend/analysis.js";
+import { analyzeWithVerdictCache } from "../coverage/verdict-cache.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
 import { runNativeFrontend } from "../frontend/pipeline-native.js";
 import { loadLibraryProfile } from "../library/library-profile.js";
@@ -106,6 +107,35 @@ export class NativeCompiler {
       this.toolchain.target.platform,
       this.frontend,
     );
+  }
+
+  /** analyze() behind the coverage verdict cache: an unchanged program
+   * replays the previous verdict (exact probe replay; comment-only edits
+   * relower here, since the token comparison is the Node frontend's). */
+  analyzeCached(entry: string, options: AnalyzeOptions): AnalyzeResult {
+    entry = resolve(entry);
+    const cache = this.cache;
+    if (cache === null) return this.analyze(entry, options);
+    let identity: string;
+    try {
+      identity = `${this.toolchain.compilerVersion}\0${nativeFileIdentity(process.execPath)}`;
+    } catch {
+      return this.analyze(entry, options);
+    }
+    const { result } = analyzeWithVerdictCache(
+      entry,
+      options,
+      {
+        store: {
+          read: (key) => cache.read("coverage", key)?.toString("utf8") ?? null,
+          write: (key, text) => cache.write("coverage", key, text),
+        },
+        identity,
+        platform: this.toolchain.target.platform,
+      },
+      () => this.analyze(entry, options),
+    );
+    return result;
   }
 
   private emitObject(
@@ -219,6 +249,21 @@ export class NativeCompiler {
   }
 
   compile(entry: string, options: CompileRequestOptions): CompileRequestResult {
+    const sink: { warnings: ScrDiagnostic[]; sources: Map<string, string> } = {
+      warnings: [],
+      sources: new Map(),
+    };
+    const result = this.compileWithWarnings(entry, options, sink);
+    // Divergence warnings ride a successful result (never a failure).
+    if (!result.ok || sink.warnings.length === 0) return result;
+    return { ...result, warnings: sink.warnings, sourceTexts: sink.sources };
+  }
+
+  private compileWithWarnings(
+    entry: string,
+    options: CompileRequestOptions,
+    sink: { warnings: ScrDiagnostic[]; sources: Map<string, string> },
+  ): CompileRequestResult {
     const timing = compilationTiming();
     const toolchain = this.toolchain;
     const target = toolchain.target;
@@ -259,6 +304,10 @@ export class NativeCompiler {
       );
       if (!prepared.ok) return prepared;
       sourceTexts = new Map(prepared.sources);
+      if (prepared.warnings !== undefined && prepared.warnings.length > 0) {
+        sink.warnings = prepared.warnings;
+        sink.sources = sourceTexts;
+      }
       mkdirSync(dirname(output), { recursive: true });
       stage = mkdtempSync(join(dirname(output), ".scriptc-native-"));
       const stagedOutput = join(stage, basename(output));

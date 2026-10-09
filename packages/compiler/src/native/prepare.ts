@@ -1,3 +1,4 @@
+import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { CompilationTiming } from "../timing.js";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -36,6 +37,9 @@ export interface NativeExecutableInput {
   sidecarJson: string | null;
   features: NativeLinkFeatures;
   sources: [string, string][];
+  /** Divergence warnings (SC6xxx) the lowering found; cached with the
+   * input so a frontend-cache hit reports them too. */
+  warnings?: ScrDiagnostic[];
 }
 
 interface FrontendCacheEntry {
@@ -137,13 +141,13 @@ function preparedFromIr(
   path: string,
   entry: string,
   options: CompileRequestOptions,
-): { ok: true; mod: IrModule; sourceTexts: Map<string, string> } {
+): { ok: true; mod: IrModule; sourceTexts: Map<string, string>; warnings: ScrDiagnostic[] } {
   if ((options.outputKind ?? "exe") !== "exe" || options.strip !== true)
     throw new Error(`${BOOTSTRAP_IR_INPUT} requires a stripped executable build`);
   const mod = deserializeModule(readFileSync(path, "utf8"));
   if (resolve(mod.sourceFile) !== resolve(entry))
     throw new Error(`${BOOTSTRAP_IR_INPUT} was lowered from a different entry`);
-  return { ok: true, mod, sourceTexts: new Map() };
+  return { ok: true, mod, sourceTexts: new Map(), warnings: [] };
 }
 
 /** Keep the checker and typed IR out of the native optimizer's live heap. */
@@ -237,6 +241,7 @@ export function prepareNativeExecutable(
     sidecarJson: null,
     features: executableLinkFeatures(prepared.mod, options.dynamic ?? false),
     sources: [...prepared.sourceTexts],
+    ...(prepared.warnings.length > 0 ? { warnings: prepared.warnings } : {}),
   };
   timing("link-features");
   const probes = tracker.snapshot();

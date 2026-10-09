@@ -1,5 +1,6 @@
 #include "scr_runtime.h"
 #include "scr_key.h"
+#include "scr_collation_data.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1257,7 +1258,15 @@ static ScrStr *scr_str_slice_units(ScrStr *s, ScrSidx *e,
 ScrStr *scr_str_repeat(ScrStr *s, double count) {
   double n = scr_to_integer_or_infinity(count);
   if (n < 0 || (isinf(n) && n > 0)) {
-    scr_trap("scriptc: RangeError: Invalid count value\n");
+    /* Node's catchable RangeError, with the count as ToString renders it
+     * ("Invalid count value: -1", "... Infinity"). The caller checks the
+     * pending exception; the empty result is never observed. */
+    char num[32];
+    scr_f64_to_str(count, num);
+    char msg[64];
+    int len = snprintf(msg, sizeof msg, "Invalid count value: %s", num);
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, (size_t)len);
+    return scr_str_empty();
   }
   if (n == 0 || s->len == 0) return scr_str_empty();
   /* n is a finite non-negative integer here. Reject sizes malloc could not
@@ -2112,4 +2121,98 @@ ScrStr *scr_str_decode_uri_component(ScrStr *s) {
     return NULL;
   }
   return out;
+}
+
+/* ── String.prototype.localeCompare (one argument) ─────────────────────
+ * Node's default collation is ICU's root locale. scr_collation_data.h
+ * (scripts/gen-collation-table.mjs, verified against the pinned Node)
+ * carries its collation elements for the Latin repertoire: ASCII, Latin-1
+ * Supplement, Latin Extended-A and the combining diacritics. Strings
+ * entirely inside it compare exactly as Node does: canonical decomposition
+ * and mark reordering, then primaries (letters before case and accents:
+ * "a" < "B"), secondaries (accents), tertiaries (case). A string with any
+ * other code point falls back to code-point order (the documented limit;
+ * `scriptc coverage` reports such literals as SC6003). */
+typedef struct {
+  ScrCollElem *e;
+  size_t n, cap;
+  ScrCollElem inline_buf[64];
+} ScrCollBuf;
+
+static void scr_coll_push(ScrCollBuf *b, ScrCollElem e) {
+  if (b->n == b->cap) {
+    size_t cap = b->cap * 2;
+    ScrCollElem *grown = b->e == b->inline_buf ? malloc(cap * sizeof *grown)
+                                               : realloc(b->e, cap * sizeof *grown);
+    if (!grown) scr_oom();
+    if (b->e == b->inline_buf) memcpy(grown, b->inline_buf, b->n * sizeof *grown);
+    b->e = grown;
+    b->cap = cap;
+  }
+  b->e[b->n++] = e;
+}
+
+/* Elements of a UTF-8 string, marks in canonical order; false when a code
+ * point is outside the table. */
+static bool scr_coll_elements(const ScrStr *s, ScrCollBuf *b) {
+  const unsigned char *p = (const unsigned char *)s->data;
+  const unsigned char *end = p + s->len;
+  while (p < end) {
+    uint32_t c = *p++;
+    if (c >= 0x80) {
+      int extra = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : 1;
+      c &= extra == 3 ? 0x07 : extra == 2 ? 0x0f : 0x1f;
+      for (int i = 0; i < extra && p < end; i++) c = (c << 6) | (*p++ & 0x3f);
+    }
+    const ScrCollEntry *entry = scr_coll_lookup(c);
+    if (entry == NULL || entry->n == 255) return false;
+    for (uint8_t i = 0; i < entry->n; i++) {
+      ScrCollElem e = entry->e[i];
+      size_t j = b->n;
+      scr_coll_push(b, e);
+      /* Canonical reordering: a mark moves before marks of a higher class. */
+      if (e.ccc != 0) {
+        while (j > 0 && b->e[j - 1].ccc > e.ccc) {
+          b->e[j] = b->e[j - 1];
+          j--;
+        }
+        b->e[j] = e;
+      }
+    }
+  }
+  return true;
+}
+
+static int scr_coll_level(const ScrCollBuf *a, const ScrCollBuf *b, int level) {
+  size_t i = 0, j = 0;
+  for (;;) {
+    if (level == 0) {
+      while (i < a->n && a->e[i].p == 0) i++;
+      while (j < b->n && b->e[j].p == 0) j++;
+    }
+    if (i == a->n || j == b->n) return (i == a->n) == (j == b->n) ? 0 : i == a->n ? -1 : 1;
+    unsigned wa = level == 0 ? a->e[i].p : level == 1 ? a->e[i].s : a->e[i].t;
+    unsigned wb = level == 0 ? b->e[j].p : level == 1 ? b->e[j].s : b->e[j].t;
+    if (wa != wb) return wa < wb ? -1 : 1;
+    i++;
+    j++;
+  }
+}
+
+double scr_str_locale_compare(ScrStr *a, ScrStr *b) {
+  ScrCollBuf ea = {0}, eb = {0};
+  ea.e = ea.inline_buf;
+  ea.cap = sizeof ea.inline_buf / sizeof ea.inline_buf[0];
+  eb.e = eb.inline_buf;
+  eb.cap = sizeof eb.inline_buf / sizeof eb.inline_buf[0];
+  int r = 0;
+  if (scr_coll_elements(a, &ea) && scr_coll_elements(b, &eb)) {
+    for (int level = 0; level < 3 && r == 0; level++) r = scr_coll_level(&ea, &eb, level);
+  } else {
+    int c = scr_str_cmp(a, b);
+    r = c < 0 ? -1 : c > 0 ? 1 : 0;
+  }
+  if (ea.e != ea.inline_buf) free(ea.e);
+  if (eb.e != eb.inline_buf) free(eb.e);
+  return (double)r;
 }

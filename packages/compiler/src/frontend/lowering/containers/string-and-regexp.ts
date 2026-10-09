@@ -5,7 +5,6 @@ import {
   DYN,
   F64,
   type IrExpr,
-  type IrFunction,
   type IrStmt,
   type IrType,
   STRING,
@@ -1266,13 +1265,12 @@ export function lowerStringMethodCall(
 }
 
 /** `a.localeCompare(b)` — the one-argument form only (locales/options
- * select ICU collations that do not exist here). Lowers to an interned
- * synthetic function returning -1/0/1 by CODE-UNIT order — the same
- * ordering as the string relational operators — NOT Node's ICU default
- * collation: a documented divergence (SEMANTICS.md; e.g. Node says
- * "a" < "B" under ICU while code units say "B" < "a"). For same-case
- * ASCII the orders agree. Null when the receiver isn't a stdlib string
- * (caller keeps its generic rejection). */
+ * select collations beyond the default). Lowers to the runtime's
+ * root-locale collation (scr_str_locale_compare): Node's ICU order for
+ * Latin-script text — letters before case and accents ("a" < "B", "ä" <
+ * "z") — and code-point order for other scripts, the documented limit.
+ * Null when the receiver isn't a stdlib string (caller keeps its generic
+ * rejection). */
 function lowerLocaleCompareCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1294,61 +1292,5 @@ function lowerLocaleCompareCall(
   const arg = lowerer.lowerExpr(call.arguments[0]!);
   if (arg.type.kind !== "string")
     lowerer.badType(call.arguments[0]!, lowerer.typeOf(call.arguments[0]!));
-  const key = "localeCompare";
-  let helper = lowerer.arrHofHelpers.get(key);
-  if (!helper) {
-    helper = `%str.localeCompare`;
-    lowerer.arrHofHelpers.set(key, helper);
-    lowerer.liftedFns.push(buildLocaleCompareFn(helper, loc));
-  }
-  return { kind: "call", callee: helper, args: [receiver, arg], type: F64, loc };
-}
-
-/** `return a < b ? -1 : a > b ? 1 : 0` over the strCmp primitive (the
- * relational operators' exact machinery — one interned helper, no new IR
- * or runtime surface). */
-function buildLocaleCompareFn(name: string, loc: SrcLoc): IrFunction {
-  const cmp = (op: "<" | ">"): IrExpr => ({
-    kind: "strCmp",
-    op,
-    left: varRef("a.0", STRING, loc),
-    right: varRef("b.0", STRING, loc),
-    type: BOOL,
-    loc,
-  });
-  const body: IrStmt[] = [
-    {
-      kind: "return",
-      value: {
-        kind: "ternary",
-        cond: cmp("<"),
-        then: numLit(-1, loc),
-        else_: {
-          kind: "ternary",
-          cond: cmp(">"),
-          then: numLit(1, loc),
-          else_: numLit(0, loc),
-          type: F64,
-          loc,
-        },
-        type: F64,
-        loc,
-      },
-      loc,
-    },
-  ];
-  return {
-    name,
-    params: [
-      { localId: "a.0", name: "a", type: STRING },
-      { localId: "b.0", name: "b", type: STRING },
-    ],
-    returnType: F64,
-    locals: [
-      { id: "a.0", name: "a", type: STRING, mutable: true },
-      { id: "b.0", name: "b", type: STRING, mutable: true },
-    ],
-    body,
-    loc,
-  };
+  return { kind: "libCall", fn: "str.localeCompare", args: [receiver, arg], type: F64, loc };
 }

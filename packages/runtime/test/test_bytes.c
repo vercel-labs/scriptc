@@ -3,8 +3,8 @@
  * bytes.test.ts, which also asserts the trap modes abort:
  *
  *   <scratch-dir>       run all assertions; prints "N/N cases passed"
- *   --crash-get-oob     element read past the end   → RangeError + abort()
- *   --crash-get-frac    fractional element index    → RangeError + abort()
+ *   --crash-get-oob     element read past the end   → pending RangeError
+ *   --crash-get-frac    fractional element index    → pending RangeError
  *
  * The coercion matrix mirrors Node exactly (verified by hand and by the
  * differential corpus): ToUint8/ToUint32 modular truncation on writes,
@@ -393,8 +393,13 @@ int main(int argc, char **argv) {
       fprintf(stderr, "unknown mode %s\n", argv[1]);
       return 2;
     }
-    fprintf(stderr, "expected a trap, still alive\n");
-    return 2;
+    if (!scr_exc_pending()) {
+      fprintf(stderr, "expected a pending RangeError\n");
+      return 2;
+    }
+    scr_exc_print_uncaught();
+    scr_bytes_release(b);
+    return 0;
   }
   if (argc != 2) {
     fprintf(stderr, "usage: test_bytes <scratch-dir> | --crash-*\n");

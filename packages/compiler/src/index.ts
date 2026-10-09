@@ -12,6 +12,9 @@ import {
   libraryWasmRefusal,
 } from "./library/prepare.js";
 import { analyzeWithFrontend } from "./frontend/analysis.js";
+import { analyzeWithVerdictCache, fileVerdictStore } from "./coverage/verdict-cache.js";
+import { coverageCompilerIdentity } from "./coverage/verdict-startup.js";
+import { commentOnlyReplay } from "./coverage/verdict-semantic.js";
 import { llvmRefusalDiag, targetRefusalDiag } from "./backend/target-diagnostics.js";
 import type {
   CompileOptions,
@@ -165,7 +168,22 @@ export {
   renderDiagnostics as renderAll,
   renderDiagnostic,
 } from "./diagnostics/render.js";
-export { renderCoverage, type CoverageInput } from "./coverage/report.js";
+export {
+  renderCoverage,
+  coverageEnvelope,
+  coveragePasses,
+  type CoverageInput,
+  type CoverageFailOn,
+} from "./coverage/report.js";
+export {
+  buildEnvelope,
+  DIAGNOSTICS_SCHEMA_VERSION,
+  type DiagnosticsEnvelope,
+  type DiagnosticGroup,
+  type LocatedDiagnostic,
+  type DiagnosticCategory,
+  type DiagnosticScope,
+} from "./diagnostics/envelope.js";
 export {
   generateSurfaceManifest,
   renderSurfaceManifest,
@@ -301,6 +319,36 @@ export function analyze(entryPath: string, opts: AnalyzeOptions = {}): AnalyzeRe
   return analyzeWithFrontend(entryPath, opts, buildTargetPlatform(), nodeFrontend);
 }
 
+/** analyze() behind the coverage verdict cache (the CLI's `scriptc
+ * coverage`): an unchanged program, or one whose TypeScript edits only
+ * touch comments, replays the previous verdict without lowering. */
+export async function analyzeCached(
+  entryPath: string,
+  opts: AnalyzeOptions = {},
+): Promise<AnalyzeResult> {
+  entryPath = resolve(entryPath);
+  const root = await prepareBuildCacheRoot(buildCacheRoot());
+  if (root === null || provenanceSources() !== null) return analyze(entryPath, opts);
+  const directory = join(root, "coverage-v1");
+  const implementation = await coverageCompilerIdentity(directory);
+  if (implementation === null) return analyze(entryPath, opts);
+  const { result, outcome } = analyzeWithVerdictCache(
+    entryPath,
+    opts,
+    {
+      store: fileVerdictStore(directory),
+      identity: implementation.digest,
+      platform: buildTargetPlatform(),
+      semanticReplay: commentOnlyReplay,
+    },
+    () => analyze(entryPath, opts),
+  );
+  if (process.env["SCRIPTC_TIMING"] === "1") {
+    process.stderr.write(`scriptc coverage cache ${JSON.stringify({ outcome })}\n`);
+  }
+  return result;
+}
+
 const nodeFrontend: FrontendFactory = (entry, npmStatic, externalTypes, libraryNpmStatic) =>
   runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic);
 
@@ -327,7 +375,26 @@ export async function compile(
 ): Promise<CompileRequestResult> {
   clearCompileSessionCaches();
   const frontendInputs = new FrontendInputTracker();
-  return frontendInputs.run(() => compileTracked(entryPath, opts, frontendInputs));
+  const warnings: CompileWarningSink = { warnings: [], sourceTexts: null };
+  const result = await frontendInputs.run(() =>
+    compileTracked(entryPath, opts, frontendInputs, warnings),
+  );
+  return withCompileWarnings(result, warnings);
+}
+
+/** Divergence warnings collected while a compile lowers (none when a cache
+ * hit skips lowering). */
+interface CompileWarningSink {
+  warnings: ScrDiagnostic[];
+  sourceTexts: Map<string, string> | null;
+}
+
+function withCompileWarnings<T extends CompileRequestResult>(
+  result: T,
+  sink: CompileWarningSink,
+): T {
+  if (!result.ok || sink.warnings.length === 0) return result;
+  return { ...result, warnings: sink.warnings, sourceTexts: sink.sourceTexts ?? new Map() };
 }
 
 /** Build-time API compatibility fence: a caller's existing CompileOptions
@@ -576,6 +643,7 @@ async function prepareExecutableInput(
   ffi: FfiProfile | null,
   buildPlatform: string,
   timing: CompilationTiming,
+  warningSink?: CompileWarningSink,
 ): Promise<PreparedExecutable | CompileRequestResult> {
   const outputKind = opts.outputKind ?? "exe";
   const prepared = prepareExecutableModule(
@@ -588,6 +656,10 @@ async function prepareExecutableInput(
   );
   if (!prepared.ok) return prepared;
   const { mod, sourceTexts } = prepared;
+  if (warningSink !== undefined && prepared.warnings.length > 0) {
+    warningSink.warnings = prepared.warnings;
+    warningSink.sourceTexts = sourceTexts;
+  }
 
   const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const defaultSourcePaths = {
@@ -721,6 +793,7 @@ async function compileTracked(
   entryPath: string,
   opts: CompileRequestOptions,
   frontendInputs: FrontendInputTracker,
+  warningSink?: CompileWarningSink,
 ): Promise<CompileRequestResult> {
   const timing = compilationTiming();
   entryPath = resolve(entryPath);
@@ -1088,7 +1161,14 @@ async function compileTracked(
     };
   }
   timing("executable-cache-miss");
-  const prepared = await prepareExecutableInput(entryPath, opts, ffi, buildPlatform, timing);
+  const prepared = await prepareExecutableInput(
+    entryPath,
+    opts,
+    ffi,
+    buildPlatform,
+    timing,
+    warningSink,
+  );
   if ("ok" in prepared) return prepared;
   const { llvmSource, llvmPath, irPath, nativeFeatures, programSplit, sourceTexts } = prepared;
   const backend = "llvm" as const;

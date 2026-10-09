@@ -86,6 +86,7 @@ export function analyzeWithFrontend(
         // which the report groups with these).
         diagnostics: [...preflight, ...lowered.diagnostics],
         ...(lowered.runtimeFences.length > 0 ? { runtimeFences: lowered.runtimeFences } : {}),
+        ...(lowered.divergences !== undefined ? { divergences: lowered.divergences } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),
         ...(lowered.npmBuiltins ? { npmBuiltins: lowered.npmBuiltins } : {}),
         ...(lowered.npmLazyTraps ? { npmLazyTraps: lowered.npmLazyTraps } : {}),

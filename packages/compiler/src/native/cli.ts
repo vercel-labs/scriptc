@@ -37,7 +37,7 @@ async function main(): Promise<number> {
   return runCli(process.argv.slice(2), {
     version: () => loadNativeToolchain(manifestPath).compilerVersion,
     sourceTargetPlatform: () => getCompiler().toolchain.target.platform,
-    analyze: (entry, options) => runCompilerTask(() => getCompiler().analyze(entry, options)),
+    analyze: (entry, options) => runCompilerTask(() => getCompiler().analyzeCached(entry, options)),
     compile: (entry, options) => runCompilerTask(() => getCompiler().compile(entry, options)),
     compileLibrary: (options) => runCompilerTask(() => getCompiler().compileLibrary(options)),
     resolveProvenanceSources: async (entry) => {

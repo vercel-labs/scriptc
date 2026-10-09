@@ -1,9 +1,12 @@
 scriptc coverage tests/coverage-fixtures/dynamic-mix.ts
 
   statements analyzed   9
-  compile statically    6  (66%)
+  compile statically    7  (77%)
 
-  runs with --dynamic   3 sites (embeds a JS engine, ~620KB — static stays the default)
-      ×1  '__island_eval' requires the embedded dynamic engine, which this build does not include             SC2010
-      ×1  '.toPrecision()' on numbers runs in the embedded dynamic engine, which this build does not include  SC2012
-      ×1  'Number.parseFloat' runs in the embedded dynamic engine, which this build does not include          SC2012
+  runs with --dynamic   2 sites (embeds a JS engine, ~620KB — static stays the default)
+      ×1  SC2010  '__island_eval' requires the embedded dynamic engine, which this build does not include
+          at tests/coverage-fixtures/dynamic-mix.ts:8:13
+          hint: build with --dynamic to embed the engine (adds ~620KB to the binary); static builds never include it
+      ×1  SC2012  '.toPrecision()' on numbers runs in the embedded dynamic engine, which this build does not include
+          at tests/coverage-fixtures/dynamic-mix.ts:6:12
+          hint: build with --dynamic to run this call in the embedded engine (adds ~620KB to the binary); static builds never include it

@@ -961,6 +961,12 @@ export interface IrModule {
   entry: string;
   /** Executable roots run in isolated native worker contexts. */
   workers?: boolean;
+  /** The entry module is CommonJS under Node's classification. Node runs a
+   * CommonJS main synchronously and drains process.nextTick callbacks
+   * before promise jobs at the first checkpoint; an ES-module main's
+   * evaluation is itself awaited, so promise jobs queued by its body run
+   * first. The event loop selects the matching first checkpoint. */
+  commonJsEntry?: boolean;
   /** Outbound native FFI declarations used by `ffiCall` expressions.
    * These are link-time C ABI imports, not runtime dynamic-library handles:
    * executable builds resolve their symbols from the manifest's archive
@@ -2494,8 +2500,8 @@ export type IrExpr =
   /** Typed-array/Buffer method or property on a bytes receiver — see
    * IrBytesIntrinsicMethod for the surface and conventions. Methods in
    * MAY_THROW_BYTES_METHODS raise catchable RangeErrors (may-throw
-   * seeds); `get` traps on invalid indices instead (the array runtime's
-   * discipline — never catchable). */
+   * seeds); `get` on an invalid index throws a catchable RangeError too
+   * (a typed read has no undefined to answer with; also a seed). */
   | {
       kind: "bytesIntrinsic";
       method: IrBytesIntrinsicMethod;

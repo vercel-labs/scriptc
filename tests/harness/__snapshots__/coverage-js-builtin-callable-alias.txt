@@ -4,4 +4,6 @@ scriptc coverage tests/coverage-fixtures/js-builtin-callable-alias.js
   compile statically    2  (66%)
 
   deferred to runtime   1 site (JS statements that throw their fence if executed)
-      ×1  a builtin function alias as an escaping value (call 'ext' directly)  SC1090
+      ×1  SC1090  a builtin function alias as an escaping value (call 'ext' directly)
+          at tests/coverage-fixtures/js-builtin-callable-alias.js:8:13
+          hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)

@@ -732,6 +732,9 @@ bool scr_str_eq(ScrStr *a, ScrStr *b);
  * JS UTF-16 code-unit order only for non-BMP vs U+E000..U+FFFF). Returns
  * <0, 0, >0. */
 int scr_str_cmp(ScrStr *a, ScrStr *b);
+/* a.localeCompare(b) with no locales/options: Node's root-locale order for
+ * Latin-script text, code-point order outside it (scr_string.c). */
+double scr_str_locale_compare(ScrStr *a, ScrStr *b);
 
 /* ECMAScript string-list ordering: compare UTF-16 code units even though
  * ScrStr stores well-formed UTF-8. Returns <0, 0, >0. */
@@ -5418,6 +5421,7 @@ double scr_now_ms(void); /* the loop's monotonic clock, in ms */
  * Returns true when a default/listener-crashing unhandled rejection
  * already selected and reported exit status 1. */
 bool scr_loop_run(ScrPromise *top_level);
+void scr_loop_commonjs_entry(void);
 /* External I/O hook, polled at loop quiescence like the child registry:
  * `pending` keeps the loop alive; `poll` makes progress and may SLEEP up
  * to max_wait_ms (on real fds — socket readiness wakes it early), so the

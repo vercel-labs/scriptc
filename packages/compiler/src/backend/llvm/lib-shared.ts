@@ -76,6 +76,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "math.random": "scr_math_random",
   "num.parseInt": "scr_parse_int",
   "num.parseFloat": "scr_parse_float",
+  "str.localeCompare": "scr_str_locale_compare",
   "num.fromString": "scr_string_to_number",
   "math.round": "scr_math_round",
   "math.sin": "sin",

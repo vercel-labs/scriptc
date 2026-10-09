@@ -71,7 +71,15 @@ export class NativeCache {
         (Number.isFinite(configured) && configured >= 0 ? configured : 4096) * 1024 * 1024;
       const files: { path: string; size: number; time: number }[] = [];
       let total = 0;
-      for (const family of ["frontend", "object", "sanitizer", "executable", "binary", "dsym"]) {
+      for (const family of [
+        "frontend",
+        "object",
+        "sanitizer",
+        "executable",
+        "binary",
+        "dsym",
+        "coverage",
+      ]) {
         const directory = join(this.root, family);
         let names: string[];
         try {

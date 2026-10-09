@@ -22,6 +22,9 @@ export interface PreparedExecutableModule {
   mod: IrModule;
   sourceTexts: Map<string, string>;
   stats: LowerStats;
+  /** Divergence warnings (SC6xxx): the build succeeds; these sites can
+   * behave differently from Node. */
+  warnings: ScrDiagnostic[];
 }
 
 /** Release the parser/checker before native object generation begins. */
@@ -91,5 +94,11 @@ export function prepareExecutableModule(
     timing("frontend-dispose");
   }
 
-  return { ok: true, mod: lowered.module!, sourceTexts, stats: lowered.stats };
+  return {
+    ok: true,
+    mod: lowered.module!,
+    sourceTexts,
+    stats: lowered.stats,
+    warnings: lowered.divergences ?? [],
+  };
 }

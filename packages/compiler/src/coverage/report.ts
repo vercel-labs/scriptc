@@ -7,6 +7,18 @@
  * collects — the diagnostics registry is the coverage taxonomy.
  */
 import type { Milestone, ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import {
+  DIAGNOSTICS_SCHEMA,
+  DIAGNOSTICS_SCHEMA_VERSION,
+  DYNAMIC_CAPABLE_CODES,
+  SourceLocator,
+  groupDiagnostics,
+  type DiagnosticGroup,
+  type DiagnosticScope,
+  type DiagnosticsEnvelope,
+  type LocatedDiagnostic,
+  type SourcePosition,
+} from "../diagnostics/envelope.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
 import type { NpmBuiltinUse, NpmLazyTrap } from "../frontend/npm.js";
@@ -27,7 +39,11 @@ export interface CoverageInput {
   /** The unreached remainder: bodies nothing on the entry path reaches,
    * lowered in a throwaway analysis pass. Its blockers cannot fail a
    * build — the report shows them as a secondary, dimmed group. */
-  unreached?: { stats: LowerStats; diagnostics: ScrDiagnostic[] };
+  unreached?: { stats: LowerStats; diagnostics: ScrDiagnostic[]; runtimeFences?: ScrDiagnostic[] };
+  /** Compile-time-detectable behavior differences from Node (SC6xxx):
+   * the program compiles, but these sites can behave differently natively.
+   * Never blockers; `--fail-on=divergences` opts into failing on them. */
+  divergences?: ScrDiagnostic[];
   /** --dynamic only: every Node builtin the embedded npm graph imports —
    * what the island must provide for this program (unshimmed ones also
    * appear as SC2030 blockers, EXCEPT lazily-reached ones, which embed
@@ -75,23 +91,53 @@ const MILESTONE_ORDER: Milestone[] = ["M1", "M2", "M3", "M4", "M5", "later"];
 
 /** Codes whose construct RUNS under --dynamic (the embedded engine) — the
  * report separates "one flag away" from "cannot compile at all". */
-const DYNAMIC_CAPABLE = new Set(["SC2010", "SC2011", "SC2012", "SC2013"]);
+const DYNAMIC_CAPABLE = DYNAMIC_CAPABLE_CODES;
+
+/** Human rows cap their message: long embedded type text would otherwise
+ * push lines past several hundred columns. The full message is in the
+ * --print=diagnostics envelope (and in `scriptc build` output). */
+const MESSAGE_CAP = 200;
+/** Sites listed per group before "+N more". */
+const SITES_SHOWN = 3;
 
 interface Blocker {
   code: string;
-  /** Message with the " (planned: ...)" suffix stripped — the milestone gets
-   * its own column. */
+  /** Root-cause message (per-instantiation type arguments collapsed). */
   what: string;
   milestone: Milestone | undefined;
   count: number;
+  group: DiagnosticGroup;
 }
 
-export function renderCoverage(
-  input: CoverageInput,
-  opts: { color?: boolean; sourceTexts?: Map<string, string> } = {},
-): string {
+export interface CoverageRenderOptions {
+  color?: boolean;
+  sourceTexts?: Map<string, string>;
+  /** Paths under this directory render relative to it. */
+  root?: string;
+}
+
+export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions = {}): string {
   const c = (code: string, s: string) => (opts.color ? code + s + RESET : s);
   const out: string[] = [];
+  const locator = new SourceLocator(opts.sourceTexts);
+  const groupBlockers = (diags: ScrDiagnostic[], scope: DiagnosticScope = "reached") =>
+    groupBlockersAt(diags, scope, locator);
+  const where = (p: SourcePosition) => `${displayPath(p.file, opts.root)}:${p.line}:${p.column}`;
+  // One root-cause group: count, code and message, then where it occurs
+  // (first sites in source order) and what to do about it.
+  const renderRows = (group: Blocker[], tone: string, dim = false) => {
+    for (const b of group) {
+      const what = capMessage(b.what);
+      out.push(
+        `    ${c(dim ? DIM : tone, `×${b.count}`.padStart(4))}  ${c(DIM, b.code)}  ${dim ? c(DIM, what) : what}`,
+      );
+      const sites = b.group.sites;
+      const shown = sites.slice(0, SITES_SHOWN).map(where).join(", ");
+      const more = sites.length > SITES_SHOWN ? ` (+${sites.length - SITES_SHOWN} more)` : "";
+      out.push(`          ${c(DIM, `at ${shown}${more}`)}`);
+      out.push(`          ${c(DIM, `hint: ${b.group.hint}`)}`);
+    }
+  };
   out.push(`${c(BOLD, "scriptc coverage")} ${DIMPath(input.file, opts.color ?? false)}`);
   out.push("");
 
@@ -109,10 +155,17 @@ export function renderCoverage(
     }
     const tsc = input.diagnostics.filter((d) => d.code === "SC0001");
     if (tsc.length > 0) {
+      const world = tsc.filter((d) => d.typeWorld === true).length;
       out.push(
         `  ${c(RED, "not analyzable")}: ${tsc.length} TypeScript error${tsc.length === 1 ? "" : "s"} — ` +
           `fix type errors first (scriptc only analyzes programs that typecheck)`,
       );
+      if (world > 0) {
+        out.push(
+          `  ${c(YELLOW, "note")}: ${world === tsc.length ? (world === 1 ? "this error comes" : "these errors come") : `${world} of them come`} from scriptc's type world, ` +
+            `not necessarily from the project's own tsc configuration — see each hint`,
+        );
+      }
       // The same rendered diagnostics a build prints: coverage is the
       // command people reach for first, so the verdict line alone would
       // swallow the code frames that say what to fix.
@@ -127,13 +180,7 @@ export function renderCoverage(
       `  ${c(RED, "analysis stopped at preflight")}: ${n} unsupported import site${n === 1 ? "" : "s"} — ` +
         `the module graph must load before statements can be counted`,
     );
-    const blockers = groupBlockers(input.diagnostics);
-    const widest = Math.max(...blockers.map((b) => b.what.length));
-    for (const b of blockers) {
-      out.push(
-        `    ${c(RED, `×${b.count}`.padStart(4))}  ${b.what.padEnd(widest)}  ${c(DIM, b.code)}`,
-      );
-    }
+    renderRows(groupBlockers(input.diagnostics, "preflight"), RED);
     if (opts.sourceTexts) {
       out.push("");
       out.push(
@@ -167,7 +214,7 @@ export function renderCoverage(
   }
   if (skipped > 0) {
     out.push(
-      `  ${c(DIM, `(+${skipped} function${skipped === 1 ? "" : "s"} not analyzed — signature blocked)`)}`,
+      `  ${c(DIM, `(${skipped} function${skipped === 1 ? "" : "s"} not analyzed — signature blocked; their statements count as not static)`)}`,
     );
   }
   out.push("");
@@ -290,26 +337,35 @@ export function renderCoverage(
   // JS program never hides its dynamic gaps.
   const fences = input.runtimeFences ?? [];
   if (fences.length > 0) {
-    const grouped = groupBlockers(fences);
-    const widestF = Math.max(...grouped.map((b) => b.what.length));
     out.push(
       `  ${c(YELLOW, "deferred to runtime")}   ${fences.length} site${fences.length === 1 ? "" : "s"} ${c(DIM, "(JS statements that throw their fence if executed)")}`,
     );
-    for (const b of grouped) {
-      out.push(
-        `    ${c(YELLOW, `×${b.count}`.padStart(4))}  ${b.what.padEnd(widestF)}  ${c(DIM, b.code)}`,
-      );
-    }
+    renderRows(groupBlockers(fences, "deferred"), YELLOW);
     out.push("");
   }
 
-  const unreachedDiags = un?.diagnostics ?? [];
+  // Divergences: the program compiles, but these sites can behave
+  // differently from Node. Never blockers (--fail-on=divergences opts in).
+  const divergences = input.divergences ?? [];
+  const renderDivergences = () => {
+    if (divergences.length === 0) return;
+    out.push(
+      `  ${c(YELLOW, "differs from Node")}   ${divergences.length} site${divergences.length === 1 ? "" : "s"} ${c(DIM, "(compiles; the native program can behave differently)")}`,
+    );
+    renderRows(groupBlockers(divergences), YELLOW);
+  };
+
+  const unreachedDiags = [...(un?.diagnostics ?? []), ...(un?.runtimeFences ?? [])];
   if (failed === 0 && input.diagnostics.length === 0 && unreachedDiags.length === 0) {
     out.push(
       island > 0
         ? `  ${c(GREEN, "builds with --dynamic")} — no remaining blockers (the island sites above run in the embedded engine).`
         : `  ${c(GREEN, "fully static")} — this program has no dynamic remainder.`,
     );
+    if (divergences.length > 0) {
+      out.push("");
+      renderDivergences();
+    }
     return out.join("\n");
   }
 
@@ -319,18 +375,22 @@ export function renderCoverage(
   // Blockers split by what a flag can fix: sites that RUN under --dynamic
   // (the embedded engine) versus constructs with no lowering at all.
   const blockers = groupBlockers(input.diagnostics);
-  const unreachedBlockers = groupBlockers(unreachedDiags);
+  const unreachedBlockers = groupBlockers(unreachedDiags, "unreached");
   const dynamic = blockers.filter((b) => DYNAMIC_CAPABLE.has(b.code));
   const rejected = blockers.filter((b) => !DYNAMIC_CAPABLE.has(b.code));
-  const widest = Math.max(...[...blockers, ...unreachedBlockers].map((b) => b.what.length));
-  const renderGroup = (group: Blocker[], dim = false) => {
-    for (const b of group) {
-      const what = b.what.padEnd(widest);
-      out.push(
-        `    ${c(dim ? DIM : RED, `×${b.count}`.padStart(4))}  ${dim ? c(DIM, what) : what}  ${c(DIM, b.code)}`,
-      );
-    }
-  };
+  const renderGroup = (group: Blocker[], dim = false) => renderRows(group, RED, dim);
+  if (
+    failed > 0 &&
+    blockers.length === 0 &&
+    unreachedBlockers.length === 0 &&
+    fences.length === 0
+  ) {
+    // Every failed statement must be explained; reaching this is a
+    // compiler bug, reported instead of silently omitted.
+    out.push(
+      `  ${c(RED, "blockers:")} ${failed} statement${failed === 1 ? "" : "s"} failed without a diagnostic (a compiler bug — please report it)`,
+    );
+  }
   if (dynamic.length > 0) {
     const sites = dynamic.reduce((n, b) => n + b.count, 0);
     out.push(
@@ -352,6 +412,10 @@ export function renderCoverage(
     );
     renderGroup(unreachedBlockers, true);
   }
+  if (divergences.length > 0) {
+    out.push("");
+    renderDivergences();
+  }
   return out.join("\n");
 }
 
@@ -359,19 +423,121 @@ function DIMPath(file: string, color: boolean): string {
   return color ? DIM + file + RESET : file;
 }
 
-function groupBlockers(diags: ScrDiagnostic[]): Blocker[] {
-  const byCode = new Map<string, Blocker>();
-  for (const d of diags) {
-    const what = d.message.replace(/ (?:is|are) not supported yet$/, "");
-    const key = `${d.code}:${what}`;
-    const existing = byCode.get(key);
-    if (existing) existing.count++;
-    else byCode.set(key, { code: d.code, what, milestone: d.milestone, count: 1 });
-  }
+function groupBlockersAt(
+  diags: ScrDiagnostic[],
+  scope: DiagnosticScope,
+  locator: SourceLocator,
+): Blocker[] {
+  const { located, groups } = groupDiagnostics(diags, scope, locator);
+  // A group's schedule is its first diagnostic's (one root cause, one
+  // milestone).
+  const milestone = new Map<string, Milestone | undefined>();
+  diags.forEach((d, i) => {
+    const id = located[i]!.group;
+    if (!milestone.has(id)) milestone.set(id, d.milestone);
+  });
   const rank = (m: Milestone | undefined) =>
     m === undefined ? MILESTONE_ORDER.length : MILESTONE_ORDER.indexOf(m);
-  return [...byCode.values()].sort(
-    (a, b) =>
-      rank(a.milestone) - rank(b.milestone) || b.count - a.count || a.code.localeCompare(b.code),
-  );
+  return groups
+    .map((g) => ({
+      code: g.code,
+      what: g.message,
+      milestone: milestone.get(g.id),
+      count: g.count,
+      group: g,
+    }))
+    .sort(
+      (a, b) =>
+        rank(a.milestone) - rank(b.milestone) || b.count - a.count || a.code.localeCompare(b.code),
+    );
+}
+
+function capMessage(text: string): string {
+  return text.length <= MESSAGE_CAP ? text : `${text.slice(0, MESSAGE_CAP - 1)}…`;
+}
+
+function displayPath(file: string, root: string | undefined): string {
+  if (root === undefined || root === "") return file;
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  return file.startsWith(prefix) ? file.slice(prefix.length) : file;
+}
+
+/** What `coverage --fail-on` checks: reached blockers (they fail a build)
+ * and, optionally, divergences. Unreached blockers never fail. */
+export type CoverageFailOn = "blockers" | "divergences";
+
+/** Whether the analysis passes the selected gate. Preflight failures
+ * always fail; `failOn` undefined means only preflight fails (the report's
+ * historical contract). Divergence gating implies blocker gating. */
+export function coveragePasses(input: CoverageInput, failOn?: CoverageFailOn): boolean {
+  if (input.preflightFailed) return false;
+  if (failOn === undefined) return true;
+  // Reached blockers are exactly the diagnostics a build would fail on;
+  // runtime fences build (the statement throws only if it executes).
+  if (input.diagnostics.length > 0) return false;
+  if (failOn === "divergences" && (input.divergences?.length ?? 0) > 0) return false;
+  return true;
+}
+
+/** The versioned machine-readable form of a coverage analysis
+ * (`scriptc coverage --print=diagnostics`). */
+export function coverageEnvelope(
+  input: CoverageInput,
+  opts: {
+    compilerVersion: string;
+    sourceTexts?: Map<string, string>;
+    failOn?: CoverageFailOn;
+  },
+): DiagnosticsEnvelope {
+  const locator = new SourceLocator(opts.sourceTexts);
+  const located: LocatedDiagnostic[] = [];
+  const groups: DiagnosticGroup[] = [];
+  const add = (diags: readonly ScrDiagnostic[] | undefined, scope: DiagnosticScope) => {
+    if (diags === undefined || diags.length === 0) return;
+    const r = groupDiagnostics(diags, scope, locator);
+    located.push(...r.located);
+    groups.push(...r.groups);
+  };
+  if (input.preflightFailed) {
+    add(input.diagnostics, "preflight");
+  } else {
+    add(input.diagnostics, "reached");
+    add(input.runtimeFences, "deferred");
+    add(input.unreached?.diagnostics, "unreached");
+    add(input.unreached?.runtimeFences, "deferred");
+    add(input.divergences, "reached");
+  }
+  const un = input.unreached;
+  const total = input.stats.statementsTotal + (un?.stats.statementsTotal ?? 0);
+  const failed = input.stats.statementsFailed + (un?.stats.statementsFailed ?? 0);
+  const island = input.stats.statementsIsland + (un?.stats.statementsIsland ?? 0);
+  const skipped = input.stats.functionsSkipped + (un?.stats.functionsSkipped ?? 0);
+  const ok = total - failed - island;
+  return {
+    schema: DIAGNOSTICS_SCHEMA,
+    schemaVersion: DIAGNOSTICS_SCHEMA_VERSION,
+    compilerVersion: opts.compilerVersion,
+    command: "coverage",
+    entry: input.file,
+    success: coveragePasses(input, opts.failOn ?? "blockers"),
+    phase: input.preflightFailed
+      ? "preflight"
+      : input.diagnostics.length > 0
+        ? "compile"
+        : "complete",
+    ...(input.preflightFailed
+      ? {}
+      : {
+          stats: {
+            statementsTotal: total,
+            statementsStatic: ok,
+            statementsDynamic: island,
+            statementsFailed: failed,
+            functionsSkipped: skipped,
+            percentStatic: total === 0 ? 100 : Math.floor((ok / total) * 100),
+          },
+        }),
+    groups,
+    diagnostics: located,
+  };
 }

@@ -223,7 +223,13 @@ function projectAllowsSyntheticDefaultImports(options: Record<string, unknown>):
 function adoptProjectConfig7(
   host: ts.Ts7Host,
   entryPath: string,
-): { configFile: string | null; options: ts.Ts7CompilerOptions; diags: ScrDiagnostic[] } {
+): {
+  configFile: string | null;
+  options: ts.Ts7CompilerOptions;
+  diags: ScrDiagnostic[];
+  projectLib?: readonly string[];
+  forcedStrictNullChecks?: boolean;
+} {
   const configFile = ts.findConfigFile(dirname(entryPath), ts.sys.fileExists) ?? null;
   if (!configFile) {
     return { configFile, options: { ...BASE_OPTIONS, ...FORCED_OPTIONS }, diags: [] };
@@ -268,11 +274,24 @@ function adoptProjectConfig7(
     adopted["paths"] = paths;
   }
   const nullChecks = adopted["strictNullChecks"] ?? adopted["strict"] ?? false;
-  if (nullChecks !== true) {
+  const forcedStrictNullChecks = nullChecks !== true;
+  if (forcedStrictNullChecks) {
     diags.push(strictNullChecksFloorDiag(configFile));
     adopted["strictNullChecks"] = true;
   }
-  return { configFile, options: { ...BASE_OPTIONS, ...adopted, ...FORCED_OPTIONS }, diags };
+  // The project's own library selection, kept only to explain errors: the
+  // checker always uses scriptc's fixed library set (FORCED_OPTIONS).
+  const rawLib = parsed.options["lib"];
+  const projectLib = Array.isArray(rawLib)
+    ? rawLib.filter((entry): entry is string => typeof entry === "string")
+    : undefined;
+  return {
+    configFile,
+    options: { ...BASE_OPTIONS, ...adopted, ...FORCED_OPTIONS },
+    diags,
+    ...(projectLib === undefined ? {} : { projectLib }),
+    forcedStrictNullChecks,
+  };
 }
 
 /** The target project's @types/node, resolved with the OWN resolver's
@@ -281,6 +300,15 @@ function adoptProjectConfig7(
 function resolveNodeTypes7(entryPath: string): string | null {
   const file = resolveTypeDirective("node", entryPath);
   return file !== null && isNodeTypesPath(file) ? file : null;
+}
+
+export interface TypeWorldDifferences {
+  /** No @types/node: the bundled fallback declarations type Node. */
+  nodeFallback: boolean;
+  /** The project tsconfig's "lib" entries (scriptc checks with its own). */
+  projectLib: readonly string[] | null;
+  /** The project disables strictNullChecks; scriptc forces it on. */
+  forcedStrictNullChecks: boolean;
 }
 
 export interface LoadResult {
@@ -305,6 +333,9 @@ export interface LoadResult {
    * checkPreflight. */
   startupCrash?: StartupCrash | null;
   configDiags: ScrDiagnostic[];
+  /** How scriptc's type world differs from the project's own tsc setup —
+   * used only to label the TypeScript errors those differences cause. */
+  typeWorld?: TypeWorldDifferences;
   /** Coverage-only external host modules: exact bare specifier → local
    * declaration file. These participate in checker resolution but never
    * become runtime module edges. */
@@ -690,6 +721,11 @@ function loadProgram7(
       entry,
       moduleOrder: [],
       configDiags: config.diags,
+      typeWorld: {
+        nodeFallback: nodeTypes === null,
+        projectLib: config.projectLib ?? null,
+        forcedStrictNullChecks: config.forcedStrictNullChecks ?? false,
+      },
       externalTypes,
       externalTypeSpecifiersByFile,
       projectWorld: () => (projectWorld ??= host.createProgram(programRoots, options)),
@@ -3377,7 +3413,13 @@ function preflight7(load: LoadResult): {
     const file = d.fileName ?? entry.fileName;
     const start = d.fileName !== undefined ? d.pos : 0;
     const end = d.fileName !== undefined ? d.end : 0;
-    return tscPassthroughDiag(message, { file, start, end });
+    const diag = tscPassthroughDiag(message, { file, start, end });
+    const hint = typeWorldHint(d, message, load);
+    if (hint !== null) {
+      diag.typeWorld = true;
+      diag.hint = hint;
+    }
+    return diag;
   };
   /* TS7 checker change (not finding 5, same discipline): tsgo types a
    * NAMESPACE import as the spec's non-callable module namespace object
@@ -5173,6 +5215,118 @@ export function isCjsExportTableLiteral(obj: ts.ObjectLiteralExpression): boolea
     if (cjs?.kind === "table" && cjsExportDiscardReason(stmt) === null) {
       return cjsExportTargetLiteral(cjs.expr.right, sf) === obj;
     }
+  }
+  return false;
+}
+
+/** Names other runtimes and the DOM declare that scriptc's type world
+ * (the ES2025 library plus Node types) does not. */
+const FOREIGN_RUNTIME_GLOBALS = new Set(["Deno", "Bun"]);
+const DOM_GLOBALS = new Set([
+  "window",
+  "document",
+  "navigator",
+  "location",
+  "localStorage",
+  "sessionStorage",
+  "HTMLElement",
+  "Element",
+  "Document",
+  "Window",
+  "BodyInit",
+  "HeadersInit",
+  "RequestInfo",
+  "XMLHttpRequest",
+  "requestAnimationFrame",
+]);
+/** Root identifiers whose members the bundled Node fallback declares. */
+const NODE_GLOBAL_ROOTS = new Set(["process", "Buffer", "console", "globalThis"]);
+
+/** A hint when a TypeScript error comes from scriptc's own type world rather
+ * than from the project: a library member newer than ES2025, a global of
+ * another runtime or of the DOM, a Node member the bundled fallback types
+ * leave out, or the strictNullChecks scriptc enforces. Null otherwise. */
+function typeWorldHint(d: ts.Diagnostic, message: string, load: LoadResult): string | null {
+  const world = load.typeWorld;
+  if (world === undefined) return null;
+  const quoted = /'([^']+)'/.exec(message)?.[1];
+  // TS2304/TS2552: Cannot find name; TS2580/TS2591/TS2592: missing type
+  // packages; TS2583: needs a newer library.
+  if (d.code === 2304 || d.code === 2552 || d.code === 2583) {
+    if (quoted !== undefined && FOREIGN_RUNTIME_GLOBALS.has(quoted)) {
+      return `'${quoted}' is another runtime's global; scriptc's type world declares the ES2025 library and Node only — feature-test it through globalThis instead, e.g. '(globalThis as { ${quoted}?: unknown }).${quoted}' (the native program runs as Node would, where it is undefined)`;
+    }
+    if (quoted !== undefined && DOM_GLOBALS.has(quoted)) {
+      return `'${quoted}' comes from the DOM library, which scriptc's type world does not include (it checks with the ES2025 library and Node types regardless of the project's "lib") — declare the shape you need locally, or move browser-only code out of the program`;
+    }
+    if (d.code === 2583) {
+      return `scriptc checks with the ES2025 library regardless of the project's "lib" setting, and '${quoted ?? "this name"}' comes from a newer library that does not compile yet`;
+    }
+  }
+  // TS2339/TS2550/TS2551: property does not exist (2550: on this lib).
+  if (d.code === 2339 || d.code === 2550 || d.code === 2551) {
+    const typeText = /on type '([^']+)'/.exec(message)?.[1] ?? "";
+    const newerLib =
+      world.projectLib !== null &&
+      world.projectLib.some((lib) => /esnext|es202[6-9]|es20[3-9]\d/i.test(lib));
+    if (d.code === 2550 || (newerLib && /^[A-Z][A-Za-z0-9]*(?:Constructor)?$/.test(typeText))) {
+      return `scriptc checks with the ES2025 library regardless of the project's "lib" setting, and '${quoted ?? "this member"}' comes from a newer library that does not compile yet — use an ES2025 equivalent here`;
+    }
+    if (world.nodeFallback && d.fileName !== undefined) {
+      const root = receiverRoot(load.program.getSourceFile(d.fileName)?.text ?? "", d.pos);
+      if (
+        root !== null &&
+        (NODE_GLOBAL_ROOTS.has(root) || importsNodeBuiltin(load, d.fileName, root))
+      ) {
+        return `the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — '${quoted ?? "this member"}' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint`;
+      }
+    }
+  }
+  if (world.forcedStrictNullChecks && /\b(?:null|undefined)\b/.test(message)) {
+    return `the project disables strictNullChecks, which scriptc always enables — this error appears only under strict null checks; narrow the value (or enable "strictNullChecks" in the project to see the same errors from its own tsc)`;
+  }
+  return null;
+}
+
+/** The root identifier of the property access whose member name starts at
+ * `pos` (`process.version` → `process`), or null. */
+function receiverRoot(text: string, pos: number): string | null {
+  let i = pos - 1;
+  while (i >= 0 && /\s/.test(text[i]!)) i--;
+  if (text[i] !== ".") return null;
+  i--;
+  if (text[i] === "?") i--;
+  let root: string | null = null;
+  for (;;) {
+    while (i >= 0 && /\s/.test(text[i]!)) i--;
+    let j = i;
+    while (j >= 0 && /[\w$]/.test(text[j]!)) j--;
+    if (j === i) return root;
+    root = text.slice(j + 1, i + 1);
+    i = j;
+    while (i >= 0 && /\s/.test(text[i]!)) i--;
+    if (text[i] !== ".") return root;
+    i--;
+    if (text[i] === "?") i--;
+  }
+}
+
+/** Whether `name` is bound in `fileName` by an import of a Node builtin. */
+function importsNodeBuiltin(load: LoadResult, fileName: string, name: string): boolean {
+  const sf = load.program.getSourceFile(fileName);
+  for (const stmt of sf?.statements ?? []) {
+    if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+    if (canonicalBuiltinModule(stmt.moduleSpecifier.text) === null) continue;
+    const clause = stmt.importClause;
+    if (clause?.name?.text === name) return true;
+    const bindings = clause?.namedBindings;
+    if (bindings && ts.isNamespaceImport(bindings) && bindings.name.text === name) return true;
+    if (
+      bindings &&
+      ts.isNamedImports(bindings) &&
+      bindings.elements.some((e) => e.name.text === name)
+    )
+      return true;
   }
   return false;
 }

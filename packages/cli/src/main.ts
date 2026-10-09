@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  analyze,
+  analyzeCached,
   compile,
   compileLibrary,
   resolveProvenanceSources,
@@ -27,7 +27,7 @@ function version(): string {
 
 process.exitCode = await runCli(process.argv.slice(2), {
   version,
-  analyze: async (entry, options) => analyze(entry, options),
+  analyze: analyzeCached,
   compile,
   compileLibrary,
   resolveProvenanceSources,

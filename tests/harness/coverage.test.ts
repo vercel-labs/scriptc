@@ -1,8 +1,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { globSync, readFileSync } from "node:fs";
+import { globSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { analyze, renderCoverage } from "@scriptc/compiler";
+import { analyze, coverageEnvelope, coveragePasses, renderCoverage } from "@scriptc/compiler";
 import { shardSelect, shardSuffix } from "./shard.js";
 
 const repoRoot = join(import.meta.dirname, "../..");
@@ -10,7 +11,10 @@ const fixture = (name: string) => join(repoRoot, "tests/coverage-fixtures", name
 
 function report(path: string, opts: { dynamic?: boolean } = {}): string {
   const { coverage } = analyze(path, opts);
-  return renderCoverage({ ...coverage, file: coverage.file.replace(repoRoot + "/", "") });
+  return renderCoverage(
+    { ...coverage, file: coverage.file.replace(repoRoot + "/", "") },
+    { root: repoRoot },
+  );
 }
 
 test("mixed program: percentage and grouped blockers", async () => {
@@ -42,6 +46,190 @@ test("unreached blockers report in their own group", async () => {
   await expect(report(fixture("unreached.ts"))).toMatchFileSnapshot(
     "__snapshots__/coverage-unreached.txt",
   );
+});
+
+test("divergences report as warnings, never as blockers", async () => {
+  const { coverage } = analyze(fixture("divergences.ts"));
+  expect(coverage.diagnostics).toEqual([]);
+  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
+    "SC6001",
+    "SC6001",
+    "SC6002",
+    "SC6003",
+    "SC6004",
+    "SC6005",
+    "SC6005",
+    "SC6005",
+  ]);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "divergences")).toBe(false);
+  await expect(report(fixture("divergences.ts"))).toMatchFileSnapshot(
+    "__snapshots__/coverage-divergences.txt",
+  );
+});
+
+test("ordinary code reports no divergence", () => {
+  const { coverage } = analyze(fixture("no-divergences.ts"));
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.divergences ?? []).toEqual([]);
+});
+
+test("statements of a signature-blocked function count as not static", () => {
+  const { coverage } = analyze(fixture("blocked-signature.ts"));
+  const un = coverage.unreached?.stats;
+  expect(coverage.stats.functionsSkipped + (un?.functionsSkipped ?? 0)).toBe(1);
+  // Two top-level statements plus the four the blocked body holds.
+  expect(coverage.stats.statementsTotal + (un?.statementsTotal ?? 0)).toBe(6);
+  expect(coverage.stats.statementsFailed + (un?.statementsFailed ?? 0)).toBe(5);
+});
+
+test("a failed unreached JavaScript statement is always explained", () => {
+  const { coverage } = analyze(fixture("unreached-js-fence.js"));
+  const failed =
+    coverage.stats.statementsFailed + (coverage.unreached?.stats.statementsFailed ?? 0);
+  expect(failed).toBe(1);
+  const explained = [
+    ...coverage.diagnostics,
+    ...(coverage.runtimeFences ?? []),
+    ...(coverage.unreached?.diagnostics ?? []),
+    ...(coverage.unreached?.runtimeFences ?? []),
+  ];
+  expect(explained.map((d) => d.code)).toEqual(["SC1090"]);
+  expect(report(fixture("unreached-js-fence.js"))).toContain(
+    "at tests/coverage-fixtures/unreached-js-fence.js:7:",
+  );
+});
+
+test("blocker groups carry a location and a hint", () => {
+  const out = report(fixture("mixed.ts"));
+  expect(out).toMatch(/at tests\/coverage-fixtures\/mixed\.ts:\d+:\d+/);
+  expect(out).toContain("hint: ");
+});
+
+test("TypeScript errors caused by scriptc's type world say so", () => {
+  const { coverage, sourceTexts } = analyze(fixture("type-world/main.ts"));
+  expect(coverage.preflightFailed).toBe(true);
+  const world = coverage.diagnostics.filter((d) => d.code === "SC0001" && d.typeWorld === true);
+  expect(world.map((d) => d.hint)).toEqual([
+    expect.stringContaining('ES2025 library regardless of the project\'s "lib"'),
+    expect.stringContaining("'Deno' is another runtime's global"),
+  ]);
+  const out = renderCoverage(coverage, { sourceTexts });
+  expect(out).toContain("come from scriptc's type world");
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  expect(envelope.phase).toBe("preflight");
+  expect(envelope.diagnostics.every((d) => d.category === "environment")).toBe(true);
+});
+
+test("coercing parseFloat and Number.parse* calls name their argument condition", () => {
+  const { coverage } = analyze(fixture("parse-coercions.ts"));
+  expect(coverage.diagnostics.map((d) => [d.code, d.message])).toEqual([
+    [
+      "SC2012",
+      "'parseFloat' with a 'boolean' argument (only a string argument compiles statically) runs in the embedded dynamic engine, which this build does not include",
+    ],
+    [
+      "SC2012",
+      "'Number.parseInt' with a 'number' argument (only a string argument compiles statically) runs in the embedded dynamic engine, which this build does not include",
+    ],
+  ]);
+  for (const d of coverage.diagnostics) expect(d.hint).toContain("convert the argument explicitly");
+});
+
+test("the diagnostics envelope is versioned and located", () => {
+  const { coverage, sourceTexts } = analyze(fixture("mixed.ts"));
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  expect(envelope).toMatchObject({
+    schema: "scriptc-diagnostics",
+    schemaVersion: 1,
+    command: "coverage",
+    success: false,
+    phase: "compile",
+    stats: { statementsTotal: 13, statementsStatic: 12, statementsFailed: 1, percentStatic: 92 },
+  });
+  expect(envelope.groups).toHaveLength(1);
+  expect(envelope.diagnostics[0]).toMatchObject({
+    code: "SC1031",
+    category: "unsupported",
+    severity: "error",
+    scope: "reached",
+    line: 13,
+    column: 7,
+    group: envelope.groups[0]!.id,
+  });
+  expect(envelope.diagnostics[0]!.hint.length).toBeGreaterThan(0);
+});
+
+test("CLI: --print=diagnostics and --fail-on set the output and exit status", () => {
+  const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, ["--import", "tsx", scriptcCli, "coverage", ...args], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, SCRIPTC_NO_CACHE: "1" },
+    });
+  const plain = run(fixture("mixed.ts"));
+  expect(plain.status).toBe(0);
+  const gated = run(fixture("mixed.ts"), "--fail-on=blockers");
+  expect(gated.status).toBe(1);
+  const json = run(fixture("mixed.ts"), "--print=diagnostics", "--fail-on=blockers");
+  expect(json.status).toBe(1);
+  const envelope = JSON.parse(json.stdout) as { schemaVersion: number; success: boolean };
+  expect(envelope).toMatchObject({ schemaVersion: 1, success: false });
+  expect(run(fixture("divergences.ts"), "--fail-on=blockers").status).toBe(0);
+  expect(run(fixture("divergences.ts"), "--fail-on=divergences").status).toBe(1);
+  // Unreached blockers cannot fail a build, so they never fail the gate.
+  expect(run(fixture("unreached.ts"), "--fail-on=blockers").status).toBe(0);
+  const bad = run(fixture("mixed.ts"), "--fail-on=everything");
+  expect(bad.status).toBe(1);
+  expect(bad.stderr).toContain('unknown --fail-on value "everything"');
+});
+
+test("CLI: build --print=diagnostics reports failures and divergence warnings as JSON", () => {
+  const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-build-envelope-"));
+  try {
+    const build = (file: string, ...args: string[]) =>
+      spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          scriptcCli,
+          "build",
+          file,
+          "--emit=ir",
+          "-o",
+          join(outDir, "out.ir.json"),
+          ...args,
+        ],
+        { cwd: repoRoot, encoding: "utf8", env: { ...process.env, SCRIPTC_NO_CACHE: "1" } },
+      );
+    const failed = build(fixture("mixed.ts"), "--print=diagnostics");
+    expect(failed.status).toBe(1);
+    expect(JSON.parse(failed.stdout)).toMatchObject({
+      command: "build",
+      success: false,
+      phase: "compile",
+      diagnostics: [{ code: "SC1031", line: 13, column: 7 }],
+    });
+    const warned = build(fixture("divergences.ts"), "--print=diagnostics");
+    expect(warned.status).toBe(0);
+    const envelope = JSON.parse(warned.stdout) as {
+      success: boolean;
+      artifact: string;
+      diagnostics: { code: string; severity: string }[];
+    };
+    expect(envelope.success).toBe(true);
+    expect(envelope.artifact).toBe(join(outDir, "out.ir.json"));
+    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(8).fill("warning"));
+    const human = build(fixture("divergences.ts"));
+    expect(human.status).toBe(0);
+    expect(human.stderr).toContain("warning SC6001");
+    expect(human.stderr).toContain("8 warnings: the program compiled");
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
 });
 
 test("fully static program reports 100%", () => {
@@ -430,6 +618,9 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     const deferred = /^\/\/ @deferred-fences:\s*(\d+)\s*$/.exec(firstLine);
     const { coverage } = analyze(file, { dynamic: /^\/\/ @dynamic\s*$/.test(firstLine) });
     expect.soft(coverage.diagnostics, file).toEqual([]);
+    // Corpus programs match Node by definition: a divergence warning on one
+    // is a false positive.
+    expect.soft(coverage.divergences ?? [], file).toEqual([]);
     expect.soft(coverage.stats.statementsFailed, file).toBe(deferred ? Number(deferred[1]) : 0);
     if (++n % 10 === 0) await new Promise((r) => setImmediate(r));
   }

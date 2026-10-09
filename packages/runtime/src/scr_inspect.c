@@ -737,6 +737,78 @@ ScrStr *scr_insp_key(ScrStr *k) {
  * lives in the value, so the traversal lives here instead of a
  * synthesized helper. Same engine, same defaults. dyn-boxed bytes render
  * in the checked-dynamic tree's documented Uint8Array identity (SEMANTICS.md). */
+/* An encoded Error's string slot: own first, then its prototype (an
+ * inherited name/message lives there), else NULL. Borrowed. */
+static const ScrDyn *insp_error_slot(const ScrDyn *d, const char *key, size_t len) {
+  const ScrDyn *v = scr_dyn_obj_get(d, key, len);
+  if (v == NULL && d->prototype != NULL && d->prototype->kind == SCR_DYN_OBJ)
+    v = scr_dyn_obj_get(d->prototype, key, len);
+  return v != NULL && v->kind == SCR_DYN_STR ? v : NULL;
+}
+
+/* The checked-dynamic Error encoding (scr_error_dyn_fields) rendered like
+ * scr_insp_error: the stackless bracket form `[Name: message]`, then the
+ * remaining enumerable own properties (code, errno, syscall, ...) in
+ * Node's `{ ... }` tail. */
+static ScrStr *scr_insp_dyn_error(ScrDyn *d, double recurse, double depth) {
+  const ScrDyn *name = insp_error_slot(d, "name", 4);
+  const ScrDyn *message = insp_error_slot(d, "message", 7);
+  size_t extra = 0;
+  for (size_t i = 0; i < d->v.obj.len; i++) {
+    ScrDynEntry *ent = &d->v.obj.entries[i];
+    if (!ent->enumerable) continue;
+    if ((ent->key_len == 4 && memcmp(ent->key, "name", 4) == 0) ||
+        (ent->key_len == 7 && memcmp(ent->key, "message", 7) == 0) ||
+        (ent->key_len == 5 && memcmp(ent->key, "stack", 5) == 0))
+      continue;
+    extra++;
+  }
+  InspBuf base = {0};
+  ib_char(&base, '[');
+  if (name != NULL) ib_str(&base, name->v.str);
+  else ib_cstr(&base, "Error");
+  if (extra > 0 && recurse > depth) {
+    ib_char(&base, ']');
+    return ib_take(&base);
+  }
+  if (message != NULL && message->v.str->len) {
+    ib_cstr(&base, ": ");
+    for (size_t i = 0; i < message->v.str->len; i++) {
+      char c = message->v.str->data[i];
+      ib_char(&base, c);
+      if (c == '\n') ib_spaces(&base, g_indent);
+    }
+  }
+  ib_char(&base, ']');
+  ScrStr *base_str = ib_take(&base);
+  if (extra == 0) return base_str;
+  scr_insp_begin(recurse + 1);
+  for (size_t i = 0; i < d->v.obj.len; i++) {
+    ScrDynEntry *ent = &d->v.obj.entries[i];
+    if (!ent->enumerable) continue;
+    if ((ent->key_len == 4 && memcmp(ent->key, "name", 4) == 0) ||
+        (ent->key_len == 7 && memcmp(ent->key, "message", 7) == 0) ||
+        (ent->key_len == 5 && memcmp(ent->key, "stack", 5) == 0))
+      continue;
+    ScrStr *val = scr_insp_dyn(ent->value, recurse + 1, depth);
+    InspBuf eb = {0};
+    insp_key_into(&eb, ent->key, ent->key_len);
+    ib_cstr(&eb, ": ");
+    ib_bytes(&eb, val->data, val->len);
+    scr_str_release(val);
+    ScrStr *entry = ib_take(&eb);
+    scr_insp_entry(entry, false);
+    scr_str_release(entry);
+  }
+  ScrStr *b0 = scr_str_new("{", 1);
+  ScrStr *b1 = scr_str_new("}", 1);
+  ScrStr *out = scr_insp_end(base_str, b0, b1, recurse + 1, false, false);
+  scr_str_release(b0);
+  scr_str_release(b1);
+  scr_str_release(base_str);
+  return out;
+}
+
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   if (d->kind == SCR_DYN_PROXY) return scr_insp_dyn(d->v.proxy.target, recurse, depth);
   switch (d->kind) {
@@ -781,6 +853,10 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       return out;
     }
     case SCR_DYN_OBJ: {
+      /* An Error carried as a checked-dynamic value (a caught error, an
+       * Error stored in an `unknown` slot): the error's own rendering,
+       * never the encoding's internal marker. */
+      if (scr_dyn_obj_get(d, "%error", 6) != NULL) return scr_insp_dyn_error(d, recurse, depth);
       /* Object.create(null)'s dictionary: Node prefixes the rendering
        * with "[Object: null prototype]" (formatValue's constructor-less
        * base), the empty form included, and the beyond-depth answer IS

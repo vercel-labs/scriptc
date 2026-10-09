@@ -23,3 +23,5 @@ export function precompiledRuntimePackTarget(
   if (env["SCRIPTC_FETCH_CURL"] === "1") return null;
   return nativeCodegenTarget(env);
 }
+export { readCoverageVerdict } from "./coverage/verdict-startup.js";
+export { coverageEnvelope, coveragePasses, renderCoverage } from "./coverage/report.js";

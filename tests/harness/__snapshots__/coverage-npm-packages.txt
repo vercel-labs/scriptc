@@ -4,7 +4,15 @@ scriptc coverage tests/diagnostics/npm-imports/main.ts
   compile statically    0  (0%)
 
   runs with --dynamic   9 sites (embeds a JS engine, ~620KB — static stays the default)
-      ×6  values from the 'mathkit' package run in the embedded dynamic engine, which this build does not include                                    SC2013
-      ×1  importing 'mathkit' requires the embedded dynamic engine, which this build does not include — the package's implementation runs there      SC2013
-      ×1  importing '@acme/units' requires the embedded dynamic engine, which this build does not include — the package's implementation runs there  SC2013
-      ×1  values from the '@acme/units' package run in the embedded dynamic engine, which this build does not include                                SC2013
+      ×6  SC2013  values from the 'mathkit' package run in the embedded dynamic engine, which this build does not include
+          at tests/diagnostics/npm-imports/main.ts:9:7, tests/diagnostics/npm-imports/main.ts:10:13, tests/diagnostics/npm-imports/main.ts:12:7 (+3 more)
+          hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
+      ×1  SC2013  importing 'mathkit' requires the embedded dynamic engine, which this build does not include — the package's implementation runs there
+          at tests/diagnostics/npm-imports/main.ts:5:1
+          hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
+      ×1  SC2013  importing '@acme/units' requires the embedded dynamic engine, which this build does not include — the package's implementation runs there
+          at tests/diagnostics/npm-imports/main.ts:6:1
+          hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
+      ×1  SC2013  values from the '@acme/units' package run in the embedded dynamic engine, which this build does not include
+          at tests/diagnostics/npm-imports/main.ts:14:13
+          hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine

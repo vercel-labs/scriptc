@@ -273,14 +273,18 @@ export function emitStrIntrinsic(
         "ptr",
         true,
       );
-    case "repeat":
-      return call(
+    case "repeat": {
+      // A negative or infinite count throws Node's catchable RangeError.
+      const result = call(
         "scr_str_repeat",
         "ptr (ptr, double)",
         `ptr ${r.name}, double ${args[0]!.name}`,
         "ptr",
         true,
       );
+      host.emitPendingCheck();
+      return result;
+    }
     case "trim":
       return call("scr_str_trim", "ptr (ptr)", `ptr ${r.name}`, "ptr", true);
     case "trimStart":

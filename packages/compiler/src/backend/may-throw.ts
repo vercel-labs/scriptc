@@ -231,7 +231,8 @@ export function computeMayThrow(mod: IrModule): {
           // setFrom and the numeric read/write families throw catchable
           // RangeErrors (Node's bounds discipline); the rest trap or
           // cannot fail.
-          if (MAY_THROW_BYTES_METHODS.has(rec.method)) {
+          // An out-of-range `get` throws the catchable RangeError too.
+          if (MAY_THROW_BYTES_METHODS.has(rec.method) || rec.method === "get") {
             f.throws = true;
           }
           break;
@@ -244,7 +245,7 @@ export function computeMayThrow(mod: IrModule): {
           f.throws = true;
           break;
         case "strIntrinsic":
-          if (rec.method === "normalize") f.throws = true;
+          if (rec.method === "normalize" || rec.method === "repeat") f.throws = true;
           break;
         case "regexIntrinsic":
           // Keep the conservative exception check for these operations;

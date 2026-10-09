@@ -146,6 +146,49 @@ throw e;
     expect(nameless.stderr).toBe("Uncaught just the message\n");
   });
 
+  test("an uncaught checked-dynamic primitive prints its value, like Node", async () => {
+    // Node prints the thrown primitive itself (after its source excerpt);
+    // the value must never be lost behind a placeholder.
+    const text = await compileAndRun(
+      "uncaught-unknown-string",
+      `console.log("before");
+const v: unknown = process.argv.length > 99 ? 0 : "plain";
+throw v;
+`,
+    );
+    expect(text.exitCode).toBe(1);
+    expect(text.stdout).toBe("before\n");
+    expect(text.stderr).toBe("Uncaught plain\n");
+
+    const num = await compileAndRun(
+      "uncaught-unknown-number",
+      `const v: unknown = process.argv.length > 99 ? "x" : 42;
+throw v;
+`,
+    );
+    expect(num.exitCode).toBe(1);
+    expect(num.stderr).toBe("Uncaught 42\n");
+  });
+
+  test("an out-of-range typed array read throws a catchable RangeError", async () => {
+    // Node answers undefined; a typed numeric read cannot, so the native
+    // program throws a catchable RangeError instead of aborting.
+    const r = await compileAndRun(
+      "typed-read-out-of-range",
+      `const t = new Uint8Array(4);
+const i: number = process.argv.length + 10;
+try {
+  console.log(t[i]);
+} catch (e) {
+  console.log(e instanceof RangeError, (e as Error).message);
+}
+console.log("after", t.length);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toMatch(/^true typed array index \d+ out of bounds \(length 4\)\nafter 4\n$/);
+  });
+
   test("an unhandled ERROR rejection renders name: message too", async () => {
     const r = await compileAndRun(
       "unhandled-error-rejection",

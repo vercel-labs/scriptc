@@ -254,16 +254,22 @@ double scr_bytes_byte_len(const ScrBytes *b) {
 
 /* ── element access ────────────────────────────────────────────────────
  * Invalid writes are ignored. Typed numeric reads cannot represent
- * undefined, so invalid reads trap; checked reads return undefined. */
+ * undefined (Node's answer), so an invalid read throws a catchable
+ * RangeError instead (the caller checks the pending exception; the NaN
+ * result is never observed); checked reads return undefined. */
 
-static size_t scr_bytes_check_index(const ScrBytes *b, double i) {
+static bool scr_bytes_check_index(const ScrBytes *b, double i, size_t *out) {
   if (!(i >= 0) || i != trunc(i) || i >= (double)b->len) {
     char buf[32];
     scr_f64_to_str(i, buf);
-    scr_trap_fmt("scriptc: RangeError: typed array index %s out of bounds (length %zu)\n",
-                 buf, b->len);
+    char msg[96];
+    int len = snprintf(msg, sizeof msg, "typed array index %s out of bounds (length %zu)", buf,
+                       b->len);
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, (size_t)len);
+    return false;
   }
-  return (size_t)i;
+  *out = (size_t)i;
+  return true;
 }
 
 /* ToUint32: NaN/±Infinity → 0, truncate toward zero, wrap mod 2^32.
@@ -274,7 +280,8 @@ static uint32_t scr_bytes_to_u32(double v) {
 
 double scr_bytes_get(const ScrBytes *b, double i) {
   SCR_SHARED_GUARD(b, NULL);
-  size_t idx = scr_bytes_check_index(b, i);
+  size_t idx;
+  if (!scr_bytes_check_index(b, i, &idx)) return NAN;
   switch (b->elem) {
     case SCR_BYTES_U8: case SCR_BYTES_U8C:
       return (double)b->data[idx];

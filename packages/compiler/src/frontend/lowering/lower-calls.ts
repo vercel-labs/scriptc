@@ -1098,153 +1098,20 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // coercion is the identity and the tests are Number.isNaN /
     // Number.isFinite exactly (ms's `isFinite(val)` guard).
     if (
-      (expr.expression.text === "parseInt" || expr.expression.text === "isNaN") &&
+      (expr.expression.text === "parseInt" ||
+        expr.expression.text === "isNaN" ||
+        expr.expression.text === "parseFloat" ||
+        expr.expression.text === "isFinite") &&
       lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
     ) {
-      const name = expr.expression.text;
-      const maxArgs = name === "parseInt" ? 2 : 1;
-      if (expr.arguments.length < 1 || expr.arguments.length > maxArgs) {
-        lowerer.noLowering(
-          `${name} with ${expr.arguments.length} argument${expr.arguments.length === 1 ? "" : "s"}`,
-          expr,
-        );
-      }
-      if (name === "isNaN") {
-        const x = lowerer.lowerExprExpecting(expr.arguments[0]!, F64);
-        return { kind: "libCall", fn: "num.isNaN", args: [x], type: BOOL, loc };
-      }
-      const radix: IrExpr = expr.arguments[1]
-        ? lowerer.lowerExprExpecting(expr.arguments[1], F64)
-        : { kind: "numLit", value: 0, type: F64, loc };
-      const optional = optionalCallValue(lowerer, expr.arguments[0]!);
-      if (optional?.type.kind === "union") {
-        const def = lowerer.unions.get(optional.type.unionId);
-        const stringTag = def?.arms.findIndex((arm) => arm.kind === "string") ?? -1;
-        if (
-          def &&
-          stringTag >= 0 &&
-          def.arms.every((arm) => arm.kind === "string" || isUnitType(arm))
-        ) {
-          const unionT = optional.type;
-          const key = `parseInt.optional:${unionT.unionId}`;
-          let helper = lowerer.valueHelpers.get(key);
-          if (!helper) {
-            helper = `%parseInt.optional.${lowerer.valueHelpers.size}`;
-            lowerer.valueHelpers.set(key, helper);
-            const value: IrExpr = { kind: "varRef", localId: "value.0", type: unionT, loc };
-            const radixRef: IrExpr = { kind: "varRef", localId: "radix.0", type: F64, loc };
-            const body: IrStmt[] = def.arms.flatMap((arm, tag): IrStmt[] =>
-              isUnitType(arm)
-                ? [
-                    {
-                      kind: "if",
-                      cond: {
-                        kind: "unionIsTag",
-                        unionId: unionT.unionId,
-                        tag,
-                        negated: false,
-                        value,
-                        type: BOOL,
-                        loc,
-                      },
-                      then: [
-                        {
-                          kind: "return",
-                          value: { kind: "numLit", value: NaN, type: F64, loc },
-                          loc,
-                        },
-                      ],
-                      else_: null,
-                      loc,
-                    },
-                  ]
-                : [],
-            );
-            body.push({
-              kind: "return",
-              value: {
-                kind: "libCall",
-                fn: "num.parseInt",
-                args: [
-                  {
-                    kind: "unionNarrow",
-                    unionId: unionT.unionId,
-                    tag: stringTag,
-                    value,
-                    type: STRING,
-                    loc,
-                  },
-                  radixRef,
-                ],
-                type: F64,
-                loc,
-              },
-              loc,
-            });
-            lowerer.liftedFns.push({
-              name: helper,
-              params: [
-                { localId: "value.0", name: "value", type: unionT },
-                { localId: "radix.0", name: "radix", type: F64 },
-              ],
-              returnType: F64,
-              locals: [
-                { id: "value.0", name: "value", type: unionT, mutable: true },
-                { id: "radix.0", name: "radix", type: F64, mutable: true },
-              ],
-              body,
-              loc,
-            });
-          }
-          return { kind: "call", callee: helper, args: [optional, radix], type: F64, loc };
-        }
-      }
-      const s = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-      return { kind: "libCall", fn: "num.parseInt", args: [s, radix], type: F64, loc };
-    }
-    // STATIC parseFloat/isFinite over exactly-typed arguments —
-    // parseInt's siblings (num.parseFloat is ECMA 19.2.4's decimal-
-    // literal prefix parse in scr_string.c; a number-typed isFinite IS
-    // Number.isFinite — the global's ToNumber coercion is the identity
-    // there, ms's `isFinite(val)` guard). Other argument types fall
-    // through to today's island path (--dynamic) or its SC2012 fence:
-    // the ToNumber/ToString coercions on arbitrary values stay engine
-    // territory. The probe never emits — lowering is IR construction.
-    if (
-      (expr.expression.text === "parseFloat" || expr.expression.text === "isFinite") &&
-      expr.arguments.length === 1 &&
-      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
-    ) {
-      const name = expr.expression.text;
-      if (name === "parseFloat") {
-        const optional = optionalCallValue(lowerer, expr.arguments[0]!);
-        if (optional) {
-          const parsed = lowerOptionalStringNumber(
-            lowerer,
-            optional,
-            loc,
-            "num.parseFloat",
-            "parseFloat",
-          );
-          if (parsed) return parsed;
-        }
-      }
-      const probed = tryLowerExpression(lowerer, expr.arguments[0]!);
-      if (name === "parseFloat" && probed?.type.kind === "string") {
-        return { kind: "libCall", fn: "num.parseFloat", args: [probed], type: F64, loc };
-      }
-      if (name === "parseFloat" && probed?.type.kind === "dyn") {
-        return {
-          kind: "libCall",
-          fn: "num.parseFloat",
-          args: [{ kind: "libCall", fn: "dyn.toStringCoerce", args: [probed], type: STRING, loc }],
-          type: F64,
-          loc,
-        };
-      }
-      if (name === "isFinite" && probed?.type.kind === "f64") {
-        return { kind: "libCall", fn: "number.isFinite", args: [probed], type: BOOL, loc };
-      }
+      const parsed = lowerStaticNumberGlobal(
+        lowerer,
+        expr.expression.text,
+        expr,
+        expr.arguments,
+        loc,
+      );
+      if (parsed !== null) return parsed;
     }
     // STATIC encodeURIComponent/encodeURI/decodeURIComponent
     // (str.encodeUriComponent / str.encodeUri / str.decodeUriComponent —
@@ -1351,7 +1218,20 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       );
     }
     if (islFn && expr.arguments.length === islFn.args.length) {
-      lowerer.requireDynamicApi(`'${expr.expression.text}'`, expr);
+      // The static forms above already took the exactly-typed argument
+      // (a string for parseFloat, a number for isFinite): name the
+      // argument type that sent this call to the engine, so the message
+      // states the condition rather than reading as if the global itself
+      // were unsupported.
+      const argText = lowerer.dynamic ? "" : loweredArgumentText(lowerer, expr.arguments[0]!);
+      const exact = expr.expression.text === "isFinite" ? "number" : "string";
+      lowerer.requireDynamicApi(
+        `'${expr.expression.text}' with a '${argText}' argument (only a ${exact} argument compiles statically)`,
+        expr,
+        exact === "string"
+          ? "convert the argument explicitly first (for example String(x), or narrow the union), or build with --dynamic to run the coercing call in the embedded engine (adds ~620KB to the binary)"
+          : "narrow the argument to a number first (isFinite over a number compiles statically), or build with --dynamic to run the coercing call in the embedded engine (adds ~620KB to the binary)",
+      );
       const callee: IrExpr = {
         kind: "jsOp",
         op: "globalGet",
@@ -9612,4 +9492,167 @@ function unionObjectMethodHelper(
   }));
   lowerer.liftedFns.push({ name, params, returnType: resultT, locals, body, loc });
   return name;
+}
+
+/** The argument's lowered type for a message (what the static form saw),
+ * or the checker's text when the argument itself does not lower. */
+function loweredArgumentText(lowerer: Lowerer, arg: ts.Expression): string {
+  const probed = tryLowerExpression(lowerer, arg);
+  return probed !== null
+    ? lowerer.fmt(probed.type)
+    : lowerer.checker.typeToString(lowerer.checker.getTypeAtLocation(arg));
+}
+
+/** The static global number parsers (parseInt/parseFloat/isNaN/isFinite),
+ * shared by the globals and their Number.* aliases. `call` blames arity
+ * fences; null when the argument shape needs the engine (the caller keeps
+ * its island path or SC2012 fence). */
+export function lowerStaticNumberGlobal(
+  lowerer: Lowerer,
+  name: string,
+  call: ts.CallExpression,
+  args: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr | null {
+  if (name === "parseInt" || name === "isNaN") {
+    const maxArgs = name === "parseInt" ? 2 : 1;
+    if (args.length < 1 || args.length > maxArgs) {
+      lowerer.noLowering(
+        `${name} with ${args.length} argument${args.length === 1 ? "" : "s"}`,
+        call,
+      );
+    }
+    if (name === "isNaN") {
+      const x = lowerer.lowerExprExpecting(args[0]!, F64);
+      return { kind: "libCall", fn: "num.isNaN", args: [x], type: BOOL, loc };
+    }
+    const radix: IrExpr = args[1]
+      ? lowerer.lowerExprExpecting(args[1], F64)
+      : { kind: "numLit", value: 0, type: F64, loc };
+    const optional = optionalCallValue(lowerer, args[0]!);
+    if (optional?.type.kind === "union") {
+      const def = lowerer.unions.get(optional.type.unionId);
+      const stringTag = def?.arms.findIndex((arm) => arm.kind === "string") ?? -1;
+      if (
+        def &&
+        stringTag >= 0 &&
+        def.arms.every((arm) => arm.kind === "string" || isUnitType(arm))
+      ) {
+        const unionT = optional.type;
+        const key = `parseInt.optional:${unionT.unionId}`;
+        let helper = lowerer.valueHelpers.get(key);
+        if (!helper) {
+          helper = `%parseInt.optional.${lowerer.valueHelpers.size}`;
+          lowerer.valueHelpers.set(key, helper);
+          const value: IrExpr = { kind: "varRef", localId: "value.0", type: unionT, loc };
+          const radixRef: IrExpr = { kind: "varRef", localId: "radix.0", type: F64, loc };
+          const body: IrStmt[] = def.arms.flatMap((arm, tag): IrStmt[] =>
+            isUnitType(arm)
+              ? [
+                  {
+                    kind: "if",
+                    cond: {
+                      kind: "unionIsTag",
+                      unionId: unionT.unionId,
+                      tag,
+                      negated: false,
+                      value,
+                      type: BOOL,
+                      loc,
+                    },
+                    then: [
+                      {
+                        kind: "return",
+                        value: { kind: "numLit", value: NaN, type: F64, loc },
+                        loc,
+                      },
+                    ],
+                    else_: null,
+                    loc,
+                  },
+                ]
+              : [],
+          );
+          body.push({
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "num.parseInt",
+              args: [
+                {
+                  kind: "unionNarrow",
+                  unionId: unionT.unionId,
+                  tag: stringTag,
+                  value,
+                  type: STRING,
+                  loc,
+                },
+                radixRef,
+              ],
+              type: F64,
+              loc,
+            },
+            loc,
+          });
+          lowerer.liftedFns.push({
+            name: helper,
+            params: [
+              { localId: "value.0", name: "value", type: unionT },
+              { localId: "radix.0", name: "radix", type: F64 },
+            ],
+            returnType: F64,
+            locals: [
+              { id: "value.0", name: "value", type: unionT, mutable: true },
+              { id: "radix.0", name: "radix", type: F64, mutable: true },
+            ],
+            body,
+            loc,
+          });
+        }
+        return { kind: "call", callee: helper, args: [optional, radix], type: F64, loc };
+      }
+    }
+    const s = lowerer.lowerExprExpecting(args[0]!, STRING);
+    return { kind: "libCall", fn: "num.parseInt", args: [s, radix], type: F64, loc };
+  }
+  // STATIC parseFloat/isFinite over exactly-typed arguments —
+  // parseInt's siblings (num.parseFloat is ECMA 19.2.4's decimal-
+  // literal prefix parse in scr_string.c; a number-typed isFinite IS
+  // Number.isFinite — the global's ToNumber coercion is the identity
+  // there, ms's `isFinite(val)` guard). Other argument types fall
+  // through to today's island path (--dynamic) or its SC2012 fence:
+  // the ToNumber/ToString coercions on arbitrary values stay engine
+  // territory. The probe never emits — lowering is IR construction.
+  if ((name === "parseFloat" || name === "isFinite") && args.length === 1) {
+    if (name === "parseFloat") {
+      const optional = optionalCallValue(lowerer, args[0]!);
+      if (optional) {
+        const parsed = lowerOptionalStringNumber(
+          lowerer,
+          optional,
+          loc,
+          "num.parseFloat",
+          "parseFloat",
+        );
+        if (parsed) return parsed;
+      }
+    }
+    const probed = tryLowerExpression(lowerer, args[0]!);
+    if (name === "parseFloat" && probed?.type.kind === "string") {
+      return { kind: "libCall", fn: "num.parseFloat", args: [probed], type: F64, loc };
+    }
+    if (name === "parseFloat" && probed?.type.kind === "dyn") {
+      return {
+        kind: "libCall",
+        fn: "num.parseFloat",
+        args: [{ kind: "libCall", fn: "dyn.toStringCoerce", args: [probed], type: STRING, loc }],
+        type: F64,
+        loc,
+      };
+    }
+    if (name === "isFinite" && probed?.type.kind === "f64") {
+      return { kind: "libCall", fn: "number.isFinite", args: [probed], type: BOOL, loc };
+    }
+  }
+  return null;
 }

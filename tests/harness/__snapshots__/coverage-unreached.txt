@@ -4,6 +4,12 @@ scriptc coverage tests/coverage-fixtures/unreached.ts
   compile statically    6  (66%)
 
   in unreached code   (never lowered — cannot fail a build)
-      ×1  for-in over class instances (which keys exist on an instance depends on runtime property creation the class model does not track — for-in over records and arrays compiles)  SC1052
-      ×1  'break outer' targeting this statement form (the labeled statement lowers through a desugar that has no label point)                                                         SC1050
-      ×1  'yield*' in async generators (use 'for await' and yield each value explicitly)                                                                                               SC1071
+      ×1  SC1052  for-in over class instances (which keys exist on an instance depends on runtime property creation the class model does not track — for-in over records and arrays compiles)
+          at tests/coverage-fixtures/unreached.ts:15:19
+          hint: this construct is valid TypeScript outside the compiled subset — rewrite it with a supported equivalent (https://scriptc.dev/limitations)
+      ×1  SC1050  'break outer' targeting this statement form (the labeled statement lowers through a desugar that has no label point)
+          at tests/coverage-fixtures/unreached.ts:19:16
+          hint: this construct is valid TypeScript outside the compiled subset — rewrite it with a supported equivalent (https://scriptc.dev/limitations)
+      ×1  SC1071  'yield*' in async generators (use 'for await' and yield each value explicitly)
+          at tests/coverage-fixtures/unreached.ts:27:3
+          hint: this construct is valid TypeScript outside the compiled subset — rewrite it with a supported equivalent (https://scriptc.dev/limitations)

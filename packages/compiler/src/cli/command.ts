@@ -3,7 +3,14 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { isExactExternalTypeSpecifier } from "../frontend/program.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
-import { renderCoverage } from "../coverage/report.js";
+import {
+  coverageEnvelope,
+  coveragePasses,
+  renderCoverage,
+  type CoverageFailOn,
+} from "../coverage/report.js";
+import { buildEnvelope } from "../diagnostics/envelope.js";
+import { renderWarnings } from "../diagnostics/render.js";
 import { isNativeOptimization } from "../backend/optimization.js";
 import { setProvenanceSources } from "../frontend/provenance-registry.js";
 import type { CliHost, NativeCacheWarmProfile } from "./host.js";
@@ -74,6 +81,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.backend !== undefined ||
       values.emit !== undefined ||
       values.print !== undefined ||
+      values["fail-on"] !== undefined ||
       values.ffi !== undefined ||
       values.profile !== undefined ||
       values.strip ||
@@ -138,6 +146,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.backend !== undefined ||
       values.emit !== undefined ||
       values.print !== undefined ||
+      values["fail-on"] !== undefined ||
       values.optimization !== undefined ||
       values.strip ||
       values.ffi !== undefined ||
@@ -189,10 +198,28 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (command === "coverage" && values.strip) {
     fail(`--strip is a build/run option\n\n${USAGE}`);
   }
-  if (values.print !== undefined && values.print !== "native-link-info") {
-    fail(`unknown print kind "${values.print}" (supported: native-link-info)\n\n${USAGE}`);
+  if (
+    values.print !== undefined &&
+    values.print !== "native-link-info" &&
+    values.print !== "diagnostics"
+  ) {
+    fail(
+      `unknown print kind "${values.print}" (supported: native-link-info, diagnostics)\n\n${USAGE}`,
+    );
   }
   const printNativeLinkInfo = values.print === "native-link-info";
+  const printDiagnostics = values.print === "diagnostics";
+  if (printDiagnostics && command === "run") {
+    fail(`--print=diagnostics is a build/coverage option\n\n${USAGE}`);
+  }
+  const failOnRaw = values["fail-on"];
+  if (failOnRaw !== undefined && failOnRaw !== "blockers" && failOnRaw !== "divergences") {
+    fail(`unknown --fail-on value "${failOnRaw}" (supported: blockers, divergences)\n\n${USAGE}`);
+  }
+  if (failOnRaw !== undefined && command !== "coverage") {
+    fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);
+  }
+  const failOn = failOnRaw as CoverageFailOn | undefined;
   if (printNativeLinkInfo && command !== "build") {
     fail(`--print=native-link-info is a build option\n\n${USAGE}`);
   }
@@ -311,9 +338,21 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(Object.keys(externalTypes).length > 0 ? { externalTypes } : {}),
     });
-    const color = process.stdout.isTTY ?? false;
-    process.stdout.write(renderCoverage(coverage, { color, sourceTexts }) + "\n");
-    return coverage.preflightFailed ? 1 : 0;
+    if (printDiagnostics) {
+      // Keep stdout pure JSON for tooling.
+      const envelope = coverageEnvelope(coverage, {
+        compilerVersion: host.version(),
+        sourceTexts,
+        ...(failOn === undefined ? {} : { failOn }),
+      });
+      process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
+    } else {
+      const color = process.stdout.isTTY ?? false;
+      process.stdout.write(
+        renderCoverage(coverage, { color, sourceTexts, root: process.cwd() }) + "\n",
+      );
+    }
+    return coveragePasses(coverage, failOn) ? 0 : 1;
   }
 
   if (output === null || !output.ok) throw new Error("internal output-option state");
@@ -328,6 +367,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
   );
 
   let nativeLinkInfo: object | undefined;
+  let diagnosticsEnvelope: object | undefined;
   const build = async (): Promise<string> => {
     const result = await host.compile(input, {
       outPath,
@@ -345,6 +385,17 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),
     });
     if (!result.ok) {
+      if (printDiagnostics) {
+        const envelope = buildEnvelope({
+          compilerVersion: host.version(),
+          entry: input,
+          ok: false,
+          diagnostics: result.diagnostics,
+          sourceTexts: result.sourceTexts,
+        });
+        process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
+        throw new CliExit(1);
+      }
       const color = process.stderr.isTTY ?? false;
       process.stderr.write(
         renderDiagnostics(result.diagnostics, result.sourceTexts, { color }) + "\n",
@@ -352,6 +403,26 @@ async function main(args: string[], host: CliHost): Promise<number> {
       const n = result.diagnostics.length;
       process.stderr.write(`\n${n} error${n === 1 ? "" : "s"}.\n`);
       throw new CliExit(1);
+    }
+    const warnings = result.warnings ?? [];
+    if (printDiagnostics) {
+      diagnosticsEnvelope = buildEnvelope({
+        compilerVersion: host.version(),
+        entry: input,
+        ok: true,
+        artifact: result.artifact.path,
+        diagnostics: [],
+        warnings,
+        ...(result.sourceTexts === undefined ? {} : { sourceTexts: result.sourceTexts }),
+      });
+    } else if (warnings.length > 0 && command === "build") {
+      // Divergence warnings never fail a build; they explain where the
+      // native program can behave differently from Node. `run` keeps
+      // stderr for the program's own output.
+      const color = process.stderr.isTTY ?? false;
+      process.stderr.write(
+        renderWarnings(warnings, result.sourceTexts ?? new Map(), { color }) + "\n",
+      );
     }
     if (result.artifact.kind === "exe") {
       if (!values["keep-llvm"]) rmSync(result.artifact.translationUnitPath, { force: true });
@@ -367,7 +438,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
     return host.run(binary);
   }
 
-  if (printNativeLinkInfo) {
+  if (printDiagnostics) {
+    process.stdout.write(`${JSON.stringify(diagnosticsEnvelope, null, 2)}\n`);
+  } else if (printNativeLinkInfo) {
     if (nativeLinkInfo === undefined) throw new Error("internal native-link-info state");
     // Keep stdout pure JSON for tooling; the ordinary artifact path is in
     // program.object inside the document.

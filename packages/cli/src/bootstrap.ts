@@ -57,6 +57,7 @@ async function tryFastPath(): Promise<number | null> {
     return values.help ? 0 : 1;
   }
   const [command, inputArg] = positionals;
+  if (command === "coverage") return coverageFastPath(values, inputArg, positionals.length);
   if (
     (command !== "build" && command !== "run") ||
     inputArg === undefined ||
@@ -161,6 +162,64 @@ async function tryFastPath(): Promise<number | null> {
       }
     });
   });
+}
+
+/** An unchanged program's coverage verdict replays from the verdict cache
+ * without loading the compiler graph. Anything else (a miss, a comment-only
+ * edit, options the replay does not cover) defers to the full CLI. */
+async function coverageFastPath(
+  values: ReturnType<
+    typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
+  >["values"],
+  inputArg: string | undefined,
+  positionalCount: number,
+): Promise<number | null> {
+  const print = values.print;
+  const failOn = values["fail-on"];
+  if (
+    inputArg === undefined ||
+    positionalCount !== 2 ||
+    (print !== undefined && print !== "diagnostics") ||
+    (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences") ||
+    values.emit !== undefined ||
+    values.strip ||
+    values.lib ||
+    values.profile !== undefined ||
+    values.ffi !== undefined ||
+    values.backend !== undefined ||
+    values.optimization !== undefined ||
+    values["windows-subsystem"] !== undefined ||
+    values["provenance-sources"] ||
+    values["emit-ir"] ||
+    (values["npm-static"] ?? []).length > 0 ||
+    (values["external-types"] ?? []).length > 0
+  )
+    return null;
+  let startup: typeof import("@scriptc/compiler/startup-cache");
+  try {
+    startup = await import("@scriptc/compiler/startup-cache");
+  } catch {
+    return null;
+  }
+  const hit = await startup
+    .readCoverageVerdict(resolve(inputArg), { dynamic: values.dynamic })
+    .catch(() => null);
+  if (hit === null) return null;
+  const { coverage, sourceTexts } = hit;
+  if (print === "diagnostics") {
+    const envelope = startup.coverageEnvelope(coverage, {
+      compilerVersion: packageVersion(),
+      sourceTexts,
+      ...(failOn === undefined ? {} : { failOn }),
+    });
+    process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
+  } else {
+    const color = process.stdout.isTTY ?? false;
+    process.stdout.write(
+      startup.renderCoverage(coverage, { color, sourceTexts, root: process.cwd() }) + "\n",
+    );
+  }
+  return startup.coveragePasses(coverage, failOn) ? 0 : 1;
 }
 
 const fastExit = await tryFastPath();

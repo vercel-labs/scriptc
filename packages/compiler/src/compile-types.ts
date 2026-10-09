@@ -93,8 +93,21 @@ export type CompileFailure = {
   sourceTexts: Map<string, string>;
 };
 
+/** Non-failing findings of a successful build: divergence warnings
+ * (SC6xxx — sites that compile but can behave differently from Node), with
+ * the sources they point into. Present only when the build lowered the
+ * program and found at least one; a cache hit that skips lowering carries
+ * none (`scriptc coverage` always reports them). */
+export interface CompileWarnings {
+  warnings?: ScrDiagnostic[];
+  sourceTexts?: Map<string, string>;
+}
+
 export type CompileSourceResult =
-  | { ok: true; artifact: Extract<CompileArtifact, { kind: "ir" | "llvm" | "asm" | "obj" }> }
+  | ({
+      ok: true;
+      artifact: Extract<CompileArtifact, { kind: "ir" | "llvm" | "asm" | "obj" }>;
+    } & CompileWarnings)
   | CompileFailure;
 
 /** Historical executable result shape retained for source compatibility. */
@@ -112,7 +125,7 @@ export type CompileExecutableResult =
   /** The generated LLVM source is retained beside the executable. */
   | (Extract<CompileResult, { ok: true }> & {
       artifact: Extract<CompileArtifact, { kind: "exe" }>;
-    })
+    } & CompileWarnings)
   | CompileFailure;
 
 /** Result union for callers that choose outputKind dynamically. */

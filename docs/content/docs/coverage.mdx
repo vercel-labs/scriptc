@@ -40,10 +40,16 @@ $ scriptc coverage cli.ts
   statements analyzed   1
   compile statically    0  (0%)
 
-  runs with --dynamic   2 sites
-      ×1  importing 'picocolors' requires the embedded dynamic engine, which this build does not include — the package's implementation runs there  SC2013
-      ×1  values from the 'picocolors' package run in the embedded dynamic engine, which this build does not include                                SC2013
+  runs with --dynamic   2 sites (embeds a JS engine, ~620KB — static stays the default)
+      ×1  SC2013  importing 'picocolors' requires the embedded dynamic engine, which this build does not include — the package's implementation runs there
+          at cli.ts:1:1
+          hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
+      ×1  SC2013  values from the 'picocolors' package run in the embedded dynamic engine, which this build does not include
+          at cli.ts:3:13
+          hint: build with --dynamic to run npm package code in the embedded engine (adds ~620KB to the binary), or try --npm-static auto to compile eligible packages' JavaScript statically; static builds never include the engine
 ```
+
+Each group collects the sites that share one root cause: the same code and message, with type arguments of generic instantiations collapsed, so one uncompilable declaration reported through several instantiations appears once. The `at` line lists the first sites in source order, and every group carries a hint.
 
 The package must be installed before analysis; the quickstart shows [how to install and use it](/docs/quickstart#use-an-npm-dependency).
 
@@ -71,10 +77,20 @@ The package must be installed before analysis; the quickstart shows [how to inst
     </tr>
     <tr>
       <td><code>blockers</code></td>
-      <td>Unsupported operations, listed with a count, reason, and diagnostic code. Enabling <code>--dynamic</code> does not resolve these blockers.</td>
+      <td>Unsupported operations, listed with a count, diagnostic code, reason, locations, and hint. Enabling <code>--dynamic</code> does not resolve these blockers.</td>
+    </tr>
+    <tr>
+      <td><code>in unreached code</code></td>
+      <td>Blockers in code the entry never reaches. A build never compiles that code, so these cannot fail it.</td>
+    </tr>
+    <tr>
+      <td><code>differs from Node</code></td>
+      <td>Sites that compile but can behave differently from Node.js. See <a href="#node-divergences">Node divergences</a>.</td>
     </tr>
   </tbody>
 </table>
+
+The statement totals include the bodies of functions whose signatures cannot compile. Their statements count as not static, so the percentage reflects how much of the program compiles.
 
 ## Analyze with --dynamic
 
@@ -147,9 +163,130 @@ Coverage uses the same diagnostic codes as `scriptc build`. Common examples incl
 - `SC2013`: a package import or package value requires the embedded engine. Enable `--dynamic`, remove the dependency, or evaluate the experimental [static package options](/docs/dependencies#static-package-compilation-experimental).
 - `SC1100`: a value crosses an unsupported `unknown`/`any` boundary. Narrow or cast the value as directed by the diagnostic.
 
+## Node divergences
+
+Some programs compile but behave differently natively than under Node.js. Coverage reports the cases it can detect at compile time as `SC6xxx` warnings; `scriptc build` prints the same warnings after a successful build. They never fail a build.
+
+- `SC6001`: an object passed to, or stored as, a narrower record type is copied, and the program then writes through the copy or compares it by identity.
+- `SC6002`: an object literal's key order differs from its type's declaration order, and the program observes the order through `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, or console output.
+- `SC6003`: `localeCompare` compares a string literal outside the built-in Latin-script collation.
+- `SC6004`: a call passes a class instance to a function that casts it to an unrelated class.
+- `SC6005`: a `Date` string literal uses a form the native parser does not accept.
+
+## Gating builds and CI
+
+By default `scriptc coverage` exits with status 0 whenever the program typechecks, so the report can be used to measure progress. Add `--fail-on=blockers` to exit with status 1 when the entry has blockers that would fail `scriptc build`; blockers in unreached code and JavaScript statements deferred to runtime do not count. `--fail-on=divergences` additionally fails on Node divergences. A program that does not typecheck always exits with status 1.
+
+An unchanged program reuses the previous verdict: coverage records the files and directories the analysis read and replays the verdict while all of them are unchanged. Edits that only change TypeScript comments also reuse it, with reported locations moved to the edited text. Set `SCRIPTC_NO_CACHE=1` to disable the cache.
+
+## Machine-readable diagnostics
+
+`scriptc coverage --print=diagnostics` and `scriptc build --print=diagnostics` write one JSON document to stdout instead of the human report. The exit status is unchanged. The document has the following shape:
+
+```json
+{
+  "schema": "scriptc-diagnostics",
+  "schemaVersion": 1,
+  "compilerVersion": "0.2.7",
+  "command": "coverage",
+  "entry": "/work/app/src/main.ts",
+  "success": false,
+  "phase": "compile",
+  "stats": {
+    "statementsTotal": 13,
+    "statementsStatic": 12,
+    "statementsDynamic": 0,
+    "statementsFailed": 1,
+    "functionsSkipped": 0,
+    "percentStatic": 92
+  },
+  "groups": [
+    {
+      "id": "SC1031-c2cc8425",
+      "code": "SC1031",
+      "category": "unsupported",
+      "severity": "error",
+      "scope": "reached",
+      "message": "object destructuring of non-record values (the source is array-typed)",
+      "hint": "...",
+      "count": 1,
+      "primary": { "file": "/work/app/src/main.ts", "line": 13, "column": 7 },
+      "sites": [{ "file": "/work/app/src/main.ts", "line": 13, "column": 7 }]
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": "SC1031",
+      "category": "unsupported",
+      "severity": "error",
+      "scope": "reached",
+      "file": "/work/app/src/main.ts",
+      "line": 13,
+      "column": 7,
+      "endLine": 13,
+      "endColumn": 28,
+      "start": 352,
+      "end": 373,
+      "message": "object destructuring of non-record values (the source is array-typed) are not supported yet",
+      "hint": "...",
+      "group": "SC1031-c2cc8425"
+    }
+  ]
+}
+```
+
+<table>
+  <thead>
+    <tr>
+      <th>Field</th>
+      <th>Meaning</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>schemaVersion</code></td>
+      <td>Incremented when a field is renamed or removed or its meaning changes. New optional fields, categories, and codes keep the version.</td>
+    </tr>
+    <tr>
+      <td><code>success</code></td>
+      <td>Coverage: no blockers on the entry path (and, with <code>--fail-on=divergences</code>, no divergences). Build: an artifact was produced, named by <code>artifact</code>.</td>
+    </tr>
+    <tr>
+      <td><code>phase</code></td>
+      <td><code>preflight</code> when type checking, configuration, or the module graph stopped the command; <code>compile</code> when blockers remain; <code>native</code> when native code generation or linking failed; otherwise <code>complete</code>.</td>
+    </tr>
+    <tr>
+      <td><code>stats</code></td>
+      <td>Coverage only, absent after a preflight failure: the report's statement counts.</td>
+    </tr>
+    <tr>
+      <td><code>category</code></td>
+      <td><code>invalid-source</code> (the program has a TypeScript or JSON error), <code>unsupported</code> (valid code scriptc cannot compile yet), <code>dynamic-only</code> (compiles with <code>--dynamic</code>), <code>divergence</code> (compiles, but can behave differently from Node.js), <code>environment</code> (project configuration, scriptc's type world, toolchain, or target), or <code>internal</code> (a compiler bug).</td>
+    </tr>
+    <tr>
+      <td><code>severity</code></td>
+      <td><code>error</code>, or <code>warning</code> for divergences.</td>
+    </tr>
+    <tr>
+      <td><code>scope</code></td>
+      <td><code>preflight</code>, <code>reached</code> (fails a build), <code>unreached</code> (code the entry never reaches), or <code>deferred</code> (a JavaScript statement that compiles to a throw of its diagnostic, which happens only if it executes).</td>
+    </tr>
+    <tr>
+      <td><code>line</code>, <code>column</code></td>
+      <td>1-based line and UTF-16 column; <code>start</code> and <code>end</code> are 0-based UTF-16 offsets.</td>
+    </tr>
+    <tr>
+      <td><code>group</code></td>
+      <td>The <code>id</code> of the root-cause group the diagnostic belongs to. A group's <code>primary</code> site is its first in source order.</td>
+    </tr>
+  </tbody>
+</table>
+
 ## Type errors
 
 Coverage requires a program that typechecks. If type checking fails, the report identifies the errors instead of producing statement counts. Fix those errors before interpreting compilation coverage.
+
+scriptc type-checks with its own settings: strict null checks, the ES2025 library, and Node.js types (its bundled declarations when the project has no `@types/node`). An error those settings cause, rather than the project's own `tsc` configuration, carries a hint naming the cause, such as a library member newer than ES2025 or a global of another runtime, and machine-readable output reports it in the `environment` category.
 
 ## External host type declarations
 

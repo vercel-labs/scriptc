@@ -84,8 +84,11 @@ Verifies and reads the installed precompiled runtime objects and vendor archives
   <dt><code>--emit &lt;ir|llvm|asm|obj|exe&gt;</code></dt>
   <dd>Select the invocation's one primary artifact. <code>ir</code> and <code>llvm</code> need only Node. <code>asm</code> and <code>obj</code> use a matching bundled LLVM helper on supported macOS, Linux, and Windows hosts and for WASI; they need no installed C compiler. <code>exe</code> is the default.</dd>
 
-  <dt><code>--print &lt;native-link-info&gt;</code></dt>
-  <dd>Build an object (equivalent to <code>--emit=obj</code>) and print its machine-readable external link recipe as JSON instead of printing the artifact path. The document names the exact installed precompiled runtime pack and all link inputs, but does not invoke a linker.</dd>
+  <dt><code>--print &lt;native-link-info|diagnostics&gt;</code></dt>
+  <dd><code>native-link-info</code>: build an object (equivalent to <code>--emit=obj</code>) and print its machine-readable external link recipe as JSON instead of printing the artifact path. The document names the exact installed precompiled runtime pack and all link inputs, but does not invoke a linker. <code>diagnostics</code>: for <code>build</code> and <code>coverage</code>, print the versioned JSON diagnostics document described in <a href="/docs/coverage#machine-readable-diagnostics">Coverage Reports</a> instead of the human output.</dd>
+
+  <dt><code>--fail-on &lt;blockers|divergences&gt;</code></dt>
+  <dd>Coverage only. Exit with status 1 when the entry has blockers that would fail a build, or with <code>divergences</code>, also when it has Node divergence warnings. See <a href="/docs/coverage#gating-builds-and-ci">Gating builds and CI</a>.</dd>
 
   <dt><code>--dynamic</code></dt>
   <dd>Embed the JavaScript engine to run npm dependencies and supported <code>any</code>-typed code. Static compilation is the default; without this flag, dynamic-tier sites produce compilation errors. See <a href="/dependencies">npm Dependencies</a>.</dd>

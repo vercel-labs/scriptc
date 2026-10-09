@@ -254,9 +254,14 @@ export function islandRegexpOf(e: IrExpr): IrExpr | null {
  * proceeds to engine ops; without it the use site is a per-site SC2012
  * (poison-recovered, so every site in the program reports — and the
  * coverage report groups them under "runs with --dynamic"). */
-export function requireDynamicApi(lowerer: Lowerer, feature: string, node: ts.Node): void {
+export function requireDynamicApi(
+  lowerer: Lowerer,
+  feature: string,
+  node: ts.Node,
+  hint?: string,
+): void {
   if (lowerer.dynamic) return;
-  lowerer.pushDiag(requiresDynamicApiDiag(feature, locOf(node)));
+  lowerer.pushDiag(requiresDynamicApiDiag(feature, locOf(node), hint));
   throw new PoisonError();
 }
 

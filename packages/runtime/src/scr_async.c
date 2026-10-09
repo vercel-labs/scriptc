@@ -3526,8 +3526,16 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
   return rejection_failed;
 }
 
+/* A CommonJS main module runs synchronously (Module._load), so the first
+ * checkpoint after it drains process.nextTick callbacks before promise
+ * jobs like every later one; only an ES-module main's awaited evaluation
+ * lets its body's promise jobs run first. Set by the emitted main before
+ * the loop starts. */
+static SCR_TL bool scr_loop_cjs_entry = false;
+void scr_loop_commonjs_entry(void) { scr_loop_cjs_entry = true; }
+
 bool scr_loop_run(ScrPromise *top_level) {
-  bool first_checkpoint = true;
+  bool first_checkpoint = !scr_loop_cjs_entry;
   bool rejection_failed;
   for (;;) {
     rejection_failed = scr_loop_run_pass(top_level && !top_level->top_level_handled ? top_level : NULL, first_checkpoint);

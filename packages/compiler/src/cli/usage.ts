@@ -22,7 +22,13 @@ Options:
       --emit <kind>  primary output: ir, llvm, asm, obj, or exe
                      (default: exe). asm/obj use the matching platform helper
       --print <kind> print machine-readable metadata instead of the output path
-                     (native-link-info implies --emit=obj and never links)
+                     (native-link-info implies --emit=obj and never links;
+                     diagnostics prints the versioned JSON diagnostics
+                     envelope for build and coverage)
+      --fail-on <blockers|divergences>
+                     coverage only: exit 1 when the entry path has blockers
+                     (a build would fail), or also when it has Node
+                     divergences
       --backend <b>  code generator (llvm)
       --optimization <release|dev|speed>
                      native optimization posture (default: release/-O2). dev
@@ -70,6 +76,7 @@ export const CLI_OPTIONS = {
   out: { type: "string", short: "o" },
   emit: { type: "string" },
   print: { type: "string" },
+  "fail-on": { type: "string" },
   backend: { type: "string" },
   optimization: { type: "string" },
   strip: { type: "boolean", default: false },

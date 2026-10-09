@@ -108,7 +108,9 @@ export function emitBytesIndex(
     B.startBlock(invalid);
     if (skipInvalid) B.br(skipInvalid);
     else {
-      emitInvalidBytesRead(host, receiver, index);
+      host.declare(`declare double @scr_bytes_get(ptr, double)`);
+      B.line(`call double @scr_bytes_get(ptr ${receiver}, double ${index})`);
+      B.terminate("unreachable");
     }
     B.startBlock(valid);
     if (host.sizeType === "i64") return wideIndex;
@@ -142,20 +144,14 @@ export function emitBytesIndex(
   B.startBlock(invalid);
   if (skipInvalid) B.br(skipInvalid);
   else {
-    emitInvalidBytesRead(host, receiver, index);
+    // No caller-supplied invalid path: never touch storage.
+    host.declare(`declare void @llvm.trap()`);
+    B.line(`call void @llvm.trap()`);
+    B.terminate("unreachable");
   }
 
   B.startBlock(valid);
   return idx;
-}
-
-/** An invalid typed-array read: the runtime throws Node's catchable
- * RangeError, and this path unwinds to the handler (it never continues). */
-function emitInvalidBytesRead(host: LlvmEmitterContext, receiver: string, index: string): void {
-  host.declare(`declare double @scr_bytes_get(ptr, double)`);
-  host.B.line(`call double @scr_bytes_get(ptr ${receiver}, double ${index})`);
-  host.emitPendingCheck();
-  host.B.terminate("unreachable");
 }
 
 export function emitBytesData(host: LlvmEmitterContext, receiver: string): string {
@@ -192,16 +188,51 @@ export function emitBytesGet(
   index: LlValue,
   expr?: IrExpr,
   inBounds = false,
+  invalidNaN = false,
 ): LlValue {
   const B = host.B;
   if (host.mod.workers) {
-    host.declare(`declare double @scr_bytes_get(ptr, double)`);
+    const fn = invalidNaN ? "scr_bytes_get_or_nan" : "scr_bytes_get";
+    host.declare(`declare double @${fn}(ptr, double)`);
     const result = B.tmp();
-    B.line(`${result} = call double @scr_bytes_get(ptr ${receiver}, double ${index.name})`);
-    host.emitPendingCheck();
+    B.line(`${result} = call double @${fn}(ptr ${receiver}, double ${index.name})`);
     return { name: result, type: F64 };
   }
-  const idx = host.emitBytesIndex(receiver, index, expr, inBounds);
+  // Any invalid index traps (the array runtime's discipline).
+  if (!invalidNaN) return emitBytesLoad(host, elem, receiver, index, expr, inBounds, undefined);
+  // The numeric view of an ordinary read: an invalid index never touches
+  // storage and reads as NaN — ToNumber of Node's undefined.
+  const invalid = B.newLabel("bytes.read.invalid");
+  const done = B.newLabel("bytes.read.done");
+  const loaded = emitBytesLoad(host, elem, receiver, index, expr, inBounds, invalid);
+  const ok = B.newLabel("bytes.read.ok");
+  B.br(ok);
+  B.startBlock(ok);
+  B.br(done);
+  B.startBlock(invalid);
+  B.br(done);
+  B.startBlock(done);
+  const out = B.tmp();
+  B.line(`${out} = phi double [ ${loaded.name}, %${ok} ], [ ${f64Lit(NaN)}, %${invalid} ]`);
+  // NaN has no integer value: the integer hint survives only when the read
+  // is proven valid (the invalid block is then unreachable).
+  if (loaded.uint32 === undefined || !inBounds) return { name: out, type: F64 };
+  const u32 = B.tmp();
+  B.line(`${u32} = phi i32 [ ${loaded.uint32}, %${ok} ], [ 0, %${invalid} ]`);
+  return { name: out, type: F64, uint32: u32 };
+}
+
+function emitBytesLoad(
+  host: LlvmEmitterContext,
+  elem: IrBytesElem,
+  receiver: string,
+  index: LlValue,
+  expr: IrExpr | undefined,
+  inBounds: boolean,
+  invalid: string | undefined,
+): LlValue {
+  const B = host.B;
+  const idx = emitBytesIndex(host, receiver, index, expr, invalid, inBounds);
   const data = host.emitBytesData(receiver);
   const p = B.tmp();
   if (BYTES_ELEMENT_SIZE[elem] < 4) {
@@ -503,6 +534,7 @@ export function emitBytesIntrinsic(
         args[0]!,
         e.args[0],
         host.bytesBounds.has(e),
+        e.invalidNaN === true,
       );
     case "slice":
       return call(

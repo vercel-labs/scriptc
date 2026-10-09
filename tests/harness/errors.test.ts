@@ -170,25 +170,6 @@ throw v;
     expect(num.stderr).toBe("Uncaught 42\n");
   });
 
-  test("an out-of-range typed array read throws a catchable RangeError", async () => {
-    // Node answers undefined; a typed numeric read cannot, so the native
-    // program throws a catchable RangeError instead of aborting.
-    const r = await compileAndRun(
-      "typed-read-out-of-range",
-      `const t = new Uint8Array(4);
-const i: number = process.argv.length + 10;
-try {
-  console.log(t[i]);
-} catch (e) {
-  console.log(e instanceof RangeError, (e as Error).message);
-}
-console.log("after", t.length);
-`,
-    );
-    expect(r.exitCode).toBe(0);
-    expect(r.stdout).toMatch(/^true typed array index \d+ out of bounds \(length 4\)\nafter 4\n$/);
-  });
-
   test("an unhandled ERROR rejection renders name: message too", async () => {
     const r = await compileAndRun(
       "unhandled-error-rejection",

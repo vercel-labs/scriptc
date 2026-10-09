@@ -2500,8 +2500,10 @@ export type IrExpr =
   /** Typed-array/Buffer method or property on a bytes receiver — see
    * IrBytesIntrinsicMethod for the surface and conventions. Methods in
    * MAY_THROW_BYTES_METHODS raise catchable RangeErrors (may-throw
-   * seeds); `get` on an invalid index throws a catchable RangeError too
-   * (a typed read has no undefined to answer with; also a seed). */
+   * seeds); `get` traps on an invalid index unless `invalidNaN` is set,
+   * in which case the invalid read answers NaN without touching storage
+   * (the numeric view of Node's undefined; ordinary reads test the index
+   * first and answer undefined itself). */
   | {
       kind: "bytesIntrinsic";
       method: IrBytesIntrinsicMethod;
@@ -2509,6 +2511,7 @@ export type IrExpr =
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;
+      invalidNaN?: true;
     }
   /** `new Map<K, V>()` — allocate an empty map. `type` is the map type
    * (key/value fences already enforced by the frontend); the result is

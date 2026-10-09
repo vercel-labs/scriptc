@@ -3993,7 +3993,8 @@ export class Lowerer {
       if (!ts.isElementAccessExpression(e)) return false;
       const kind = this.mapTypeOf(this.typeOf(e.expression))?.kind;
       if (kind === "string") return !this.stringIndexBounds.inBounds(e);
-      return kind === "array";
+      // Typed-array reads answer undefined for an invalid index too.
+      return kind === "array" || kind === "bytes";
     };
     const isDynamicObjectEntryRead = (node: ts.Expression): boolean => {
       const read = peel(node);

@@ -6404,6 +6404,7 @@ void scr_dataview_set(ScrBytes *b, double byte_off, double value, ScrDataViewGet
  * JS-exactly: u8/u32 by modular truncation (NaN/±Infinity → 0, truncate
  * toward zero, wrap mod 2^8/2^32), f32 by double→float rounding. */
 double scr_bytes_get(const ScrBytes *b, double i);
+double scr_bytes_get_or_nan(const ScrBytes *b, double i); /* NaN when the index is invalid */
 void scr_bytes_set(ScrBytes *b, double i, double v);
 /* Replace a live typed-array capsule's fixed-size payload from its dyn
  * snapshot. Source and target have the same compiler-checked bytes type. */

@@ -254,22 +254,16 @@ double scr_bytes_byte_len(const ScrBytes *b) {
 
 /* ── element access ────────────────────────────────────────────────────
  * Invalid writes are ignored. Typed numeric reads cannot represent
- * undefined (Node's answer), so an invalid read throws a catchable
- * RangeError instead (the caller checks the pending exception; the NaN
- * result is never observed); checked reads return undefined. */
+ * undefined, so invalid reads trap; checked reads return undefined. */
 
-static bool scr_bytes_check_index(const ScrBytes *b, double i, size_t *out) {
+static size_t scr_bytes_check_index(const ScrBytes *b, double i) {
   if (!(i >= 0) || i != trunc(i) || i >= (double)b->len) {
     char buf[32];
     scr_f64_to_str(i, buf);
-    char msg[96];
-    int len = snprintf(msg, sizeof msg, "typed array index %s out of bounds (length %zu)", buf,
-                       b->len);
-    scr_throw_error_msg(SCR_ERR_RANGE, msg, (size_t)len);
-    return false;
+    scr_trap_fmt("scriptc: RangeError: typed array index %s out of bounds (length %zu)\n",
+                 buf, b->len);
   }
-  *out = (size_t)i;
-  return true;
+  return (size_t)i;
 }
 
 /* ToUint32: NaN/±Infinity → 0, truncate toward zero, wrap mod 2^32.
@@ -280,8 +274,7 @@ static uint32_t scr_bytes_to_u32(double v) {
 
 double scr_bytes_get(const ScrBytes *b, double i) {
   SCR_SHARED_GUARD(b, NULL);
-  size_t idx;
-  if (!scr_bytes_check_index(b, i, &idx)) return NAN;
+  size_t idx = scr_bytes_check_index(b, i);
   switch (b->elem) {
     case SCR_BYTES_U8: case SCR_BYTES_U8C:
       return (double)b->data[idx];
@@ -322,6 +315,14 @@ double scr_bytes_get(const ScrBytes *b, double i) {
     }
   }
   return 0; /* unreachable */
+}
+
+/* The numeric view of an ordinary typed-array read: Node answers undefined
+ * for an index that is not an integer in [0, length), which ToNumber turns
+ * into NaN. Never touches storage out of bounds. */
+double scr_bytes_get_or_nan(const ScrBytes *b, double i) {
+  if (!(i >= 0) || i != trunc(i) || i >= (double)b->len) return NAN;
+  return scr_bytes_get(b, i);
 }
 
 void scr_bytes_set(ScrBytes *b, double i, double v) {

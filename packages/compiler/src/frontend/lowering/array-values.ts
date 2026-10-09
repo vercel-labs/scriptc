@@ -226,6 +226,108 @@ export function lowerSafeIndexRead(
   return { kind: "call", callee: name, args: [arr, index], type: resultT, loc };
 }
 
+/** An ordinary typed-array element read `t[i]`: like Node, an index that
+ * is not an integer in [0, length) answers undefined (the storage is
+ * never touched out of bounds). The result is `number | undefined`, the
+ * same optional shape ordinary array reads carry; numeric consumers fuse
+ * back to the plain element read (tryLowerNumericIndexRead), where the
+ * invalid case reads as NaN — exactly ToNumber(undefined). */
+export function lowerSafeBytesRead(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  index: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const bytesT = receiver.type;
+  if (bytesT.kind !== "bytes") throw new InternalCompilerError("typed read requires bytes");
+  const resultT = lowerer.withUndefinedArm(F64);
+  const key = `bytesIdxOr:${typeKey(bytesT)}`;
+  let name = lowerer.arrHofHelpers.get(key);
+  if (!name) {
+    name = `%bytes.idxOr.${lowerer.arrHofHelpers.size}`;
+    lowerer.arrHofHelpers.set(key, name);
+    const b = varRef("b.0", bytesT, loc);
+    const i = varRef("i.0", F64, loc);
+    const cmp = (op: "<" | ">=" | "===", left: IrExpr, right: IrExpr): IrExpr => ({
+      kind: "bin",
+      op,
+      left,
+      right,
+      type: BOOL,
+      loc,
+    });
+    const inRange: IrExpr = {
+      kind: "logical",
+      op: "&&",
+      left: cmp(">=", i, { kind: "numLit", value: 0, type: F64, loc }),
+      right: {
+        kind: "logical",
+        op: "&&",
+        left: cmp("<", i, {
+          kind: "bytesIntrinsic",
+          method: "length",
+          receiver: b,
+          args: [],
+          type: F64,
+          loc,
+        }),
+        right: cmp("===", { kind: "libCall", fn: "math.trunc", args: [i], type: F64, loc }, i),
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+    const read: IrExpr = {
+      kind: "bytesIntrinsic",
+      method: "get",
+      receiver: b,
+      args: [i],
+      type: F64,
+      loc,
+    };
+    lowerer.liftedFns.push({
+      name,
+      params: [
+        { localId: "b.0", name: "b", type: bytesT },
+        { localId: "i.0", name: "i", type: F64 },
+      ],
+      returnType: resultT,
+      locals: [
+        { id: "b.0", name: "b", type: bytesT, mutable: false },
+        { id: "i.0", name: "i", type: F64, mutable: false },
+      ],
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "ternary",
+            cond: inRange,
+            then: lowerer.coerceToExpected(read, resultT),
+            else_: lowerer.wrappedUndefined(resultT, loc)!,
+            type: resultT,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [receiver, index], type: resultT, loc };
+}
+
+/** Whether `operand` is a call of the typed-array read helper. */
+function isBytesReadHelperCall(lowerer: Lowerer, operand: IrExpr): boolean {
+  if (operand.kind !== "call" || operand.args.length !== 2) return false;
+  const receiver = operand.args[0]!;
+  return (
+    receiver.type.kind === "bytes" &&
+    operand.args[1]!.type.kind === "f64" &&
+    operand.callee === lowerer.arrHofHelpers.get(`bytesIdxOr:${typeKey(receiver.type)}`)
+  );
+}
+
 /** Fuse only our own f64-array read helper with immediate ToNumber.
  * Reuse its arguments verbatim so the receiver and index still evaluate
  * exactly once, in order, before the read. Do not specialize user calls,
@@ -235,6 +337,20 @@ export function tryLowerNumericIndexRead(
   operand: IrExpr,
   loc: SrcLoc,
 ): IrExpr | null {
+  if (operand.kind === "call" && isBytesReadHelperCall(lowerer, operand)) {
+    // The plain element read: an invalid index reads as NaN, which is
+    // ToNumber(undefined).
+    const [receiver, index] = operand.args;
+    return {
+      kind: "bytesIntrinsic",
+      method: "get",
+      receiver: receiver!,
+      args: [index!],
+      type: F64,
+      loc,
+      invalidNaN: true,
+    };
+  }
   if (
     operand.kind !== "call" ||
     operand.callee !== lowerer.arrHofHelpers.get(`idxOr:${typeKey(F64)}`)
@@ -275,6 +391,11 @@ export function tryLowerIndexTruthiness(
   loc: SrcLoc,
 ): IrExpr | null {
   if (operand.kind !== "call" || operand.args.length !== 2) return null;
+  if (isBytesReadHelperCall(lowerer, operand)) {
+    // NaN (the invalid read) is falsy exactly like undefined.
+    const number = tryLowerNumericIndexRead(lowerer, operand, loc);
+    return number ? lowerer.ensureBool(number, node) : null;
+  }
   const [arr, index] = operand.args;
   if (arr?.type.kind !== "array" || index?.type.kind !== "f64") return null;
   const elem = arr.type.elem;

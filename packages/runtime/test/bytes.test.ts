@@ -74,13 +74,18 @@ test("bytes runtime: coercions, encodings, zlib, fs, RC", async () => {
   expect(stderr.trim().split("\n").pop()).toMatch(/^(\d+)\/\1 cases passed$/);
 });
 
-// Statically typed numeric reads cannot represent undefined; an invalid
-// index throws a catchable RangeError instead of aborting. Invalid writes
-// are ignored and covered by the runtime assertions above.
+// Statically typed numeric reads cannot represent undefined and still trap.
+// Invalid writes are ignored and covered by the runtime assertions above.
 test.each([
   ["--crash-get-oob", "typed array index 1 out of bounds (length 1)"],
   ["--crash-get-frac", "typed array index 0.5 out of bounds (length 1)"],
-])("invalid reads throw a catchable RangeError (%s)", async (mode, message) => {
-  const { stderr } = await execFileAsync(bin, [mode]);
-  expect(stderr).toContain(`Uncaught RangeError: ${message}`);
+])("trap aborts (%s)", async (mode, message) => {
+  const err = await execFileAsync(bin, [mode]).then(
+    () => {
+      throw new Error(`expected ${mode} to abort`);
+    },
+    (e: Error & { signal?: string; stderr?: string }) => e,
+  );
+  expect(err.signal).toBe("SIGABRT");
+  expect(err.stderr).toContain(`scriptc: RangeError: ${message}`);
 });

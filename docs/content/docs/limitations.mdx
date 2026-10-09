@@ -144,11 +144,11 @@ Compiled code has runtime behavior that can differ from Node.js. Account for the
 
 ### Array bounds and runtime errors
 
-Statically typed numeric reads from typed arrays throw a catchable `RangeError` for invalid indexes, because a typed numeric read cannot produce `undefined`. Node.js returns `undefined` for these reads. Invalid numeric indexed writes are ignored, while the assignment expression retains its original value.
+Typed-array reads at an index that is not an integer in the array's range return `undefined`, as in Node.js, and invalid numeric indexed writes are ignored, while the assignment expression retains its original value. A non-null assertion on such a read (`bytes[i]!`) yields `NaN` instead of `undefined`.
 
 Ordinary arrays track holes separately from present `undefined` values. Missing reads and empty `pop()`/`shift()` return `undefined`, indexed writes can grow the array, and length growth creates holes.
 
-Runtime traps cannot be caught. User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, regex, invalid typed-array read, and `String.prototype.repeat` count errors, can be caught; hard traps such as out-of-range reads of statically typed ordinary arrays terminate the process.
+Runtime traps cannot be caught. User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, regex, and `String.prototype.repeat` count errors, can be caught; hard traps such as out-of-range reads of statically typed ordinary arrays terminate the process.
 
 Deep recursion that exhausts the native stack terminates the process with a signal instead of throwing Node's catchable `RangeError: Maximum call stack size exceeded`.
 

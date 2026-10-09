@@ -2,7 +2,8 @@
 // as a structured clone: a plain object with the instance's own enumerable
 // data properties. Methods, accessors, private fields and the prototype
 // chain are not transferred, so instanceof is false in the receiver, and
-// repeated references inside one message stay one object.
+// repeated references inside one message stay one object. A frozen
+// message arrives unfrozen.
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 class Fixture {
@@ -49,13 +50,15 @@ if (isMainThread) {
     else console.log("reply", inspect(message));
   });
   worker.on("exit", (code: number) => console.log("exit", code, lamp.describe(), lamp.label));
-  worker.postMessage([lamp, lamp]);
+  worker.postMessage(Object.freeze([lamp, lamp]));
 } else {
   const port = parentPort!;
-  port.postMessage(`workerData ${inspect(workerData)}`);
+  port.postMessage(`workerData ${inspect(workerData)} ${Object.isFrozen(workerData)}`);
   port.once("message", (message: unknown) => {
     const pair = message as unknown[];
-    port.postMessage(`pair ${pair.length} ${pair[0] === pair[1]} ${inspect(pair[0])}`);
+    port.postMessage(
+      `pair ${pair.length} ${pair[0] === pair[1]} ${Object.isFrozen(message)} ${inspect(pair[0])}`,
+    );
     port.postMessage(new Lamp("floor", ["base"]));
     port.close();
   });

@@ -268,7 +268,7 @@ export function analyzeIntegerRanges(fn: IrFunction): IntegerRanges {
         if (numeric && !numeric.write) range = byteNumberRange(numeric);
         else if (e.method === "length" || e.method === "byteLength" || e.method === "byteOffset")
           range = { min: 0, max: Number.MAX_SAFE_INTEGER };
-        else if (e.method === "get" && e.receiver.type.kind === "bytes") {
+        else if (e.method === "get" && e.invalidNaN !== true && e.receiver.type.kind === "bytes") {
           const elem = e.receiver.type.elem;
           if (elem === "u8" || elem === "u8c") range = { min: 0, max: 255 };
           else if (elem === "i8") range = { min: -128, max: 127 };

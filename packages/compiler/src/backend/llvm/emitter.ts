@@ -6733,8 +6733,9 @@ export class LlEmitter {
     index: LlValue,
     expr?: IrExpr,
     inBounds = false,
+    invalidNaN = false,
   ): LlValue {
-    return emitBytesGet(this, elem, receiver, index, expr, inBounds);
+    return emitBytesGet(this, elem, receiver, index, expr, inBounds, invalidNaN);
   }
 
   emitToUint32(value: string, expr?: IrExpr, uint32?: string): string {

@@ -67,15 +67,16 @@
  * whose condition holds:
  *   full, growth   the live cycle-headered heap is a fraction past its size
  *                  after the last full pass. The fraction starts at 1/4 and
- *                  ADAPTS to what full passes find: a growth-triggered full
- *                  pass that reclaims few OLD objects relative to the growth
- *                  that triggered it, twice in a row, doubles the fraction
- *                  (up to 1/2), and one that does reclaim them restores 1/4.
- *                  Garbage younger than the old generation does not count:
- *                  the mature level reclaims it without walking the old heap.
- *                  This is what stops a large retained structure from being
- *                  re-walked at every quarter of growth while it is building
- *                  or while the garbage is all young.
+ *                  is scheduled by YIELD: it widens by doublings (up to 1)
+ *                  as growth-triggered full passes reclaim fewer OLD objects
+ *                  relative to the growth that triggered them, and narrows
+ *                  back as soon as a pass finds old garbage again (see
+ *                  scr_cyc_adapt_growth). Garbage younger than the old
+ *                  generation does not count: the mature level reclaims it
+ *                  without walking the old heap. This is what stops a large
+ *                  retained structure from being re-walked at every quarter
+ *                  of growth while it is building or while the garbage is
+ *                  all young.
  *   full, backlog  the old candidate buffer has reached a fraction of the
  *                  live heap. This one is not redundant: live data that is
  *                  unlinked INTO a dead cycle grows no counter at all (it
@@ -88,9 +89,10 @@
  *                  objects that are not garbage. A pass that frees almost
  *                  nothing therefore doubles this fraction, and a productive
  *                  one restores it.
- *   mature         the same two rules one level down, with a fixed 1/4
- *                  growth fraction measured from the last mature-or-full
- *                  pass and a backlog rule over the mature buffer.
+ *   mature         the same two rules one level down: a growth fraction
+ *                  measured from the last mature-or-full pass and scheduled
+ *                  by everything mature passes free, and a backlog rule over
+ *                  the mature buffer.
  *   scheduled age  a mature or old candidate has waited through a nursery's
  *                  worth of event-loop checkpoints. Candidate COUNT cannot
  *                  bound the garbage behind one root, and an idle heap does
@@ -104,11 +106,18 @@
  * roots wait. That is the trade: a fixed root threshold bounds floating
  * garbage tightly and pays unbounded time for it; this bounds ordinary
  * mutator-triggered work and lets garbage float in proportion, but not
- * forever. Peak memory stays bounded the same way: young garbage floats by
- * at most a quarter of the heap before a mature pass, and old garbage by at
- * most half the heap's size after the last full pass, and by more than a
- * quarter only once two full passes in a row have shown that little of the
- * growth was old garbage.
+ * forever. Peak memory stays bounded the same way. Every dead cycle keeps a
+ * buffered member (a restricted pass re-buffers what it spares), and a full
+ * pass walks every buffer without skipping any generation, so it leaves no
+ * cyclic garbage behind except what its own teardowns release for the next
+ * pass. Between two full passes the cycle-headered heap can grow by at most
+ * the old level's fraction, so it never exceeds twice its size after the
+ * last full pass (or the growth floor); the mature level bounds younger
+ * garbage the same way between mature passes. That cap is reached only after
+ * passes have stopped finding garbage. While they find it, a level widens its
+ * fraction only in inverse proportion to its yield, so if the yield holds,
+ * the garbage floating by its next pass stays below an eighth of the heap
+ * once widened, inside the quarter the base fraction allows.
  */
 #include "scr_runtime.h"
 
@@ -255,20 +264,19 @@ static size_t scr_cyc_pass(unsigned gen_limit);
 #define SCR_CYC_GROWTH_DIV 4           /* growth pass per +1/4 of live heap */
 #define SCR_CYC_GROWTH_FLOOR 4096      /* ...but not below this many objects */
 
-/* Live count as of the end of the last full pass, and of the last pass that
- * walked the mature generation (mature or full). */
-static SCR_TL size_t scr_cyc_live_after_full = 0;
-static SCR_TL size_t scr_cyc_live_after_mature = 0;
+/* Per level, the live count as of the end of the last pass that walked it:
+ * the mature entry is set by mature and full passes, the old entry by full
+ * passes. The nursery entry is unused. */
+static SCR_TL size_t scr_cyc_live_after[SCR_CYC_NGENS];
 
-/* Doublings of the full-pass growth fraction earned by consecutive
- * growth-triggered full passes that reclaimed little of the old generation
- * (see scr_cyc_scheduled_pass). Capped at a fraction of 1/2: the heap may grow
- * at most by half past its size after the last full pass before the next.
- * The streak counts those unproductive passes since the last productive one;
- * the fraction only grows once two have run in a row. */
-#define SCR_CYC_GROWTH_MAX_SHIFT 1
-static SCR_TL unsigned scr_cyc_growth_shift = 0;
-static SCR_TL unsigned scr_cyc_growth_streak = 0;
+/* Per level, doublings of the growth fraction (see scr_cyc_adapt_growth),
+ * and the run of growth-triggered passes at that level whose yield asked for
+ * a wider fraction than the current one. Capped at a fraction of 1: the heap
+ * may at most double past its size after the last pass at a level before
+ * the next. Only the mature and old entries are used. */
+#define SCR_CYC_GROWTH_MAX_SHIFT 2
+static SCR_TL unsigned char scr_cyc_growth_shift[SCR_CYC_NGENS];
+static SCR_TL unsigned char scr_cyc_growth_streak[SCR_CYC_NGENS];
 
 /* Doublings of each generation's backlog threshold earned by consecutive
  * passes that found almost nothing to free (see scr_cyc_backlog_threshold).
@@ -315,13 +323,14 @@ static size_t scr_cyc_growth_base(size_t live_after) {
   return live_after < SCR_CYC_GROWTH_FLOOR ? SCR_CYC_GROWTH_FLOOR : live_after;
 }
 
-/* A pass is due once the live heap has grown a fraction past what it was
- * when the last pass at that level finished. Since a pass resets its
- * baseline to the live count it leaves behind, an unproductive pass cannot
- * re-trigger itself — the next one waits for another fraction of growth. */
-static bool scr_cyc_grown(size_t live_after, unsigned shift) {
-  size_t base = scr_cyc_growth_base(live_after);
-  return scr_cyc_live > base + ((base / SCR_CYC_GROWTH_DIV) << shift);
+/* A pass at `gen` is due once the live heap has grown that level's fraction
+ * past what it was when the last pass at that level finished. Since a pass
+ * resets its baseline to the live count it leaves behind, an unproductive
+ * pass cannot re-trigger itself — the next one waits for another fraction of
+ * growth. */
+static SCR_CYC_SCHEDULING bool scr_cyc_grown(unsigned gen) {
+  size_t base = scr_cyc_growth_base(scr_cyc_live_after[gen]);
+  return scr_cyc_live > base + ((base / SCR_CYC_GROWTH_DIV) << scr_cyc_growth_shift[gen]);
 }
 
 /* The backlog rule for one generation's candidate buffer.
@@ -353,28 +362,54 @@ static size_t scr_cyc_backlog_threshold(unsigned gen) {
   return t > (SIZE_MAX >> shift) ? SIZE_MAX : t << shift;
 }
 
+/* Adapt a level's growth fraction to the yield of a growth-triggered pass at
+ * that level: `reclaimed` objects found against `growth` objects of heap
+ * growth since the previous pass there. Only full passes reclaim the old
+ * generation, so a full pass counts old objects alone (younger garbage is the
+ * mature level's to find, without walking the old heap); a mature pass counts
+ * everything it freed.
+ *
+ * The fraction is sized so the garbage a level lets float stays near what the
+ * base schedule allows. A pass whose yield reaches 1/GROWTH_DIV of the growth
+ * keeps the base fraction of 1/4; each halving of the yield below that asks
+ * for one doubling of the fraction, up to the cap. A level that keeps
+ * reclaiming in proportion to growth therefore stays on the base schedule,
+ * while one whose passes walk a large retained structure and find nothing
+ * spaces them out geometrically, so its total walking stays a small multiple
+ * of the heap it ends with instead of growing with every fraction of growth.
+ *
+ * Narrowing takes effect at once: a pass that finds garbage again moves the
+ * fraction straight to what its yield asks for. Widening waits for two
+ * passes in a row that asked for it and then moves one doubling per pass. A
+ * program that discards older structures at a steady rate sees its passes
+ * alternate between finding the garbage just aged into the level and finding
+ * it still younger, and a single miss says little. */
+static void scr_cyc_adapt_growth(unsigned gen, size_t growth,
+                                 size_t reclaimed) {
+  unsigned want = 0;
+  while (want < SCR_CYC_GROWTH_MAX_SHIFT
+         && reclaimed * SCR_CYC_GROWTH_DIV < (growth >> want))
+    want++;
+  if (want <= scr_cyc_growth_shift[gen]) {
+    scr_cyc_growth_shift[gen] = (unsigned char)want;
+    scr_cyc_growth_streak[gen] = 0;
+  } else if (++scr_cyc_growth_streak[gen] >= 2) {
+    scr_cyc_growth_streak[gen] = 2;
+    scr_cyc_growth_shift[gen]++;
+  }
+}
+
 /* One scheduled pass at `gen`. A mature or old pass adapts that level's
  * backlog threshold to its yield; the explicit sweep (scr_collect_cycles) is
  * not a scheduling decision and leaves the thresholds alone. Productive means
  * at least one object freed per GROWTH_DIV candidates; a pass with no
- * candidates says nothing.
- *
- * A full pass that heap growth triggered also adapts the growth fraction to
- * what it reclaimed from the OLD generation — the one part of its work no
- * restricted pass could have done. Weighing that against the growth since the
- * last full pass keeps full passes frequent while old structures are being
- * discarded (their garbage is what floats until the next full pass) and
- * spaces them out while the heap is growing with live or young data, where
- * each walk of the retained heap buys almost nothing. Backing off only after
- * two unproductive passes in a row keeps a program that discards old
- * structures at a steady rate on the base schedule: its passes alternate
- * between finding the garbage just aged into the old generation and finding
- * it still younger, and a single miss says little.
+ * candidates says nothing. A pass that its level's growth rule triggered also
+ * adapts that level's growth fraction (scr_cyc_adapt_growth).
  *
  * Every level shares this one body, so a program that links the collector
  * carries a single copy of the scheduling logic. */
 static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_growth) {
-  size_t base = scr_cyc_growth_base(scr_cyc_live_after_full);
+  size_t base = scr_cyc_growth_base(scr_cyc_live_after[gen]);
   size_t growth = scr_cyc_live > base ? scr_cyc_live - base : 0;
   size_t old_freed_before = scr_cyc_old_freed;
   size_t freed = scr_cyc_pass(gen);
@@ -385,28 +420,23 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
     else if (scr_cyc_backlog_shift[gen] < SCR_CYC_BACKLOG_MAX_SHIFT)
       scr_cyc_backlog_shift[gen]++;
   }
-  if (!by_growth) return;
-  size_t reclaimed = scr_cyc_old_freed - old_freed_before;
-  if (reclaimed * SCR_CYC_GROWTH_DIV >= growth) {
-    scr_cyc_growth_shift = 0;
-    scr_cyc_growth_streak = 0;
-  } else if (++scr_cyc_growth_streak >= 2
-             && scr_cyc_growth_shift < SCR_CYC_GROWTH_MAX_SHIFT) {
-    scr_cyc_growth_shift++;
-  }
+  if (by_growth)
+    scr_cyc_adapt_growth(gen, growth,
+                         gen == SCR_CYC_OLD ? scr_cyc_old_freed - old_freed_before : freed);
 }
 
 /* Cold half of the release path: pick the level and collect. It runs once
  * per pass, so it is kept out of line and built for size, which leaves the
  * hot buffering path in scr_cyc_on_release small. */
 static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
-  unsigned gen = SCR_CYC_NURSERY;
-  bool by_growth = scr_cyc_grown(scr_cyc_live_after_full, scr_cyc_growth_shift);
-  if (by_growth || scr_roots[SCR_CYC_OLD].n >= scr_cyc_backlog_threshold(SCR_CYC_OLD))
-    gen = SCR_CYC_OLD;
-  else if (scr_cyc_grown(scr_cyc_live_after_mature, 0)
-           || scr_roots[SCR_CYC_MATURE].n >= scr_cyc_backlog_threshold(SCR_CYC_MATURE))
+  unsigned gen = SCR_CYC_OLD;
+  bool by_growth = scr_cyc_grown(SCR_CYC_OLD);
+  if (!by_growth && scr_roots[SCR_CYC_OLD].n < scr_cyc_backlog_threshold(SCR_CYC_OLD)) {
     gen = SCR_CYC_MATURE;
+    by_growth = scr_cyc_grown(SCR_CYC_MATURE);
+    if (!by_growth && scr_roots[SCR_CYC_MATURE].n < scr_cyc_backlog_threshold(SCR_CYC_MATURE))
+      gen = SCR_CYC_NURSERY;
+  }
   scr_cyc_scheduled_pass(gen, by_growth);
 }
 
@@ -704,9 +734,9 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
   scr_xgen.n = 0;
   freed += scr_xg_freed;
 
-  if (gen_limit >= SCR_CYC_MATURE) scr_cyc_live_after_mature = scr_cyc_live;
+  if (gen_limit >= SCR_CYC_MATURE) scr_cyc_live_after[SCR_CYC_MATURE] = scr_cyc_live;
   if (gen_limit >= SCR_CYC_OLD) {
-    scr_cyc_live_after_full = scr_cyc_live;
+    scr_cyc_live_after[SCR_CYC_OLD] = scr_cyc_live;
     scr_cyc_scheduled_mature_age = 0;
   }
   /* markRoots drained buffers in bulk and teardowns moved the count around;

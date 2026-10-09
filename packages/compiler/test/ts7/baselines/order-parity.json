@@ -15211,6 +15211,18 @@
     "<repo>/tests/corpus/4091-class-evaluation-deferred.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/cycle-growth-yield.ts": {
+   "order": [
+    "<repo>/tests/corpus/cycle-growth-yield.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/indexed-element-field-reads.ts": {
+   "order": [
+    "<repo>/tests/corpus/indexed-element-field-reads.ts"
+   ],
+   "diags": []
   }
  }
 }

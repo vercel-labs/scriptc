@@ -12,6 +12,7 @@ struct Node {
 };
 
 static size_t freed;
+static size_t traced; /* trace calls: the collector's walk, one per object visit */
 
 static size_t configured_nursery_threshold(void) {
   const char *env = getenv("SCR_CYCLE_THRESHOLD");
@@ -31,6 +32,7 @@ _Noreturn void scr_trap(const char *msg) {
 }
 
 static void node_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  traced++;
   visit(((Node *)obj)->next, ctx);
   visit(((Node *)obj)->other, ctx);
 }
@@ -275,10 +277,10 @@ static void drop_leaves(Node **keep, size_t n) {
 }
 
 /* A dead cycle that has aged into the old generation is reachable only by a
- * full pass. While the heap grows with live data, full passes find nothing
- * and back off, but the dead cycle must still be reclaimed before the heap
- * has grown by half past its size after the last full pass. Runs first, so
- * the live heap is below the growth floor and that bound is known. */
+ * full pass, which must reclaim it before the heap has grown a quarter past
+ * its size after the last full pass while no pass has yet asked for a wider
+ * fraction. Runs first, so the live heap is below the growth floor and that
+ * bound is known. */
 static void check_old_garbage_reclaimed_while_growing(void) {
   enum { RING = 64, FLOOR = 4096, LIMIT = 4 * FLOOR };
   static Node *keep[LIMIT];
@@ -288,7 +290,7 @@ static void check_old_garbage_reclaimed_while_growing(void) {
   release_live(ring); /* last outside owner gone: a dead old cycle */
   size_t grown = grow_until(keep, LIMIT, before + RING);
   check(freed == before + RING, "dead old cycle was never reclaimed while the heap grew");
-  check(grown <= FLOOR + FLOOR / 2, "dead old cycle outlived the growth bound");
+  check(grown <= FLOOR + FLOOR / 4, "dead old cycle outlived the growth bound");
   drop_leaves(keep, grown);
   scr_collect_cycles();
 }
@@ -343,6 +345,93 @@ static void check_cycle_spanning_mature_and_old(void) {
   check(freed == before + 8, "cycle spanning generations was never reclaimed");
   drop_leaves(keep, grown);
   scr_collect_cycles();
+}
+
+/* Grow a chain by `count` nodes, each new head owning the previous one and
+ * released once, as reading the newest entry of a retained list would. Every
+ * buffered head reaches the whole chain, so each full pass walks all of it. */
+static Node *grow_chain(Node *head, size_t count) {
+  for (size_t i = 0; i < count; i++) {
+    Node *node = make_leaf();
+    node->next = head; /* takes over the caller's reference */
+    head = node;
+    read_live(head);
+  }
+  return head;
+}
+
+/* A dead ring aged into the old generation, with no outside owner left. */
+static void make_dead_old_ring(size_t count) {
+  Node *ring = make_ring(count);
+  age_to_old(ring);
+  release_live(ring);
+}
+
+/* Full passes over a growing retained structure that find nothing widen the
+ * growth fraction, so the structure is not re-walked at every quarter of its
+ * growth; old garbage still goes before the heap has doubled past its size
+ * after the last full pass, and garbage found in proportion to the growth
+ * narrows the schedule again. */
+static void check_growth_schedule_follows_yield(void) {
+  enum { START = 4096, GROW = 64 * START, RING = 64 };
+  size_t before = freed;
+  Node *head = grow_chain(make_leaf(), START);
+  scr_collect_cycles(); /* a baseline the bounds below are measured from */
+  size_t walked_before = traced;
+  head = grow_chain(head, GROW);
+  check(freed == before, "growing a live chain freed part of it");
+  /* Counting every level, walking the chain at every quarter or half of its
+   * growth costs eight to ten times its final length; the widened schedule
+   * keeps it near five. */
+  check(traced - walked_before <= 7 * (size_t)GROW,
+        "a growing retained structure was re-walked at every fraction of growth");
+
+  /* Widened to the cap: a dead old ring still goes within one doubling. */
+  make_dead_old_ring(RING);
+  size_t live = scr_cyc_live;
+  size_t grown = 0;
+  while (freed < before + RING && grown <= 2 * live) {
+    head = grow_chain(head, 1);
+    grown++;
+  }
+  check(freed == before + RING, "old garbage was never reclaimed after widening");
+  /* A pass waits for the release trigger, so allow one nursery's worth. */
+  check(grown <= live + configured_nursery_threshold(),
+        "old garbage outlived the doubled growth bound");
+
+  /* Old garbage in proportion to the growth narrows the fraction back. */
+  size_t big = scr_cyc_live / 2;
+  before = freed;
+  make_dead_old_ring(big);
+  live = scr_cyc_live;
+  grown = 0;
+  while (freed < before + big && grown <= 2 * live) {
+    head = grow_chain(head, 1);
+    grown++;
+  }
+  check(freed == before + big, "large old garbage was never reclaimed");
+  before = freed;
+  make_dead_old_ring(RING);
+  live = scr_cyc_live;
+  grown = 0;
+  while (freed < before + RING && grown <= 2 * live) {
+    head = grow_chain(head, 1);
+    grown++;
+  }
+  check(freed == before + RING, "old garbage was never reclaimed after narrowing");
+  check(grown <= live / 4 + configured_nursery_threshold(),
+        "a productive pass did not narrow the growth fraction");
+
+  /* Close the chain into one dead cycle: the collector reclaims it whole. */
+  Node *tail = head;
+  while (tail->next) tail = tail->next;
+  tail->other = head;
+  head->rc++;
+  size_t length = scr_cyc_live; /* nothing else is live between the tests */
+  before = freed;
+  release_live(head);
+  scr_collect_cycles();
+  check(freed == before + length, "the closed chain was not reclaimed whole");
 }
 
 static void check_deep_ring(void) {
@@ -517,6 +606,7 @@ static void check_deferred_white_restoration(void) {
 
 int main(void) {
   check_old_garbage_reclaimed_while_growing();
+  check_growth_schedule_follows_yield();
   check_older_rings_into_old();
   check_cycle_spanning_mature_and_old();
   check_unproductive_backlog_backs_off();

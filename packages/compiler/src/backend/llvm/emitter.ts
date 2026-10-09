@@ -145,6 +145,7 @@ import {
   OptionalArrayReads,
   type LocalArrayRead,
 } from "./local-array-reads.js";
+import { CheckedNarrows, emitCheckedNarrowReceiver } from "./checked-narrows.js";
 import { emitDenseArrayGet, emitDenseArraySet } from "./dense-array-access.js";
 import {
   emitStackMapRead,
@@ -512,6 +513,7 @@ export class LlEmitter {
   private readonly fnDefText = new Map<string, string>();
   readonly referenceEffects: ReferenceEffects;
   readonly optionalArrayReads: OptionalArrayReads;
+  readonly checkedNarrows: CheckedNarrows;
   callArrayReads = new Map<IrExpr, LocalArrayRead>();
   mapReadLifetimes: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
   readonly callLifetimes: CallLifetimes;
@@ -731,6 +733,7 @@ export class LlEmitter {
     for (const u of mod.unions ?? []) this.unionsById.set(u.id, u);
     this.nullableFields = new NullableRefFields(mod.classes ?? [], this.unionsById);
     this.optionalArrayReads = new OptionalArrayReads(this.fnByName, this.unionsById);
+    this.checkedNarrows = new CheckedNarrows(this.fnByName);
     this.referenceEffects = new ReferenceEffects(
       this.fnByName,
       (call) => this.optionalArrayReads.get(call) !== null,
@@ -6216,6 +6219,9 @@ export class LlEmitter {
     }
     const arrayRead = this.optionalArrayReads.get(e);
     if (arrayRead) return emitProjectedArrayRead(this, arrayRead);
+    const narrow = this.checkedNarrows.get(e);
+    const narrowed = narrow ? emitCheckedNarrowReceiver(this, narrow) : null;
+    if (narrowed) return narrowed;
     if (canStackUnion(e, this.unionsById)) return emitStackUnion(this, e).value;
     if (e.kind === "unionNarrow") {
       const union = this.emitUnionProjection(e.value);

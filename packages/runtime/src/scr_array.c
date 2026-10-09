@@ -731,10 +731,10 @@ static void scr_arr_destroy(void *object) {
 void scr_arr_release(ScrArr *a) {
   if (!a || a->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--a->rc == 0) {
-    if (a->elem_trace) scr_cyc_dead(a);
+    if (a->elem_trace) scr_cyc_on_dead(a);
     scr_rc_destroy(a, scr_arr_destroy);
   } else if (a->elem_trace) {
-    scr_cyc_released(a); /* possible cycle root; may collect */
+    scr_cyc_on_release(a); /* possible cycle root; may collect */
   }
 }
 

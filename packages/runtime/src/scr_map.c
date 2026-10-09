@@ -684,10 +684,10 @@ static void scr_map_destroy(void *object) {
 void scr_map_release(ScrMap *m) {
   if (!m || m->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--m->rc == 0) {
-    if (m->key_trace || m->val_trace) scr_cyc_dead(m);
+    if (m->key_trace || m->val_trace) scr_cyc_on_dead(m);
     scr_rc_destroy(m, scr_map_destroy);
   } else if (m->key_trace || m->val_trace) {
-    scr_cyc_released(m); /* possible cycle root; may collect — m is done */
+    scr_cyc_on_release(m); /* possible cycle root; may collect — m is done */
   }
 }
 

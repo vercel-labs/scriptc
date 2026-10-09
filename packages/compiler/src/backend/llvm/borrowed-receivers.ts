@@ -2,51 +2,9 @@ import { isStableReceiverOperand } from "../../ir/analysis.js";
 import { isRefCounted, type IrExpr, type IrStmt } from "../../ir/ir.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 
-/** The value of a sequence whose statements are only throwing guards over
- * scalar conditions: `if (cond) throw` with no else, where the throw is the
- * runtime's coded Node error (a derived constructor's `this` before super()
- * lowers to exactly this). Such guards read no reference and replace no
- * owner, so the sequence can be read wherever its result can: the guards
- * still run in place, and only the result is borrowed. Null otherwise. */
-export function guardedValue(e: IrExpr): IrExpr | null {
-  if (e.kind !== "seqExpr") return null;
-  for (const s of e.stmts) {
-    if (
-      s.kind !== "if" ||
-      s.else_ !== null ||
-      isRefCounted(s.cond.type) ||
-      !scalarGuardCondition(s.cond) ||
-      s.then.length !== 1
-    )
-      return null;
-    const only = s.then[0]!;
-    if (
-      only.kind !== "exprStmt" ||
-      only.expr.kind !== "libCall" ||
-      only.expr.fn !== "error.nodeThrow" ||
-      !only.expr.args.every((arg) => arg.kind === "numLit" || arg.kind === "strLit")
-    )
-      return null;
-  }
-  return e.result;
-}
-
-function scalarGuardCondition(e: IrExpr): boolean {
-  switch (e.kind) {
-    case "boolLit":
-    case "varRef":
-      return !isRefCounted(e.type);
-    case "unary":
-      return scalarGuardCondition(e.operand);
-    default:
-      return false;
-  }
-}
-
 function stableProjection(host: LlvmEmitterContext, e: IrExpr): boolean {
   switch (e.kind) {
     case "varRef":
-    case "seqExpr":
       return host.canBorrowReceiver(e);
     case "unionNarrow":
     case "downcast":

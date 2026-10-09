@@ -536,19 +536,6 @@ ScrStr *scr_str_concat_mixed(ScrStr *head, ScrStr *const *parts, const double *n
   return out;
 }
 
-ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b) {
-  ScrStr *r = scr_str_concat(a, b);
-  scr_str_release(a);
-  return r;
-}
-
-ScrStr *scr_str_concat_mixed_move(ScrStr *head, ScrStr *const *parts, const double *nums,
-                                  size_t count) {
-  ScrStr *r = scr_str_concat_mixed(head, parts, nums, count);
-  scr_str_release(head);
-  return r;
-}
-
 ScrStr *scr_str_concat_f64(ScrStr *a, double x) {
   ScrStr *none = NULL;
   return scr_str_concat_mixed(a, &none, &x, 1);

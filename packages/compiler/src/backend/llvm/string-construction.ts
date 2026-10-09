@@ -43,7 +43,6 @@ export function emitMixedConcat(
   host: LlvmEmitterContext,
   head: string | null,
   values: readonly LlValue[],
-  moveHead = false,
 ): string {
   const B = host.B;
   const count = values.length;
@@ -63,11 +62,10 @@ export function emitMixedConcat(
       B.line(`store ptr ${value.name}, ptr ${slot}`);
     }
   });
-  const fn = moveHead ? "scr_str_concat_mixed_move" : "scr_str_concat_mixed";
-  host.declare(`declare ptr @${fn}(ptr, ptr, ptr, ${host.sizeType})`);
+  host.declare(`declare ptr @scr_str_concat_mixed(ptr, ptr, ptr, ${host.sizeType})`);
   const result = B.tmp();
   B.line(
-    `${result} = call ptr @${fn}(ptr ${head ?? "null"}, ptr ${strings}, ptr ${numbers}, ${host.sizeType} ${count})`,
+    `${result} = call ptr @scr_str_concat_mixed(ptr ${head ?? "null"}, ptr ${strings}, ptr ${numbers}, ${host.sizeType} ${count})`,
   );
   return result;
 }

@@ -104,13 +104,13 @@ void scr_union_release(ScrUnion *u) {
      * have been buffered under an earlier arm (typed-ref cache commits swap
      * arm contents between boxes of one union type), so this reads the
      * header rather than arm_trace. */
-    scr_cyc_dead(u);
+    if (scr_cyc_hdr(u)->buffered) scr_cyc_on_dead(u);
     scr_rc_destroy(u, scr_union_destroy);
   } else if (u->arm_trace) {
     /* Possible cycle root; may collect — u is done. A box whose trace
      * visits nothing (scalar arms, and ref arms the compiler proved
      * acyclic) cannot be on a collectable cycle, so it is never a root. */
-    scr_cyc_released(u);
+    scr_cyc_on_release(u);
   }
 }
 

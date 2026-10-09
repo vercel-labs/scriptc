@@ -124,10 +124,10 @@ static void scr_box_destroy(void *object) {
 void scr_box_release(ScrBox *b) {
   if (!b || b->rc == SIZE_MAX) return; /* NULL: a switch jumped past the decl */
   if (--b->rc == 0) {
-    scr_cyc_dead(b);
+    scr_cyc_on_dead(b);
     scr_rc_destroy(b, scr_box_destroy);
   } else {
-    scr_cyc_released(b); /* possible cycle root; may collect — b is done */
+    scr_cyc_on_release(b); /* possible cycle root; may collect — b is done */
   }
 }
 
@@ -223,10 +223,10 @@ static void scr_closure_destroy(void *object) {
 void scr_closure_release(ScrClosure *c) {
   if (!c || c->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--c->rc == 0) {
-    scr_cyc_dead(c);
+    scr_cyc_on_dead(c);
     scr_rc_destroy(c, scr_closure_destroy);
   } else {
-    scr_cyc_released(c); /* possible cycle root; may collect — c is done */
+    scr_cyc_on_release(c); /* possible cycle root; may collect — c is done */
   }
 }
 

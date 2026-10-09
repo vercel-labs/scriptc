@@ -355,7 +355,7 @@ static void scr_promise_release_payload(ScrPromise *p) {
 void scr_promise_release(ScrPromise *p) {
   if (!p || p->rc == SIZE_MAX) return;
   if (--p->rc == 0) {
-    scr_cyc_dead(p);
+    scr_cyc_on_dead(p);
     scr_promise_release_payload(p);
     if (--p->identity->rc == 0) free(p->identity);
     free(p->waiters);
@@ -369,7 +369,7 @@ void scr_promise_release(ScrPromise *p) {
 #endif
     scr_cyc_free(p);
   } else {
-    scr_cyc_released(p); /* possible cycle root; may collect — p is done */
+    scr_cyc_on_release(p); /* possible cycle root; may collect — p is done */
   }
 }
 

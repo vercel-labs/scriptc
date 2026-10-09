@@ -95,7 +95,7 @@ import {
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
-import { everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
+import { everyStmtList } from "../../ir/traverse.js";
 import { analyzeIntegerRanges, INT32_RANGE, type IntegerRanges } from "../../ir/integer-ranges.js";
 import { analyzeInt32Slots, type Int32Slots } from "../../ir/int32-slots.js";
 import { findIntegerViews } from "./integer-views.js";
@@ -154,7 +154,7 @@ import {
   matchMapRead,
   type MapReadLifetimes,
 } from "./map-read-lifetimes.js";
-import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js";
+import { emitBorrowedFieldSequence } from "./borrowed-receivers.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { ReferenceEffects } from "./reference-effects.js";
 import { LlvmDebugInfo } from "./debug-info.js";
@@ -286,7 +286,6 @@ import {
   type LlClassMeta,
 } from "./classes.js";
 import { LlDyn, type DynHost } from "./dyn.js";
-import { VirtualBorrows } from "./virtual-borrows.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import { isObjectArm, NULLABLE_ABSENT, NULLABLE_NULL, NullableUnions } from "./nullable-unions.js";
@@ -424,27 +423,6 @@ function llStrBytes(text: string): string {
   return llBytes(Buffer.from(text, "utf8"));
 }
 
-const NO_BORROWED: ReadonlySet<number> = new Set();
-
-/** Whether any node of `e` names the local (reads, writes, declarations,
- * captures). */
-function mentionsLocal(e: IrExpr, localId: string): boolean {
-  const names = (node: IrExpr | IrStmt): boolean =>
-    ("localId" in node && node.localId === localId) ||
-    ("captures" in node && Array.isArray(node.captures) && node.captures.includes(localId));
-  let found = false;
-  const expr = (node: IrExpr): boolean => {
-    if (found || names(node)) return !(found = true);
-    return everyExprChild(node, expr, stmt);
-  };
-  const stmt = (node: IrStmt): boolean => {
-    if (found || names(node)) return !(found = true);
-    return everyStmtChild(node, expr, stmt);
-  };
-  expr(e);
-  return found;
-}
-
 export class LlEmitter {
   localArrayReads = new Map<string, LocalArrayRead>();
   private loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
@@ -511,9 +489,6 @@ export class LlEmitter {
   /** The nullable-union ABSENT sentinel was referenced (absentInstanceRef). */
   private needsNullableAbsent = false;
   private readonly immortalValues = new Set<string>();
-  /** Temps known to hold immortal values, per block builder (temp names
-   * are only unique within one). */
-  private readonly immortalTemps = new WeakMap<BlockBuilder, Set<string>>();
   /** Regex literal templates: "<flags>/<pattern>" → { symbol, interned
    * source/flags literal refs } — one immortal ScrRegex template per distinct
    * (pattern, flags) pair; the bytecode slot starts null and the runtime
@@ -627,8 +602,6 @@ export class LlEmitter {
   /** The class graph (buildClassGraph): preorder numbering, hierarchy
    * membership, virtual slot lists. */
   readonly classMeta: Map<string, LlClassMeta>;
-  /** Which vtable slots borrow which parameters (virtual-borrows.ts). */
-  private virtualBorrows!: VirtualBorrows;
   /** Class objects (classes as first-class values): className → the
    * interned .name literal ref — registered during body emission, the
    * statics and construct thunks assemble around the bodies. */
@@ -860,7 +833,6 @@ export class LlEmitter {
           .map((meta) => meta.def.name);
       },
       pendingTestLines: (dest) => this.pendingTestLines(dest),
-      virtualEntry: (implFn) => this.virtualEntry(implFn),
     };
     this.walkers = new LlWalkers(this.shapeHost);
     this.dyn = new LlDyn(this.shapeHost);
@@ -914,26 +886,6 @@ export class LlEmitter {
         lib: rec.lib,
       });
     }
-    this.virtualBorrows = new VirtualBorrows(
-      mod,
-      this.classMeta,
-      this.fnByName,
-      this.callLifetimes.borrowed,
-    );
-  }
-
-  /** The borrowed parameters of a hierarchy's vtable slot (empty: owned). */
-  virtualSlotBorrowed(rootName: string, slotIndex: number): ReadonlySet<number> {
-    return this.virtualBorrows.slot(rootName, slotIndex);
-  }
-
-  /** The vtable entry for one implementation (VirtualBorrows.entry). */
-  virtualEntry(implFn: string): string {
-    return this.virtualBorrows.entry(implFn);
-  }
-
-  private implSlotBorrowed(implFn: string): ReadonlySet<number> {
-    return this.virtualBorrows.implSlotBorrowed(implFn);
   }
 
   abiOffset(native64: number, wasm32: number): number {
@@ -3485,24 +3437,9 @@ export class LlEmitter {
     return frame;
   }
 
-  /** Whether a value is immortal: an interned constant, or a temp marked by
-   * markImmortal. */
-  private isImmortal(name: string): boolean {
-    return this.immortalValues.has(name) || this.immortalTemps.get(this.B)?.has(name) === true;
-  }
-
-  /** Record that a temp holds an immortal value (a choice between interned
-   * literals): nothing owns it, and retains, releases and moves skip it. */
-  markImmortal(v: LlValue): LlValue {
-    let temps = this.immortalTemps.get(this.B);
-    if (!temps) this.immortalTemps.set(this.B, (temps = new Set()));
-    temps.add(v.name);
-    return v;
-  }
-
   /** Registers an owned refcounted value on the current statement frame. */
   own(v: LlValue): LlValue {
-    if (isRefCounted(v.type) && !this.isImmortal(v.name)) this.currentFrame().push(v);
+    if (isRefCounted(v.type) && !this.immortalValues.has(v.name)) this.currentFrame().push(v);
     return v;
   }
 
@@ -3514,7 +3451,7 @@ export class LlEmitter {
 
   /** Strike a refcounted temp from its frame: ownership is being moved. */
   moveTemp(v: LlValue): void {
-    if (!isRefCounted(v.type) || this.isImmortal(v.name)) return;
+    if (!isRefCounted(v.type) || this.immortalValues.has(v.name)) return;
     for (let i = this.frames.length - 1; i >= 0; i--) {
       const idx = this.frames[i]!.findIndex((e) => e.name === v.name);
       if (idx >= 0) {
@@ -3530,7 +3467,7 @@ export class LlEmitter {
   /** The retained (+1) read of a refcounted value — type-directed through
    * the `_v` table (immortals skip, exactly the C retain calls). */
   retainValue(name: string, type: IrType): string {
-    if (this.isImmortal(name)) return name;
+    if (this.immortalValues.has(name)) return name;
     const t = this.B.tmp();
     this.B.line(`${t} = call ptr ${retainSym(this.shapeHost, type)}(ptr ${name})`);
     return t;
@@ -3539,7 +3476,7 @@ export class LlEmitter {
   /** The release call for one owned refcounted value — type-directed like
    * releaseCallC (all runtime releases are NULL-tolerant). */
   releaseValue(name: string, type: IrType): void {
-    if (this.isImmortal(name)) return;
+    if (this.immortalValues.has(name)) return;
     this.B.line(`call void ${releaseSym(this.shapeHost, type)}(ptr ${name})`);
   }
 
@@ -5000,13 +4937,7 @@ export class LlEmitter {
     const debug = this.debugScope === null ? "" : ` !dbg ${this.debugScope}`;
     const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
     const body = `define internal ${ret} @${symbol}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
-    if (!borrowed) return body;
-    const slot = this.implSlotBorrowed(fn.name);
-    const virtual =
-      slot.size > 0 && slot.size !== borrowed.size
-        ? "\n" + this.emitOwnedCallAdapter(fn, borrowed, slot)
-        : "";
-    return body + "\n" + this.emitOwnedCallAdapter(fn, borrowed) + virtual;
+    return borrowed ? body + "\n" + this.emitOwnedCallAdapter(fn, borrowed) : body;
   }
 
   /** Keep the ordinary owned ABI for closures, virtual dispatch, generated
@@ -5014,26 +4945,16 @@ export class LlEmitter {
    * borrowing body. Ownership of other parameters moves into that body;
    * borrowed parameters are released here on normal and exceptional exits.
    * The pending exception remains for the adapter's caller to handle. */
-  /** With `kept`, the virtual adapter of a borrowing slot instead: the
-   * slot's parameters stay borrowed, the body's other borrowed ones are
-   * released here. */
-  private emitOwnedCallAdapter(
-    fn: IrFunction,
-    borrowed: ReadonlySet<number>,
-    kept: ReadonlySet<number> = NO_BORROWED,
-  ): string {
+  private emitOwnedCallAdapter(fn: IrFunction, borrowed: ReadonlySet<number>): string {
     const B = new BlockBuilder();
     this.B = B;
     const params = fn.params.map((param, index) => `${this.llType(param.type)} %p${index}`);
     const ret = this.llType(fn.returnType);
     const call = `call ${ret} @${mangleBorrowedFunction(fn.name)}(${params.join(", ")})`;
     B.line(ret === "void" ? call : `%result = ${call}`);
-    for (const index of borrowed)
-      if (!kept.has(index)) this.releaseValue(`%p${index}`, fn.params[index]!.type);
+    for (const index of borrowed) this.releaseValue(`%p${index}`, fn.params[index]!.type);
     B.terminate(ret === "void" ? "ret void" : `ret ${ret} %result`);
-    const symbol =
-      kept.size > 0 ? `${mangleBorrowedFunction(fn.name)}.virtual` : mangleFunction(fn.name);
-    return `define internal ${ret} @${symbol}(${params.join(", ")}) ${FN_ATTRS} {\n${B.render()}\n}`;
+    return `define internal ${ret} @${mangleFunction(fn.name)}(${params.join(", ")}) ${FN_ATTRS} {\n${B.render()}\n}`;
   }
 
   /** A local stable binding keeps its value alive while later arguments
@@ -5042,16 +4963,6 @@ export class LlEmitter {
    * Other writable bindings need an owned snapshot. */
   canBorrowCallArgument(value: IrExpr): boolean {
     if (value.kind === "strLit") return true;
-    // Class casts reinterpret the same pointer (prefix layouts).
-    if (
-      (value.kind === "upcast" || value.kind === "downcast") &&
-      value.value.type.kind === "object"
-    )
-      return this.canBorrowCallArgument(value.value);
-    if (value.kind === "seqExpr") {
-      const guarded = guardedValue(value);
-      return guarded !== null && this.canBorrowCallArgument(guarded);
-    }
     if (value.kind !== "varRef") return false;
     const binding = this.binding(value.localId);
     return (
@@ -5272,7 +5183,7 @@ export class LlEmitter {
       }
       case "exprStmt":
         // A statement-position splice never observes its removed elements.
-        if (!emitDiscardedSplice(this, s.expr)) this.emitDiscarded(s.expr);
+        if (!emitDiscardedSplice(this, s.expr)) this.emitExpr(s.expr);
         break;
       case "arraySet": {
         // Evaluation order matches JS: array, index, then value. Ownership
@@ -5364,7 +5275,7 @@ export class LlEmitter {
         const nullable =
           s.kind === "fieldSet" ? this.nullableFields.get(s.className, s.field) : null;
         if (nullable && s.kind === "fieldSet") {
-          const obj = this.emitStableReceiver(s.obj, [s.value]);
+          const obj = this.emitExpr(s.obj);
           this.emitNullableFieldStore(obj.name, s.className, s.field, nullable, s.value);
           break;
         }
@@ -5375,7 +5286,9 @@ export class LlEmitter {
           this.storeInt32Field(ptr, v, s.value);
           break;
         }
-        const obj = this.emitStableReceiver(s.obj, [s.value]);
+        const obj = isRefCounted(s.value.type)
+          ? this.emitExpr(s.obj)
+          : this.emitStableReceiver(s.obj, [s.value]);
         const v = this.emitExpr(s.value);
         const { ptr, type } =
           s.kind === "fieldSet"
@@ -6411,48 +6324,23 @@ export class LlEmitter {
   emitOperatorExpr(
     e: ExprOf<"bin" | "unary" | "incDec" | "fieldIncDec" | "assignExpr" | "seqExpr">,
   ): LlValue {
-    if (e.kind === "seqExpr")
-      return this.emitSequence(
-        () => emitBorrowedFieldSequence(this, e) ?? emitOperatorExpr(this, e),
-      );
+    if (e.kind === "seqExpr") {
+      // Saved operands can feed later call arguments. Transfer ownership
+      // to this expression's frame so they survive those reads and still
+      // die on the path that created them, including inside lazy branches.
+      this.scopes.push([]);
+      const result = emitBorrowedFieldSequence(this, e) ?? emitOperatorExpr(this, e);
+      for (const local of this.scopes.pop()!) {
+        this.currentFrame().push({
+          name: local.slot,
+          type: local.type,
+          slot: true,
+          ...(local.boxed ? { boxed: true } : {}),
+        });
+      }
+      return result;
+    }
     return emitOperatorExpr(this, e);
-  }
-
-  /** Saved operands can feed later call arguments. Transfer ownership of a
-   * sequence's locals to this expression's frame so they survive those
-   * reads and still die on the path that created them, including inside
-   * lazy branches. */
-  private emitSequence<T>(body: () => T): T {
-    this.scopes.push([]);
-    const result = body();
-    for (const local of this.scopes.pop()!) {
-      this.currentFrame().push({
-        name: local.slot,
-        type: local.type,
-        slot: true,
-        ...(local.boxed ? { boxed: true } : {}),
-      });
-    }
-    return result;
-  }
-
-  /** A statement-position expression whose value is dropped. When a
-   * sequence's result only reads an unchanged local (a derived
-   * constructor's `super()` evaluates to `this`), its statements still run
-   * in place, but the result is neither retained nor released. */
-  private emitDiscarded(e: IrExpr): void {
-    if (
-      e.kind === "seqExpr" &&
-      isRefCounted(e.result.type) &&
-      e.result.kind !== "strLit" &&
-      this.canBorrowCallArgument(e.result)
-    ) {
-      this.emitSequence(() => {
-        for (const s of e.stmts) this.emitStmt(s);
-      });
-      return;
-    }
-    this.emitExpr(e);
   }
 
   emitControlExpr(
@@ -6498,8 +6386,6 @@ export class LlEmitter {
     suffix: IrExpr,
     retainForYield: boolean,
   ): LlValue {
-    const moved = this.emitMovedSelfConcat(localId, left, suffix, retainForYield);
-    if (moved) return moved;
     const snapshot = this.emitExpr(left);
     // A suffix of several parts, or a number, appends each operand to the
     // snapshot directly (in place once the binding lets go of it) instead
@@ -6538,50 +6424,6 @@ export class LlEmitter {
       else B.line(`store ptr ${result.name}, ptr ${b.slot}`);
     }
     return result;
-  }
-
-  /** `local = local + suffix` when the suffix cannot read or write the
-   * local (an unboxed binding is only reachable through this function's own
-   * expressions): reading the binding after the suffix gives the value the
-   * left side had, so it moves into a consuming concat, and the result takes
-   * its place. Null when the general snapshot path is needed. */
-  private emitMovedSelfConcat(
-    localId: string,
-    left: IrExpr,
-    suffix: IrExpr,
-    retainForYield: boolean,
-  ): LlValue | null {
-    const b = this.binding(localId);
-    if (
-      retainForYield ||
-      b.kind !== "local" ||
-      b.local === undefined ||
-      b.local.boxed ||
-      b.local.tdz ||
-      b.type.kind !== "string" ||
-      left.kind !== "varRef" ||
-      left.localId !== localId ||
-      mentionsLocal(suffix, localId)
-    )
-      return null;
-    const parts = stringParts(suffix);
-    const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
-    const inputs = mixed ? emitConcatInputs(this, parts) : [];
-    const right = mixed ? null : this.emitExpr(suffix);
-    this.materializeSplitLocal(localId);
-    const B = this.B;
-    const head = B.tmp();
-    B.line(`${head} = load ptr, ptr ${b.slot}`);
-    let raw: string;
-    if (right === null) {
-      raw = emitMixedConcat(this, head, inputs, true);
-    } else {
-      this.declare(`declare ptr @scr_str_concat_move(ptr, ptr)`);
-      raw = B.tmp();
-      B.line(`${raw} = call ptr @scr_str_concat_move(ptr ${head}, ptr ${right.name})`);
-    }
-    B.line(`store ptr ${raw}, ptr ${b.slot}`);
-    return { name: raw, type: left.type }; // moved into the binding
   }
 
   emitContainerExpr(
@@ -6701,12 +6543,6 @@ export class LlEmitter {
   emitReadReceiver(e: IrExpr): LlValue {
     if (!isRefCounted(e.type)) return this.emitExpr(e);
     if (e.kind === "strLit") return { name: this.internLiteral(e.value), type: e.type };
-    const guarded = guardedValue(e);
-    if (guarded !== null) {
-      // Throwing guards run in place, exactly as the sequence emits them.
-      for (const s of (e as IrExpr & { kind: "seqExpr" }).stmts) this.emitStmt(s);
-      return this.emitReadReceiver(guarded);
-    }
     if (e.kind === "varRef") {
       this.materializeSplitLocal(e.localId);
       const binding = this.binding(e.localId);
@@ -6982,10 +6818,6 @@ export class LlEmitter {
         return this.canBorrowReceiver(e.obj);
       case "ternary":
         return this.canBorrowReceiver(e.then) && this.canBorrowReceiver(e.else_);
-      case "seqExpr": {
-        const guarded = guardedValue(e);
-        return guarded !== null && this.canBorrowReceiver(guarded);
-      }
       // The runtime always sets a pending exception; its unreachable
       // typed dummy is null and owns no receiver.
       case "libCall":

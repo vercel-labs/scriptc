@@ -922,10 +922,10 @@ void scr_dyn_release(ScrDyn *d) {
     if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ || d->kind == SCR_DYN_FUNC ||
         d->kind == SCR_DYN_PROXY || d->kind == SCR_DYN_TYPED_REF ||
         (d->kind == SCR_DYN_HANDLE && d->v.handle.traced))
-      scr_cyc_released(d);
+      scr_cyc_on_release(d);
     return;
   }
-  scr_cyc_dead(d);
+  scr_cyc_on_dead(d);
   scr_rc_destroy(d, scr_dyn_destroy);
 }
 
@@ -9525,8 +9525,8 @@ static void *scr_weak_map_retain(void *ptr) {
 
 static void scr_weak_map_release(void *ptr) {
   ScrWeakMap *map = ptr;
-  if (--map->rc) { scr_cyc_released(map); return; }
-  scr_cyc_dead(map);
+  if (--map->rc) { scr_cyc_on_release(map); return; }
+  scr_cyc_on_dead(map);
   scr_weak_dispose(map);
   while (map->entries) scr_weak_remove(map->entries);
   scr_cyc_free(map);

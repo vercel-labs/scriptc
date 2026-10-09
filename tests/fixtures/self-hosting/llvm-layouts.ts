@@ -10,9 +10,6 @@ import { NULLABLE_ABSENT, NullableUnions } from "../../../packages/compiler/src/
 import { emitFieldAbsentTest } from "../../../packages/compiler/src/backend/llvm/common.js";
 import { undefinedArmTag } from "../../../packages/compiler/src/ir/analysis.js";
 import { analyzeInt32Slots } from "../../../packages/compiler/src/ir/int32-slots.js";
-import { analyzeCallLifetimes } from "../../../packages/compiler/src/backend/llvm/call-lifetimes.js";
-import { NullableRefFields } from "../../../packages/compiler/src/backend/llvm/nullable-fields.js";
-import { VirtualBorrows } from "../../../packages/compiler/src/backend/llvm/virtual-borrows.js";
 import { f64Lit } from "../../../packages/compiler/src/backend/llvm/common.js";
 import { mangleClassObj } from "../../../packages/compiler/src/backend/mangle.js";
 import { type IrType } from "../../../packages/compiler/src/ir/ir.js";
@@ -39,7 +36,6 @@ try {
   const traced = computeTraced(mod);
   const nullableUnions = new NullableUnions(mod);
   const unionsById = new Map((mod.unions ?? []).map((union) => [union.id, union]));
-  let virtualBorrows: VirtualBorrows | undefined;
   const host: ClassHost & WalkerHost = {
     declare: (decl) => { declarations.add(decl); },
     needOom: () => { needsOom = true; },
@@ -75,8 +71,6 @@ try {
       B.line(`${absent} = icmp eq ptr ${value}, ${NULLABLE_ABSENT}`);
       return absent;
     },
-    // Mirrors the emitter: borrowing vtable slots store the borrowing body.
-    virtualEntry: (implFn) => virtualBorrows!.entry(implFn),
     cstr: (text) => {
       let index = strings.indexOf(text);
       if (index === -1) { index = strings.length; strings.push(text); }
@@ -85,9 +79,6 @@ try {
   };
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const graph = buildClassGraph(mod, functions);
-  const nullableFields = new NullableRefFields(mod.classes ?? [], nullableUnions.boxedUnions(unionsById));
-  const lifetimes = analyzeCallLifetimes(functions, (className, field) => nullableFields.get(className, field) !== null);
-  virtualBorrows = new VirtualBorrows(mod, graph, functions, lifetimes.borrowed);
   const classObjects = new Map(request.classObjects.map((name) => [name, { nameSym: `@name_${mangleClassObj(name)}` }]));
   const typeName = (type: IrType): string => type.kind === "void" ? "void" : type.kind === "f64" || type.kind === "date" ? "double" : type.kind === "bool" ? "i1" : "ptr";
   // Mirrors the emitter: whole-program int32 fields store the exact i32.

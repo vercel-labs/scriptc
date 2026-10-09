@@ -590,17 +590,6 @@ void scr_rc_destroy(void *obj, void (*destroy)(void *));
 void scr_cyc_on_release(void *obj);
 void scr_cyc_on_dead(void *obj);
 
-/* Inline halves of the hooks for runtime release paths, mirroring the
- * emitted ones (llvm/shapes.ts): a release of an already-buffered
- * object, and the death of an object that was never buffered, need no call.
- * Most releases of long-lived containers take the first early return. */
-static inline void scr_cyc_released(void *obj) {
-  if (!scr_cyc_hdr(obj)->buffered) scr_cyc_on_release(obj);
-}
-static inline void scr_cyc_dead(void *obj) {
-  if (scr_cyc_hdr(obj)->buffered) scr_cyc_on_dead(obj);
-}
-
 /* Full sweep: trial-deletion passes over EVERY generation, to a fixpoint.
  * This is the exit / session-reset entry point (the RC audit runs straight
  * after and wants nothing reclaimable left), and it costs a walk of the
@@ -797,12 +786,6 @@ ScrStr *scr_str_concat_parts(ScrStr *const *parts, size_t count);
  * result. The head may be appended in place under scr_str_concat's rule for
  * its left operand; parts are never mutated. */
 ScrStr *scr_str_concat_mixed(ScrStr *head, ScrStr *const *parts, const double *nums, size_t count);
-/* The same with the left operand / head MOVED in (`s = s + x` when nothing
- * else can observe `s`): one call instead of a snapshot retain, the
- * binding's release and the snapshot's release around a borrowing concat. */
-ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b);
-ScrStr *scr_str_concat_mixed_move(ScrStr *head, ScrStr *const *parts, const double *nums,
-                                  size_t count);
 /* a + String(x): scr_str_concat's contract with a number right operand. */
 ScrStr *scr_str_concat_f64(ScrStr *a, double x);
 

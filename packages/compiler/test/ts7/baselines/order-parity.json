@@ -15520,36 +15520,6 @@
     "<repo>/tests/corpus/4487-array-literal-optional-values.ts"
    ],
    "diags": []
-  },
-  "<repo>/tests/corpus/4560-field-store-borrowed-receivers.ts": {
-   "order": [
-    "<repo>/tests/corpus/4560-field-store-borrowed-receivers.ts"
-   ],
-   "diags": []
-  },
-  "<repo>/tests/corpus/4561-virtual-borrowed-parameters.ts": {
-   "order": [
-    "<repo>/tests/corpus/4561-virtual-borrowed-parameters.ts"
-   ],
-   "diags": []
-  },
-  "<repo>/tests/corpus/4562-string-self-concat-move.ts": {
-   "order": [
-    "<repo>/tests/corpus/4562-string-self-concat-move.ts"
-   ],
-   "diags": []
-  },
-  "<repo>/tests/corpus/4563-array-read-projection-receivers.ts": {
-   "order": [
-    "<repo>/tests/corpus/4563-array-read-projection-receivers.ts"
-   ],
-   "diags": []
-  },
-  "<repo>/tests/corpus/4564-literal-choice-strings.ts": {
-   "order": [
-    "<repo>/tests/corpus/4564-literal-choice-strings.ts"
-   ],
-   "diags": []
   }
  }
 }

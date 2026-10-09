@@ -95,10 +95,10 @@ static void scr_error_destroy(void *obj) {
 static void scr_error_reld(void *obj) {
   ScrError *e = (ScrError *)obj;
   if (--e->rc == 0) {
-    if (scr_error_traced) scr_cyc_dead(e);
+    if (scr_error_traced) scr_cyc_on_dead(e);
     scr_rc_destroy(obj, scr_error_destroy);
   } else if (scr_error_traced) {
-    scr_cyc_released(e); /* possible cycle root; may collect */
+    scr_cyc_on_release(e); /* possible cycle root; may collect */
   }
 }
 
@@ -112,10 +112,10 @@ static void scr_domex_destroy(void *obj) {
 static void scr_domex_reld(void *obj) {
   ScrDomException *d = (ScrDomException *)obj;
   if (--d->rc == 0) {
-    if (scr_error_traced) scr_cyc_dead(d);
+    if (scr_error_traced) scr_cyc_on_dead(d);
     scr_rc_destroy(obj, scr_domex_destroy);
   } else if (scr_error_traced) {
-    scr_cyc_released(d);
+    scr_cyc_on_release(d);
   }
 }
 

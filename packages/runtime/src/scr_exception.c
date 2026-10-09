@@ -194,7 +194,7 @@ ScrCaught *scr_caught_retain(ScrCaught *c) {
 void scr_caught_release(ScrCaught *c) {
   if (!c) return;
   if (--c->rc == 0) {
-    scr_cyc_dead(c);
+    scr_cyc_on_dead(c);
     if (c->kind == SCR_EXC_STR) {
       scr_str_release((ScrStr *)c->payload);
     } else if (c->kind == SCR_EXC_REF || c->kind == SCR_EXC_OBJ ||
@@ -204,7 +204,7 @@ void scr_caught_release(ScrCaught *c) {
     scr_obj_free_note();
     scr_cyc_free(c);
   } else {
-    scr_cyc_released(c);
+    scr_cyc_on_release(c);
   }
 }
 

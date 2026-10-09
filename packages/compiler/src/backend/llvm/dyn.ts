@@ -79,8 +79,6 @@ export const DYN_KIND = {
  * unit instances (undefined-armed dynCheck targets build them). */
 export interface DynHost extends WalkerHost {
   unitInstanceRef(unionId: string, tag: number): string;
-  /** See ClassHost.virtualEntry. */
-  virtualEntry?(implFn: string): string;
   /** The immortal ABSENT field-slot state of an undefined-armed union. */
   absentInstanceRef(unionId: string): string;
   liveDynRefAdapter(t: IrType): { snapshot: string; commit: string };

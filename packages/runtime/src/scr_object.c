@@ -43,10 +43,10 @@ static void scr_classobj_destroy(void *object) {
 void scr_classobj_release(ScrClassObj *c) {
   if (!c || c->rc == SIZE_MAX) return;
   if (--c->rc == 0) {
-    scr_cyc_dead(c);
+    scr_cyc_on_dead(c);
     scr_rc_destroy(c, scr_classobj_destroy);
   } else {
-    scr_cyc_released(c);
+    scr_cyc_on_release(c);
   }
 }
 

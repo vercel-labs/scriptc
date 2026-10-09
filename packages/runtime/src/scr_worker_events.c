@@ -64,9 +64,9 @@ static void scr_worker_view_release(void *ptr) {
   ScrWorkerView *view = ptr;
   if (!view) return;
   if (--view->rc == 0) {
-    scr_cyc_dead(view);
+    scr_cyc_on_dead(view);
     scr_rc_destroy(view, scr_worker_view_destroy);
-  } else scr_cyc_released(view);
+  } else scr_cyc_on_release(view);
 }
 
 static void scr_worker_port_listeners(void *ptr, const ScrStr *name, bool present) {

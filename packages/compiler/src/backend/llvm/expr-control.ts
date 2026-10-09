@@ -2,7 +2,7 @@ import { emitBorrowedInput } from "./borrowed-inputs.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, isUnitType, typeEquals, type IrExpr } from "../../ir/ir.js";
+import { isRefCounted, isUnitType, typeEquals } from "../../ir/ir.js";
 import { DYN_KIND } from "./dyn.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
@@ -135,9 +135,6 @@ export function emitControlExpr(
         B.line(`${uint32} = load i32, ptr ${integerSlot}`);
         return { name: t, type: e.type, uint32 };
       }
-      // A choice between interned literals is an interned literal: like a
-      // strLit operand, nothing owns it (retain and release are no-ops).
-      if (literalChoice(e)) return host.markImmortal({ name: t, type: e.type });
       return host.own({ name: t, type: e.type });
     }
     case "optChain": {
@@ -621,10 +618,4 @@ function emitNullishOptionalChain(host: LlvmEmitterContext, e: ExprOf<"nullish">
   const t = B.tmp();
   B.line(`${t} = load ${ty}, ptr ${slot}`);
   return host.own({ name: t, type: e.type });
-}
-
-/** Whether every arm of a (nested) ternary is a string literal. */
-function literalChoice(e: IrExpr): boolean {
-  if (e.kind === "strLit") return true;
-  return e.kind === "ternary" && literalChoice(e.then) && literalChoice(e.else_);
 }

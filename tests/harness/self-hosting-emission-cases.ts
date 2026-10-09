@@ -238,8 +238,7 @@ export function emissionCases(): EmissionCase[] {
   concrete.methods = ["read"];
   abstract.classes = [abstractRoot, concrete];
   abstract.functions.push(method("Concrete", "read"));
-  // The implementation borrows its receiver, so the slot stores the borrowing body.
-  add("abstract slot implementation", abstract, ["ptr null", "@sc_bf__x25_Concrete_read"]);
+  add("abstract slot implementation", abstract, ["ptr null", "@sc_f__x25_Concrete_read"]);
 
   const incomplete = emissionModule();
   const abstractChild = cls("AbstractChild", "Abstract");

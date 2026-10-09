@@ -766,7 +766,7 @@ export function releaseBody(
     `  %dead = icmp eq ${S} %n, 0`,
     `  br i1 %dead, label %free, label %${traced ? "root" : "done"}`,
     `free:`,
-    ...(traced ? cycleDeadLines(host, "teardown") : []),
+    ...(traced ? [`  call void @scr_cyc_on_dead(ptr %o)`] : []),
     ...(bounded ? [`  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`] : freeBody),
     `  br label %done`,
   ];
@@ -832,25 +832,6 @@ export function cycleRootLines(host: ShapeHost, done: string): string[] {
     `enqueue:`,
     `  call void @scr_cyc_on_release(ptr %o) ; buffer the candidate; may collect`,
     `  br label %${done}`,
-  ];
-}
-
-/** The death of a headered object: scr_cyc_on_dead with its early return
- * inlined. Only an object still in a candidate buffer
- * (`buffered` nonzero) has an entry to remove; the sequence continues at
- * the new block `next`. */
-export function cycleDeadLines(host: ShapeHost, next: string): string[] {
-  const S = host.sizeType;
-  host.declare(`declare void @scr_cyc_on_dead(ptr)`);
-  return [
-    `  %dbufp = getelementptr i8, ptr %o, ${S} -${host.cycleColorOffset - 4}`,
-    `  %dbuf = load i16, ptr %dbufp`,
-    `  %dqueued = icmp ne i16 %dbuf, 0`,
-    `  br i1 %dqueued, label %unbuffer, label %${next}`,
-    `unbuffer:`,
-    `  call void @scr_cyc_on_dead(ptr %o)`,
-    `  br label %${next}`,
-    `${next}:`,
   ];
 }
 

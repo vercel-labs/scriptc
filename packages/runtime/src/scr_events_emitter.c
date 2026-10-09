@@ -271,12 +271,12 @@ static void scr_emitter_gcfree(void *obj) {
 static void scr_emitter_release_direct(void *obj) {
   ScrEmitter *em = obj;
   if (--em->rc == 0) {
-    scr_cyc_dead(em);
+    scr_cyc_on_dead(em);
     scr_emitter_reg_drop(em->reg);
     scr_obj_free_note();
     scr_cyc_free(em);
   } else {
-    scr_cyc_released(em); /* possible cycle root; may collect */
+    scr_cyc_on_release(em); /* possible cycle root; may collect */
   }
 }
 

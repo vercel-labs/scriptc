@@ -938,18 +938,8 @@ export function emitCallExpr(
           `llvm emitter bug: no vtable slot for ${e.className}.${e.method}`,
         );
       const slot = meta.root.slots[slotIdx]!;
-      // Callees own their params, except those the slot borrows
-      // (LlEmitter.computeVirtualBorrowing): those are passed like borrowed
-      // arguments of a direct call, owned snapshots living in this frame.
-      const borrowed = host.virtualSlotBorrowed(meta.root.def.name, slotIdx);
-      const inputs = borrowed.size > 0 ? borrowableInputs(host, e.args, false) : [];
-      if (borrowed.size > 0) host.frames.push([]);
-      const args = e.args.map((a, index) =>
-        borrowed.has(index) && inputs[index] ? host.emitReadReceiver(a) : host.emitExpr(a),
-      );
-      args.forEach((a, index) => {
-        if (!borrowed.has(index)) host.moveTemp(a);
-      });
+      const args = e.args.map((a) => host.emitExpr(a));
+      for (const a of args) host.moveTemp(a); // callees own their params
       const recv = args[0]!.name;
       const vtp = B.tmp();
       const vt = B.tmp();
@@ -969,18 +959,12 @@ export function emitCallExpr(
       if (e.type.kind === "void") {
         B.line(`call void ${fn}(${argList})`);
         if (host.mayThrowMethods.has(e.method)) host.emitPendingCheck();
-        if (borrowed.size > 0) host.releaseFrame(host.frames.pop()!);
         return { name: "", type: e.type };
       }
       const t = B.tmp();
       B.line(`${t} = call ${host.llType(e.type)} ${fn}(${argList})`);
       const out = host.own({ name: t, type: e.type });
       if (host.mayThrowMethods.has(e.method)) host.emitPendingCheck();
-      if (borrowed.size > 0) {
-        host.moveTemp(out);
-        host.releaseFrame(host.frames.pop()!);
-        return host.own(out);
-      }
       return out;
     }
     default: {

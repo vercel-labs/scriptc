@@ -301,13 +301,13 @@ static void scr_stream_gcfree(void *obj) {
 static void scr_stream_release_direct(void *obj) {
   ScrStream *s = obj;
   if (--s->rc == 0) {
-    scr_cyc_dead(s);
+    scr_cyc_on_dead(s);
     scr_emitter_reg_drop(s->reg);
     scr_stream_state_drop(s->st, false);
     scr_obj_free_note();
     scr_cyc_free(s);
   } else {
-    scr_cyc_released(s);
+    scr_cyc_on_release(s);
   }
 }
 

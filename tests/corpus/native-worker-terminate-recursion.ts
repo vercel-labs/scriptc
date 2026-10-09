@@ -27,12 +27,19 @@ function odd(n: number): boolean {
   return n === 0 ? false : even(n - 1);
 }
 
-function forever(kind: string): number {
+// Each round recurses to a bounded depth, so the worker stays busy inside
+// recursive calls until it is terminated without ever exhausting its stack.
+function round(kind: string): number {
   if (kind === "recursion") return spin(60);
-  if (kind === "mutual") return even(4000) ? forever(kind) : 0;
-  if (kind === "methods") return new Node2(12).count() + forever(kind);
-  const step = (n: number): number => (n > 0 ? step(n - 1) : forever(kind));
+  if (kind === "mutual") return even(4000) ? 1 : 0;
+  if (kind === "methods") return new Node2(12).count();
+  const step = (n: number): number => (n > 0 ? step(n - 1) + 1 : 0);
   return step(100);
+}
+
+function forever(kind: string): number {
+  let total = 0;
+  for (;;) total += round(kind);
 }
 
 if (isMainThread) {

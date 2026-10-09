@@ -67,6 +67,10 @@ import {
 } from "./lower-builtin-values.js";
 import { everyExprChild, everyStmtChild, transformStmtList } from "../../ir/traverse.js";
 import { RuntimeOptionalProvenance } from "./runtime-optional-provenance.js";
+import { presentAtUse, reassignedBindings } from "./runtime-optional-guards.js";
+import { ArrayElementStates } from "./runtime-optional-elements.js";
+import { indexReadInBounds } from "./runtime-optional-bounds.js";
+import { ArrayOwnership } from "./runtime-optional-ownership.js";
 import { StringIndexBounds } from "./string-index-bounds.js";
 import { RuntimeOptionalLocals } from "./runtime-optional-locals.js";
 import { sanitizeUnregisteredClassTypes } from "./sanitize-class-types.js";
@@ -1547,6 +1551,16 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
   return null;
 }
 
+/** Answers `fallback` when a checker query panics inside the type checker. */
+function panicSafe<T>(query: () => T, fallback: T): T {
+  try {
+    return query();
+  } catch (e) {
+    if (isCheckerPanic(e)) return fallback;
+    throw e;
+  }
+}
+
 export class Lowerer {
   readonly frontendServices: FrontendServices | undefined;
   readonly checker: ts.TypeChecker;
@@ -1850,6 +1864,10 @@ export class Lowerer {
    * hold undefined. `x!` has no runtime effect, so these keep the stored
    * undefined state instead of trapping before any dereference. */
   readonly runtimeOptionalAssertions = new Set<ts.NonNullExpression>();
+  /** Array callback calls whose receiver the optional-read analysis proved
+   * never holds an explicit undefined (or a hole, for the find family):
+   * their callbacks take the element type itself. */
+  readonly presentElementCalls = new Set<ts.CallExpression>();
   /** Capture entries and their origin share one mutable box. Normalize each
    * entry to the origin so writes and flow proofs stay synchronized. */
   readonly runtimeOptionalRoots = new Map<IrLocal, IrLocal>();
@@ -3866,6 +3884,12 @@ export class Lowerer {
       let operand = e.expression;
       while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
       if (ts.isElementAccessExpression(operand) || ts.isNonNullExpression(operand)) return null;
+      // A guard that already proves the binding present makes the
+      // assertion true at runtime: nothing is forwarded as undefined.
+      if (ts.isIdentifier(operand)) {
+        const symbol = symbolOf(operand);
+        if (symbol && provenPresent(operand, symbol)) return null;
+      }
       const stored = this.mapTypeOf(this.typeOf(e.expression));
       const asserted = this.mapTypeOf(this.typeOf(e));
       if (stored?.kind !== "union" || asserted?.kind !== "object") return null;
@@ -3888,6 +3912,10 @@ export class Lowerer {
       while (ts.isParenthesizedExpression(read)) read = read.expression;
       if (!ts.isElementAccessExpression(read)) return null;
       if (this.mapTypeOf(this.typeOf(read.expression))?.kind !== "array") return null;
+      // An in-bounds read of an array that never holds undefined or holes
+      // always produces a present element.
+      if (indexReadInBounds(read) && elementStates.elementsPresent(read.expression, "find"))
+        return null;
       const element = this.mapTypeOf(this.typeOf(e));
       if (
         !element ||
@@ -3933,6 +3961,29 @@ export class Lowerer {
       return this.withUndefinedArm(t);
     };
     const fieldName = (node: ts.PropertyAccessExpression): string => node.name.text;
+    // The precision facts below ask about nodes ordinary lowering may never
+    // query. A checker panic on one of them answers null, and each caller
+    // falls back to its conservative fact.
+    const typeOrNull = (node: ts.Node): ts.Type | null => panicSafe(() => this.typeOf(node), null);
+    const contextualOrNull = (node: ts.Expression): ts.Type | null | undefined =>
+      panicSafe(() => this.checker.getContextualType(node), null);
+    // Presence proofs only hold for a binding that keeps its one value for
+    // its whole lifetime.
+    const reassigned = reassignedBindings(sourceFiles, symbolOf, isJsSourceFile);
+    const presenceProofs = new Map<ts.Identifier, boolean>();
+    const provenPresent = (use: ts.Identifier, symbol: ts.Symbol): boolean => {
+      if (reassigned.has(symbol)) return false;
+      const cached = presenceProofs.get(use);
+      if (cached !== undefined) return cached;
+      const proven = presentAtUse(use, {
+        sameBinding: (node) => node.text === use.text && symbolOf(node) === symbol,
+        isUndefined: (node) =>
+          node.text === "undefined" &&
+          ((typeOrNull(node)?.flags ?? 0) & ts.TypeFlags.Undefined) !== 0,
+      });
+      presenceProofs.set(use, proven);
+      return proven;
+    };
     const mayBeOptional = (node: ts.Expression): boolean => {
       // `xs[i]!` is the explicit proven-present form. Its array read keeps
       // the established dense bounds trap and must not promote the enclosing
@@ -3963,7 +4014,13 @@ export class Lowerer {
         return true;
       if (ts.isIdentifier(e)) {
         const symbol = symbolOf(e);
-        return symbol !== null && optionalSymbols.has(symbol);
+        // A for-of binding over an array that can yield a hole or an
+        // explicit undefined carries that value like an unchecked read.
+        return (
+          symbol !== null &&
+          (optionalSymbols.has(symbol) || iterationSymbols.has(symbol)) &&
+          !provenPresent(e, symbol)
+        );
       }
       if (ts.isPropertyAccessExpression(e)) {
         const symbol = symbolOf(e.name);
@@ -4339,6 +4396,39 @@ export class Lowerer {
       }
       return changed;
     };
+    // A reduce callback over present elements keeps the reduce helper's
+    // optional element ABI for its parameter storage, so the helper still
+    // splits each visit into a plain-element call. Its value is never
+    // absent, so nothing it flows into is widened.
+    const retypeInlineCallback = (
+      callback: ts.Expression,
+      parameterIndices: readonly number[],
+    ): boolean => {
+      const fn = peel(callback);
+      if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) return false;
+      let changed = false;
+      for (const parameterIndex of parameterIndices) {
+        const parameter = fn.parameters[parameterIndex];
+        if (!parameter) continue;
+        const checkerType = this.typeOf(parameter.name);
+        if ((checkerType.flags & ts.TypeFlags.TypeParameter) !== 0) continue;
+        const current = this.mapTypeOf(checkerType);
+        if (!current) continue;
+        const widened = this.runtimeOptionalType(current);
+        if (!ts.isIdentifier(parameter.name)) {
+          const previous = this.runtimeOptionalPatternTypes.get(parameter.name);
+          this.runtimeOptionalPatternTypes.set(parameter.name, widened);
+          if (!previous || !typeEquals(previous, widened)) changed = true;
+          continue;
+        }
+        const symbol = symbolOf(parameter.name);
+        if (!symbol) continue;
+        const previous = this.runtimeOptionalBindingTypes.get(symbol);
+        this.runtimeOptionalBindingTypes.set(symbol, widened);
+        if (!previous || !typeEquals(previous, widened)) changed = true;
+      }
+      return changed;
+    };
     const callbackReturnsOptional = (
       callback: ts.Expression,
       seen = new Set<ts.Symbol>(),
@@ -4359,6 +4449,244 @@ export class Lowerer {
         callbackReturnsOptional(decl.initializer, seen)
       );
     };
+    // Bindings of a for-of loop over an array that can hold holes or
+    // undefined. Lowering keeps such a binding's runtime union, so storing
+    // it into another array can store undefined.
+    const iterationSymbols = new Set<ts.Symbol>();
+    // Element ABIs whose own type admits undefined (`(T | undefined)[]`,
+    // or a rest array widened for an absent argument).
+    const optionalElementKeys = new Set<string>();
+    // Checker answers for the fixed point's repeated element-ABI queries.
+    // Only a binding's widened storage can change between passes.
+    const checkerTypes = new Map<ts.Node, ts.Type>();
+    const arrayKeysOf = (node: ts.Expression): readonly string[] | null =>
+      panicSafe(() => arrayKeysUnsafe(node), null);
+    const arrayKeysUnsafe = (node: ts.Expression): readonly string[] | null => {
+      let checkerType = checkerTypes.get(node);
+      if (checkerType === undefined) {
+        checkerType = this.typeOf(node);
+        checkerTypes.set(node, checkerType);
+      }
+      const e = peel(node);
+      // A binding the prepass widened stores its widened array ABI.
+      const widened = ts.isIdentifier(e)
+        ? (() => {
+            const symbol = symbolOf(e);
+            return symbol ? this.runtimeOptionalBindingTypes.get(symbol) : undefined;
+          })()
+        : undefined;
+      let mapped = widened ?? this.mapTypeOf(checkerType);
+      if (mapped?.kind === "promise") mapped = mapped.inner;
+      const anyElements =
+        mapped?.kind === "array"
+          ? mapped.elem.kind === "dyn" || mapped.elem.kind === "jsval"
+          : mapped === null &&
+            this.checker.isArrayType(checkerType) &&
+            !this.checker.isTupleType(checkerType) &&
+            ((this.checker.getTypeArguments(checkerType as ts.TypeReference)[0]?.flags ?? 0) &
+              (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
+              0;
+      if (anyElements) {
+        // `new Array(n)` has an `any` element type; its storage takes the
+        // ABI of the slot it initializes.
+        const contextual = this.checker.getContextualType(node);
+        const target = contextual ? this.mapTypeOf(contextual) : null;
+        return target?.kind === "array" ? [typeKey(target.elem)] : [];
+      }
+      if (mapped === null) {
+        // An array whose element type is a type parameter: each
+        // instantiation picks its own element ABI.
+        return this.checker.isArrayType(checkerType) ? null : [];
+      }
+      const arms =
+        mapped.kind === "union" ? (this.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
+      const keys: string[] = [];
+      for (const arm of arms) {
+        if (arm.kind !== "array") continue;
+        const key = typeKey(arm.elem);
+        if (
+          arm.elem.kind === "union"
+            ? this.armTag(arm.elem.unionId, UNDEFINED_T) >= 0
+            : isUnitType(arm.elem) || arm.elem.kind === "void"
+        )
+          optionalElementKeys.add(key);
+        keys.push(key);
+      }
+      return keys;
+    };
+    const ownership = new ArrayOwnership(sourceFiles, {
+      symbolOf,
+      declarationOf: (symbol) => this.checker.valueDeclarationOf(symbol),
+      typeOf: typeOrNull,
+      instanceAssignableTo: (owner, target) =>
+        panicSafe(
+          () => this.checker.isTypeAssignableTo(this.checker.getTypeAtLocation(owner), target),
+          true,
+        ),
+      isGlobal: (node, name) => this.isStdlibGlobal(node, name),
+      isArray: (node) => {
+        const type = typeOrNull(node);
+        return type !== null && this.checker.isArrayType(type);
+      },
+      fieldKeys: (declaration) => arrayKeysOf(declaration.name as ts.Expression) ?? [],
+      dynamicViewKeys: () => (dynamicViews ??= collectDynamicViews()),
+    });
+    let dynamicViews: Set<string> | null = null;
+    // Element ABIs of the native arrays that an `any` or `unknown` value is
+    // converted to, including arrays nested in the converted value.
+    const collectDynamicViews = (): Set<string> => {
+      const keys = new Set<string>();
+      const dynamicValue = (node: ts.Expression): boolean => {
+        // A binding's declared type says whether it holds dynamic data; a
+        // flow type such as `Array.isArray(x)`'s `any[]` only narrows it.
+        const e = peel(node);
+        const symbol = ts.isIdentifier(e) ? symbolOf(e) : null;
+        const declaration = symbol ? this.checker.valueDeclarationOf(symbol) : undefined;
+        const declared =
+          declaration &&
+          (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration)) &&
+          ts.isIdentifier(declaration.name)
+            ? declaration.name
+            : null;
+        const type = typeOrNull(declared ?? node);
+        if (type === null) return true;
+        if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+        if (!this.checker.isArrayType(type) || this.checker.isTupleType(type)) return false;
+        const element = this.checker.getTypeArguments(type as ts.TypeReference)[0];
+        return (
+          element !== undefined && (element.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+        );
+      };
+      const collect = (type: IrType | null, depth: number): void => {
+        if (!type || depth > 4) return;
+        if (type.kind === "array") {
+          keys.add(typeKey(type.elem));
+          collect(type.elem, depth + 1);
+        } else if (type.kind === "union") {
+          for (const arm of this.unions.get(type.unionId)?.arms ?? []) collect(arm, depth + 1);
+        } else if (type.kind === "record") {
+          for (const field of this.shapes.get(type.shapeId)?.fields ?? [])
+            collect(field.type, depth + 1);
+        } else if (type.kind === "promise") collect(type.inner, depth + 1);
+      };
+      const target = (type: ts.Type | null | undefined): void => {
+        // An unanswerable target may be any array.
+        if (type === null) keys.add("*");
+        else if (type) collect(this.mapTypeOf(type), 0);
+      };
+      const visit = (node: ts.Node): void => {
+        if ((ts.isAsExpression(node) || ts.isTypeAssertion(node)) && dynamicValue(node.expression))
+          target(typeOrNull(node));
+        else if (
+          ts.isVariableDeclaration(node) &&
+          node.type &&
+          node.initializer &&
+          dynamicValue(node.initializer)
+        )
+          target(typeOrNull(node.name));
+        else if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          dynamicValue(node.right)
+        )
+          target(typeOrNull(node.left));
+        else if (ts.isReturnStatement(node) && node.expression && dynamicValue(node.expression))
+          target(contextualOrNull(node.expression));
+        else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+          for (const arg of node.arguments ?? [])
+            if (!ts.isSpreadElement(arg) && dynamicValue(arg)) target(contextualOrNull(arg));
+        } else if (ts.isPropertyAssignment(node) && dynamicValue(node.initializer))
+          target(contextualOrNull(node.initializer));
+        else if (ts.isArrayLiteralExpression(node)) {
+          for (const element of node.elements)
+            if (
+              !ts.isSpreadElement(element) &&
+              !ts.isOmittedExpression(element) &&
+              dynamicValue(element)
+            )
+              target(contextualOrNull(element));
+        } else if (
+          ts.isArrowFunction(node) &&
+          !ts.isBlock(node.body) &&
+          dynamicValue(node.body as ts.Expression)
+        )
+          target(contextualOrNull(node.body as ts.Expression));
+      };
+      for (const sf of sourceFiles)
+        ts.walkPreorder(sf, (node) => {
+          // A checker panic hides this conversion's target: any array.
+          if (!panicSafe(() => (visit(node), true), false)) keys.add("*");
+          return undefined;
+        });
+      return keys;
+    };
+    const elementStates = new ArrayElementStates({
+      elementAdmitsUndefined: (key) => optionalElementKeys.has(key),
+      ownerOf: (node) => ownership.ownerOf(node),
+      allocationOwner: (node) => ownership.allocationOwner(node),
+      arrayKeys: arrayKeysOf,
+      mayBeUndefined: (node) => {
+        if (explicitlyNonNull(node)) return false;
+        if (mayBeOptional(node)) return true;
+        // `undefined as unknown as T` keeps the undefined value.
+        for (
+          let inner: ts.Expression = node;
+          ts.isParenthesizedExpression(inner) ||
+          ts.isAsExpression(inner) ||
+          ts.isTypeAssertion(inner) ||
+          ts.isSatisfiesExpression(inner);
+        ) {
+          inner = inner.expression;
+          const type = typeOrNull(inner);
+          if (type === null || (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0)
+            return true;
+        }
+        const e = peel(node);
+        if (!ts.isIdentifier(e)) return false;
+        const symbol = symbolOf(e);
+        return symbol !== null && iterationSymbols.has(symbol) && !provenPresent(e, symbol);
+      },
+      callbackReturnsUndefined: (node) => callbackReturnsOptional(node),
+      isGlobal: (node, name) => this.isStdlibGlobal(node, name),
+      isString: (node) => {
+        const type = typeOrNull(node);
+        return type !== null && this.mapTypeOf(type)?.kind === "string";
+      },
+      isArrayLikeObject: (node) => {
+        if (ts.isObjectLiteralExpression(peel(node))) return true;
+        const type = typeOrNull(node);
+        const mapped = type === null ? null : this.mapTypeOf(type);
+        return (
+          mapped === null ||
+          mapped.kind === "record" ||
+          mapped.kind === "object" ||
+          mapped.kind === "dyn" ||
+          mapped.kind === "jsval" ||
+          mapped.kind === "union"
+        );
+      },
+      restKeys: (call) => {
+        const callee = peel(call.expression);
+        if (!ts.isIdentifier(callee) && !ts.isPropertyAccessExpression(callee)) return null;
+        const symbol = callableSymbolOf(callee);
+        const sig = symbol ? signatureBySymbol.get(symbol) : undefined;
+        if (!sig) return ts.isPropertyAccessExpression(callee) ? [] : null;
+        const rest = sig.params.find((shape) => shape.mode === "rest");
+        return rest?.type.kind === "array" ? [typeKey(rest.type.elem)] : [];
+      },
+      markIterationBinding: (node) => {
+        const symbol = symbolOf(node);
+        if (!symbol || iterationSymbols.has(symbol)) return false;
+        iterationSymbols.add(symbol);
+        return true;
+      },
+      note: provenance
+        ? (fact, key, site) => provenance.note(`element-${fact}`, site, site, key)
+        : null,
+    });
+    // Each pass revisits every array callback site; the last visit holds
+    // the decision at the fixed point.
+    const presentSites = new Map<ts.CallExpression, boolean>();
     const scanSites = new Map<ts.SourceFile, ts.Node[]>();
     const sitesOf = (sf: ts.SourceFile): ts.Node[] => {
       const cached = scanSites.get(sf);
@@ -4368,7 +4696,14 @@ export class Lowerer {
         if (
           ts.isVariableDeclaration(node) ||
           ts.isBinaryExpression(node) ||
-          ts.isCallExpression(node)
+          ts.isCallExpression(node) ||
+          ts.isNewExpression(node) ||
+          ts.isArrayLiteralExpression(node) ||
+          ts.isDeleteExpression(node) ||
+          ts.isForOfStatement(node) ||
+          ts.isArrayBindingPattern(node) ||
+          ts.isPrefixUnaryExpression(node) ||
+          ts.isPostfixUnaryExpression(node)
         )
           nodes.push(node);
       });
@@ -4378,6 +4713,7 @@ export class Lowerer {
     const scanFile = (sf: ts.SourceFile): boolean => {
       let changed = false;
       const scan = (node: ts.Node): void => {
+        if (elementStates.scan(node)) changed = true;
         if (ts.isVariableDeclaration(node)) {
           if (node.initializer) {
             const result = optionalPrimitiveResultType(node.initializer);
@@ -4608,11 +4944,25 @@ export class Lowerer {
             }
             if (nativeArrayReceiver) {
               provenanceSite = node;
-              if (promoteHofCallback(callback, callbackIndices)) changed = true;
               const method = node.expression.name.text;
+              // Callbacks skip holes (except the find family), so an array
+              // that never holds undefined only passes present elements.
+              const elementsPresent =
+                receiver?.kind === "array" && elementStates.elementsPresent(receiverNode, method);
+              // A callback returning a runtime-absent value still needs its
+              // widened return, whatever its elements.
+              if (promoteHofCallback(callback, elementsPresent ? [] : callbackIndices))
+                changed = true;
+              // Element-typed callback helpers cover every method but
+              // reduce, whose accumulator keeps the split visit.
+              const reduce = method === "reduce" || method === "reduceRight";
+              presentSites.set(node, elementsPresent && !reduce);
+              if (elementsPresent && reduce && retypeInlineCallback(callback, callbackIndices))
+                changed = true;
               if (
                 (method === "reduce" || method === "reduceRight") &&
-                (node.arguments.length < 2 || callbackReturnsOptional(callback))
+                ((!elementsPresent && node.arguments.length < 2) ||
+                  callbackReturnsOptional(callback))
               ) {
                 if (promoteHofCallback(callback, [0, 1])) changed = true;
                 const result = this.runtimeOptionalType(this.irTypeOf(node));
@@ -4869,6 +5219,7 @@ export class Lowerer {
         }
       }
     }
+    for (const [site, present] of presentSites) if (present) this.presentElementCalls.add(site);
     const globalsById = new Map(this.globalsList.map((global) => [global.id, global]));
     for (const [symbol, field] of staticFieldsBySymbol) {
       if (!optionalSymbols.has(symbol)) continue;

@@ -1,7 +1,8 @@
 import * as ts from "../ts7/adapter.js";
 
 /** Debug-only record of why the indexed-read analysis widened a binding,
- * parameter, return, or field to a runtime-optional representation. It is
+ * parameter, return, or field to a runtime-optional representation, and
+ * why an array element ABI can hold undefined values or holes. It is
  * enabled by SCRIPTC_DEBUG_RUNTIME_OPTIONAL=1 and writes one line per
  * widening to stderr; the disabled path records nothing. Not a public API:
  * the output format may change at any time. */

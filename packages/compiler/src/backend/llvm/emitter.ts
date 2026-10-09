@@ -350,6 +350,9 @@ interface LlScopeEntry {
   slot: string;
   type: IrType;
   boxed?: boolean;
+  /** A lazily created box: the slot stays null on paths that build no
+   * environment, which skip the release call. */
+  lazy?: boolean;
 }
 
 export interface LlvmTargetOptions {
@@ -3336,7 +3339,20 @@ export class LlEmitter {
     for (const e of scope) {
       const t = this.B.tmp();
       this.B.line(`${t} = load ptr, ptr ${e.slot}`);
-      if (e.boxed) {
+      if (e.boxed && e.lazy) {
+        // Unreachable code after a terminator emits nothing; a new block
+        // here would revive it.
+        if (this.B.isTerminated()) continue;
+        const created = this.B.tmp();
+        this.B.line(`${created} = icmp ne ptr ${t}, null`);
+        const release = this.B.newLabel("lazy.release"),
+          join = this.B.newLabel("lazy.release.j");
+        this.B.condBr(created, release, join);
+        this.B.startBlock(release);
+        this.B.line(`call void ${boxReleaseSym(this.shapeHost)}(ptr ${t})`);
+        this.B.br(join);
+        this.B.startBlock(join);
+      } else if (e.boxed) {
         this.B.line(`call void ${boxReleaseSym(this.shapeHost)}(ptr ${t})`);
       } else {
         this.releaseValue(t, e.type); // runtime releases are NULL-tolerant
@@ -4517,7 +4533,12 @@ export class LlEmitter {
       const cache = B.slot();
       B.entryAllocas.push(`${cache} = alloca ptr ; lazy box ${this.currentLocals.get(id)!.name}`);
       B.line(`store ptr null, ptr ${cache}`);
-      fnScope.push({ slot: cache, type: this.currentLocals.get(id)!.type, boxed: true });
+      fnScope.push({
+        slot: cache,
+        type: this.currentLocals.get(id)!.type,
+        boxed: true,
+        lazy: true,
+      });
       this.lazyCaptureBoxes.set(id, cache);
       // Environments that finish during the call can share an immortal
       // frame box. Its payload owner is released with the function scope.

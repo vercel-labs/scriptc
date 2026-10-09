@@ -1,6 +1,6 @@
-spread-runtime-optional.ts:4:41 - error SC1090: object spread of '{ id: number; name: string } | undefined' sources where 'id' has no earlier contributor (the absent arm leaves the required field unset — spread defaults first: { ...defaults, ...overrides }) is not supported yet
+spread-runtime-optional.ts:6:41 - error SC1090: object spread of '{ id: number; name: string } | undefined' sources where 'id' has no earlier contributor (the absent arm leaves the required field unset — spread defaults first: { ...defaults, ...overrides }) is not supported yet
 
-  3 | // initialize the required fields inferred by TypeScript.
-  4 | const copies = values.map((value) => ({ ...value, label: "copy" }));
+  5 | // that arm cannot initialize the required fields inferred by TypeScript.
+  6 | const copies = values.map((value) => ({ ...value, label: "copy" }));
     |                                         ^~~~~~~~
-  5 | console.log(copies.length);
+  7 | console.log(copies.length);

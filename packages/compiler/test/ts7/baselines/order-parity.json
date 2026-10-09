@@ -15262,6 +15262,30 @@
     "<repo>/tests/corpus/nonnull-element-arguments.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/4520-optional-guard-narrowing.ts": {
+   "order": [
+    "<repo>/tests/corpus/4520-optional-guard-narrowing.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4521-array-callback-element-presence.ts": {
+   "order": [
+    "<repo>/tests/corpus/4521-array-callback-element-presence.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4522-captured-parameter-lifetimes.ts": {
+   "order": [
+    "<repo>/tests/corpus/4522-captured-parameter-lifetimes.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4523-array-pop-removal.ts": {
+   "order": [
+    "<repo>/tests/corpus/4523-array-pop-removal.ts"
+   ],
+   "diags": []
   }
  }
 }

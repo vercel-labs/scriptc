@@ -8,6 +8,7 @@ import {
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import { borrowsStringInputs } from "./string-lifetimes.js";
 import { borrowsMapReadInputs } from "./map-read-lifetimes.js";
+import { LazyCaptures } from "./lazy-captures.js";
 
 interface ForwardedUse {
   callee: string;
@@ -218,6 +219,7 @@ export function analyzeCallLifetimes(
   nullableField: NullableFieldTest = () => false,
 ): CallLifetimes {
   const usesByFunction = new Map<string, Uses>();
+  const lazyCaptures = new LazyCaptures(functions);
   const nodes = new Map<string, Parameter[]>();
   const unsafe: Parameter[] = [];
   const result: CallLifetimes = {
@@ -254,9 +256,17 @@ export function analyzeCallLifetimes(
       continue;
     }
     const borrowed = new Set<number>();
+    // A captured parameter that nothing rebinds keeps its entry value; its
+    // environment box takes a reference of its own when it is created.
+    const unchangedCaptures = lazyCaptures.parameters(fn);
     fn.params.forEach((param, index) => {
       const local = locals.get(param.localId);
-      if (local && isRefCounted(param.type) && stable(local) && !uses.declarations.has(local.id))
+      if (
+        local &&
+        isRefCounted(param.type) &&
+        (stable(local) || unchangedCaptures.has(local.id)) &&
+        !uses.declarations.has(local.id)
+      )
         borrowed.add(index);
     });
     if (borrowed.size > 0) result.borrowed.set(fn.name, borrowed);

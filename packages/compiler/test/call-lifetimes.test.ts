@@ -342,11 +342,13 @@ console.log(framed(1, "ab"), deferred({ limit: 4 }, false)(), deferred({ limit: 
     const labels = [...text.matchAll(/^[\w.]+:$/gm)];
     return labels.length > 1 ? text.slice(0, labels[1]!.index) : text;
   };
-  const framed = body(llvm, "sc_f_framed");
+  // Never-rebound captured parameters are borrowed, so their bodies are
+  // the direct-call entry points.
+  const framed = body(llvm, "sc_bf_framed");
   expect(framed).toContain("alloca %ScrBox");
   expect(framed).not.toContain("@scr_box_new");
   expect(framed).not.toContain("@scr_closure_new");
-  const deferred = body(llvm, "sc_f_deferred");
+  const deferred = body(llvm, "sc_bf_deferred");
   expect(deferred).toContain("lazy.box");
   expect(entry(deferred)).not.toContain("@scr_box_new");
   expect(deferred).toContain("@scr_box_new");

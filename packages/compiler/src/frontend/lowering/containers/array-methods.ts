@@ -704,6 +704,8 @@ export function lowerArrayMethodCall(
     };
   }
   if (name === "pop") {
+    // An unused result needs no value at all: drop the last slot.
+    if (resultDiscarded(call)) return lowerDiscardedPop(lowerer, access.expression, loc);
     // Widen a union payload through the normal array-read machinery
     // before removing it. Reinterpreting the stored union's tag as the
     // result union would confuse arms when undefined changes their order.
@@ -921,7 +923,80 @@ export function lowerArrayMethodCall(
   return lowerArrayReduceCall(lowerer, call, access, name as "reduce" | "reduceRight", elem);
 }
 
-/** Read before splice so removal cannot destroy the result's owned payload.
+/** The call's value is never read: an expression statement, a `void`
+ * operand, the left of a comma, or a for-loop initializer or update. */
+function resultDiscarded(call: ts.Expression): boolean {
+  let child: ts.Node = call;
+  let parent = call.parent;
+  while (parent && ts.isParenthesizedExpression(parent)) {
+    child = parent;
+    parent = parent.parent;
+  }
+  if (!parent) return false;
+  if (ts.isExpressionStatement(parent) || ts.isVoidExpression(parent)) return true;
+  if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.CommaToken)
+    return parent.left === child || resultDiscarded(parent);
+  return (
+    ts.isForStatement(parent) && (parent.initializer === child || parent.incrementor === child)
+  );
+}
+
+/** `xs.pop()` whose result is unused: truncate a non-empty array by one
+ * slot. Truncation releases the removed element and leaves the length of
+ * an empty array at zero, as pop does. */
+function lowerDiscardedPop(lowerer: Lowerer, source: ts.Expression, loc: SrcLoc): IrExpr {
+  const receiver = lowerer.lowerExpr(source);
+  const arr = lowerer.declareHiddenLocal("%popArray", receiver.type);
+  const arrRef = varRef(arr.id, arr.type, loc);
+  const length = lowerer.declareHiddenLocal("%popLength", F64);
+  const lengthRef = varRef(length.id, F64, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: arr.id, init: receiver, loc },
+      {
+        kind: "varDecl",
+        localId: length.id,
+        init: {
+          kind: "arrIntrinsic",
+          method: "length",
+          receiver: arrRef,
+          args: [],
+          type: F64,
+          loc,
+        },
+        loc,
+      },
+      {
+        kind: "if",
+        cond: { kind: "bin", op: ">", left: lengthRef, right: numLit(0, loc), type: BOOL, loc },
+        then: [
+          {
+            kind: "arraySetLength",
+            arr: arrRef,
+            length: {
+              kind: "bin",
+              op: "-",
+              left: lengthRef,
+              right: numLit(1, loc),
+              type: F64,
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+    ],
+    // The value is never read; any placeholder scalar keeps it unboxed.
+    result: numLit(0, loc),
+    type: F64,
+    loc,
+  };
+}
+
+/** Read before removal so it cannot destroy the result's owned payload.
  * The source is evaluated once and empty/sparse arrays yield undefined using
  * the same slot-state checks as an indexed read. */
 function lowerUnionArrayRemoval(
@@ -965,18 +1040,35 @@ function lowerUnionArrayRemoval(
         loc,
       },
       { kind: "varDecl", localId: result.id, init: value, loc },
-      {
-        kind: "exprStmt",
-        expr: {
-          kind: "arrIntrinsic",
-          method: "splice",
-          receiver: arrRef,
-          args: [indexRef, numLit(1, loc)],
-          type: arr.type,
-          loc,
-        },
-        loc,
-      },
+      first
+        ? {
+            kind: "exprStmt",
+            expr: {
+              kind: "arrIntrinsic",
+              method: "splice",
+              receiver: arrRef,
+              args: [indexRef, numLit(1, loc)],
+              type: arr.type,
+              loc,
+            },
+            loc,
+          }
+        : {
+            // Removing the last slot is a truncation: no removed-element
+            // array, and an empty array keeps length zero.
+            kind: "if",
+            cond: {
+              kind: "bin",
+              op: ">=",
+              left: indexRef,
+              right: numLit(0, loc),
+              type: BOOL,
+              loc,
+            },
+            then: [{ kind: "arraySetLength", arr: arrRef, length: indexRef, loc }],
+            else_: null,
+            loc,
+          },
     ],
     result: varRef(result.id, result.type, loc),
     type: result.type,

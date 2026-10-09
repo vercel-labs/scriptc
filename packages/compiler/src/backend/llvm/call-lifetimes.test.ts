@@ -398,8 +398,16 @@ test("borrows unchanged collection and callback parameters without a callee effe
   }
 });
 
+test("heap borrowing keeps a boxed parameter that nothing rebinds", () => {
+  const fn = helper("identity");
+  fn.body = [ret(ref("value"))];
+  fn.locals[0]!.boxed = true;
+  expect(analyze(fn).borrowed.get(fn.name)).toEqual(new Set([0]));
+  fn.body.unshift({ kind: "assign", localId: "value", value: ref("value"), loc });
+  expect(analyze(fn).borrowed.size).toBe(0);
+});
+
 test.each([
-  "boxed",
   "tdz",
   "capture",
   "class capture",
@@ -411,7 +419,6 @@ test.each([
 ])("heap borrowing excludes a %s parameter", (reason) => {
   const fn = helper("identity");
   fn.body = [ret(ref("value"))];
-  if (reason === "boxed") fn.locals[0]!.boxed = true;
   if (reason === "tdz") fn.locals[0]!.tdz = true;
   if (reason === "capture" || reason === "class capture")
     fn.body.unshift({

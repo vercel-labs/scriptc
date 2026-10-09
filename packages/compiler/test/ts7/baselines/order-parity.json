@@ -15262,6 +15262,36 @@
     "<repo>/tests/corpus/nonnull-element-arguments.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-bounded-errors.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-bounded-errors.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-cancel-hot.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-cancel-hot.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-class-fields.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-class-fields.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-poll-exceptions.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-poll-exceptions.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/native-worker-terminate-recursion.ts": {
+   "order": [
+    "<repo>/tests/corpus/native-worker-terminate-recursion.ts"
+   ],
+   "diags": []
   }
  }
 }

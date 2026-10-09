@@ -16,7 +16,13 @@ import { hasRetainedFfiCallback } from "./ffi-callbacks.js";
  * not exceptions, so most intrinsics never contribute. The module evaluator's
  * internal await and throwing library calls are the exceptions: both can
  * surface a catchable rejection/error and seed the fixpoint like a `throw`. */
-export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: boolean } {
+export function computeMayThrow(mod: IrModule): {
+  fns: Set<string>;
+  indirect: boolean;
+  /** Worker programs: the functions that poll for termination on entry. */
+  workerEntryPolls?: Set<string>;
+} {
+  const terminations = mod.workers === true ? workerTerminationPolls(mod) : null;
   interface Facts {
     throws: boolean;
     callees: string[];
@@ -293,6 +299,9 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
       return true;
     };
     everyStmtList(fn.body, { expr: visit, stmt: visit });
+    // A worker can be terminated at any of its polls: the noncatchable
+    // stop unwinds like an exception from every function that polls.
+    if (terminations?.polls.has(fn.name)) f.throws = true;
     facts.set(fn.name, f);
   }
 
@@ -341,5 +350,225 @@ export function computeMayThrow(mod: IrModule): { fns: Set<string>; indirect: bo
       cls = def.base;
     }
   }
-  return { fns: may, indirect };
+  return { fns: may, indirect, ...(terminations ? { workerEntryPolls: terminations.entry } : {}) };
+}
+
+/** Statement and expression kinds that cannot reenter scriptc code except
+ * through the direct call edges recorded below (`call`, `new`,
+ * `virtualCall`), and cannot block in the runtime. Everything else, such as
+ * indirect calls, callbacks, awaits, dynamic operations and library calls, is
+ * treated as unbounded. */
+const BOUNDED_KINDS: ReadonlySet<string> = new Set([
+  "varDecl",
+  "assign",
+  "exprStmt",
+  "if",
+  "block",
+  "return",
+  "throw",
+  "rethrow",
+  "tryCatch",
+  "switch",
+  "break",
+  "continue",
+  "while",
+  "doWhile",
+  "for",
+  "forOf",
+  "numLit",
+  "strLit",
+  "boolLit",
+  "unitLit",
+  "varRef",
+  "assignExpr",
+  "incDec",
+  "bin",
+  "unary",
+  "logical",
+  "ternary",
+  "strCmp",
+  "strEq",
+  "strConcat",
+  "strIntrinsic",
+  "call",
+  "new",
+  "virtualCall",
+  "fieldGet",
+  "fieldSet",
+  "fieldIncDec",
+  "fieldAbsent",
+  "arrayGet",
+  "arraySet",
+  "arrayHas",
+  "arrayLit",
+  "arrayNewLen",
+  "arrayDelete",
+  "arraySetUndefined",
+  "arrayState",
+  "dynFrom",
+  "recordGet",
+  "recordSet",
+  "recordHas",
+  "recordLit",
+  "mapIntrinsic",
+  "setIntrinsic",
+  "upcast",
+  "downcast",
+  "toBool",
+  "seqExpr",
+  "nullish",
+  "orDefault",
+  "optChain",
+  "chainRecv",
+  "selfRef",
+  "unionWrap",
+  "unionNarrow",
+  "unionDisc",
+  "unionIsTag",
+  "unionEq",
+  "instanceOf",
+  "closure",
+  "classRef",
+]);
+
+/** Array methods that can call back into scriptc code (a comparator, or
+ * element string conversion). */
+const UNBOUNDED_ARR_METHODS: ReadonlySet<string> = new Set(["sortValues", "join"]);
+
+function primitiveDynArgument(arg: IrExpr): boolean {
+  if (arg.kind !== "dynFrom") return false;
+  const kind = arg.value.type.kind;
+  return kind === "string" || kind === "f64" || kind === "bool" || kind === "undefinedT";
+}
+
+function boundedNode(rec: IrExpr | IrStmt): boolean {
+  if (BOUNDED_KINDS.has(rec.kind)) return true;
+  switch (rec.kind) {
+    case "arrIntrinsic":
+      return !UNBOUNDED_ARR_METHODS.has(rec.method);
+    case "libCall":
+      if (rec.fn === "error.new") return true;
+      // `new Error(message, options)` stays bounded while its message cannot
+      // reach a user toString and no options object is passed.
+      if (rec.fn === "error.newOptions") return rec.args.every(primitiveDynArgument);
+      return rec.fn.startsWith("math.");
+    case "toString": {
+      const operand = rec.operand.type.kind;
+      return operand === "f64" || operand === "bool" || operand === "string";
+    }
+    default:
+      return false;
+  }
+}
+
+/** Where a worker program must poll for termination so that every unbounded
+ * execution observes it promptly: every loop polls on entry and then in
+ * bounded batches, and a function polls on entry unless it is bounded. A
+ * function is bounded when all of its operations are listed above and it is
+ * not part of a direct call cycle; then every execution of it either
+ * finishes after finitely many steps or reaches a polling callee. `polls`
+ * names the functions that poll (and therefore may unwind with the
+ * termination sentinel); `entry` the subset that polls on entry. */
+export function workerTerminationPolls(mod: IrModule): {
+  entry: Set<string>;
+  polls: Set<string>;
+} {
+  const methodImpls = new Map<string, string[]>();
+  for (const cls of mod.classes ?? []) {
+    for (const m of cls.methods ?? []) {
+      let list = methodImpls.get(m);
+      if (!list) methodImpls.set(m, (list = []));
+      list.push(`%${cls.name}.${m}`);
+    }
+  }
+  const names = new Set(mod.functions.map((fn) => fn.name));
+  const edges = new Map<string, string[]>();
+  const entry = new Set<string>();
+  const polls = new Set<string>();
+  for (const fn of mod.functions) {
+    const out: string[] = [];
+    let bounded = fn.async !== true && fn.generator === undefined && fn.name !== mod.entry;
+    let loops = false;
+    const visit = (rec: IrExpr | IrStmt): boolean => {
+      if (!boundedNode(rec)) bounded = false;
+      switch (rec.kind) {
+        case "while":
+        case "doWhile":
+        case "for":
+        case "forOf":
+          loops = true;
+          break;
+        case "call":
+          out.push(rec.callee);
+          break;
+        case "new":
+          out.push(`%${rec.className}.constructor`);
+          break;
+        case "virtualCall":
+          out.push(...(methodImpls.get(rec.method) ?? []));
+          break;
+      }
+      return true;
+    };
+    everyStmtList(fn.body, { expr: visit, stmt: visit });
+    edges.set(
+      fn.name,
+      out.filter((callee) => names.has(callee)),
+    );
+    if (!bounded) entry.add(fn.name);
+    if (loops) polls.add(fn.name);
+  }
+  for (const name of cyclicFunctions(edges)) entry.add(name);
+  for (const name of entry) polls.add(name);
+  return { entry, polls };
+}
+
+/** Functions on a cycle of the call graph (Tarjan's strongly connected
+ * components, iterative so deep call chains cannot exhaust the stack). */
+function cyclicFunctions(edges: ReadonlyMap<string, readonly string[]>): Set<string> {
+  const index = new Map<string, number>();
+  const low = new Map<string, number>();
+  const onStack = new Set<string>();
+  const stack: string[] = [];
+  const cyclic = new Set<string>();
+  let next = 0;
+  for (const root of edges.keys()) {
+    if (index.has(root)) continue;
+    const work: { name: string; edge: number }[] = [{ name: root, edge: 0 }];
+    index.set(root, next);
+    low.set(root, next++);
+    stack.push(root);
+    onStack.add(root);
+    while (work.length > 0) {
+      const frame = work[work.length - 1]!;
+      const callees = edges.get(frame.name) ?? [];
+      if (frame.edge < callees.length) {
+        const callee = callees[frame.edge++]!;
+        if (callee === frame.name) cyclic.add(callee);
+        if (!index.has(callee)) {
+          index.set(callee, next);
+          low.set(callee, next++);
+          stack.push(callee);
+          onStack.add(callee);
+          work.push({ name: callee, edge: 0 });
+        } else if (onStack.has(callee)) {
+          low.set(frame.name, Math.min(low.get(frame.name)!, index.get(callee)!));
+        }
+        continue;
+      }
+      work.pop();
+      const parent = work[work.length - 1];
+      if (parent) low.set(parent.name, Math.min(low.get(parent.name)!, low.get(frame.name)!));
+      if (low.get(frame.name) !== index.get(frame.name)) continue;
+      const component: string[] = [];
+      let member: string;
+      do {
+        member = stack.pop()!;
+        onStack.delete(member);
+        component.push(member);
+      } while (member !== frame.name);
+      if (component.length > 1) for (const name of component) cyclic.add(name);
+    }
+  }
+  return cyclic;
 }

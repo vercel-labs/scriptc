@@ -289,6 +289,9 @@ void scr_context_stop_flag(const void *flag);
 void scr_context_stop(int code);
 bool scr_context_stopping(void);
 bool scr_context_checkpoint(void);
+/* Read inline by generated exception polls in worker executables: points at
+ * a raised flag once the context must stop. Never NULL. */
+extern SCR_TL const _Atomic bool *scr_context_signal;
 void scr_loop_context_shutdown(void);
 extern SCR_TL void (*scr_context_report_error)(void);
 typedef struct ScrContextEnv ScrContextEnv;
@@ -2675,6 +2678,9 @@ typedef struct ScrExcCell {
 
 /* Runtime-internal (fiber machinery in scr_async.c) — never emitted. */
 ScrExcCell *scr_exc_swap_cell(ScrExcCell *cell); /* NULL = main's cell */
+/* The active cell, read inline by generated exception polls (thread-local
+ * builds use NULL for the main cell until scr_init installs it). */
+extern SCR_TL ScrExcCell *scr_exc_active;
 ScrExcCell *scr_exc_current_cell(void);          /* the ACTIVE cell */
 
 bool scr_exc_pending(void);

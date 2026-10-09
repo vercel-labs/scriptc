@@ -17,6 +17,9 @@ import { analyzeCallLifetimes } from "./call-lifetimes.js";
 import { emitLlvmModule } from "./emitter.js";
 import { borrowsStringInputs } from "./string-lifetimes.js";
 
+/** A pending-exception check: the inline active-cell test or a runtime call. */
+const PENDING_CHECK = /@scr_exc_(?:active|pending)\b/;
+
 const loc = { file: "strings.ts", start: 0, end: 1 };
 const ref = (id: string, type: IrType = STRING): IrExpr => ({
   kind: "varRef",
@@ -221,7 +224,7 @@ test("throwing string operations leave owned adapters responsible for parameters
   const module = mod(f);
   const borrowed = body(module, "sc_bf_normalize");
   expect(borrowed).toContain("@scr_str_normalize");
-  expect(borrowed).toContain("@scr_exc_pending");
+  expect(borrowed).toMatch(PENDING_CHECK);
   expect(borrowed).not.toContain("@scr_str_retain_v");
   const owned = body(module, "sc_f_normalize");
   expect(owned.match(/@scr_str_release/g)).toHaveLength(2);
@@ -239,7 +242,7 @@ test("a temporary receiver stays owned across a throwing argument", () => {
   const ir = body(mod(source, failure, f), "sc_f_inspect");
   const argument = ir.indexOf("@sc_f_failure");
   expect(argument).toBeGreaterThan(ir.indexOf("@sc_f_source"));
-  expect(ir.slice(argument)).toContain("@scr_exc_pending");
+  expect(ir.slice(argument)).toMatch(PENDING_CHECK);
   expect(ir.slice(argument)).toContain("@scr_str_release");
 });
 

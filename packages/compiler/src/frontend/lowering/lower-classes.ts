@@ -2287,7 +2287,7 @@ export function collectClassShapeInner(
           if (
             type.kind === "dyn" &&
             !isJsSourceFile(member.getSourceFile()) &&
-            !lowerer.classImplementedProtocol(lowerer.typeOf(member.name)) &&
+            !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name)) &&
             (member.type !== undefined ||
               (lowerer.typeOf(member.name).flags & ts.TypeFlags.Any) === 0)
           ) {
@@ -2718,7 +2718,7 @@ export function collectClassShapeInner(
         if (
           type.kind === "dyn" &&
           !isJsSourceFile(member.getSourceFile()) &&
-          !lowerer.classImplementedProtocol(lowerer.typeOf(member.name))
+          !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name))
         ) {
           lowerer.unsupported("SC1090", member.name, "'unknown'-typed class fields");
         }
@@ -2854,7 +2854,7 @@ export function collectClassShapeInner(
           const type = shape.bodyType ?? shape.type;
           if (type.kind === "void") lowerer.badType(p.name, lowerer.typeOf(p.name));
           // The class-field dyn rule verbatim (KEEP NARROW).
-          if (type.kind === "dyn" && !lowerer.classImplementedProtocol(lowerer.typeOf(p))) {
+          if (type.kind === "dyn" && !lowerer.classFieldStoresDyn(lowerer.typeOf(p))) {
             lowerer.unsupported("SC1090", p.name, "'unknown'-typed class fields");
           }
           // `override x` (and any same-named inherited member) would

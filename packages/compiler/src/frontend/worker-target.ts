@@ -9,6 +9,7 @@ import {
 } from "./fork-target.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
+import { resolveWorkerEntrySource } from "./resolve.js";
 
 function workerNamespace(program: ts.Program, expression: ts.Expression): boolean {
   if (
@@ -97,6 +98,13 @@ export function workerModulePath(program: ts.Program, expression: ts.Expression)
   }
 }
 
+/** The compiled source behind a worker entry path (see
+ * resolveWorkerEntrySource). An unresolvable path stays as spelled, so
+ * program loading reports the missing file. */
+export function workerSourcePath(path: string): string {
+  return resolveWorkerEntrySource(path) ?? path;
+}
+
 export function workerTargetPaths(program: ts.Program, files: readonly ts.SourceFile[]): string[] {
   const targets = new Set<string>();
   const checker = program.getTypeChecker();
@@ -116,7 +124,7 @@ export function workerTargetPaths(program: ts.Program, files: readonly ts.Source
       const expression = construction.expression;
       if (!isWorkerConstructor(program, expression) || !construction.arguments?.[0]) continue;
       const path = workerModulePath(program, construction.arguments[0]);
-      if (path !== null) targets.add(path);
+      if (path !== null) targets.add(workerSourcePath(path));
     }
   }
   return [...targets];

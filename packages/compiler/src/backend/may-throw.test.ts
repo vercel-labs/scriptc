@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  BOOL,
   DYN,
   F64,
   VOID,
@@ -350,4 +351,56 @@ test("generic collection mutation propagates checked storage failures to callers
       moduleWith(caller, fn("write", [exprStmt(write)], []), fn("add", [exprStmt(add)], [])),
     ).fns,
   ).toEqual(new Set(["caller", "write", "add"]));
+});
+
+test("worker programs poll for termination only where execution can be unbounded", () => {
+  const call = (callee: string): IrStmt =>
+    exprStmt({ kind: "call", callee, args: [], type: VOID, loc });
+  const plain = (name: string, body: IrStmt[]): IrFunction => fn(name, body, []);
+  const loop: IrStmt = {
+    kind: "while",
+    cond: { kind: "boolLit", value: true, type: BOOL, loc },
+    body: [],
+    loc,
+  };
+  const mod: IrModule = {
+    ...moduleWith(
+      plain("caller", [call("leaf"), call("looping"), call("left"), call("indirect")]),
+      plain("leaf", [exprStmt(value)]),
+      plain("leafCaller", [call("leaf")]),
+      plain("looping", [loop]),
+      plain("left", [call("right")]),
+      plain("right", [call("left")]),
+      plain("self", [call("self")]),
+      plain("indirect", [
+        exprStmt({
+          kind: "callValue",
+          callee: { kind: "closure", fnName: "leaf", captures: [], type: funcOf([], VOID), loc },
+          args: [],
+          type: VOID,
+          loc,
+        }),
+      ]),
+    ),
+    workers: true,
+  };
+  const answer = computeMayThrow(mod);
+  // The entry, call cycles and unbounded operations poll on entry; a loop
+  // polls itself; bounded leaves poll nowhere and unwind nothing.
+  expect([...answer.workerEntryPolls!].sort()).toEqual([
+    "caller",
+    "indirect",
+    "left",
+    "right",
+    "self",
+  ]);
+  expect([...answer.fns].sort()).toEqual([
+    "caller",
+    "indirect",
+    "left",
+    "looping",
+    "right",
+    "self",
+  ]);
+  expect(computeMayThrow({ ...mod, workers: false }).workerEntryPolls).toBeUndefined();
 });

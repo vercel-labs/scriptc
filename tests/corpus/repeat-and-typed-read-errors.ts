@@ -40,6 +40,10 @@ bytes[far] = 7;
 bytes[negative] = 7;
 bytes[fraction] = 7;
 console.log("ignored writes", bytes.join(","), bytes.length);
+const sums = new Int32Array([3, 4]);
+console.log("compound", (sums[far] += 2), (sums[negative] *= 3), (sums[fraction] |= 1), (sums[1] -= 1));
+let bumped = sums[far]++;
+console.log("compound ignored", sums.join(","), bumped, Number.isNaN((sums[far] **= 2)));
 
 const floats = new Float64Array([1.5, -2]);
 let sum = 0;

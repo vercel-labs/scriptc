@@ -7717,12 +7717,15 @@ export function lowerElementCompound(
     receiver.type.kind === "array"
       ? arrayValueRead(lowerer, receiverRef(), indexRef(), receiver.type.elem, locOf(target))
       : {
+          // An invalid index reads undefined in Node, which every numeric
+          // compound operator turns into NaN; the write is then ignored.
           kind: "bytesIntrinsic",
           method: "get",
           receiver: receiverRef(),
           args: [indexRef()],
           type: F64,
           loc: locOf(target),
+          invalidNaN: true,
         };
   const oldLocal = lowerer.declareHiddenLocal("%compoundOld", oldValue.type);
   const oldRef = (): IrExpr => varRef(oldLocal.id, oldValue.type, loc);
